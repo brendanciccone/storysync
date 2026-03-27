@@ -10,7 +10,7 @@ import ora from "ora";
 import { StorybookClient } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { Renderer } from "./renderer.js";
-import { mapComponent, type FigmaComponentDefinition } from "./mapper.js";
+import { mapComponent } from "./mapper.js";
 
 const program = new Command();
 
@@ -121,7 +121,7 @@ program
           const component = await storybook.getComponent(componentName);
 
           // Map to Figma structure
-          const definition: FigmaComponentDefinition = mapComponent(component);
+          const definition = mapComponent(component);
 
           // Capture screenshots
           let screenshots = new Map<string, Buffer>();
@@ -137,8 +137,9 @@ program
           // Write to Figma
           const result = await figma.writeComponent(definition, screenshots, options.page);
 
+          const cappedNote = definition.wasCapped ? chalk.yellow(" (capped at 256)") : "";
           spinner.succeed(
-            `${chalk.bold(componentName)} → ${result.variantCount} variants (${result.figmaNodeId})`
+            `${chalk.bold(componentName)} → ${result.variantCount} variants (${result.figmaNodeId})${cappedNote}`
           );
           successCount++;
         } catch (err) {

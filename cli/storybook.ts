@@ -5,7 +5,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import type { StorybookComponent, StorybookProp, StorybookStory, PropType } from "./mapper.js";
+import type { StorybookComponent, StorybookProp, StorybookStory, PropType, ArgTypeControl } from "./mapper.js";
 
 export interface StorybookConnectionOptions {
   /** URL of the running Storybook instance. */
@@ -68,12 +68,16 @@ export class StorybookClient {
 
     const raw = JSON.parse(this.extractText(result));
 
-    const props: StorybookProp[] = (raw.props ?? []).map((p: Record<string, unknown>) => ({
+    // Support both docgen-style props array and argTypes-style object
+    const rawProps = this.normalizeRawProps(raw);
+
+    const props: StorybookProp[] = rawProps.map((p: Record<string, unknown>) => ({
       name: p.name as string,
       type: this.normalizeType(p.type),
       description: p.description as string | undefined,
       defaultValue: p.defaultValue,
       required: p.required as boolean | undefined,
+      control: this.normalizeControl(p.control ?? p.argType),
     }));
 
     const stories: StorybookStory[] = (raw.stories ?? []).map((s: Record<string, unknown>) => ({
@@ -98,6 +102,74 @@ export class StorybookClient {
     });
 
     return this.extractText(result);
+  }
+
+  /**
+   * Normalize raw props from Storybook MCP — handles both:
+   * - docgen-style: { props: [{ name, type, ... }] }
+   * - argTypes-style: { argTypes: { propName: { control, options, ... } } }
+   */
+  private normalizeRawProps(raw: Record<string, unknown>): Record<string, unknown>[] {
+    // If there's a props array, use it directly
+    if (Array.isArray(raw.props) && raw.props.length > 0) {
+      return raw.props as Record<string, unknown>[];
+    }
+
+    // If there's an argTypes object, convert it to an array
+    if (raw.argTypes && typeof raw.argTypes === "object" && !Array.isArray(raw.argTypes)) {
+      const argTypes = raw.argTypes as Record<string, Record<string, unknown>>;
+      return Object.entries(argTypes).map(([name, argType]) => ({
+        name,
+        type: argType.type ?? { name: argType.control?.type ?? "unknown" },
+        description: argType.description,
+        defaultValue: argType.defaultValue,
+        required: argType.required,
+        control: argType.control ?? (argType.options ? { type: "select", options: argType.options } : undefined),
+        argType,
+      }));
+    }
+
+    // Fallback: try props as an object keyed by name (another common format)
+    if (raw.props && typeof raw.props === "object" && !Array.isArray(raw.props)) {
+      const propsObj = raw.props as Record<string, Record<string, unknown>>;
+      return Object.entries(propsObj).map(([name, prop]) => ({
+        name,
+        ...prop,
+      }));
+    }
+
+    return [];
+  }
+
+  private normalizeControl(raw: unknown): ArgTypeControl | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+
+    const obj = raw as Record<string, unknown>;
+
+    // Direct control object: { type: "select", options: [...] }
+    if (obj.type || obj.options) {
+      return {
+        type: obj.type as string | undefined,
+        options: Array.isArray(obj.options)
+          ? obj.options.map((o) => String(o))
+          : undefined,
+      };
+    }
+
+    // Nested: { control: { type: "select" }, options: [...] }
+    if (obj.control && typeof obj.control === "object") {
+      const ctrl = obj.control as Record<string, unknown>;
+      return {
+        type: ctrl.type as string | undefined,
+        options: Array.isArray(obj.options)
+          ? obj.options.map((o) => String(o))
+          : Array.isArray(ctrl.options)
+            ? ctrl.options.map((o) => String(o))
+            : undefined,
+      };
+    }
+
+    return undefined;
   }
 
   private normalizeType(raw: unknown): PropType {
