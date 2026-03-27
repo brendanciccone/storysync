@@ -1,39 +1,37 @@
 # storysync
 
-Map your React Storybook components to Figma variant definitions. Deterministic rules, no LLM.
+Deterministic mapping rules from Storybook components to Figma variants — delivered as skill files for Claude Code and Cursor, with a CLI for previewing and validating mappings.
 
 ## What it does
 
-Reads components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), maps boolean and enum props to Figma variant properties, and writes them to [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) as component sets.
-
-### How to use it
+Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), maps boolean and enum props to Figma variant properties, and tells [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create the corresponding component sets.
 
 | Method | What it does |
 |---|---|
-| **Claude Code skill** | Claude reads Storybook + writes to Figma in one conversation |
-| **Cursor rules** | Same as Claude Code, from Cursor |
+| **Claude Code skill** | Claude reads Storybook MCP, applies mapping rules, writes to Figma MCP |
+| **Cursor rules** | Same — Cursor reads, maps, writes |
 | **CLI** | Preview mappings locally (`storysync map`, `list`, `inspect`) |
 | **GitHub Action** | Validate mappings in CI on every push |
 
-Writing to Figma requires the `mcp:connect` OAuth scope, which is only available to first-party MCP clients (Claude Code, Cursor, VS Code, Codex). The CLI and Action handle the read + map side. Claude Code or Cursor handle the write side.
+> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from Storybook MCP (no auth restrictions) and previews what the mapping would produce.
 
 ## Quick start
 
 ### Claude Code (recommended)
 
 ```bash
-# 1. Install Storybook MCP addon (Vite-based Storybook 9+, Node 24+)
+# 1. Install the Storybook MCP addon in your project
 npm install @storybook/addon-mcp
 
-# 2. Connect Storybook MCP
+# 2. Connect Storybook MCP to Claude Code
 claude mcp add --transport http storybook http://localhost:6006/mcp
 
-# 3. Install Figma plugin (includes MCP server + agent skills)
+# 3. Install the Figma plugin (includes MCP server + agent skills)
 claude plugin install figma@claude-plugins-official
 
 # 4. Add the storysync skill
 mkdir -p .claude/skills
-cp skills/claude-code.md .claude/skills/storysync.md
+curl -o .claude/skills/storysync.md https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/claude-code.md
 ```
 
 Start Storybook, open Claude Code, and say: **"Generate my Figma library from Storybook"**
@@ -41,12 +39,12 @@ Start Storybook, open Claude Code, and say: **"Generate my Figma library from St
 ### Cursor
 
 ```bash
-# 1. Install Storybook MCP addon
+# 1. Install the Storybook MCP addon in your project
 npm install @storybook/addon-mcp
 
 # 2. Add the storysync rule
 mkdir -p .cursor/rules
-cp skills/cursor.mdc .cursor/rules/storysync.mdc
+curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/cursor.mdc
 ```
 
 In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say: **"Generate my Figma library from Storybook"**
@@ -83,17 +81,17 @@ jobs:
 ## How it works
 
 ```
-Storybook MCP              storysync               Figma MCP
-list-all-documentation     (mapping rules)         use_figma
-get-documentation                                  (writes to canvas)
+                          storysync
+Storybook MCP             mapping rules             Figma MCP
+─────────────             ─────────────             ─────────
 
-component: Button     →    boolean prop?        →  Figma boolean variant
-props:                     enum prop?            →  Figma variant property
-  variant: enum            callback prop?        →  skip
-    [default, destructive]
-  disabled: boolean        Cartesian product     →  Figma component set
-  size: enum               of all mapped props      with all variants
-    [sm, md, lg]           (capped at 256)
+list-all-documentation    boolean prop?         →   boolean variant
+get-documentation         enum/union prop?      →   variant property
+                          string/number/callback →  skip
+     ↓                         ↓                         ↓
+ reads props              Cartesian product        Claude Code or Cursor
+ from TypeScript          of mapped props          calls use_figma to
+ type definitions         (capped at 256)          create component sets
 ```
 
 ## Mapping rules
@@ -142,18 +140,20 @@ Options:
 ## Requirements
 
 ### Storybook
-- **Storybook 9+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, `@storybook/sveltekit`)
-- **`@storybook/addon-mcp`** installed
+
+- **Storybook 9+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **`@storybook/addon-mcp`** installed — provides MCP endpoint at `/mcp`
 - **Node.js 24+**
 - Must be the **dev server** (`storybook dev`), not a static build
 
 ### Figma (for writing via Claude Code / Cursor)
-- **Full seat** on a paid plan (Dev seats are read-only)
-- Auth is **OAuth 2.0**, handled automatically by Claude Code, Cursor, and other supported MCP clients
-- Write-to-canvas is free during beta, will become paid
-- Rate limits: Starter/View/Collab = 6 calls/month. Full seats on Professional+ = per-minute limits
 
-No Anthropic API key needed.
+- **Full seat** on a paid plan — required for write access. Dev seats are read-only.
+- Auth is **OAuth 2.0**, handled automatically by supported MCP clients
+- Write-to-canvas is **free during beta**, will become a paid usage-based feature
+- **Rate limits**: Starter plans = 6 tool calls/month. Full seats on Professional+ = per-minute limits
+
+No Anthropic API key needed. The mapping rules are deterministic — no LLM costs from storysync itself. (Figma's `use_figma` tool is agent-driven on their side.)
 
 ## License
 
