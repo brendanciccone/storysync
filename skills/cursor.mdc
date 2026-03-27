@@ -1,0 +1,25 @@
+---
+description: Generate Figma component library from Storybook using storysync
+globs:
+alwaysApply: false
+---
+
+# storysync - Storybook to Figma
+
+Read components from Storybook MCP and write them to Figma MCP as a component library.
+
+## Requirements
+
+- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+- Storybook MCP connected (endpoint at `/mcp` on the dev server)
+- Figma MCP connected (`/add-plugin figma` or add `https://mcp.figma.com/mcp`)
+- Figma Full seat (Dev seats are read-only)
+
+## Workflow
+
+1. Call `list-all-documentation({ withStoryIds: true })` to get component IDs.
+2. For each, call `get-documentation({ id: "<component-id>" })`. Parse the TypeScript `Props` type.
+3. Map props: `boolean` -> Figma boolean variant. Union of string literals -> variant property. Skip everything else (strings, numbers, callbacks, ReactNode, children, className, style, ref, key, aria-*, data-*, on*).
+4. Cartesian product of mapped props, capped at 256.
+5. Write with `use_figma` - component name, variant properties with types/values/defaults, file key.
+6. Summarize: components synced, variant counts, failures, caps.

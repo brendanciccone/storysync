@@ -1,0 +1,49 @@
+name: "storysync"
+description: "Validate Storybook-to-Figma variant mappings in CI"
+author: "Brendan Ciccone"
+
+branding:
+  icon: "refresh-cw"
+  color: "purple"
+
+inputs:
+  storybook_url:
+    description: "URL of the running Storybook dev server"
+    required: false
+    default: "http://localhost:6006"
+  components:
+    description: "Comma-separated list of component names to validate (default: all)"
+    required: false
+  node_version:
+    description: "Node.js version to use"
+    required: false
+    default: "24"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    - name: Start Storybook dev server
+      shell: bash
+      run: |
+        npx storybook dev --port 6006 --ci &
+        npx wait-on http://localhost:6006 --timeout 120000
+
+    - name: Validate mappings
+      shell: bash
+      run: |
+        ARGS="--storybook ${{ inputs.storybook_url }}"
+
+        if [ -n "${{ inputs.components }}" ]; then
+          ARGS="$ARGS --components '${{ inputs.components }}'"
+        fi
+
+        npx storysync map $ARGS
