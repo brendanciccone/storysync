@@ -1,101 +1,65 @@
 #!/usr/bin/env node
 
-/**
- * storysync CLI. Preview how Storybook components map to Figma variants.
- *
- * Writing to Figma requires the `mcp:connect` OAuth scope, which is only
- * available to first-party MCP clients (Claude Code, Cursor, VS Code, etc.).
- * Use the skill files for the actual Figma write path.
- */
-
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient } from "./storybook.js";
 import { mapComponent } from "./mapper.js";
 
-const program = new Command();
+async function connectStorybook(url: string) {
+  const spinner = ora("Connecting to Storybook MCP...").start();
+  const client = new StorybookClient(url);
+  try {
+    await client.connect();
+    spinner.succeed("Connected to Storybook MCP");
+    return client;
+  } catch (err) {
+    spinner.fail("Failed to connect to Storybook MCP");
+    console.error(chalk.red(String(err)));
+    process.exit(1);
+  }
+}
 
-program
-  .name("storysync")
-  .description("Preview how Storybook components map to Figma variants")
-  .version("0.1.0");
+const program = new Command();
+program.name("storysync").description("Preview how Storybook components map to Figma variants").version("0.1.0");
 
 program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
-  .requiredOption("--storybook <url>", "URL of the running Storybook instance")
-  .option("--components <names>", "Comma-separated list of component names (default: all)")
-  .action(async (options) => {
-    const spinner = ora();
-
-    spinner.start("Connecting to Storybook MCP...");
-    const storybook = new StorybookClient({ url: options.storybook });
+  .requiredOption("--storybook <url>", "Storybook URL")
+  .option("--components <names>", "Comma-separated component names")
+  .action(async (opts) => {
+    const storybook = await connectStorybook(opts.storybook);
     try {
-      await storybook.connect();
-      spinner.succeed("Connected to Storybook MCP");
-    } catch (err) {
-      spinner.fail("Failed to connect to Storybook MCP");
-      console.error(chalk.red(String(err)));
-      console.error(chalk.dim("  Make sure @storybook/addon-mcp is installed and Storybook dev server is running."));
-      process.exit(1);
-    }
-
-    try {
-      spinner.start("Reading components from Storybook...");
+      const spinner = ora("Reading components...").start();
       let entries = await storybook.listComponents();
       spinner.succeed(`Found ${entries.length} components`);
 
-      if (options.components) {
-        const filter = new Set(
-          (options.components as string).split(",").map((s: string) => s.trim().toLowerCase())
-        );
-        entries = entries.filter(
-          (e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase())
-        );
-        console.log(chalk.dim(`  Filtered to ${entries.length} components`));
+      if (opts.components) {
+        const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
+        entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
+        console.log(chalk.dim(`  Filtered to ${entries.length}`));
       }
 
-      if (entries.length === 0) {
-        console.log(chalk.yellow("\nNo components found."));
-        return;
-      }
+      if (!entries.length) { console.log(chalk.yellow("\nNo components found.")); return; }
 
-      let totalVariants = 0;
-      let cappedCount = 0;
-
+      let total = 0, capped = 0;
       for (const entry of entries) {
-        spinner.start(`Processing ${chalk.bold(entry.name)}...`);
-
         try {
           const component = await storybook.getComponent(entry.id, entry.name);
-          const definition = mapComponent(component);
-
-          const propsInfo = definition.variantProperties
-            .map((p) => `${p.name}(${p.values.length})`)
-            .join(", ");
-          const cappedNote = definition.wasCapped ? chalk.yellow(" [CAPPED]") : "";
-
-          spinner.succeed(
-            `${chalk.bold(entry.name)} - ${definition.variantProperties.length} props [${propsInfo || "none"}] → ${definition.variantCombinations.length} variants${cappedNote}`
-          );
-
-          totalVariants += definition.variantCombinations.length;
-          if (definition.wasCapped) cappedCount++;
+          const def = mapComponent(component);
+          const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
+          const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
+          console.log(`  ${chalk.green("✓")} ${chalk.bold(entry.name)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+          total += def.variantCombinations.length;
+          if (def.wasCapped) capped++;
         } catch (err) {
-          spinner.fail(`${chalk.bold(entry.name)} - failed`);
-          console.error(chalk.red(`  ${String(err)}`));
+          console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.name)} ${chalk.red(String(err))}`);
         }
       }
 
-      console.log();
-      console.log(chalk.bold("Summary"));
-      console.log(`  ${entries.length} components → ${totalVariants} total variants`);
-      if (cappedCount > 0) {
-        console.log(chalk.yellow(`  ${cappedCount} components capped at 256 combinations`));
-      }
-      console.log();
-      console.log(chalk.dim("To write these to Figma, use the Claude Code skill or Cursor rules file."));
+      console.log(`\n${entries.length} components, ${total} total variants${capped ? `, ${capped} capped` : ""}`);
+      console.log(chalk.dim("To write to Figma, use the Claude Code skill or Cursor rules file."));
     } finally {
       await storybook.disconnect();
     }
@@ -103,29 +67,16 @@ program
 
 program
   .command("list")
-  .description("List components available in Storybook")
-  .requiredOption("--storybook <url>", "URL of the running Storybook instance")
-  .action(async (options) => {
-    const spinner = ora();
-
-    spinner.start("Connecting to Storybook MCP...");
-    const storybook = new StorybookClient({ url: options.storybook });
-    try {
-      await storybook.connect();
-      spinner.succeed("Connected to Storybook MCP");
-    } catch (err) {
-      spinner.fail("Failed to connect to Storybook MCP");
-      console.error(chalk.red(String(err)));
-      process.exit(1);
-    }
-
+  .description("List components in Storybook")
+  .requiredOption("--storybook <url>", "Storybook URL")
+  .action(async (opts) => {
+    const storybook = await connectStorybook(opts.storybook);
     try {
       const entries = await storybook.listComponents();
-      console.log(chalk.bold(`\nFound ${entries.length} components:\n`));
-      for (const entry of entries) {
-        const storyCount = entry.storyIds?.length ?? 0;
-        const storyInfo = storyCount > 0 ? chalk.dim(` (${storyCount} stories)`) : "";
-        console.log(`  ${chalk.cyan("•")} ${entry.name} ${chalk.dim(`[${entry.id}]`)}${storyInfo}`);
+      console.log(`\n${entries.length} components:\n`);
+      for (const e of entries) {
+        const stories = e.storyIds?.length ? chalk.dim(` (${e.storyIds.length} stories)`) : "";
+        console.log(`  ${e.name} ${chalk.dim(e.id)}${stories}`);
       }
     } finally {
       await storybook.disconnect();
@@ -134,63 +85,30 @@ program
 
 program
   .command("inspect")
-  .description("Inspect a component's props and show how they map to Figma variants")
-  .requiredOption("--storybook <url>", "URL of the running Storybook instance")
-  .requiredOption("--component <name>", "Component name or ID to inspect")
-  .action(async (options) => {
-    const spinner = ora();
-
-    spinner.start("Connecting to Storybook MCP...");
-    const storybook = new StorybookClient({ url: options.storybook });
-    try {
-      await storybook.connect();
-      spinner.succeed("Connected to Storybook MCP");
-    } catch (err) {
-      spinner.fail("Failed to connect to Storybook MCP");
-      console.error(chalk.red(String(err)));
-      process.exit(1);
-    }
-
+  .description("Show how a component's props map to Figma variants")
+  .requiredOption("--storybook <url>", "Storybook URL")
+  .requiredOption("--component <name>", "Component name or ID")
+  .action(async (opts) => {
+    const storybook = await connectStorybook(opts.storybook);
     try {
       const entries = await storybook.listComponents();
       const match = entries.find(
-        (e) =>
-          e.id.toLowerCase() === options.component.toLowerCase() ||
-          e.name.toLowerCase() === options.component.toLowerCase()
+        (e) => e.id.toLowerCase() === opts.component.toLowerCase() || e.name.toLowerCase() === opts.component.toLowerCase()
       );
 
-      const componentId = match?.id ?? options.component.toLowerCase();
-      const componentName = match?.name ?? options.component;
+      const component = await storybook.getComponent(match?.id ?? opts.component.toLowerCase(), match?.name ?? opts.component);
+      const def = mapComponent(component);
 
-      const component = await storybook.getComponent(componentId, componentName);
-      const definition = mapComponent(component);
-
-      console.log(chalk.bold(`\n${component.name}`) + chalk.dim(` [${componentId}]`) + "\n");
-
-      if (component.props.length === 0) {
-        console.log(chalk.yellow("  No props found in documentation."));
-      } else {
-        console.log(chalk.dim("Props → Figma mapping:\n"));
-        for (const prop of component.props) {
-          const variant = definition.variantProperties.find((v) => v.name === prop.name);
-          if (variant) {
-            const values = variant.values.join(", ");
-            console.log(
-              `  ${chalk.green("✓")} ${chalk.bold(prop.name)} (${prop.type.name}) → ${variant.type} [${values}]`
-            );
-          } else {
-            console.log(
-              `  ${chalk.dim("✗")} ${chalk.dim(prop.name)} (${prop.type.name}) → ${chalk.dim("skipped")}`
-            );
-          }
+      console.log(`\n${chalk.bold(component.name)}\n`);
+      for (const prop of component.props) {
+        const v = def.variantProperties.find((vp) => vp.name === prop.name);
+        if (v) {
+          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}]`);
+        } else {
+          console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped`);
         }
       }
-
-      console.log(
-        `\n${chalk.bold(String(definition.variantProperties.length))} variant properties → ${chalk.bold(
-          String(definition.variantCombinations.length)
-        )} total combinations${definition.wasCapped ? chalk.yellow(" (capped at 256)") : ""}\n`
-      );
+      console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);
     } finally {
       await storybook.disconnect();
     }

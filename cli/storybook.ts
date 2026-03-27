@@ -1,17 +1,7 @@
-/**
- * Storybook MCP client. Reads components and their props via @storybook/addon-mcp.
- *
- * Tools:
- *   - list-all-documentation({ withStoryIds?: boolean }) → markdown list
- *   - get-documentation({ id: string }) → markdown with TypeScript Props type
- *
- * Transport: Streamable HTTP at /mcp (e.g. http://localhost:6006/mcp)
- */
-
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import type { StorybookComponent, StorybookProp, StorybookStory, PropType } from "./mapper.js";
+import type { StorybookComponent, StorybookProp, PropType } from "./mapper.js";
 
 export interface ComponentEntry {
   id: string;
@@ -23,8 +13,8 @@ export class StorybookClient {
   private client: Client | null = null;
   private url: string;
 
-  constructor(options: { url: string }) {
-    this.url = options.url;
+  constructor(url: string) {
+    this.url = url;
   }
 
   async connect(): Promise<void> {
@@ -32,210 +22,122 @@ export class StorybookClient {
     const mcpUrl = new URL("/mcp", this.url);
 
     try {
-      const transport = new StreamableHTTPClientTransport(mcpUrl);
-      await this.client.connect(transport);
+      await this.client.connect(new StreamableHTTPClientTransport(mcpUrl));
     } catch {
-      // Fallback to SSE for older Storybook versions
-      const transport = new SSEClientTransport(mcpUrl);
-      await this.client.connect(transport);
+      await this.client.connect(new SSEClientTransport(mcpUrl));
     }
   }
 
   async disconnect(): Promise<void> {
-    if (this.client) {
-      await this.client.close();
-      this.client = null;
-    }
+    await this.client?.close();
+    this.client = null;
   }
 
   async listComponents(): Promise<ComponentEntry[]> {
-    this.ensureConnected();
-
-    const result = await this.client!.callTool({
-      name: "list-all-documentation",
-      arguments: { withStoryIds: true },
-    });
-
-    return this.parseComponentList(this.extractText(result));
+    const result = await this.call("list-all-documentation", { withStoryIds: true });
+    return this.parseComponentList(result);
   }
 
-  async getComponent(componentId: string, displayName?: string): Promise<StorybookComponent> {
-    this.ensureConnected();
-
-    const result = await this.client!.callTool({
-      name: "get-documentation",
-      arguments: { id: componentId },
-    });
-
-    const text = this.extractText(result);
-    const name = displayName ?? componentId;
-    const props = this.parseTypeScriptProps(text);
-    const stories = this.parseStories(name, text);
-
-    return { name, props, stories };
+  async getComponent(id: string, displayName?: string): Promise<StorybookComponent> {
+    const text = await this.call("get-documentation", { id });
+    const name = displayName ?? id;
+    return { name, props: this.parseProps(text), stories: this.parseStories(name, text) };
   }
 
-  /**
-   * Parse component list from markdown.
-   *
-   * Official format:
-   *   - **Button** (id: `button`) - A clickable button
-   *     - Primary (id: `button--primary`)
-   */
+  private async call(tool: string, args: Record<string, unknown>): Promise<string> {
+    if (!this.client) throw new Error("Not connected");
+    const result = await this.client.callTool({ name: tool, arguments: args });
+    const r = result as { content?: { type: string; text?: string }[] };
+    const texts = r.content?.filter((c) => c.type === "text" && c.text).map((c) => c.text!) ?? [];
+    return texts.length ? texts.join("\n") : JSON.stringify(result);
+  }
+
+  // Parses the markdown list from list-all-documentation.
+  // Format: - **Button** (id: `button`) - description
+  //           - Primary (id: `button--primary`)
   private parseComponentList(text: string): ComponentEntry[] {
     const entries: ComponentEntry[] = [];
-    const lines = text.split("\n");
     let current: ComponentEntry | null = null;
 
-    for (const line of lines) {
-      // Component line: - **Button** (id: `button`) - summary
-      const componentMatch = line.match(
-        /^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/
-      );
-
-      if (componentMatch && !line.match(/^\s{2,}/)) {
-        current = {
-          name: componentMatch[1].trim(),
-          id: componentMatch[2].trim(),
-          storyIds: [],
-        };
+    for (const line of text.split("\n")) {
+      const m = line.match(/^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
+      if (m && !/^\s{2,}/.test(line)) {
+        current = { name: m[1].trim(), id: m[2].trim(), storyIds: [] };
         entries.push(current);
-        continue;
-      }
-
-      // Story sub-item:   - Primary (id: `button--primary`)
-      if (current && /^\s{2,}/.test(line)) {
-        const storyMatch = line.match(
-          /[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/
-        );
-        if (storyMatch) {
-          current.storyIds?.push(storyMatch[2].trim());
-        }
+      } else if (current && /^\s{2,}/.test(line)) {
+        const s = line.match(/[\-\*]\s+(?:\*\*)?[^*(\n]+?(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
+        if (s) current.storyIds?.push(s[1].trim());
       }
     }
-
     return entries;
   }
 
-  /**
-   * Parse TypeScript `export type Props = { ... }` blocks.
-   *
-   * Format:
-   *   variant?: "default" | "destructive" = "default";
-   *   disabled?: boolean = false;
-   */
-  private parseTypeScriptProps(text: string): StorybookProp[] {
+  // Extracts props from TypeScript type definitions in the documentation.
+  // Looks for `export type Props = { ... }` blocks in code fences.
+  private parseProps(text: string): StorybookProp[] {
     const props: StorybookProp[] = [];
+    const codeBlocks = /```(?:typescript|ts|tsx)?\s*\n([\s\S]*?)```/g;
+    let m: RegExpExecArray | null;
 
-    // Find TypeScript code blocks
-    const codeBlockRegex = /```(?:typescript|ts|tsx)?\s*\n([\s\S]*?)```/g;
-    let match: RegExpExecArray | null;
-
-    while ((match = codeBlockRegex.exec(text)) !== null) {
-      props.push(...this.parsePropsBlock(match[1]));
+    while ((m = codeBlocks.exec(text)) !== null) {
+      props.push(...this.parsePropsBlock(m[1]));
     }
 
-    // Try without code fences
-    if (props.length === 0) {
-      const inlineMatch = text.match(/export\s+type\s+Props\s*=\s*\{([\s\S]*?)\}/);
-      if (inlineMatch) {
-        props.push(...this.parsePropsBlock(`export type Props = {${inlineMatch[1]}}`));
-      }
+    if (!props.length) {
+      const inline = text.match(/export\s+type\s+Props\s*=\s*\{([\s\S]*?)\}/);
+      if (inline) props.push(...this.parsePropsBlock(`export type Props = {${inline[1]}}`));
     }
-
     return props;
   }
 
   private parsePropsBlock(block: string): StorybookProp[] {
+    const body = block.match(/(?:export\s+)?type\s+\w+\s*=\s*\{([\s\S]*)\}/);
+    if (!body) return [];
+
     const props: StorybookProp[] = [];
-    const bodyMatch = block.match(/(?:export\s+)?type\s+\w+\s*=\s*\{([\s\S]*)\}/);
-    if (!bodyMatch) return props;
+    for (const line of body[1].split("\n")) {
+      const t = line.trim();
+      if (!t || t.startsWith("/") || t.startsWith("*") || t === "}") continue;
 
-    for (const line of bodyMatch[1].split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("/**") || trimmed.startsWith("*") || trimmed.startsWith("//") || trimmed === "}") continue;
+      const m = t.match(/^(\w+)(\?)?:\s*(.+);?\s*$/);
+      if (!m) continue;
 
-      const propMatch = trimmed.match(/^(\w+)(\?)?:\s*(.+);?\s*$/);
-      if (!propMatch) continue;
+      const [, name, opt, rest] = m;
+      const eqIdx = rest.lastIndexOf(" = ");
+      let typeStr: string, defaultValue: string | undefined;
 
-      const [, name, optional, rawTypeAndDefault] = propMatch;
-
-      // Split on last ` = ` to separate type from default
-      const lastEqIdx = rawTypeAndDefault.lastIndexOf(" = ");
-      let typeStr: string;
-      let defaultStr: string | undefined;
-
-      if (lastEqIdx !== -1) {
-        typeStr = rawTypeAndDefault.slice(0, lastEqIdx).trim();
-        defaultStr = rawTypeAndDefault.slice(lastEqIdx + 3).replace(/;$/, "").trim();
+      if (eqIdx !== -1) {
+        typeStr = rest.slice(0, eqIdx).trim();
+        defaultValue = rest.slice(eqIdx + 3).replace(/;$/, "").trim().replace(/^["']|["']$/g, "");
       } else {
-        typeStr = rawTypeAndDefault.replace(/;$/, "").trim();
+        typeStr = rest.replace(/;$/, "").trim();
       }
 
-      const type = this.parseTypeString(typeStr);
-      const defaultValue = defaultStr?.replace(/^["']|["']$/g, "");
-
-      props.push({
-        name,
-        type,
-        defaultValue: defaultValue ?? undefined,
-        required: !optional,
-      });
+      const type: PropType = typeStr.includes("|") ? { name: "union", raw: typeStr } : { name: typeStr };
+      props.push({ name, type, defaultValue, required: !opt });
     }
-
     return props;
   }
 
-  private parseStories(componentName: string, text: string): StorybookStory[] {
-    const stories: StorybookStory[] = [];
-    const seenIds = new Set<string>();
+  private parseStories(componentName: string, text: string): { id: string; name: string }[] {
+    const stories: { id: string; name: string }[] = [];
+    const seen = new Set<string>();
 
     for (const line of text.split("\n")) {
-      const idMatch = line.match(/(?:id:\s*|storyId:\s*)[`"']([^`"']+)[`"']/g);
-      if (idMatch) {
-        for (const m of idMatch) {
-          const id = m.replace(/.*[`"']([^`"']+)[`"'].*/, "$1");
-          if (!seenIds.has(id) && id.includes("--")) {
-            seenIds.add(id);
-            const namePart = id.split("--").pop() ?? id;
-            stories.push({
-              id,
-              name: namePart.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-            });
-          }
-        }
+      const ids = line.match(/(?:id:\s*|storyId:\s*)[`"']([^`"']+)[`"']/g);
+      if (!ids) continue;
+      for (const raw of ids) {
+        const id = raw.replace(/.*[`"']([^`"']+)[`"'].*/, "$1");
+        if (seen.has(id) || !id.includes("--")) continue;
+        seen.add(id);
+        const slug = id.split("--").pop() ?? id;
+        stories.push({ id, name: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) });
       }
     }
 
-    if (stories.length === 0) {
+    if (!stories.length) {
       stories.push({ id: `${componentName.toLowerCase()}--default`, name: "Default" });
     }
-
     return stories;
-  }
-
-  private parseTypeString(typeStr: string): PropType {
-    const trimmed = typeStr.trim();
-    if (trimmed.includes("|")) {
-      return { name: "union", raw: trimmed };
-    }
-    return { name: trimmed };
-  }
-
-  private extractText(result: unknown): string {
-    const r = result as { content?: Array<{ type: string; text?: string }> };
-    if (r.content && Array.isArray(r.content)) {
-      const texts = r.content
-        .filter((c) => c.type === "text" && c.text)
-        .map((c) => c.text!);
-      if (texts.length > 0) return texts.join("\n");
-    }
-    return JSON.stringify(result);
-  }
-
-  private ensureConnected(): void {
-    if (!this.client) {
-      throw new Error("StorybookClient not connected. Call connect() first.");
-    }
   }
 }
