@@ -9,50 +9,25 @@ npm install -g storysync
 Or use directly with npx:
 
 ```bash
-npx storysync generate --storybook http://localhost:6006 --figma-file <file-key>
+npx storysync --help
 ```
 
 ## Prerequisites
 
-1. **Running Storybook dev server** — `@storybook/addon-mcp` must be installed (the MCP endpoint at `/mcp` only works with the dev server, not static builds)
+1. **Running Storybook dev server** — `@storybook/addon-mcp` must be installed (Vite-based Storybook 9+ only). The MCP endpoint at `/mcp` only works with the dev server, not static builds.
 2. **Node.js 24+** — required by `@storybook/addon-mcp`
-3. **Figma access token** — the official Figma MCP server uses OAuth 2.0. A personal access token (from https://www.figma.com/developers/api#access-tokens) may not be accepted by the official server
-4. **Figma file key** — the key from your Figma file URL: `figma.com/file/<THIS-PART>/...`
+
+> **Note on Figma writes:** The CLI can read from Storybook MCP but cannot authenticate with the official Figma MCP server, which requires OAuth 2.0. Use `--dry-run` to preview mappings, then use Claude Code or Cursor to write to Figma.
 
 ## Usage
 
-### Preview without Figma (dry run)
+### Preview mappings (dry run)
 
 ```bash
 npx storysync generate --storybook http://localhost:6006 --dry-run
 ```
 
-This shows what would be synced without connecting to Figma. No token needed.
-
-### Set your Figma token
-
-```bash
-export FIGMA_ACCESS_TOKEN=your-token-here
-```
-
-Or pass it inline:
-
-```bash
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --figma-token your-token
-```
-
-### Generate your Figma library
-
-```bash
-# Sync all components
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123
-
-# Sync specific components only
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --components Button,Input,Card
-
-# Custom page name
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --page "Design System"
-```
+Shows what would be synced — props, variant properties, combination counts — without connecting to Figma.
 
 ### List available components
 
@@ -66,10 +41,27 @@ npx storysync list --storybook http://localhost:6006
 npx storysync inspect --storybook http://localhost:6006 --component Button
 ```
 
-This shows each prop and whether it maps to a Figma variant or gets skipped.
+Shows each prop and whether it maps to a Figma variant or gets skipped.
 
-## Known limitations
+### Generate (with Figma connection)
 
-- **Figma OAuth**: The official Figma MCP server at `https://mcp.figma.com/mcp` uses OAuth 2.0. The `--figma-token` flag passes a Bearer token, which may not be accepted. If you use a third-party Figma MCP server that accepts personal access tokens, it will work.
-- **Storybook dev server required**: Static Storybook builds (`storybook build`) do not include the MCP endpoint. You must have a running dev server (`storybook dev`).
-- **Rate limits**: Figma MCP Starter plans are limited to 6 tool calls per month.
+If you have a Figma MCP server that accepts token auth (e.g. a third-party server):
+
+```bash
+# Sync all components
+npx storysync generate --storybook http://localhost:6006 --figma-file abc123
+
+# Sync specific components only
+npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --components Button,Input,Card
+
+# Custom page name
+npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --page "Design System"
+```
+
+Set your token via environment variable or flag:
+
+```bash
+export FIGMA_ACCESS_TOKEN=your-token-here
+# or
+npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --figma-token your-token
+```

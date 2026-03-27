@@ -2,78 +2,69 @@
 
 ## Prerequisites
 
-1. [Claude Code](https://claude.ai/code) installed and configured
-2. Storybook MCP server connected to your Claude Code session
-3. Figma MCP server connected to your Claude Code session
+1. [Claude Code](https://claude.ai/code) installed
+2. A Storybook project with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+3. Figma Full seat on a paid plan (Dev seats are read-only)
 
-## Install the skill
-
-Copy the storysync skill file into your project:
+## Step 1: Install the storysync skill
 
 ```bash
 mkdir -p .claude/skills
-cp node_modules/storysync/skills/claude-code.md .claude/skills/storysync.md
 ```
 
-Or download it directly:
-
+Copy from the repo:
 ```bash
-mkdir -p .claude/skills
+cp skills/claude-code.md .claude/skills/storysync.md
+```
+
+Or download directly:
+```bash
 curl -o .claude/skills/storysync.md https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/claude-code.md
 ```
 
-## Connect the MCPs
+## Step 2: Connect Storybook MCP
 
-Make sure both Storybook MCP and Figma MCP are configured in your Claude Code settings.
-
-### Storybook MCP
-
-Install `@storybook/addon-mcp` in your project. The addon runs an MCP server within your Storybook dev server at `/mcp`.
-
-Add to your Claude Code MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "storybook": {
-      "type": "http",
-      "url": "http://localhost:6006/mcp"
-    }
-  }
-}
+Install the addon in your Storybook project:
+```bash
+npm install @storybook/addon-mcp
 ```
 
-### Figma MCP
-
-Add the official Figma MCP remote server:
-
-```json
-{
-  "mcpServers": {
-    "figma": {
-      "type": "http",
-      "url": "https://mcp.figma.com/mcp"
-    }
-  }
-}
+Start Storybook (`npm run storybook`), then add the MCP server to Claude Code:
+```bash
+claude mcp add --transport http storybook http://localhost:6006/mcp
 ```
 
-See [Figma MCP documentation](https://developers.figma.com/docs/figma-mcp-server/) for auth setup.
+## Step 3: Connect Figma MCP
 
-## Usage
+The recommended way is the Figma plugin, which includes the MCP server and agent skills:
+```bash
+claude plugin install figma@claude-plugins-official
+```
+
+Or add the MCP server manually:
+```bash
+claude mcp add --transport http figma https://mcp.figma.com/mcp
+```
+
+Either way, Claude Code will prompt you to authenticate with Figma via OAuth when you first use it.
+
+> Tip: Add `--scope user` to make the MCP server available across all projects.
+
+## Step 4: Use it
 
 Start a Claude Code session and say:
 
 > Generate my Figma library from Storybook
 
 Claude will use the storysync skill to:
-1. List all components from Storybook MCP
-2. Read each component's props
-3. Apply the deterministic mapping rules
-4. Create corresponding Figma components via Figma MCP
+1. List all components from Storybook MCP (`list-all-documentation`)
+2. Read each component's props (`get-documentation`)
+3. Map boolean and enum props to Figma variant properties
+4. Create component sets in Figma via `use_figma`
 5. Report the results
 
 You can also be more specific:
 
 > Sync just the Button and Input components to Figma
+
 > Inspect the Card component's prop mapping before syncing

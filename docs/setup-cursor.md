@@ -3,60 +3,69 @@
 ## Prerequisites
 
 1. [Cursor](https://cursor.com) installed
-2. Storybook MCP server connected in Cursor
-3. Figma MCP server connected in Cursor
+2. A Storybook project with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+3. Figma Full seat on a paid plan (Dev seats are read-only)
 
-## Install the rules file
-
-Copy the storysync rules file into your project:
+## Step 1: Install the storysync rule
 
 ```bash
 mkdir -p .cursor/rules
-cp node_modules/storysync/skills/cursor.mdc .cursor/rules/storysync.mdc
 ```
 
-Or download it directly:
-
+Copy from the repo:
 ```bash
-mkdir -p .cursor/rules
+cp skills/cursor.mdc .cursor/rules/storysync.mdc
+```
+
+Or download directly:
+```bash
 curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/cursor.mdc
 ```
 
-## Connect the MCPs
+## Step 2: Connect Storybook MCP
 
-### Storybook MCP
+Install the addon in your Storybook project:
+```bash
+npm install @storybook/addon-mcp
+```
 
-Install `@storybook/addon-mcp` in your project. Add to your Cursor MCP configuration:
+Start Storybook (`npm run storybook`), then add the MCP server in Cursor settings (Settings > MCP):
 
 ```json
 {
   "mcpServers": {
     "storybook": {
-      "type": "http",
       "url": "http://localhost:6006/mcp"
     }
   }
 }
 ```
 
-### Figma MCP
+## Step 3: Connect Figma MCP
 
-Add the official Figma MCP remote server:
+The recommended way is the Figma plugin. In Cursor's agent chat, type:
+
+```
+/add-plugin figma
+```
+
+This installs the MCP server configuration and agent skills for Figma.
+
+Or add the MCP server manually in Cursor settings:
 
 ```json
 {
   "mcpServers": {
     "figma": {
-      "type": "http",
       "url": "https://mcp.figma.com/mcp"
     }
   }
 }
 ```
 
-See [Figma MCP documentation](https://developers.figma.com/docs/figma-mcp-server/) for auth setup.
+Cursor will prompt you to authenticate with Figma via OAuth when you first connect.
 
-## Usage
+## Step 4: Use it
 
 Open the Cursor chat and say:
 

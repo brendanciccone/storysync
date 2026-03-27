@@ -1,24 +1,13 @@
 # GitHub Action setup
 
-## Prerequisites
+> **Important**: The official Figma MCP server requires OAuth 2.0 (browser-based). The GitHub Action can read from Storybook and run `--dry-run` to validate mappings in CI, but cannot write to Figma without a third-party MCP server that accepts token auth.
 
-1. A React Storybook in your repository with `@storybook/addon-mcp` installed
-2. A Figma file where components will be written
-3. A Figma access token (note: the official Figma MCP server uses OAuth — a personal access token may not be accepted)
+## Use case: Validate mappings in CI
 
-## Configure secrets
-
-Add these secrets to your repository (Settings > Secrets and variables > Actions):
-
-- `FIGMA_FILE_KEY` — your Figma file key (from the URL: `figma.com/file/<KEY>/...`)
-- `FIGMA_ACCESS_TOKEN` — your Figma access token
-
-## Add the workflow
-
-Create `.github/workflows/storysync.yml`:
+The most reliable use of the action is `--dry-run` mode — it validates that your component props map correctly to Figma variants on every push, without needing Figma auth.
 
 ```yaml
-name: Sync Storybook to Figma
+name: Validate Storybook → Figma mappings
 on:
   push:
     branches: [main]
@@ -28,22 +17,49 @@ on:
       - '.storybook/**'
 
 jobs:
-  sync:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - name: Start Storybook dev server
+        run: |
+          npx storybook dev --port 6006 --ci &
+          npx wait-on http://localhost:6006 --timeout 120000
+
+      - name: Validate mappings
+        run: npx storysync generate --storybook http://localhost:6006 --dry-run
+```
+
+## Use case: Full sync (requires third-party Figma MCP)
+
+If you use a Figma MCP server that accepts token auth:
+
+```yaml
+name: Sync Storybook to Figma
+on:
+  push:
+    branches: [main]
+    paths: ['src/components/**', 'stories/**']
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: brendanciccone/storysync/action@main
         with:
           figma_file_key: ${{ secrets.FIGMA_FILE_KEY }}
           figma_token: ${{ secrets.FIGMA_ACCESS_TOKEN }}
 ```
 
-The action handles Node.js setup, `npm ci`, starting the Storybook dev server, and installing Playwright automatically.
-
-> **Important**: The `@storybook/addon-mcp` endpoint only works with the Storybook **dev server**, not static builds. The action starts `storybook dev` in the background automatically.
-
-## Options
+## Action inputs
 
 | Input | Required | Default | Description |
 |---|---|---|---|
@@ -53,20 +69,3 @@ The action handles Node.js setup, `npm ci`, starting the Storybook dev server, a
 | `page_name` | No | `storysync` | Figma page name |
 | `components` | No | all | Comma-separated component names |
 | `node_version` | No | `24` | Node.js version |
-
-## Triggering on PR
-
-To run on pull requests instead of pushes:
-
-```yaml
-on:
-  pull_request:
-    paths:
-      - 'src/components/**'
-      - 'stories/**'
-```
-
-## Known limitations
-
-- **Figma OAuth**: The official Figma MCP server uses OAuth 2.0, which is designed for interactive auth flows. A personal access token passed via `figma_token` may not be accepted. If you use a third-party Figma MCP server that accepts tokens, this will work.
-- **Rate limits**: Figma MCP Starter plans are limited to 6 tool calls per month. Each component sync uses at least 1 call, plus 1 for page creation.

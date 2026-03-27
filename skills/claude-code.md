@@ -5,14 +5,15 @@ You are helping the user generate a Figma component library from their React Sto
 ## Prerequisites
 
 The user must have:
-1. A running Storybook instance (local or deployed)
-2. Storybook MCP connected (`@storybook/addon-mcp` — endpoint at `/mcp`)
-3. Figma MCP connected (remote server at `https://mcp.figma.com/mcp`)
-4. A Figma file where components will be written
+1. A running Storybook dev server with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+2. Storybook MCP connected: `claude mcp add --transport http storybook http://localhost:6006/mcp`
+3. Figma MCP connected: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
+4. A Figma file URL or file key where components will be written
+5. Figma Full seat (Dev seats are read-only)
 
 ## How it works
 
-storysync reads components from Storybook MCP and writes them to Figma MCP using deterministic mapping rules — no LLM in the mapping path.
+storysync reads components from Storybook MCP and writes them to Figma MCP using deterministic mapping rules.
 
 ### Mapping rules
 
@@ -32,17 +33,24 @@ When the user asks to generate their Figma library from Storybook, follow these 
 
 ### 1. List components from Storybook MCP
 
-Use the Storybook MCP `list-all-documentation` tool with `withStoryIds: true`:
+Use the Storybook MCP `list-all-documentation` tool:
 
 ```
 list-all-documentation({ withStoryIds: true })
 ```
 
-This returns a markdown list of components with their IDs and story IDs. Parse the response to get component IDs (NOT display names — the ID is what you pass to `get-documentation`).
+This returns a markdown list like:
+```
+- **Button** (id: `button`) — A clickable button
+  - Primary (id: `button--primary`)
+  - Secondary (id: `button--secondary`)
+```
+
+Parse the response to get component IDs (the `id` value, NOT the display name).
 
 ### 2. For each component, get its documentation
 
-Use `get-documentation` with the component **ID** (from the list above):
+Use `get-documentation` with the component **ID**:
 
 ```
 get-documentation({ id: "button" })
@@ -50,35 +58,41 @@ get-documentation({ id: "button" })
 
 Note: the parameter is `id`, not `name`. Use the ID exactly as returned by `list-all-documentation`.
 
-The response includes a TypeScript Props type definition. Extract props from it:
-- Boolean props → will become Figma boolean variants
-- Enum/union props → will become Figma variant properties
-- Skip: string, number, callbacks, ReactNode, className, style, ref, etc.
+The response includes a TypeScript Props type definition in a code block:
+```typescript
+export type Props = {
+  variant?: "default" | "destructive" = "default";
+  disabled?: boolean = false;
+  size?: "sm" | "md" | "lg";
+  onClick?: (event: MouseEvent) => void;
+  children?: ReactNode;
+}
+```
 
 ### 3. Apply mapping rules
 
-For each prop from the documentation:
+For each prop from the TypeScript definition:
 - **Boolean props** (`boolean`, `bool`) → Figma boolean variant property
 - **Enum/union of string literals** (`'sm' | 'md' | 'lg'`) → Figma variant property with those values
-- **Skip everything else** — free-text strings, numbers, callbacks, React internals
+- **Skip everything else** — free-text strings, numbers, callbacks (`=>` in type), ReactNode, children, className, style, ref, key, aria-*, data-*, on* handlers
 
 ### 4. Generate variant combinations
 
-Compute all combinations. Cap at 256 to avoid explosion.
-Example: `variant: [default, destructive]` × `disabled: [true, false]` = 4 combinations.
+Compute the Cartesian product of all mapped props. Cap at 256.
+Example: `variant: [default, destructive]` x `disabled: [true, false]` = 4 combinations.
 
 ### 5. Write to Figma
 
-Use the Figma MCP `use_figma` tool to create each component:
+Use the Figma MCP `use_figma` tool to create each component set. Include the Figma file URL or key:
 
 ```
 use_figma({
-  instruction: "Create a component set in file <file-key> on page 'storysync':\n\nComponent name: Button\n\nVariant properties:\n  - variant (VARIANT): [default, destructive] (default: default)\n  - disabled (BOOLEAN): [true, false] (default: false)\n\nCreate 4 variants for all combinations.",
+  instruction: "Create a component set in file <file-key> on page 'storysync':\n\nComponent name: Button\n\nVariant properties:\n  - variant (VARIANT): [default, destructive] (default: default)\n  - disabled (BOOLEAN): [true, false] (default: false)\n\nCreate 4 variants for all combinations.\nEach variant named: property1=value1, property2=value2",
   fileKey: "<file-key>"
 })
 ```
 
-The `use_figma` tool is a general-purpose write tool — describe what you want to create and it will do it.
+`use_figma` is Figma's general-purpose write tool. It executes Plugin API code to create real Figma objects (components, variants, variables, auto layout).
 
 ### 6. Report results
 

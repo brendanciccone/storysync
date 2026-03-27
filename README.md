@@ -6,74 +6,72 @@ You have a React Storybook. You run one command. You get a Figma component libra
 
 ## What it does
 
-Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview) and writes them to [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/). Deterministic mapping, no LLM.
+Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview) and writes them to [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) using deterministic mapping rules. Four ways to use it:
 
 ### Ways to use it
 
-| Method | How it works | Figma auth | Status |
-|---|---|---|---|
-| **Claude Code skill** | Conversational — Claude calls both MCPs | OAuth (handled by Claude) | Works |
-| **Cursor rules** | Cursor calls both MCPs | OAuth (handled by Cursor) | Works |
-| **CLI** | `npx storysync generate ...` | Requires MCP auth setup | Requires OAuth setup |
-| **GitHub Action** | Runs on push/PR | Requires MCP auth setup | Requires OAuth setup |
+| Method | How it works | Status |
+|---|---|---|
+| **Claude Code skill** | Claude calls both MCPs directly | Works |
+| **Cursor rules** | Cursor calls both MCPs directly | Works |
+| **CLI** | `npx storysync generate --dry-run` | Read-only (dry-run, list, inspect) |
+| **GitHub Action** | Runs on push/PR | Read-only (dry-run only) |
 
-> **Note on Figma auth**: The remote Figma MCP server (`https://mcp.figma.com/mcp`) uses OAuth 2.0. AI coding tools like Claude Code and Cursor handle OAuth automatically. The CLI and GitHub Action pass a personal access token, which may not be accepted by the official server. If you use a third-party Figma MCP server that accepts tokens, the CLI and Action will work.
+> **Why read-only for CLI/Action?** The Figma MCP remote server requires OAuth 2.0 with a browser-based consent flow. AI coding tools (Claude Code, Cursor) handle this automatically. The CLI and Action cannot open a browser for OAuth. Use `--dry-run` to preview mappings, then use Claude Code or Cursor to write to Figma.
 
 ## Quick start
 
 ### Claude Code (recommended)
 
-1. Install `@storybook/addon-mcp` in your Storybook project
-2. Copy `skills/claude-code.md` to `.claude/skills/storysync.md`
-3. Connect Storybook MCP: `claude mcp add storybook --url http://localhost:6006/mcp`
-4. Connect Figma MCP: `claude mcp add --transport http figma https://mcp.figma.com/mcp`
-5. Tell Claude: "Generate my Figma library from Storybook"
+1. Install `@storybook/addon-mcp` in your Storybook project (Vite-based Storybook 9+ only)
+2. Start Storybook: `npm run storybook`
+3. Connect Storybook MCP:
+   ```bash
+   claude mcp add --transport http storybook http://localhost:6006/mcp
+   ```
+4. Install the Figma plugin (includes MCP server + skills):
+   ```bash
+   claude plugin install figma@claude-plugins-official
+   ```
+5. Copy the storysync skill:
+   ```bash
+   mkdir -p .claude/skills
+   cp skills/claude-code.md .claude/skills/storysync.md
+   ```
+6. Tell Claude: "Generate my Figma library from Storybook"
 
 ### Cursor
 
-1. Install `@storybook/addon-mcp` in your Storybook project
-2. Copy `skills/cursor.mdc` to `.cursor/rules/storysync.mdc`
-3. Connect both MCPs in Cursor settings
-4. Run the rule
+1. Install `@storybook/addon-mcp` in your Storybook project (Vite-based Storybook 9+ only)
+2. Start Storybook: `npm run storybook`
+3. Add Storybook MCP in Cursor settings (URL: `http://localhost:6006/mcp`)
+4. Install the Figma plugin in Cursor chat: `/add-plugin figma`
+5. Copy the storysync rule:
+   ```bash
+   mkdir -p .cursor/rules
+   cp skills/cursor.mdc .cursor/rules/storysync.mdc
+   ```
+6. Tell Cursor: "Generate my Figma library from Storybook"
 
-### CLI
+### CLI (dry-run / inspect)
 
 ```bash
-# Preview what would be synced (no Figma connection needed)
+# Preview what would be synced — no Figma connection needed
 npx storysync generate --storybook http://localhost:6006 --dry-run
 
-# Sync to Figma (requires Figma MCP auth)
-npx storysync generate \
-  --storybook http://localhost:6006 \
-  --figma-file <file-key> \
-  --figma-token <token>
-```
+# List all components
+npx storysync list --storybook http://localhost:6006
 
-### GitHub Action
-
-```yaml
-name: Sync Storybook to Figma
-on:
-  push:
-    branches: [main]
-    paths: ['src/components/**', 'stories/**']
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: brendanciccone/storysync/action@main
-        with:
-          figma_file_key: ${{ secrets.FIGMA_FILE_KEY }}
-          figma_token: ${{ secrets.FIGMA_ACCESS_TOKEN }}
+# Inspect a component's mapping
+npx storysync inspect --storybook http://localhost:6006 --component Button
 ```
 
 ## How it works
 
 ```
 Storybook MCP              storysync               Figma MCP
-(reads your components)    (mapping rules)         (writes to canvas)
+list-all-documentation     (mapping rules)         use_figma
+get-documentation                                  (writes to canvas)
 
 component: Button     →    boolean prop?        →  Figma boolean variant
 props:                      → boolean variant
@@ -87,7 +85,7 @@ props:                      → boolean variant
 
 ## Mapping rules
 
-Deterministic. No LLM.
+Deterministic — storysync maps prop types to Figma variants without an LLM. (Note: Figma's `use_figma` tool itself is agent-driven on their side.)
 
 | Storybook prop type | Figma output |
 |---|---|
@@ -138,26 +136,22 @@ Options:
 
 ## Requirements
 
+### Storybook
+
+- **Storybook 9+** with a **Vite-based** framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **`@storybook/addon-mcp`** installed — provides MCP server at `/mcp` on the dev server
 - **Node.js 24+** — required by `@storybook/addon-mcp`
-- **React Storybook** with `@storybook/addon-mcp` installed (provides MCP server at `/mcp`)
-- **Figma account** with Dev or Full seat on a paid plan (for write access)
+- The MCP endpoint only works with the **dev server** (`storybook dev`), not static builds
 
-### Figma MCP details
+### Figma
 
-- Write operations use the **remote** Figma MCP server at `https://mcp.figma.com/mcp`
-- The desktop Figma MCP server is **read-only** — it cannot create components
-- Auth: **OAuth 2.0** (AI tools handle this; CLI/Action pass a token which may not work with the official server)
-- **Rate limits**: Starter/View/Collab seats: **6 tool calls per month**. Dev/Full seats on Professional+ plans: per-minute rate limits
+- **Full seat** on a paid plan — required for write access via `use_figma`. Dev seats are read-only.
+- **Remote MCP server** at `https://mcp.figma.com/mcp` — auth is OAuth 2.0 (handled automatically by Claude Code, Cursor, and other supported MCP clients)
+- The **desktop MCP server** (`http://127.0.0.1:3845/mcp`) does not expose `use_figma`
+- **Rate limits**: Starter/View/Collab seats get 6 tool calls per month. Full seats on Professional+ plans have per-minute rate limits.
 - Write-to-canvas is free during beta but will become a paid, usage-based feature
 
-### Storybook MCP details
-
-- Install: `npm install @storybook/addon-mcp`
-- The addon runs an MCP server within the **dev server** at `/mcp` (static builds do not have MCP)
-- Requires **Node.js 24+**
-- Props are returned as TypeScript type definitions
-
-No Anthropic API key needed. No LLM costs. Fully deterministic.
+No Anthropic API key needed.
 
 ## License
 
