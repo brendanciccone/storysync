@@ -2,14 +2,26 @@
  * Storybook MCP client — reads components and their props via the official
  * @storybook/addon-mcp server.
  *
- * Real tools (kebab-case):
- *   - list-all-documentation: lists all components with IDs and metadata
- *   - get-documentation: gets full documentation for a component (props, stories, etc.)
- *   - get-documentation-for-story: gets documentation for a specific story
+ * Real tools (from storybookjs/mcp source):
+ *   - list-all-documentation: lists components with IDs and summaries
+ *       params: { withStoryIds?: boolean }
+ *       returns: markdown list with component IDs and optionally story IDs
+ *   - get-documentation: gets full docs for a component by ID
+ *       params: { id: string, storybookId?: string }
+ *       returns: markdown with TypeScript Props type definition + story snippets
+ *   - get-documentation-for-story: gets docs for a specific story
+ *       params: { componentId: string, storyName: string }
  *   - preview-stories: preview rendered stories
  *   - run-story-tests: run component/accessibility tests
  *
  * Transport: Streamable HTTP at /mcp (e.g. http://localhost:6006/mcp)
+ *
+ * The response for get-documentation formats props as TypeScript type definitions:
+ *   export type Props = {
+ *     variant?: "default" | "destructive" = "default";
+ *     disabled?: boolean = false;
+ *     size?: "sm" | "md" | "lg";
+ *   }
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -23,6 +35,16 @@ export interface StorybookConnectionOptions {
   url: string;
   /** Optional: path to a local MCP server binary (stdio transport). */
   mcpServerPath?: string;
+}
+
+/** A component entry from list-all-documentation. */
+export interface ComponentEntry {
+  /** Component ID used with get-documentation (e.g. "button", "ui-input"). */
+  id: string;
+  /** Display name (e.g. "Button", "Input"). */
+  name: string;
+  /** Story IDs if withStoryIds was true. */
+  storyIds?: string[];
 }
 
 export class StorybookClient {
@@ -52,14 +74,12 @@ export class StorybookClient {
         const transport = new StreamableHTTPClientTransport(mcpUrl);
         await this.client.connect(transport);
       } catch {
-        // Fallback: try SSE transport for older Storybook MCP versions
         const sseUrl = new URL("/mcp", this.options.url);
         const transport = new SSEClientTransport(sseUrl);
         await this.client.connect(transport);
       }
     }
 
-    // Discover available tools so we can adapt to different server versions
     await this.discoverTools();
   }
 
@@ -70,33 +90,28 @@ export class StorybookClient {
     }
   }
 
-  /** Discover what tools the server actually exposes. */
   private async discoverTools(): Promise<void> {
     this.ensureConnected();
     try {
       const result = await this.client!.listTools();
       this.availableTools = new Set(result.tools.map((t) => t.name));
     } catch {
-      // If tool discovery fails, we'll try known tool names and handle errors per-call
       this.availableTools = new Set();
     }
   }
 
-  /** Check if a specific tool is available on this server. */
-  hasToolAvailable(name: string): boolean {
-    return this.availableTools.size === 0 || this.availableTools.has(name);
-  }
-
-  /** Get the set of discovered tool names (empty if discovery failed). */
   getAvailableTools(): Set<string> {
     return this.availableTools;
   }
 
-  async listComponents(): Promise<string[]> {
+  /**
+   * List all components available in Storybook.
+   * Returns ComponentEntry objects with both ID and display name,
+   * plus story IDs when available.
+   */
+  async listComponents(): Promise<ComponentEntry[]> {
     this.ensureConnected();
 
-    // Official tool: list-all-documentation
-    // Fallback: list_components, list_all_components (third-party servers)
     const toolName = this.resolveToolName([
       "list-all-documentation",
       "list_all_components",
@@ -104,20 +119,25 @@ export class StorybookClient {
       "getComponentList",
     ]);
 
+    // Use withStoryIds: true to get story IDs in one call
+    const isOfficial = toolName === "list-all-documentation";
     const result = await this.client!.callTool({
       name: toolName,
-      arguments: {},
+      arguments: isOfficial ? { withStoryIds: true } : {},
     });
 
     const text = this.extractText(result);
     return this.parseComponentList(text);
   }
 
-  async getComponent(componentName: string): Promise<StorybookComponent> {
+  /**
+   * Get full component documentation by ID.
+   * The `id` parameter must match what list-all-documentation returned
+   * (e.g. "button", not "Button").
+   */
+  async getComponent(componentId: string, displayName?: string): Promise<StorybookComponent> {
     this.ensureConnected();
 
-    // Official tool: get-documentation
-    // Fallback: get_component, get_component_documentation (third-party)
     const toolName = this.resolveToolName([
       "get-documentation",
       "get_component",
@@ -125,121 +145,414 @@ export class StorybookClient {
       "getComponentsProps",
     ]);
 
+    // Official tool uses `id`, third-party might use `name` or `component`
+    const isOfficial = toolName === "get-documentation";
+    const args = isOfficial
+      ? { id: componentId }
+      : { id: componentId, name: displayName ?? componentId, component: displayName ?? componentId };
+
     const result = await this.client!.callTool({
       name: toolName,
-      arguments: { name: componentName, component: componentName },
+      arguments: args,
     });
 
     const text = this.extractText(result);
-    return this.parseComponentDocumentation(componentName, text);
+    return this.parseComponentDocumentation(displayName ?? componentId, text);
   }
 
   async getStoryUrl(storyId: string): Promise<string> {
-    // Construct the URL directly — this doesn't need a tool call.
     const base = this.options.url.replace(/\/$/, "");
     return `${base}/iframe.html?id=${encodeURIComponent(storyId)}&viewMode=story`;
   }
 
-  /**
-   * Pick the first available tool from a list of candidates.
-   * If tool discovery succeeded, pick the first match.
-   * If discovery failed (empty set), use the first candidate.
-   */
   private resolveToolName(candidates: string[]): string {
     if (this.availableTools.size > 0) {
       for (const name of candidates) {
         if (this.availableTools.has(name)) return name;
       }
-      // None matched — use first candidate and let it fail with a clear error
     }
     return candidates[0];
   }
 
   /**
-   * Parse a component list from the MCP response.
-   * Handles multiple formats:
-   *   - JSON array of strings: ["Button", "Input"]
-   *   - JSON array of objects: [{ name: "Button", ... }]
-   *   - JSON object with components key: { components: [...] }
-   *   - MDX/documentation text with component names
+   * Parse component list from MCP response.
+   *
+   * Official format (markdown list):
+   *   - **Button** (id: `button`) — A clickable button element
+   *     - Primary (id: `button--primary`)
+   *     - Secondary (id: `button--secondary`)
+   *   - **Input** (id: `input`) — Text input field
+   *
+   * Also handles JSON formats from third-party servers.
    */
-  private parseComponentList(text: string): string[] {
-    // Try JSON first
+  private parseComponentList(text: string): ComponentEntry[] {
+    // Try JSON first (third-party servers)
     try {
       const parsed = JSON.parse(text);
-
-      // Bare array of strings
-      if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
-        return parsed;
-      }
-
-      // Array of objects with name field
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
-        return parsed
-          .map((v) => v.name ?? v.component ?? v.title)
-          .filter((v): v is string => typeof v === "string");
-      }
-
-      // Object with a components/items key
-      if (typeof parsed === "object" && !Array.isArray(parsed)) {
-        const arr = parsed.components ?? parsed.items ?? parsed.stories ?? parsed.docs;
-        if (Array.isArray(arr)) {
-          return arr.map((v: unknown) =>
-            typeof v === "string" ? v : (v as Record<string, string>).name ?? (v as Record<string, string>).title
-          ).filter((v): v is string => typeof v === "string");
-        }
-      }
+      return this.parseJsonComponentList(parsed);
     } catch {
-      // Not JSON — parse as documentation text
+      // Not JSON
     }
 
-    // Parse MDX/text documentation: look for component names in headings or lists
-    const names: string[] = [];
+    // Parse official markdown list format
+    const entries: ComponentEntry[] = [];
     const lines = text.split("\n");
+    let currentEntry: ComponentEntry | null = null;
+
     for (const line of lines) {
-      // Match markdown headings: ## Button, ### Input
-      const headingMatch = line.match(/^#{1,4}\s+(.+?)(?:\s*\{.*\})?\s*$/);
-      if (headingMatch) {
-        const name = headingMatch[1].trim();
-        // Skip generic headings
-        if (!["components", "documentation", "overview", "api", "props"].includes(name.toLowerCase())) {
-          names.push(name);
+      // Match component line: - **Button** (id: `button`) — summary
+      // or: - Button (id: "button") — summary
+      // or simpler: - Button (button)
+      const componentMatch = line.match(
+        /^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/
+      );
+
+      if (componentMatch && !line.match(/^\s{2,}/)) {
+        // Top-level component entry
+        currentEntry = {
+          name: componentMatch[1].trim(),
+          id: componentMatch[2].trim(),
+          storyIds: [],
+        };
+        entries.push(currentEntry);
+        continue;
+      }
+
+      // Match story sub-item:   - Primary (id: `button--primary`)
+      // or:   - Primary (button--primary)
+      if (currentEntry && /^\s{2,}/.test(line)) {
+        const storyMatch = line.match(
+          /[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/
+        );
+        if (storyMatch) {
+          currentEntry.storyIds?.push(storyMatch[2].trim());
         }
       }
-      // Match list items: - Button, * Input
-      const listMatch = line.match(/^[\-\*]\s+\[?([A-Z][a-zA-Z0-9]*)\]?/);
-      if (listMatch) {
-        names.push(listMatch[1]);
+    }
+
+    // If the markdown parsing found nothing, try simpler patterns
+    if (entries.length === 0) {
+      return this.parseSimpleComponentList(text);
+    }
+
+    return entries;
+  }
+
+  private parseJsonComponentList(parsed: unknown): ComponentEntry[] {
+    if (Array.isArray(parsed)) {
+      return parsed.map((v) => {
+        if (typeof v === "string") return { id: v, name: v };
+        const obj = v as Record<string, unknown>;
+        const id = (obj.id ?? obj.name ?? obj.component) as string;
+        const name = (obj.name ?? obj.title ?? obj.id) as string;
+        return { id, name };
+      }).filter((e) => e.id != null);
+    }
+
+    if (typeof parsed === "object" && parsed !== null) {
+      const obj = parsed as Record<string, unknown>;
+      const arr = obj.components ?? obj.items ?? obj.docs;
+      if (Array.isArray(arr)) return this.parseJsonComponentList(arr);
+    }
+
+    return [];
+  }
+
+  /** Fallback: parse simple markdown list or headings. */
+  private parseSimpleComponentList(text: string): ComponentEntry[] {
+    const entries: ComponentEntry[] = [];
+    const seen = new Set<string>();
+
+    for (const line of text.split("\n")) {
+      // Headings: ## Button
+      const heading = line.match(/^#{1,4}\s+([A-Z][a-zA-Z0-9]*)/);
+      if (heading && !seen.has(heading[1])) {
+        const name = heading[1];
+        entries.push({ id: name.toLowerCase(), name });
+        seen.add(name);
+        continue;
+      }
+
+      // List items with component-like names: - Button, * Input
+      const listItem = line.match(/^[\-\*]\s+([A-Z][a-zA-Z0-9]*)\b/);
+      if (listItem && !seen.has(listItem[1])) {
+        const name = listItem[1];
+        entries.push({ id: name.toLowerCase(), name });
+        seen.add(name);
       }
     }
 
-    return [...new Set(names)];
+    return entries;
   }
 
   /**
-   * Parse component documentation into our internal StorybookComponent format.
-   * Handles structured JSON or MDX documentation from either official or third-party servers.
+   * Parse component documentation into StorybookComponent.
+   *
+   * The official Storybook MCP returns props as TypeScript type definitions:
+   *   ```typescript
+   *   export type Props = {
+   *     variant?: "default" | "destructive" = "default";
+   *     disabled?: boolean = false;
+   *   }
+   *   ```
+   *
+   * Plus story snippets with IDs.
    */
   private parseComponentDocumentation(componentName: string, text: string): StorybookComponent {
-    // Try structured JSON first
+    // Try structured JSON first (third-party servers)
     try {
       const raw = JSON.parse(text);
       return this.parseStructuredComponent(componentName, raw);
     } catch {
-      // Not JSON — parse as documentation text
+      // Not JSON
     }
 
-    // Parse documentation/MDX format
-    return this.parseDocumentationText(componentName, text);
+    // Parse as documentation text (official server)
+    const props = this.parsePropsFromDocumentation(text);
+    const stories = this.parseStoriesFromDocumentation(componentName, text);
+
+    return { name: componentName, props, stories };
   }
 
   /**
-   * Parse a structured JSON response into StorybookComponent.
-   * Handles docgen-style, argTypes-style, and mixed formats.
+   * Parse props from TypeScript type definitions in documentation.
+   *
+   * Handles:
+   *   export type Props = {
+   *     variant?: "default" | "destructive" = "default";
+   *     disabled?: boolean = false;
+   *     size?: "sm" | "md" | "lg";
+   *     /** Description of the prop *​/
+   *     label?: string;
+   *   }
+   *
+   * Also handles markdown table format as fallback.
    */
+  private parsePropsFromDocumentation(text: string): StorybookProp[] {
+    const props: StorybookProp[] = [];
+
+    // Strategy 1: Parse TypeScript type definition blocks
+    const tsProps = this.parseTypeScriptProps(text);
+    if (tsProps.length > 0) return tsProps;
+
+    // Strategy 2: Parse markdown table format
+    const tableProps = this.parseMarkdownTableProps(text);
+    if (tableProps.length > 0) return tableProps;
+
+    // Strategy 3: Parse definition list format
+    return this.parseDefinitionListProps(text);
+  }
+
+  /**
+   * Parse TypeScript `export type Props = { ... }` blocks.
+   * This is the primary format from official Storybook MCP.
+   */
+  private parseTypeScriptProps(text: string): StorybookProp[] {
+    const props: StorybookProp[] = [];
+
+    // Find TypeScript code blocks containing Props type
+    const codeBlockRegex = /```(?:typescript|ts|tsx)?\s*\n([\s\S]*?)```/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      const block = match[1];
+      const propsFromBlock = this.parsePropsTypeBlock(block);
+      props.push(...propsFromBlock);
+    }
+
+    // Also try without code fences (sometimes inline)
+    if (props.length === 0) {
+      const inlineMatch = text.match(/export\s+type\s+Props\s*=\s*\{([\s\S]*?)\}/);
+      if (inlineMatch) {
+        props.push(...this.parsePropsTypeBlock(`export type Props = {${inlineMatch[1]}}`));
+      }
+    }
+
+    return props;
+  }
+
+  /**
+   * Parse individual prop lines from a TypeScript Props type block.
+   *
+   * Lines look like:
+   *   variant?: "default" | "destructive" = "default";
+   *   disabled?: boolean = false;
+   *   size?: "sm" | "md" | "lg";
+   *   onClick?: (event: MouseEvent) => void;
+   */
+  private parsePropsTypeBlock(block: string): StorybookProp[] {
+    const props: StorybookProp[] = [];
+
+    // Match the content inside `type Props = { ... }`
+    const bodyMatch = block.match(/(?:export\s+)?type\s+\w+\s*=\s*\{([\s\S]*)\}/);
+    if (!bodyMatch) return props;
+
+    const body = bodyMatch[1];
+    let currentDescription: string | undefined;
+
+    for (const line of body.split("\n")) {
+      const trimmed = line.trim();
+
+      // Collect JSDoc comments as descriptions
+      if (trimmed.startsWith("/**") || trimmed.startsWith("*")) {
+        const commentText = trimmed.replace(/^\/?\*\*?\s*|\*\/\s*$/g, "").trim();
+        if (commentText.length > 0) {
+          currentDescription = commentText;
+        }
+        continue;
+      }
+
+      // Match: propName?: type = defaultValue;
+      // or:   propName: type;
+      const propMatch = trimmed.match(
+        /^(\w+)(\?)?:\s*(.+?)(?:\s*=\s*(.+?))?;?\s*$/
+      );
+
+      if (!propMatch) {
+        if (trimmed.length > 0 && !trimmed.startsWith("//") && !trimmed.startsWith("}")) {
+          currentDescription = undefined;
+        }
+        continue;
+      }
+
+      const [, name, optional, typeStr, defaultStr] = propMatch;
+      const type = this.parseTypeString(typeStr.trim());
+      const defaultValue = defaultStr?.trim().replace(/^["']|["']$/g, "");
+
+      props.push({
+        name,
+        type,
+        description: currentDescription,
+        defaultValue: defaultValue ?? undefined,
+        required: !optional,
+      });
+
+      currentDescription = undefined;
+    }
+
+    return props;
+  }
+
+  /** Parse markdown table props (fallback for non-standard servers). */
+  private parseMarkdownTableProps(text: string): StorybookProp[] {
+    const props: StorybookProp[] = [];
+    let inPropsSection = false;
+
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+
+      if (/^#{1,4}\s+(Props|API|Properties|Args|ArgTypes)/i.test(trimmed)) {
+        inPropsSection = true;
+        continue;
+      }
+      if (/^#{1,4}\s+/.test(trimmed) && inPropsSection) {
+        inPropsSection = false;
+        continue;
+      }
+
+      if (inPropsSection && trimmed.startsWith("|") && !trimmed.includes("---")) {
+        const cells = trimmed.split("|").map((c) => c.trim()).filter((c) => c.length > 0);
+        if (cells.length >= 2) {
+          const name = cells[0].replace(/`/g, "").trim();
+          if (name.toLowerCase() === "name" || name.toLowerCase() === "prop") continue;
+
+          const typeStr = cells[1].replace(/`/g, "").trim();
+          const defaultStr = cells[2]?.replace(/`/g, "").trim();
+
+          props.push({
+            name,
+            type: this.parseTypeString(typeStr),
+            defaultValue: defaultStr === "-" || defaultStr === "" ? undefined : defaultStr,
+            description: cells[3]?.trim(),
+          });
+        }
+      }
+    }
+
+    return props;
+  }
+
+  /** Parse definition list props: **propName** (`type`) - description */
+  private parseDefinitionListProps(text: string): StorybookProp[] {
+    const props: StorybookProp[] = [];
+    let inPropsSection = false;
+
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+
+      if (/^#{1,4}\s+(Props|API|Properties)/i.test(trimmed)) {
+        inPropsSection = true;
+        continue;
+      }
+      if (/^#{1,4}\s+/.test(trimmed) && inPropsSection) {
+        inPropsSection = false;
+        continue;
+      }
+
+      if (inPropsSection) {
+        const defMatch = trimmed.match(/\*\*(\w+)\*\*\s*(?:\(`?([^)]+)`?\))?/);
+        if (defMatch) {
+          props.push({
+            name: defMatch[1],
+            type: this.parseTypeString(defMatch[2] ?? "unknown"),
+          });
+        }
+      }
+    }
+
+    return props;
+  }
+
+  /**
+   * Parse story references from documentation.
+   * Official format includes story snippets with IDs.
+   */
+  private parseStoriesFromDocumentation(componentName: string, text: string): StorybookStory[] {
+    const stories: StorybookStory[] = [];
+    const seenIds = new Set<string>();
+
+    for (const line of text.split("\n")) {
+      // Match story ID patterns: (id: `button--primary`) or id: "button--primary"
+      const idMatch = line.match(/(?:id:\s*|storyId:\s*)[`"']([^`"']+)[`"']/g);
+      if (idMatch) {
+        for (const m of idMatch) {
+          const id = m.replace(/.*[`"']([^`"']+)[`"'].*/, "$1");
+          if (!seenIds.has(id) && id.includes("--")) {
+            seenIds.add(id);
+            const namePart = id.split("--").pop() ?? id;
+            const name = namePart.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+            stories.push({ id, name });
+          }
+        }
+      }
+
+      // Match story headings: ### Primary, ### Secondary
+      const headingMatch = line.match(/^#{3,4}\s+(\w[\w\s]*)/);
+      if (headingMatch) {
+        const name = headingMatch[1].trim();
+        // Skip generic headings
+        if (!["props", "api", "stories", "usage", "examples", "description", "overview"].includes(name.toLowerCase())) {
+          const id = `${componentName.toLowerCase()}--${name.toLowerCase().replace(/\s+/g, "-")}`;
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            stories.push({ id, name });
+          }
+        }
+      }
+    }
+
+    if (stories.length === 0) {
+      stories.push({
+        id: `${componentName.toLowerCase()}--default`,
+        name: "Default",
+      });
+    }
+
+    return stories;
+  }
+
   private parseStructuredComponent(componentName: string, raw: Record<string, unknown>): StorybookComponent {
     const rawProps = this.normalizeRawProps(raw);
-
     const props: StorybookProp[] = rawProps.map((p: Record<string, unknown>) => ({
       name: p.name as string,
       type: this.normalizeType(p.type),
@@ -249,155 +562,13 @@ export class StorybookClient {
       control: this.normalizeControl(p.control ?? p.argType),
     }));
 
-    const stories: StorybookStory[] = this.extractStories(raw);
-
     return {
       name: raw.name as string ?? componentName,
       props,
-      stories,
+      stories: this.extractStories(raw),
     };
   }
 
-  /**
-   * Parse documentation text (MDX/Markdown) to extract props and stories.
-   * This handles the official Storybook MCP which returns documentation, not raw data.
-   */
-  private parseDocumentationText(componentName: string, text: string): StorybookComponent {
-    const props: StorybookProp[] = [];
-    const stories: StorybookStory[] = [];
-
-    const lines = text.split("\n");
-    let inPropsTable = false;
-    let inStoriesSection = false;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-
-      // Detect props/API table section
-      if (/^#{1,4}\s+(Props|API|Properties|Args|ArgTypes)/i.test(line)) {
-        inPropsTable = true;
-        inStoriesSection = false;
-        continue;
-      }
-
-      // Detect stories section
-      if (/^#{1,4}\s+(Stories|Examples|Variants)/i.test(line)) {
-        inPropsTable = false;
-        inStoriesSection = true;
-        continue;
-      }
-
-      // Exit section on next heading
-      if (/^#{1,4}\s+/.test(line) && !/(Props|API|Properties|Args|Stories|Examples|Variants)/i.test(line)) {
-        inPropsTable = false;
-        inStoriesSection = false;
-        continue;
-      }
-
-      // Parse props table rows: | propName | type | default | description |
-      if (inPropsTable && line.startsWith("|") && !line.includes("---")) {
-        const cells = line.split("|").map((c) => c.trim()).filter((c) => c.length > 0);
-        if (cells.length >= 2) {
-          const name = cells[0].replace(/`/g, "").trim();
-          const typeStr = cells[1].replace(/`/g, "").trim();
-
-          // Skip header row
-          if (name.toLowerCase() === "name" || name.toLowerCase() === "prop") continue;
-
-          const prop = this.parsePropFromDocRow(name, typeStr, cells[2], cells[3]);
-          if (prop) props.push(prop);
-        }
-      }
-
-      // Parse props from definition list format: **propName** (`type`) - description
-      if (inPropsTable) {
-        const defMatch = line.match(/\*\*(\w+)\*\*\s*(?:\(`?([^)]+)`?\))?/);
-        if (defMatch) {
-          const prop = this.parsePropFromDocRow(defMatch[1], defMatch[2] ?? "unknown", undefined, undefined);
-          if (prop) props.push(prop);
-        }
-      }
-
-      // Parse story references
-      if (inStoriesSection) {
-        // Story ID references: story-button--primary
-        const storyIdMatch = line.match(/story[_-](\S+)/i);
-        if (storyIdMatch) {
-          const id = storyIdMatch[1];
-          stories.push({ id, name: id.replace(/--/g, "/").replace(/-/g, " ") });
-        }
-        // Story name in list: - Primary, - Destructive
-        const storyListMatch = line.match(/^[\-\*]\s+(.+)/);
-        if (storyListMatch && !storyIdMatch) {
-          const name = storyListMatch[1].trim();
-          const id = `${componentName.toLowerCase()}--${name.toLowerCase().replace(/\s+/g, "-")}`;
-          stories.push({ id, name });
-        }
-      }
-    }
-
-    // If no stories found, create a default one
-    if (stories.length === 0) {
-      stories.push({
-        id: `${componentName.toLowerCase()}--default`,
-        name: "Default",
-      });
-    }
-
-    return { name: componentName, props, stories };
-  }
-
-  private parsePropFromDocRow(
-    name: string,
-    typeStr: string | undefined,
-    defaultStr: string | undefined,
-    descriptionStr: string | undefined
-  ): StorybookProp | null {
-    if (!name || name.length === 0) return null;
-
-    const cleanType = (typeStr ?? "unknown").replace(/`/g, "").trim();
-    const type = this.parseTypeString(cleanType);
-    const defaultValue = defaultStr?.replace(/`/g, "").trim();
-
-    return {
-      name,
-      type,
-      description: descriptionStr?.trim(),
-      defaultValue: defaultValue === "-" || defaultValue === "" ? undefined : defaultValue,
-    };
-  }
-
-  /**
-   * Parse a type string from documentation into a PropType.
-   * e.g. "'sm' | 'md' | 'lg'" → { name: "union", raw: "'sm' | 'md' | 'lg'" }
-   * e.g. "boolean" → { name: "boolean" }
-   * e.g. "enum" → { name: "enum" }
-   */
-  private parseTypeString(typeStr: string): PropType {
-    const trimmed = typeStr.trim();
-
-    // Union of string literals: 'a' | 'b' | 'c' or "a" | "b" | "c"
-    if (trimmed.includes("|")) {
-      const parts = trimmed.split("|").map((p) => p.trim());
-      const allQuoted = parts.every((p) => /^["'`].*["'`]$/.test(p));
-
-      if (allQuoted) {
-        return { name: "union", raw: trimmed };
-      }
-
-      // Mixed union — still return it, the mapper will filter
-      return { name: "union", raw: trimmed };
-    }
-
-    return { name: trimmed };
-  }
-
-  /**
-   * Normalize raw props from structured JSON — handles:
-   *   - docgen-style: { props: [{ name, type, ... }] }
-   *   - argTypes-style: { argTypes: { propName: { control, options, ... } } }
-   *   - props-as-object: { props: { propName: { type, ... } } }
-   */
   private normalizeRawProps(raw: Record<string, unknown>): Record<string, unknown>[] {
     if (Array.isArray(raw.props) && raw.props.length > 0) {
       return raw.props as Record<string, unknown>[];
@@ -420,10 +591,7 @@ export class StorybookClient {
 
     if (raw.props && typeof raw.props === "object" && !Array.isArray(raw.props)) {
       const propsObj = raw.props as Record<string, Record<string, unknown>>;
-      return Object.entries(propsObj).map(([name, prop]) => ({
-        name,
-        ...prop,
-      }));
+      return Object.entries(propsObj).map(([name, prop]) => ({ name, ...prop }));
     }
 
     return [];
@@ -431,34 +599,27 @@ export class StorybookClient {
 
   private extractStories(raw: Record<string, unknown>): StorybookStory[] {
     const storiesRaw = raw.stories;
-    if (!storiesRaw) return [];
+    if (!Array.isArray(storiesRaw)) return [];
 
-    if (Array.isArray(storiesRaw)) {
-      return storiesRaw.map((s: unknown) => {
-        if (typeof s === "string") return { id: s, name: s };
-        const obj = s as Record<string, unknown>;
-        return {
-          id: (obj.id ?? obj.storyId ?? obj.name) as string,
-          name: (obj.name ?? obj.title ?? obj.id) as string,
-          args: obj.args as Record<string, unknown> | undefined,
-        };
-      });
-    }
-
-    return [];
+    return storiesRaw.map((s: unknown) => {
+      if (typeof s === "string") return { id: s, name: s };
+      const obj = s as Record<string, unknown>;
+      return {
+        id: (obj.id ?? obj.storyId ?? obj.name) as string,
+        name: (obj.name ?? obj.title ?? obj.id) as string,
+        args: obj.args as Record<string, unknown> | undefined,
+      };
+    });
   }
 
   private normalizeControl(raw: unknown): ArgTypeControl | undefined {
     if (!raw || typeof raw !== "object") return undefined;
-
     const obj = raw as Record<string, unknown>;
 
     if (obj.type || obj.options) {
       return {
         type: obj.type as string | undefined,
-        options: Array.isArray(obj.options)
-          ? obj.options.map((o) => String(o))
-          : undefined,
+        options: Array.isArray(obj.options) ? obj.options.map((o) => String(o)) : undefined,
       };
     }
 
@@ -478,9 +639,7 @@ export class StorybookClient {
   }
 
   private normalizeType(raw: unknown): PropType {
-    if (typeof raw === "string") {
-      return this.parseTypeString(raw);
-    }
+    if (typeof raw === "string") return this.parseTypeString(raw);
 
     if (raw && typeof raw === "object") {
       const obj = raw as Record<string, unknown>;
@@ -492,6 +651,16 @@ export class StorybookClient {
     }
 
     return { name: "unknown" };
+  }
+
+  private parseTypeString(typeStr: string): PropType {
+    const trimmed = typeStr.trim();
+
+    if (trimmed.includes("|")) {
+      return { name: "union", raw: trimmed };
+    }
+
+    return { name: trimmed };
   }
 
   private extractText(result: unknown): string {

@@ -118,7 +118,15 @@ Inspect a component's props and show how they map to Figma.
 ```
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --component <name>     Component name to inspect (required)
+  --component <name>     Component name or ID to inspect (required)
+```
+
+### `storysync generate --dry-run`
+
+Preview what would be synced without writing to Figma. No Figma token needed.
+
+```bash
+npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --dry-run
 ```
 
 ## What you get in Figma
@@ -132,11 +140,25 @@ For each Storybook component:
 
 ## Requirements
 
-- React Storybook (local or deployed)
-- Figma account + personal access token
-- Node 18+
-- For Claude Code/Cursor: respective setups with both MCPs connected
-- For GitHub Action: Action in your workflow + secrets configured
+- **React Storybook** with `@storybook/addon-mcp` installed (provides MCP server at `/mcp`)
+- **Figma account** with Dev or Full seat on a paid plan (for write access)
+- **Node 18+** for storysync CLI; Node 24+ for the Storybook MCP addon itself
+- **Playwright** for screenshots: `npx playwright install chromium`
+
+### Figma MCP specifics
+
+- Write operations use the **remote** Figma MCP server at `https://mcp.figma.com/mcp`
+- The desktop Figma MCP server is **read-only** — it cannot create components
+- **Rate limits**: Starter plans / View / Collab seats are limited to **6 tool calls per month**. Dev/Full seats on Professional+ plans have per-minute rate limits
+- Write-to-canvas is free during beta but will become a paid, usage-based feature
+- Authentication is via Figma account (OAuth), not just a personal access token
+
+### Storybook MCP specifics
+
+- Install: `npm install @storybook/addon-mcp`
+- The addon runs an MCP server within your Storybook dev server at `/mcp`
+- Props are returned as TypeScript type definitions, not raw JSON
+- Story IDs are provided by `list-all-documentation` with `withStoryIds: true`
 
 No Anthropic API key needed. No LLM costs. Fully deterministic.
 
