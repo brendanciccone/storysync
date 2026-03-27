@@ -65,7 +65,7 @@ npx storysync inspect --storybook http://localhost:6006 --component Button
 ### GitHub Action (validate in CI)
 
 ```yaml
-name: Validate Storybook → Figma mappings
+name: Validate storysync mappings
 on:
   push:
     paths: ['src/components/**', 'stories/**']
@@ -85,9 +85,9 @@ jobs:
 Storybook MCP             mapping rules             Figma MCP
 ─────────────             ─────────────             ─────────
 
-list-all-documentation    boolean prop?         →   boolean variant
-get-documentation         enum/union prop?      →   variant property
-                          string/number/callback →  skip
+list-all-documentation    boolean prop?          -> boolean variant
+get-documentation         enum/union prop?       -> variant property
+                          string/number/callback -> skip
      ↓                         ↓                         ↓
  reads props              Cartesian product        Claude Code or Cursor
  from TypeScript          of mapped props          calls use_figma to

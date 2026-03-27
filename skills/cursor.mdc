@@ -4,61 +4,22 @@ globs:
 alwaysApply: false
 ---
 
-# storysync - Generate Figma library from Storybook
+# storysync - Storybook to Figma
 
-You are helping the user generate a Figma component library from their React Storybook using storysync.
+Read components from Storybook MCP and write them to Figma MCP as a component library.
 
-## Prerequisites
+## Requirements
 
-The user must have:
-1. A running Storybook dev server with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
-2. Storybook MCP connected (endpoint at `/mcp` on the dev server)
-3. Figma MCP connected (install plugin: `/add-plugin figma`, or add remote server `https://mcp.figma.com/mcp`)
-4. A Figma file URL or file key where components will be written
-5. Figma Full seat (Dev seats are read-only)
+- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+- Storybook MCP connected (endpoint at `/mcp` on the dev server)
+- Figma MCP connected (`/add-plugin figma` or add `https://mcp.figma.com/mcp`)
+- Figma Full seat (Dev seats are read-only)
 
-## Mapping rules
+## Workflow
 
-| Storybook prop type | Figma output |
-|---|---|
-| `boolean` | Boolean variant property |
-| `enum` / `union` of literals | Variant property with matching values |
-| `string` (free text) | Skipped |
-| `number` (free value) | Skipped |
-| `function` / `callback` | Skipped |
-| `ReactNode` / `children` | Skipped |
-| `ref` / `className` / `style` | Skipped |
-
-## Steps
-
-### 1. List components from Storybook MCP
-
-Use `list-all-documentation({ withStoryIds: true })` to get all components with IDs.
-
-### 2. For each component, get its documentation
-
-Use `get-documentation({ id: "component-id" })` with the component **ID** (not display name).
-
-The response contains a TypeScript Props type definition. Extract prop types and defaults.
-
-### 3. Apply mapping rules
-
-- Boolean props → Figma boolean variant
-- Enum/union of string literals → Figma variant property
-- Skip: string, number, callbacks (`=>`), ReactNode, children, className, style, ref, key, aria-*, data-*, on*
-
-### 4. Generate variant combinations
-
-Cartesian product of all mapped props. Cap at 256 combinations.
-
-### 5. Write to Figma
-
-Use `use_figma` with a structured instruction describing the component set:
-- Component name
-- Variant properties with types, values, and defaults
-- Number of variants to create
-- File key or URL
-
-### 6. Report results
-
-Summarize: components synced, variant counts, any failures or caps.
+1. Call `list-all-documentation({ withStoryIds: true })` to get component IDs.
+2. For each, call `get-documentation({ id: "<component-id>" })`. Parse the TypeScript `Props` type.
+3. Map props: `boolean` -> Figma boolean variant. Union of string literals -> variant property. Skip everything else (strings, numbers, callbacks, ReactNode, children, className, style, ref, key, aria-*, data-*, on*).
+4. Cartesian product of mapped props, capped at 256.
+5. Write with `use_figma` - component name, variant properties with types/values/defaults, file key.
+6. Summarize: components synced, variant counts, failures, caps.

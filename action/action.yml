@@ -1,5 +1,5 @@
 name: "storysync"
-description: "Validate Storybook → Figma variant mappings in CI"
+description: "Validate Storybook-to-Figma variant mappings in CI"
 author: "Brendan Ciccone"
 
 branding:
