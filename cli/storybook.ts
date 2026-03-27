@@ -404,19 +404,29 @@ export class StorybookClient {
 
       // Match: propName?: type = defaultValue;
       // or:   propName: type;
-      const propMatch = trimmed.match(
-        /^(\w+)(\?)?:\s*(.+?)(?:\s*=\s*(.+?))?;?\s*$/
-      );
+      // Split on the LAST ` = ` to avoid mis-splitting types containing `=`.
+      const propBaseMatch = trimmed.match(/^(\w+)(\?)?:\s*(.+);?\s*$/);
 
-      if (!propMatch) {
+      if (!propBaseMatch) {
         if (trimmed.length > 0 && !trimmed.startsWith("//") && !trimmed.startsWith("}")) {
           currentDescription = undefined;
         }
         continue;
       }
 
-      const [, name, optional, typeStr, defaultStr] = propMatch;
-      const type = this.parseTypeString(typeStr.trim());
+      const [, name, optional, rawTypeAndDefault] = propBaseMatch;
+      // Split on last ` = ` (space-equals-space) to separate type from default
+      const lastEqIdx = rawTypeAndDefault.lastIndexOf(" = ");
+      let typeStr: string;
+      let defaultStr: string | undefined;
+      if (lastEqIdx !== -1) {
+        typeStr = rawTypeAndDefault.slice(0, lastEqIdx).trim();
+        defaultStr = rawTypeAndDefault.slice(lastEqIdx + 3).replace(/;$/, "").trim();
+      } else {
+        typeStr = rawTypeAndDefault.replace(/;$/, "").trim();
+        defaultStr = undefined;
+      }
+      const type = this.parseTypeString(typeStr);
       const defaultValue = defaultStr?.trim().replace(/^["']|["']$/g, "");
 
       props.push({

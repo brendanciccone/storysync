@@ -330,7 +330,7 @@ export function generateVariantCombinations(
     combinations = next;
   }
 
-  return { combinations, wasCapped: willOverflow };
+  return { combinations, wasCapped: false };
 }
 
 export function mapComponent(

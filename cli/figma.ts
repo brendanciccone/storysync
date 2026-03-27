@@ -35,6 +35,8 @@ export interface WriteResult {
   componentName: string;
   figmaNodeId: string;
   variantCount: number;
+  /** True if the component already existed and was not re-created. */
+  skipped?: boolean;
 }
 
 export class FigmaClient {
@@ -165,6 +167,18 @@ export class FigmaClient {
     this.ensureConnected();
 
     const page = pageName ?? this.options.pageName ?? "storysync";
+
+    // Check if component already exists (idempotency)
+    const existingId = await this.findExistingComponent(definition.name);
+    if (existingId) {
+      return {
+        componentName: definition.name,
+        figmaNodeId: existingId,
+        variantCount: definition.variantCombinations.length,
+        skipped: true,
+      };
+    }
+
     const hasUseFigma = this.availableTools.has("use_figma");
     const hasGranularTools = this.availableTools.has("create_component_set");
 

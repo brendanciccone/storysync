@@ -8,13 +8,14 @@ branding:
 
 inputs:
   storybook_url:
-    description: "URL of the running Storybook instance"
-    required: true
+    description: "URL of the running Storybook dev server (must have @storybook/addon-mcp installed)"
+    required: false
+    default: "http://localhost:6006"
   figma_file_key:
     description: "Figma file key to write components into"
     required: true
   figma_token:
-    description: "Figma personal access token"
+    description: "Figma personal access token (note: may not work with remote Figma MCP server which requires OAuth)"
     required: true
   page_name:
     description: "Figma page name for synced components"
@@ -38,7 +39,7 @@ inputs:
   node_version:
     description: "Node.js version to use"
     required: false
-    default: "20"
+    default: "24"
 
 outputs:
   components_synced:
@@ -54,9 +55,24 @@ runs:
       with:
         node-version: ${{ inputs.node_version }}
 
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    - name: Start Storybook dev server
+      shell: bash
+      run: |
+        # The MCP addon only works with the dev server, not static builds.
+        # Start Storybook in the background and wait for it to be ready.
+        npx storybook dev --port 6006 --ci &
+        npx wait-on http://localhost:6006 --timeout 120000
+
     - name: Install Playwright
       shell: bash
-      run: npx playwright install chromium --with-deps
+      run: |
+        if [ "${{ inputs.no_screenshots }}" != "true" ]; then
+          npx playwright install chromium --with-deps
+        fi
 
     - name: Run storysync
       shell: bash
@@ -70,7 +86,7 @@ runs:
         fi
 
         if [ -n "${{ inputs.components }}" ]; then
-          ARGS="$ARGS --components ${{ inputs.components }}"
+          ARGS="$ARGS --components '${{ inputs.components }}'"
         fi
 
         ARGS="$ARGS --viewport-width ${{ inputs.viewport_width }} --viewport-height ${{ inputs.viewport_height }}"

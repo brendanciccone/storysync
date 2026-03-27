@@ -32,23 +32,25 @@ When the user asks to generate their Figma library from Storybook, follow these 
 
 ### 1. List components from Storybook MCP
 
-Use the Storybook MCP `list-all-documentation` tool:
+Use the Storybook MCP `list-all-documentation` tool with `withStoryIds: true`:
 
 ```
-list-all-documentation()
+list-all-documentation({ withStoryIds: true })
 ```
 
-This returns component names and metadata. Parse the response to get a list of component names.
+This returns a markdown list of components with their IDs and story IDs. Parse the response to get component IDs (NOT display names — the ID is what you pass to `get-documentation`).
 
 ### 2. For each component, get its documentation
 
-Use `get-documentation` to read each component's props, stories, and API docs:
+Use `get-documentation` with the component **ID** (from the list above):
 
 ```
-get-documentation({ name: "Button" })
+get-documentation({ id: "button" })
 ```
 
-The response is documentation format (MDX/Markdown). Extract the props table to find:
+Note: the parameter is `id`, not `name`. Use the ID exactly as returned by `list-all-documentation`.
+
+The response includes a TypeScript Props type definition. Extract props from it:
 - Boolean props → will become Figma boolean variants
 - Enum/union props → will become Figma variant properties
 - Skip: string, number, callbacks, ReactNode, className, style, ref, etc.

@@ -36,11 +36,11 @@ storysync reads components from Storybook MCP and writes them to Figma MCP using
 
 ### 1. List components from Storybook MCP
 
-Use `list-all-documentation` to get all components.
+Use `list-all-documentation({ withStoryIds: true })` to get all components with their IDs and story IDs.
 
 ### 2. For each component, get its documentation
 
-Use `get-documentation` with the component name. Parse the props table from the documentation.
+Use `get-documentation({ id: "component-id" })` with the component **ID** (not display name). Parse the TypeScript Props type definition from the response to extract prop types and defaults.
 
 ### 3. Apply mapping rules
 

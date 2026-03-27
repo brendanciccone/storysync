@@ -23,7 +23,7 @@ program
   .command("generate")
   .description("Generate Figma component library from Storybook")
   .requiredOption("--storybook <url>", "URL of the running Storybook instance")
-  .requiredOption("--figma-file <key>", "Figma file key to write components into")
+  .option("--figma-file <key>", "Figma file key to write components into")
   .option("--figma-token <token>", "Figma personal access token (or set FIGMA_ACCESS_TOKEN env var)")
   .option("--page <name>", "Figma page name for components", "storysync")
   .option("--no-screenshots", "Skip capturing screenshots")
@@ -32,6 +32,11 @@ program
   .option("--viewport-height <height>", "Screenshot viewport height", "600")
   .option("--dry-run", "Show what would be synced without writing to Figma")
   .action(async (options) => {
+    if (!options.dryRun && !options.figmaFile) {
+      console.error(chalk.red("Error: --figma-file is required (or use --dry-run to preview without Figma)."));
+      process.exit(1);
+    }
+
     const figmaToken = options.figmaToken ?? process.env.FIGMA_ACCESS_TOKEN;
     if (!figmaToken && !options.dryRun) {
       console.error(
@@ -205,8 +210,9 @@ program
           const result = await figma!.writeComponent(definition, screenshots, options.page);
 
           const cappedNote = definition.wasCapped ? chalk.yellow(" (capped at 256)") : "";
+          const skippedNote = result.skipped ? chalk.dim(" (already exists)") : "";
           spinner.succeed(
-            `${chalk.bold(entry.name)} → ${result.variantCount} variants (${result.figmaNodeId})${cappedNote}`
+            `${chalk.bold(entry.name)} → ${result.variantCount} variants (${result.figmaNodeId})${cappedNote}${skippedNote}`
           );
           successCount++;
         } catch (err) {
