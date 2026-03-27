@@ -15,7 +15,7 @@ inputs:
     description: "Figma file key to write components into"
     required: true
   figma_token:
-    description: "Figma personal access token (note: may not work with remote Figma MCP server which requires OAuth)"
+    description: "Figma access token (note: official Figma MCP server requires OAuth)"
     required: true
   page_name:
     description: "Figma page name for synced components"
@@ -24,18 +24,6 @@ inputs:
   components:
     description: "Comma-separated list of component names to sync (default: all)"
     required: false
-  no_screenshots:
-    description: "Skip capturing screenshots"
-    required: false
-    default: "false"
-  viewport_width:
-    description: "Screenshot viewport width"
-    required: false
-    default: "800"
-  viewport_height:
-    description: "Screenshot viewport height"
-    required: false
-    default: "600"
   node_version:
     description: "Node.js version to use"
     required: false
@@ -63,16 +51,8 @@ runs:
       shell: bash
       run: |
         # The MCP addon only works with the dev server, not static builds.
-        # Start Storybook in the background and wait for it to be ready.
         npx storybook dev --port 6006 --ci &
         npx wait-on http://localhost:6006 --timeout 120000
-
-    - name: Install Playwright
-      shell: bash
-      run: |
-        if [ "${{ inputs.no_screenshots }}" != "true" ]; then
-          npx playwright install chromium --with-deps
-        fi
 
     - name: Run storysync
       shell: bash
@@ -81,14 +61,8 @@ runs:
       run: |
         ARGS="--storybook ${{ inputs.storybook_url }} --figma-file ${{ inputs.figma_file_key }} --page ${{ inputs.page_name }}"
 
-        if [ "${{ inputs.no_screenshots }}" = "true" ]; then
-          ARGS="$ARGS --no-screenshots"
-        fi
-
         if [ -n "${{ inputs.components }}" ]; then
           ARGS="$ARGS --components '${{ inputs.components }}'"
         fi
-
-        ARGS="$ARGS --viewport-width ${{ inputs.viewport_width }} --viewport-height ${{ inputs.viewport_height }}"
 
         npx storysync generate $ARGS

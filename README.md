@@ -81,7 +81,8 @@ props:                      → boolean variant
     [default, destructive]  → variant property       with matching values
   disabled: boolean         callback prop?
   size: enum                → skip (not visual)     Figma component set
-    [sm, md, lg]                                     with all variants
+    [sm, md, lg]                                     with all variant
+                                                     combinations
 ```
 
 ## Mapping rules
@@ -112,10 +113,7 @@ Options:
   --figma-file <key>        Figma file key (required unless --dry-run)
   --figma-token <token>     Figma access token (or set FIGMA_ACCESS_TOKEN)
   --page <name>             Figma page name (default: "storysync")
-  --no-screenshots          Skip capturing screenshots
   --components <names>      Comma-separated component names to sync
-  --viewport-width <width>  Screenshot viewport width (default: 800)
-  --viewport-height <height> Screenshot viewport height (default: 600)
   --dry-run                 Preview mapping without writing to Figma
 ```
 
@@ -143,7 +141,6 @@ Options:
 - **Node.js 24+** — required by `@storybook/addon-mcp`
 - **React Storybook** with `@storybook/addon-mcp` installed (provides MCP server at `/mcp`)
 - **Figma account** with Dev or Full seat on a paid plan (for write access)
-- **Playwright** for screenshots: `npx playwright install chromium`
 
 ### Figma MCP details
 

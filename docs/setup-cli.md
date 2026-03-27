@@ -18,7 +18,6 @@ npx storysync generate --storybook http://localhost:6006 --figma-file <file-key>
 2. **Node.js 24+** — required by `@storybook/addon-mcp`
 3. **Figma access token** — the official Figma MCP server uses OAuth 2.0. A personal access token (from https://www.figma.com/developers/api#access-tokens) may not be accepted by the official server
 4. **Figma file key** — the key from your Figma file URL: `figma.com/file/<THIS-PART>/...`
-5. **Playwright** (for screenshots) — install with `npx playwright install chromium`
 
 ## Usage
 
@@ -50,9 +49,6 @@ npx storysync generate --storybook http://localhost:6006 --figma-file abc123
 
 # Sync specific components only
 npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --components Button,Input,Card
-
-# Skip screenshots (faster)
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --no-screenshots
 
 # Custom page name
 npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --page "Design System"

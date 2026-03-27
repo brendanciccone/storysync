@@ -9,7 +9,6 @@ import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient, type ComponentEntry } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
-import { Renderer } from "./renderer.js";
 import { mapComponent } from "./mapper.js";
 
 const program = new Command();
@@ -26,10 +25,7 @@ program
   .option("--figma-file <key>", "Figma file key to write components into")
   .option("--figma-token <token>", "Figma personal access token (or set FIGMA_ACCESS_TOKEN env var)")
   .option("--page <name>", "Figma page name for components", "storysync")
-  .option("--no-screenshots", "Skip capturing screenshots")
   .option("--components <names>", "Comma-separated list of component names to sync (default: all)")
-  .option("--viewport-width <width>", "Screenshot viewport width", "800")
-  .option("--viewport-height <height>", "Screenshot viewport height", "600")
   .option("--dry-run", "Show what would be synced without writing to Figma")
   .action(async (options) => {
     if (!options.dryRun && !options.figmaFile) {
@@ -52,18 +48,15 @@ program
     const storybook = new StorybookClient({ url: options.storybook });
     try {
       await storybook.connect();
-      const tools = storybook.getAvailableTools();
-      const toolInfo = tools.size > 0 ? ` (tools: ${[...tools].join(", ")})` : "";
-      spinner.succeed(`Connected to Storybook MCP${toolInfo}`);
+      spinner.succeed("Connected to Storybook MCP");
     } catch (err) {
       spinner.fail("Failed to connect to Storybook MCP");
       console.error(chalk.red(String(err)));
       console.error(chalk.dim("  Make sure @storybook/addon-mcp is installed and Storybook is running."));
-      console.error(chalk.dim("  Expected endpoint: " + options.storybook + "/mcp"));
       process.exit(1);
     }
 
-    // Connect to Figma MCP (skip in dry-run without token)
+    // Connect to Figma MCP
     let figma: FigmaClient | null = null;
     if (!options.dryRun) {
       spinner.start("Connecting to Figma MCP...");
@@ -74,57 +67,22 @@ program
       });
       try {
         await figma.connect();
-        const figmaTools = figma.getAvailableTools();
-
-        // Check for write capability
-        if (figmaTools.size > 0 && !figmaTools.has("use_figma")) {
-          spinner.warn("Connected to Figma MCP (read-only — desktop server detected)");
-          console.error(chalk.yellow("  Write operations require the remote server at https://mcp.figma.com/mcp"));
-          console.error(chalk.yellow("  Desktop Figma MCP is read-only."));
-          await storybook.disconnect();
-          process.exit(1);
-        }
-
-        // Warn about rate limits
         spinner.succeed("Connected to Figma MCP");
-        console.log(chalk.dim("  Note: Figma MCP rate limits apply. Starter plans are limited to 6 calls/month."));
       } catch (err) {
         spinner.fail("Failed to connect to Figma MCP");
         console.error(chalk.red(String(err)));
-        console.error(chalk.dim("  Remote server: https://mcp.figma.com/mcp"));
-        console.error(chalk.dim("  Auth may require: claude mcp add --transport http figma https://mcp.figma.com/mcp"));
         await storybook.disconnect();
         process.exit(1);
       }
     }
 
-    // Set up renderer
-    let renderer: Renderer | null = null;
-    if (options.screenshots !== false && !options.dryRun) {
-      spinner.start("Launching screenshot renderer...");
-      renderer = new Renderer({
-        storybookUrl: options.storybook,
-        width: parseInt(options.viewportWidth, 10),
-        height: parseInt(options.viewportHeight, 10),
-      });
-      try {
-        await renderer.launch();
-        spinner.succeed("Screenshot renderer ready");
-      } catch (err) {
-        spinner.warn("Screenshot renderer unavailable — continuing without screenshots");
-        console.error(chalk.yellow(`  ${String(err)}`));
-        console.error(chalk.dim("  Install Playwright: npx playwright install chromium"));
-        renderer = null;
-      }
-    }
-
     try {
-      // List components (returns entries with both ID and name)
+      // List components
       spinner.start("Reading components from Storybook...");
       let entries = await storybook.listComponents();
       spinner.succeed(`Found ${entries.length} components`);
 
-      // Filter if specified (match against both name and id)
+      // Filter if specified
       if (options.components) {
         const filter = new Set(
           (options.components as string).split(",").map((s: string) => s.trim().toLowerCase())
@@ -147,29 +105,17 @@ program
         spinner.succeed(`Figma page "${options.page}" ready`);
       }
 
-      // Estimate Figma API calls and warn
-      if (figma) {
-        // Each component = at least 1 use_figma call
-        const estimatedCalls = entries.length + 1; // +1 for ensurePage
-        if (estimatedCalls > 5) {
-          console.log(
-            chalk.yellow(`  Estimated ${estimatedCalls}+ Figma MCP calls. Starter plans allow 6/month.`)
-          );
-        }
-      }
-
       // Process each component
       let successCount = 0;
       let errorCount = 0;
 
       for (const entry of entries) {
-        spinner.start(`Processing ${chalk.bold(entry.name)} (${entry.id})...`);
+        spinner.start(`Processing ${chalk.bold(entry.name)}...`);
 
         try {
-          // Read from Storybook using the component ID
           const component = await storybook.getComponent(entry.id, entry.name);
 
-          // Use story IDs from the list call if the component didn't have them
+          // Use story IDs from list call if component didn't have them
           if (component.stories.length <= 1 && entry.storyIds && entry.storyIds.length > 0) {
             component.stories = entry.storyIds.map((id) => {
               const namePart = id.split("--").pop() ?? id;
@@ -180,7 +126,6 @@ program
             });
           }
 
-          // Map to Figma structure
           const definition = mapComponent(component);
 
           if (options.dryRun) {
@@ -195,24 +140,10 @@ program
             continue;
           }
 
-          // Capture screenshots
-          let screenshots = new Map<string, Buffer>();
-          if (renderer && component.stories.length > 0) {
-            const primaryStory = component.stories[0];
-            screenshots = await renderer.captureVariants(
-              entry.name,
-              primaryStory.id,
-              definition.variantCombinations
-            );
-          }
-
-          // Write to Figma
-          const result = await figma!.writeComponent(definition, screenshots, options.page);
-
+          const result = await figma!.writeComponent(definition, options.page);
           const cappedNote = definition.wasCapped ? chalk.yellow(" (capped at 256)") : "";
-          const skippedNote = result.skipped ? chalk.dim(" (already exists)") : "";
           spinner.succeed(
-            `${chalk.bold(entry.name)} → ${result.variantCount} variants (${result.figmaNodeId})${cappedNote}${skippedNote}`
+            `${chalk.bold(entry.name)} → ${result.variantCount} variants (${result.figmaNodeId})${cappedNote}`
           );
           successCount++;
         } catch (err) {
@@ -224,11 +155,7 @@ program
 
       // Summary
       console.log();
-      if (options.dryRun) {
-        console.log(chalk.bold("Dry run complete."));
-      } else {
-        console.log(chalk.bold("Done."));
-      }
+      console.log(chalk.bold(options.dryRun ? "Dry run complete." : "Done."));
       console.log(
         `  ${chalk.green(`${successCount} synced`)}${
           errorCount > 0 ? `, ${chalk.red(`${errorCount} failed`)}` : ""
@@ -237,7 +164,6 @@ program
     } finally {
       await storybook.disconnect();
       if (figma) await figma.disconnect();
-      if (renderer) await renderer.close();
     }
   });
 
@@ -292,7 +218,6 @@ program
     }
 
     try {
-      // Resolve component name to ID
       const entries = await storybook.listComponents();
       const match = entries.find(
         (e) =>
@@ -310,7 +235,6 @@ program
 
       if (component.props.length === 0) {
         console.log(chalk.yellow("  No props found in documentation."));
-        console.log(chalk.dim("  This may mean the component's types are not picked up by react-docgen."));
       } else {
         console.log(chalk.dim("Props → Figma mapping:"));
         for (const prop of component.props) {
@@ -333,14 +257,6 @@ program
           String(definition.variantCombinations.length)
         )} total combinations${definition.wasCapped ? chalk.yellow(" (capped at 256)") : ""}\n`
       );
-
-      if (component.stories.length > 0) {
-        console.log(chalk.dim("Stories:"));
-        for (const story of component.stories) {
-          console.log(`  ${chalk.cyan("•")} ${story.name} ${chalk.dim(`[${story.id}]`)}`);
-        }
-        console.log();
-      }
     } finally {
       await storybook.disconnect();
     }

@@ -52,9 +52,6 @@ The action handles Node.js setup, `npm ci`, starting the Storybook dev server, a
 | `figma_token` | Yes | — | Figma access token |
 | `page_name` | No | `storysync` | Figma page name |
 | `components` | No | all | Comma-separated component names |
-| `no_screenshots` | No | `false` | Skip screenshots |
-| `viewport_width` | No | `800` | Screenshot width |
-| `viewport_height` | No | `600` | Screenshot height |
 | `node_version` | No | `24` | Node.js version |
 
 ## Triggering on PR
