@@ -1,10 +1,10 @@
 # GitHub Action setup
 
-> **Important**: The official Figma MCP server requires OAuth 2.0 (browser-based). The GitHub Action can read from Storybook and run `--dry-run` to validate mappings in CI, but cannot write to Figma without a third-party MCP server that accepts token auth.
+The action validates that your Storybook components map correctly to Figma variants on every push. It reads from Storybook MCP and runs the mapping rules — it does not write to Figma.
 
-## Use case: Validate mappings in CI
+## Basic setup
 
-The most reliable use of the action is `--dry-run` mode — it validates that your component props map correctly to Figma variants on every push, without needing Figma auth.
+Create `.github/workflows/storysync.yml`:
 
 ```yaml
 name: Validate Storybook → Figma mappings
@@ -21,51 +21,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - run: npm ci
-
-      - name: Start Storybook dev server
-        run: |
-          npx storybook dev --port 6006 --ci &
-          npx wait-on http://localhost:6006 --timeout 120000
-
-      - name: Validate mappings
-        run: npx storysync generate --storybook http://localhost:6006 --dry-run
-```
-
-## Use case: Full sync (requires third-party Figma MCP)
-
-If you use a Figma MCP server that accepts token auth:
-
-```yaml
-name: Sync Storybook to Figma
-on:
-  push:
-    branches: [main]
-    paths: ['src/components/**', 'stories/**']
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: brendanciccone/storysync/action@main
-        with:
-          figma_file_key: ${{ secrets.FIGMA_FILE_KEY }}
-          figma_token: ${{ secrets.FIGMA_ACCESS_TOKEN }}
 ```
 
-## Action inputs
+The action handles Node.js setup, `npm ci`, starting the Storybook dev server, and running `storysync map`.
+
+## Inputs
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `storybook_url` | No | `http://localhost:6006` | URL of the running Storybook |
-| `figma_file_key` | Yes | — | Figma file key |
-| `figma_token` | Yes | — | Figma access token |
-| `page_name` | No | `storysync` | Figma page name |
-| `components` | No | all | Comma-separated component names |
+| `storybook_url` | No | `http://localhost:6006` | URL of the Storybook dev server |
+| `components` | No | all | Comma-separated component names to validate |
 | `node_version` | No | `24` | Node.js version |
+
+## Trigger on PR
+
+```yaml
+on:
+  pull_request:
+    paths:
+      - 'src/components/**'
+      - 'stories/**'
+```
+
+## What it checks
+
+For each component, the action reads the TypeScript props from Storybook MCP and shows:
+- Which props map to Figma boolean variants
+- Which props map to Figma variant properties (enums)
+- Which props are skipped (strings, numbers, callbacks, etc.)
+- The total variant combination count (capped at 256)
+
+If a component's props can't be parsed, the action reports the failure.

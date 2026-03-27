@@ -1,5 +1,7 @@
 # CLI setup
 
+The CLI reads from Storybook MCP and shows how your components map to Figma variants. It does not write to Figma — use Claude Code or Cursor for that.
+
 ## Install
 
 ```bash
@@ -14,20 +16,25 @@ npx storysync --help
 
 ## Prerequisites
 
-1. **Running Storybook dev server** — `@storybook/addon-mcp` must be installed (Vite-based Storybook 9+ only). The MCP endpoint at `/mcp` only works with the dev server, not static builds.
-2. **Node.js 24+** — required by `@storybook/addon-mcp`
+1. **Running Storybook dev server** with `@storybook/addon-mcp` installed
+2. **Vite-based Storybook 9+** (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+3. **Node.js 24+**
 
-> **Note on Figma writes:** The CLI can read from Storybook MCP but cannot authenticate with the official Figma MCP server, which requires OAuth 2.0. Use `--dry-run` to preview mappings, then use Claude Code or Cursor to write to Figma.
+## Commands
 
-## Usage
-
-### Preview mappings (dry run)
+### Map all components
 
 ```bash
-npx storysync generate --storybook http://localhost:6006 --dry-run
+npx storysync map --storybook http://localhost:6006
 ```
 
-Shows what would be synced — props, variant properties, combination counts — without connecting to Figma.
+Shows every component, which props map to Figma variants, and the total combination count.
+
+### Map specific components
+
+```bash
+npx storysync map --storybook http://localhost:6006 --components Button,Input,Card
+```
 
 ### List available components
 
@@ -35,33 +42,10 @@ Shows what would be synced — props, variant properties, combination counts —
 npx storysync list --storybook http://localhost:6006
 ```
 
-### Inspect a component's mapping
+### Inspect one component
 
 ```bash
 npx storysync inspect --storybook http://localhost:6006 --component Button
 ```
 
-Shows each prop and whether it maps to a Figma variant or gets skipped.
-
-### Generate (with Figma connection)
-
-If you have a Figma MCP server that accepts token auth (e.g. a third-party server):
-
-```bash
-# Sync all components
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123
-
-# Sync specific components only
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --components Button,Input,Card
-
-# Custom page name
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --page "Design System"
-```
-
-Set your token via environment variable or flag:
-
-```bash
-export FIGMA_ACCESS_TOKEN=your-token-here
-# or
-npx storysync generate --storybook http://localhost:6006 --figma-file abc123 --figma-token your-token
-```
+Shows each prop and whether it maps to a Figma boolean variant, variant property, or gets skipped.

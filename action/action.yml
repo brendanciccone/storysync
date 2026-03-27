@@ -1,5 +1,5 @@
 name: "storysync"
-description: "Sync Storybook components to Figma. Reads from Storybook MCP, writes to Figma MCP."
+description: "Validate Storybook → Figma variant mappings in CI"
 author: "Brendan Ciccone"
 
 branding:
@@ -8,32 +8,16 @@ branding:
 
 inputs:
   storybook_url:
-    description: "URL of the running Storybook dev server (must have @storybook/addon-mcp installed)"
+    description: "URL of the running Storybook dev server"
     required: false
     default: "http://localhost:6006"
-  figma_file_key:
-    description: "Figma file key to write components into"
-    required: true
-  figma_token:
-    description: "Figma access token (note: official Figma MCP server requires OAuth)"
-    required: true
-  page_name:
-    description: "Figma page name for synced components"
-    required: false
-    default: "storysync"
   components:
-    description: "Comma-separated list of component names to sync (default: all)"
+    description: "Comma-separated list of component names to validate (default: all)"
     required: false
   node_version:
     description: "Node.js version to use"
     required: false
     default: "24"
-
-outputs:
-  components_synced:
-    description: "Number of components successfully synced"
-  components_failed:
-    description: "Number of components that failed to sync"
 
 runs:
   using: "composite"
@@ -50,19 +34,16 @@ runs:
     - name: Start Storybook dev server
       shell: bash
       run: |
-        # The MCP addon only works with the dev server, not static builds.
         npx storybook dev --port 6006 --ci &
         npx wait-on http://localhost:6006 --timeout 120000
 
-    - name: Run storysync
+    - name: Validate mappings
       shell: bash
-      env:
-        FIGMA_ACCESS_TOKEN: ${{ inputs.figma_token }}
       run: |
-        ARGS="--storybook ${{ inputs.storybook_url }} --figma-file ${{ inputs.figma_file_key }} --page ${{ inputs.page_name }}"
+        ARGS="--storybook ${{ inputs.storybook_url }}"
 
         if [ -n "${{ inputs.components }}" ]; then
           ARGS="$ARGS --components '${{ inputs.components }}'"
         fi
 
-        npx storysync generate $ARGS
+        npx storysync map $ARGS
