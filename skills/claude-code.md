@@ -1,4 +1,4 @@
-# storysync — Generate Figma library from Storybook
+# storysync - Generate Figma library from Storybook
 
 You are helping the user generate a Figma component library from their React Storybook using storysync.
 
@@ -41,7 +41,7 @@ list-all-documentation({ withStoryIds: true })
 
 This returns a markdown list like:
 ```
-- **Button** (id: `button`) — A clickable button
+- **Button** (id: `button`) - A clickable button
   - Primary (id: `button--primary`)
   - Secondary (id: `button--secondary`)
 ```
@@ -74,7 +74,7 @@ export type Props = {
 For each prop from the TypeScript definition:
 - **Boolean props** (`boolean`, `bool`) → Figma boolean variant property
 - **Enum/union of string literals** (`'sm' | 'md' | 'lg'`) → Figma variant property with those values
-- **Skip everything else** — free-text strings, numbers, callbacks (`=>` in type), ReactNode, children, className, style, ref, key, aria-*, data-*, on* handlers
+- **Skip everything else**: free-text strings, numbers, callbacks (`=>` in type), ReactNode, children, className, style, ref, key, aria-*, data-*, on* handlers
 
 ### 4. Generate variant combinations
 
@@ -113,8 +113,8 @@ First, let me list all available components...
 
 Found 12 components. Let me process each one:
 
-1. **Button** — 3 variant props (variant, size, disabled) → 18 combinations
-2. **Input** — 2 variant props (variant, disabled) → 6 combinations
+1. **Button** - 3 variant props (variant, size, disabled) -> 18 combinations
+2. **Input** - 2 variant props (variant, disabled) -> 6 combinations
 ...
 
 All 12 components synced to your Figma file on the "storysync" page.

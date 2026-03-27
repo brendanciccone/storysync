@@ -9,7 +9,7 @@ export interface StorybookProp {
   description?: string;
   defaultValue?: unknown;
   required?: boolean;
-  /** Storybook argType control definition — often the real source of variant info. */
+  /** Storybook argType control definition, often the real source of variant info. */
   control?: ArgTypeControl;
 }
 
@@ -58,7 +58,7 @@ export interface MapperOptions {
 
 const DEFAULT_MAX_COMBINATIONS = 256;
 
-/** Props that are never visual variants — always skip. */
+/** Props that are never visual variants. Always skip. */
 const SKIP_PROP_NAMES = new Set([
   "children",
   "className",
@@ -70,7 +70,7 @@ const SKIP_PROP_NAMES = new Set([
   "dangerouslySetInnerHTML",
 ]);
 
-/** Prop type names that indicate callbacks — always skip. */
+/** Prop type names that indicate callbacks. Always skip. */
 const CALLBACK_TYPE_PATTERNS = [
   /^func$/i,
   /^function$/i,
@@ -84,7 +84,7 @@ const CALLBACK_TYPE_PATTERNS = [
   /^EventHandler/,
 ];
 
-/** Prop type names that indicate non-visual types — skip. */
+/** Prop type names that indicate non-visual types. Skip. */
 const NON_VISUAL_TYPE_PATTERNS = [
   /^ReactNode$/,
   /^ReactElement$/,
@@ -165,7 +165,7 @@ export function shouldSkipProp(prop: StorybookProp): boolean {
 
   if (typeName === "string" || typeName === "number") {
     // Exception: if the prop has argType control with explicit options,
-    // it's a constrained value — don't skip it. Let it fall through
+    // it's a constrained value, don't skip it. Let it fall through
     // to the argType extraction path.
     if (prop.control?.options && prop.control.options.length > 0) {
       return false;
@@ -201,10 +201,10 @@ function isLiteralUnionMember(member: PropType): boolean {
   // Explicit literal type (react-docgen standard)
   if (member.name === "literal") return true;
 
-  // Has a raw value wrapped in quotes — it's a string literal
+  // Has a raw value wrapped in quotes, it's a string literal
   if (member.raw && /^["'`].*["'`]$/.test(member.raw.trim())) return true;
 
-  // Everything else is rejected. We don't guess based on case or length —
+  // Everything else is rejected. We don't guess based on case or length.
   // "placement", "iconType", "undefined" are all lowercase but are type names.
   return false;
 }

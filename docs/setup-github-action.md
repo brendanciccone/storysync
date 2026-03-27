@@ -1,6 +1,6 @@
 # GitHub Action setup
 
-The action validates that your Storybook components map correctly to Figma variants on every push. It reads from Storybook MCP and runs the mapping rules — it does not write to Figma.
+The action validates that your Storybook components map correctly to Figma variants on every push. It reads from Storybook MCP and runs the mapping rules. It does not write to Figma.
 
 ## Basic setup
 

@@ -1,6 +1,6 @@
 # CLI setup
 
-The CLI reads from Storybook MCP and shows how your components map to Figma variants. It does not write to Figma — use Claude Code or Cursor for that.
+The CLI reads from Storybook MCP and shows how your components map to Figma variants. It does not write to Figma. Use Claude Code or Cursor for that.
 
 ## Install
 

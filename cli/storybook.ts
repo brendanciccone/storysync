@@ -1,5 +1,5 @@
 /**
- * Storybook MCP client — reads components and their props via @storybook/addon-mcp.
+ * Storybook MCP client. Reads components and their props via @storybook/addon-mcp.
  *
  * Tools:
  *   - list-all-documentation({ withStoryIds?: boolean }) → markdown list
@@ -79,7 +79,7 @@ export class StorybookClient {
    * Parse component list from markdown.
    *
    * Official format:
-   *   - **Button** (id: `button`) — A clickable button
+   *   - **Button** (id: `button`) - A clickable button
    *     - Primary (id: `button--primary`)
    */
   private parseComponentList(text: string): ComponentEntry[] {
@@ -88,7 +88,7 @@ export class StorybookClient {
     let current: ComponentEntry | null = null;
 
     for (const line of lines) {
-      // Component line: - **Button** (id: `button`) — summary
+      // Component line: - **Button** (id: `button`) - summary
       const componentMatch = line.match(
         /^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/
       );

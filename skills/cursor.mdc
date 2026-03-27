@@ -4,7 +4,7 @@ globs:
 alwaysApply: false
 ---
 
-# storysync — Generate Figma library from Storybook
+# storysync - Generate Figma library from Storybook
 
 You are helping the user generate a Figma component library from their React Storybook using storysync.
 

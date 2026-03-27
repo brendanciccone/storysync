@@ -1,6 +1,6 @@
 # storysync
 
-Deterministic mapping rules from Storybook components to Figma variants — delivered as skill files for Claude Code and Cursor, with a CLI for previewing and validating mappings.
+Deterministic mapping rules from Storybook components to Figma variants, delivered as skill files for Claude Code and Cursor, with a CLI for previewing and validating mappings.
 
 ## What it does
 
@@ -9,7 +9,7 @@ Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/
 | Method | What it does |
 |---|---|
 | **Claude Code skill** | Claude reads Storybook MCP, applies mapping rules, writes to Figma MCP |
-| **Cursor rules** | Same — Cursor reads, maps, writes |
+| **Cursor rules** | Same as above, from Cursor |
 | **CLI** | Preview mappings locally (`storysync map`, `list`, `inspect`) |
 | **GitHub Action** | Validate mappings in CI on every push |
 
@@ -142,18 +142,18 @@ Options:
 ### Storybook
 
 - **Storybook 9+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
-- **`@storybook/addon-mcp`** installed — provides MCP endpoint at `/mcp`
+- **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
 - **Node.js 24+**
 - Must be the **dev server** (`storybook dev`), not a static build
 
 ### Figma (for writing via Claude Code / Cursor)
 
-- **Full seat** on a paid plan — required for write access. Dev seats are read-only.
+- **Full seat** on a paid plan (required for write access; Dev seats are read-only)
 - Auth is **OAuth 2.0**, handled automatically by supported MCP clients
 - Write-to-canvas is **free during beta**, will become a paid usage-based feature
 - **Rate limits**: Starter plans = 6 tool calls/month. Full seats on Professional+ = per-minute limits
 
-No Anthropic API key needed. The mapping rules are deterministic — no LLM costs from storysync itself. (Figma's `use_figma` tool is agent-driven on their side.)
+No Anthropic API key needed. The mapping rules are deterministic, no LLM costs from storysync itself. Figma's `use_figma` tool is agent-driven on their side.
 
 ## License
 

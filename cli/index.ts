@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * storysync CLI — preview how Storybook components map to Figma variants.
+ * storysync CLI. Preview how Storybook components map to Figma variants.
  *
  * Writing to Figma requires the `mcp:connect` OAuth scope, which is only
  * available to first-party MCP clients (Claude Code, Cursor, VS Code, etc.).
@@ -77,13 +77,13 @@ program
           const cappedNote = definition.wasCapped ? chalk.yellow(" [CAPPED]") : "";
 
           spinner.succeed(
-            `${chalk.bold(entry.name)} — ${definition.variantProperties.length} props [${propsInfo || "none"}] → ${definition.variantCombinations.length} variants${cappedNote}`
+            `${chalk.bold(entry.name)} - ${definition.variantProperties.length} props [${propsInfo || "none"}] → ${definition.variantCombinations.length} variants${cappedNote}`
           );
 
           totalVariants += definition.variantCombinations.length;
           if (definition.wasCapped) cappedCount++;
         } catch (err) {
-          spinner.fail(`${chalk.bold(entry.name)} — failed`);
+          spinner.fail(`${chalk.bold(entry.name)} - failed`);
           console.error(chalk.red(`  ${String(err)}`));
         }
       }
