@@ -1,0 +1,40 @@
+{
+  "name": "storysync",
+  "version": "0.1.0",
+  "description": "The missing link between Storybook MCP and Figma MCP. Read components from Storybook, write them to Figma.",
+  "bin": {
+    "storysync": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli/index.js",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "storybook",
+    "figma",
+    "mcp",
+    "design-system",
+    "component-library",
+    "sync"
+  ],
+  "author": "Brendan Ciccone",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "commander": "^13.1.0",
+    "chalk": "^5.4.1",
+    "ora": "^8.2.0",
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "type": "module"
+}
