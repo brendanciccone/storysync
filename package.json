@@ -22,8 +22,7 @@
   "author": "Brendan Ciccone",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.15.0",
     "commander": "^13.1.0",
     "chalk": "^5.4.1",
     "ora": "^8.2.0",

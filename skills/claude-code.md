@@ -6,9 +6,9 @@ You are helping the user generate a Figma component library from their React Sto
 
 The user must have:
 1. A running Storybook instance (local or deployed)
-2. Storybook MCP connected to this session
-3. Figma MCP connected to this session
-4. A Figma file key where components will be written
+2. Storybook MCP connected (`@storybook/addon-mcp` — endpoint at `/mcp`)
+3. Figma MCP connected (remote server at `https://mcp.figma.com/mcp`)
+4. A Figma file where components will be written
 
 ## How it works
 
@@ -19,7 +19,7 @@ storysync reads components from Storybook MCP and writes them to Figma MCP using
 | Storybook prop type | Figma output |
 |---|---|
 | `boolean` | Boolean variant property |
-| `enum` / `union` | Variant property with matching values |
+| `enum` / `union` of literals | Variant property with matching values |
 | `string` (free text) | Skipped (not a visual variant) |
 | `number` (free value) | Skipped |
 | `function` / `callback` | Skipped |
@@ -30,74 +30,61 @@ storysync reads components from Storybook MCP and writes them to Figma MCP using
 
 When the user asks to generate their Figma library from Storybook, follow these steps:
 
-### 1. Read components from Storybook MCP
+### 1. List components from Storybook MCP
 
-Use the Storybook MCP `list_components` tool to get all available components:
-
-```
-list_components()
-```
-
-### 2. For each component, get its props
-
-Use `get_component` to read each component's props and stories:
+Use the Storybook MCP `list-all-documentation` tool:
 
 ```
-get_component({ name: "Button" })
+list-all-documentation()
 ```
+
+This returns component names and metadata. Parse the response to get a list of component names.
+
+### 2. For each component, get its documentation
+
+Use `get-documentation` to read each component's props, stories, and API docs:
+
+```
+get-documentation({ name: "Button" })
+```
+
+The response is documentation format (MDX/Markdown). Extract the props table to find:
+- Boolean props → will become Figma boolean variants
+- Enum/union props → will become Figma variant properties
+- Skip: string, number, callbacks, ReactNode, className, style, ref, etc.
 
 ### 3. Apply mapping rules
 
-For each prop:
-- **Boolean props** (`boolean`, `bool`) → Create a Figma boolean variant property
-- **Enum/union props** → Create a Figma variant property with matching values
-- **Skip**: `string`, `number`, `function`, callbacks (`onClick`, `onChange`, etc.), `ReactNode`, `children`, `className`, `style`, `ref`, `key`, `aria-*`, `data-*`
+For each prop from the documentation:
+- **Boolean props** (`boolean`, `bool`) → Figma boolean variant property
+- **Enum/union of string literals** (`'sm' | 'md' | 'lg'`) → Figma variant property with those values
+- **Skip everything else** — free-text strings, numbers, callbacks, React internals
 
 ### 4. Generate variant combinations
 
-Compute all combinations of the mapped variant properties. For example, a component with `variant: [default, destructive]` and `disabled: [true, false]` produces 4 combinations.
+Compute all combinations. Cap at 256 to avoid explosion.
+Example: `variant: [default, destructive]` × `disabled: [true, false]` = 4 combinations.
 
-### 5. Create the Figma page
+### 5. Write to Figma
 
-Use Figma MCP to create a page for the components:
+Use the Figma MCP `use_figma` tool to create each component:
 
 ```
-create_page({ fileKey: "<file-key>", name: "storysync" })
-```
-
-### 6. Write each component to Figma
-
-For each component, use Figma MCP to:
-
-1. Create a component set with variant properties:
-```
-create_component_set({
-  fileKey: "<file-key>",
-  pageName: "storysync",
-  name: "Button",
-  variantProperties: [
-    { name: "variant", type: "VARIANT", values: ["default", "destructive"] },
-    { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }
-  ]
+use_figma({
+  instruction: "Create a component set in file <file-key> on page 'storysync':\n\nComponent name: Button\n\nVariant properties:\n  - variant (VARIANT): [default, destructive] (default: default)\n  - disabled (BOOLEAN): [true, false] (default: false)\n\nCreate 4 variants for all combinations.",
+  fileKey: "<file-key>"
 })
 ```
 
-2. Create each variant:
-```
-create_variant({
-  fileKey: "<file-key>",
-  componentSetId: "<node-id>",
-  name: "variant=default, disabled=false",
-  properties: { variant: "default", disabled: "false" }
-})
-```
+The `use_figma` tool is a general-purpose write tool — describe what you want to create and it will do it.
 
-### 7. Report results
+### 6. Report results
 
 After processing all components, summarize:
 - How many components were synced
 - How many variant combinations were created for each
 - Any components that were skipped or failed
+- Whether any were capped at 256 combinations
 
 ## Example conversation
 
@@ -106,7 +93,7 @@ After processing all components, summarize:
 **Assistant**: I'll read your components from Storybook MCP and write them to Figma MCP.
 
 First, let me list all available components...
-[Uses Storybook MCP list_components]
+[Uses Storybook MCP `list-all-documentation`]
 
 Found 12 components. Let me process each one:
 

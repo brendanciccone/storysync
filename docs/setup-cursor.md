@@ -26,13 +26,14 @@ curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendancic
 
 ### Storybook MCP
 
-Add to your Cursor MCP configuration:
+Install `@storybook/addon-mcp` in your project. Add to your Cursor MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "storybook": {
-      "url": "http://localhost:6006/.mcp"
+      "type": "http",
+      "url": "http://localhost:6006/mcp"
     }
   }
 }
@@ -40,7 +41,20 @@ Add to your Cursor MCP configuration:
 
 ### Figma MCP
 
-Add Figma MCP following the [Figma MCP documentation](https://figma.com/developers/mcp).
+Add the official Figma MCP remote server:
+
+```json
+{
+  "mcpServers": {
+    "figma": {
+      "type": "http",
+      "url": "https://mcp.figma.com/mcp"
+    }
+  }
+}
+```
+
+See [Figma MCP documentation](https://developers.figma.com/docs/figma-mcp-server/) for auth setup.
 
 ## Usage
 

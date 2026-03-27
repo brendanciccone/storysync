@@ -189,37 +189,23 @@ export function mapBooleanProp(prop: StorybookProp): FigmaVariantProperty {
 /**
  * Check if a union member looks like a string literal value
  * (as opposed to a type name like ReactNode, HTMLElement, etc.)
+ *
+ * React-docgen returns literal union members as:
+ *   { name: "literal", value: "'primary'" }
+ * Non-literal members as:
+ *   { name: "string" }, { name: "ReactNode" }, etc.
+ *
+ * We're strict here: only accept things we're confident are literals.
  */
 function isLiteralUnionMember(member: PropType): boolean {
-  // Explicit literal type
+  // Explicit literal type (react-docgen standard)
   if (member.name === "literal") return true;
 
-  // Has a raw value with quotes — it's a string literal
-  if (member.raw && /^["'`]/.test(member.raw.trim())) return true;
+  // Has a raw value wrapped in quotes — it's a string literal
+  if (member.raw && /^["'`].*["'`]$/.test(member.raw.trim())) return true;
 
-  // Common non-literal type names to reject
-  const nonLiteralPatterns = [
-    /^React/, /^HTML/, /^SVG/, /^CSS/, /^Event/,
-    /^Node$/, /^Element$/, /^Function$/,
-    /^object$/i, /^any$/i, /^never$/i, /^void$/i, /^undefined$/i, /^null$/i,
-    /^string$/i, /^number$/i, /^boolean$/i, /^symbol$/i, /^bigint$/i,
-  ];
-  for (const pattern of nonLiteralPatterns) {
-    if (pattern.test(member.name)) return false;
-  }
-
-  // If name is short, lowercase, and looks like a value (not a type), accept it
-  // e.g. "sm", "md", "lg", "primary", "destructive"
-  if (member.name === member.name.toLowerCase() && member.name.length <= 30) {
-    return true;
-  }
-
-  // If raw looks like a quoted value, accept
-  if (member.raw) {
-    const stripped = stripQuotes(member.raw);
-    if (stripped !== member.raw) return true;
-  }
-
+  // Everything else is rejected. We don't guess based on case or length —
+  // "placement", "iconType", "undefined" are all lowercase but are type names.
   return false;
 }
 
@@ -232,11 +218,27 @@ export function extractEnumValues(prop: StorybookProp): string[] | null {
   const typeName = prop.type.name;
 
   // Priority 2: react-docgen enum type
+  // Values can be: plain strings, { value: "'primary'" } objects, or PropType objects.
+  // We need to safely extract the string value from whatever shape we get.
   if (typeName === "enum" && Array.isArray(prop.type.value)) {
-    return (prop.type.value as Array<string | { value: string }>)
-      .map((v) => (typeof v === "string" ? v : v.value))
+    const values = prop.type.value
+      .map((v: unknown) => {
+        if (typeof v === "string") return v;
+        if (v && typeof v === "object") {
+          const obj = v as Record<string, unknown>;
+          // react-docgen: { value: "'primary'", computed: false }
+          if (typeof obj.value === "string") return obj.value;
+          // PropType shape: { name: "literal", raw: "'primary'" }
+          if (typeof obj.raw === "string") return obj.raw;
+          if (typeof obj.name === "string") return obj.name;
+        }
+        return null;
+      })
+      .filter((v): v is string => v != null)
       .map(stripQuotes)
       .filter((v) => v.length > 0);
+
+    if (values.length > 0) return values;
   }
 
   // Priority 3: react-docgen union type (with literal filtering)
@@ -301,29 +303,34 @@ export function generateVariantCombinations(
 ): { combinations: Record<string, string>[]; wasCapped: boolean } {
   if (properties.length === 0) return { combinations: [{}], wasCapped: false };
 
-  // Estimate total combinations first to avoid unnecessary work
+  // Estimate total to know if we'll cap
   let totalEstimate = 1;
+  let willOverflow = false;
   for (const prop of properties) {
     totalEstimate *= prop.values.length;
-    if (totalEstimate > maxCombinations) break;
-  }
-
-  const wasCapped = totalEstimate > maxCombinations;
-
-  const [first, ...rest] = properties;
-  const { combinations: restCombinations } = generateVariantCombinations(rest, maxCombinations);
-
-  const combinations: Record<string, string>[] = [];
-  for (const value of first.values) {
-    for (const restCombo of restCombinations) {
-      combinations.push({ [first.name]: value, ...restCombo });
-      if (combinations.length >= maxCombinations) {
-        return { combinations, wasCapped: true };
-      }
+    if (totalEstimate > maxCombinations) {
+      willOverflow = true;
+      break;
     }
   }
 
-  return { combinations, wasCapped };
+  // Iterative Cartesian product with early termination
+  let combinations: Record<string, string>[] = [{}];
+
+  for (const prop of properties) {
+    const next: Record<string, string>[] = [];
+    for (const existing of combinations) {
+      for (const value of prop.values) {
+        next.push({ ...existing, [prop.name]: value });
+        if (next.length >= maxCombinations) {
+          return { combinations: next, wasCapped: true };
+        }
+      }
+    }
+    combinations = next;
+  }
+
+  return { combinations, wasCapped: willOverflow };
 }
 
 export function mapComponent(
