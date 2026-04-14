@@ -116,6 +116,8 @@ Map all components to Figma variant definitions.
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --components <names>   Comma-separated component names (default: all)
+  --json                 Output JSON instead of formatted text
+  --strict               Exit with code 1 if any component fails or is capped
 ```
 
 ### `storysync list`
@@ -143,7 +145,7 @@ Options:
 
 - **Storybook 9.x and 10.x** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
-- **Node.js 24+**
+- **Node.js 18+**
 - Must be the **dev server** (`storybook dev`), not a static build
 
 ### Figma (for writing via Claude Code / Cursor)
