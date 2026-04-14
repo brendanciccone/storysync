@@ -55,6 +55,7 @@ runs:
         npm run build
 
     - name: Start Storybook
+      if: inputs.storybook_url == 'http://localhost:6006'
       shell: bash
       run: |
         npx storybook dev --port 6006 --ci &
@@ -105,7 +106,7 @@ runs:
         const removed = baseline.components.filter(c => !currMap[c.name]);
         const changed = current.components.filter(c => {
           const b = baseMap[c.name];
-          return b && JSON.stringify(b.variantProperties) !== JSON.stringify(c.variantProperties);
+          return b && JSON.stringify(b) !== JSON.stringify(c);
         });
 
         if (!added.length && !removed.length && !changed.length) {

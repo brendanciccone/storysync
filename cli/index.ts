@@ -15,7 +15,7 @@ async function connectStorybook(url: string, quiet = false) {
     return client;
   } catch (err) {
     spinner?.fail("Failed to connect to Storybook MCP");
-    if (!quiet) console.error(chalk.red(String(err)));
+    console.error(chalk.red(String(err)));
     process.exit(1);
   }
 }
@@ -79,7 +79,7 @@ program
         console.log(chalk.dim("To write to Figma, use the Claude Code skill or Cursor rules file."));
       }
 
-      if (opts.strict && (failed > 0 || capped > 0)) process.exit(1);
+      if (opts.strict && (failed > 0 || capped > 0)) process.exitCode = 1;
     } finally {
       await storybook.disconnect();
     }
