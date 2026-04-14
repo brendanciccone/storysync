@@ -90,8 +90,8 @@ get-documentation         enum/union prop?       -> variant property
                           string/number/callback -> skip
      ↓                         ↓                         ↓
  reads props              Cartesian product        Claude Code or Cursor
- from TypeScript          of mapped props          calls use_figma to
- type definitions         (capped at 256)          create component sets
+ and visual details       of mapped props          calls use_figma to
+ from documentation       (capped at 256)          create styled components
 ```
 
 ## Mapping rules
