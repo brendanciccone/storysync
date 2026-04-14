@@ -23,7 +23,8 @@ Read components from Storybook MCP and write them to Figma MCP as a component li
 ```
 use_figma({
   instruction: "Create a component set in file <file-key> on page 'storysync':\n\nComponent: Button\n\nVariant properties:\n  - variant (VARIANT): [default, destructive] (default: default)\n  - disabled (BOOLEAN): [true, false] (default: false)\n\nCreate 4 variants. Name each: property1=value1, property2=value2",
-  fileKey: "<file-key>"
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
 })
 ```
 
