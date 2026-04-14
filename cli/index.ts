@@ -6,16 +6,16 @@ import ora from "ora";
 import { StorybookClient } from "./storybook.js";
 import { mapComponent } from "./mapper.js";
 
-async function connectStorybook(url: string) {
-  const spinner = ora("Connecting to Storybook MCP...").start();
+async function connectStorybook(url: string, quiet = false) {
+  const spinner = quiet ? null : ora("Connecting to Storybook MCP...").start();
   const client = new StorybookClient(url);
   try {
     await client.connect();
-    spinner.succeed("Connected to Storybook MCP");
+    spinner?.succeed("Connected to Storybook MCP");
     return client;
   } catch (err) {
-    spinner.fail("Failed to connect to Storybook MCP");
-    console.error(chalk.red(String(err)));
+    spinner?.fail("Failed to connect to Storybook MCP");
+    if (!quiet) console.error(chalk.red(String(err)));
     process.exit(1);
   }
 }
@@ -28,38 +28,58 @@ program
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--components <names>", "Comma-separated component names")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--strict", "Exit with code 1 if any component fails or is capped")
   .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook);
+    const json = !!opts.json;
+    const storybook = await connectStorybook(opts.storybook, json);
     try {
-      const spinner = ora("Reading components...").start();
+      const spinner = json ? null : ora("Reading components...").start();
       let entries = await storybook.listComponents();
-      spinner.succeed(`Found ${entries.length} components`);
+      spinner?.succeed(`Found ${entries.length} components`);
 
       if (opts.components) {
         const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
         entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
-        console.log(chalk.dim(`  Filtered to ${entries.length}`));
+        if (!json) console.log(chalk.dim(`  Filtered to ${entries.length}`));
       }
 
-      if (!entries.length) { console.log(chalk.yellow("\nNo components found.")); return; }
+      if (!entries.length) {
+        if (json) console.log(JSON.stringify({ components: [], summary: { total: 0, mapped: 0, failed: 0, capped: 0, totalCombinations: 0 } }));
+        else console.log(chalk.yellow("\nNo components found."));
+        return;
+      }
 
-      let total = 0, capped = 0;
+      const results: { name: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
+      let total = 0, capped = 0, failed = 0;
+
       for (const entry of entries) {
         try {
           const component = await storybook.getComponent(entry.id, entry.name);
           const def = mapComponent(component);
-          const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
-          const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
-          console.log(`  ${chalk.green("✓")} ${chalk.bold(entry.name)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+          results.push({ name: entry.name, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
+          if (!json) {
+            const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
+            const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
+            console.log(`  ${chalk.green("✓")} ${chalk.bold(entry.name)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+          }
           total += def.variantCombinations.length;
           if (def.wasCapped) capped++;
         } catch (err) {
-          console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.name)} ${chalk.red(String(err))}`);
+          failed++;
+          results.push({ name: entry.name, variantProperties: [], combinations: 0, capped: false, error: String(err) });
+          if (!json) console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.name)} ${chalk.red(String(err))}`);
         }
       }
 
-      console.log(`\n${entries.length} components, ${total} total variants${capped ? `, ${capped} capped` : ""}`);
-      console.log(chalk.dim("To write to Figma, use the Claude Code skill or Cursor rules file."));
+      if (json) {
+        console.log(JSON.stringify({ components: results, summary: { total: entries.length, mapped: entries.length - failed, failed, capped, totalCombinations: total } }));
+      } else {
+        console.log(`\n${entries.length} components, ${total} total variants${capped ? `, ${capped} capped` : ""}`);
+        console.log(chalk.dim("To write to Figma, use the Claude Code skill or Cursor rules file."));
+      }
+
+      if (opts.strict && (failed > 0 || capped > 0)) process.exit(1);
     } finally {
       await storybook.disconnect();
     }
