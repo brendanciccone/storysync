@@ -4,10 +4,10 @@ Read components from Storybook MCP and write them to Figma MCP as a component li
 
 ## Requirements
 
-- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+- Storybook dev server running with `@storybook/addon-mcp` >= 0.5.0 (Vite-based Storybook 9+ or 10+, Node 24+)
 - Storybook MCP: `claude mcp add --transport http storybook http://localhost:6006/mcp`
 - Figma MCP: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
-- Figma Full seat (Dev seats are read-only)
+- Figma Full seat (Dev seats are read-only outside drafts). Starter plans limited to 6 tool calls/month.
 
 ## Workflow
 
@@ -23,7 +23,8 @@ Read components from Storybook MCP and write them to Figma MCP as a component li
 ```
 use_figma({
   instruction: "Create a component set in file <file-key> on page 'storysync':\n\nComponent: Button\n\nVariant properties:\n  - variant (VARIANT): [default, destructive] (default: default)\n  - disabled (BOOLEAN): [true, false] (default: false)\n\nCreate 4 variants. Name each: property1=value1, property2=value2",
-  fileKey: "<file-key>"
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
 })
 ```
 
