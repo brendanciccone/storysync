@@ -141,7 +141,7 @@ Options:
 
 ### Storybook
 
-- **Storybook 9+ or 10+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **Storybook 9.x and 10.x** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
 - **Node.js 24+**
 - Must be the **dev server** (`storybook dev`), not a static build
