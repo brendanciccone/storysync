@@ -13,7 +13,7 @@ Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/
 | **CLI** | Preview mappings locally (`storysync map`, `list`, `inspect`) |
 | **GitHub Action** | Validate mappings in CI on every push |
 
-> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from Storybook MCP (no auth restrictions) and previews what the mapping would produce.
+> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from Storybook MCP (no auth restrictions) and previews what the mapping would produce.
 
 ## Quick start
 
@@ -141,7 +141,7 @@ Options:
 
 ### Storybook
 
-- **Storybook 9+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **Storybook 9.x and 10.x** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
 - **Node.js 24+**
 - Must be the **dev server** (`storybook dev`), not a static build
