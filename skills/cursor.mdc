@@ -22,9 +22,16 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 3. Map props: `boolean` -> Figma boolean variant. Union of string literals -> variant property. Skip everything else (strings, numbers, callbacks, ReactNode, children, className, style, ref, key, aria-*, data-*, on*).
 4. Cartesian product of mapped props, capped at 256.
 5. Extract visual details from the documentation: colors, typography, spacing, borders, radius, shadows, and how each variant state changes appearance.
-6. Write with `use_figma` — include full visual styling in the instruction, not just variant structure. Describe how each variant should look: background colors, text colors, font sizes, padding, border radius, borders. Use `skillNames: "figma-use"`.
-7. Verify each component visually after creation. Fix any styling issues with a follow-up `use_figma` call.
-8. Summarize: components synced, variant counts, visual details applied, failures, caps.
+6. Read the component's source file (`.tsx` / `.jsx`) to extract concrete styling values. Look for:
+   - **Tailwind classes** — translate to Figma properties (e.g. `bg-blue-600` → fill `#2563EB`, `rounded-md` → 6px corner radius, `px-4` → 16px horizontal padding, `py-2` → 8px vertical padding, `text-sm` → 14px font size, `font-semibold` → 600 weight, `border` → 1px border, `shadow-sm` → drop shadow)
+   - **CSS module imports** — follow the `.module.css` / `.module.scss` import, read that file, and extract the actual property values used for each class
+   - **Styled-component definitions** — read the tagged-template CSS in `styled.div`, `styled(Base)`, etc. and pull out colors, spacing, typography, and borders
+   - **Inline styles** — capture any `style={{ ... }}` objects with literal values
+   - **Theme token references** — if the component uses tokens like `theme.colors.primary` or CSS custom properties (`var(--color-primary)`), trace them back to the theme definition file and resolve to concrete values
+   Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps; source code values always win.
+7. Write with `use_figma` — include full visual styling in the instruction, not just variant structure. Describe how each variant should look: background colors, text colors, font sizes, padding, border radius, borders. Use `skillNames: "figma-use"`.
+8. Verify each component visually after creation. Fix any styling issues with a follow-up `use_figma` call.
+9. Summarize: components synced, variant counts, visual details applied, failures, caps.
 
 ## Visual accuracy guidelines
 
