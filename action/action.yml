@@ -1,5 +1,5 @@
 name: "storysync"
-description: "Validate Storybook-to-Figma variant mappings in CI"
+description: "Validate Storybook-to-Figma variant mappings in CI, with optional drift detection"
 author: "Brendan Ciccone"
 
 branding:
@@ -18,6 +18,22 @@ inputs:
     description: "Node.js version to use"
     required: false
     default: "24"
+  baseline:
+    description: "Path to baseline mapping JSON for drift detection"
+    required: false
+    default: ".storysync/baseline.json"
+  create_issue:
+    description: "Create or update a GitHub issue when drift is detected"
+    required: false
+    default: "false"
+
+outputs:
+  drift:
+    description: "Whether drift was detected (true/false/new)"
+    value: ${{ steps.drift.outputs.result }}
+  json:
+    description: "JSON mapping output"
+    value: ${{ steps.map.outputs.json }}
 
 runs:
   using: "composite"
@@ -27,23 +43,127 @@ runs:
       with:
         node-version: ${{ inputs.node_version }}
 
-    - name: Install dependencies
+    - name: Install project dependencies
       shell: bash
       run: npm ci
 
-    - name: Start Storybook dev server
+    - name: Build storysync
+      shell: bash
+      run: |
+        cd "${{ github.action_path }}/.."
+        npm ci --ignore-scripts
+        npm run build
+
+    - name: Start Storybook
+      if: inputs.storybook_url == 'http://localhost:6006'
       shell: bash
       run: |
         npx storybook dev --port 6006 --ci &
         npx wait-on http://localhost:6006 --timeout 120000
 
-    - name: Validate mappings
+    - name: Map components
+      id: map
       shell: bash
+      env:
+        STORYBOOK_URL: ${{ inputs.storybook_url }}
+        COMPONENTS: ${{ inputs.components }}
+        STORYSYNC_CLI: ${{ github.action_path }}/../dist/cli/index.js
       run: |
-        ARGS="--storybook ${{ inputs.storybook_url }}"
-
-        if [ -n "${{ inputs.components }}" ]; then
-          ARGS="$ARGS --components '${{ inputs.components }}'"
+        ARGS=(--storybook "$STORYBOOK_URL" --json)
+        if [ -n "$COMPONENTS" ]; then
+          ARGS+=(--components "$COMPONENTS")
         fi
+        node "$STORYSYNC_CLI" map "${ARGS[@]}" > storysync-current.json
+        {
+          echo "json<<STORYSYNC_EOF"
+          cat storysync-current.json
+          echo "STORYSYNC_EOF"
+        } >> "$GITHUB_OUTPUT"
 
-        npx storysync map $ARGS
+    - name: Detect drift
+      id: drift
+      shell: bash
+      env:
+        BASELINE_PATH: ${{ inputs.baseline }}
+      run: |
+        node << 'SCRIPT'
+        const fs = require("fs");
+
+        const baselinePath = process.env.BASELINE_PATH;
+        const current = JSON.parse(fs.readFileSync("storysync-current.json", "utf8"));
+
+        if (!fs.existsSync(baselinePath)) {
+          console.log("No baseline found at " + baselinePath + " — first run");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=new\n");
+          process.exit(0);
+        }
+
+        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+        const baseMap = Object.fromEntries(baseline.components.map(c => [c.name, c]));
+        const currMap = Object.fromEntries(current.components.map(c => [c.name, c]));
+
+        const added = current.components.filter(c => !baseMap[c.name]);
+        const removed = baseline.components.filter(c => !currMap[c.name]);
+        const changed = current.components.filter(c => {
+          const b = baseMap[c.name];
+          return b && JSON.stringify(b) !== JSON.stringify(c);
+        });
+
+        if (!added.length && !removed.length && !changed.length) {
+          console.log("No drift detected");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=false\n");
+          process.exit(0);
+        }
+
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=true\n");
+
+        let body = "## Storybook to Figma drift detected\n\n";
+        body += "The variant mappings have changed since the last baseline.\n\n";
+
+        if (added.length) {
+          body += "### Added\n";
+          for (const c of added) body += "- **" + c.name + "** (" + c.combinations + " combinations)\n";
+          body += "\n";
+        }
+        if (removed.length) {
+          body += "### Removed\n";
+          for (const c of removed) body += "- **" + c.name + "**\n";
+          body += "\n";
+        }
+        if (changed.length) {
+          body += "### Changed\n";
+          for (const c of changed) {
+            const b = baseMap[c.name];
+            body += "- **" + c.name + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
+            body += b.combinations + " → " + c.combinations + " combinations\n";
+          }
+          body += "\n";
+        }
+
+        body += "| Metric | Baseline | Current |\n|---|---|---|\n";
+        body += "| Components | " + baseline.summary.total + " | " + current.summary.total + " |\n";
+        body += "| Combinations | " + baseline.summary.totalCombinations + " | " + current.summary.totalCombinations + " |\n";
+        body += "| Capped | " + baseline.summary.capped + " | " + current.summary.capped + " |\n";
+        body += "| Failed | " + baseline.summary.failed + " | " + current.summary.failed + " |\n";
+
+        fs.writeFileSync("storysync-drift.md", body);
+        console.log(body);
+        SCRIPT
+
+    - name: Create or update issue
+      if: inputs.create_issue == 'true' && steps.drift.outputs.result == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh label create storysync-drift --description "Storybook-to-Figma mapping drift" --color "d93f0b" 2>/dev/null || true
+        EXISTING=$(gh issue list --label storysync-drift --state open --json number --jq '.[0].number' 2>/dev/null || true)
+        if [ -n "$EXISTING" ]; then
+          gh issue edit "$EXISTING" --body-file storysync-drift.md
+          echo "Updated issue #$EXISTING"
+        else
+          gh issue create \
+            --title "storysync: component mapping drift detected" \
+            --body-file storysync-drift.md \
+            --label storysync-drift
+        fi
