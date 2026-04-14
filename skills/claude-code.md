@@ -31,7 +31,11 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
    - **Styled-component definitions** — read the tagged-template CSS in `styled.div`, `styled(Base)`, etc. and pull out colors, spacing, typography, and borders
    - **Inline styles** — capture any `style={{ ... }}` objects with literal values
    - **Theme token references** — if the component uses tokens like `theme.colors.primary` or CSS custom properties (`var(--color-primary)`), trace them back to the theme definition file and resolve to concrete values
-   Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps; source code values always win.
+   Edge cases:
+   - **Source file not found** — if the component source cannot be located or read, fall back to documentation values and note the result as inferred.
+   - **Dynamic/conditional styling** — for simple ternaries and literal concatenations (e.g. `isPrimary ? 'bg-blue-600' : 'bg-gray-200'`), capture both concrete values and create variants for each. For runtime-computed expressions (template literals with variables, `clsx`/`cn` calls with non-literal keys), extract whatever literal fragments are present and flag the rest for manual review.
+   - **Source vs. documentation conflicts** — prefer explicit literal values found in source code. If source and documentation both provide concrete but different values, use the source value and note the discrepancy in the summary.
+   Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps where source code lacks concrete values.
 7. Write to Figma with `use_figma`. Include full visual styling in the instruction — not just variant names, but how each variant should actually look:
 
 ```
