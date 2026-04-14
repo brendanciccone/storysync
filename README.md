@@ -4,7 +4,7 @@ Deterministic mapping rules from Storybook components to Figma variants, deliver
 
 ## What it does
 
-Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview) (v0.5.0+), maps boolean and enum props to Figma variant properties, and tells [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create the corresponding component sets.
+Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), maps boolean and enum props to Figma variant properties, and tells [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create the corresponding component sets.
 
 | Method | What it does |
 |---|---|
@@ -13,7 +13,7 @@ Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/
 | **CLI** | Preview mappings locally (`storysync map`, `list`, `inspect`) |
 | **GitHub Action** | Validate mappings in CI on every push |
 
-> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot CLI, Copilot in VS Code, Augment, Factory, Firebender, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from Storybook MCP (no auth restrictions) and previews what the mapping would produce.
+> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from Storybook MCP (no auth restrictions) and previews what the mapping would produce.
 
 ## Quick start
 
@@ -141,16 +141,16 @@ Options:
 
 ### Storybook
 
-- **Storybook 9+ or 10+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
-- **`@storybook/addon-mcp`** >= 0.5.0 installed (provides MCP endpoint at `/mcp`). v0.5.0+ is required for `reactComponentMeta` compatibility and default `componentsManifest` support.
+- **Storybook 9+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
 - **Node.js 24+**
 - Must be the **dev server** (`storybook dev`), not a static build
 
 ### Figma (for writing via Claude Code / Cursor)
 
-- **Full seat** on a paid plan (required for write access; Dev seats are read-only outside drafts)
+- **Full seat** on a paid plan (required for write access; Dev seats are read-only)
 - Auth is **OAuth 2.0**, handled automatically by supported MCP clients
-- Write-to-canvas is **free during beta** (write tools are exempt from rate limits during beta), will become a paid usage-based feature
+- Write-to-canvas is **free during beta**, will become a paid usage-based feature
 - **Rate limits**: Starter plans = 6 tool calls/month. Full seats on Professional+ = per-minute limits
 
 No Anthropic API key needed. The mapping rules are deterministic, no LLM costs from storysync itself. Figma's `use_figma` tool is agent-driven on their side.
