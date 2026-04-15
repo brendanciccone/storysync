@@ -162,8 +162,8 @@ runs:
           body += "\n";
         }
         if (removed.length) {
-          body += "### Removed collections\n";
-          for (const r of removed) body += "- **" + r.category + "** (" + r.count + " tokens)\n";
+          body += "### Removed tokens\n";
+          for (const r of removed) body += "- **" + r.category + "**: " + r.count + " token(s) removed\n";
           body += "\n";
         }
         if (changed.length) {

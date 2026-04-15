@@ -59,6 +59,7 @@ If variable collections were created in Phase 0, bind component properties to va
 - Padding / spacing → bind to the Spacing collection
 - Corner radius → bind to the Radius collection
 - Font size → bind to the Typography collection
+- Drop shadows → bind to the Shadows collection
 
 ## Visual accuracy guidelines
 
