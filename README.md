@@ -1,6 +1,6 @@
 # storysync
 
-Sync your design system from code to Figma — tokens, components, and variants — using Storybook MCP and Figma MCP.
+Sync your design system from code to Figma — and diff Figma back against code — using Storybook MCP and Figma MCP.
 
 ## What it does
 
@@ -8,9 +8,9 @@ Reads design tokens from your codebase (Tailwind config, CSS custom properties, 
 
 | Method | What it does |
 |---|---|
-| **Claude Code skill** | Claude extracts tokens, creates Figma variables, reads Storybook MCP, writes styled components |
+| **Claude Code skill** | Claude extracts tokens, creates Figma variables, reads Storybook MCP, writes styled components. Can also audit Figma against code. |
 | **Cursor rules** | Same as above, from Cursor |
-| **CLI** | Preview token extraction and component mappings locally |
+| **CLI** | Preview token extraction and component mappings locally, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
 > **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from your project and Storybook MCP (no auth restrictions) and previews what the mapping would produce.
@@ -35,6 +35,8 @@ curl -o .claude/skills/storysync.md https://raw.githubusercontent.com/brendancic
 ```
 
 Start Storybook, open Claude Code, and say: **"Generate my Figma library from Storybook"**
+
+To audit an existing Figma file against code: **"Check if my Figma file is in sync with code"**
 
 ### Cursor
 
@@ -63,6 +65,9 @@ npx storysync list --storybook http://localhost:6006
 
 # Inspect one component's mapping in detail
 npx storysync inspect --storybook http://localhost:6006 --component Button
+
+# Diff Figma file against code tokens and components
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key <key> --storybook http://localhost:6006
 ```
 
 ### GitHub Action (validate in CI)
@@ -99,6 +104,22 @@ jobs:
                                   ↓                  ↓
                             components bind   create styled component sets
                             to variables      via use_figma
+
+  Phase 2: Audit (reverse diff)
+
+  Figma MCP                          Code / Storybook
+  read variables via                 extract tokens from
+  use_figma Plugin API               tailwind/css/theme
+         ↓                                  ↓
+  read component sets                map Storybook props
+  and variant properties             to variant definitions
+         ↓                                  ↓
+         └──────── compare ────────────────┘
+                      ↓
+               drift report:
+               + missing from Figma
+               - missing from code
+               ~ value mismatch
 ```
 
 ## Token extraction
@@ -160,6 +181,32 @@ List all components available in Storybook.
 ```text
 Options:
   --storybook <url>    URL of the running Storybook instance (required)
+```
+
+### `storysync diff`
+
+Compare a Figma file against code tokens and Storybook components. Reads from Figma via MCP, extracts tokens from local code, and optionally maps Storybook components — then reports what's different.
+
+```text
+Options:
+  --figma <url>          Figma MCP server URL (required)
+  --file-key <key>       Figma file key (required)
+  --storybook <url>      Storybook URL (enables component diff)
+  --project <path>       Project root to scan for tokens (default: ".")
+  --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted)
+  --components <names>   Comma-separated component names to diff
+  --json                 Output JSON instead of formatted text
+  --strict               Exit with code 1 if any differences found
+```
+
+Example:
+
+```bash
+# Diff tokens only
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
+
+# Diff tokens + components
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
 ```
 
 ### `storysync inspect`

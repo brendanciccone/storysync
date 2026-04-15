@@ -61,6 +61,31 @@ If variable collections were created in Phase 0, bind component properties to va
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
+## Phase 2: Audit (Figma vs Code)
+
+Compare the current Figma file against code to find drift in either direction. Use this when asked to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
+
+2.1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value. Convert COLOR values to hex strings.
+
+2.2. **Read Figma components** — call `use_figma` to enumerate component sets using `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })`. For each, read `componentPropertyDefinitions` to get variant properties and their options.
+
+2.3. **Extract code tokens** — follow Phase 0 steps 0.1–0.2 to extract tokens from the project source.
+
+2.4. **Map code components** — follow Phase 1 steps 1–4 to read Storybook props and compute variant mappings.
+
+2.5. **Compare tokens** — match Figma variable collections to code token categories (Colors → colors, Spacing → spacing, etc.). For each token:
+   - In code but not in Figma → **missing from Figma** (needs sync)
+   - In Figma but not in code → **missing from code** (orphaned or manually added)
+   - Both exist but values differ → **value mismatch** (show both values)
+   - Normalize before comparing: lowercase hex, convert rem→px, strip units for numerics.
+
+2.6. **Compare components** — match by name (case-insensitive). For each:
+   - In code/Storybook but not in Figma → **code only**
+   - In Figma but not in code/Storybook → **Figma only**
+   - Both exist → compare variant properties: missing props, extra props, missing/extra values.
+
+2.7. **Report** — present a structured drift report grouped by category/component. Use `+` for missing from Figma, `-` for missing from code, `~` for value mismatch. End with a summary count.
+
 ## Visual accuracy guidelines
 
 - Match the real component's appearance as closely as possible. The goal is a usable Figma library, not just variant scaffolding.

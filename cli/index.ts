@@ -4,9 +4,14 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient } from "./storybook.js";
+import { FigmaClient } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
+import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import type { TokenBaseline } from "./tokens.js";
+import type { FigmaComponentDefinition } from "./mapper.js";
+import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
+import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
 
 async function connectStorybook(url: string, quiet = false) {
   const spinner = quiet ? null : ora("Connecting to Storybook MCP...").start();
@@ -246,6 +251,165 @@ program
       console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);
     } finally {
       await storybook.disconnect();
+    }
+  });
+
+program
+  .command("diff")
+  .description("Compare Figma file against code tokens and Storybook components")
+  .requiredOption("--figma <url>", "Figma MCP server URL")
+  .requiredOption("--file-key <key>", "Figma file key")
+  .option("--storybook <url>", "Storybook URL (enables component diff)")
+  .option("--project <path>", "Project root to scan for tokens", ".")
+  .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
+  .option("--components <names>", "Comma-separated component names to diff")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--strict", "Exit with code 1 if any differences found")
+  .action(async (opts) => {
+    const json = !!opts.json;
+
+    // Connect to Figma MCP
+    const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
+    const figma = new FigmaClient(opts.figma as string);
+    try {
+      await figma.connect();
+      figmaSpinner?.succeed("Connected to Figma MCP");
+    } catch (err) {
+      figmaSpinner?.fail("Failed to connect to Figma MCP");
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+
+    // Optionally connect to Storybook MCP
+    let storybook: StorybookClient | null = null;
+    if (opts.storybook) {
+      storybook = await connectStorybook(opts.storybook as string, json);
+    }
+
+    try {
+      const fileKey = opts.fileKey as string;
+
+      // --- Token diff ---
+      const tokenSpinner = json ? null : ora("Reading Figma variables...").start();
+      let figmaVars: FigmaVariable[] = [];
+      try {
+        figmaVars = await figma.getVariables(fileKey as string);
+        tokenSpinner?.succeed(`Read ${figmaVars.length} Figma variables`);
+      } catch (err) {
+        tokenSpinner?.fail("Failed to read Figma variables");
+        console.error(chalk.red(String(err)));
+        figmaVars = [];
+      }
+
+      const codeResult = extractTokens(opts.project as string, opts.source as "tailwind" | "css" | "theme" | undefined);
+      const tokenDiffs = diffTokens(codeResult.collections, figmaVars);
+
+      // --- Component diff ---
+      let componentDiffs: ComponentDiffEntry[] = [];
+      if (storybook) {
+        const compSpinner = json ? null : ora("Reading Figma components...").start();
+        let figmaComponents: FigmaComponentInfo[] = [];
+        try {
+          figmaComponents = await figma.getComponents(fileKey as string);
+          compSpinner?.succeed(`Read ${figmaComponents.length} Figma components`);
+        } catch (err) {
+          compSpinner?.fail("Failed to read Figma components");
+          console.error(chalk.red(String(err)));
+          figmaComponents = [];
+        }
+
+        const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
+        let entries = await storybook.listComponents();
+        if (opts.components) {
+          const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
+          entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
+        }
+
+        const codeComponents: FigmaComponentDefinition[] = [];
+        for (const entry of entries) {
+          try {
+            const component = await storybook.getComponent(entry.id, entry.name);
+            codeComponents.push(mapComponent(component));
+          } catch {
+            // skip unmappable components
+          }
+        }
+        mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
+
+        componentDiffs = diffComponents(codeComponents, figmaComponents);
+      }
+
+      // --- Output ---
+      const summary = computeDiffSummary(tokenDiffs, componentDiffs);
+
+      if (json) {
+        console.log(JSON.stringify({
+          tokens: tokenDiffs.filter((t) => t.status !== "match"),
+          components: componentDiffs.filter((c) => c.status !== "match"),
+          summary,
+          hasDifferences: hasDifferences(summary),
+        }));
+      } else {
+        const mismatched = tokenDiffs.filter((t) => t.status !== "match");
+        if (mismatched.length) {
+          console.log(chalk.bold("\nToken differences:\n"));
+          for (const t of mismatched) {
+            if (t.status === "missing_from_figma") {
+              console.log(`  ${chalk.yellow("+")} ${t.category}/${t.name} ${chalk.dim(`(${t.codeValue})`)} ${chalk.yellow("not in Figma")}`);
+            } else if (t.status === "missing_from_code") {
+              console.log(`  ${chalk.cyan("-")} ${t.category}/${t.name} ${chalk.dim(`(${t.figmaValue})`)} ${chalk.cyan("not in code")}`);
+            } else if (t.status === "value_mismatch") {
+              console.log(`  ${chalk.red("~")} ${t.category}/${t.name} code=${chalk.dim(t.codeValue!)} figma=${chalk.dim(t.figmaValue!)}`);
+            }
+          }
+        } else if (figmaVars.length || codeResult.collections.length) {
+          console.log(chalk.green("\nTokens in sync."));
+        }
+
+        const compMismatched = componentDiffs.filter((c) => c.status !== "match");
+        if (compMismatched.length) {
+          console.log(chalk.bold("\nComponent differences:\n"));
+          for (const c of compMismatched) {
+            if (c.status === "code_only") {
+              console.log(`  ${chalk.yellow("+")} ${chalk.bold(c.name)} ${chalk.yellow("not in Figma")} ${chalk.dim(c.details.join(", "))}`);
+            } else if (c.status === "figma_only") {
+              console.log(`  ${chalk.cyan("-")} ${chalk.bold(c.name)} ${chalk.cyan("not in code")} ${chalk.dim(c.details.join(", "))}`);
+            } else if (c.status === "variant_mismatch") {
+              console.log(`  ${chalk.red("~")} ${chalk.bold(c.name)}`);
+              for (const d of c.details) console.log(`      ${chalk.dim(d)}`);
+            }
+          }
+        } else if (storybook && componentDiffs.length) {
+          console.log(chalk.green("\nComponents in sync."));
+        }
+
+        // Summary
+        console.log("");
+        const parts: string[] = [];
+        if (summary.tokensMatched) parts.push(chalk.green(`${summary.tokensMatched} tokens matched`));
+        if (summary.tokensMismatched) parts.push(chalk.red(`${summary.tokensMismatched} value mismatches`));
+        if (summary.tokensMissingFromFigma) parts.push(chalk.yellow(`${summary.tokensMissingFromFigma} missing from Figma`));
+        if (summary.tokensMissingFromCode) parts.push(chalk.cyan(`${summary.tokensMissingFromCode} missing from code`));
+        if (parts.length) console.log(`Tokens: ${parts.join(", ")}`);
+
+        if (storybook) {
+          const cParts: string[] = [];
+          if (summary.componentsMatched) cParts.push(chalk.green(`${summary.componentsMatched} matched`));
+          if (summary.componentsMismatched) cParts.push(chalk.red(`${summary.componentsMismatched} mismatched`));
+          if (summary.componentsCodeOnly) cParts.push(chalk.yellow(`${summary.componentsCodeOnly} code-only`));
+          if (summary.componentsFigmaOnly) cParts.push(chalk.cyan(`${summary.componentsFigmaOnly} Figma-only`));
+          if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
+        }
+
+        if (!hasDifferences(summary)) {
+          console.log(chalk.green("\nNo differences found."));
+        }
+      }
+
+      if (opts.strict && hasDifferences(summary)) process.exitCode = 1;
+    } finally {
+      await figma.disconnect();
+      if (storybook) await storybook.disconnect();
     }
   });
 

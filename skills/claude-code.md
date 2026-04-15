@@ -121,6 +121,91 @@ If variable collections were created in Phase 0, bind component properties to va
 
 This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 
+## Phase 2: Audit (Figma vs Code)
+
+Compare the current Figma file against code to find drift in either direction. Use this when someone asks to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
+
+2.1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
+
+```js
+use_figma({
+  code: `
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const results = [];
+    for (const coll of collections) {
+      for (const varId of coll.variableIds) {
+        const v = await figma.variables.getVariableByIdAsync(varId);
+        if (!v) continue;
+        const mode = coll.modes[0];
+        const raw = v.valuesByMode[mode.modeId];
+        let value = '';
+        if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
+          const r = Math.round(raw.r * 255);
+          const g = Math.round(raw.g * 255);
+          const b = Math.round(raw.b * 255);
+          value = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+        } else {
+          value = String(raw);
+        }
+        results.push({ name: v.name, type: v.resolvedType, value, collection: coll.name });
+      }
+    }
+    return JSON.stringify(results);
+  `,
+  description: "Read all variable collections and values from Figma file",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
+2.2. **Read Figma components** — call `use_figma` to enumerate all component sets and their variant properties:
+
+```js
+use_figma({
+  code: `
+    const componentSets = figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] });
+    const results = [];
+    for (const cs of componentSets) {
+      const defs = cs.componentPropertyDefinitions;
+      const props = [];
+      for (const [key, def] of Object.entries(defs)) {
+        if (def.type === 'VARIANT') {
+          props.push({ name: key, type: 'VARIANT', values: def.variantOptions || [] });
+        } else if (def.type === 'BOOLEAN') {
+          props.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
+        }
+      }
+      results.push({ name: cs.name, variantProperties: props, variantCount: cs.children.length });
+    }
+    return JSON.stringify(results);
+  `,
+  description: "Read all component sets and variant properties from Figma file",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
+2.3. **Extract code tokens** — follow Phase 0 steps 0.1–0.2 to extract tokens from the project source.
+
+2.4. **Map code components** — follow Phase 1 steps 1–4 to read Storybook props and compute variant mappings.
+
+2.5. **Compare tokens** — match Figma variable collections to code token categories (Colors → colors, Spacing → spacing, etc.). For each token:
+   - In code but not in Figma → **missing from Figma** (needs sync)
+   - In Figma but not in code → **missing from code** (orphaned or manually added)
+   - Both exist but values differ → **value mismatch** (show code value vs Figma value)
+   - Normalize before comparing: lowercase hex colors, convert rem→px (1rem=16px), strip units for numeric comparison.
+
+2.6. **Compare components** — match by name (case-insensitive). For each component:
+   - In code/Storybook but not in Figma → **code only** (not yet synced)
+   - In Figma but not in code/Storybook → **Figma only** (orphaned or renamed)
+   - Both exist → compare variant properties: missing props, extra props, missing/extra values per prop.
+
+2.7. **Report** — present a structured drift report:
+   - Group by category (tokens) or component name
+   - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch
+   - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched.
+   - If everything matches, confirm "Figma and code are in sync."
+
 ## Visual accuracy guidelines
 
 - Always try to match the real component's appearance as closely as possible. The goal is a Figma library that a designer can immediately use, not just variant scaffolding.
