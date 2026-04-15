@@ -189,7 +189,7 @@ function extractFromTailwind(configPath: string): TokenExtractionResult {
 /** Load all :root CSS custom properties from the project for cross-referencing. */
 function loadCSSCustomProperties(projectPath: string): Map<string, string> {
   const vars = new Map<string, string>();
-  const cssFiles = findCSSWithCustomProperties(projectPath);
+  const cssFiles = findCSSWithCustomProperties(projectPath).sort();
 
   for (const file of cssFiles) {
     try {
@@ -207,10 +207,24 @@ function loadCSSCustomProperties(projectPath: string): Map<string, string> {
   return vars;
 }
 
-/** Resolve values like "hsl(var(--primary))" → "hsl(217 91% 60%)" using CSS vars. */
+/** Resolve values like "hsl(var(--primary))" → "hsl(217 91% 60%)" using CSS vars.
+ *  Handles chained aliases recursively with cycle protection. */
 function resolveCSSVarValue(value: string, cssVars: Map<string, string>): string {
-  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, varName) => {
-    return cssVars.get(varName) ?? `var(${varName})`;
+  const resolveVar = (varName: string, seen = new Set<string>()): string | null => {
+    if (seen.has(varName)) return null; // cycle guard
+    const raw = cssVars.get(varName);
+    if (!raw) return null;
+
+    const nextSeen = new Set(seen);
+    nextSeen.add(varName);
+
+    return raw.replace(/var\(\s*(--[\w-]+)\s*\)/g, (match, nestedVar) => {
+      return resolveVar(nestedVar, nextSeen) ?? match;
+    });
+  };
+
+  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (match, varName) => {
+    return resolveVar(varName) ?? match;
   });
 }
 
