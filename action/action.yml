@@ -1,5 +1,5 @@
 name: "storysync"
-description: "Validate Storybook-to-Figma variant mappings in CI, with optional drift detection"
+description: "Validate design tokens and Storybook-to-Figma variant mappings in CI, with optional drift detection"
 author: "Brendan Ciccone"
 
 branding:
@@ -26,14 +26,28 @@ inputs:
     description: "Create or update a GitHub issue when drift is detected"
     required: false
     default: "false"
+  token_source:
+    description: "Token source type: tailwind, css, theme, or auto (default: auto)"
+    required: false
+    default: "auto"
+  token_baseline:
+    description: "Path to token baseline JSON for drift detection"
+    required: false
+    default: ".storysync/tokens-baseline.json"
 
 outputs:
   drift:
-    description: "Whether drift was detected (true/false/new)"
+    description: "Whether component drift was detected (true/false/new)"
     value: ${{ steps.drift.outputs.result }}
+  token_drift:
+    description: "Whether token drift was detected (true/false/new)"
+    value: ${{ steps.token-drift.outputs.result }}
   json:
     description: "JSON mapping output"
     value: ${{ steps.map.outputs.json }}
+  tokens_json:
+    description: "JSON token extraction output"
+    value: ${{ steps.tokens.outputs.json }}
 
 runs:
   using: "composite"
@@ -60,6 +74,107 @@ runs:
       run: |
         npx storybook dev --port 6006 --ci &
         npx wait-on http://localhost:6006 --timeout 120000
+
+    - name: Extract tokens
+      id: tokens
+      shell: bash
+      env:
+        TOKEN_SOURCE: ${{ inputs.token_source }}
+        STORYSYNC_CLI: ${{ github.action_path }}/../dist/cli/index.js
+      run: |
+        ARGS=(--project . --json)
+        if [ "$TOKEN_SOURCE" != "auto" ]; then
+          ARGS+=(--source "$TOKEN_SOURCE")
+        fi
+        node "$STORYSYNC_CLI" tokens "${ARGS[@]}" > storysync-tokens-current.json
+        {
+          echo "json<<STORYSYNC_TOKENS_EOF"
+          cat storysync-tokens-current.json
+          echo "STORYSYNC_TOKENS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Detect token drift
+      id: token-drift
+      shell: bash
+      env:
+        TOKEN_BASELINE_PATH: ${{ inputs.token_baseline }}
+      run: |
+        node << 'SCRIPT'
+        const fs = require("fs");
+
+        const baselinePath = process.env.TOKEN_BASELINE_PATH;
+        const current = JSON.parse(fs.readFileSync("storysync-tokens-current.json", "utf8"));
+
+        if (!current.collections || !current.collections.length) {
+          console.log("No tokens found in project");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=none\n");
+          process.exit(0);
+        }
+
+        if (!fs.existsSync(baselinePath)) {
+          console.log("No token baseline found at " + baselinePath + " — first run");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=new\n");
+          process.exit(0);
+        }
+
+        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+        const baseMap = Object.fromEntries((baseline.collections || []).map(c => [c.category, c]));
+        const currMap = Object.fromEntries(current.collections.map(c => [c.category, c]));
+
+        const added = [];
+        const removed = [];
+        const changed = [];
+
+        for (const [cat, coll] of Object.entries(currMap)) {
+          const base = baseMap[cat];
+          if (!base) { added.push({ category: cat, count: coll.tokens.length }); continue; }
+          const baseTokens = Object.fromEntries(base.tokens.map(t => [t.name, t.value]));
+          let newCount = 0, changedCount = 0;
+          for (const t of coll.tokens) {
+            if (!(t.name in baseTokens)) newCount++;
+            else if (baseTokens[t.name] !== t.value) changedCount++;
+          }
+          if (newCount || changedCount) changed.push({ category: cat, added: newCount, changed: changedCount });
+        }
+        for (const [cat, coll] of Object.entries(baseMap)) {
+          const curr = currMap[cat];
+          if (!curr) {
+            removed.push({ category: cat, count: coll.tokens.length });
+            continue;
+          }
+          const currTokens = new Set(curr.tokens.map(t => t.name));
+          const removedCount = coll.tokens.filter(t => !currTokens.has(t.name)).length;
+          if (removedCount) removed.push({ category: cat, count: removedCount });
+        }
+
+        if (!added.length && !removed.length && !changed.length) {
+          console.log("No token drift detected");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=false\n");
+          process.exit(0);
+        }
+
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=true\n");
+
+        let body = "## Token drift\n\n";
+        if (added.length) {
+          body += "### New collections\n";
+          for (const a of added) body += "- **" + a.category + "** (" + a.count + " tokens)\n";
+          body += "\n";
+        }
+        if (removed.length) {
+          body += "### Removed tokens\n";
+          for (const r of removed) body += "- **" + r.category + "**: " + r.count + " token(s) removed\n";
+          body += "\n";
+        }
+        if (changed.length) {
+          body += "### Changed collections\n";
+          for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed\n";
+          body += "\n";
+        }
+
+        fs.writeFileSync("storysync-token-drift.md", body);
+        console.log(body);
+        SCRIPT
 
     - name: Map components
       id: map
@@ -151,19 +266,30 @@ runs:
         SCRIPT
 
     - name: Create or update issue
-      if: inputs.create_issue == 'true' && steps.drift.outputs.result == 'true'
+      if: inputs.create_issue == 'true' && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         gh label create storysync-drift --description "Storybook-to-Figma mapping drift" --color "d93f0b" 2>/dev/null || true
+        # Combine token drift and component drift into one issue body
+        BODY=""
+        if [ -f storysync-token-drift.md ]; then
+          BODY=$(cat storysync-token-drift.md)
+          BODY="$BODY"$'\n'
+        fi
+        if [ -f storysync-drift.md ]; then
+          BODY="$BODY$(cat storysync-drift.md)"
+        fi
+        echo "$BODY" > storysync-combined-drift.md
+
         EXISTING=$(gh issue list --label storysync-drift --state open --json number --jq '.[0].number' 2>/dev/null || true)
         if [ -n "$EXISTING" ]; then
-          gh issue edit "$EXISTING" --body-file storysync-drift.md
+          gh issue edit "$EXISTING" --body-file storysync-combined-drift.md
           echo "Updated issue #$EXISTING"
         else
           gh issue create \
-            --title "storysync: component mapping drift detected" \
-            --body-file storysync-drift.md \
+            --title "storysync: drift detected" \
+            --body-file storysync-combined-drift.md \
             --label storysync-drift
         fi

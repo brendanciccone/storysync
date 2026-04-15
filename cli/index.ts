@@ -5,6 +5,8 @@ import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient } from "./storybook.js";
 import { mapComponent } from "./mapper.js";
+import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
+import type { TokenBaseline } from "./tokens.js";
 
 async function connectStorybook(url: string, quiet = false) {
   const spinner = quiet ? null : ora("Connecting to Storybook MCP...").start();
@@ -21,7 +23,7 @@ async function connectStorybook(url: string, quiet = false) {
 }
 
 const program = new Command();
-program.name("storysync").description("Preview how Storybook components map to Figma variants").version("0.1.0");
+program.name("storysync").description("Sync design tokens and Storybook components to Figma").version("0.2.0");
 
 program
   .command("map")
@@ -100,6 +102,119 @@ program
       }
     } finally {
       await storybook.disconnect();
+    }
+  });
+
+program
+  .command("tokens")
+  .description("Extract design tokens from project source and preview Figma variable collections")
+  .option("--project <path>", "Project root to scan", ".")
+  .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--check", "Compare against baseline and detect drift")
+  .option("--baseline <path>", "Path to token baseline JSON", ".storysync/tokens-baseline.json")
+  .option("--strict", "Exit with code 1 if no tokens found or drift detected")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const projectPath = opts.project as string;
+
+    if (!json) {
+      const spinner = ora("Detecting token source...").start();
+      const detected = detectTokenSource(projectPath);
+      if (detected) {
+        spinner.succeed(`Detected: ${detected.type} (${detected.path})`);
+      } else {
+        spinner.fail("No token source found");
+        if (opts.strict) process.exitCode = 1;
+        return;
+      }
+    }
+
+    const result = extractTokens(projectPath, opts.source as "tailwind" | "css" | "theme" | undefined);
+
+    if (!result.collections.length) {
+      if (json) {
+        console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
+      } else {
+        console.log(chalk.yellow("\nNo tokens found."));
+        for (const w of result.warnings) console.log(chalk.dim(`  ${w}`));
+      }
+      if (opts.strict) process.exitCode = 1;
+      return;
+    }
+
+    if (opts.check) {
+      const baselinePath = opts.baseline as string;
+      let baseline: TokenBaseline;
+      try {
+        const { readFileSync } = await import("node:fs");
+        baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as TokenBaseline;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          if (json) {
+            console.log(JSON.stringify({ drift: "new", ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
+          } else {
+            console.log(chalk.yellow(`\nNo baseline found at ${baselinePath} - first run`));
+            console.log(chalk.dim("Save current output with --json to create a baseline."));
+          }
+          return;
+        }
+        throw err;
+      }
+
+      const drift = compareTokens(baseline, result);
+      if (!hasDrift(drift)) {
+        if (json) console.log(JSON.stringify({ drift: false }));
+        else console.log(chalk.green("\nNo token drift detected."));
+        return;
+      }
+
+      if (json) {
+        console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed }));
+      } else {
+        console.log(chalk.red("\nToken drift detected:\n"));
+        for (const a of drift.added) {
+          console.log(`  ${chalk.green("+")} ${a.category}: ${a.tokens.map((t) => t.name).join(", ")}`);
+        }
+        for (const r of drift.removed) {
+          console.log(`  ${chalk.red("-")} ${r.category}: ${r.tokens.map((t) => t.name).join(", ")}`);
+        }
+        for (const c of drift.changed) {
+          console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}: ${c.from} → ${c.to}`);
+        }
+      }
+      if (opts.strict) process.exitCode = 1;
+      return;
+    }
+
+    // Default: pretty-print discovered tokens
+    const totalTokens = result.collections.reduce((sum, c) => sum + c.tokens.length, 0);
+
+    if (json) {
+      console.log(JSON.stringify({
+        source: result.source,
+        sourcePath: result.sourcePath,
+        collections: result.collections,
+        warnings: result.warnings,
+        summary: { totalTokens, collections: result.collections.length },
+      }));
+    } else {
+      console.log("");
+      for (const collection of result.collections) {
+        console.log(`  ${chalk.bold(collection.category)} ${chalk.dim(`(${collection.tokens.length} tokens)`)}`);
+        for (const token of collection.tokens.slice(0, 8)) {
+          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value)}`);
+        }
+        if (collection.tokens.length > 8) {
+          console.log(chalk.dim(`    ... and ${collection.tokens.length - 8} more`));
+        }
+      }
+      console.log(`\n${totalTokens} tokens in ${result.collections.length} collections`);
+      if (result.warnings.length) {
+        console.log(chalk.dim(`\nWarnings:`));
+        for (const w of result.warnings) console.log(chalk.dim(`  ${w}`));
+      }
+      console.log(chalk.dim("To create Figma variables, use the Claude Code skill or Cursor rules file."));
     }
   });
 
