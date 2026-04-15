@@ -24,4 +24,4 @@ yarn-error.log*
 *.tsbuildinfo
 
 # local settings
-.claude/settings.local.json
+.claude/*.local.json

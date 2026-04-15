@@ -22,7 +22,7 @@ Before syncing components, extract design tokens from the project and create Fig
 
 0.3. **Create Figma variable collections** — call `use_figma` to create one variable collection per token category. Example:
 
-```
+```js
 use_figma({
   code: `
     // Create Colors collection
@@ -82,7 +82,7 @@ use_figma({
    Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps where source code lacks concrete values.
 7. Write to Figma with `use_figma`. Include full visual styling — not just variant names, but how each variant should actually look:
 
-```
+```js
 use_figma({
   code: `
     // Create component set on 'storysync' page

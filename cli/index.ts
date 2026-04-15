@@ -149,14 +149,17 @@ program
       try {
         const { readFileSync } = await import("node:fs");
         baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as TokenBaseline;
-      } catch {
-        if (json) {
-          console.log(JSON.stringify({ drift: "new", ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
-        } else {
-          console.log(chalk.yellow(`\nNo baseline found at ${baselinePath} - first run`));
-          console.log(chalk.dim("Save current output with --json to create a baseline."));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          if (json) {
+            console.log(JSON.stringify({ drift: "new", ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
+          } else {
+            console.log(chalk.yellow(`\nNo baseline found at ${baselinePath} - first run`));
+            console.log(chalk.dim("Save current output with --json to create a baseline."));
+          }
+          return;
         }
-        return;
+        throw err;
       }
 
       const drift = compareTokens(baseline, result);

@@ -137,7 +137,14 @@ runs:
           if (newCount || changedCount) changed.push({ category: cat, added: newCount, changed: changedCount });
         }
         for (const [cat, coll] of Object.entries(baseMap)) {
-          if (!currMap[cat]) removed.push({ category: cat, count: coll.tokens.length });
+          const curr = currMap[cat];
+          if (!curr) {
+            removed.push({ category: cat, count: coll.tokens.length });
+            continue;
+          }
+          const currTokens = new Set(curr.tokens.map(t => t.name));
+          const removedCount = coll.tokens.filter(t => !currTokens.has(t.name)).length;
+          if (removedCount) removed.push({ category: cat, count: removedCount });
         }
 
         if (!added.length && !removed.length && !changed.length) {

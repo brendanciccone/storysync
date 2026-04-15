@@ -83,7 +83,7 @@ jobs:
 
 ## How it works
 
-```
+```text
   Phase 0: Foundations               Phase 1: Components
 
   tailwind.config.ts                 Storybook MCP
@@ -131,7 +131,7 @@ Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows
 
 Extract design tokens from your project and preview what Figma variable collections would be created.
 
-```
+```text
 Options:
   --project <path>     Project root to scan (default: ".")
   --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted)
@@ -145,7 +145,7 @@ Options:
 
 Map all components to Figma variant definitions.
 
-```
+```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --components <names>   Comma-separated component names (default: all)
@@ -157,7 +157,7 @@ Options:
 
 List all components available in Storybook.
 
-```
+```text
 Options:
   --storybook <url>    URL of the running Storybook instance (required)
 ```
@@ -166,7 +166,7 @@ Options:
 
 Inspect one component's props and show how each maps to Figma.
 
-```
+```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --component <name>     Component name or ID to inspect (required)

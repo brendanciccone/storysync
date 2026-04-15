@@ -132,7 +132,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
 
   switch (detected.type) {
     case "tailwind": return extractFromTailwind(detected.path);
-    case "css": return extractFromCSS([detected.path, ...findCSSWithCustomProperties(join(detected.path, "..")).filter((f) => f !== detected.path)]);
+    case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath));
     case "theme": return extractFromTheme(detected.path);
   }
 }
@@ -178,11 +178,10 @@ interface ThemeBlocks {
 }
 
 function extractThemeBlocks(content: string): ThemeBlocks {
-  // Try to find theme.extend: { ... } and theme: { ... }
-  const extendMatch = findBalancedBlock(content, /theme\s*:\s*\{[^}]*?extend\s*:\s*\{/);
   const rootMatch = findBalancedBlock(content, /theme\s*:\s*\{/);
+  const extendBlock = rootMatch ? findPropertyBlock(rootMatch, "extend") : null;
   return {
-    extend: extendMatch ?? "",
+    extend: extendBlock ? `{${extendBlock}}` : "",
     root: rootMatch ?? "",
   };
 }
@@ -325,11 +324,30 @@ function extractKeyValuePairs(block: string): [string, string][] {
       pairs.push([key, block.slice(valueStart, i)]);
       regex.lastIndex = i;
     } else {
-      // Simple value - read until comma, newline, or closing brace
-      const endMatch = block.slice(valueStart).match(/^([^,}\n]+)/);
-      if (endMatch) {
-        pairs.push([key, endMatch[1].trim()]);
-        regex.lastIndex = valueStart + endMatch[0].length;
+      // Simple value - read until unbalanced comma, newline, or closing brace
+      // Track paren depth so commas inside rgb(), rgba(), etc. are not treated as separators
+      let i = valueStart;
+      let parenDepth = 0;
+      let inQuote: string | null = null;
+      while (i < block.length) {
+        const ch = block[i];
+        if (inQuote) {
+          if (ch === inQuote) inQuote = null;
+        } else if (ch === "'" || ch === '"' || ch === "`") {
+          inQuote = ch;
+        } else if (ch === "(") {
+          parenDepth++;
+        } else if (ch === ")") {
+          parenDepth--;
+        } else if (parenDepth === 0 && (ch === "," || ch === "}" || ch === "\n")) {
+          break;
+        }
+        i++;
+      }
+      const raw = block.slice(valueStart, i).trim();
+      if (raw) {
+        pairs.push([key, raw]);
+        regex.lastIndex = i;
       }
     }
   }
