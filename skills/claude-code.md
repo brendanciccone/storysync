@@ -1,6 +1,6 @@
-# storysync - Storybook to Figma
+# storysync — Storybook to Figma
 
-Read components from Storybook MCP and recreate them in Figma MCP as a visually accurate component library.
+Read components from Storybook MCP and recreate them in Figma MCP as a visually accurate component library, with design token foundations.
 
 ## Requirements
 
@@ -9,7 +9,51 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 - Figma MCP: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
 
-## Workflow
+## Phase 0: Foundations
+
+Before syncing components, extract design tokens from the project and create Figma variable collections. This ensures components can bind to variables instead of hardcoded values.
+
+0.1. **Detect token source** — look for `tailwind.config.ts` / `tailwind.config.js` in the project root, CSS files with `:root` custom properties in `src/`, or theme/token export files (`tokens.ts`, `theme.ts`). If none found, skip to Phase 1.
+
+0.2. **Extract tokens** — read the source file and identify tokens by category:
+   - **Tailwind config**: parse `theme.extend` for `colors` (flatten nested objects, e.g. `primary.500` → `primary/500`), `spacing`, `borderRadius`, `fontSize`, and `boxShadow`.
+   - **CSS custom properties**: extract `--variable: value` from `:root` blocks. Categorize by prefix (`--color-*` → colors, `--spacing-*` → spacing, `--radius-*` → radius, `--font-*` → typography, `--shadow-*` → shadows). Resolve `var()` references.
+   - **Theme files**: find exported objects (`export const colors = { ... }`), flatten nested structures into token paths.
+
+0.3. **Create Figma variable collections** — call `use_figma` to create one variable collection per token category. Example:
+
+```
+use_figma({
+  code: `
+    // Create Colors collection
+    const colors = figma.variables.createVariableCollection('Colors');
+    const mode = colors.modes[0];
+
+    // Add variables
+    const primary500 = figma.variables.createVariable('primary/500', colors, 'COLOR');
+    primary500.setValueForMode(mode.modeId, figma.util.rgb('#3B82F6'));
+
+    // ... repeat for each color token
+
+    // Create Spacing collection
+    const spacing = figma.variables.createVariableCollection('Spacing');
+    const spMode = spacing.modes[0];
+    const sp4 = figma.variables.createVariable('4', spacing, 'FLOAT');
+    sp4.setValueForMode(spMode.modeId, 16); // 1rem = 16px
+
+    // ... repeat for each spacing token
+  `,
+  description: "Create variable collections: Colors (N variables), Spacing (N variables), Radius (N variables), Typography (N variables), Shadows (N variables)",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
+   Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
+
+0.4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
+
+## Phase 1: Component sync
 
 1. Call `list-all-documentation({ withStoryIds: true })` on Storybook MCP to get component IDs and story IDs.
 2. For each component, call `get-documentation({ id: "<component-id>" })`. The response has a TypeScript `Props` type and documentation describing the component's appearance and behavior.
@@ -36,18 +80,45 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
    - **Dynamic/conditional styling** — for simple ternaries and literal concatenations (e.g. `isPrimary ? 'bg-blue-600' : 'bg-gray-200'`), capture both concrete values and create variants for each. For runtime-computed expressions (template literals with variables, `clsx`/`cn` calls with non-literal keys), extract whatever literal fragments are present and flag the rest for manual review.
    - **Source vs. documentation conflicts** — prefer explicit literal values found in source code. If source and documentation both provide concrete but different values, use the source value and note the discrepancy in the summary.
    Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps where source code lacks concrete values.
-7. Write to Figma with `use_figma`. Include full visual styling in the instruction — not just variant names, but how each variant should actually look:
+7. Write to Figma with `use_figma`. Include full visual styling — not just variant names, but how each variant should actually look:
 
 ```
 use_figma({
-  instruction: "Create a component set in file <file-key> on page 'storysync':\n\nComponent: Button\n\nVariant properties:\n  - primary (BOOLEAN): [true, false] (default: true)\n  - size (VARIANT): [small, medium, large] (default: medium)\n\nVisual spec:\n  All variants: rounded corners (6px radius), horizontal auto-layout, centered text, font family Inter or system sans-serif.\n  primary=true: background #1EA7FD, white text, no border.\n  primary=false: transparent background, #333 text, 1px solid #ccc border.\n  size=small: 12px font, 8px horizontal / 4px vertical padding.\n  size=medium: 14px font, 16px horizontal / 8px vertical padding.\n  size=large: 16px font, 24px horizontal / 12px vertical padding.\n\nCreate 6 variants. Name each: primary=true, size=small (etc). Make each variant look visually distinct and match the spec above.",
+  code: `
+    // Create component set on 'storysync' page
+    // Component: Button
+    // Variant properties:
+    //   - primary (BOOLEAN): [true, false] (default: true)
+    //   - size (VARIANT): [small, medium, large] (default: medium)
+    //
+    // Visual spec:
+    //   All variants: rounded corners (6px radius), horizontal auto-layout, centered text
+    //   primary=true: background #1EA7FD, white text, no border
+    //   primary=false: transparent background, #333 text, 1px solid #ccc border
+    //   size=small: 12px font, 8px/4px padding
+    //   size=medium: 14px font, 16px/8px padding
+    //   size=large: 16px font, 24px/12px padding
+
+    // ... Figma Plugin API code to create the component set
+  `,
+  description: "Create Button component set with 6 variants (primary x size), styled per visual spec",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
 ```
 
 8. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
-9. Summarize what was synced: component count, variant counts, visual details applied, any failures or caps.
+9. Summarize what was synced: token collections created (if Phase 0 ran), component count, variant counts, visual details applied, any failures or caps.
+
+## Variable binding
+
+If variable collections were created in Phase 0, bind component properties to variables instead of hardcoding values:
+- Fills → bind to the matching variable from the Colors collection (e.g. `primary/500`)
+- Padding / spacing → bind to the Spacing collection
+- Corner radius → bind to the Radius collection
+- Font size → bind to the Typography collection
+
+This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 
 ## Visual accuracy guidelines
 

@@ -1,19 +1,19 @@
 # storysync
 
-Deterministic mapping rules from Storybook components to Figma variants, delivered as skill files for Claude Code and Cursor, with a CLI for previewing and validating mappings.
+Sync your design system from code to Figma — tokens, components, and variants — using Storybook MCP and Figma MCP.
 
 ## What it does
 
-Reads your components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), maps boolean and enum props to Figma variant properties, and tells [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create the corresponding component sets.
+Reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), then creates Figma variable collections and component sets via [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/).
 
 | Method | What it does |
 |---|---|
-| **Claude Code skill** | Claude reads Storybook MCP, applies mapping rules, writes to Figma MCP |
+| **Claude Code skill** | Claude extracts tokens, creates Figma variables, reads Storybook MCP, writes styled components |
 | **Cursor rules** | Same as above, from Cursor |
-| **CLI** | Preview mappings locally (`storysync map`, `list`, `inspect`) |
-| **GitHub Action** | Validate mappings in CI on every push |
+| **CLI** | Preview token extraction and component mappings locally |
+| **GitHub Action** | Detect token and component drift in CI on every push |
 
-> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from Storybook MCP (no auth restrictions) and previews what the mapping would produce.
+> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from your project and Storybook MCP (no auth restrictions) and previews what the mapping would produce.
 
 ## Quick start
 
@@ -49,9 +49,12 @@ curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendancic
 
 In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say: **"Generate my Figma library from Storybook"**
 
-### CLI (preview mappings)
+### CLI
 
 ```bash
+# Extract design tokens from your project
+npx storysync tokens
+
 # See how all components map to Figma variants
 npx storysync map --storybook http://localhost:6006
 
@@ -68,7 +71,7 @@ npx storysync inspect --storybook http://localhost:6006 --component Button
 name: Validate storysync mappings
 on:
   push:
-    paths: ['src/components/**', 'stories/**']
+    paths: ['src/components/**', 'stories/**', 'tailwind.config.*']
 
 jobs:
   validate:
@@ -81,20 +84,36 @@ jobs:
 ## How it works
 
 ```
-                          storysync
-Storybook MCP             mapping rules             Figma MCP
-─────────────             ─────────────             ─────────
+  Phase 0: Foundations               Phase 1: Components
 
-list-all-documentation    boolean prop?          -> boolean variant
-get-documentation         enum/union prop?       -> variant property
-                          string/number/callback -> skip
-     ↓                         ↓                         ↓
- reads props              Cartesian product        Claude Code or Cursor
- and visual details       of mapped props          calls use_figma to
- from documentation       (capped at 256)          create styled components
+  tailwind.config.ts                 Storybook MCP
+  globals.css (:root)       storysync         storysync
+  theme.ts                  token rules       mapping rules
+         ↓                       ↓                  ↓
+  extract colors,           Figma variable    boolean prop?    -> boolean variant
+  spacing, typography,      collections       enum/union prop? -> variant property
+  radius, shadows                             other props      -> skip
+         ↓                       ↓                  ↓
+  preview with CLI          create via        Cartesian product of mapped props
+  (storysync tokens)        use_figma         (capped at 256 combinations)
+                                  ↓                  ↓
+                            components bind   create styled component sets
+                            to variables      via use_figma
 ```
 
-## Mapping rules
+## Token extraction
+
+storysync reads design tokens from your codebase and previews the Figma variable collections that the skill files will create. Supported sources (auto-detected):
+
+| Source | What it reads |
+|---|---|
+| **Tailwind** | `tailwind.config.ts/js` — `theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow` |
+| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files |
+| **Theme files** | `tokens.ts`, `theme.ts`, etc. — exported objects with `colors`, `spacing`, and similar keys |
+
+Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows**
+
+## Component mapping rules
 
 | Storybook prop type | Figma output |
 |---|---|
@@ -107,6 +126,20 @@ get-documentation         enum/union prop?       -> variant property
 | `ref` / `className` / `style` | Skipped |
 
 ## CLI commands
+
+### `storysync tokens`
+
+Extract design tokens from your project and preview what Figma variable collections would be created.
+
+```
+Options:
+  --project <path>     Project root to scan (default: ".")
+  --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted)
+  --json               Output JSON instead of formatted text
+  --check              Compare against baseline and detect drift
+  --baseline <path>    Path to token baseline JSON (default: .storysync/tokens-baseline.json)
+  --strict             Exit with code 1 if no tokens found or drift detected
+```
 
 ### `storysync map`
 
@@ -141,7 +174,7 @@ Options:
 
 ## Requirements
 
-### Storybook
+### Storybook (for component sync)
 
 - **Storybook 9.x and 10.x** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
@@ -154,6 +187,10 @@ Options:
 - Auth is **OAuth 2.0**, handled automatically by supported MCP clients
 - Write-to-canvas is **free during beta**, will become a paid usage-based feature
 - **Rate limits**: Starter plans = 6 tool calls/month. Full seats on Professional+ = per-minute limits
+
+### Token extraction (no extra requirements)
+
+Token extraction reads local files only — no Storybook, no MCP connection, no auth needed. Works with `storysync tokens` as a standalone command.
 
 No Anthropic API key needed. The mapping rules are deterministic, no LLM costs from storysync itself. Figma's `use_figma` tool is agent-driven on their side.
 
