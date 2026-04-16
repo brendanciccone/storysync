@@ -200,6 +200,45 @@ describe("extractTokens — CSS", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("categorizes --color-* and other standard prefixes", () => {
+    const tmp = join(tmpdir(), `storysync-test-css-prefix-${Date.now()}`);
+    const stylesDir = join(tmp, "styles");
+    mkdirSync(stylesDir, { recursive: true });
+    writeFileSync(join(stylesDir, "globals.css"), `
+      :root {
+        --color-primary: #3b82f6;
+        --color-secondary: rgb(100, 200, 150);
+        --bg-surface: #ffffff;
+        --spacing-sm: 0.5rem;
+        --spacing-md: 1rem;
+        --radius-md: 0.375rem;
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+        --font-sans: "Inter", sans-serif;
+      }
+    `);
+    try {
+      const result = extractTokens(tmp, "css");
+      const colors = result.collections.find((c) => c.category === "colors");
+      const spacing = result.collections.find((c) => c.category === "spacing");
+      const radius = result.collections.find((c) => c.category === "radius");
+      const shadows = result.collections.find((c) => c.category === "shadows");
+      const typography = result.collections.find((c) => c.category === "typography");
+      assert.ok(colors, "should have colors");
+      assert.equal(colors.tokens.length, 3, "3 color tokens (--color-primary, --color-secondary, --bg-surface)");
+      assert.ok(spacing, "should have spacing");
+      assert.equal(spacing.tokens.length, 2);
+      assert.ok(radius, "should have radius");
+      assert.equal(radius.tokens.length, 1);
+      assert.ok(shadows, "should have shadows");
+      assert.equal(shadows.tokens.length, 1);
+      assert.ok(typography, "should have typography");
+      assert.equal(typography.tokens.length, 1);
+      assert.deepEqual(result.warnings, [], "no uncategorized warnings");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("drift detection", () => {
