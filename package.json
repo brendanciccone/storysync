@@ -9,7 +9,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && tsc --project tsconfig.test.json",
+    "test": "tsx --test cli/tokens.test.ts"
   },
   "keywords": [
     "storybook",
@@ -23,12 +24,13 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",
-    "commander": "^13.1.0",
     "chalk": "^5.4.1",
+    "commander": "^13.1.0",
     "ora": "^8.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0"
   },
   "engines": {

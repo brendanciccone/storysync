@@ -169,7 +169,63 @@ function extractFromTailwind(configPath: string): TokenExtractionResult {
   const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
   if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
 
+  // Resolve CSS variable references: hsl(var(--x)) → actual values from CSS files
+  const projectPath = join(configPath, "..");
+  const cssVarMap = loadCSSCustomProperties(projectPath);
+  if (cssVarMap.size) {
+    for (const coll of collections) {
+      for (const token of coll.tokens) {
+        const resolved = resolveCSSVarValue(token.value, cssVarMap);
+        if (resolved !== token.value) {
+          token.value = resolved;
+        }
+      }
+    }
+  }
+
   return { source: "tailwind", sourcePath: configPath, collections, warnings };
+}
+
+/** Load all :root CSS custom properties from the project for cross-referencing. */
+function loadCSSCustomProperties(projectPath: string): Map<string, string> {
+  const vars = new Map<string, string>();
+  const cssFiles = findCSSWithCustomProperties(projectPath).sort();
+
+  for (const file of cssFiles) {
+    try {
+      const content = readFileSync(file, "utf8");
+      // Match :root blocks (light mode defaults)
+      const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
+      for (const block of rootBlocks) {
+        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;]+);/g);
+        for (const decl of declarations) {
+          vars.set(decl[1].trim(), decl[2].trim());
+        }
+      }
+    } catch { /* skip unreadable */ }
+  }
+  return vars;
+}
+
+/** Resolve values like "hsl(var(--primary))" → "hsl(217 91% 60%)" using CSS vars.
+ *  Handles chained aliases recursively with cycle protection. */
+function resolveCSSVarValue(value: string, cssVars: Map<string, string>): string {
+  const resolveVar = (varName: string, seen = new Set<string>()): string | null => {
+    if (seen.has(varName)) return null; // cycle guard
+    const raw = cssVars.get(varName);
+    if (!raw) return null;
+
+    const nextSeen = new Set(seen);
+    nextSeen.add(varName);
+
+    return raw.replace(/var\(\s*(--[\w-]+)\s*\)/g, (match, nestedVar) => {
+      return resolveVar(nestedVar, nextSeen) ?? match;
+    });
+  };
+
+  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (match, varName) => {
+    return resolveVar(varName) ?? match;
+  });
 }
 
 interface ThemeBlocks {
@@ -399,10 +455,28 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
   const fontPrefixes = ["--font-", "--text-size-", "--fs-", "--line-height-", "--lh-"];
   const shadowPrefixes = ["--shadow-", "--elevation-"];
 
+  // Semantic color names (common in shadcn/ui, Radix, and custom design systems)
+  const semanticColorNames = new Set([
+    "--background", "--foreground", "--card", "--card-foreground",
+    "--muted", "--muted-foreground", "--border", "--ring",
+    "--primary", "--primary-foreground", "--secondary", "--secondary-foreground",
+    "--accent", "--accent-foreground", "--destructive", "--destructive-foreground",
+    "--popover", "--popover-foreground", "--input", "--overlay",
+    "--background-contrast", "--success", "--success-foreground",
+  ]);
+  // Semantic color prefixes for families like --danger-50, --warning-700, --heatmap-0
+  const semanticColorFamilies = [
+    "--danger", "--warning", "--notice", "--error", "--info",
+    "--heatmap", "--chart", "--status",
+  ];
+
   for (const [varName, value] of allVars) {
     const shortName = varName.replace(/^--/, "").replace(/-/g, "/");
 
-    if (colorPrefixes.some((p) => varName.startsWith(p)) || isColorValue(value)) {
+    const isSemanticColor = semanticColorNames.has(varName) ||
+      semanticColorFamilies.some((f) => varName === f || varName.startsWith(f + "-"));
+
+    if (colorPrefixes.some((p) => varName.startsWith(p)) || isSemanticColor || isColorValue(value)) {
       categorized.colors.push({ name: shortName, value });
     } else if (spacingPrefixes.some((p) => varName.startsWith(p))) {
       categorized.spacing.push({ name: shortName, value });
@@ -431,10 +505,13 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
 }
 
 function isColorValue(value: string): boolean {
-  return /^#[0-9a-fA-F]{3,8}$/.test(value.trim()) ||
-    /^rgba?\(/.test(value.trim()) ||
-    /^hsla?\(/.test(value.trim()) ||
-    /^oklch\(/.test(value.trim());
+  const v = value.trim();
+  return /^#[0-9a-fA-F]{3,8}$/.test(v) ||
+    /^rgba?\(/.test(v) ||
+    /^hsla?\(/.test(v) ||
+    /^oklch\(/.test(v) ||
+    // Bare HSL channels: "240 5% 98%" or "0 0% 100%"
+    /^\d{1,3}\s+\d{1,3}%\s+\d{1,3}%$/.test(v);
 }
 
 // --- Theme file extraction ---
