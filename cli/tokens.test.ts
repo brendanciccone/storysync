@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
@@ -22,8 +22,7 @@ function run(...args: string[]): string {
 
 describe("detectTokenSource", () => {
   it("finds tailwind config", () => {
-    const tmp = join(tmpdir(), `storysync-test-tw-${Date.now()}`);
-    mkdirSync(tmp, { recursive: true });
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-tw-"));
     writeFileSync(join(tmp, "tailwind.config.ts"), `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`);
     try {
       const source = detectTokenSource(tmp);
@@ -34,9 +33,9 @@ describe("detectTokenSource", () => {
   });
 
   it("finds CSS custom properties", () => {
-    const tmp = join(tmpdir(), `storysync-test-css-${Date.now()}`);
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-css-"));
     const stylesDir = join(tmp, "styles");
-    mkdirSync(stylesDir, { recursive: true });
+    mkdirSync(stylesDir);
     writeFileSync(join(stylesDir, "globals.css"), `:root { --color-primary: #3b82f6; }`);
     try {
       const source = detectTokenSource(tmp);
@@ -47,8 +46,7 @@ describe("detectTokenSource", () => {
   });
 
   it("returns null when nothing found", () => {
-    const tmp = join(tmpdir(), `storysync-test-empty-${Date.now()}`);
-    mkdirSync(tmp, { recursive: true });
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-empty-"));
     try {
       assert.equal(detectTokenSource(tmp), null);
     } finally {
@@ -59,8 +57,7 @@ describe("detectTokenSource", () => {
 
 describe("extractTokens — Tailwind", () => {
   it("extracts color tokens from theme.extend.colors", () => {
-    const tmp = join(tmpdir(), `storysync-test-tw-extract-${Date.now()}`);
-    mkdirSync(tmp, { recursive: true });
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-tw-extract-"));
     writeFileSync(join(tmp, "tailwind.config.ts"), `
       export default {
         theme: {
@@ -87,9 +84,9 @@ describe("extractTokens — Tailwind", () => {
   });
 
   it("resolves hsl(var(--x)) references from CSS files", () => {
-    const tmp = join(tmpdir(), `storysync-test-tw-resolve-${Date.now()}`);
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-tw-resolve-"));
     const stylesDir = join(tmp, "styles");
-    mkdirSync(stylesDir, { recursive: true });
+    mkdirSync(stylesDir);
     writeFileSync(join(tmp, "tailwind.config.ts"), `
       export default {
         theme: {
@@ -121,9 +118,9 @@ describe("extractTokens — Tailwind", () => {
   });
 
   it("resolves chained var references", () => {
-    const tmp = join(tmpdir(), `storysync-test-tw-chain-${Date.now()}`);
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-tw-chain-"));
     const stylesDir = join(tmp, "styles");
-    mkdirSync(stylesDir, { recursive: true });
+    mkdirSync(stylesDir);
     writeFileSync(join(tmp, "tailwind.config.ts"), `
       export default {
         theme: {
@@ -155,9 +152,9 @@ describe("extractTokens — Tailwind", () => {
 
 describe("extractTokens — CSS", () => {
   it("categorizes bare HSL channel values as colors", () => {
-    const tmp = join(tmpdir(), `storysync-test-css-hsl-${Date.now()}`);
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-css-hsl-"));
     const stylesDir = join(tmp, "styles");
-    mkdirSync(stylesDir, { recursive: true });
+    mkdirSync(stylesDir);
     writeFileSync(join(stylesDir, "globals.css"), `
       :root {
         --primary: 217 91% 60%;
@@ -176,9 +173,9 @@ describe("extractTokens — CSS", () => {
   });
 
   it("categorizes semantic color names without prefix", () => {
-    const tmp = join(tmpdir(), `storysync-test-css-semantic-${Date.now()}`);
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-css-semantic-"));
     const stylesDir = join(tmp, "styles");
-    mkdirSync(stylesDir, { recursive: true });
+    mkdirSync(stylesDir);
     writeFileSync(join(stylesDir, "globals.css"), `
       :root {
         --background: 240 5% 98%;
@@ -202,9 +199,9 @@ describe("extractTokens — CSS", () => {
   });
 
   it("categorizes --color-* and other standard prefixes", () => {
-    const tmp = join(tmpdir(), `storysync-test-css-prefix-${Date.now()}`);
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-css-prefix-"));
     const stylesDir = join(tmp, "styles");
-    mkdirSync(stylesDir, { recursive: true });
+    mkdirSync(stylesDir);
     writeFileSync(join(stylesDir, "globals.css"), `
       :root {
         --color-primary: #3b82f6;
@@ -288,8 +285,7 @@ describe("drift detection", () => {
 
 describe("CLI: storysync tokens", () => {
   it("runs with --json and returns valid JSON", () => {
-    const tmp = join(tmpdir(), `storysync-test-cli-${Date.now()}`);
-    mkdirSync(tmp, { recursive: true });
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-cli-"));
     writeFileSync(join(tmp, "tailwind.config.ts"), `
       export default { theme: { extend: { colors: { test: "#abcdef" } } } }
     `);
@@ -304,8 +300,7 @@ describe("CLI: storysync tokens", () => {
   });
 
   it("exits 1 with --strict when no tokens found", () => {
-    const tmp = join(tmpdir(), `storysync-test-strict-${Date.now()}`);
-    mkdirSync(tmp, { recursive: true });
+    const tmp = mkdtempSync(join(tmpdir(), "storysync-test-strict-"));
     try {
       execFileSync("tsx", [CLI, "tokens", "--project", tmp, "--strict"], { encoding: "utf8" });
       assert.fail("should have exited with code 1");
