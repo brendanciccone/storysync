@@ -5,14 +5,16 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import type { TokenBaseline } from "./tokens.js";
 
-const CLI = join(import.meta.dirname, "index.ts");
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLI = join(__dirname, "index.ts");
 
 function run(...args: string[]): string {
   return execFileSync("tsx", [CLI, ...args], { encoding: "utf8" });
