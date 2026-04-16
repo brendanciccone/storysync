@@ -1,6 +1,6 @@
 {
   "name": "storysync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The missing link between Storybook MCP and Figma MCP. Read components from Storybook, write them to Figma.",
   "bin": {
     "storysync": "./dist/cli/index.js"

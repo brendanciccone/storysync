@@ -293,7 +293,7 @@ program
       const tokenSpinner = json ? null : ora("Reading Figma variables...").start();
       let figmaVars: FigmaVariable[] = [];
       try {
-        figmaVars = await figma.getVariables(fileKey as string);
+        figmaVars = await figma.getVariables(fileKey);
         tokenSpinner?.succeed(`Read ${figmaVars.length} Figma variables`);
       } catch (err) {
         tokenSpinner?.fail("Failed to read Figma variables");
@@ -310,7 +310,7 @@ program
         const compSpinner = json ? null : ora("Reading Figma components...").start();
         let figmaComponents: FigmaComponentInfo[] = [];
         try {
-          figmaComponents = await figma.getComponents(fileKey as string);
+          figmaComponents = await figma.getComponents(fileKey);
           compSpinner?.succeed(`Read ${figmaComponents.length} Figma components`);
         } catch (err) {
           compSpinner?.fail("Failed to read Figma components");
@@ -379,8 +379,8 @@ program
               for (const d of c.details) console.log(`      ${chalk.dim(d)}`);
             }
           }
-        } else if (storybook && componentDiffs.length) {
-          console.log(chalk.green("\nComponents in sync."));
+        } else if (storybook) {
+          console.log(chalk.green(componentDiffs.length ? "\nComponents in sync." : "\nNo components to diff."));
         }
 
         // Summary

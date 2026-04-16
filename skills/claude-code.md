@@ -125,6 +125,8 @@ This ensures that when tokens change in code and storysync runs again, updating 
 
 Compare the current Figma file against code to find drift in either direction. Use this when someone asks to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
 
+If the `use_figma` tool doesn't return the plugin code's return value in a usable form, fall back to reading Figma state via any available `get-*` / `list-*` tools on the Figma MCP server (call `tools/list` first to see what's available), or ask the user to export Figma variables/components to JSON and diff against that.
+
 2.1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
 
 ```js

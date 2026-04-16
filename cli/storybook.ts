@@ -18,7 +18,7 @@ export class StorybookClient {
   }
 
   async connect(): Promise<void> {
-    this.client = new Client({ name: "storysync", version: "0.1.0" }, {});
+    this.client = new Client({ name: "storysync", version: "0.2.0" }, {});
     const mcpUrl = new URL("/mcp", this.url);
 
     try {

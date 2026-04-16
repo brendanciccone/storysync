@@ -65,6 +65,8 @@ If variable collections were created in Phase 0, bind component properties to va
 
 Compare the current Figma file against code to find drift in either direction. Use this when asked to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
 
+If `use_figma` doesn't return plugin return values, call `tools/list` on the Figma MCP first to find read-only tools, or ask the user to export Figma state to JSON.
+
 2.1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value. Convert COLOR values to hex strings.
 
 2.2. **Read Figma components** — call `use_figma` to enumerate component sets using `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })`. For each, read `componentPropertyDefinitions` to get variant properties and their options.
