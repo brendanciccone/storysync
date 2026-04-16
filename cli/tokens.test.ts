@@ -1,5 +1,5 @@
 // Smoke tests for token extraction.
-// Uses Node's built-in test runner — no extra deps needed.
+// Uses Node's built-in test runner with tsx (devDependency) for TypeScript.
 // Run: npm test
 
 import { describe, it } from "node:test";
@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import type { TokenBaseline } from "./tokens.js";
 
-const CLI = join(import.meta.dirname, "..", "dist", "cli", "index.js");
+const CLI = join(import.meta.dirname, "index.ts");
 
 function run(...args: string[]): string {
-  return execFileSync("node", [CLI, ...args], { encoding: "utf8" });
+  return execFileSync("tsx", [CLI, ...args], { encoding: "utf8" });
 }
 
 // --- Unit tests: token extraction logic ---
@@ -307,7 +307,7 @@ describe("CLI: storysync tokens", () => {
     const tmp = join(tmpdir(), `storysync-test-strict-${Date.now()}`);
     mkdirSync(tmp, { recursive: true });
     try {
-      execFileSync("node", [CLI, "tokens", "--project", tmp, "--strict"], { encoding: "utf8" });
+      execFileSync("tsx", [CLI, "tokens", "--project", tmp, "--strict"], { encoding: "utf8" });
       assert.fail("should have exited with code 1");
     } catch (err: any) {
       assert.equal(err.status, 1);

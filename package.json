@@ -9,8 +9,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
-    "lint": "tsc --noEmit",
-    "test": "node --import tsx --test cli/tokens.test.ts"
+    "lint": "tsc --noEmit && tsc --project tsconfig.test.json",
+    "test": "tsx --test cli/tokens.test.ts"
   },
   "keywords": [
     "storybook",
