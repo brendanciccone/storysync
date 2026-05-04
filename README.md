@@ -10,6 +10,7 @@ Reads design tokens from your codebase (Tailwind config, CSS custom properties, 
 |---|---|
 | **Claude Code skill** | Claude extracts tokens, creates Figma variables, reads Storybook MCP, writes styled components. Can also audit Figma against code. |
 | **Cursor rules** | Same as above, from Cursor |
+| **Codex** | Same as above, from Codex |
 | **CLI** | Preview token extraction and component mappings locally, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
@@ -50,6 +51,30 @@ curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendancic
 ```
 
 In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say: **"Generate my Figma library from Storybook"**
+
+### Codex
+
+```bash
+# 1. Install the Storybook MCP addon in your project
+npm install @storybook/addon-mcp
+
+# 2. Add the storysync instructions
+curl -o AGENTS.md https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/codex.md
+```
+
+Add Storybook and Figma MCP servers to `.codex/config.toml`:
+
+```toml
+[mcp.storybook]
+type = "http"
+url = "http://localhost:6006/mcp"
+
+[mcp.figma]
+type = "http"
+url = "https://mcp.figma.com/mcp"
+```
+
+Start Storybook and say: **"Generate my Figma library from Storybook"**
 
 ### CLI
 
