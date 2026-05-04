@@ -9,18 +9,18 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 - Figma MCP: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
 
-## Phase 0: Foundations
+## Tokens
 
 Before syncing components, extract design tokens from the project and create Figma variable collections. This ensures components can bind to variables instead of hardcoded values.
 
-0.1. **Detect token source** — look for `tailwind.config.ts` / `tailwind.config.js` in the project root, CSS files with `:root` custom properties in `src/`, or theme/token export files (`tokens.ts`, `theme.ts`). If none found, skip to Phase 1.
+1. **Detect token source** — look for `tailwind.config.ts` / `tailwind.config.js` in the project root, CSS files with `:root` custom properties in `src/`, or theme/token export files (`tokens.ts`, `theme.ts`). If none found, skip to Components.
 
-0.2. **Extract tokens** — read the source file and identify tokens by category:
+2. **Extract tokens** — read the source file and identify tokens by category:
    - **Tailwind config**: parse `theme.extend` for `colors` (flatten nested objects, e.g. `primary.500` → `primary/500`), `spacing`, `borderRadius`, `fontSize`, and `boxShadow`.
    - **CSS custom properties**: extract `--variable: value` from `:root` blocks. Categorize by prefix (`--color-*` → colors, `--spacing-*` → spacing, `--radius-*` → radius, `--font-*` → typography, `--shadow-*` → shadows). Resolve `var()` references.
    - **Theme files**: find exported objects (`export const colors = { ... }`), flatten nested structures into token paths.
 
-0.3. **Create Figma variable collections** — call `use_figma` to create one variable collection per token category. Example:
+3. **Create Figma variable collections** — call `use_figma` to create one variable collection per token category. Example:
 
 ```js
 use_figma({
@@ -51,9 +51,9 @@ use_figma({
 
    Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
 
-0.4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
+4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
 
-## Phase 1: Component sync
+## Components
 
 1. Call `list-all-documentation({ withStoryIds: true })` on Storybook MCP to get component IDs and story IDs.
 2. For each component, call `get-documentation({ id: "<component-id>" })`. The response has a TypeScript `Props` type and documentation describing the component's appearance and behavior.
@@ -108,11 +108,11 @@ use_figma({
 ```
 
 8. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
-9. Summarize what was synced: token collections created (if Phase 0 ran), component count, variant counts, visual details applied, any failures or caps.
+9. Summarize what was synced: token collections created, component count, variant counts, visual details applied, any failures or caps.
 
 ## Variable binding
 
-If variable collections were created in Phase 0, bind component properties to variables instead of hardcoding values:
+When token variable collections exist, bind component properties to variables instead of hardcoding values:
 - Fills → bind to the matching variable from the Colors collection (e.g. `primary/500`)
 - Padding / spacing → bind to the Spacing collection
 - Corner radius → bind to the Radius collection
@@ -121,13 +121,13 @@ If variable collections were created in Phase 0, bind component properties to va
 
 This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 
-## Phase 2: Audit (Figma vs Code)
+## Audit
 
 Compare the current Figma file against code to find drift in either direction. Use this when someone asks to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
 
 If the `use_figma` tool doesn't return the plugin code's return value in a usable form, fall back to reading Figma state via any available `get-*` / `list-*` tools on the Figma MCP server (call `tools/list` first to see what's available), or ask the user to export Figma variables/components to JSON and diff against that.
 
-2.1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
+1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
 
 ```js
 use_figma({
@@ -160,7 +160,7 @@ use_figma({
 })
 ```
 
-2.2. **Read Figma components** — call `use_figma` to enumerate all component sets and their variant properties:
+2. **Read Figma components** — call `use_figma` to enumerate all component sets and their variant properties:
 
 ```js
 use_figma({
@@ -187,22 +187,22 @@ use_figma({
 })
 ```
 
-2.3. **Extract code tokens** — follow Phase 0 steps 0.1–0.2 to extract tokens from the project source.
+3. **Extract code tokens** — follow the Tokens steps 1–2 to extract tokens from the project source.
 
-2.4. **Map code components** — follow Phase 1 steps 1–4 to read Storybook props and compute variant mappings.
+4. **Map code components** — follow Components steps 1–4 to read Storybook props and compute variant mappings.
 
-2.5. **Compare tokens** — match Figma variable collections to code token categories (Colors → colors, Spacing → spacing, etc.). For each token:
+5. **Compare tokens** — match Figma variable collections to code token categories (Colors → colors, Spacing → spacing, etc.). For each token:
    - In code but not in Figma → **missing from Figma** (needs sync)
    - In Figma but not in code → **missing from code** (orphaned or manually added)
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
    - Normalize before comparing: lowercase hex colors, convert rem→px (1rem=16px), strip units for numeric comparison.
 
-2.6. **Compare components** — match by name (case-insensitive). For each component:
+6. **Compare components** — match by name (case-insensitive). For each component:
    - In code/Storybook but not in Figma → **code only** (not yet synced)
    - In Figma but not in code/Storybook → **Figma only** (orphaned or renamed)
    - Both exist → compare variant properties: missing props, extra props, missing/extra values per prop.
 
-2.7. **Report** — present a structured drift report:
+7. **Report** — present a structured drift report:
    - Group by category (tokens) or component name
    - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch
    - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched.

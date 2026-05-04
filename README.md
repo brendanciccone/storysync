@@ -13,7 +13,7 @@ Reads design tokens from your codebase (Tailwind config, CSS custom properties, 
 | **CLI** | Preview token extraction and component mappings locally, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
-> **Why skill files?** Talking to Figma MCP requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI's token extraction, component mapping, and `list`/`inspect` commands work anywhere because they only touch your project files and Storybook MCP. The `diff` command needs Figma MCP access — use it from inside a supported client (via its local MCP proxy), or rely on the skill file's Phase 2 audit flow instead.
+> **Why skill files?** Talking to Figma MCP requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI's token extraction, component mapping, and `list`/`inspect` commands work anywhere because they only touch your project files and Storybook MCP. The `diff` command needs Figma MCP access — use it from inside a supported client (via its local MCP proxy), or rely on the skill file's audit flow instead.
 
 ## Quick start
 
@@ -89,23 +89,23 @@ jobs:
 ## How it works
 
 ```text
-  Phase 0: Foundations               Phase 1: Components
+  Tokens                               Components
 
-  tailwind.config.ts                 Storybook MCP
-  globals.css (:root)       storysync         storysync
-  theme.ts                  token rules       mapping rules
-         ↓                       ↓                  ↓
-  extract colors,           Figma variable    boolean prop?    -> boolean variant
-  spacing, typography,      collections       enum/union prop? -> variant property
-  radius, shadows                             other props      -> skip
-         ↓                       ↓                  ↓
-  preview with CLI          create via        Cartesian product of mapped props
-  (storysync tokens)        use_figma         (capped at 256 combinations)
-                                  ↓                  ↓
-                            components bind   create styled component sets
-                            to variables      via use_figma
+  tailwind.config.ts                   Storybook MCP
+  globals.css (:root)       storysync           storysync
+  theme.ts                  skill               skill
+         ↓                       ↓                    ↓
+  extract colors,           Figma variable      boolean prop?    -> boolean variant
+  spacing, typography,      collections         enum/union prop? -> variant property
+  radius, shadows                               other props      -> skip
+         ↓                       ↓                    ↓
+  preview with CLI          create via          Cartesian product of mapped props
+  (storysync tokens)        use_figma           (capped at 256 combinations)
+                                  ↓                    ↓
+                            components bind     create styled component sets
+                            to variables        via use_figma
 
-  Phase 2: Audit (reverse diff)
+  Audit
 
   Figma MCP                          Code / Storybook
   read variables via                 extract tokens from
@@ -187,7 +187,7 @@ Options:
 
 Compare a Figma file against code tokens and Storybook components. Reads from Figma via MCP, extracts tokens from local code, and optionally maps Storybook components — then reports what's different.
 
-> Requires a Figma MCP endpoint reachable without browser-based OAuth (typically a local proxy from a supported MCP client). If the command hangs on auth or returns `401`/`403`, use the skill file's Phase 2 audit flow instead — it runs inside the client that already holds the OAuth session.
+> Requires a Figma MCP endpoint reachable without browser-based OAuth (typically a local proxy from a supported MCP client). If the command hangs on auth or returns `401`/`403`, use the skill file's audit flow instead — it runs inside the client that already holds the OAuth session.
 
 ```text
 Options:
