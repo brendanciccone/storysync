@@ -221,9 +221,10 @@ Options:
   --storybook <url>      Storybook URL (enables component diff)
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted)
+  --mode <name>          Figma variable mode to read (default: each collection's first mode)
   --components <names>   Comma-separated component names to diff
   --json                 Output JSON instead of formatted text
-  --strict               Exit with code 1 if any differences found
+  --strict               Exit with code 1 if any differences found or Figma reads fail
 ```
 
 Example:
@@ -245,6 +246,17 @@ Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --component <name>     Component name or ID to inspect (required)
 ```
+
+## Limitations
+
+The reverse-direction (Figma → code) features have known constraints that you should be aware of before relying on the diff output:
+
+- **Figma MCP auth**: The CLI `diff` command needs an authenticated Figma MCP endpoint. Most Figma MCP setups require browser-based OAuth that only supported MCP clients can complete. Use the skill file's audit flow inside Claude Code / Cursor / Codex if the CLI returns `401`/`403`.
+- **`use_figma` return contract**: The audit relies on `use_figma` surfacing the plugin code's return value as MCP tool output. This works when run from a supported MCP client; behavior from third-party CLIs is not guaranteed. If `use_figma` doesn't return values, the skill agent is instructed to look for read-only tools or fall back to a user-exported JSON snapshot.
+- **Multi-mode variables**: By default, only the first mode of each Figma variable collection is read. Use `--mode <name>` on the CLI (or instruct the agent in chat) to read a specific mode like "Light" or "Dark".
+- **Variable aliases**: Aliases are resolved up to 8 levels deep; cycles are detected. Aliases pointing at variables in remote/team libraries are not resolved.
+- **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
+- **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`).
 
 ## Requirements
 

@@ -9,7 +9,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsc && node --test dist/cli/__tests__/*.test.js"
   },
   "keywords": [
     "storybook",
@@ -37,7 +38,8 @@
   },
   "type": "module",
   "files": [
-    "dist",
+    "dist/cli/*.js",
+    "dist/cli/*.d.ts",
     "skills",
     "action",
     "README.md",

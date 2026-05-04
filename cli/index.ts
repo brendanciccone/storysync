@@ -262,9 +262,10 @@ program
   .option("--storybook <url>", "Storybook URL (enables component diff)")
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
+  .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
   .option("--components <names>", "Comma-separated component names to diff")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any differences found")
+  .option("--strict", "Exit with code 1 if any differences found or Figma reads fail")
   .action(async (opts) => {
     const json = !!opts.json;
 
@@ -286,57 +287,64 @@ program
       storybook = await connectStorybook(opts.storybook as string, json);
     }
 
+    let figmaReadFailed = false;
+
     try {
       const fileKey = opts.fileKey as string;
+      const mode = opts.mode as string | undefined;
 
       // --- Token diff ---
       const tokenSpinner = json ? null : ora("Reading Figma variables...").start();
       let figmaVars: FigmaVariable[] = [];
       try {
-        figmaVars = await figma.getVariables(fileKey);
+        figmaVars = await figma.getVariables(fileKey, mode);
         tokenSpinner?.succeed(`Read ${figmaVars.length} Figma variables`);
       } catch (err) {
+        figmaReadFailed = true;
         tokenSpinner?.fail("Failed to read Figma variables");
         console.error(chalk.red(String(err)));
-        figmaVars = [];
       }
 
       const codeResult = extractTokens(opts.project as string, opts.source as "tailwind" | "css" | "theme" | undefined);
-      const tokenDiffs = diffTokens(codeResult.collections, figmaVars);
+      const tokenDiffs = figmaReadFailed ? [] : diffTokens(codeResult.collections, figmaVars);
 
       // --- Component diff ---
       let componentDiffs: ComponentDiffEntry[] = [];
       if (storybook) {
         const compSpinner = json ? null : ora("Reading Figma components...").start();
         let figmaComponents: FigmaComponentInfo[] = [];
+        let componentReadFailed = false;
         try {
           figmaComponents = await figma.getComponents(fileKey);
           compSpinner?.succeed(`Read ${figmaComponents.length} Figma components`);
         } catch (err) {
+          componentReadFailed = true;
+          figmaReadFailed = true;
           compSpinner?.fail("Failed to read Figma components");
           console.error(chalk.red(String(err)));
-          figmaComponents = [];
         }
 
-        const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
-        let entries = await storybook.listComponents();
-        if (opts.components) {
-          const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
-          entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
-        }
-
-        const codeComponents: FigmaComponentDefinition[] = [];
-        for (const entry of entries) {
-          try {
-            const component = await storybook.getComponent(entry.id, entry.name);
-            codeComponents.push(mapComponent(component));
-          } catch {
-            // skip unmappable components
+        if (!componentReadFailed) {
+          const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
+          let entries = await storybook.listComponents();
+          if (opts.components) {
+            const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
+            entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
           }
-        }
-        mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
 
-        componentDiffs = diffComponents(codeComponents, figmaComponents);
+          const codeComponents: FigmaComponentDefinition[] = [];
+          for (const entry of entries) {
+            try {
+              const component = await storybook.getComponent(entry.id, entry.name);
+              codeComponents.push(mapComponent(component));
+            } catch {
+              // skip unmappable components
+            }
+          }
+          mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
+
+          componentDiffs = diffComponents(codeComponents, figmaComponents);
+        }
       }
 
       // --- Output ---
@@ -348,8 +356,13 @@ program
           components: componentDiffs.filter((c) => c.status !== "match"),
           summary,
           hasDifferences: hasDifferences(summary),
+          figmaReadFailed,
         }));
       } else {
+        if (figmaReadFailed) {
+          console.log(chalk.yellow("\nFigma read failed — diff results above are partial. See errors for details."));
+        }
+
         const mismatched = tokenDiffs.filter((t) => t.status !== "match");
         if (mismatched.length) {
           console.log(chalk.bold("\nToken differences:\n"));
@@ -362,7 +375,7 @@ program
               console.log(`  ${chalk.red("~")} ${t.category}/${t.name} code=${chalk.dim(t.codeValue!)} figma=${chalk.dim(t.figmaValue!)}`);
             }
           }
-        } else if (figmaVars.length || codeResult.collections.length) {
+        } else if (!figmaReadFailed && (figmaVars.length || codeResult.collections.length)) {
           console.log(chalk.green("\nTokens in sync."));
         }
 
@@ -379,7 +392,7 @@ program
               for (const d of c.details) console.log(`      ${chalk.dim(d)}`);
             }
           }
-        } else if (storybook) {
+        } else if (storybook && !figmaReadFailed) {
           console.log(chalk.green(componentDiffs.length ? "\nComponents in sync." : "\nNo components to diff."));
         }
 
@@ -401,12 +414,12 @@ program
           if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
         }
 
-        if (!hasDifferences(summary)) {
+        if (!figmaReadFailed && !hasDifferences(summary)) {
           console.log(chalk.green("\nNo differences found."));
         }
       }
 
-      if (opts.strict && hasDifferences(summary)) process.exitCode = 1;
+      if (opts.strict && (figmaReadFailed || hasDifferences(summary))) process.exitCode = 1;
     } finally {
       await figma.disconnect();
       if (storybook) await storybook.disconnect();
