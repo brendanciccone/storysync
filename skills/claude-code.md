@@ -4,7 +4,7 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 
 ## Requirements
 
-- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 24+)
+- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 9+, Node 18+)
 - Storybook MCP: `claude mcp add --transport http storybook http://localhost:6006/mcp`
 - Figma MCP: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
