@@ -78,6 +78,12 @@ test("numericToPx: unitless preserved", () => {
   assert.equal(numericToPx("16"), "16");
 });
 
+test("numericToPx: negative values", () => {
+  assert.equal(numericToPx("-0.5rem"), "-8");
+  assert.equal(numericToPx("-4px"), "-4");
+  assert.equal(numericToPx("-16"), "-16");
+});
+
 test("numericToPx: non-numeric returned as-is normalized", () => {
   assert.equal(numericToPx("auto"), "auto");
 });

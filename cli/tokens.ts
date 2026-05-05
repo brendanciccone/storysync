@@ -366,7 +366,7 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
 
       for (const block of rootBlocks) {
-        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;]+);/g);
+        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
         for (const decl of declarations) {
           allVars.set(decl[1].trim(), decl[2].trim());
         }

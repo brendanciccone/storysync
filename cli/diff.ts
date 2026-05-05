@@ -177,13 +177,13 @@ export function numericToPx(input: string): string {
   let s = input.trim().toLowerCase();
   s = s.replace(/;$/, "").replace(/^['"]|['"]$/g, "");
 
-  const rem = s.match(/^([\d.]+)rem$/);
+  const rem = s.match(/^(-?[\d.]+)rem$/);
   if (rem) return stripTrailingZero(parseFloat(rem[1]) * 16);
 
-  const px = s.match(/^([\d.]+)px$/);
+  const px = s.match(/^(-?[\d.]+)px$/);
   if (px) return stripTrailingZero(parseFloat(px[1]));
 
-  const unitless = s.match(/^[\d.]+$/);
+  const unitless = s.match(/^-?[\d.]+$/);
   if (unitless) return stripTrailingZero(parseFloat(s));
 
   return s;
