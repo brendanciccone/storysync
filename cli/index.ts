@@ -8,6 +8,7 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { VERSION } from "./version.js";
 import type { TokenBaseline } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
@@ -28,7 +29,7 @@ async function connectStorybook(url: string, quiet = false) {
 }
 
 const program = new Command();
-program.name("storysync").description("Sync design tokens and Storybook components to Figma").version("0.2.0");
+program.name("storysync").description("Sync design tokens and Storybook components to Figma").version(VERSION);
 
 program
   .command("map")

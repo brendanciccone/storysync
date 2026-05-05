@@ -3,6 +3,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { VERSION } from "./version.js";
 
 export interface FigmaVariable {
   name: string;
@@ -105,7 +106,7 @@ export class FigmaClient {
   }
 
   async connect(): Promise<void> {
-    this.client = new Client({ name: "storysync", version: "0.2.0" }, {});
+    this.client = new Client({ name: "storysync", version: VERSION }, {});
     const mcpUrl = new URL(this.url);
 
     try {

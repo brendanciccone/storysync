@@ -380,12 +380,9 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
     return { source: "css", sourcePath: files[0] ?? "", collections: [], warnings: [...warnings, "No custom properties found"] };
   }
 
-  // Resolve var() references
+  // Resolve var() references — handles chains and var(--x, fallback)
   for (const [name, value] of allVars) {
-    const varRef = value.match(/var\(\s*(--[\w-]+)\s*\)/);
-    if (varRef && allVars.has(varRef[1])) {
-      allVars.set(name, allVars.get(varRef[1])!);
-    }
+    allVars.set(name, resolveCssVar(value, allVars, 0));
   }
 
   // Categorize by prefix
@@ -393,17 +390,22 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
     colors: [], spacing: [], typography: [], radius: [], shadows: [],
   };
 
-  const colorPrefixes = ["--color-", "--clr-", "--bg-", "--text-", "--border-color-"];
+  const colorPrefixes = ["--color-", "--clr-", "--bg-", "--border-color-"];
   const spacingPrefixes = ["--space-", "--spacing-", "--gap-", "--padding-", "--margin-"];
   const radiusPrefixes = ["--radius-", "--rounded-", "--border-radius-"];
   const fontPrefixes = ["--font-", "--text-size-", "--fs-", "--line-height-", "--lh-"];
   const shadowPrefixes = ["--shadow-", "--elevation-"];
+  // --text-* is ambiguous: could be a text color (--text-primary: #000) or
+  // a font size (--text-sm: 0.875rem). Decide by value.
+  const textAmbiguousPrefix = "--text-";
 
   for (const [varName, value] of allVars) {
     const shortName = varName.replace(/^--/, "").replace(/-/g, "/");
 
     if (colorPrefixes.some((p) => varName.startsWith(p)) || isColorValue(value)) {
       categorized.colors.push({ name: shortName, value });
+    } else if (varName.startsWith(textAmbiguousPrefix)) {
+      categorized.typography.push({ name: shortName, value });
     } else if (spacingPrefixes.some((p) => varName.startsWith(p))) {
       categorized.spacing.push({ name: shortName, value });
     } else if (radiusPrefixes.some((p) => varName.startsWith(p))) {
@@ -413,12 +415,7 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
     } else if (shadowPrefixes.some((p) => varName.startsWith(p))) {
       categorized.shadows.push({ name: shortName, value });
     } else {
-      // Fall back to value-based categorization
-      if (isColorValue(value)) {
-        categorized.colors.push({ name: shortName, value });
-      } else {
-        warnings.push(`Uncategorized: ${varName}: ${value}`);
-      }
+      warnings.push(`Uncategorized: ${varName}: ${value}`);
     }
   }
 
@@ -428,6 +425,18 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
   }
 
   return { source: "css", sourcePath: files[0], collections, warnings };
+}
+
+// Recursively resolve var(--name) and var(--name, fallback). Cycle/depth-guarded.
+function resolveCssVar(value: string, allVars: Map<string, string>, depth: number): string {
+  if (depth > 8) return value;
+  const m = value.trim().match(/^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)$/);
+  if (!m) return value;
+  const [, name, fallback] = m;
+  const ref = allVars.get(name);
+  if (ref != null && ref !== value) return resolveCssVar(ref, allVars, depth + 1);
+  if (fallback != null) return resolveCssVar(fallback.trim(), allVars, depth + 1);
+  return value;
 }
 
 function isColorValue(value: string): boolean {
