@@ -2,6 +2,14 @@
   "name": "storysync",
   "version": "0.2.0",
   "description": "The missing link between Storybook MCP and Figma MCP. Read components from Storybook, write them to Figma.",
+  "homepage": "https://github.com/brendanciccone/storysync#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brendanciccone/storysync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/brendanciccone/storysync/issues"
+  },
   "bin": {
     "storysync": "./dist/cli/index.js"
   },
@@ -10,7 +18,8 @@
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "lint": "tsc --noEmit",
-    "test": "tsc && node --test dist/cli/__tests__/*.test.js"
+    "test": "tsc && node --test dist/cli/__tests__/*.test.js",
+    "prepublishOnly": "tsc && node --test dist/cli/__tests__/*.test.js"
   },
   "keywords": [
     "storybook",
