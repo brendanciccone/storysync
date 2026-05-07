@@ -464,10 +464,28 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
   // a font size (--text-sm: 0.875rem). Decide by value.
   const textAmbiguousPrefix = "--text-";
 
+  // Semantic color names (common in shadcn/ui, Radix, and custom design systems)
+  const semanticColorNames = new Set([
+    "--background", "--foreground", "--card", "--card-foreground",
+    "--muted", "--muted-foreground", "--border", "--ring",
+    "--primary", "--primary-foreground", "--secondary", "--secondary-foreground",
+    "--accent", "--accent-foreground", "--destructive", "--destructive-foreground",
+    "--popover", "--popover-foreground", "--input", "--overlay",
+    "--background-contrast", "--success", "--success-foreground",
+  ]);
+  // Semantic color prefixes for families like --danger-50, --warning-700, --heatmap-0
+  const semanticColorFamilies = [
+    "--danger", "--warning", "--notice", "--error", "--info",
+    "--heatmap", "--chart", "--status",
+  ];
+
   for (const [varName, value] of allVars) {
     const shortName = varName.replace(/^--/, "").replace(/-/g, "/");
 
-    if (colorPrefixes.some((p) => varName.startsWith(p)) || isColorValue(value)) {
+    const isSemanticColor = semanticColorNames.has(varName) ||
+      semanticColorFamilies.some((f) => varName === f || varName.startsWith(f + "-"));
+
+    if (colorPrefixes.some((p) => varName.startsWith(p)) || isSemanticColor || isColorValue(value)) {
       categorized.colors.push({ name: shortName, value });
     } else if (varName.startsWith(textAmbiguousPrefix)) {
       categorized.typography.push({ name: shortName, value });
@@ -505,10 +523,13 @@ function resolveCssVar(value: string, allVars: Map<string, string>, depth: numbe
 }
 
 function isColorValue(value: string): boolean {
-  return /^#[0-9a-fA-F]{3,8}$/.test(value.trim()) ||
-    /^rgba?\(/.test(value.trim()) ||
-    /^hsla?\(/.test(value.trim()) ||
-    /^oklch\(/.test(value.trim());
+  const v = value.trim();
+  return /^#[0-9a-fA-F]{3,8}$/.test(v) ||
+    /^rgba?\(/.test(v) ||
+    /^hsla?\(/.test(v) ||
+    /^oklch\(/.test(v) ||
+    // Bare HSL channels: "240 5% 98%" or "0 0% 100%"
+    /^\d{1,3}\s+\d{1,3}%\s+\d{1,3}%$/.test(v);
 }
 
 // --- Theme file extraction ---

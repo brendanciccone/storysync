@@ -181,14 +181,20 @@ export class StorybookClient {
     }
 
     if (!props.length) {
-      const inline = text.match(/export\s+type\s+Props\s*=\s*\{([\s\S]*?)\}/);
+      const inline = text.match(/export\s+type\s+Props\s*=\s*\{([\s\S]*?)\}/)
+        ?? text.match(/export\s+interface\s+\w+\s*\{([\s\S]*?)\}/);
       if (inline) props.push(...this.parsePropsBlock(`export type Props = {${inline[1]}}`));
+    }
+
+    if (!props.length) {
+      props.push(...this.parseArgTable(text));
     }
     return props;
   }
 
   private parsePropsBlock(block: string): StorybookProp[] {
-    const body = block.match(/(?:export\s+)?type\s+\w+\s*=\s*\{([\s\S]*)\}/);
+    const body = block.match(/(?:export\s+)?type\s+\w+\s*=\s*\{([\s\S]*)\}/)
+      ?? block.match(/(?:export\s+)?interface\s+\w+(?:\s+extends\s+\w+(?:<[^>]*>)?)?\s*\{([\s\S]*)\}/);
     if (!body) return [];
 
     const props: StorybookProp[] = [];
@@ -212,6 +218,51 @@ export class StorybookClient {
 
       const type: PropType = typeStr.includes("|") ? { name: "union", raw: typeStr } : { name: typeStr };
       props.push({ name, type, defaultValue, required: !opt });
+    }
+    return props;
+  }
+
+  // Parses Storybook argType/controls markdown tables like:
+  //   | Name | Type | Default |
+  //   |------|------|---------|
+  //   | variant | "primary" \| "secondary" | "primary" |
+  private parseArgTable(text: string): StorybookProp[] {
+    const props: StorybookProp[] = [];
+    const lines = text.split("\n");
+
+    for (let i = 0; i < lines.length - 2; i++) {
+      const header = lines[i];
+      const separator = lines[i + 1];
+      if (!separator || !/^\s*\|[\s-:|]+\|\s*$/.test(separator)) continue;
+
+      const cols = header.split("|").map((c) => c.trim().toLowerCase()).filter(Boolean);
+      const nameIdx = cols.findIndex((c) => c === "name" || c === "property" || c === "prop");
+      const typeIdx = cols.findIndex((c) => c === "type" || c === "control");
+      const defaultIdx = cols.findIndex((c) => c === "default" || c === "default value");
+      if (nameIdx < 0 || typeIdx < 0) continue;
+
+      for (let j = i + 2; j < lines.length; j++) {
+        const row = lines[j];
+        if (!row.trim().startsWith("|")) break;
+        const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
+        if (cells.length <= Math.max(nameIdx, typeIdx)) continue;
+
+        const name = cells[nameIdx].replace(/`/g, "").trim();
+        const typeStr = cells[typeIdx].replace(/`/g, "").replace(/\\\|/g, "|").trim();
+        const defaultValue = defaultIdx >= 0 && cells[defaultIdx]
+          ? cells[defaultIdx].replace(/`/g, "").replace(/^["']|["']$/g, "").replace(/-$/, "").trim() || undefined
+          : undefined;
+
+        if (!name || name === "-") continue;
+
+        const type: PropType = typeStr.includes("|")
+          ? { name: "union", raw: typeStr }
+          : typeStr === "boolean" ? { name: "boolean" }
+          : { name: typeStr };
+
+        props.push({ name, type, defaultValue, required: false });
+      }
+      break;
     }
     return props;
   }
