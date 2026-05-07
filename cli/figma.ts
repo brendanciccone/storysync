@@ -140,7 +140,10 @@ export class FigmaClient {
     });
     const r = result as { content?: { type: string; text?: string }[] };
     const texts = r.content?.filter((c) => c.type === "text" && c.text).map((c) => c.text!) ?? [];
-    return texts.length ? texts.join("\n") : JSON.stringify(result);
+    if (!texts.length) {
+      throw new Error(`use_figma returned no text content. Raw result: ${JSON.stringify(result).slice(0, 200)}`);
+    }
+    return texts.join("\n");
   }
 }
 
