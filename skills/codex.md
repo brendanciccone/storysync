@@ -1,9 +1,3 @@
----
-description: Generate Figma component library from Storybook using storysync
-globs:
-alwaysApply: false
----
-
 # storysync — Storybook to Figma
 
 Read components from Storybook MCP and recreate them in Figma MCP as a visually accurate component library, with design token foundations.
@@ -11,8 +5,8 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 ## Requirements
 
 - Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+)
-- Storybook MCP connected (endpoint at `/mcp` on the dev server)
-- Figma MCP connected (`/add-plugin figma` or add `https://mcp.figma.com/mcp`)
+- Storybook MCP configured in `.codex/config.toml` (HTTP server at `http://localhost:6006/mcp`)
+- Figma MCP configured in `.codex/config.toml` (HTTP server at `https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
 - storysync installed: `npm install -g storysync` or `npx storysync`
 

@@ -1,6 +1,6 @@
 # storysync
 
-Sync your design system from code to Figma — tokens, components, and variants — using Storybook MCP and Figma MCP.
+Sync your design system from code to Figma — and diff Figma back against code — using Storybook MCP and Figma MCP.
 
 ## What it does
 
@@ -8,62 +8,83 @@ Reads design tokens from your codebase (Tailwind config, CSS custom properties, 
 
 | Method | What it does |
 |---|---|
-| **Claude Code skill** | Claude extracts tokens, creates Figma variables, reads Storybook MCP, writes styled components |
+| **Claude Code skill** | Runs `storysync tokens` and `storysync map` to extract structured data from your codebase, then writes Figma variables and styled components via `use_figma`. Can also audit Figma against code. |
 | **Cursor rules** | Same as above, from Cursor |
-| **CLI** | Preview token extraction and component mappings locally |
+| **Codex** | Same as above, from Codex |
+| **CLI** | Extract tokens, map components, preview mappings locally, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
-> **Why skill files?** Writing to Figma requires the `mcp:connect` OAuth scope, which Figma currently restricts to [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others). Third-party apps cannot obtain this scope. The skill files run inside these clients, so auth is handled automatically. The CLI reads from your project and Storybook MCP (no auth restrictions) and previews what the mapping would produce.
+> **Why skill files?** Writing to Figma requires the `use_figma` tool, which only works through [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others) that can complete Figma's OAuth flow. The skill files instruct these clients to run storysync CLI commands (`tokens --json`, `map --json`) to get deterministic, structured data from your codebase, then use that data to create Figma variables and components via `use_figma`. This means storysync handles the extraction logic and the AI client handles the Figma writes — each doing what it's best at.
 
 ## Quick start
 
-### Claude Code (recommended)
+storysync ships three workflows: **push** (code → Figma), **diff** (audit drift in either direction), and **pull** (Figma → code, _coming in v0.3_).
+
+Install storysync once, then drop the right config into your project for the AI client you use:
 
 ```bash
-# 1. Install the Storybook MCP addon in your project
-npm install @storybook/addon-mcp
+npm install -g storysync                # or: pnpm add -g storysync
 
-# 2. Connect Storybook MCP to Claude Code
-claude mcp add --transport http storybook http://localhost:6006/mcp
-
-# 3. Install the Figma plugin (includes MCP server + agent skills)
-claude plugin install figma@claude-plugins-official
-
-# 4. Add the storysync skill
-mkdir -p .claude/skills
-curl -o .claude/skills/storysync.md https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/claude-code.md
+cd your-project
+npx storysync init                      # set up @storybook/addon-mcp if needed
+npx storysync setup --client claude     # or: --client cursor   --client codex
 ```
 
-Start Storybook, open Claude Code, and say: **"Generate my Figma library from Storybook"**
+`setup` writes the skill file (and slash commands, for Claude) into the right place and prints the MCP setup commands you still need to run.
+
+### Claude Code
+
+After `storysync setup --client claude`:
+
+```bash
+claude mcp add --transport http storybook http://localhost:6006/mcp
+claude plugin install figma@claude-plugins-official
+```
+
+Then start Storybook and open Claude Code. Two slash commands are now available:
+
+- `/storysync-push <figma-file-key>` — sync Storybook + tokens into Figma
+- `/storysync-diff <figma-file-key>` — audit Figma against code
+
+Or just say it in plain English: **"Push my Storybook to Figma (file key abc123)"** / **"Diff Figma against code"**.
 
 ### Cursor
 
-```bash
-# 1. Install the Storybook MCP addon in your project
-npm install @storybook/addon-mcp
+After `storysync setup --client cursor`:
 
-# 2. Add the storysync rule
-mkdir -p .cursor/rules
-curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/cursor.mdc
+In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say:
+
+- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
+- **"Diff Figma against code (file key abc123)"** — audit
+
+### Codex
+
+After `storysync setup --client codex`:
+
+Add Storybook and Figma MCP servers to `.codex/config.toml`:
+
+```toml
+[mcp.storybook]
+type = "http"
+url = "http://localhost:6006/mcp"
+
+[mcp.figma]
+type = "http"
+url = "https://mcp.figma.com/mcp"
 ```
 
-In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say: **"Generate my Figma library from Storybook"**
+Start Storybook and say:
 
-### CLI
+- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
+- **"Diff Figma against code (file key abc123)"** — audit
 
-```bash
-# Extract design tokens from your project
-npx storysync tokens
+### Magic phrases (all clients)
 
-# See how all components map to Figma variants
-npx storysync map --storybook http://localhost:6006
-
-# List available components
-npx storysync list --storybook http://localhost:6006
-
-# Inspect one component's mapping in detail
-npx storysync inspect --storybook http://localhost:6006 --component Button
-```
+| Goal | Say |
+|---|---|
+| Code → Figma | "Push my Storybook to Figma (file key `<key>`)" |
+| Audit drift | "Diff Figma against code (file key `<key>`)" or "Check if Figma is in sync" |
+| Figma → code | _Coming in v0.3_ |
 
 ### GitHub Action (validate in CI)
 
@@ -84,21 +105,37 @@ jobs:
 ## How it works
 
 ```text
-  Phase 0: Foundations               Phase 1: Components
+  Tokens                               Components
 
-  tailwind.config.ts                 Storybook MCP
-  globals.css (:root)       storysync         storysync
-  theme.ts                  token rules       mapping rules
-         ↓                       ↓                  ↓
-  extract colors,           Figma variable    boolean prop?    -> boolean variant
-  spacing, typography,      collections       enum/union prop? -> variant property
-  radius, shadows                             other props      -> skip
-         ↓                       ↓                  ↓
-  preview with CLI          create via        Cartesian product of mapped props
-  (storysync tokens)        use_figma         (capped at 256 combinations)
-                                  ↓                  ↓
-                            components bind   create styled component sets
-                            to variables      via use_figma
+  tailwind.config.ts                   Storybook MCP
+  globals.css (:root)                        ↓
+  theme.ts                   storysync tokens --json     storysync map --json
+         ↓                          ↓                           ↓
+  storysync extracts         Structured token JSON       Variant definitions JSON
+  colors, spacing,           (deterministic output)      (props, combinations)
+  typography, radius,              ↓                           ↓
+  shadows                   AI client reads JSON,        AI client reads source
+         ↓                  creates Figma variables      for visual styling
+  preview with CLI          via use_figma                      ↓
+  (storysync tokens)              ↓                      creates styled component
+                            components bind to           sets via use_figma
+                            variables
+
+  Audit
+
+  Figma MCP                          Code / Storybook
+  read variables via                 storysync tokens --json
+  use_figma Plugin API               storysync map --json
+         ↓                                  ↓
+  read component sets                deterministic extraction
+  and variant properties             of tokens + components
+         ↓                                  ↓
+         └──────── compare ────────────────┘
+                      ↓
+               drift report:
+               + missing from Figma
+               - missing from code
+               ~ value mismatch
 ```
 
 ## Token extraction
@@ -113,6 +150,29 @@ storysync reads design tokens from your codebase and previews the Figma variable
 
 Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows**
 
+### shadcn/ui and Tailwind configs that reference CSS variables
+
+Many Tailwind configs (notably shadcn/ui templates) define colors as `hsl(var(--background))` and put the actual values in `globals.css` under `:root`. storysync detects this pattern and automatically resolves the references:
+
+```ts
+// tailwind.config.ts
+colors: { background: "hsl(var(--background))" }
+```
+
+```css
+/* globals.css */
+:root { --background: 0 0% 100%; }
+```
+
+→ resolves to `hsl(0 0% 100%)`.
+
+It also handles:
+- Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)` → `hsl(0 0% 100%)`)
+- Nested CSS variable chains (`--brand: var(--blue-500)`)
+- Fallback values (`var(--missing, 200 50% 50%)`)
+
+If no matching CSS variable is found (and no fallback is provided), the raw `var(...)` reference is preserved so you can see what didn't resolve.
+
 ## Component mapping rules
 
 | Storybook prop type | Figma output |
@@ -125,7 +185,36 @@ Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
 
-## CLI commands
+## CLI reference
+
+The CLI exists for two purposes: **setup** (the `init` and `setup` commands wire your project up for an AI client) and **preview / CI** (the `tokens`, `map`, `list`, `inspect`, and `diff` commands give you deterministic output you can inspect locally or run in GitHub Actions). Day-to-day Figma syncing happens through the AI client using the skill + slash commands above — the CLI does not write to Figma directly.
+
+### `storysync init`
+
+Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version (10.1+ required for component sync), whether `@storybook/addon-mcp` is installed, and whether it's registered in `addons` — then prompts before applying each fix to your `.storybook/main.ts`.
+
+```text
+Options:
+  --project <path>     Project root path (default: ".")
+```
+
+### `storysync setup`
+
+Drop the storysync skill, slash commands, and MCP setup notes into your project for the AI client you use.
+
+```text
+Options:
+  --client <name>      AI client: claude, cursor, or codex (required)
+  --project <path>     Project root path (default: ".")
+  --force              Overwrite existing files
+```
+
+Example:
+
+```bash
+npx storysync setup --client claude
+# writes .claude/skills/storysync.md and .claude/commands/storysync-{push,diff}.md
+```
 
 ### `storysync tokens`
 
@@ -136,6 +225,7 @@ Options:
   --project <path>     Project root to scan (default: ".")
   --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted)
   --json               Output JSON instead of formatted text
+  --all                Show all tokens instead of truncating
   --check              Compare against baseline and detect drift
   --baseline <path>    Path to token baseline JSON (default: .storysync/tokens-baseline.json)
   --strict             Exit with code 1 if no tokens found or drift detected
@@ -162,6 +252,35 @@ Options:
   --storybook <url>    URL of the running Storybook instance (required)
 ```
 
+### `storysync diff`
+
+Compare a Figma file against code tokens and Storybook components. Reads from Figma via MCP, extracts tokens from local code, and optionally maps Storybook components — then reports what's different.
+
+> Requires a Figma MCP endpoint reachable without browser-based OAuth (typically a local proxy from a supported MCP client). If the command hangs on auth or returns `401`/`403`, use the skill file's audit flow instead — it runs inside the client that already holds the OAuth session.
+
+```text
+Options:
+  --figma <url>          Figma MCP server URL (required)
+  --file-key <key>       Figma file key (required)
+  --storybook <url>      Storybook URL (enables component diff)
+  --project <path>       Project root to scan for tokens (default: ".")
+  --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted)
+  --mode <name>          Figma variable mode to read (default: each collection's first mode)
+  --components <names>   Comma-separated component names to diff
+  --json                 Output JSON instead of formatted text
+  --strict               Exit with code 1 if any differences found or Figma reads fail
+```
+
+Example:
+
+```bash
+# Diff tokens only
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
+
+# Diff tokens + components
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
+```
+
 ### `storysync inspect`
 
 Inspect one component's props and show how each maps to Figma.
@@ -172,11 +291,23 @@ Options:
   --component <name>     Component name or ID to inspect (required)
 ```
 
+## Limitations
+
+The reverse-direction (Figma → code) features have known constraints that you should be aware of before relying on the diff output:
+
+- **Figma MCP auth**: The CLI `diff` command needs an authenticated Figma MCP endpoint. Most Figma MCP setups require browser-based OAuth that only supported MCP clients can complete. Use the skill file's audit flow inside Claude Code / Cursor / Codex if the CLI returns `401`/`403`.
+- **`use_figma` return contract**: The audit relies on `use_figma` surfacing the plugin code's return value as MCP tool output. This works when run from a supported MCP client; behavior from third-party CLIs is not guaranteed. If `use_figma` doesn't return values, the skill agent is instructed to look for read-only tools or fall back to a user-exported JSON snapshot.
+- **Multi-mode variables**: By default, only the first mode of each Figma variable collection is read. Use `--mode <name>` on the CLI (or instruct the agent in chat) to read a specific mode like "Light" or "Dark".
+- **Variable aliases**: Aliases are resolved up to 8 levels deep; cycles are detected. Aliases pointing at variables in remote/team libraries are not resolved.
+- **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
+- **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`).
+- **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used.
+
 ## Requirements
 
 ### Storybook (for component sync)
 
-- **Storybook 9.x and 10.x** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **Storybook 10.1+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`). Storybook 9.x only supports token extraction — the docs tools that `list`/`map`/`inspect` depend on require Storybook 10's component manifests.
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
 - **Node.js 18+**
 - Must be the **dev server** (`storybook dev`), not a static build

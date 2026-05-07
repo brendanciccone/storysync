@@ -108,7 +108,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
       case "tailwind": {
         for (const name of ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"]) {
           const p = join(projectPath, name);
-          if (existsSync(p)) return extractFromTailwind(p);
+          if (existsSync(p)) return extractFromTailwind(p, projectPath);
         }
         return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config found"] };
       }
@@ -131,7 +131,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
   }
 
   switch (detected.type) {
-    case "tailwind": return extractFromTailwind(detected.path);
+    case "tailwind": return extractFromTailwind(detected.path, projectPath);
     case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath));
     case "theme": return extractFromTheme(detected.path);
   }
@@ -139,7 +139,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
 
 // --- Tailwind extraction ---
 
-function extractFromTailwind(configPath: string): TokenExtractionResult {
+function extractFromTailwind(configPath: string, projectRoot?: string): TokenExtractionResult {
   const content = readFileSync(configPath, "utf8");
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
@@ -169,63 +169,72 @@ function extractFromTailwind(configPath: string): TokenExtractionResult {
   const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
   if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
 
-  // Resolve CSS variable references: hsl(var(--x)) → actual values from CSS files
-  const projectPath = join(configPath, "..");
-  const cssVarMap = loadCSSCustomProperties(projectPath);
-  if (cssVarMap.size) {
-    for (const coll of collections) {
-      for (const token of coll.tokens) {
-        const resolved = resolveCSSVarValue(token.value, cssVarMap);
-        if (resolved !== token.value) {
-          token.value = resolved;
+  // Resolve any `var(--name)` refs in token values against the project's :root CSS vars.
+  // Common in shadcn/ui: `colors: { background: "hsl(var(--background))" }` with the actual
+  // value defined in globals.css as `:root { --background: 0 0% 100%; }`.
+  const root = projectRoot ?? join(configPath, "..");
+  const cssFiles = findCSSWithCustomProperties(root);
+  if (cssFiles.length && collectionsHaveCssVarRefs(collections)) {
+    const cssVars = readCssVars(cssFiles);
+    if (cssVars.size) {
+      for (const coll of collections) {
+        for (const token of coll.tokens) {
+          token.value = resolveTailwindCssRefs(token.value, cssVars);
         }
       }
+      warnings.push(`Resolved CSS variable references from ${cssFiles[0]}`);
     }
   }
 
   return { source: "tailwind", sourcePath: configPath, collections, warnings };
 }
 
-/** Load all :root CSS custom properties from the project for cross-referencing. */
-function loadCSSCustomProperties(projectPath: string): Map<string, string> {
-  const vars = new Map<string, string>();
-  const cssFiles = findCSSWithCustomProperties(projectPath).sort();
+function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
+  for (const c of collections) {
+    for (const t of c.tokens) {
+      if (/var\(\s*--/.test(t.value)) return true;
+    }
+  }
+  return false;
+}
 
-  for (const file of cssFiles) {
+// Read CSS variables from :root blocks (with chained var() resolution).
+function readCssVars(files: string[]): Map<string, string> {
+  const allVars = new Map<string, string>();
+  for (const file of files) {
     try {
       const content = readFileSync(file, "utf8");
-      // Match :root blocks (light mode defaults)
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
       for (const block of rootBlocks) {
-        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;]+);/g);
+        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
         for (const decl of declarations) {
-          vars.set(decl[1].trim(), decl[2].trim());
+          allVars.set(decl[1].trim(), decl[2].trim());
         }
       }
     } catch { /* skip unreadable */ }
   }
-  return vars;
+  for (const [name, value] of allVars) {
+    allVars.set(name, resolveCssVar(value, allVars, 0));
+  }
+  return allVars;
 }
 
-/** Resolve values like "hsl(var(--primary))" → "hsl(217 91% 60%)" using CSS vars.
- *  Handles chained aliases recursively with cycle protection. */
-function resolveCSSVarValue(value: string, cssVars: Map<string, string>): string {
-  const resolveVar = (varName: string, seen = new Set<string>()): string | null => {
-    if (seen.has(varName)) return null; // cycle guard
-    const raw = cssVars.get(varName);
-    if (!raw) return null;
+// Replace `var(--name)` and `var(--name, fallback)` inside a Tailwind token value.
+// Also strips Tailwind's `<alpha-value>` opacity placeholder.
+export function resolveTailwindCssRefs(value: string, cssVars: Map<string, string>): string {
+  // Strip Tailwind opacity placeholder: `hsl(var(--bg) / <alpha-value>)` → `hsl(var(--bg))`
+  let s = value.replace(/\s*\/\s*<alpha-value>\s*/g, "");
 
-    const nextSeen = new Set(seen);
-    nextSeen.add(varName);
-
-    return raw.replace(/var\(\s*(--[\w-]+)\s*\)/g, (match, nestedVar) => {
-      return resolveVar(nestedVar, nextSeen) ?? match;
+  // Replace each var(--name) or var(--name, fallback) with its resolved CSS value (depth-guarded).
+  for (let depth = 0; depth < 8 && /var\(\s*--/.test(s); depth++) {
+    s = s.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)/g, (_match, name: string, fallback?: string) => {
+      const resolved = cssVars.get(name);
+      if (resolved != null) return resolved;
+      if (fallback != null) return fallback.trim();
+      return _match;
     });
-  };
-
-  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (match, varName) => {
-    return resolveVar(varName) ?? match;
-  });
+  }
+  return s.trim();
 }
 
 interface ThemeBlocks {
@@ -422,7 +431,7 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
 
       for (const block of rootBlocks) {
-        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;]+);/g);
+        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
         for (const decl of declarations) {
           allVars.set(decl[1].trim(), decl[2].trim());
         }
@@ -436,12 +445,9 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
     return { source: "css", sourcePath: files[0] ?? "", collections: [], warnings: [...warnings, "No custom properties found"] };
   }
 
-  // Resolve var() references
+  // Resolve var() references — handles chains and var(--x, fallback)
   for (const [name, value] of allVars) {
-    const varRef = value.match(/var\(\s*(--[\w-]+)\s*\)/);
-    if (varRef && allVars.has(varRef[1])) {
-      allVars.set(name, allVars.get(varRef[1])!);
-    }
+    allVars.set(name, resolveCssVar(value, allVars, 0));
   }
 
   // Categorize by prefix
@@ -449,11 +455,14 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
     colors: [], spacing: [], typography: [], radius: [], shadows: [],
   };
 
-  const colorPrefixes = ["--color-", "--clr-", "--bg-", "--text-", "--border-color-"];
+  const colorPrefixes = ["--color-", "--clr-", "--bg-", "--border-color-"];
   const spacingPrefixes = ["--space-", "--spacing-", "--gap-", "--padding-", "--margin-"];
   const radiusPrefixes = ["--radius-", "--rounded-", "--border-radius-"];
   const fontPrefixes = ["--font-", "--text-size-", "--fs-", "--line-height-", "--lh-"];
   const shadowPrefixes = ["--shadow-", "--elevation-"];
+  // --text-* is ambiguous: could be a text color (--text-primary: #000) or
+  // a font size (--text-sm: 0.875rem). Decide by value.
+  const textAmbiguousPrefix = "--text-";
 
   // Semantic color names (common in shadcn/ui, Radix, and custom design systems)
   const semanticColorNames = new Set([
@@ -478,6 +487,8 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
 
     if (colorPrefixes.some((p) => varName.startsWith(p)) || isSemanticColor || isColorValue(value)) {
       categorized.colors.push({ name: shortName, value });
+    } else if (varName.startsWith(textAmbiguousPrefix)) {
+      categorized.typography.push({ name: shortName, value });
     } else if (spacingPrefixes.some((p) => varName.startsWith(p))) {
       categorized.spacing.push({ name: shortName, value });
     } else if (radiusPrefixes.some((p) => varName.startsWith(p))) {
@@ -487,12 +498,7 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
     } else if (shadowPrefixes.some((p) => varName.startsWith(p))) {
       categorized.shadows.push({ name: shortName, value });
     } else {
-      // Fall back to value-based categorization
-      if (isColorValue(value)) {
-        categorized.colors.push({ name: shortName, value });
-      } else {
-        warnings.push(`Uncategorized: ${varName}: ${value}`);
-      }
+      warnings.push(`Uncategorized: ${varName}: ${value}`);
     }
   }
 
@@ -502,6 +508,18 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
   }
 
   return { source: "css", sourcePath: files[0], collections, warnings };
+}
+
+// Recursively resolve var(--name) and var(--name, fallback). Cycle/depth-guarded.
+function resolveCssVar(value: string, allVars: Map<string, string>, depth: number): string {
+  if (depth > 8) return value;
+  const m = value.trim().match(/^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)$/);
+  if (!m) return value;
+  const [, name, fallback] = m;
+  const ref = allVars.get(name);
+  if (ref != null && ref !== value) return resolveCssVar(ref, allVars, depth + 1);
+  if (fallback != null) return resolveCssVar(fallback.trim(), allVars, depth + 1);
+  return value;
 }
 
 function isColorValue(value: string): boolean {
