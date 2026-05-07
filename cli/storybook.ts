@@ -12,6 +12,42 @@ export interface ComponentEntry {
   storyIds?: string[];
 }
 
+// Derives a Figma-friendly category label from a Storybook ID by stripping
+// the kebab-cased component name from the end. Storybook IDs are
+// `kebab(title)`, so `ui-icon-button` for component `IconButton` yields
+// category `UI`. Multi-word categories like `Data Display` round-trip too:
+// `data-display-card` minus `card` → `data-display` → "Data Display".
+export function deriveCategoryFromId(id: string, name: string): string | undefined {
+  const idPath = id.split("--")[0];
+  if (!idPath) return undefined;
+
+  // Storybook is inconsistent about whether it splits PascalCase in IDs:
+  // `EmptyState` may become `empty-state` or `emptystate`. Try both.
+  const nameSplit = name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/\s+/g, "-").toLowerCase();
+  const nameJoined = name.replace(/\s+/g, "").toLowerCase();
+
+  let prefix: string | null = null;
+  for (const candidate of [nameSplit, nameJoined]) {
+    const suffix = `-${candidate}`;
+    if (idPath.endsWith(suffix)) {
+      prefix = idPath.slice(0, -suffix.length);
+      break;
+    }
+  }
+  if (prefix == null || !prefix) return undefined;
+
+  const ACRONYMS = new Set(["ui", "ux", "api", "html", "css", "svg", "js", "ts"]);
+
+  return prefix
+    .split("-")
+    .map((seg) => {
+      if (!seg.length) return seg;
+      if (ACRONYMS.has(seg)) return seg.toUpperCase();
+      return seg[0].toUpperCase() + seg.slice(1);
+    })
+    .join(" ");
+}
+
 export class StorybookClient {
   private client: Client | null = null;
   private url: string;
@@ -81,7 +117,10 @@ export class StorybookClient {
   }
 
   // Parses the markdown list from list-all-documentation.
-  // Captures hierarchy from section headings (## Forms) or slashes in bold names (**Forms/Button**).
+  // Category is derived from the component ID prefix (Storybook IDs are
+  // kebab-case versions of the title, so `ui-button` → category "UI").
+  // Falls back to slashed names (`Forms/Button`) and section headings
+  // when present, since not all Storybook MCP responses include IDs.
   private parseComponentList(text: string): ComponentEntry[] {
     const entries: ComponentEntry[] = [];
     let current: ComponentEntry | null = null;
@@ -104,11 +143,21 @@ export class StorybookClient {
         if (rawName.includes("/")) {
           title = rawName;
           name = rawName.split("/").pop()!.trim();
-        } else if (currentSection) {
-          title = `${currentSection}/${rawName}`;
         }
 
-        const category = title?.includes("/") ? title.split("/").slice(0, -1).join("/") : undefined;
+        // Prefer ID-derived category — Storybook IDs encode the title path
+        // and survive when the markdown response loses the heading hierarchy.
+        let category = deriveCategoryFromId(id, name);
+
+        if (!category && title?.includes("/")) {
+          category = title.split("/").slice(0, -1).join("/");
+        } else if (!category && currentSection && currentSection.toLowerCase() !== "components") {
+          category = currentSection;
+        }
+
+        if (category && !title) {
+          title = `${category}/${name}`;
+        }
 
         current = { id, name, title, category, storyIds: [] };
         entries.push(current);
