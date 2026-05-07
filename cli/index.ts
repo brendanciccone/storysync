@@ -331,7 +331,14 @@ program
 
         if (!componentReadFailed) {
           const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
-          let entries = await storybook.listComponents();
+          let entries: Awaited<ReturnType<StorybookClient["listComponents"]>> = [];
+          try {
+            entries = await storybook.listComponents();
+          } catch (err) {
+            mapSpinner?.fail("Failed to list Storybook components");
+            console.error(chalk.red(String(err)));
+            if (opts.strict) process.exitCode = 1;
+          }
           if (opts.components) {
             const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
             entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));

@@ -50,7 +50,10 @@ async function callFigma(code, description) {
   });
   const r = result;
   const texts = r.content?.filter((c) => c.type === "text" && c.text).map((c) => c.text) ?? [];
-  return texts.join("\n") || JSON.stringify(result);
+  if (!texts.length) {
+    throw new Error(`use_figma returned no text content. Raw: ${JSON.stringify(result).slice(0, 200)}`);
+  }
+  return texts.join("\n");
 }
 
 // --- Push tokens as Figma variables ---
@@ -131,9 +134,10 @@ for (const token of tokens) {
     }
   } else {
     // For non-color tokens, store as FLOAT if numeric, STRING otherwise
-    const numMatch = token.value.match(/^([\\d.]+)\\s*(?:rem|px)?$/);
+    const numMatch = token.value.match(/^([\\d.]+)\\s*(rem|px)?$/);
     if (numMatch) {
-      const num = parseFloat(numMatch[1]);
+      const raw = parseFloat(numMatch[1]);
+      const num = numMatch[2] === 'rem' ? raw * 16 : raw;
       const resolvedType = 'FLOAT';
       if (!existing) {
         const v = figma.variables.createVariable(name, coll, resolvedType);

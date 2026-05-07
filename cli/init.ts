@@ -131,6 +131,7 @@ export async function runInit(projectInput: string): Promise<void> {
     console.log(chalk.red(`storysync requires Storybook 10.1+ for component sync (list, map, inspect, diff).`));
     console.log(chalk.red(`Token extraction (storysync tokens) works with any version.`));
     console.log(chalk.dim(`\n  Upgrade: ${upgradeCommand(pm)}\n`));
+    process.exitCode = 1;
   }
 
   let updatedContent = config.content;
