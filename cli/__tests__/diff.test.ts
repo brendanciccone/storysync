@@ -11,6 +11,7 @@ import {
   hasDifferences,
 } from "../diff.js";
 import type { TokenCollection } from "../tokens.js";
+import { extractFirstBalancedArray } from "../figma.js";
 import type { FigmaVariable, FigmaComponentInfo } from "../figma.js";
 import type { FigmaComponentDefinition } from "../mapper.js";
 
@@ -292,4 +293,33 @@ test("hasDifferences: true when any mismatch", () => {
     [],
   );
   assert.equal(hasDifferences(summary), true);
+});
+
+// --- extractFirstBalancedArray ---
+
+test("extractFirstBalancedArray: simple array", () => {
+  assert.equal(extractFirstBalancedArray('[1,2,3]'), '[1,2,3]');
+});
+
+test("extractFirstBalancedArray: nested arrays", () => {
+  const input = 'Result:\n[{"name":"Button","values":["sm","md"]}]';
+  assert.equal(extractFirstBalancedArray(input), '[{"name":"Button","values":["sm","md"]}]');
+});
+
+test("extractFirstBalancedArray: brackets inside strings", () => {
+  const input = '[{"name":"test]value","data":"a[b"}]';
+  assert.equal(extractFirstBalancedArray(input), input);
+});
+
+test("extractFirstBalancedArray: escaped quotes in strings", () => {
+  const input = '[{"name":"say \\"hello\\""}]';
+  assert.equal(extractFirstBalancedArray(input), input);
+});
+
+test("extractFirstBalancedArray: no array returns null", () => {
+  assert.equal(extractFirstBalancedArray('no arrays here'), null);
+});
+
+test("extractFirstBalancedArray: unbalanced returns null", () => {
+  assert.equal(extractFirstBalancedArray('[1,2,3'), null);
 });

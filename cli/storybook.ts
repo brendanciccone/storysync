@@ -45,18 +45,18 @@ export class StorybookClient {
       const result = await this.call("list-all-documentation", { withStoryIds: true });
       return this.parseComponentList(result);
     } catch (err) {
+      let toolMissing = false;
       try {
         const tools = await this.listAvailableTools();
-        if (!tools.includes("list-all-documentation")) {
-          throw new Error(
-            "Storybook MCP is missing the docs tools (list-all-documentation, get-documentation).\n" +
-              "  This usually means @storybook/addon-mcp is not configured with docs enabled,\n" +
-              "  or `features.componentsManifest` is not turned on in your Storybook config.\n\n" +
-              "  Run `storysync init` to fix this automatically.",
-          );
-        }
-      } catch (checkErr) {
-        if (checkErr !== err && (checkErr as Error)?.message?.includes("storysync init")) throw checkErr;
+        toolMissing = !tools.includes("list-all-documentation");
+      } catch { /* tool listing failed */ }
+      if (toolMissing) {
+        throw new Error(
+          "Storybook MCP is missing the docs tools (list-all-documentation, get-documentation).\n" +
+            "  This usually means @storybook/addon-mcp is not configured with docs enabled,\n" +
+            "  or `features.componentsManifest` is not turned on in your Storybook config.\n\n" +
+            "  Run `storysync init` to fix this automatically.",
+        );
       }
       throw err;
     }

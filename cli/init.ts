@@ -1,7 +1,7 @@
 // `storysync init` — detect Storybook MCP setup gaps and offer to fix them.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
@@ -107,7 +107,7 @@ export async function runInit(projectInput: string): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  console.log(chalk.green("✔") + ` Found ${config.path.replace(projectPath + "/", "")}`);
+  console.log(chalk.green("✔") + ` Found ${relative(projectPath, config.path)}`);
 
   const pm = detectPackageManager(projectPath);
 
@@ -127,12 +127,14 @@ export async function runInit(projectInput: string): Promise<void> {
 
   let updatedContent = config.content;
   let configChanged = false;
+  let installed = false;
 
   if (!hasAddon) {
     const yes = await confirm(`Install @storybook/addon-mcp via ${pm}?`);
     if (yes) {
       try {
         execSync(installCommand(pm), { cwd: projectPath, stdio: "inherit" });
+        installed = true;
       } catch (err) {
         console.log(chalk.red(`Install failed: ${String(err)}`));
         process.exitCode = 1;
@@ -173,9 +175,11 @@ export async function runInit(projectInput: string): Promise<void> {
 
   if (configChanged) {
     writeFileSync(config.path, updatedContent);
-    console.log(chalk.green(`\n✔ Updated ${config.path.replace(projectPath + "/", "")}`));
+    console.log(chalk.green(`\n✔ Updated ${relative(projectPath, config.path)}`));
   }
 
-  console.log(chalk.dim("\nRestart Storybook to apply changes, then run:"));
-  console.log(chalk.dim("  storysync list --storybook http://localhost:6006"));
+  if (configChanged || installed) {
+    console.log(chalk.dim("\nRestart Storybook to apply changes, then run:"));
+    console.log(chalk.dim("  storysync list --storybook http://localhost:6006"));
+  }
 }

@@ -157,7 +157,7 @@ function parseJsonResult<T>(text: string, label: string): T {
   }
 }
 
-function extractFirstBalancedArray(text: string): string | null {
+export function extractFirstBalancedArray(text: string): string | null {
   const start = text.indexOf("[");
   if (start === -1) return null;
   let depth = 0;
