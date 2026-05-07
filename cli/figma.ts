@@ -145,15 +145,38 @@ export class FigmaClient {
 }
 
 function parseJsonResult<T>(text: string, label: string): T {
-  // Some MCP responses wrap return values in extra text; try to extract the first JSON array.
   const trimmed = text.trim();
   try {
     return JSON.parse(trimmed) as T;
   } catch {
-    const arrayMatch = trimmed.match(/\[[\s\S]*?\]/);
-    if (arrayMatch) {
-      try { return JSON.parse(arrayMatch[0]) as T; } catch { /* fall through */ }
+    const slice = extractFirstBalancedArray(trimmed);
+    if (slice) {
+      try { return JSON.parse(slice) as T; } catch { /* fall through */ }
     }
     throw new Error(`Failed to parse Figma ${label} response. The use_figma tool may not return plugin code's return value. Got: ${trimmed.slice(0, 200)}`);
   }
+}
+
+function extractFirstBalancedArray(text: string): string | null {
+  const start = text.indexOf("[");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }

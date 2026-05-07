@@ -54,6 +54,13 @@ export function addAddonToConfig(content: string): { content: string; ok: boolea
 }
 
 export function addComponentsManifest(content: string): { content: string; ok: boolean } {
+  if (/componentsManifest\s*:\s*(?:true|false)/.test(content)) {
+    return {
+      content: content.replace(/componentsManifest\s*:\s*(?:true|false)/, "componentsManifest: true"),
+      ok: true,
+    };
+  }
+
   const featuresMatch = content.match(/(features\s*:\s*\{)/);
   if (featuresMatch) {
     const insertAt = (featuresMatch.index ?? 0) + featuresMatch[0].length;

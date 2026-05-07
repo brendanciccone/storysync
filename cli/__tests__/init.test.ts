@@ -143,6 +143,14 @@ test("addComponentsManifest: inserts into existing features block", () => {
   assert.match(result.content, /componentsManifest:\s*true/);
 });
 
+test("addComponentsManifest: replaces false with true in-place", () => {
+  const input = `const config = {\n  features: {\n    componentsManifest: false,\n  },\n};`;
+  const result = addComponentsManifest(input);
+  assert.equal(result.ok, true);
+  assert.match(result.content, /componentsManifest:\s*true/);
+  assert.doesNotMatch(result.content, /componentsManifest:\s*false/);
+});
+
 test("addComponentsManifest: creates new features block before addons", () => {
   const input = `const config = {\n  addons: [],\n};`;
   const result = addComponentsManifest(input);
