@@ -16,7 +16,7 @@ Before syncing components, extract design tokens from the project and create Fig
 1. **Detect token source** — look for `tailwind.config.ts` / `tailwind.config.js` in the project root, CSS files with `:root` custom properties in `src/`, or theme/token export files (`tokens.ts`, `theme.ts`). If none found, skip to Components.
 
 2. **Extract tokens** — read the source file and identify tokens by category:
-   - **Tailwind config**: parse `theme.extend` for `colors` (flatten nested objects, e.g. `primary.500` → `primary/500`), `spacing`, `borderRadius`, `fontSize`, and `boxShadow`.
+   - **Tailwind config**: parse `theme.extend` for `colors` (flatten nested objects, e.g. `primary.500` → `primary/500`), `spacing`, `borderRadius`, `fontSize`, and `boxShadow`. If a value is a CSS-var reference like `hsl(var(--background))` (common in shadcn/ui), look up `--background` in the project's `:root` block in `globals.css` (or any CSS file under `src/`/`app/`/`styles/`) and substitute the resolved value. Strip Tailwind's `/ <alpha-value>` placeholder. Resolve nested var() chains.
    - **CSS custom properties**: extract `--variable: value` from `:root` blocks. Categorize by prefix (`--color-*` → colors, `--spacing-*` → spacing, `--radius-*` → radius, `--font-*` → typography, `--shadow-*` → shadows). Resolve `var()` references.
    - **Theme files**: find exported objects (`export const colors = { ... }`), flatten nested structures into token paths.
 

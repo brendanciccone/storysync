@@ -159,6 +159,29 @@ storysync reads design tokens from your codebase and previews the Figma variable
 
 Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows**
 
+### shadcn/ui and Tailwind configs that reference CSS variables
+
+Many Tailwind configs (notably shadcn/ui templates) define colors as `hsl(var(--background))` and put the actual values in `globals.css` under `:root`. storysync detects this pattern and automatically resolves the references:
+
+```ts
+// tailwind.config.ts
+colors: { background: "hsl(var(--background))" }
+```
+
+```css
+/* globals.css */
+:root { --background: 0 0% 100%; }
+```
+
+→ resolves to `hsl(0 0% 100%)`.
+
+It also handles:
+- Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)` → `hsl(0 0% 100%)`)
+- Nested CSS variable chains (`--brand: var(--blue-500)`)
+- Fallback values (`var(--missing, 200 50% 50%)`)
+
+If no matching CSS variable is found (and no fallback is provided), the raw `var(...)` reference is preserved so you can see what didn't resolve.
+
 ## Component mapping rules
 
 | Storybook prop type | Figma output |
@@ -257,6 +280,7 @@ The reverse-direction (Figma → code) features have known constraints that you 
 - **Variable aliases**: Aliases are resolved up to 8 levels deep; cycles are detected. Aliases pointing at variables in remote/team libraries are not resolved.
 - **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
 - **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`).
+- **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used.
 
 ## Requirements
 

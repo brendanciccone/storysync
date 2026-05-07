@@ -108,7 +108,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
       case "tailwind": {
         for (const name of ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"]) {
           const p = join(projectPath, name);
-          if (existsSync(p)) return extractFromTailwind(p);
+          if (existsSync(p)) return extractFromTailwind(p, projectPath);
         }
         return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config found"] };
       }
@@ -131,7 +131,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
   }
 
   switch (detected.type) {
-    case "tailwind": return extractFromTailwind(detected.path);
+    case "tailwind": return extractFromTailwind(detected.path, projectPath);
     case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath));
     case "theme": return extractFromTheme(detected.path);
   }
@@ -139,7 +139,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
 
 // --- Tailwind extraction ---
 
-function extractFromTailwind(configPath: string): TokenExtractionResult {
+function extractFromTailwind(configPath: string, projectRoot?: string): TokenExtractionResult {
   const content = readFileSync(configPath, "utf8");
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
@@ -169,7 +169,72 @@ function extractFromTailwind(configPath: string): TokenExtractionResult {
   const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
   if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
 
+  // Resolve any `var(--name)` refs in token values against the project's :root CSS vars.
+  // Common in shadcn/ui: `colors: { background: "hsl(var(--background))" }` with the actual
+  // value defined in globals.css as `:root { --background: 0 0% 100%; }`.
+  const root = projectRoot ?? join(configPath, "..");
+  const cssFiles = findCSSWithCustomProperties(root);
+  if (cssFiles.length && collectionsHaveCssVarRefs(collections)) {
+    const cssVars = readCssVars(cssFiles);
+    if (cssVars.size) {
+      for (const coll of collections) {
+        for (const token of coll.tokens) {
+          token.value = resolveTailwindCssRefs(token.value, cssVars);
+        }
+      }
+      warnings.push(`Resolved CSS variable references from ${cssFiles[0]}`);
+    }
+  }
+
   return { source: "tailwind", sourcePath: configPath, collections, warnings };
+}
+
+function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
+  for (const c of collections) {
+    for (const t of c.tokens) {
+      if (/var\(\s*--/.test(t.value)) return true;
+    }
+  }
+  return false;
+}
+
+// Read CSS variables from :root blocks (with chained var() resolution).
+function readCssVars(files: string[]): Map<string, string> {
+  const allVars = new Map<string, string>();
+  for (const file of files) {
+    try {
+      const content = readFileSync(file, "utf8");
+      const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
+      for (const block of rootBlocks) {
+        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
+        for (const decl of declarations) {
+          allVars.set(decl[1].trim(), decl[2].trim());
+        }
+      }
+    } catch { /* skip unreadable */ }
+  }
+  for (const [name, value] of allVars) {
+    allVars.set(name, resolveCssVar(value, allVars, 0));
+  }
+  return allVars;
+}
+
+// Replace `var(--name)` and `var(--name, fallback)` inside a Tailwind token value.
+// Also strips Tailwind's `<alpha-value>` opacity placeholder.
+export function resolveTailwindCssRefs(value: string, cssVars: Map<string, string>): string {
+  // Strip Tailwind opacity placeholder: `hsl(var(--bg) / <alpha-value>)` → `hsl(var(--bg))`
+  let s = value.replace(/\s*\/\s*<alpha-value>\s*/g, "");
+
+  // Replace each var(--name) or var(--name, fallback) with its resolved CSS value (depth-guarded).
+  for (let depth = 0; depth < 8 && /var\(\s*--/.test(s); depth++) {
+    s = s.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)/g, (_match, name: string, fallback?: string) => {
+      const resolved = cssVars.get(name);
+      if (resolved != null) return resolved;
+      if (fallback != null) return fallback.trim();
+      return _match;
+    });
+  }
+  return s.trim();
 }
 
 interface ThemeBlocks {
