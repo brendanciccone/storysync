@@ -437,7 +437,7 @@ program
 
 program
   .command("init")
-  .description("Set up @storybook/addon-mcp and componentsManifest in your Storybook config")
+  .description("Check and set up @storybook/addon-mcp in your Storybook project")
   .option("--project <path>", "Project root path", ".")
   .action(async (opts) => {
     await runInit(opts.project as string);
