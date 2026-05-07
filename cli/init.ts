@@ -22,7 +22,7 @@ export function detectPackageManager(projectPath: string): PackageManager {
 }
 
 export function findStorybookConfig(projectPath: string): StorybookConfigFile | null {
-  for (const name of ["main.ts", "main.js", "main.mts", "main.mjs"]) {
+  for (const name of ["main.ts", "main.js", "main.mts", "main.mjs", "main.cjs"]) {
     const p = join(projectPath, ".storybook", name);
     if (existsSync(p)) return { path: p, content: readFileSync(p, "utf8") };
   }
@@ -62,7 +62,35 @@ export function hasAddonMcpInPackageJson(projectPath: string): boolean {
 }
 
 export function hasAddonMcpInConfig(content: string): boolean {
-  return /["']@storybook\/addon-mcp["']/.test(content);
+  // Strip block + line comments first so a commented-out `addons: [...]`
+  // entry can't be misread as the real one. Then locate the addons array
+  // and only consider @storybook/addon-mcp matches inside its bracket span.
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+  const m = stripped.match(/(?<![A-Za-z_$])addons\s*:\s*\[/);
+  if (!m) return false;
+  const start = (m.index ?? 0) + m[0].length;
+  let depth = 1;
+  let i = start;
+  let quote: string | null = null;
+  while (i < stripped.length && depth > 0) {
+    const ch = stripped[i];
+    if (quote) {
+      if (ch === "\\") { i += 2; continue; }
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    } else if (ch === "[") {
+      depth++;
+    } else if (ch === "]") {
+      depth--;
+    }
+    i++;
+  }
+  if (depth !== 0) return false;
+  const arrayBody = stripped.slice(start, i - 1);
+  return /["'`]@storybook\/addon-mcp["'`]/.test(arrayBody);
 }
 
 export function addAddonToConfig(content: string): { content: string; ok: boolean } {
@@ -73,7 +101,13 @@ export function addAddonToConfig(content: string): { content: string; ok: boolea
   return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
 }
 
-function confirm(message: string): Promise<boolean> {
+export function confirm(message: string): Promise<boolean> {
+  // Without a TTY (CI, piped input) `rl.question` never resolves and the
+  // process hangs. Auto-decline so callers can fall back to manual setup.
+  if (!process.stdin.isTTY) {
+    console.log(`${message} ${chalk.dim("[non-TTY: declined — pass --yes to accept]")}`);
+    return Promise.resolve(false);
+  }
   return new Promise((resolveP) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     rl.question(`${message} ${chalk.dim("[Y/n]")} `, (answer) => {

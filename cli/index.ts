@@ -4,7 +4,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient } from "./storybook.js";
-import { FigmaClient } from "./figma.js";
+import { FigmaClient, extractFileKey } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
@@ -264,7 +264,7 @@ program
   .command("diff")
   .description("Compare Figma file against code tokens and Storybook components")
   .requiredOption("--figma <url>", "Figma MCP server URL")
-  .requiredOption("--file-key <key>", "Figma file key")
+  .requiredOption("--file-key <key>", "Figma file key or URL (e.g. 4dWAJJAwIisK5pmyOGDW7p or https://www.figma.com/design/4dWAJJAwIisK5pmyOGDW7p/...)")
   .option("--storybook <url>", "Storybook URL (enables component diff)")
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
@@ -275,28 +275,33 @@ program
   .action(async (opts) => {
     const json = !!opts.json;
 
-    // Connect to Figma MCP
-    const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
-    const figma = new FigmaClient(opts.figma as string);
+    let fileKey: string;
     try {
-      await figma.connect();
-      figmaSpinner?.succeed("Connected to Figma MCP");
+      fileKey = extractFileKey(opts.fileKey as string);
     } catch (err) {
-      figmaSpinner?.fail("Failed to connect to Figma MCP");
       console.error(chalk.red(String(err)));
       process.exit(1);
     }
 
-    // Optionally connect to Storybook MCP
+    const figma = new FigmaClient(opts.figma as string);
     let storybook: StorybookClient | null = null;
-    if (opts.storybook) {
-      storybook = await connectStorybook(opts.storybook as string, json);
-    }
-
     let figmaReadFailed = false;
 
     try {
-      const fileKey = opts.fileKey as string;
+      const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
+      try {
+        await figma.connect();
+        figmaSpinner?.succeed("Connected to Figma MCP");
+      } catch (err) {
+        figmaSpinner?.fail("Failed to connect to Figma MCP");
+        console.error(chalk.red(String(err)));
+        process.exit(1);
+      }
+
+      if (opts.storybook) {
+        storybook = await connectStorybook(opts.storybook as string, json);
+      }
+
       const mode = opts.mode as string | undefined;
 
       // --- Token diff ---
@@ -457,15 +462,21 @@ program
   .description("Drop the storysync skill, slash commands, and MCP setup notes for an AI client")
   .requiredOption("--client <name>", "AI client: claude, cursor, or codex")
   .option("--project <path>", "Project root path", ".")
-  .option("--force", "Overwrite existing files")
-  .action((opts) => {
+  .option("--force", "Overwrite existing files without prompting")
+  .option("--dry-run", "Print what would be written without making changes")
+  .option("--yes", "Accept all prompts (also implied in non-TTY environments)")
+  .action(async (opts) => {
     const client = String(opts.client).toLowerCase();
     if (client !== "claude" && client !== "cursor" && client !== "codex") {
       console.error(`Unknown client: ${opts.client}. Use one of: claude, cursor, codex.`);
       process.exitCode = 1;
       return;
     }
-    runSetup(client as Client, opts.project as string, !!opts.force);
+    await runSetup(client as Client, opts.project as string, {
+      force: !!opts.force,
+      dryRun: !!opts.dryRun,
+      yes: !!opts.yes,
+    });
   });
 
 program.parse();

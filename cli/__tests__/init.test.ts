@@ -78,6 +78,19 @@ test("findStorybookConfig: returns null when no config exists", () => {
   }
 });
 
+test("findStorybookConfig: detects main.cjs", () => {
+  const dir = makeProject({
+    ".storybook/main.cjs": "module.exports = { addons: [] };",
+  });
+  try {
+    const found = findStorybookConfig(dir);
+    assert.ok(found);
+    assert.ok(found!.path.endsWith("main.cjs"));
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("getStorybookVersion: reads from devDependencies", () => {
   const dir = makeProject({
     "package.json": JSON.stringify({ devDependencies: { storybook: "10.3.6" } }),
@@ -166,6 +179,42 @@ test("hasAddonMcpInConfig: detects object form", () => {
 test("hasAddonMcpInConfig: false when absent", () => {
   const config = `addons: ["@storybook/addon-a11y"]`;
   assert.equal(hasAddonMcpInConfig(config), false);
+});
+
+test("hasAddonMcpInConfig: ignores entries in line comments", () => {
+  const config = `const config = {
+  // addons: ["@storybook/addon-mcp"],
+  addons: ["@storybook/addon-a11y"],
+};`;
+  assert.equal(hasAddonMcpInConfig(config), false);
+});
+
+test("hasAddonMcpInConfig: ignores entries in block comments inside addons", () => {
+  const config = `const config = {
+  addons: [
+    /* "@storybook/addon-mcp", -- temporarily disabled */
+    "@storybook/addon-a11y",
+  ],
+};`;
+  assert.equal(hasAddonMcpInConfig(config), false);
+});
+
+test("hasAddonMcpInConfig: ignores disabledAddons array", () => {
+  const config = `const config = {
+  disabledAddons: ["@storybook/addon-mcp"],
+  addons: ["@storybook/addon-a11y"],
+};`;
+  assert.equal(hasAddonMcpInConfig(config), false);
+});
+
+test("hasAddonMcpInConfig: detects nested object entry", () => {
+  const config = `const config = {
+  addons: [
+    "@storybook/addon-a11y",
+    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },
+  ],
+};`;
+  assert.equal(hasAddonMcpInConfig(config), true);
 });
 
 test("addAddonToConfig: inserts entry with toolsets.docs", () => {

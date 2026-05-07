@@ -13,6 +13,35 @@ export interface FigmaVariable {
   mode: string;
 }
 
+// Accepts a raw Figma file key (`4dWAJJAwIisK5pmyOGDW7p`) or any of the
+// common Figma URL forms (figma.com/design/<key>, /file/<key>, /board/<key>,
+// /proto/<key>). Returns the file key. Throws on input we can't parse so
+// callers fail loudly rather than later with a confusing API error.
+export function extractFileKey(input: string): string {
+  const s = input.trim();
+  if (!s) throw new Error("Figma file key or URL is empty");
+
+  // Already a bare key — alphanumeric, no slashes or dots.
+  if (/^[A-Za-z0-9]+$/.test(s)) return s;
+
+  // Try parsing as a URL.
+  let url: URL;
+  try {
+    url = new URL(s.startsWith("http") ? s : `https://${s}`);
+  } catch {
+    throw new Error(`Could not parse Figma file key from: ${input}`);
+  }
+  if (!/(^|\.)figma\.com$/.test(url.hostname)) {
+    throw new Error(`Not a Figma URL: ${input}`);
+  }
+  // Path forms: /design/<key>/..., /file/<key>/..., /board/<key>/..., /proto/<key>/...
+  const m = url.pathname.match(/^\/(?:design|file|board|proto|slides|make)\/([A-Za-z0-9]+)/);
+  if (!m) {
+    throw new Error(`Could not extract file key from URL: ${input}`);
+  }
+  return m[1];
+}
+
 export interface FigmaComponentInfo {
   name: string;
   variantProperties: { name: string; type: string; values: string[] }[];

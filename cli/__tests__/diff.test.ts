@@ -11,7 +11,7 @@ import {
   hasDifferences,
 } from "../diff.js";
 import type { TokenCollection } from "../tokens.js";
-import { extractFirstBalancedArray } from "../figma.js";
+import { extractFirstBalancedArray, extractFileKey } from "../figma.js";
 import type { FigmaVariable, FigmaComponentInfo } from "../figma.js";
 import type { FigmaComponentDefinition } from "../mapper.js";
 
@@ -250,6 +250,115 @@ test("diffComponents: variant value mismatch", () => {
   const diffs = diffComponents(code, figma);
   assert.equal(diffs[0].status, "variant_mismatch");
   assert.ok(diffs[0].details.some((d) => d.includes("lg")));
+});
+
+test("diffComponents: BOOLEAN code prop matches VARIANT[true,false] in Figma", () => {
+  // Figma's MCP encodes booleans as VARIANT with ["true","false"]; this
+  // shouldn't show up as drift against a code-side BOOLEAN.
+  const code: FigmaComponentDefinition[] = [{
+    name: "Button",
+    variantProperties: [{ name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" }],
+    variantCombinations: [],
+    wasCapped: false,
+  }];
+  const figma: FigmaComponentInfo[] = [{
+    name: "Button",
+    variantProperties: [{ name: "disabled", type: "VARIANT", values: ["true", "false"] }],
+    variantCount: 2,
+  }];
+  const diffs = diffComponents(code, figma);
+  assert.equal(diffs[0].status, "match");
+  assert.equal(diffs[0].details.length, 0);
+});
+
+test("diffComponents: case-insensitive boolean values still match", () => {
+  const code: FigmaComponentDefinition[] = [{
+    name: "Button",
+    variantProperties: [{ name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" }],
+    variantCombinations: [],
+    wasCapped: false,
+  }];
+  const figma: FigmaComponentInfo[] = [{
+    name: "Button",
+    variantProperties: [{ name: "disabled", type: "VARIANT", values: ["True", "False"] }],
+    variantCount: 2,
+  }];
+  const diffs = diffComponents(code, figma);
+  assert.equal(diffs[0].status, "match");
+});
+
+test("diffComponents: VARIANT with three values is not boolean — still diffs", () => {
+  const code: FigmaComponentDefinition[] = [{
+    name: "Button",
+    variantProperties: [{ name: "state", type: "VARIANT", values: ["true", "false", "indeterminate"], defaultValue: "false" }],
+    variantCombinations: [],
+    wasCapped: false,
+  }];
+  const figma: FigmaComponentInfo[] = [{
+    name: "Button",
+    variantProperties: [{ name: "state", type: "VARIANT", values: ["true", "false"] }],
+    variantCount: 2,
+  }];
+  const diffs = diffComponents(code, figma);
+  assert.equal(diffs[0].status, "variant_mismatch");
+  assert.ok(diffs[0].details.some((d) => d.includes("indeterminate")));
+});
+
+// --- extractFileKey ---
+
+test("extractFileKey: bare key passthrough", () => {
+  assert.equal(extractFileKey("4dWAJJAwIisK5pmyOGDW7p"), "4dWAJJAwIisK5pmyOGDW7p");
+});
+
+test("extractFileKey: full /design/ URL", () => {
+  assert.equal(
+    extractFileKey("https://www.figma.com/design/4dWAJJAwIisK5pmyOGDW7p/Untitled?node-id=0-1"),
+    "4dWAJJAwIisK5pmyOGDW7p",
+  );
+});
+
+test("extractFileKey: /file/ URL", () => {
+  assert.equal(
+    extractFileKey("https://www.figma.com/file/abc123XYZ/Some-File"),
+    "abc123XYZ",
+  );
+});
+
+test("extractFileKey: /board/ URL (FigJam)", () => {
+  assert.equal(
+    extractFileKey("https://www.figma.com/board/zzz999/My-Board"),
+    "zzz999",
+  );
+});
+
+test("extractFileKey: URL with query params and fragment", () => {
+  assert.equal(
+    extractFileKey("https://www.figma.com/design/keyABC/Title?node-id=1%3A2&t=xx#x"),
+    "keyABC",
+  );
+});
+
+test("extractFileKey: URL without protocol still works", () => {
+  assert.equal(
+    extractFileKey("www.figma.com/design/keyABC/Title"),
+    "keyABC",
+  );
+});
+
+test("extractFileKey: trims whitespace around input", () => {
+  assert.equal(extractFileKey("  abc123  "), "abc123");
+});
+
+test("extractFileKey: throws on empty string", () => {
+  assert.throws(() => extractFileKey(""), /empty/);
+});
+
+test("extractFileKey: throws on non-Figma URL", () => {
+  assert.throws(() => extractFileKey("https://example.com/design/abc"), /Figma/);
+});
+
+test("extractFileKey: throws on Figma URL with no recognizable path", () => {
+  assert.throws(() => extractFileKey("https://www.figma.com/community"), /Could not extract/);
 });
 
 // --- summary ---

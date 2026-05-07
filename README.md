@@ -261,7 +261,7 @@ Compare a Figma file against code tokens and Storybook components. Reads from Fi
 ```text
 Options:
   --figma <url>          Figma MCP server URL (required)
-  --file-key <key>       Figma file key (required)
+  --file-key <key|url>   Figma file key or full URL — both accepted (required)
   --storybook <url>      Storybook URL (enables component diff)
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted)
@@ -276,6 +276,9 @@ Example:
 ```bash
 # Diff tokens only
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
+
+# A full Figma URL works too — the file key is extracted automatically
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key 'https://www.figma.com/design/abc123/Untitled'
 
 # Diff tokens + components
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
