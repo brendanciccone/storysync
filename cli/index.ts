@@ -8,6 +8,7 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { runInit } from "./init.js";
 import { VERSION } from "./version.js";
 import type { TokenBaseline } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
@@ -430,6 +431,14 @@ program
       await figma.disconnect();
       if (storybook) await storybook.disconnect();
     }
+  });
+
+program
+  .command("init")
+  .description("Set up @storybook/addon-mcp and componentsManifest in your Storybook config")
+  .option("--project <path>", "Project root path", ".")
+  .action(async (opts) => {
+    await runInit(opts.project as string);
   });
 
 program.parse();

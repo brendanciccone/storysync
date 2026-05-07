@@ -79,6 +79,9 @@ Start Storybook and say: **"Generate my Figma library from Storybook"**
 ### CLI
 
 ```bash
+# One-time setup: configure @storybook/addon-mcp + componentsManifest in your project
+npx storysync init
+
 # Extract design tokens from your project
 npx storysync tokens
 
@@ -195,6 +198,15 @@ If no matching CSS variable is found (and no fallback is provided), the raw `var
 | `ref` / `className` / `style` | Skipped |
 
 ## CLI commands
+
+### `storysync init`
+
+Detect missing Storybook MCP setup and offer to fix it. Checks whether `@storybook/addon-mcp` is installed, registered in `addons`, and whether `features.componentsManifest` is enabled — then prompts before applying each fix to your `.storybook/main.ts`.
+
+```text
+Options:
+  --project <path>     Project root path (default: ".")
+```
 
 ### `storysync tokens`
 
