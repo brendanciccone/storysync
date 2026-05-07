@@ -118,6 +118,7 @@ program
   .option("--project <path>", "Project root to scan", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
   .option("--json", "Output JSON instead of formatted text")
+  .option("--all", "Show all tokens instead of truncating")
   .option("--check", "Compare against baseline and detect drift")
   .option("--baseline <path>", "Path to token baseline JSON", ".storysync/tokens-baseline.json")
   .option("--strict", "Exit with code 1 if no tokens found or drift detected")
@@ -209,11 +210,12 @@ program
       console.log("");
       for (const collection of result.collections) {
         console.log(`  ${chalk.bold(collection.category)} ${chalk.dim(`(${collection.tokens.length} tokens)`)}`);
-        for (const token of collection.tokens.slice(0, 8)) {
+        const shown = opts.all ? collection.tokens : collection.tokens.slice(0, 8);
+        for (const token of shown) {
           console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value)}`);
         }
-        if (collection.tokens.length > 8) {
-          console.log(chalk.dim(`    ... and ${collection.tokens.length - 8} more`));
+        if (!opts.all && collection.tokens.length > 8) {
+          console.log(chalk.dim(`    ... and ${collection.tokens.length - 8} more (use --all to show)`));
         }
       }
       console.log(`\n${totalTokens} tokens in ${result.collections.length} collections`);

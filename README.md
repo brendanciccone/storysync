@@ -217,6 +217,7 @@ Options:
   --project <path>     Project root to scan (default: ".")
   --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted)
   --json               Output JSON instead of formatted text
+  --all                Show all tokens instead of truncating
   --check              Compare against baseline and detect drift
   --baseline <path>    Path to token baseline JSON (default: .storysync/tokens-baseline.json)
   --strict             Exit with code 1 if no tokens found or drift detected
