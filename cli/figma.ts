@@ -24,13 +24,13 @@ const collections = await figma.variables.getLocalVariableCollectionsAsync();
 const results = [];
 const MAX_ALIAS_DEPTH = 8;
 
-async function resolveAlias(varId, depth) {
+async function resolveAlias(varId, modeId, depth) {
   if (depth > MAX_ALIAS_DEPTH) return { value: '<alias-cycle>', type: 'STRING' };
   const v = await figma.variables.getVariableByIdAsync(varId);
   if (!v) return { value: '<missing>', type: 'STRING' };
-  const mode = v.valuesByMode[Object.keys(v.valuesByMode)[0]];
+  const mode = v.valuesByMode[modeId] ?? v.valuesByMode[Object.keys(v.valuesByMode)[0]];
   if (mode && typeof mode === 'object' && 'type' in mode && mode.type === 'VARIABLE_ALIAS') {
-    return resolveAlias(mode.id, depth + 1);
+    return resolveAlias(mode.id, modeId, depth + 1);
   }
   return { value: mode, type: v.resolvedType };
 }
@@ -54,7 +54,7 @@ for (const coll of collections) {
     let raw = v.valuesByMode[targetMode.modeId];
     let type = v.resolvedType;
     if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'VARIABLE_ALIAS') {
-      const resolved = await resolveAlias(raw.id, 0);
+      const resolved = await resolveAlias(raw.id, targetMode.modeId, 0);
       raw = resolved.value;
     }
     let value = '';
@@ -150,7 +150,7 @@ function parseJsonResult<T>(text: string, label: string): T {
   try {
     return JSON.parse(trimmed) as T;
   } catch {
-    const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
+    const arrayMatch = trimmed.match(/\[[\s\S]*?\]/);
     if (arrayMatch) {
       try { return JSON.parse(arrayMatch[0]) as T; } catch { /* fall through */ }
     }

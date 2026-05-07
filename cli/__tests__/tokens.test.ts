@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { extractTokens } from "../tokens.js";
 
@@ -9,7 +9,7 @@ function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-test-"));
   for (const [path, content] of Object.entries(files)) {
     const full = join(dir, path);
-    const parent = full.slice(0, full.lastIndexOf("/"));
+    const parent = dirname(full);
     if (parent !== dir) mkdirSync(parent, { recursive: true });
     writeFileSync(full, content);
   }

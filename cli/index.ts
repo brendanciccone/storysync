@@ -311,6 +311,7 @@ program
 
       // --- Component diff ---
       let componentDiffs: ComponentDiffEntry[] = [];
+      let mappingFailures: { name: string; error: string }[] = [];
       if (storybook) {
         const compSpinner = json ? null : ora("Reading Figma components...").start();
         let figmaComponents: FigmaComponentInfo[] = [];
@@ -334,15 +335,19 @@ program
           }
 
           const codeComponents: FigmaComponentDefinition[] = [];
+          mappingFailures = [];
           for (const entry of entries) {
             try {
               const component = await storybook.getComponent(entry.id, entry.name);
               codeComponents.push(mapComponent(component));
-            } catch {
-              // skip unmappable components
+            } catch (err) {
+              mappingFailures.push({ name: entry.name, error: String(err) });
             }
           }
           mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
+          if (!json && mappingFailures.length) {
+            console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors.`));
+          }
 
           componentDiffs = diffComponents(codeComponents, figmaComponents);
         }
@@ -420,7 +425,7 @@ program
         }
       }
 
-      if (opts.strict && (figmaReadFailed || hasDifferences(summary))) process.exitCode = 1;
+      if (opts.strict && (figmaReadFailed || hasDifferences(summary) || mappingFailures.length)) process.exitCode = 1;
     } finally {
       await figma.disconnect();
       if (storybook) await storybook.disconnect();
