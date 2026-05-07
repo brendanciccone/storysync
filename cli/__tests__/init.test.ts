@@ -110,8 +110,27 @@ test("isStorybookVersionOk: 9.1.20 fails", () => {
   assert.equal(isStorybookVersionOk("9.1.20"), false);
 });
 
+test("isStorybookVersionOk: 10.0.0 fails (needs 10.1+)", () => {
+  assert.equal(isStorybookVersionOk("10.0.0"), false);
+});
+
+test("isStorybookVersionOk: 11.0.0 passes", () => {
+  assert.equal(isStorybookVersionOk("11.0.0"), true);
+});
+
 test("isStorybookVersionOk: null fails", () => {
   assert.equal(isStorybookVersionOk(null), false);
+});
+
+test("getStorybookVersion: falls back to @storybook/ framework package", () => {
+  const dir = makeProject({
+    "package.json": JSON.stringify({ devDependencies: { "@storybook/react-vite": "^10.3.0" } }),
+  });
+  try {
+    assert.equal(getStorybookVersion(dir), "^10.3.0");
+  } finally {
+    cleanup(dir);
+  }
 });
 
 test("hasAddonMcpInPackageJson: detects in devDependencies", () => {

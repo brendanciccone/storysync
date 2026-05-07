@@ -36,13 +36,19 @@ export function getStorybookVersion(projectPath: string): string | null {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
-  return pkg.devDependencies?.["storybook"] || pkg.dependencies?.["storybook"] || null;
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+  if (deps["storybook"]) return deps["storybook"];
+  const framework = Object.entries(deps).find(([name]) => name.startsWith("@storybook/"));
+  return framework?.[1] ?? null;
 }
 
 export function isStorybookVersionOk(version: string | null): boolean {
   if (!version) return false;
-  const m = version.replace(/^[\^~>=<]*/, "").match(/^(\d+)/);
-  return m ? parseInt(m[1], 10) >= MIN_STORYBOOK_MAJOR : false;
+  const m = version.replace(/^[\^~>=<]*/, "").match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const major = parseInt(m[1], 10);
+  const minor = parseInt(m[2], 10);
+  return major > MIN_STORYBOOK_MAJOR || (major === MIN_STORYBOOK_MAJOR && minor >= 1);
 }
 
 export function hasAddonMcpInPackageJson(projectPath: string): boolean {

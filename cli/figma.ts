@@ -51,7 +51,7 @@ for (const coll of collections) {
   for (const varId of coll.variableIds) {
     const v = await figma.variables.getVariableByIdAsync(varId);
     if (!v) continue;
-    let raw = v.valuesByMode[targetMode.modeId];
+    let raw = v.valuesByMode[targetMode.modeId] ?? v.valuesByMode[Object.keys(v.valuesByMode)[0]];
     let type = v.resolvedType;
     if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'VARIABLE_ALIAS') {
       const resolved = await resolveAlias(raw.id, targetMode.modeId, 0);
