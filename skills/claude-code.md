@@ -92,6 +92,8 @@ This outputs:
   "components": [
     {
       "name": "Button",
+      "title": "Forms/Button",
+      "category": "Forms",
       "variantProperties": [
         { "name": "variant", "type": "VARIANT", "values": ["default", "destructive", "outline"], "defaultValue": "default" },
         { "name": "size", "type": "VARIANT", "values": ["sm", "md", "lg"], "defaultValue": "md" },
@@ -104,6 +106,8 @@ This outputs:
   "summary": { "total": 5, "mapped": 5, "failed": 0, "capped": 0, "totalCombinations": 42 }
 }
 ```
+
+The `category` field reflects the component's place in Storybook's sidebar (the part of `Forms/Button` before the last `/`). Use it to organize the Figma file — see "Organization" below.
 
 2. **Inspect individual components** — for detailed prop-to-variant mapping of a specific component:
 
@@ -122,13 +126,23 @@ npx storysync inspect --storybook http://localhost:6006 --component Button
    - **Dynamic/conditional styling** — for simple ternaries and literal concatenations (e.g. `isPrimary ? 'bg-blue-600' : 'bg-gray-200'`), capture both concrete values and create variants for each. For runtime-computed expressions (template literals with variables, `clsx`/`cn` calls with non-literal keys), extract whatever literal fragments are present and flag the rest for manual review.
    - **Source vs. documentation conflicts** — prefer explicit literal values found in source code. If source and documentation both provide concrete but different values, use the source value and note the discrepancy in the summary.
    Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps where source code lacks concrete values.
-4. Write to Figma with `use_figma`. Use the variant data from `storysync map` and the visual details from the source code. Include full visual styling — not just variant names, but how each variant should actually look:
+4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field of each component, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page that matches its top-level category. This mirrors the Storybook sidebar so designers can find things where they expect them. If multiple components share the same leaf name (e.g. two `Button`s under different categories), the per-page organization keeps them distinct.
+
+5. Write to Figma with `use_figma`. Use the variant data from `storysync map`, the visual details from the source code, and the category for page placement. Include full visual styling — not just variant names, but how each variant should actually look:
 
 ```js
 use_figma({
   code: `
-    // Create component set on 'storysync' page
-    // Component: Button
+    // Component: Button (title: Forms/Button, category: Forms)
+    //
+    // Find or create the 'Forms' page; place the component set there.
+    let page = figma.root.children.find(p => p.name === 'Forms');
+    if (!page) {
+      page = figma.createPage();
+      page.name = 'Forms';
+    }
+    figma.currentPage = page;
+    //
     // Variant properties (from storysync map output):
     //   - variant (VARIANT): [default, destructive, outline]
     //   - size (VARIANT): [sm, md, lg]
@@ -143,16 +157,16 @@ use_figma({
     //   size=md: 14px font, 16px/8px padding
     //   size=lg: 16px font, 24px/12px padding
 
-    // ... Figma Plugin API code to create the component set
+    // ... Figma Plugin API code to create the component set on the Forms page
   `,
-  description: "Create Button component set with N variants, styled per visual spec",
+  description: "Create Button component set on 'Forms' page with N variants, styled per visual spec",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
 ```
 
-5. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
-6. Summarize what was synced: token collections created, component count, variant counts, visual details applied, any failures or caps.
+6. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
+7. Summarize what was synced: token collections created, component count grouped by page/category, variant counts, visual details applied, any failures or caps.
 
 ## Variable binding
 

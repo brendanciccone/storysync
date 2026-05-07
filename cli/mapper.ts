@@ -29,6 +29,8 @@ export interface FigmaVariantProperty {
 
 export interface FigmaComponentDefinition {
   name: string;
+  title?: string;
+  category?: string;
   variantProperties: FigmaVariantProperty[];
   variantCombinations: Record<string, string>[];
   wasCapped: boolean;
@@ -36,6 +38,8 @@ export interface FigmaComponentDefinition {
 
 export interface StorybookComponent {
   name: string;
+  title?: string;
+  category?: string;
   props: StorybookProp[];
   stories: { id: string; name: string }[];
 }
@@ -186,5 +190,12 @@ function cartesian(properties: FigmaVariantProperty[]): { combinations: Record<s
 export function mapComponent(component: StorybookComponent): FigmaComponentDefinition {
   const variantProperties = component.props.map(mapProp).filter((v): v is FigmaVariantProperty => v != null);
   const { combinations, wasCapped } = cartesian(variantProperties);
-  return { name: component.name, variantProperties, variantCombinations: combinations, wasCapped };
+  return {
+    name: component.name,
+    title: component.title,
+    category: component.category,
+    variantProperties,
+    variantCombinations: combinations,
+    wasCapped,
+  };
 }

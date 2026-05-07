@@ -18,52 +18,48 @@ Reads design tokens from your codebase (Tailwind config, CSS custom properties, 
 
 ## Quick start
 
-### Claude Code (recommended)
+storysync ships three workflows: **push** (code → Figma), **diff** (audit drift in either direction), and **pull** (Figma → code, _coming in v0.3_).
+
+Install storysync once, then drop the right config into your project for the AI client you use:
 
 ```bash
-# 1. Install the Storybook MCP addon in your project
-npm install @storybook/addon-mcp
+npm install -g storysync                # or: pnpm add -g storysync
 
-# 2. Connect Storybook MCP to Claude Code
-claude mcp add --transport http storybook http://localhost:6006/mcp
-
-# 3. Install the Figma plugin (includes MCP server + agent skills)
-claude plugin install figma@claude-plugins-official
-
-# 4. Install storysync
-npm install -g storysync
-
-# 5. Add the storysync skill
-mkdir -p .claude/skills
-curl -o .claude/skills/storysync.md https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/claude-code.md
+cd your-project
+npx storysync init                      # set up @storybook/addon-mcp if needed
+npx storysync setup --client claude     # or: --client cursor   --client codex
 ```
 
-Start Storybook, open Claude Code, and say: **"Generate my Figma library from Storybook"**
+`setup` writes the skill file (and slash commands, for Claude) into the right place and prints the MCP setup commands you still need to run.
 
-To audit an existing Figma file against code: **"Check if my Figma file is in sync with code"**
+### Claude Code
+
+After `storysync setup --client claude`:
+
+```bash
+claude mcp add --transport http storybook http://localhost:6006/mcp
+claude plugin install figma@claude-plugins-official
+```
+
+Then start Storybook and open Claude Code. Two slash commands are now available:
+
+- `/storysync-push <figma-file-key>` — sync Storybook + tokens into Figma
+- `/storysync-diff <figma-file-key>` — audit Figma against code
+
+Or just say it in plain English: **"Push my Storybook to Figma (file key abc123)"** / **"Diff Figma against code"**.
 
 ### Cursor
 
-```bash
-# 1. Install the Storybook MCP addon in your project
-npm install @storybook/addon-mcp
+After `storysync setup --client cursor`:
 
-# 2. Add the storysync rule
-mkdir -p .cursor/rules
-curl -o .cursor/rules/storysync.mdc https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/cursor.mdc
-```
+In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say:
 
-In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say: **"Generate my Figma library from Storybook"**
+- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
+- **"Diff Figma against code (file key abc123)"** — audit
 
 ### Codex
 
-```bash
-# 1. Install the Storybook MCP addon in your project
-npm install @storybook/addon-mcp
-
-# 2. Add the storysync instructions
-curl -o AGENTS.md https://raw.githubusercontent.com/brendanciccone/storysync/main/skills/codex.md
-```
+After `storysync setup --client codex`:
 
 Add Storybook and Figma MCP servers to `.codex/config.toml`:
 
@@ -77,29 +73,18 @@ type = "http"
 url = "https://mcp.figma.com/mcp"
 ```
 
-Start Storybook and say: **"Generate my Figma library from Storybook"**
+Start Storybook and say:
 
-### CLI
+- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
+- **"Diff Figma against code (file key abc123)"** — audit
 
-```bash
-# One-time setup: configure @storybook/addon-mcp in your project
-npx storysync init
+### Magic phrases (all clients)
 
-# Extract design tokens from your project
-npx storysync tokens
-
-# See how all components map to Figma variants
-npx storysync map --storybook http://localhost:6006
-
-# List available components
-npx storysync list --storybook http://localhost:6006
-
-# Inspect one component's mapping in detail
-npx storysync inspect --storybook http://localhost:6006 --component Button
-
-# Diff Figma file against code tokens and components
-npx storysync diff --figma https://mcp.figma.com/mcp --file-key <key> --storybook http://localhost:6006
-```
+| Goal | Say |
+|---|---|
+| Code → Figma | "Push my Storybook to Figma (file key `<key>`)" |
+| Audit drift | "Diff Figma against code (file key `<key>`)" or "Check if Figma is in sync" |
+| Figma → code | _Coming in v0.3_ |
 
 ### GitHub Action (validate in CI)
 
@@ -200,7 +185,9 @@ If no matching CSS variable is found (and no fallback is provided), the raw `var
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
 
-## CLI commands
+## CLI reference
+
+The CLI exists for two purposes: **setup** (the `init` and `setup` commands wire your project up for an AI client) and **preview / CI** (the `tokens`, `map`, `list`, `inspect`, and `diff` commands give you deterministic output you can inspect locally or run in GitHub Actions). Day-to-day Figma syncing happens through the AI client using the skill + slash commands above — the CLI does not write to Figma directly.
 
 ### `storysync init`
 
@@ -209,6 +196,24 @@ Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version
 ```text
 Options:
   --project <path>     Project root path (default: ".")
+```
+
+### `storysync setup`
+
+Drop the storysync skill, slash commands, and MCP setup notes into your project for the AI client you use.
+
+```text
+Options:
+  --client <name>      AI client: claude, cursor, or codex (required)
+  --project <path>     Project root path (default: ".")
+  --force              Overwrite existing files
+```
+
+Example:
+
+```bash
+npx storysync setup --client claude
+# writes .claude/skills/storysync.md and .claude/commands/storysync-{push,diff}.md
 ```
 
 ### `storysync tokens`

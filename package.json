@@ -41,6 +41,7 @@
     "dist/cli/*.js",
     "dist/cli/*.d.ts",
     "skills",
+    "commands",
     "action",
     "README.md",
     "LICENSE"

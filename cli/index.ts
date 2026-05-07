@@ -9,6 +9,7 @@ import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
+import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
 import type { TokenBaseline } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
@@ -59,25 +60,26 @@ program
         return;
       }
 
-      const results: { name: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
+      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
       for (const entry of entries) {
         try {
-          const component = await storybook.getComponent(entry.id, entry.name);
+          const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(component);
-          results.push({ name: entry.name, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
+          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
             const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
-            console.log(`  ${chalk.green("✓")} ${chalk.bold(entry.name)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            const label = entry.title ?? entry.name;
+            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
           }
           total += def.variantCombinations.length;
           if (def.wasCapped) capped++;
         } catch (err) {
           failed++;
-          results.push({ name: entry.name, variantProperties: [], combinations: 0, capped: false, error: String(err) });
-          if (!json) console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.name)} ${chalk.red(String(err))}`);
+          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: [], combinations: 0, capped: false, error: String(err) });
+          if (!json) console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.title ?? entry.name)} ${chalk.red(String(err))}`);
         }
       }
 
@@ -348,7 +350,7 @@ program
           mappingFailures = [];
           for (const entry of entries) {
             try {
-              const component = await storybook.getComponent(entry.id, entry.name);
+              const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
               codeComponents.push(mapComponent(component));
             } catch (err) {
               mappingFailures.push({ name: entry.name, error: String(err) });
@@ -448,6 +450,22 @@ program
   .option("--project <path>", "Project root path", ".")
   .action(async (opts) => {
     await runInit(opts.project as string);
+  });
+
+program
+  .command("setup")
+  .description("Drop the storysync skill, slash commands, and MCP setup notes for an AI client")
+  .requiredOption("--client <name>", "AI client: claude, cursor, or codex")
+  .option("--project <path>", "Project root path", ".")
+  .option("--force", "Overwrite existing files")
+  .action((opts) => {
+    const client = String(opts.client).toLowerCase();
+    if (client !== "claude" && client !== "cursor" && client !== "codex") {
+      console.error(`Unknown client: ${opts.client}. Use one of: claude, cursor, codex.`);
+      process.exitCode = 1;
+      return;
+    }
+    runSetup(client as Client, opts.project as string, !!opts.force);
   });
 
 program.parse();

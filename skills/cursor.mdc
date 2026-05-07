@@ -42,7 +42,7 @@ This auto-detects the token source (Tailwind config, CSS custom properties, or t
 npx storysync map --storybook http://localhost:6006 --json
 ```
 
-This outputs structured JSON with each component's variant properties (name, type, values, default) and combination count.
+This outputs structured JSON with each component's variant properties (name, type, values, default), combination count, and a `title`/`category` reflecting the component's place in Storybook's sidebar (e.g. `title: "Forms/Button"`, `category: "Forms"`). Use the category to organize the Figma file — see "Organization" below.
 
 2. **Inspect individual components** — for detailed prop-to-variant mapping:
 
@@ -61,9 +61,11 @@ npx storysync inspect --storybook http://localhost:6006 --component Button
    - **Dynamic/conditional styling** — for simple ternaries (e.g. `isPrimary ? 'bg-blue-600' : 'bg-gray-200'`), capture both values as variants. For runtime-computed expressions, extract literal fragments and flag the rest for manual review.
    - **Source vs. documentation conflicts** — prefer explicit literal values from source. If both differ, use source and note the discrepancy in the summary.
    Use these extracted values as the source of truth for colors, spacing, typography, and borders when calling `use_figma` in the next step. Documentation values fill in gaps where source code lacks concrete values.
-4. Write with `use_figma` — use the variant data from `storysync map` and the visual details from the source code. Include full visual styling in the instruction, not just variant structure. Describe how each variant should look: background colors, text colors, font sizes, padding, border radius, borders. Use `skillNames: "figma-use"`.
-5. Verify each component visually after creation. Fix any styling issues with a follow-up `use_figma` call.
-6. Summarize: token collections created, components synced, variant counts, visual details applied, failures, caps.
+4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page matching its category. This mirrors the Storybook sidebar so designers find things where they expect them, and keeps duplicate leaf names (e.g. two `Button`s under different categories) distinct.
+
+5. Write with `use_figma` — find or create the target page, then create the component set on it. Use the variant data from `storysync map` and the visual details from the source code. Include full visual styling in the instruction, not just variant structure: background colors, text colors, font sizes, padding, border radius, borders. Use `skillNames: "figma-use"`.
+6. Verify each component visually after creation. Fix any styling issues with a follow-up `use_figma` call.
+7. Summarize: token collections created, components synced grouped by page/category, variant counts, visual details applied, failures, caps.
 
 ## Variable binding
 

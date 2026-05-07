@@ -7,6 +7,8 @@ import type { StorybookComponent, StorybookProp, PropType } from "./mapper.js";
 export interface ComponentEntry {
   id: string;
   name: string;
+  title?: string;
+  category?: string;
   storyIds?: string[];
 }
 
@@ -61,10 +63,10 @@ export class StorybookClient {
     }
   }
 
-  async getComponent(id: string, displayName?: string): Promise<StorybookComponent> {
+  async getComponent(id: string, displayName?: string, title?: string, category?: string): Promise<StorybookComponent> {
     const text = await this.call("get-documentation", { id });
     const name = displayName ?? id;
-    return { name, props: this.parseProps(text), stories: this.parseStories(name, text) };
+    return { name, title, category, props: this.parseProps(text), stories: this.parseStories(name, text) };
   }
 
   private async call(tool: string, args: Record<string, unknown>): Promise<string> {
@@ -79,16 +81,36 @@ export class StorybookClient {
   }
 
   // Parses the markdown list from list-all-documentation.
-  // Format: - **Button** (id: `button`) - description
-  //           - Primary (id: `button--primary`)
+  // Captures hierarchy from section headings (## Forms) or slashes in bold names (**Forms/Button**).
   private parseComponentList(text: string): ComponentEntry[] {
     const entries: ComponentEntry[] = [];
     let current: ComponentEntry | null = null;
+    let currentSection: string | null = null;
 
     for (const line of text.split("\n")) {
+      const heading = line.match(/^#{1,6}\s+(.+?)\s*$/);
+      if (heading) {
+        currentSection = heading[1].trim();
+        continue;
+      }
+
       const m = line.match(/^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
       if (m && !/^\s{2,}/.test(line)) {
-        current = { name: m[1].trim(), id: m[2].trim(), storyIds: [] };
+        const rawName = m[1].trim();
+        const id = m[2].trim();
+        let title: string | undefined;
+        let name = rawName;
+
+        if (rawName.includes("/")) {
+          title = rawName;
+          name = rawName.split("/").pop()!.trim();
+        } else if (currentSection) {
+          title = `${currentSection}/${rawName}`;
+        }
+
+        const category = title?.includes("/") ? title.split("/").slice(0, -1).join("/") : undefined;
+
+        current = { id, name, title, category, storyIds: [] };
         entries.push(current);
       } else if (current && /^\s{2,}/.test(line)) {
         const s = line.match(/[\-\*]\s+(?:\*\*)?[^*(\n]+?(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
