@@ -201,7 +201,7 @@ If no matching CSS variable is found (and no fallback is provided), the raw `var
 
 ### `storysync init`
 
-Detect missing Storybook MCP setup and offer to fix it. Checks whether `@storybook/addon-mcp` is installed, registered in `addons`, and whether `features.componentsManifest` is enabled — then prompts before applying each fix to your `.storybook/main.ts`.
+Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version (10.1+ required for component sync), whether `@storybook/addon-mcp` is installed, and whether it's registered in `addons` — then prompts before applying each fix to your `.storybook/main.ts`.
 
 ```text
 Options:
@@ -298,7 +298,7 @@ The reverse-direction (Figma → code) features have known constraints that you 
 
 ### Storybook (for component sync)
 
-- **Storybook 9.x and 10.x** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`)
+- **Storybook 10.1+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`). Storybook 9.x only supports token extraction — the docs tools that `list`/`map`/`inspect` depend on require Storybook 10's component manifests.
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
 - **Node.js 18+**
 - Must be the **dev server** (`storybook dev`), not a static build

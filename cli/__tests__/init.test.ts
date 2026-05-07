@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import {
   detectPackageManager,
   findStorybookConfig,
+  getStorybookVersion,
+  isStorybookVersionOk,
   hasAddonMcpInPackageJson,
   hasAddonMcpInConfig,
-  hasComponentsManifest,
   addAddonToConfig,
-  addComponentsManifest,
 } from "../init.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -78,6 +78,42 @@ test("findStorybookConfig: returns null when no config exists", () => {
   }
 });
 
+test("getStorybookVersion: reads from devDependencies", () => {
+  const dir = makeProject({
+    "package.json": JSON.stringify({ devDependencies: { storybook: "10.3.6" } }),
+  });
+  try {
+    assert.equal(getStorybookVersion(dir), "10.3.6");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("getStorybookVersion: null when not installed", () => {
+  const dir = makeProject({ "package.json": JSON.stringify({ devDependencies: {} }) });
+  try {
+    assert.equal(getStorybookVersion(dir), null);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("isStorybookVersionOk: 10.3.6 passes", () => {
+  assert.equal(isStorybookVersionOk("10.3.6"), true);
+});
+
+test("isStorybookVersionOk: ^10.1.0 passes", () => {
+  assert.equal(isStorybookVersionOk("^10.1.0"), true);
+});
+
+test("isStorybookVersionOk: 9.1.20 fails", () => {
+  assert.equal(isStorybookVersionOk("9.1.20"), false);
+});
+
+test("isStorybookVersionOk: null fails", () => {
+  assert.equal(isStorybookVersionOk(null), false);
+});
+
 test("hasAddonMcpInPackageJson: detects in devDependencies", () => {
   const dir = makeProject({
     "package.json": JSON.stringify({ devDependencies: { "@storybook/addon-mcp": "^0.6.0" } }),
@@ -113,16 +149,6 @@ test("hasAddonMcpInConfig: false when absent", () => {
   assert.equal(hasAddonMcpInConfig(config), false);
 });
 
-test("hasComponentsManifest: true when set to true", () => {
-  const config = `features: { componentsManifest: true }`;
-  assert.equal(hasComponentsManifest(config), true);
-});
-
-test("hasComponentsManifest: false when set to false", () => {
-  const config = `features: { componentsManifest: false }`;
-  assert.equal(hasComponentsManifest(config), false);
-});
-
 test("addAddonToConfig: inserts entry with toolsets.docs", () => {
   const input = `const config = {\n  addons: [\n    '@storybook/addon-a11y',\n  ],\n};`;
   const result = addAddonToConfig(input);
@@ -133,33 +159,5 @@ test("addAddonToConfig: inserts entry with toolsets.docs", () => {
 
 test("addAddonToConfig: returns ok=false when no addons array found", () => {
   const result = addAddonToConfig(`const config = { framework: '@storybook/nextjs-vite' };`);
-  assert.equal(result.ok, false);
-});
-
-test("addComponentsManifest: inserts into existing features block", () => {
-  const input = `const config = {\n  features: {\n    other: true,\n  },\n  addons: [],\n};`;
-  const result = addComponentsManifest(input);
-  assert.equal(result.ok, true);
-  assert.match(result.content, /componentsManifest:\s*true/);
-});
-
-test("addComponentsManifest: replaces false with true in-place", () => {
-  const input = `const config = {\n  features: {\n    componentsManifest: false,\n  },\n};`;
-  const result = addComponentsManifest(input);
-  assert.equal(result.ok, true);
-  assert.match(result.content, /componentsManifest:\s*true/);
-  assert.doesNotMatch(result.content, /componentsManifest:\s*false/);
-});
-
-test("addComponentsManifest: creates new features block before addons", () => {
-  const input = `const config = {\n  addons: [],\n};`;
-  const result = addComponentsManifest(input);
-  assert.equal(result.ok, true);
-  assert.match(result.content, /features:\s*\{\s*[\s\S]*componentsManifest:\s*true/);
-  assert.match(result.content, /addons:\s*\[/);
-});
-
-test("addComponentsManifest: ok=false when no anchors found", () => {
-  const result = addComponentsManifest(`const x = 1;`);
   assert.equal(result.ok, false);
 });

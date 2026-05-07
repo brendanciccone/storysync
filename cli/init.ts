@@ -13,6 +13,8 @@ export interface StorybookConfigFile {
   content: string;
 }
 
+const MIN_STORYBOOK_MAJOR = 10;
+
 export function detectPackageManager(projectPath: string): PackageManager {
   if (existsSync(join(projectPath, "pnpm-lock.yaml"))) return "pnpm";
   if (existsSync(join(projectPath, "yarn.lock"))) return "yarn";
@@ -25,6 +27,22 @@ export function findStorybookConfig(projectPath: string): StorybookConfigFile | 
     if (existsSync(p)) return { path: p, content: readFileSync(p, "utf8") };
   }
   return null;
+}
+
+export function getStorybookVersion(projectPath: string): string | null {
+  const pkgPath = join(projectPath, "package.json");
+  if (!existsSync(pkgPath)) return null;
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  return pkg.devDependencies?.["storybook"] || pkg.dependencies?.["storybook"] || null;
+}
+
+export function isStorybookVersionOk(version: string | null): boolean {
+  if (!version) return false;
+  const m = version.replace(/^[\^~>=<]*/, "").match(/^(\d+)/);
+  return m ? parseInt(m[1], 10) >= MIN_STORYBOOK_MAJOR : false;
 }
 
 export function hasAddonMcpInPackageJson(projectPath: string): boolean {
@@ -41,41 +59,12 @@ export function hasAddonMcpInConfig(content: string): boolean {
   return /["']@storybook\/addon-mcp["']/.test(content);
 }
 
-export function hasComponentsManifest(content: string): boolean {
-  return /componentsManifest\s*:\s*true/.test(content);
-}
-
 export function addAddonToConfig(content: string): { content: string; ok: boolean } {
   const m = content.match(/(addons\s*:\s*\[)/);
   if (!m) return { content, ok: false };
   const insertAt = (m.index ?? 0) + m[0].length;
   const entry = `\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
   return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
-}
-
-export function addComponentsManifest(content: string): { content: string; ok: boolean } {
-  if (/componentsManifest\s*:\s*(?:true|false)/.test(content)) {
-    return {
-      content: content.replace(/componentsManifest\s*:\s*(?:true|false)/, "componentsManifest: true"),
-      ok: true,
-    };
-  }
-
-  const featuresMatch = content.match(/(features\s*:\s*\{)/);
-  if (featuresMatch) {
-    const insertAt = (featuresMatch.index ?? 0) + featuresMatch[0].length;
-    const entry = `\n    componentsManifest: true,`;
-    return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
-  }
-
-  const addonsMatch = content.match(/(addons\s*:\s*\[)/);
-  if (addonsMatch) {
-    const block = `features: {\n    componentsManifest: true,\n  },\n  `;
-    const insertAt = addonsMatch.index ?? 0;
-    return { content: content.slice(0, insertAt) + block + content.slice(insertAt), ok: true };
-  }
-
-  return { content, ok: false };
 }
 
 function confirm(message: string): Promise<boolean> {
@@ -95,6 +84,12 @@ function installCommand(pm: PackageManager): string {
   return "npm install -D @storybook/addon-mcp";
 }
 
+function upgradeCommand(pm: PackageManager): string {
+  if (pm === "pnpm") return "pnpm dlx storybook@latest upgrade";
+  if (pm === "yarn") return "npx storybook@latest upgrade";
+  return "npx storybook@latest upgrade";
+}
+
 export async function runInit(projectInput: string): Promise<void> {
   const projectPath = resolve(projectInput);
   console.log(chalk.bold("\nstorysync init"));
@@ -111,18 +106,25 @@ export async function runInit(projectInput: string): Promise<void> {
 
   const pm = detectPackageManager(projectPath);
 
+  const sbVersion = getStorybookVersion(projectPath);
+  const sbOk = isStorybookVersionOk(sbVersion);
   const hasAddon = hasAddonMcpInPackageJson(projectPath);
   const inConfig = hasAddonMcpInConfig(config.content);
-  const hasManifest = hasComponentsManifest(config.content);
 
+  console.log(`${sbOk ? chalk.green("✔") : chalk.red("✖")} Storybook 10.1+ ${chalk.dim(sbVersion ? `(found ${sbVersion})` : "(not found)")}`);
   console.log(`${hasAddon ? chalk.green("✔") : chalk.yellow("✖")} @storybook/addon-mcp installed`);
   console.log(`${inConfig ? chalk.green("✔") : chalk.yellow("✖")} addon-mcp registered in addons array`);
-  console.log(`${hasManifest ? chalk.green("✔") : chalk.yellow("✖")} componentsManifest feature enabled`);
   console.log("");
 
-  if (hasAddon && inConfig && hasManifest) {
+  if (sbOk && hasAddon && inConfig) {
     console.log(chalk.green("Everything looks good. Restart Storybook if it's running."));
     return;
+  }
+
+  if (!sbOk) {
+    console.log(chalk.red(`storysync requires Storybook 10.1+ for component sync (list, map, inspect, diff).`));
+    console.log(chalk.red(`Token extraction (storysync tokens) works with any version.`));
+    console.log(chalk.dim(`\n  Upgrade: ${upgradeCommand(pm)}\n`));
   }
 
   let updatedContent = config.content;
@@ -155,20 +157,6 @@ export async function runInit(projectInput: string): Promise<void> {
       } else {
         console.log(chalk.yellow("  Couldn't locate `addons: [` in your config. Add this manually:"));
         console.log(chalk.dim(`    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } }`));
-      }
-    }
-  }
-
-  if (!hasManifest) {
-    const yes = await confirm(`Enable features.componentsManifest in Storybook config?`);
-    if (yes) {
-      const result = addComponentsManifest(updatedContent);
-      if (result.ok) {
-        updatedContent = result.content;
-        configChanged = true;
-      } else {
-        console.log(chalk.yellow("  Couldn't locate a `features:` or `addons:` anchor in your config. Add this manually:"));
-        console.log(chalk.dim(`    features: { componentsManifest: true }`));
       }
     }
   }

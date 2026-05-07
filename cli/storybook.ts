@@ -53,9 +53,8 @@ export class StorybookClient {
       if (toolMissing) {
         throw new Error(
           "Storybook MCP is missing the docs tools (list-all-documentation, get-documentation).\n" +
-            "  This usually means @storybook/addon-mcp is not configured with docs enabled,\n" +
-            "  or `features.componentsManifest` is not turned on in your Storybook config.\n\n" +
-            "  Run `storysync init` to fix this automatically.",
+            "  The docs tools require Storybook 10.1+ — they are not available in Storybook 9.x.\n" +
+            "  Run `storysync init` to check your setup, or upgrade with: pnpm dlx storybook@latest upgrade",
         );
       }
       throw err;
