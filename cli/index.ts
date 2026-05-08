@@ -286,15 +286,20 @@ program
     }
     console.log(`\n${chalk.bold(result.name)} ${chalk.dim(result.path ?? "")}`);
     for (const w of result.warnings) console.log(chalk.yellow(`  ! ${w}`));
+    const renderField = (k: string, v: unknown, binding?: { token: string; collection: string }) => {
+      const tag = binding ? chalk.dim(` ← bind to ${binding.collection}/${binding.token}`) : "";
+      console.log(`      ${k}: ${v}${tag}`);
+    };
     if (Object.keys(result.base).length) {
       console.log(chalk.bold("\n  Base"));
-      for (const [k, v] of Object.entries(result.base)) if (v != null) console.log(`    ${k}: ${v}`);
+      for (const [k, v] of Object.entries(result.base)) if (v != null) renderField(k, v, result.baseBindings[k as keyof typeof result.baseBindings]);
     }
     for (const variant of result.variants) {
       console.log(chalk.bold(`\n  ${variant.name}${variant.defaultValue ? chalk.dim(` (default: ${variant.defaultValue})`) : ""}`));
       for (const [valueName, styling] of Object.entries(variant.values)) {
         console.log(`    ${chalk.cyan(valueName)}`);
-        for (const [k, v] of Object.entries(styling)) if (v != null) console.log(`      ${k}: ${v}`);
+        const binds = variant.bindings[valueName] ?? {};
+        for (const [k, v] of Object.entries(styling)) if (v != null) renderField(k, v, binds[k as keyof typeof binds]);
       }
     }
     if (result.unresolved.length) {

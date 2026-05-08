@@ -361,3 +361,115 @@ const x = cva("base", { variants: { size: { sm: "p-1" } } });
   assert.ok(parsed);
   assert.equal(parsed!.compoundCount, 0);
 });
+
+// --- Token bindings ---
+
+test("inspectComponent: emits bindings when fill came from a project color token", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { primary: "#0066ff", danger: "#ff0044" } } } };`,
+    "src/components/button.tsx": `
+import { cva } from "cva";
+export const button = cva("rounded-md", {
+  variants: {
+    variant: {
+      primary: "bg-primary text-white",
+      danger: "bg-danger text-white",
+    },
+  },
+});
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "Button");
+    assert.ok(result);
+    const variant = result!.variants.find((v) => v.name === "variant");
+    assert.ok(variant);
+
+    // primary: fill resolved through tokens.colors → binding present.
+    assert.equal(variant!.values.primary.fill, "#0066ff");
+    assert.deepEqual(variant!.bindings.primary.fill, { token: "primary", collection: "colors" });
+
+    // danger: same shape, different token name.
+    assert.deepEqual(variant!.bindings.danger.fill, { token: "danger", collection: "colors" });
+
+    // text: white came from CSS_NAMED_COLORS, not a project token → no binding.
+    assert.equal(variant!.values.primary.text, "#ffffff");
+    assert.equal(variant!.bindings.primary.text, undefined);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: arbitrary-value bg-[#hex] does NOT bind", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("bg-[#abcdef]");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#abcdef");
+    assert.equal(result!.baseBindings.fill, undefined);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: shadow and radius bind to project tokens", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { boxShadow: { card: "0 4px 12px rgba(0,0,0,0.1)" }, borderRadius: { pill: "9999px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("shadow-card rounded-pill");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.deepEqual(result!.baseBindings.shadow, { token: "card", collection: "shadows" });
+    assert.deepEqual(result!.baseBindings.borderRadius, { token: "pill", collection: "radius" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: project tokens override Tailwind defaults", () => {
+  // `rounded-md` resolves to the project's value when defined, not the
+  // bundled "6px" default.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { borderRadius: { md: "10px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("rounded-md");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.borderRadius, "10px");
+    assert.deepEqual(result!.baseBindings.borderRadius, { token: "md", collection: "radius" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: bindings absent when no project tokens", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("bg-blue-500 rounded-md shadow-sm");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#3b82f6");
+    assert.equal(result!.baseBindings.fill, undefined);
+    assert.equal(result!.baseBindings.borderRadius, undefined);
+    assert.equal(result!.baseBindings.shadow, undefined);
+  } finally {
+    cleanup(dir);
+  }
+});

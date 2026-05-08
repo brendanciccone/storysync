@@ -22,16 +22,29 @@ export interface ResolvedStyling {
   layout?: "row" | "column" | null;
 }
 
+export interface FieldBinding {
+  token: string;
+  collection: "colors" | "spacing" | "radius" | "shadows" | "typography";
+}
+
+// Per-field token provenance. Present only for fields whose value resolved
+// through a project token (not a Tailwind default or arbitrary value), so
+// the agent can bind the Figma property to the variable instead of writing
+// a literal that's ambiguous on the way back.
+export type Bindings = Partial<Record<keyof ResolvedStyling, FieldBinding>>;
+
 export interface InspectVariant {
   name: string;
   defaultValue: string | null;
   values: Record<string, ResolvedStyling>;
+  bindings: Record<string, Bindings>;
 }
 
 export interface InspectionResult {
   name: string;
   path: string | null;
   base: ResolvedStyling;
+  baseBindings: Bindings;
   variants: InspectVariant[];
   unresolved: string[];
   warnings: string[];
@@ -104,6 +117,7 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
     name,
     path,
     base: {},
+    baseBindings: {},
     variants: [],
     unresolved: [],
     warnings: [],
@@ -119,16 +133,18 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
       return result;
     }
     const all = classNames.flatMap((c) => splitClasses(c));
-    const { styling, unresolved } = resolveClasses(all, tokenMap);
+    const { styling, bindings, unresolved } = resolveClasses(all, tokenMap);
     result.base = styling;
+    result.baseBindings = bindings;
     result.unresolved.push(...unresolved);
     result.warnings.push("Component does not use cva(); base styling collapses all className strings.");
     return result;
   }
 
   const baseClasses = splitClasses(cva.base);
-  const { styling: baseStyling, unresolved: baseUnresolved } = resolveClasses(baseClasses, tokenMap);
+  const { styling: baseStyling, bindings: baseBindings, unresolved: baseUnresolved } = resolveClasses(baseClasses, tokenMap);
   result.base = baseStyling;
+  result.baseBindings = baseBindings;
   result.unresolved.push(...baseUnresolved);
 
   for (const [variantName, valueMap] of Object.entries(cva.variants)) {
@@ -136,10 +152,12 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
       name: variantName,
       defaultValue: cva.defaults[variantName] ?? null,
       values: {},
+      bindings: {},
     };
     for (const [valueName, classes] of Object.entries(valueMap)) {
-      const { styling, unresolved } = resolveClasses(splitClasses(classes), tokenMap);
+      const { styling, bindings, unresolved } = resolveClasses(splitClasses(classes), tokenMap);
       variant.values[valueName] = styling;
+      variant.bindings[valueName] = bindings;
       for (const u of unresolved) if (!result.unresolved.includes(u)) result.unresolved.push(u);
     }
     result.variants.push(variant);
@@ -436,13 +454,19 @@ function normalizeTokenKey(name: string): string {
 
 interface ResolveCtx {
   styling: ResolvedStyling;
+  bindings: Bindings;
   padding: { t?: number; r?: number; b?: number; l?: number };
   border: { width?: string; color?: string };
   unresolved: string[];
 }
 
-function resolveClasses(classes: string[], tokens: TokenMap): { styling: ResolvedStyling; unresolved: string[] } {
-  const ctx: ResolveCtx = { styling: {}, padding: {}, border: {}, unresolved: [] };
+interface ResolvedSource {
+  value: string;
+  binding?: FieldBinding;
+}
+
+function resolveClasses(classes: string[], tokens: TokenMap): { styling: ResolvedStyling; bindings: Bindings; unresolved: string[] } {
+  const ctx: ResolveCtx = { styling: {}, bindings: {}, padding: {}, border: {}, unresolved: [] };
 
   for (const cls of classes) {
     if (!cls) continue;
@@ -463,7 +487,7 @@ function resolveClasses(classes: string[], tokens: TokenMap): { styling: Resolve
     ctx.styling.border = `${ctx.border.width ?? "1px"} solid ${ctx.border.color ?? "currentColor"}`;
     if (ctx.border.color) ctx.styling.borderColor = ctx.border.color;
   }
-  return { styling: ctx.styling, unresolved: ctx.unresolved };
+  return { styling: ctx.styling, bindings: ctx.bindings, unresolved: ctx.unresolved };
 }
 
 function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
@@ -476,18 +500,32 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   // Background fill
   let m = cls.match(/^bg-(.+)$/);
   if (m) {
-    const v = resolveColor(m[1], tokens);
-    if (v) { ctx.styling.fill = v; return true; }
+    const r = resolveColor(m[1], tokens);
+    if (r) {
+      ctx.styling.fill = r.value;
+      if (r.binding) ctx.bindings.fill = r.binding;
+      return true;
+    }
     return false;
   }
 
   // Text color
   m = cls.match(/^text-(.+)$/);
   if (m) {
-    const v = resolveColor(m[1], tokens);
-    if (v) { ctx.styling.text = v; return true; }
+    const r = resolveColor(m[1], tokens);
+    if (r) {
+      ctx.styling.text = r.value;
+      if (r.binding) ctx.bindings.text = r.binding;
+      return true;
+    }
     const fs = TEXT_SIZES[m[1]];
     if (fs) { ctx.styling.fontSize = fs; return true; }
+    const tFs = tokens.typography.get(normalizeTokenKey(m[1]));
+    if (tFs) {
+      ctx.styling.fontSize = tFs;
+      ctx.bindings.fontSize = { token: normalizeTokenKey(m[1]), collection: "typography" };
+      return true;
+    }
     return false;
   }
 
@@ -495,12 +533,18 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   m = cls.match(/^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/);
   if (m) { ctx.styling.fontWeight = String(FONT_WEIGHTS[m[1]]); return true; }
 
-  // Border radius
+  // Border radius — project token wins over Tailwind default
   m = cls.match(/^rounded(?:-(.+))?$/);
   if (m) {
     const key = m[1] ?? "default";
-    const v = RADIUS[key] ?? tokens.radius.get(key);
-    if (v != null) { ctx.styling.borderRadius = v; return true; }
+    const fromToken = tokens.radius.get(normalizeTokenKey(key));
+    if (fromToken != null) {
+      ctx.styling.borderRadius = fromToken;
+      ctx.bindings.borderRadius = { token: normalizeTokenKey(key), collection: "radius" };
+      return true;
+    }
+    const fromDefault = RADIUS[key];
+    if (fromDefault != null) { ctx.styling.borderRadius = fromDefault; return true; }
     return false;
   }
 
@@ -510,33 +554,59 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   if (m) { ctx.border.width = `${m[1]}px`; return true; }
   m = cls.match(/^border-(.+)$/);
   if (m) {
-    const v = resolveColor(m[1], tokens);
-    if (v) { ctx.border.color = v; return true; }
+    const r = resolveColor(m[1], tokens);
+    if (r) {
+      ctx.border.color = r.value;
+      if (r.binding) ctx.bindings.borderColor = r.binding;
+      return true;
+    }
     return false;
   }
 
-  // Padding
-  if ((m = cls.match(/^p-(\d+(?:\.\d+)?)$/))) {
-    const px = spacingToPx(m[1]);
-    ctx.padding.t = ctx.padding.r = ctx.padding.b = ctx.padding.l = px;
-    return true;
+  // Padding — project token wins over Tailwind's 0.25rem-per-step default
+  if ((m = cls.match(/^p-(.+)$/))) {
+    const r = resolveSpacing(m[1], tokens);
+    if (r) { ctx.padding.t = ctx.padding.r = ctx.padding.b = ctx.padding.l = r.px; return true; }
+    return false;
   }
-  if ((m = cls.match(/^px-(\d+(?:\.\d+)?)$/))) { const v = spacingToPx(m[1]); ctx.padding.l = ctx.padding.r = v; return true; }
-  if ((m = cls.match(/^py-(\d+(?:\.\d+)?)$/))) { const v = spacingToPx(m[1]); ctx.padding.t = ctx.padding.b = v; return true; }
-  if ((m = cls.match(/^pt-(\d+(?:\.\d+)?)$/))) { ctx.padding.t = spacingToPx(m[1]); return true; }
-  if ((m = cls.match(/^pr-(\d+(?:\.\d+)?)$/))) { ctx.padding.r = spacingToPx(m[1]); return true; }
-  if ((m = cls.match(/^pb-(\d+(?:\.\d+)?)$/))) { ctx.padding.b = spacingToPx(m[1]); return true; }
-  if ((m = cls.match(/^pl-(\d+(?:\.\d+)?)$/))) { ctx.padding.l = spacingToPx(m[1]); return true; }
+  if ((m = cls.match(/^px-(.+)$/))) {
+    const r = resolveSpacing(m[1], tokens);
+    if (r) { ctx.padding.l = ctx.padding.r = r.px; return true; }
+    return false;
+  }
+  if ((m = cls.match(/^py-(.+)$/))) {
+    const r = resolveSpacing(m[1], tokens);
+    if (r) { ctx.padding.t = ctx.padding.b = r.px; return true; }
+    return false;
+  }
+  if ((m = cls.match(/^pt-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.t = r.px; return true; } return false; }
+  if ((m = cls.match(/^pr-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.r = r.px; return true; } return false; }
+  if ((m = cls.match(/^pb-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.b = r.px; return true; } return false; }
+  if ((m = cls.match(/^pl-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.l = r.px; return true; } return false; }
 
   // Gap
-  if ((m = cls.match(/^gap-(\d+(?:\.\d+)?)$/))) { ctx.styling.gap = `${spacingToPx(m[1])}px`; return true; }
+  if ((m = cls.match(/^gap-(.+)$/))) {
+    const r = resolveSpacing(m[1], tokens);
+    if (r) {
+      ctx.styling.gap = `${r.px}px`;
+      if (r.binding) ctx.bindings.gap = r.binding;
+      return true;
+    }
+    return false;
+  }
 
-  // Shadow
+  // Shadow — project token wins over Tailwind default
   m = cls.match(/^shadow(?:-(.+))?$/);
   if (m) {
     const key = m[1] ?? "default";
-    const v = SHADOWS[key] ?? tokens.shadows.get(key);
-    if (v != null) { ctx.styling.shadow = v; return true; }
+    const fromToken = tokens.shadows.get(normalizeTokenKey(key));
+    if (fromToken != null) {
+      ctx.styling.shadow = fromToken;
+      ctx.bindings.shadow = { token: normalizeTokenKey(key), collection: "shadows" };
+      return true;
+    }
+    const fromDefault = SHADOWS[key];
+    if (fromDefault != null) { ctx.styling.shadow = fromDefault; return true; }
     return false;
   }
 
@@ -553,23 +623,42 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   return false;
 }
 
-function spacingToPx(scale: string): number {
-  return Math.round(parseFloat(scale) * 4 * 100) / 100;
+// Resolves a Tailwind spacing scale (`4`, `1.5`, `auto`, or `[12px]`) to
+// a pixel number, plus a token binding when the project's spacing tokens
+// define the scale value explicitly. Falls back to Tailwind's `0.25rem`-
+// per-step default.
+function resolveSpacing(spec: string, tokens: TokenMap): { px: number; binding?: FieldBinding } | null {
+  if (spec.startsWith("[") && spec.endsWith("]")) {
+    const px = parseFloat(spec.slice(1, -1));
+    if (!isNaN(px)) return { px };
+    return null;
+  }
+  const fromToken = tokens.spacing.get(normalizeTokenKey(spec));
+  if (fromToken != null) {
+    const px = parseFloat(fromToken);
+    if (!isNaN(px)) {
+      return { px, binding: { token: normalizeTokenKey(spec), collection: "spacing" } };
+    }
+  }
+  const n = parseFloat(spec);
+  if (isNaN(n)) return null;
+  return { px: Math.round(n * 4 * 100) / 100 };
 }
 
-function resolveColor(spec: string, tokens: TokenMap): string | null {
-  // Arbitrary value: bg-[#ff0000] or bg-[rgb(...)]
+function resolveColor(spec: string, tokens: TokenMap): ResolvedSource | null {
+  // Arbitrary value: bg-[#ff0000] or bg-[rgb(...)] — never a token binding.
   if (spec.startsWith("[") && spec.endsWith("]")) {
-    return spec.slice(1, -1);
+    return { value: spec.slice(1, -1) };
   }
-  // Token lookup: try the spec verbatim, then dash-normalized.
-  const direct = tokens.colors.get(normalizeTokenKey(spec));
-  if (direct) return direct;
+  // Token lookup: project tokens win over the bundled palette.
+  const key = normalizeTokenKey(spec);
+  const direct = tokens.colors.get(key);
+  if (direct) return { value: direct, binding: { token: key, collection: "colors" } };
   // Tailwind palette default (e.g. blue-500).
   const def = TAILWIND_PALETTE[spec];
-  if (def) return def;
+  if (def) return { value: def };
   // CSS named colors (white/black/transparent).
-  if (CSS_NAMED_COLORS[spec]) return CSS_NAMED_COLORS[spec];
+  if (CSS_NAMED_COLORS[spec]) return { value: CSS_NAMED_COLORS[spec] };
   return null;
 }
 
