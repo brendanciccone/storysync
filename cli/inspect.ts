@@ -111,7 +111,8 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
   const name = basename(path, extname(path));
 
   const { map: tokenMap, warning: tokenWarning } = buildTokenMap(projectPath);
-  const cva = parseCvaCall(source);
+  const cva = parseCvaCall(source) ?? parseCnCall(source);
+  if (cva) cva.defaults = { ...inferDefaultsFromPropDestructure(source), ...cva.defaults };
 
   const result: InspectionResult = {
     name,
@@ -129,11 +130,12 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
   };
 
   if (!cva) {
-    // No cva() call found. Fall back to scanning className strings on JSX
-    // tags so simple components still emit something useful.
+    // Neither cva() nor a recognized cn()/clsx() conditional pattern. Fall
+    // back to scanning bare className="..." strings on JSX tags so simple
+    // components still emit something useful.
     const classNames = extractInlineClassNames(source);
     if (!classNames.length) {
-      result.warnings.push("No cva() call or className strings found; nothing to resolve.");
+      result.warnings.push("No cva(), cn()/clsx() conditional pattern, or className strings found; nothing to resolve.");
       return result;
     }
     const all = classNames.flatMap((c) => splitClasses(c));
@@ -142,7 +144,7 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
     result.baseBindings = bindings;
     result.unresolved.push(...unresolved);
     for (const w of warnings) pushWarning(w);
-    result.warnings.push("Component does not use cva(); base styling collapses all className strings.");
+    result.warnings.push("No variant pattern detected; base styling collapses all className strings.");
     return result;
   }
 
@@ -240,6 +242,144 @@ export function parseCvaCall(source: string): ParsedCva | null {
   }
 
   return { base, variants, defaults, compoundCount };
+}
+
+// Parses the hand-rolled "cn(base, cond === 'val' && 'classes', ...)" pattern
+// — extremely common in shadcn/ui-derived codebases and anywhere a maintainer
+// preferred conditional class strings over CVA. Each conditional argument
+// becomes a synthetic variant entry, so the same downstream resolver can
+// handle both this shape and the CVA shape uniformly.
+//
+// Recognized arguments:
+//   'string literal'                  → base classes
+//   `template literal`                → base classes
+//   varName === 'value' && '...'      → variant value
+//   'value' === varName && '...'      → variant value (other order)
+//   varName && '...'                  → boolean variant (true case)
+//   !varName && '...'                 → boolean variant (false case)
+//   identifier (e.g. className)       → ignored
+//
+// Things deliberately not supported (would expand surface for marginal gain):
+//   ternaries (cond ? a : b), object syntax (cn({ active: x })),
+//   nested cn() calls, cn(...spread).
+export function parseCnCall(source: string): ParsedCva | null {
+  const callIdx = findClassMergerCall(source);
+  if (callIdx < 0) return null;
+
+  const open = source.indexOf("(", callIdx);
+  if (open < 0) return null;
+  const close = matchClose(source, open, "(", ")");
+  if (close < 0) return null;
+
+  const args = splitTopLevelArgs(source.slice(open + 1, close));
+  if (!args.length) return null;
+
+  const baseParts: string[] = [];
+  const variants: Record<string, Record<string, string>> = {};
+
+  const addVariantClasses = (varName: string, valueName: string, classes: string) => {
+    if (!variants[varName]) variants[varName] = {};
+    const existing = variants[varName][valueName];
+    variants[varName][valueName] = existing ? `${existing} ${classes}` : classes;
+  };
+
+  for (const rawArg of args) {
+    const arg = rawArg.trim();
+    if (!arg) continue;
+
+    // Plain string or template literal → base classes
+    const lit = readStringOrTemplate(arg);
+    if (lit !== null) {
+      baseParts.push(lit);
+      continue;
+    }
+
+    // Equality conditional: `varName === 'value' && '...'` or `'value' === varName && '...'`
+    const eq = arg.match(/^(.+?)\s*===\s*(.+?)\s*&&\s*([\s\S]+)$/);
+    if (eq) {
+      const lhs = eq[1].trim();
+      const rhs = eq[2].trim();
+      const classExpr = eq[3].trim();
+      const classStr = readStringOrTemplate(classExpr);
+      if (classStr === null) continue;
+
+      const lhsName = identifierOf(lhs);
+      const rhsName = identifierOf(rhs);
+      const lhsLit = readStringOrTemplate(lhs);
+      const rhsLit = readStringOrTemplate(rhs);
+
+      if (lhsName && rhsLit !== null) {
+        addVariantClasses(lhsName, rhsLit, classStr);
+        continue;
+      }
+      if (rhsName && lhsLit !== null) {
+        addVariantClasses(rhsName, lhsLit, classStr);
+        continue;
+      }
+      continue;
+    }
+
+    // Boolean conditional: `varName && '...'` or `!varName && '...'`
+    const bool = arg.match(/^(!?)\s*([A-Za-z_$][\w$]*)\s*&&\s*([\s\S]+)$/);
+    if (bool) {
+      const negated = !!bool[1];
+      const varName = bool[2];
+      const classStr = readStringOrTemplate(bool[3].trim());
+      if (classStr === null) continue;
+      addVariantClasses(varName, negated ? "false" : "true", classStr);
+      continue;
+    }
+
+    // Bare identifier (className) or anything else: ignore.
+  }
+
+  if (!baseParts.length && !Object.keys(variants).length) return null;
+
+  return {
+    base: baseParts.join(" "),
+    variants,
+    defaults: {},
+    compoundCount: 0,
+  };
+}
+
+function findClassMergerCall(source: string): number {
+  // cn / clsx / classNames / twMerge / cx — the common merge helpers.
+  const re = /(?<![A-Za-z0-9_$])(cn|clsx|classNames|twMerge|cx)\s*\(/g;
+  const matches = [...source.matchAll(re)];
+  for (const m of matches) {
+    const lineStart = source.lastIndexOf("\n", m.index!) + 1;
+    const eol = source.indexOf("\n", m.index!);
+    const line = source.slice(lineStart, eol === -1 ? source.length : eol);
+    if (/^\s*import\b/.test(line)) continue;
+    return m.index!;
+  }
+  return -1;
+}
+
+// Returns the trimmed expression as a bare identifier name, or null when the
+// expression is not a simple identifier. Used to disambiguate which side of
+// `a === b` is the variable vs. the literal.
+function identifierOf(expr: string): string | null {
+  const t = expr.trim();
+  return /^[A-Za-z_$][\w$]*$/.test(t) ? t : null;
+}
+
+// Pulls default variant values from a destructured prop list like
+// `({ variant = 'primary', size = 'md', ... }) => ...`. cn()-pattern
+// components don't have CVA's defaultVariants block, so this is the only
+// way to know which value should be marked as the default in the output.
+function inferDefaultsFromPropDestructure(source: string): Record<string, string> {
+  const defaults: Record<string, string> = {};
+  // Find each `name = 'value'` inside any `{ ... }` argument list near a
+  // function/arrow function. We don't try to scope it to the component's
+  // own param list — that's a rabbit hole; collisions are rare in practice.
+  const re = /([A-Za-z_$][\w$]*)\s*=\s*(['"`])([^'"`]+)\2/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    if (!defaults[m[1]]) defaults[m[1]] = m[3];
+  }
+  return defaults;
 }
 
 function findCvaCall(source: string): number {

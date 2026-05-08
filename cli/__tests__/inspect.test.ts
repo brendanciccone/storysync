@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { inspectComponent, findComponentFile, parseCvaCall } from "../inspect.js";
+import { inspectComponent, findComponentFile, parseCvaCall, parseCnCall } from "../inspect.js";
 
 function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-inspect-test-"));
@@ -249,7 +249,7 @@ export const Card = ({ children }) => (
     assert.equal(result!.base.fill, "#ffffff");
     assert.equal(result!.base.borderRadius, "8px");
     assert.equal(result!.base.padding, "16px 16px 16px 16px");
-    assert.ok(result!.warnings.some((w) => w.includes("does not use cva")));
+    assert.ok(result!.warnings.some((w) => w.includes("No variant pattern detected")));
   } finally {
     cleanup(dir);
   }
@@ -582,6 +582,119 @@ const x = cva("text-base");
     assert.ok(result);
     assert.equal(result!.base.fontSize, "15px");
     assert.deepEqual(result!.baseBindings.fontSize, { token: "base", collection: "typography" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// --- cn()/clsx() conditional class pattern ---
+
+test("parseCnCall: extracts base + variant entries from conditional cn() args", () => {
+  const source = `
+import { cn } from '@/lib/utils';
+export const Button = ({ variant = 'primary', size = 'md' }) => (
+  <button
+    className={cn(
+      'rounded-md font-medium',
+      size === 'sm' && 'h-8 px-3',
+      size === 'md' && 'h-10 px-4',
+      variant === 'primary' && 'bg-blue-600 text-white',
+      variant === 'ghost' && 'bg-transparent text-foreground',
+      className
+    )}
+  />
+);
+`;
+  const parsed = parseCnCall(source);
+  assert.ok(parsed);
+  assert.equal(parsed!.base, "rounded-md font-medium");
+  assert.deepEqual(parsed!.variants.size, { sm: "h-8 px-3", md: "h-10 px-4" });
+  assert.deepEqual(parsed!.variants.variant, { primary: "bg-blue-600 text-white", ghost: "bg-transparent text-foreground" });
+});
+
+test("parseCnCall: handles boolean shorthand `disabled && '...'`", () => {
+  const source = `
+import { cn } from '@/lib/utils';
+const x = cn('base', disabled && 'opacity-50 cursor-not-allowed', !active && 'border-zinc-200');
+`;
+  const parsed = parseCnCall(source);
+  assert.ok(parsed);
+  assert.deepEqual(parsed!.variants.disabled, { true: "opacity-50 cursor-not-allowed" });
+  assert.deepEqual(parsed!.variants.active, { false: "border-zinc-200" });
+});
+
+test("parseCnCall: ignores bare identifiers like className", () => {
+  const source = `
+import { cn } from '@/lib/utils';
+const x = cn('base', className);
+`;
+  const parsed = parseCnCall(source);
+  assert.ok(parsed);
+  assert.equal(parsed!.base, "base");
+  assert.deepEqual(parsed!.variants, {});
+});
+
+test("parseCnCall: skips the import line", () => {
+  // The cn import shouldn't be mistaken for a call.
+  const source = `import { cn } from '@/lib/utils';`;
+  assert.equal(parseCnCall(source), null);
+});
+
+test("parseCnCall: returns null when neither cva nor cn pattern present", () => {
+  const source = `const x = "just a string";`;
+  assert.equal(parseCnCall(source), null);
+});
+
+test("parseCnCall: also matches clsx, classNames, twMerge, cx", () => {
+  for (const name of ["clsx", "classNames", "twMerge", "cx"]) {
+    const source = `import { ${name} } from 'lib';\nconst x = ${name}('base', size === 'sm' && 'h-8');`;
+    const parsed = parseCnCall(source);
+    assert.ok(parsed, `expected ${name} to parse`);
+    assert.equal(parsed!.base, "base");
+    assert.deepEqual(parsed!.variants.size, { sm: "h-8" });
+  }
+});
+
+test("inspectComponent: resolves cn()-pattern component end-to-end", () => {
+  // The crenel-style pattern: hand-rolled cn() with size/variant conditionals,
+  // defaults read from prop destructure.
+  const dir = makeProject({
+    "src/components/ui/button.tsx": `
+import { cn } from '@/lib/utils';
+export const Button = ({ variant = 'primary', size = 'md', className }) => (
+  <button
+    className={cn(
+      'inline-flex rounded-md font-medium',
+      size === 'sm' && 'h-8 px-3 text-sm',
+      size === 'md' && 'h-10 px-4 text-sm',
+      size === 'lg' && 'h-11 px-5 text-base',
+      variant === 'primary' && 'bg-blue-600 text-white',
+      variant === 'ghost' && 'bg-transparent text-foreground',
+      className
+    )}
+  />
+);
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "Button");
+    assert.ok(result);
+    // Base styling came from the unconditional first arg.
+    assert.equal(result!.base.borderRadius, "6px");
+
+    const sizeVariant = result!.variants.find((v) => v.name === "size");
+    assert.ok(sizeVariant);
+    assert.equal(sizeVariant!.defaultValue, "md");
+    assert.equal(sizeVariant!.values.sm.fontSize, "14px");
+    assert.equal(sizeVariant!.values.md.fontSize, "14px");
+    assert.equal(sizeVariant!.values.lg.fontSize, "16px");
+    assert.equal(sizeVariant!.values.sm.padding, "0px 12px 0px 12px");
+
+    const variantVariant = result!.variants.find((v) => v.name === "variant");
+    assert.ok(variantVariant);
+    assert.equal(variantVariant!.defaultValue, "primary");
+    assert.equal(variantVariant!.values.primary.fill, "#2563eb");
+    assert.equal(variantVariant!.values.primary.text, "#ffffff");
   } finally {
     cleanup(dir);
   }
