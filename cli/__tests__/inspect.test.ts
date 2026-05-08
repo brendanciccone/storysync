@@ -283,18 +283,113 @@ const b = cva("bg-primary text-white");
   }
 });
 
-test("inspectComponent: strips responsive/state prefixes from classes", () => {
+test("inspectComponent: skips modifier-prefixed classes (hover/dark/md)", () => {
+  // Modifier-prefixed classes represent state changes, not the default.
+  // Figma frames are the default state, so we want bg-blue-500 and ignore
+  // any hover/dark/responsive variants. Previously these were stripped of
+  // their prefix and applied, which made `dark:bg-zinc-900` overwrite the
+  // real default `bg-blue-500`.
   const dir = makeProject({
     "src/components/x.tsx": `
 import { cva } from "cva";
-const x = cva("md:bg-blue-500 hover:text-white");
+const x = cva("bg-blue-500 hover:bg-blue-700 dark:bg-zinc-900 md:px-8");
 `,
   });
   try {
     const result = inspectComponent(dir, "x");
     assert.ok(result);
-    assert.equal(result!.base.fill, "#3b82f6");
-    assert.equal(result!.base.text, "#ffffff");
+    assert.equal(result!.base.fill, "#3b82f6");      // not #1d4ed8 or #18181b
+    assert.equal(result!.base.padding, undefined);    // md:px-8 was skipped
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: arbitrary values with colons are not treated as prefixes", () => {
+  // Inside `[...]` brackets, colons are part of the value (e.g. `data-[state=open]`,
+  // `bg-[url(http://...)]`). Don't strip these.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("bg-[#abcdef] rounded-[10px]");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#abcdef");
+    assert.equal(result!.base.borderRadius, "10px");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: handles bg-{color}/{opacity} by stripping the opacity", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("bg-zinc-900/60");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#18181b");   // strips /60, resolves zinc-900
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: parses cn() with comments interleaved between args", () => {
+  // Real-world pattern: maintainers add // section comments between
+  // conditional class strings. Previously the comment + the next arg
+  // became one un-parseable arg, silently dropping that variant value.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cn } from '@/lib/utils';
+export const X = ({ variant = 'primary' }) => (
+  <button
+    className={cn(
+      'rounded-md',
+      // Solid variants
+      variant === 'primary' && 'bg-blue-600 text-white',
+      variant === 'success' && 'bg-emerald-600 text-white',
+      // Subtle variants
+      variant === 'ghost' && 'bg-transparent',
+    )}
+  />
+);
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "X");
+    assert.ok(result);
+    const variant = result!.variants.find((v) => v.name === "variant");
+    assert.ok(variant);
+    // All three variants should be present — primary and ghost previously vanished.
+    assert.deepEqual(Object.keys(variant!.values).sort(), ["ghost", "primary", "success"]);
+    assert.equal(variant!.values.primary.fill, "#2563eb");
+    assert.equal(variant!.values.success.fill, "#059669");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: emerald and other expanded palette colors resolve", () => {
+  // The bundled palette previously omitted emerald, sky, indigo's full ramp,
+  // violet, fuchsia, rose, lime, teal, cyan — common shadcn variant colors.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("bg-emerald-600 text-sky-500 border-rose-300");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#059669");
+    assert.equal(result!.base.text, "#0ea5e9");
+    assert.equal(result!.base.borderColor, "#fda4af");
   } finally {
     cleanup(dir);
   }
