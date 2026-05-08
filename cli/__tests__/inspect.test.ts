@@ -473,3 +473,133 @@ const x = cva("bg-blue-500 rounded-md shadow-sm");
     cleanup(dir);
   }
 });
+
+test("inspectComponent: rem-valued spacing token converts to px", () => {
+  // Project tokens are commonly stored as rem strings ("1rem"). The
+  // resolver must convert to px for the styling output, NOT pass the
+  // numeric prefix straight through (parseFloat("1rem") === 1, wrong).
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { spacing: { "4": "1rem", "8": "2rem" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("p-4 gap-8");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.padding, "16px 16px 16px 16px");
+    assert.equal(result!.base.gap, "32px");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: padding binds when all sides came from same spacing token", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { spacing: { "4": "16px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("p-4");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.deepEqual(result!.baseBindings.padding, { token: "4", collection: "spacing" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: padding does NOT bind when sides came from different tokens", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { spacing: { "2": "8px", "4": "16px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("px-4 py-2");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.baseBindings.padding, undefined);
+    assert.ok(result!.warnings.some((w) => w.includes("different spacing tokens")));
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: gap binds to spacing token", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { spacing: { "3": "12px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("gap-3");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.gap, "12px");
+    assert.deepEqual(result!.baseBindings.gap, { token: "3", collection: "spacing" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: shadow project token overrides bundled default", () => {
+  // Symmetric to the existing radius-override test.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { boxShadow: { sm: "0 8px 16px rgba(0,0,0,0.2)" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("shadow-sm");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.shadow, "0 8px 16px rgba(0,0,0,0.2)");
+    assert.deepEqual(result!.baseBindings.shadow, { token: "sm", collection: "shadows" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: text-{key} prefers project typography token over bundled default", () => {
+  // text-base is bundled at 16px, but if the project defines a different
+  // typography token of that name, that should win and bind.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { fontSize: { base: "15px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("text-base");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fontSize, "15px");
+    assert.deepEqual(result!.baseBindings.fontSize, { token: "base", collection: "typography" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: bundled fontSize default still works when no token defined", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("text-lg");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fontSize, "18px");
+    assert.equal(result!.baseBindings.fontSize, undefined);
+  } finally {
+    cleanup(dir);
+  }
+});

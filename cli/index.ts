@@ -7,7 +7,7 @@ import { StorybookClient } from "./storybook.js";
 import { FigmaClient, extractFileKey } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
-import { inspectComponent } from "./inspect.js";
+import { inspectComponent, type FieldBinding } from "./inspect.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -286,7 +286,7 @@ program
     }
     console.log(`\n${chalk.bold(result.name)} ${chalk.dim(result.path ?? "")}`);
     for (const w of result.warnings) console.log(chalk.yellow(`  ! ${w}`));
-    const renderField = (k: string, v: unknown, binding?: { token: string; collection: string }) => {
+    const renderField = (k: string, v: unknown, binding?: FieldBinding) => {
       const tag = binding ? chalk.dim(` ← bind to ${binding.collection}/${binding.token}`) : "";
       console.log(`      ${k}: ${v}${tag}`);
     };

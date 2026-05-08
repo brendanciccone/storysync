@@ -124,6 +124,10 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
   };
   if (tokenWarning) result.warnings.push(tokenWarning);
 
+  const pushWarning = (w: string) => {
+    if (!result.warnings.includes(w)) result.warnings.push(w);
+  };
+
   if (!cva) {
     // No cva() call found. Fall back to scanning className strings on JSX
     // tags so simple components still emit something useful.
@@ -133,19 +137,21 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
       return result;
     }
     const all = classNames.flatMap((c) => splitClasses(c));
-    const { styling, bindings, unresolved } = resolveClasses(all, tokenMap);
+    const { styling, bindings, unresolved, warnings } = resolveClasses(all, tokenMap);
     result.base = styling;
     result.baseBindings = bindings;
     result.unresolved.push(...unresolved);
+    for (const w of warnings) pushWarning(w);
     result.warnings.push("Component does not use cva(); base styling collapses all className strings.");
     return result;
   }
 
   const baseClasses = splitClasses(cva.base);
-  const { styling: baseStyling, bindings: baseBindings, unresolved: baseUnresolved } = resolveClasses(baseClasses, tokenMap);
+  const { styling: baseStyling, bindings: baseBindings, unresolved: baseUnresolved, warnings: baseWarnings } = resolveClasses(baseClasses, tokenMap);
   result.base = baseStyling;
   result.baseBindings = baseBindings;
   result.unresolved.push(...baseUnresolved);
+  for (const w of baseWarnings) pushWarning(w);
 
   for (const [variantName, valueMap] of Object.entries(cva.variants)) {
     const variant: InspectVariant = {
@@ -155,10 +161,11 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
       bindings: {},
     };
     for (const [valueName, classes] of Object.entries(valueMap)) {
-      const { styling, bindings, unresolved } = resolveClasses(splitClasses(classes), tokenMap);
+      const { styling, bindings, unresolved, warnings } = resolveClasses(splitClasses(classes), tokenMap);
       variant.values[valueName] = styling;
       variant.bindings[valueName] = bindings;
       for (const u of unresolved) if (!result.unresolved.includes(u)) result.unresolved.push(u);
+      for (const w of warnings) pushWarning(w);
     }
     result.variants.push(variant);
   }
@@ -456,8 +463,10 @@ interface ResolveCtx {
   styling: ResolvedStyling;
   bindings: Bindings;
   padding: { t?: number; r?: number; b?: number; l?: number };
+  paddingBindings: { t?: FieldBinding; r?: FieldBinding; b?: FieldBinding; l?: FieldBinding };
   border: { width?: string; color?: string };
   unresolved: string[];
+  warnings: string[];
 }
 
 interface ResolvedSource {
@@ -465,8 +474,8 @@ interface ResolvedSource {
   binding?: FieldBinding;
 }
 
-function resolveClasses(classes: string[], tokens: TokenMap): { styling: ResolvedStyling; bindings: Bindings; unresolved: string[] } {
-  const ctx: ResolveCtx = { styling: {}, bindings: {}, padding: {}, border: {}, unresolved: [] };
+function resolveClasses(classes: string[], tokens: TokenMap): { styling: ResolvedStyling; bindings: Bindings; unresolved: string[]; warnings: string[] } {
+  const ctx: ResolveCtx = { styling: {}, bindings: {}, padding: {}, paddingBindings: {}, border: {}, unresolved: [], warnings: [] };
 
   for (const cls of classes) {
     if (!cls) continue;
@@ -478,16 +487,32 @@ function resolveClasses(classes: string[], tokens: TokenMap): { styling: Resolve
   }
 
   // Combine padding shorthand into one CSS-like string when any sides set.
+  // Record a binding only when every set side resolved through the same
+  // spacing token — Figma can't express per-side variable binding via this
+  // output shape, so a mixed-token padding stays a literal.
   const p = ctx.padding;
   if (p.t != null || p.r != null || p.b != null || p.l != null) {
     const t = p.t ?? 0, r = p.r ?? 0, b = p.b ?? 0, l = p.l ?? 0;
     ctx.styling.padding = `${t}px ${r}px ${b}px ${l}px`;
+    const pb = ctx.paddingBindings;
+    const setSides = (["t", "r", "b", "l"] as const).filter((s) => p[s] != null);
+    const bindings = setSides.map((s) => pb[s]);
+    if (bindings.length && bindings.every((b) => b != null)) {
+      const first = bindings[0]!;
+      if (bindings.every((b) => b!.token === first.token && b!.collection === first.collection)) {
+        ctx.bindings.padding = first;
+      } else {
+        ctx.warnings.push(
+          `Padding sides resolved through different spacing tokens (${bindings.map((b) => b!.token).join(", ")}); writing literal pixels — bind sides individually in Figma.`,
+        );
+      }
+    }
   }
   if (ctx.border.width || ctx.border.color) {
     ctx.styling.border = `${ctx.border.width ?? "1px"} solid ${ctx.border.color ?? "currentColor"}`;
     if (ctx.border.color) ctx.styling.borderColor = ctx.border.color;
   }
-  return { styling: ctx.styling, bindings: ctx.bindings, unresolved: ctx.unresolved };
+  return { styling: ctx.styling, bindings: ctx.bindings, unresolved: ctx.unresolved, warnings: ctx.warnings };
 }
 
 function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
@@ -509,7 +534,7 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
     return false;
   }
 
-  // Text color
+  // Text color and font size — project token wins over Tailwind default
   m = cls.match(/^text-(.+)$/);
   if (m) {
     const r = resolveColor(m[1], tokens);
@@ -518,14 +543,14 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
       if (r.binding) ctx.bindings.text = r.binding;
       return true;
     }
-    const fs = TEXT_SIZES[m[1]];
-    if (fs) { ctx.styling.fontSize = fs; return true; }
     const tFs = tokens.typography.get(normalizeTokenKey(m[1]));
-    if (tFs) {
+    if (tFs != null) {
       ctx.styling.fontSize = tFs;
       ctx.bindings.fontSize = { token: normalizeTokenKey(m[1]), collection: "typography" };
       return true;
     }
+    const fs = TEXT_SIZES[m[1]];
+    if (fs) { ctx.styling.fontSize = fs; return true; }
     return false;
   }
 
@@ -566,23 +591,35 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   // Padding — project token wins over Tailwind's 0.25rem-per-step default
   if ((m = cls.match(/^p-(.+)$/))) {
     const r = resolveSpacing(m[1], tokens);
-    if (r) { ctx.padding.t = ctx.padding.r = ctx.padding.b = ctx.padding.l = r.px; return true; }
+    if (r) {
+      ctx.padding.t = ctx.padding.r = ctx.padding.b = ctx.padding.l = r.px;
+      if (r.binding) ctx.paddingBindings.t = ctx.paddingBindings.r = ctx.paddingBindings.b = ctx.paddingBindings.l = r.binding;
+      return true;
+    }
     return false;
   }
   if ((m = cls.match(/^px-(.+)$/))) {
     const r = resolveSpacing(m[1], tokens);
-    if (r) { ctx.padding.l = ctx.padding.r = r.px; return true; }
+    if (r) {
+      ctx.padding.l = ctx.padding.r = r.px;
+      if (r.binding) ctx.paddingBindings.l = ctx.paddingBindings.r = r.binding;
+      return true;
+    }
     return false;
   }
   if ((m = cls.match(/^py-(.+)$/))) {
     const r = resolveSpacing(m[1], tokens);
-    if (r) { ctx.padding.t = ctx.padding.b = r.px; return true; }
+    if (r) {
+      ctx.padding.t = ctx.padding.b = r.px;
+      if (r.binding) ctx.paddingBindings.t = ctx.paddingBindings.b = r.binding;
+      return true;
+    }
     return false;
   }
-  if ((m = cls.match(/^pt-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.t = r.px; return true; } return false; }
-  if ((m = cls.match(/^pr-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.r = r.px; return true; } return false; }
-  if ((m = cls.match(/^pb-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.b = r.px; return true; } return false; }
-  if ((m = cls.match(/^pl-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.l = r.px; return true; } return false; }
+  if ((m = cls.match(/^pt-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.t = r.px; if (r.binding) ctx.paddingBindings.t = r.binding; return true; } return false; }
+  if ((m = cls.match(/^pr-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.r = r.px; if (r.binding) ctx.paddingBindings.r = r.binding; return true; } return false; }
+  if ((m = cls.match(/^pb-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.b = r.px; if (r.binding) ctx.paddingBindings.b = r.binding; return true; } return false; }
+  if ((m = cls.match(/^pl-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.l = r.px; if (r.binding) ctx.paddingBindings.l = r.binding; return true; } return false; }
 
   // Gap
   if ((m = cls.match(/^gap-(.+)$/))) {
@@ -629,20 +666,32 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
 // per-step default.
 function resolveSpacing(spec: string, tokens: TokenMap): { px: number; binding?: FieldBinding } | null {
   if (spec.startsWith("[") && spec.endsWith("]")) {
-    const px = parseFloat(spec.slice(1, -1));
-    if (!isNaN(px)) return { px };
-    return null;
+    const px = lengthToPx(spec.slice(1, -1));
+    return px == null ? null : { px };
   }
   const fromToken = tokens.spacing.get(normalizeTokenKey(spec));
   if (fromToken != null) {
-    const px = parseFloat(fromToken);
-    if (!isNaN(px)) {
+    const px = lengthToPx(fromToken);
+    if (px != null) {
       return { px, binding: { token: normalizeTokenKey(spec), collection: "spacing" } };
     }
   }
   const n = parseFloat(spec);
   if (isNaN(n)) return null;
   return { px: Math.round(n * 4 * 100) / 100 };
+}
+
+// Parses a CSS length string ("16px", "1rem", "0.5em", "20") into pixels.
+// Returns null when the input isn't a length we recognize.
+function lengthToPx(value: string): number | null {
+  const t = value.trim();
+  const m = t.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em)?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return null;
+  const unit = m[2];
+  if (unit === "rem" || unit === "em") return Math.round(n * 16 * 100) / 100;
+  return n;
 }
 
 function resolveColor(spec: string, tokens: TokenMap): ResolvedSource | null {
