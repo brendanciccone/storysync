@@ -38,37 +38,13 @@ npx storysync map --storybook http://localhost:6006 --json
 
 This outputs structured JSON with each component's variant properties (name, type, values, default), combination count, and a `title`/`category` reflecting the component's place in Storybook's sidebar (e.g. `title: "Forms/Button"`, `category: "Forms"`). Use the category to organize the Figma file — see "Organization" below.
 
-2. **Inspect individual components** — for detailed prop-to-variant mapping:
+2. **REQUIRED — Get a deterministic styling spec.** For every component, run:
 
-```bash
-npx storysync inspect --storybook http://localhost:6006 --component Button
-```
+   ```bash
+   npx storysync inspect <ComponentName> --json
+   ```
 
-3. **REQUIRED — Extract concrete styling values from source.** Do not skip. Do not proceed to step 5 without these values. A `use_figma` call with only variant names and no actual styling will produce a useless library.
-
-   For each component, read the source file (`.tsx` / `.jsx`) and any imported style files. Build a styling spec with these fields, per variant where applicable:
-   - **Background fill** (hex)
-   - **Text color** (hex)
-   - **Border** (width + color hex, or `none`)
-   - **Border radius** (px)
-   - **Padding** (px horizontal + vertical)
-   - **Font size** (px) and **weight** (numeric)
-   - **Shadow** (offset + blur + color, or `none`)
-   - **Auto-layout direction** (horizontal / vertical) and **gap** (px)
-
-   Source patterns:
-   - **Tailwind classes** — translate to Figma properties (e.g. `bg-blue-600` → fill `#2563EB`, `rounded-md` → 6px corner radius, `px-4` → 16px horizontal padding, `py-2` → 8px vertical padding, `text-sm` → 14px font size, `font-semibold` → 600 weight, `border` → 1px border, `shadow-sm` → drop shadow). Resolve `cva`/`clsx`/`cn` calls and pull base + per-variant class sets.
-   - **CSS module imports** — follow the `.module.css` / `.module.scss` import, read that file, and extract the actual property values used for each class.
-   - **Styled-component definitions** — read the tagged-template CSS in `styled.div`, `styled(Base)`, etc. and pull out colors, spacing, typography, and borders.
-   - **Inline styles** — capture any `style={{ ... }}` objects with literal values.
-   - **Theme token references** — if the component uses tokens like `theme.colors.primary` or CSS custom properties (`var(--color-primary)`), trace them back to the theme definition file and resolve to concrete values.
-
-   Edge cases:
-   - **Source file not found** — fall back to documentation values and note as inferred.
-   - **Dynamic/conditional styling** — for simple ternaries (e.g. `isPrimary ? 'bg-blue-600' : 'bg-gray-200'`), capture both values as variants. For runtime-computed expressions, extract literal fragments and flag the rest for manual review.
-   - **Source vs. documentation conflicts** — prefer explicit literal values from source. If both differ, use source and note the discrepancy in the summary.
-
-   **Checkpoint before step 5**: confirm a styling spec exists for every component and every variant value. If you only have variant names with no concrete values per variant, go back and read the source. Do not call `use_figma` with placeholder styling.
+   It parses the source's CVA / Tailwind / CSS-variable chain and returns a per-variant `{ fill, text, border, borderRadius, padding, fontSize, fontWeight, shadow, gap, layout }` object plus an `unresolved` array. Use the result verbatim — do not infer or guess. If `unresolved` is non-empty, ask the user to map each entry before any Figma write. If `inspect` fails, stop and report; do not fall back to manual source reading.
 4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page matching its category. This mirrors the Storybook sidebar so designers find things where they expect them, and keeps duplicate leaf names (e.g. two `Button`s under different categories) distinct.
 
 5. Write with `use_figma` — find or create the target page, then create the component set on it. Use the variant data from `storysync map` and the visual details from the source code. Include full visual styling in the instruction, not just variant structure: background colors, text colors, font sizes, padding, border radius, borders. Use `skillNames: "figma-use"`.

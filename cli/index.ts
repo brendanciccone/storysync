@@ -7,6 +7,7 @@ import { StorybookClient } from "./storybook.js";
 import { FigmaClient, extractFileKey } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
+import { inspectComponent } from "./inspect.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -231,33 +232,76 @@ program
 
 program
   .command("inspect")
-  .description("Show how a component's props map to Figma variants")
-  .requiredOption("--storybook <url>", "Storybook URL")
-  .requiredOption("--component <name>", "Component name or ID")
-  .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook);
-    try {
-      const entries = await storybook.listComponents();
-      const match = entries.find(
-        (e) => e.id.toLowerCase() === opts.component.toLowerCase() || e.name.toLowerCase() === opts.component.toLowerCase()
-      );
+  .description("Resolve a component's CVA/Tailwind classes into a per-variant styling spec")
+  .argument("[component]", "Component name (e.g. Button) or path to a .tsx/.jsx file")
+  .option("--project <path>", "Project root to scan", ".")
+  .option("--storybook <url>", "Optionally enrich with Storybook prop-to-variant mapping")
+  .option("--component <name>", "Legacy alias for the positional component argument")
+  .option("--json", "Output JSON instead of formatted text")
+  .action(async (nameOrPath: string | undefined, opts) => {
+    const target = nameOrPath ?? opts.component;
+    if (!target) {
+      console.error(chalk.red("Pass a component name or path. Example: storysync inspect Button"));
+      process.exit(1);
+    }
+    const result = inspectComponent(opts.project, target);
+    if (!result) {
+      console.error(chalk.red(`Could not find component "${target}".`));
+      console.error(chalk.dim("  Pass an explicit path or check that the component lives under src/components, components, or app/components."));
+      process.exit(1);
+    }
 
-      const component = await storybook.getComponent(match?.id ?? opts.component.toLowerCase(), match?.name ?? opts.component);
-      const def = mapComponent(component);
+    let propMapping: { name: string; included: { type: string; values: string[] } | null; type: string }[] | undefined;
+    if (opts.storybook) {
+      const storybook = await connectStorybook(opts.storybook, !!opts.json);
+      try {
+        const entries = await storybook.listComponents();
+        const match = entries.find(
+          (e) => e.id.toLowerCase() === target.toLowerCase() || e.name.toLowerCase() === target.toLowerCase()
+        );
+        const component = await storybook.getComponent(match?.id ?? target.toLowerCase(), match?.name ?? target);
+        const def = mapComponent(component);
+        propMapping = component.props.map((prop) => {
+          const v = def.variantProperties.find((vp) => vp.name === prop.name);
+          return { name: prop.name, included: v ? { type: v.type, values: v.values } : null, type: prop.type.name };
+        });
+      } finally {
+        await storybook.disconnect();
+      }
+    }
 
-      console.log(`\n${chalk.bold(component.name)}\n`);
-      for (const prop of component.props) {
-        const v = def.variantProperties.find((vp) => vp.name === prop.name);
-        if (v) {
-          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}]`);
+    if (opts.json) {
+      console.log(JSON.stringify({ ...result, propMapping }, null, 2));
+      return;
+    }
+    console.log(`\n${chalk.bold(result.name)} ${chalk.dim(result.path ?? "")}`);
+    for (const w of result.warnings) console.log(chalk.yellow(`  ! ${w}`));
+    if (Object.keys(result.base).length) {
+      console.log(chalk.bold("\n  Base"));
+      for (const [k, v] of Object.entries(result.base)) if (v != null) console.log(`    ${k}: ${v}`);
+    }
+    for (const variant of result.variants) {
+      console.log(chalk.bold(`\n  ${variant.name}${variant.defaultValue ? chalk.dim(` (default: ${variant.defaultValue})`) : ""}`));
+      for (const [valueName, styling] of Object.entries(variant.values)) {
+        console.log(`    ${chalk.cyan(valueName)}`);
+        for (const [k, v] of Object.entries(styling)) if (v != null) console.log(`      ${k}: ${v}`);
+      }
+    }
+    if (result.unresolved.length) {
+      console.log(chalk.bold("\n  Unresolved utilities (ask the user before writing):"));
+      for (const u of result.unresolved) console.log(`    ${chalk.yellow(u)}`);
+    }
+    if (propMapping) {
+      console.log(chalk.bold("\n  Storybook prop mapping"));
+      for (const p of propMapping) {
+        if (p.included) {
+          console.log(`    ${chalk.green("✓")} ${p.name} (${p.type}) -> ${p.included.type} [${p.included.values.join(", ")}]`);
         } else {
-          console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped`);
+          console.log(`    ${chalk.dim("✗")} ${p.name} (${p.type}) -> skipped`);
         }
       }
-      console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);
-    } finally {
-      await storybook.disconnect();
     }
+    console.log("");
   });
 
 program
