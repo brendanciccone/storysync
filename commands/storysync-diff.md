@@ -5,7 +5,7 @@ argument-hint: [figma-file-key-or-url]
 
 Compare the current Figma file against this codebase's design tokens and Storybook components, then report drift in either direction. Use the storysync skill at `.claude/skills/storysync.md` (Audit section).
 
-**This is a read-only audit.** Do not call any Figma write tool — no `set_variable`, no `create_variable`, no `set_styles`, no `create_component`, no `set_node_properties`, no `replace_image`, no node mutation of any kind. If you find drift, report it. Do not fix it. The user will review the report and decide what to repair separately.
+**This is a read-only audit.** Do not modify the Figma file in any way. Use only `use_figma` calls that read state (variables, component sets, styles); never call write tools or run plugin code that mutates nodes. If you find drift, report it. Do not fix it. The user will review the report and decide what to repair separately.
 
 **Figma file key or URL:** $ARGUMENTS
 

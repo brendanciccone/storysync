@@ -116,9 +116,9 @@ The `category` field reflects the component's place in Storybook's sidebar (the 
    ```
 
    This parses the source's CVA / Tailwind / CSS-variable chain and returns a per-variant `{ fill, text, border, borderRadius, padding, fontSize, fontWeight, shadow, gap, layout }` object plus an `unresolved` array of utility classes it could not map. Use the result verbatim — do not infer, guess, or fall back to reading the source file by hand. If `unresolved` is non-empty, ask the user how to map each entry before writing anything to Figma. If `inspect` itself fails, stop and report; do not paper over with placeholder hex.
-4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field of each component, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page that matches its top-level category. This mirrors the Storybook sidebar so designers can find things where they expect them. If multiple components share the same leaf name (e.g. two `Button`s under different categories), the per-page organization keeps them distinct.
+3. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field of each component, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page that matches its top-level category. This mirrors the Storybook sidebar so designers can find things where they expect them. If multiple components share the same leaf name (e.g. two `Button`s under different categories), the per-page organization keeps them distinct.
 
-5. Write to Figma with `use_figma`. The instruction MUST embed the styling spec from step 3 — every variant value needs concrete fill, text color, padding, radius, border, font size, and shadow. A call that only references variant names without these values is a bug; refuse it and re-read the source.
+4. Write to Figma with `use_figma`. The instruction MUST embed the styling spec from step 2 — every variant value needs concrete fill, text color, padding, radius, border, font size, and shadow. A call that only references variant names without these values is a bug; refuse it and re-read the source.
 
 ```js
 use_figma({
@@ -155,8 +155,8 @@ use_figma({
 })
 ```
 
-6. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
-7. Summarize what was synced: token collections created, component count grouped by page/category, variant counts, visual details applied, any failures or caps.
+5. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
+6. Summarize what was synced: token collections created, component count grouped by page/category, variant counts, visual details applied, any failures or caps.
 
 ## Variable binding
 

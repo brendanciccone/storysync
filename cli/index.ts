@@ -241,14 +241,24 @@ program
   .action(async (nameOrPath: string | undefined, opts) => {
     const target = nameOrPath ?? opts.component;
     if (!target) {
-      console.error(chalk.red("Pass a component name or path. Example: storysync inspect Button"));
-      process.exit(1);
+      if (opts.json) {
+        console.log(JSON.stringify({ error: "Missing component argument", hint: "Pass a component name or path." }));
+      } else {
+        console.error(chalk.red("Pass a component name or path. Example: storysync inspect Button"));
+      }
+      process.exitCode = 1;
+      return;
     }
     const result = inspectComponent(opts.project, target);
     if (!result) {
-      console.error(chalk.red(`Could not find component "${target}".`));
-      console.error(chalk.dim("  Pass an explicit path or check that the component lives under src/components, components, or app/components."));
-      process.exit(1);
+      if (opts.json) {
+        console.log(JSON.stringify({ error: "Component not found", name: target, project: opts.project }));
+      } else {
+        console.error(chalk.red(`Could not find component "${target}".`));
+        console.error(chalk.dim("  Pass an explicit path or check that the component lives under src/components, components, or app/components."));
+      }
+      process.exitCode = 1;
+      return;
     }
 
     let propMapping: { name: string; included: { type: string; values: string[] } | null; type: string }[] | undefined;

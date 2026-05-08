@@ -299,3 +299,65 @@ const x = cva("md:bg-blue-500 hover:text-white");
     cleanup(dir);
   }
 });
+
+test("inspectComponent: warns when compoundVariants are present", () => {
+  // The CVA compoundVariants list applies styling only when multiple variant
+  // values co-occur — Figma's per-axis variant model can't represent that,
+  // so we surface a warning rather than silently dropping the styles.
+  const dir = makeProject({
+    "src/components/button.tsx": `
+import { cva } from "cva";
+export const button = cva("rounded-md", {
+  variants: {
+    variant: { primary: "bg-blue-500", secondary: "bg-gray-500" },
+    size: { sm: "p-2", lg: "p-4" },
+  },
+  compoundVariants: [
+    { variant: "primary", size: "sm", class: "ring-2" },
+    { variant: "secondary", size: "lg", class: "shadow-lg" },
+  ],
+  defaultVariants: { variant: "primary", size: "sm" },
+});
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "Button");
+    assert.ok(result);
+    assert.ok(
+      result!.warnings.some((w) => w.includes("2 compoundVariants")),
+      `expected compoundVariants warning, got: ${result!.warnings.join(" / ")}`,
+    );
+    // Regular variants still resolved correctly.
+    const variant = result!.variants.find((v) => v.name === "variant");
+    assert.ok(variant);
+    assert.equal(variant!.values.primary.fill, "#3b82f6");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("parseCvaCall: counts compoundVariants without parsing them", () => {
+  const source = `
+import { cva } from "cva";
+const x = cva("base", {
+  variants: { size: { sm: "p-1", md: "p-2" } },
+  compoundVariants: [
+    { size: "sm", class: "a" },
+    { size: "md", class: "b" },
+    { size: "md", class: "c" },
+  ],
+});
+`;
+  const parsed = parseCvaCall(source);
+  assert.ok(parsed);
+  assert.equal(parsed!.compoundCount, 3);
+});
+
+test("parseCvaCall: compoundCount is 0 when field absent", () => {
+  const parsed = parseCvaCall(`
+import { cva } from "cva";
+const x = cva("base", { variants: { size: { sm: "p-1" } } });
+`);
+  assert.ok(parsed);
+  assert.equal(parsed!.compoundCount, 0);
+});

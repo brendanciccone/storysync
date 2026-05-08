@@ -97,7 +97,7 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
   const source = readFileSync(path, "utf8");
   const name = basename(path, extname(path));
 
-  const tokenMap = buildTokenMap(projectPath);
+  const { map: tokenMap, warning: tokenWarning } = buildTokenMap(projectPath);
   const cva = parseCvaCall(source);
 
   const result: InspectionResult = {
@@ -108,6 +108,7 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
     unresolved: [],
     warnings: [],
   };
+  if (tokenWarning) result.warnings.push(tokenWarning);
 
   if (!cva) {
     // No cva() call found. Fall back to scanning className strings on JSX
@@ -144,6 +145,12 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
     result.variants.push(variant);
   }
 
+  if (cva.compoundCount > 0) {
+    result.warnings.push(
+      `Component has ${cva.compoundCount} compoundVariants entries that aren't representable in Figma's per-axis variant model — those styles are NOT in this output. Either flatten them by hand or skip the variant combinations they target.`,
+    );
+  }
+
   return result;
 }
 
@@ -153,6 +160,7 @@ interface ParsedCva {
   base: string;
   variants: Record<string, Record<string, string>>;
   defaults: Record<string, string>;
+  compoundCount: number;
 }
 
 export function parseCvaCall(source: string): ParsedCva | null {
@@ -174,6 +182,7 @@ export function parseCvaCall(source: string): ParsedCva | null {
   const config = args.length >= 2 ? args[1].trim() : "";
   const variants: Record<string, Record<string, string>> = {};
   const defaults: Record<string, string> = {};
+  let compoundCount = 0;
 
   if (config.startsWith("{")) {
     const variantsBlock = readObjectField(config, "variants");
@@ -195,9 +204,17 @@ export function parseCvaCall(source: string): ParsedCva | null {
         if (str != null) defaults[vName] = str;
       }
     }
+    // CVA's compoundVariants apply styling only when multiple variant values
+    // co-occur (e.g. variant=primary AND size=sm). They can't be expressed
+    // in Figma's per-axis variant model, so we count them and surface a
+    // warning rather than silently dropping the styling.
+    const compoundsBlock = readArrayField(config, "compoundVariants");
+    if (compoundsBlock) {
+      compoundCount = countTopLevelObjects(compoundsBlock);
+    }
   }
 
-  return { base, variants, defaults };
+  return { base, variants, defaults, compoundCount };
 }
 
 function findCvaCall(source: string): number {
@@ -307,6 +324,20 @@ function readObjectField(objBody: string, fieldName: string): string | null {
   return null;
 }
 
+function readArrayField(objBody: string, fieldName: string): string | null {
+  const v = readObjectField(objBody, fieldName);
+  if (v == null) return null;
+  return v.startsWith("[") ? v : null;
+}
+
+function countTopLevelObjects(arrayBody: string): number {
+  if (!arrayBody.startsWith("[")) return 0;
+  const close = matchClose(arrayBody, 0, "[", "]");
+  if (close < 0) return 0;
+  const entries = splitTopLevelArgs(arrayBody.slice(1, close));
+  return entries.filter((e) => e.trim().startsWith("{")).length;
+}
+
 function* iterateObjectEntries(objBody: string): Generator<[string, string]> {
   if (!objBody.startsWith("{")) return;
   const close = matchClose(objBody, 0, "{", "}");
@@ -366,7 +397,7 @@ function splitClasses(s: string): string[] {
 
 // --- Token map ---
 
-function buildTokenMap(projectPath: string): TokenMap {
+function buildTokenMap(projectPath: string): { map: TokenMap; warning: string | null } {
   const map: TokenMap = { colors: new Map(), spacing: new Map(), radius: new Map(), shadows: new Map(), typography: new Map() };
   try {
     const result = extractTokens(projectPath);
@@ -377,10 +408,16 @@ function buildTokenMap(projectPath: string): TokenMap {
         target.set(normalizeTokenKey(t.name), t.value);
       }
     }
-  } catch {
-    // No tokens available; resolution falls back to Tailwind defaults.
+    return { map, warning: null };
+  } catch (err) {
+    // Token extraction failed (malformed config, missing file, etc).
+    // Fall back to bundled Tailwind defaults but surface the failure so the
+    // user notices instead of getting "unresolved" for `bg-primary`.
+    return {
+      map,
+      warning: `Token extraction failed (${String(err).split("\n")[0]}); falling back to Tailwind defaults.`,
+    };
   }
-  return map;
 }
 
 interface TokenMap {
