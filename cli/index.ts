@@ -39,6 +39,8 @@ program
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--components <names>", "Comma-separated component names")
+  .option("--inspect", "Bundle the per-component styling spec from `storysync inspect` inline (recommended for push workflows)")
+  .option("--project <path>", "Project root used when --inspect is set", ".")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any component fails or is capped")
   .action(async (opts) => {
@@ -61,19 +63,28 @@ program
         return;
       }
 
-      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
+      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; styling?: ReturnType<typeof inspectComponent>; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
       for (const entry of entries) {
         try {
           const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(component);
-          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
+          const result: typeof results[number] = { name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null };
+          if (opts.inspect) {
+            result.styling = inspectComponent(opts.project, entry.name);
+          }
+          results.push(result);
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
             const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
             const label = entry.title ?? entry.name;
-            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            const stylingTag = opts.inspect && result.styling
+              ? chalk.dim(` styling✓${result.styling.unresolved.length ? ` ${chalk.yellow(`(${result.styling.unresolved.length} unresolved)`)}` : ""}`)
+              : opts.inspect && !result.styling
+              ? chalk.yellow(" styling✗ source not found")
+              : "";
+            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}${stylingTag}`);
           }
           total += def.variantCombinations.length;
           if (def.wasCapped) capped++;
