@@ -43,10 +43,10 @@ claude plugin install figma@claude-plugins-official
 
 Then start Storybook and open Claude Code. Two slash commands are now available:
 
-- `/storysync-push <figma-file-key>` — sync Storybook + tokens into Figma
-- `/storysync-diff <figma-file-key>` — audit Figma against code
+- `/storysync-push <figma-url>` — sync Storybook + tokens into Figma
+- `/storysync-diff <figma-url>` — audit Figma against code
 
-Or just say it in plain English: **"Push my Storybook to Figma (file key abc123)"** / **"Diff Figma against code"**.
+Paste the Figma URL straight from your browser (`https://www.figma.com/design/...`); both slash commands extract the file key automatically. Plain English works too: **"Push my Storybook to Figma (https://www.figma.com/design/...)"** / **"Diff Figma against code"**.
 
 ### Cursor
 
@@ -54,8 +54,8 @@ After `storysync setup --client cursor`:
 
 In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say:
 
-- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
-- **"Diff Figma against code (file key abc123)"** — audit
+- **"Push my Storybook to Figma (https://www.figma.com/design/...)"** — code → Figma
+- **"Diff Figma against code (https://www.figma.com/design/...)"** — audit
 
 ### Codex
 
@@ -75,15 +75,15 @@ url = "https://mcp.figma.com/mcp"
 
 Start Storybook and say:
 
-- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
-- **"Diff Figma against code (file key abc123)"** — audit
+- **"Push my Storybook to Figma (https://www.figma.com/design/...)"** — code → Figma
+- **"Diff Figma against code (https://www.figma.com/design/...)"** — audit
 
 ### Magic phrases (all clients)
 
 | Goal | Say |
 |---|---|
-| Code → Figma | "Push my Storybook to Figma (file key `<key>`)" |
-| Audit drift | "Diff Figma against code (file key `<key>`)" or "Check if Figma is in sync" |
+| Code → Figma | "Push my Storybook to Figma (`<paste figma url>`)" |
+| Audit drift | "Diff Figma against code (`<paste figma url>`)" or "Check if Figma is in sync" |
 | Figma → code | _Coming in v0.3_ |
 
 ### GitHub Action (validate in CI)
@@ -274,14 +274,14 @@ Options:
 Example:
 
 ```bash
-# Diff tokens only
-npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
-
-# A full Figma URL works too — the file key is extracted automatically
+# Diff tokens only — paste the URL straight from the browser
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key 'https://www.figma.com/design/abc123/Untitled'
 
+# A bare file key works too
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
+
 # Diff tokens + components
-npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
+npx storysync diff --figma https://mcp.figma.com/mcp --file-key 'https://www.figma.com/design/abc123/Untitled' --storybook http://localhost:6006
 ```
 
 ### `storysync inspect`
