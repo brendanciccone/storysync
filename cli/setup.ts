@@ -25,6 +25,7 @@ function findPackageRoot(start: string): string {
 
 const PACKAGE_ROOT = findPackageRoot(__dirname);
 const CODEX_APPEND_MARKER = "<!-- storysync:start -->";
+const CODEX_APPEND_END_MARKER = "<!-- storysync:end -->";
 
 export interface SetupOptions {
   force: boolean;
@@ -81,7 +82,13 @@ export function buildPlan(client: Client, projectPath: string): SetupPlan {
   // Codex: append to AGENTS.md if it exists, otherwise create it.
   const dest = join(projectPath, "AGENTS.md");
   const exists = existsSync(dest);
-  const alreadyHasMarker = exists && readFileSync(dest, "utf8").includes(CODEX_APPEND_MARKER);
+  // Treat the storysync block as "already present" only when BOTH the start
+  // and end markers are present; a half-stamped file (manual edit, merge
+  // conflict, or interrupted prior run) is malformed and needs --force to
+  // be repaired rather than silently skipped.
+  const existing = exists ? readFileSync(dest, "utf8") : "";
+  const alreadyHasMarker =
+    existing.includes(CODEX_APPEND_MARKER) && existing.includes(CODEX_APPEND_END_MARKER);
   return { client, copies: [], codexAppend: { dest, exists, alreadyHasMarker } };
 }
 
@@ -250,10 +257,12 @@ export async function runSetup(client: Client, projectInput: string, opts: Setup
 
   // MCP auto-setup is currently Claude-only — Cursor and Codex still need
   // manual configuration in their own settings.
-  if (client === "claude" && !opts.skipMcp) {
-    console.log("");
-    const notes = await offerClaudeMcpSetup(opts);
-    for (const n of notes) console.log(`  ${n}`);
+  if (client === "claude") {
+    if (!opts.skipMcp) {
+      console.log("");
+      const notes = await offerClaudeMcpSetup(opts);
+      for (const n of notes) console.log(`  ${n}`);
+    }
   } else if (client === "cursor") {
     console.log(`\n${chalk.bold("Next steps:")}`);
     console.log(chalk.dim("  In Cursor settings, add Storybook MCP: http://localhost:6006/mcp"));

@@ -94,7 +94,11 @@ export function findComponentFile(projectPath: string, nameOrPath: string): stri
 
 function walkForComponent(dir: string, target: string, out: string[], depth: number): void {
   if (depth > 6) return;
-  for (const entry of readdirSync(dir)) {
+  // Guard the top-level read too — a single unreadable subtree (EACCES,
+  // transient filesystem error) shouldn't abort discovery in sibling trees.
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return; }
+  for (const entry of entries) {
     const full = join(dir, entry);
     let stat;
     try { stat = statSync(full); } catch { continue; }
@@ -211,7 +215,9 @@ export function parseCvaCall(source: string): ParsedCva | null {
   const close = matchClose(source, open, "(", ")");
   if (close < 0) return null;
 
-  const args = splitTopLevelArgs(source.slice(open + 1, close));
+  // Mirror parseCnCall: strip comments before splitting so a `// trailing`
+  // comment between variant entries doesn't leak into the next arg.
+  const args = splitTopLevelArgs(stripComments(source.slice(open + 1, close)));
   if (!args.length) return null;
 
   const base = readStringOrTemplate(args[0]);
@@ -440,10 +446,14 @@ function findCvaCall(source: string): number {
   // Match the cva identifier followed by `(`, ignoring the import line.
   const re = /(?<![A-Za-z0-9_$])cva\s*\(/g;
   const matches = [...source.matchAll(re)];
-  // Skip the import declaration if `cva` shows up there too.
+  // Skip the import declaration if `cva` shows up there too. Handle the
+  // case where the cva call is on the final source line (no trailing
+  // newline): `indexOf("\n", ...)` returns -1, which would silently
+  // truncate the line slice and might still match the import filter.
   for (const m of matches) {
     const lineStart = source.lastIndexOf("\n", m.index!) + 1;
-    const line = source.slice(lineStart, source.indexOf("\n", m.index!));
+    const eol = source.indexOf("\n", m.index!);
+    const line = source.slice(lineStart, eol === -1 ? source.length : eol);
     if (/^\s*import\b/.test(line)) continue;
     return m.index!;
   }
@@ -699,25 +709,37 @@ function resolveClasses(classes: string[], tokens: TokenMap): { styling: Resolve
   }
 
   // Combine padding shorthand into one CSS-like string when any sides set.
-  // Record a binding only when every set side resolved through the same
-  // spacing token — Figma can't express per-side variable binding via this
-  // output shape, so a mixed-token padding stays a literal.
+  // Record a binding only when ALL FOUR sides were explicitly set AND
+  // resolved through the same spacing token. Asymmetric forms like `px-4`
+  // alone leave top/bottom at the default 0 — emitting a single
+  // `bindings.padding` would tell downstream Figma writes to bind all four
+  // sides to the spacing token, which isn't true. Per-axis bindings would
+  // be the better long-term fix; for now, mixed/partial padding stays a
+  // literal (with a warning if multiple tokens disagree).
   const p = ctx.padding;
   if (p.t != null || p.r != null || p.b != null || p.l != null) {
     const t = p.t ?? 0, r = p.r ?? 0, b = p.b ?? 0, l = p.l ?? 0;
     ctx.styling.padding = `${t}px ${r}px ${b}px ${l}px`;
     const pb = ctx.paddingBindings;
     const setSides = (["t", "r", "b", "l"] as const).filter((s) => p[s] != null);
-    const bindings = setSides.map((s) => pb[s]);
-    if (bindings.length && bindings.every((b) => b != null)) {
-      const first = bindings[0]!;
-      if (bindings.every((b) => b!.token === first.token && b!.collection === first.collection)) {
+    const sideBindings = setSides.map((s) => pb[s]);
+    const allFourSet = setSides.length === 4;
+    const allBound = sideBindings.length > 0 && sideBindings.every((b) => b != null);
+    if (allFourSet && allBound) {
+      const first = sideBindings[0]!;
+      if (sideBindings.every((b) => b!.token === first.token && b!.collection === first.collection)) {
         ctx.bindings.padding = first;
       } else {
         ctx.warnings.push(
-          `Padding sides resolved through different spacing tokens (${bindings.map((b) => b!.token).join(", ")}); writing literal pixels — bind sides individually in Figma.`,
+          `Padding sides resolved through different spacing tokens (${sideBindings.map((b) => b!.token).join(", ")}); writing literal pixels — bind sides individually in Figma.`,
         );
       }
+    } else if (allBound && sideBindings.length < 4) {
+      // Partial sides bound (e.g., px-4 alone) — can't aggregate into a
+      // single padding binding without overstating which sides bind.
+      ctx.warnings.push(
+        `Padding bound on ${setSides.length}/4 sides (${setSides.join(", ")}); writing literal pixels — extend padding to all sides or bind individually in Figma.`,
+      );
     }
   }
   if (ctx.border.width || ctx.border.color) {
@@ -1013,6 +1035,7 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   // pollute `unresolved` and force the agent to interrupt the push to ask
   // about them. None of these are actionable in Figma's auto-layout model:
   if (/^(content|self|place)-(start|end|center|between|around|evenly|stretch|baseline)$/.test(cls)) return true;
+  if (/^place-(content|items|self)-(auto|start|end|center|between|around|evenly|stretch|baseline)$/.test(cls)) return true;
   if (/^(w|h|min-w|min-h|max-w|max-h|size)-/.test(cls)) return true; // sizing — content-driven in Figma
   if (/^(m|mx|my|mt|mr|mb|ml)-/.test(cls)) return true; // margin — Figma uses padding + gap on the parent
   if (/^space-[xy]-/.test(cls)) return true; // sibling spacing — same as gap

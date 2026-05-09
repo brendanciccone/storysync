@@ -277,11 +277,15 @@ program
     if (opts.storybook) {
       const storybook = await connectStorybook(opts.storybook, !!opts.json);
       try {
+        // Use the inspected component's resolved name (e.g. "Button"), not
+        // the raw target — when the user passed a path like
+        // `src/components/button.tsx`, the path itself isn't a Storybook ID.
+        const lookupName = result.name.toLowerCase();
         const entries = await storybook.listComponents();
         const match = entries.find(
-          (e) => e.id.toLowerCase() === target.toLowerCase() || e.name.toLowerCase() === target.toLowerCase()
+          (e) => e.id.toLowerCase() === lookupName || e.name.toLowerCase() === lookupName,
         );
-        const component = await storybook.getComponent(match?.id ?? target.toLowerCase(), match?.name ?? target);
+        const component = await storybook.getComponent(match?.id ?? lookupName, match?.name ?? result.name);
         const def = mapComponent(component);
         propMapping = component.props.map((prop) => {
           const v = def.variantProperties.find((vp) => vp.name === prop.name);
@@ -559,7 +563,13 @@ program
   .option("--components <names>", "Comma-separated component names to include (default: all)")
   .option("--json", "Output JSON (default — meant to be piped). Without --json, prints a human-readable summary of script labels.")
   .action(async (figma: string, opts) => {
-    const fileKey = extractFileKey(figma);
+    let fileKey: string;
+    try {
+      fileKey = extractFileKey(figma);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
     const json = !!opts.json || !process.stdout.isTTY;
 
     const storybook = await connectStorybook(opts.storybook, json);

@@ -283,7 +283,13 @@ function isBooleanShape(values: string[]): boolean {
   return lowered[0] === "false" && lowered[1] === "true";
 }
 
-function normalizePropType(type: string, values: string[]): string {
+// The Figma MCP exposes boolean component properties as VARIANT with
+// `["true", "false"]` values rather than a true BOOLEAN. We treat that
+// shape as equivalent to BOOLEAN for diff purposes — but ONLY on the
+// Figma side. Code-side VARIANT should never be coerced even if it
+// happens to enumerate exactly true/false (e.g., a literal union type
+// `'true' | 'false'`), since that's a real distinction the user owns.
+function normalizeFigmaPropType(type: string, values: string[]): string {
   if (type === "BOOLEAN") return "BOOLEAN";
   if (type === "VARIANT" && isBooleanShape(values)) return "BOOLEAN";
   return type;
@@ -332,11 +338,10 @@ export function diffComponents(
       const figmaProp = figmaPropMap.get(pName);
       if (!figmaProp) continue;
 
-      const codeKind = normalizePropType(codeProp.type, codeProp.values);
-      const figmaKind = normalizePropType(figmaProp.type, figmaProp.values);
-      // Both sides reduce to BOOLEAN — values are by definition {true,false},
-      // so skip the value comparison entirely.
-      if (codeKind === "BOOLEAN" && figmaKind === "BOOLEAN") continue;
+      const figmaKind = normalizeFigmaPropType(figmaProp.type, figmaProp.values);
+      // Code-side BOOLEAN ≡ Figma-side BOOLEAN-shaped VARIANT. Skip the
+      // value comparison since both sides describe the same true/false axis.
+      if (codeProp.type === "BOOLEAN" && figmaKind === "BOOLEAN") continue;
 
       const codeVals = new Set(codeProp.values.map((v) => v.toLowerCase()));
       const figmaVals = new Set(figmaProp.values.map((v) => v.toLowerCase()));

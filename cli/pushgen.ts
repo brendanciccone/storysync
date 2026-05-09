@@ -131,8 +131,12 @@ export interface ComponentInput {
 }
 
 export function generateComponentScript(input: ComponentInput): PushScript {
-  const pageName = input.category || "Components";
-  const compName = input.name;
+  const pageName = sanitizeIdentifier(input.category || "Components", "category");
+  const compName = sanitizeIdentifier(input.name, "component name");
+  for (const p of input.variantProperties) {
+    sanitizeIdentifier(p.name, "variant property name");
+    for (const v of p.values) sanitizeIdentifier(v, "variant value");
+  }
   const matrix = enumerateVariantMatrix(input.variantProperties);
 
   const lines: string[] = [];
@@ -194,11 +198,36 @@ export function generateComponentScript(input: ComponentInput): PushScript {
     lines.push(`  const set = figma.combineAsVariants(variants, page);`);
     lines.push(`  set.name = ${JSON.stringify(compName)};`);
   } else {
+    // Single-variant path: convert the lone frame into a Component while
+    // preserving every property emitFrameStyling already set on it (auto-
+    // layout, padding, fills, radius, opacity, effects, bindings).
     lines.push(`  const single = figma.createComponent();`);
     lines.push(`  single.name = ${JSON.stringify(compName)};`);
-    lines.push(`  single.resize(variants[0].width, variants[0].height);`);
-    lines.push(`  for (const child of [...variants[0].children]) single.appendChild(child);`);
-    lines.push(`  variants[0].remove();`);
+    lines.push(`  const src = variants[0];`);
+    lines.push(`  // Mirror styling from the staged frame to the component.`);
+    lines.push(`  single.layoutMode = src.layoutMode;`);
+    lines.push(`  single.primaryAxisSizingMode = src.primaryAxisSizingMode;`);
+    lines.push(`  single.counterAxisSizingMode = src.counterAxisSizingMode;`);
+    lines.push(`  single.paddingTop = src.paddingTop; single.paddingRight = src.paddingRight; single.paddingBottom = src.paddingBottom; single.paddingLeft = src.paddingLeft;`);
+    lines.push(`  single.itemSpacing = src.itemSpacing;`);
+    lines.push(`  single.counterAxisAlignItems = src.counterAxisAlignItems;`);
+    lines.push(`  single.primaryAxisAlignItems = src.primaryAxisAlignItems;`);
+    lines.push(`  single.cornerRadius = src.cornerRadius;`);
+    lines.push(`  single.fills = src.fills;`);
+    lines.push(`  single.strokes = src.strokes;`);
+    lines.push(`  single.strokeWeight = src.strokeWeight;`);
+    lines.push(`  single.dashPattern = src.dashPattern;`);
+    lines.push(`  single.effects = src.effects;`);
+    lines.push(`  single.opacity = src.opacity;`);
+    lines.push(`  // Preserve any variable bindings on the frame.`);
+    lines.push(`  if (src.boundVariables) {`);
+    lines.push(`    for (const [field, binding] of Object.entries(src.boundVariables)) {`);
+    lines.push(`      const v = figma.variables.getVariableById(binding.id);`);
+    lines.push(`      if (v) single.setBoundVariable(field, v);`);
+    lines.push(`    }`);
+    lines.push(`  }`);
+    lines.push(`  for (const child of [...src.children]) single.appendChild(child);`);
+    lines.push(`  src.remove();`);
     lines.push(`  page.appendChild(single);`);
   }
   lines.push(`  console.log("storysync: created ${compName} with ${matrix.length} variants on page ${pageName}");`);
@@ -350,15 +379,22 @@ export function parseColorToRgb(value: string): RGB | null {
       return a != null ? { r, g, b, a } : { r, g, b };
     }
   }
-  // rgb / rgba
-  m = v.match(/^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*(?:,\s*(\d+(?:\.\d+)?))?\s*\)$/i);
+  // rgb / rgba — accepts both Tailwind v3 space-separated form
+  // (`rgb(255 0 0 / 0.5)`) and the legacy comma-separated form. Alpha may
+  // be a fraction (`0.5`) or a percent (`50%`).
+  m = v.match(/^rgba?\(\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*(?:[,\/]\s*(\d+(?:\.\d+)?%?))?\s*\)$/i);
   if (m) {
-    return {
+    const result: RGB = {
       r: parseFloat(m[1]) / 255,
       g: parseFloat(m[2]) / 255,
       b: parseFloat(m[3]) / 255,
-      ...(m[4] ? { a: parseFloat(m[4]) } : {}),
     };
+    if (m[4] != null) {
+      const aStr = m[4];
+      const a = aStr.endsWith("%") ? parseFloat(aStr) / 100 : parseFloat(aStr);
+      if (!isNaN(a)) result.a = a;
+    }
+    return result;
   }
   // hsl / hsla — including the bare-component form `224 71% 4%` shadcn uses.
   m = v.match(/^hsla?\(\s*(\d+(?:\.\d+)?)(?:deg)?[,\s]+(\d+(?:\.\d+)?)%[,\s]+(\d+(?:\.\d+)?)%(?:[\s,/]+(\d*\.?\d+%?))?\s*\)$/i)
@@ -394,6 +430,32 @@ function hslToRgb(h: number, s: number, l: number): RGB {
   else [r1, g1, b1] = [c, 0, x];
   const m = l - c / 2;
   return { r: r1 + m, g: g1 + m, b: b1 + m };
+}
+
+// Validates an identifier-like string before interpolating it into generated
+// Figma Plugin code. Token names, component names, page categories, and
+// variant values all flow into JS string literals via JSON.stringify (which
+// escapes quotes/backslashes correctly), but we still want a hard guard
+// against newlines, control chars, and JS comment markers in case future
+// edits embed values without JSON.stringify wrapping. Throws on violation
+// so the failure surfaces at plan-generation time instead of in Figma.
+function sanitizeIdentifier(value: string, kind: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`storysync push: ${kind} is empty`);
+  }
+  if (value.length > 200) {
+    throw new Error(`storysync push: ${kind} too long (>200 chars): ${value.slice(0, 80)}…`);
+  }
+  // Allow letters, digits, common separators (space, dash, underscore,
+  // forward slash, dot). Reject anything that could break out of a string
+  // or comment context.
+  if (!/^[A-Za-z0-9 _\-/.]+$/.test(value)) {
+    throw new Error(
+      `storysync push: ${kind} contains unsupported characters (${JSON.stringify(value)}). ` +
+      `Only letters, digits, space, and ._-/ are allowed.`,
+    );
+  }
+  return value;
 }
 
 function rgbToJsLiteral(rgb: RGB): string {

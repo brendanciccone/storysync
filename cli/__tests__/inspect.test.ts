@@ -77,7 +77,8 @@ test("findComponentFile: skips node_modules and dist", () => {
   try {
     const found = findComponentFile(dir, "button");
     assert.ok(found);
-    assert.ok(found!.includes("src/components"));
+    // Path-separator tolerant — Windows uses backslashes.
+    assert.match(found!, /src[\\/]+components[\\/]+button\.tsx$/i);
   } finally {
     cleanup(dir);
   }
@@ -843,6 +844,28 @@ const x = cva("px-4 py-2");
     assert.ok(result);
     assert.equal(result!.baseBindings.padding, undefined);
     assert.ok(result!.warnings.some((w) => w.includes("different spacing tokens")));
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: padding does NOT bind when only some sides are set", () => {
+  // px-4 alone leaves top/bottom at the default 0. Emitting a single
+  // bindings.padding entry would tell Figma to bind all four sides to
+  // the spacing token, which isn't what the source said. Stay literal
+  // and surface a warning.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { spacing: { "4": "16px" } } } };`,
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("px-4");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.baseBindings.padding, undefined);
+    assert.ok(result!.warnings.some((w) => w.includes("2/4 sides")));
   } finally {
     cleanup(dir);
   }
