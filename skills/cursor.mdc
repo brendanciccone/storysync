@@ -36,29 +36,25 @@ This auto-detects the token source (Tailwind config, CSS custom properties, or t
 
 ## Components
 
-**The single rule:** `storysync map --inspect --json` is the only source of truth for component data. Run it once and use the JSON verbatim. Do NOT read component source files yourself. Each component carries `variantProperties` (Figma matrix) AND `styling` (`base`, `baseBindings`, per-variant `values` and `bindings`). When `bindings.<field>` exists, you MUST bind that Figma property to the named variable using `setBoundVariable` — writing the literal hardcodes the component and breaks theme/dark-mode swap. **Creating variable collections without binding any components to them produces dead variables plus hardcoded components.** Bindings and collections are a pair; commit to both or skip both.
+**You are a thin pipeline.** The CLI generates the exact Figma Plugin API code (variables, components, bindings, all of it). Your job is to pipe each generated script to `use_figma` verbatim. Do NOT read component source files. Do NOT write your own Figma Plugin code. Do NOT decide which variants to skip or which bindings to apply.
 
-1. **Map + inspect (single call).** Run:
+1. **Generate the plan.** Run:
 
 ```bash
-npx storysync map --storybook http://localhost:6006 --inspect --json --project .
+npx storysync push <figma-url> --storybook http://localhost:6006 --project . --json
 ```
 
-Output bundles variant matrix + styling spec + bindings per component. The `styling` field has `base`, `baseBindings`, `variants[]` with `values` and `bindings` per variant value, plus an `unresolved` array. Use the result verbatim. If `styling.unresolved` is non-empty, ask the user how to map each entry. If `styling` is `null` (source file not found), ask for the path or skip.
+The output has a `scripts` array. Each script is a complete Figma Plugin API JavaScript snippet (variables, components, bindings) wired together. Variable bindings inside component scripts resolve at runtime, so script ordering matters but no IDs need to be threaded.
 
-2. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page matching its category.
+2. **Pipe each script to `use_figma`** in order:
 
-3. **Write each component.** For each field on each variant value:
-   - If `styling.variants[].bindings[name].<field>` exists → call `setBoundVariable` with the named variable from the Tokens step. Do not also write the literal.
-   - Otherwise → write the literal from `styling.variants[].values[name].<field>`.
+```js
+use_figma({ code: <script.code>, description: <script.label>, fileKey: <plan.fileKey>, skillNames: "figma-use" })
+```
 
-   Same rule for base styling. Before each `use_figma` call, output a short markdown table with one row per (variant value × property) showing **bound** vs **literal**. Use `skillNames: "figma-use"`.
+Do not modify the code. Do not skip a script. Do not reorder.
 
-4. **Verify visually.** Eyeball each component; fix issues with a follow-up `use_figma`.
-
-5. **Self-audit before reporting complete.** Confirm: you ran `map --inspect` once and used its `styling` for every component; every `bindings.<field>` resulted in a `setBoundVariable` call; you did NOT create unused variable collections; you did NOT read source files yourself. If any failed, redo before summarizing. Never report "binding skipped".
-
-6. **Summary.** Token collections, components grouped by page/category, variant counts, bindings count (e.g. "47 of 52 fields bound to variables"), failures, caps.
+3. **Report** the plan's `failures` and `warnings` plus the count of scripts that ran successfully.
 
 ## Variable binding
 

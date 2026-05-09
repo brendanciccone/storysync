@@ -79,104 +79,43 @@ use_figma({
 
 ## Components
 
-**The single rule:** `storysync map --inspect --json` is the only source of truth for component data. Run it once and use the JSON verbatim. Do NOT read component source files yourself. Do NOT derive Tailwind class meaning by inspection. Each component in the response carries `variantProperties` (the Figma variant matrix) AND `styling` (`base`, `baseBindings`, per-variant `values` and `bindings`). When `bindings.<field>` exists, you MUST bind that Figma property to the named variable using `setBoundVariable` — writing the literal value instead hardcodes the component forever and breaks theme/dark-mode swap. **Creating variable collections without binding any components to them produces dead variables plus hardcoded components** — the worst-of-both-worlds outcome. Bindings and collections are a pair; commit to both or skip both.
+**You are a thin pipeline.** The CLI generates the exact Figma Plugin API code (variables, components, bindings, all of it). Your job is to pipe each generated script to `use_figma` verbatim. Do NOT read component source files. Do NOT write your own Figma Plugin code. Do NOT decide which variants to skip or which bindings to apply.
 
-1. **Map + inspect (single call).** Run:
+1. **Generate the plan.** Run:
 
 ```bash
-npx storysync map --storybook http://localhost:6006 --inspect --json --project .
+npx storysync push <figma-url> --storybook http://localhost:6006 --project . --json
 ```
 
-The output bundles variant matrix + styling spec + bindings per component:
+The output is a JSON object with a `scripts` array. Each script is a complete Figma Plugin API JavaScript snippet — variables, components, bindings, all of it — already wired together. Variable bindings inside component scripts resolve at runtime via `figma.variables.getLocalVariables().find(...)` so script ordering matters but no IDs need to be threaded through.
 
 ```json
 {
-  "components": [
-    {
-      "name": "Button",
-      "title": "Forms/Button",
-      "category": "Forms",
-      "variantProperties": [{ "name": "variant", "type": "VARIANT", "values": ["primary", "ghost"], "defaultValue": "primary" }],
-      "combinations": 2,
-      "styling": {
-        "base": { "borderRadius": "6px", "fontWeight": "500" },
-        "baseBindings": {},
-        "variants": [{
-          "name": "variant",
-          "defaultValue": "primary",
-          "values": {
-            "primary": { "fill": "#2563eb", "text": "#ffffff" },
-            "ghost": { "fill": "transparent", "text": "hsl(224 71% 4%)" }
-          },
-          "bindings": {
-            "primary": {},
-            "ghost": { "text": { "token": "foreground", "collection": "colors" } }
-          }
-        }],
-        "unresolved": [],
-        "warnings": []
-      }
-    }
-  ]
+  "fileKey": "VdqfCRrFqCrB7ii0IRb6OU",
+  "scripts": [
+    { "label": "Create or update 39 variables across 2 collections", "code": "(async () => { ... })();" },
+    { "label": "Create Badge (18 variants) on Catalyst", "code": "(async () => { ... })();" },
+    { "label": "Create Button (46 variants) on Catalyst", "code": "(async () => { ... })();" }
+  ],
+  "warnings": [],
+  "failures": []
 }
 ```
 
-Use this result verbatim. If `styling.unresolved` is non-empty for a component, ask the user how to map each entry before writing it. If `styling` is `null` (source file not found), ask for the path or skip the component. The `category` field reflects the component's place in Storybook's sidebar (the part of `Forms/Button` before the last `/`).
-
-2. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page that matches its top-level category. This mirrors the Storybook sidebar so designers can find things where they expect them. If multiple components share the same leaf name (e.g. two `Button`s under different categories), the per-page organization keeps them distinct.
-
-3. **Write each component.** For each field on each variant value:
-   - If `styling.variants[].bindings[name].<field>` exists → call `setBoundVariable` with the named variable from the Tokens step. Do not also write the literal.
-   - Otherwise → write the literal from `styling.variants[].values[name].<field>`.
-
-   Same rule for base: `styling.baseBindings.<field>` → bind; otherwise `styling.base.<field>` literal. Before each `use_figma` call, output a short markdown table with one row per (variant value × property) showing whether the value will be **bound** (and to what) or written as a **literal**. This audit row is mandatory.
+2. **Pipe each script to `use_figma`** in order:
 
 ```js
 use_figma({
-  code: `
-    // Component: Button (title: Forms/Button, category: Forms)
-    //
-    // Find or create the 'Forms' page; place the component set there.
-    let page = figma.root.children.find(p => p.name === 'Forms');
-    if (!page) {
-      page = figma.createPage();
-      page.name = 'Forms';
-    }
-    figma.currentPage = page;
-    //
-    // Variant properties (from storysync map output):
-    //   - variant (VARIANT): [default, destructive, outline]
-    //   - size (VARIANT): [sm, md, lg]
-    //   - disabled (BOOLEAN): [true, false]
-    //
-    // Visual spec (from source code analysis):
-    //   All variants: rounded corners (6px radius), horizontal auto-layout, centered text
-    //   variant=default: background #1EA7FD, white text, no border
-    //   variant=destructive: background #EF4444, white text
-    //   variant=outline: transparent background, #333 text, 1px solid #ccc border
-    //   size=sm: 12px font, 8px/4px padding
-    //   size=md: 14px font, 16px/8px padding
-    //   size=lg: 16px font, 24px/12px padding
-
-    // ... Figma Plugin API code to create the component set on the Forms page
-  `,
-  description: "Create Button component set on 'Forms' page with N variants, styled per visual spec",
-  fileKey: "<file-key>",
-  skillNames: "figma-use"
+  code: <script.code>,
+  description: <script.label>,
+  fileKey: <plan.fileKey>,
+  skillNames: "figma-use",
 })
 ```
 
-4. **Verify visually.** After creating each component, confirm it looks right. Fix styling issues with a follow-up `use_figma`.
+Do not modify the code. Do not skip a script. Do not reorder.
 
-5. **Self-audit before reporting complete.** Walk back through your transcript and confirm:
-   - You ran `storysync map --inspect` exactly once and used its `styling` field for every component.
-   - Every `bindings.<field>` from the map result resulted in a `setBoundVariable` call (not a literal write).
-   - You did NOT create variable collections that no component binds to.
-   - You did NOT read component source files yourself (only the map output is allowed).
-
-   If any of those failed, redo the affected components before producing the summary. If you're about to write "variable binding skipped" or "wired bindings later", you violated the rule — go back.
-
-6. **Summary.** Token collections, components grouped by page/category, variant counts, bindings count (e.g. "47 of 52 fields bound to variables; 5 unbound because no matching token"), failures, caps.
+3. **Report** the plan's `failures` and `warnings`, plus the count of scripts that ran successfully. That's it.
 
 ## Variable binding
 

@@ -7,83 +7,56 @@ Push design tokens and Storybook components from this codebase into Figma.
 
 **Figma URL:** $ARGUMENTS
 
-If $ARGUMENTS is empty, ask. Users typically paste a full Figma URL (`https://www.figma.com/design/<key>/...`); extract the file key from the path between `/design/` (or `/file/`, `/board/`, `/proto/`, `/slides/`, `/make/`) and the next `/`. A raw file key is also accepted as-is.
+If $ARGUMENTS is empty, ask the user. They'll typically paste a full Figma URL; storysync extracts the file key automatically.
 
-## The single non-negotiable rule
+## What to do
 
-**`storysync map --inspect --json` is the only source of truth for component data.** Run it once, parse the JSON, and use it verbatim. Each component in the response includes `variantProperties` (the Figma variant matrix) and `styling` (`base`, `baseBindings`, `variants[]` with per-value styling and `bindings`). Do NOT read source files yourself. Do NOT derive Tailwind class meaning by inspection. Do NOT call `use_figma` to write a styled component without first checking `styling` for that component in the map output.
+You are a thin pipeline. Your job is to run one CLI command and pipe its output to `use_figma`. Do not improvise. Do not read source files. Do not write your own Figma Plugin API code. The CLI has already done all of that for you.
 
-When `bindings.<field>` exists for a field, you MUST bind the Figma property to that variable using `setBoundVariable`. The literal value in the styling object is for your reference only — it tells you what the variable currently resolves to. Writing the literal hardcodes the component forever: it ignores theme switches, dark mode, and any future token edit. **If you create variable collections in Figma but don't bind any components to them, you produced dead variables plus hardcoded components — the worst of both worlds.** Either commit to bindings or skip the variable collection step entirely; they're a pair.
+1. **If Storybook isn't running**, ask the user to start it (`pnpm storybook` / `npm run storybook`) and wait for `http://localhost:6006/index.json` to return 200.
 
-## Workflow
-
-1. **Tokens.** Run `npx storysync tokens --json --project .`. If no tokens, skip step 2.
-
-2. **Variable collections.** For each token category, call `use_figma` to create or update a matching Figma variable collection. Convert rem→px (1rem = 16px). Use `COLOR` for colors, `FLOAT` for numeric tokens. Remember the collection + variable names — you'll bind to them in step 4.
-
-3. **Map + inspect (single call).** Run:
+2. **Generate the plan** in one call:
 
    ```bash
-   npx storysync map --storybook http://localhost:6006 --inspect --json --project .
+   npx storysync push <figma-url> --storybook http://localhost:6006 --project . --json
    ```
 
-   If Storybook isn't running, ask the user for the correct URL or to start it. The output looks like:
+   The output is JSON of the form:
 
    ```json
    {
-     "components": [
-       {
-         "name": "Button",
-         "title": "Forms/Button",
-         "category": "Forms",
-         "variantProperties": [{ "name": "variant", "type": "VARIANT", "values": ["primary", "ghost"], "defaultValue": "primary" }],
-         "combinations": 2,
-         "styling": {
-           "base": { "borderRadius": "6px", "fontWeight": "500" },
-           "baseBindings": {},
-           "variants": [
-             {
-               "name": "variant",
-               "defaultValue": "primary",
-               "values": {
-                 "primary": { "fill": "#2563eb", "text": "#ffffff" },
-                 "ghost":   { "fill": "transparent", "text": "hsl(224 71% 4%)" }
-               },
-               "bindings": {
-                 "primary": {},
-                 "ghost":   { "text": { "token": "foreground", "collection": "colors" } }
-               }
-             }
-           ],
-           "unresolved": [],
-           "warnings": []
-         }
-       }
-     ]
+     "fileKey": "VdqfCRrFqCrB7ii0IRb6OU",
+     "scripts": [
+       { "label": "Create or update 39 variables across 2 collections", "code": "(async () => { ... })();" },
+       { "label": "Create Badge (18 variants) on Catalyst", "code": "(async () => { ... })();" },
+       { "label": "Create Button (46 variants) on Catalyst", "code": "(async () => { ... })();" }
+     ],
+     "warnings": [],
+     "failures": []
    }
    ```
 
-   If `styling.unresolved` is non-empty for a component, ask the user how to map each entry before writing that component. If `styling` is null (source file not found), ask the user for the path or skip that component.
+3. **For each script in `scripts` (in order)**, call `use_figma` with the script's `code` verbatim:
 
-4. **Organize + write each component.** Group components by `category`, create one Figma page per top-level category, place component sets on the matching page. Then for each component, call `use_figma` once. The Figma Plugin API code MUST:
+   ```js
+   use_figma({
+     code: <script.code>,
+     description: <script.label>,
+     fileKey: <plan.fileKey>,
+     skillNames: "figma-use",
+   })
+   ```
 
-   - Set every property on every variant value from `styling.variants[].values[name]`.
-   - For each field where `styling.variants[].bindings[name].<field>` exists → call `setBoundVariable` referencing the variable created in step 2 (match by collection + token name). Do not also write the literal.
-   - For each field with no binding → write the literal from `styling.variants[].values[name].<field>`.
-   - Same rule for the base styling: `styling.baseBindings.<field>` → bind, otherwise write `styling.base.<field>` literal.
+   Do not modify the code. Do not skip any script. Do not reorder them. Each script is self-contained, idempotent, and resolves its own variable references at runtime — variables created by script 1 are looked up by name in script 2+, so the order matters but no ID-passing is needed.
 
-   Before each `use_figma` call, output a short markdown table with one row per (variant value × property) showing whether the value will be **bound** (and to what) or written as a **literal**. This audit row is mandatory; if you can't produce it, you don't have the data and should re-run step 3.
+4. **Report** the plan's `failures` and `warnings` to the user, plus a count of scripts run successfully. Done.
 
-5. **Verify visually.** Eyeball each component; fix any issues with a follow-up `use_figma`.
+## What NOT to do
 
-6. **Self-audit before reporting complete.** Walk back through your transcript and confirm:
-   - You ran `storysync map --inspect` exactly once and used its `styling` field for every component.
-   - Every `bindings.<field>` entry from the map result resulted in a `setBoundVariable` call (not a literal write).
-   - You did NOT create variable collections that no component binds to.
-   - You did NOT read component source files yourself (only the map output is allowed).
+- ❌ Do NOT read component source files (`*.tsx`, `*.jsx`). The CLI already parsed them via `storysync inspect`.
+- ❌ Do NOT write your own Figma Plugin API code. The CLI generated the exact code with bindings already wired.
+- ❌ Do NOT call `storysync map` or `storysync inspect` separately — `storysync push` does both internally.
+- ❌ Do NOT skip the binding step. Bindings are baked into the generated scripts; if you don't run them you don't get a working component library.
+- ❌ Do NOT "decide" which variants matter. The CLI emits them all; if a component has too many variants the user will tell you to filter via `--components`.
 
-   If any of those failed, redo the affected components before producing the summary. If you're about to write "variable binding skipped" or "wired bindings later", you violated the rule above — go back.
-
-7. **Summary.** Token collections, components grouped by page/category, variant counts, **bindings count** (e.g. "47 of 52 fields bound to variables; 5 unbound because no matching token"), failures, caps.
-
-Refer to `.claude/skills/storysync.md` for edge cases.
+If the agent in this session is tempted to "be helpful" by inferring source patterns or simplifying the output, suppress the impulse. The four prior versions of this workflow all failed because the agent overrode the CLI. This one works because the CLI does the work.

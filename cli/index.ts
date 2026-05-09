@@ -8,6 +8,7 @@ import { FigmaClient, extractFileKey } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { inspectComponent, type FieldBinding } from "./inspect.js";
+import { generatePushPlan, type ComponentInput } from "./pushgen.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -547,6 +548,73 @@ program
       dryRun: !!opts.dryRun,
       yes: !!opts.yes,
     });
+  });
+
+program
+  .command("push")
+  .description("Generate Figma Plugin API scripts to create variable collections + component sets — agent pipes each script to use_figma verbatim")
+  .argument("<figma>", "Figma file URL or raw file key")
+  .requiredOption("--storybook <url>", "Storybook URL (with addon-mcp)")
+  .option("--project <path>", "Project root to scan for tokens + components", ".")
+  .option("--components <names>", "Comma-separated component names to include (default: all)")
+  .option("--json", "Output JSON (default — meant to be piped). Without --json, prints a human-readable summary of script labels.")
+  .action(async (figma: string, opts) => {
+    const fileKey = extractFileKey(figma);
+    const json = !!opts.json || !process.stdout.isTTY;
+
+    const storybook = await connectStorybook(opts.storybook, json);
+    try {
+      // Tokens
+      const tokensResult = extractTokens(opts.project);
+
+      // Map components
+      const entries = await storybook.listComponents();
+      const filter = opts.components
+        ? new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()))
+        : null;
+      const filtered = filter
+        ? entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()))
+        : entries;
+
+      const components: ComponentInput[] = [];
+      const failures: { name: string; error: string }[] = [];
+      for (const entry of filtered) {
+        try {
+          const sbComp = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+          const def = mapComponent(sbComp);
+          const styling = inspectComponent(opts.project, entry.name);
+          if (!styling) {
+            failures.push({ name: entry.name, error: "source file not found by inspect" });
+            continue;
+          }
+          components.push({
+            name: entry.name,
+            category: entry.category,
+            variantProperties: def.variantProperties,
+            styling,
+          });
+        } catch (err) {
+          failures.push({ name: entry.name, error: String(err) });
+        }
+      }
+
+      const plan = generatePushPlan({ fileKey, collections: tokensResult.collections, components });
+
+      if (json) {
+        console.log(JSON.stringify({ ...plan, failures }, null, 2));
+      } else {
+        console.log(chalk.bold(`\nstorysync push — ${fileKey}`));
+        console.log(chalk.dim(`  ${plan.scripts.length} script(s) to send to use_figma:`));
+        for (const [i, s] of plan.scripts.entries()) {
+          console.log(`  ${chalk.green(`${i + 1}.`)} ${s.label}`);
+        }
+        for (const w of plan.warnings) console.log(chalk.yellow(`  ! ${w}`));
+        for (const f of failures) console.log(chalk.red(`  ✗ ${f.name}: ${f.error}`));
+        console.log(chalk.dim(`\n  Run with --json to get the executable scripts.`));
+      }
+    } finally {
+      await storybook.disconnect();
+    }
   });
 
 program.parse();
