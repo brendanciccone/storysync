@@ -79,6 +79,11 @@ use_figma({
 
 ## Components
 
+**Two non-negotiable rules — read before doing anything:**
+
+- **Rule 1 — `inspect` is the only source of truth.** Before writing any styled component to Figma, you MUST call `npx storysync inspect <Component> --json` for that component. Do not read source files yourself. Do not derive Tailwind class meaning by inspection. Do not skip `inspect` because the source "looks simple". If you write a component without first running `inspect` for it, the run is invalid and must be redone.
+- **Rule 2 — bindings are not labels; they change behavior.** When `inspect` returns `baseBindings.<field>` or `bindings[value].<field>`, you MUST bind the Figma property to that variable using `setBoundVariable`. The literal value in the styling object is for your reference only — it tells you what the variable currently resolves to. Writing the literal hardcodes the component forever: it ignores theme switches, dark mode, and any future token edit. The single most common failure mode for this workflow is the agent writing literal hex/px and reporting success. Do not be that agent. If you create variable collections but don't bind any components to them, you produced the worst-of-both-worlds result: dead variables plus hardcoded components. Either commit to bindings, or skip the variable collection step entirely — they're a pair.
+
 1. **List and map components** — run storysync to read Storybook components and compute variant mappings:
 
 ```bash
@@ -109,16 +114,21 @@ This outputs:
 
 The `category` field reflects the component's place in Storybook's sidebar (the part of `Forms/Button` before the last `/`). Use it to organize the Figma file — see "Organization" below.
 
-2. **REQUIRED — Get a deterministic styling spec.** For every component, run:
+2. **Inspect each component (Rule 1).** For every component returned by `map`, run:
 
    ```bash
    npx storysync inspect <ComponentName> --json
    ```
 
-   This parses the source (CVA, hand-rolled `cn()`/`clsx()` conditionals, or inline classNames) and returns a per-variant styling object covering fill, text color, border + borderColor + borderStyle, borderRadius, padding, fontFamily, fontSize, fontWeight, fontStyle, lineHeight, letterSpacing, textAlign, textTransform, textDecoration, shadow, gap, layout, alignItems, justifyContent, and opacity — plus a `baseBindings` object and a `bindings` map per variant value. The bindings tell you which fields resolved through a project token — bind those Figma properties to the matching variable from the collections you created in the Tokens step. An unbound field gets the literal value. **Components that look right in isolation but don't respond to theme/dark-mode changes mean the bindings were ignored — do not ignore them.** Also surfaces an `unresolved` array of utility classes it could not map. Use the result verbatim — do not infer, guess, or fall back to reading the source file by hand. If `unresolved` is non-empty, ask the user how to map each entry before writing anything to Figma. If `inspect` itself fails, stop and report; do not paper over with placeholder hex.
+   The output has a per-variant styling object covering fill, text, border + borderColor + borderStyle, borderRadius, padding, fontFamily, fontSize, fontWeight, fontStyle, lineHeight, letterSpacing, textAlign, textTransform, textDecoration, shadow, gap, layout, alignItems, justifyContent, opacity — paired with `baseBindings` and `bindings[valueName]` indicating which fields resolved through a project token. Use the result verbatim. Do not infer or guess. If `unresolved` is non-empty, ask the user how to map each entry before any Figma write. If `inspect` errors, stop and report; do not switch to manual source reading.
+
 3. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field of each component, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page that matches its top-level category. This mirrors the Storybook sidebar so designers can find things where they expect them. If multiple components share the same leaf name (e.g. two `Button`s under different categories), the per-page organization keeps them distinct.
 
-4. Write to Figma with `use_figma`. The instruction MUST embed the styling spec from step 2 — every variant value needs concrete fill, text color, padding, radius, border, font size, and shadow. A call that only references variant names without these values is a bug; refuse it and re-read the source.
+4. **Write each component (Rule 2).** Call `use_figma` per component. For each field on each variant value:
+   - If `bindings[value].<field>` exists → call `setBoundVariable` with the named variable from the Tokens step. Do not also write the literal.
+   - Otherwise → write the literal from `values[value].<field>`.
+
+   Before each `use_figma` call, output a list showing the variant → property → (binding `colors/foreground` | literal `#3b82f6`) chain so the user can audit which fields bound and which didn't.
 
 ```js
 use_figma({
@@ -155,8 +165,16 @@ use_figma({
 })
 ```
 
-5. After creating each component, verify it looks correct. If something is off, call `use_figma` again to fix the styling.
-6. Summarize what was synced: token collections created, component count grouped by page/category, variant counts, visual details applied, any failures or caps.
+5. **Verify visually.** After creating each component, confirm it looks right. Fix styling issues with a follow-up `use_figma`.
+
+6. **Self-audit before reporting complete.** Walk back through your transcript and confirm:
+   - Every component you wrote to Figma had a corresponding `storysync inspect` call earlier.
+   - Every `bindings.<field>` entry from `inspect` resulted in a `setBoundVariable` call (not a literal write).
+   - You did NOT create variable collections that no component binds to.
+
+   If any of those failed, redo the affected components before producing the summary. If you reach the summary and have to write "variable binding skipped", you violated Rule 2 — go back.
+
+7. **Summary.** Token collections, components grouped by page/category, variant counts, bindings count (e.g. "47 of 52 fields bound to variables; 5 unbound because no matching token"), failures, caps.
 
 ## Variable binding
 
