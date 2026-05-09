@@ -126,7 +126,7 @@ export function inspectComponent(projectPath: string, nameOrPath: string): Inspe
   const name = basename(path, extname(path));
 
   const { map: tokenMap, warning: tokenWarning } = buildTokenMap(projectPath);
-  const cva = parseCvaCall(source) ?? parseCnCall(source);
+  const cva = parseCvaCall(source) ?? parseStyleMapAsCva(source) ?? parseCnCall(source);
   if (cva) cva.defaults = { ...inferDefaultsFromPropDestructure(source), ...cva.defaults };
 
   const result: InspectionResult = {
@@ -259,6 +259,112 @@ export function parseCvaCall(source: string): ParsedCva | null {
   }
 
   return { base, variants, defaults, compoundCount };
+}
+
+// Parses Catalyst-style declarations of the shape
+//   const styles = {
+//     base: ['...', '...'],
+//     solid: ['...'],
+//     outline: ['...'],
+//     plain: ['...'],
+//     colors: { red: ['...'], blue: ['...'], ... },
+//   };
+// and synthesizes a ParsedCva-equivalent so the rest of the pipeline can
+// treat it uniformly. The synthesized CVA has a single `color` variant axis
+// whose values are the keys of styles.colors. Each value's class string is
+// `base + solid + colors[value]` (the default appearance — `outline` and
+// `plain` axes are ignored for now since stories typically don't enumerate
+// them as argTypes).
+//
+// Returns null when no recognizable styles map is found.
+export function parseStyleMapAsCva(source: string): ParsedCva | null {
+  const map = parseStyleObjectMap(source);
+  if (!map) return null;
+  if (!map.colors || Object.keys(map.colors).length === 0) return null;
+
+  // Important: merge base + solid + per-color into ONE class string per
+  // variant value. This is necessary because Catalyst's per-color entries
+  // declare CSS custom property setters (`[--btn-bg:var(--color-red-600)]`)
+  // while base/solid contain the references (`bg-(--btn-bg)`,
+  // `before:bg-(--btn-bg)`). The resolver builds its CSS-variable map
+  // per-class-string, so setters and references must travel together.
+  const baseClasses = [
+    ...(map.base ?? []),
+    ...(map.solid ?? []),
+  ].join(" ");
+
+  const variants: Record<string, Record<string, string>> = { color: {} };
+  for (const [colorName, classes] of Object.entries(map.colors)) {
+    const merged = baseClasses ? `${baseClasses} ${classes.join(" ")}` : classes.join(" ");
+    variants.color[colorName] = merged;
+  }
+
+  // Pick a sensible default: prop destructure's `color = 'red'`; otherwise
+  // the first key declared.
+  const inferred = inferDefaultsFromPropDestructure(source);
+  const defaults: Record<string, string> = {};
+  const firstColor = Object.keys(variants.color)[0];
+  if (inferred.color && variants.color[inferred.color]) defaults.color = inferred.color;
+  else if (firstColor) defaults.color = firstColor;
+
+  return { base: "", variants, defaults, compoundCount: 0 };
+}
+
+interface StyleObjectMap {
+  base?: string[];
+  solid?: string[];
+  outline?: string[];
+  plain?: string[];
+  colors?: Record<string, string[]>;
+}
+
+// Reads a `const styles = { ... }` declaration and pulls out the array-of-
+// string values for `base`, `solid`, `outline`, `plain`, and the nested
+// `colors` map. Tolerant of trailing commas and inline comments.
+export function parseStyleObjectMap(source: string): StyleObjectMap | null {
+  const cleaned = stripComments(source);
+  // Find the opening of `const styles = {` (allow `let`/`var` too).
+  const declMatch = cleaned.match(/(?:const|let|var)\s+styles\s*=\s*\{/);
+  if (!declMatch) return null;
+  const openIdx = declMatch.index! + declMatch[0].length - 1; // position of `{`
+  const closeIdx = matchClose(cleaned, openIdx, "{", "}");
+  if (closeIdx < 0) return null;
+
+  const out: StyleObjectMap = {};
+  for (const [key, body] of iterateObjectEntries(cleaned.slice(openIdx, closeIdx + 1))) {
+    if (key === "base" || key === "solid" || key === "outline" || key === "plain") {
+      const arr = parseArrayOfStrings(body);
+      if (arr) (out as Record<string, string[]>)[key] = arr;
+    } else if (key === "colors") {
+      // `colors` is itself a `{ red: [...], blue: [...] }` map.
+      const colors: Record<string, string[]> = {};
+      for (const [colorName, colorBody] of iterateObjectEntries(body)) {
+        const arr = parseArrayOfStrings(colorBody);
+        if (arr) colors[colorName] = arr;
+      }
+      if (Object.keys(colors).length) out.colors = colors;
+    }
+  }
+  if (!out.base && !out.solid && !out.outline && !out.plain && !out.colors) return null;
+  return out;
+}
+
+// Reads `[..., ...]` or `['a', 'b']` and returns the joined array of strings,
+// concatenating multi-line template/string-literal entries. Returns null when
+// the value isn't a recognizable array of strings.
+function parseArrayOfStrings(body: string): string[] | null {
+  const t = body.trim();
+  if (!t.startsWith("[")) return null;
+  const close = matchClose(t, 0, "[", "]");
+  if (close < 0) return null;
+  const inner = t.slice(1, close);
+  const out: string[] = [];
+  for (const arg of splitTopLevelArgs(inner)) {
+    const s = readStringOrTemplate(arg.trim());
+    if (s != null) out.push(s);
+    // Non-string entries (e.g., spread) are skipped silently.
+  }
+  return out;
 }
 
 // Parses the hand-rolled "cn(base, cond === 'val' && 'classes', ...)" pattern
@@ -685,6 +791,15 @@ interface ResolveCtx {
   border: { width?: string; color?: string };
   unresolved: string[];
   warnings: string[];
+  // CSS custom properties defined via `[--name:value]` setters in this same
+  // class string. Catalyst-style components rely on this map to drive their
+  // actual fills via `bg-(--btn-bg)` references.
+  cssVars: Map<string, ResolvedSource>;
+  // True when a `before:bg-...` was found in this class string. Catalyst
+  // paints the visible fill via the pseudo-element while the button's own
+  // `bg-` becomes the optical 1px stroke. Shifts subsequent direct `bg-`
+  // resolution into the stroke channel.
+  hasBeforePseudoFill: boolean;
 }
 
 interface ResolvedSource {
@@ -693,7 +808,31 @@ interface ResolvedSource {
 }
 
 function resolveClasses(classes: string[], tokens: TokenMap): { styling: ResolvedStyling; bindings: Bindings; unresolved: string[]; warnings: string[] } {
-  const ctx: ResolveCtx = { styling: {}, bindings: {}, padding: {}, paddingBindings: {}, border: {}, unresolved: [], warnings: [] };
+  // Pre-pass 1: collect `[--name:value]` setters across all classes (including
+  // modifier-prefixed ones at the default-mode setters only). This is what
+  // makes `bg-(--btn-bg)` resolvable later.
+  const cssVars = collectCssVariables(classes, tokens);
+
+  // Pre-pass 2: detect `before:bg-...` to pre-emptively set the effective
+  // fill. When present, the button's own `bg-` becomes the visible STROKE
+  // (Catalyst's optical-border trick).
+  const beforePseudoFill = detectBeforePseudoFill(classes, tokens, cssVars);
+
+  const ctx: ResolveCtx = {
+    styling: {},
+    bindings: {},
+    padding: {},
+    paddingBindings: {},
+    border: {},
+    unresolved: [],
+    warnings: [],
+    cssVars,
+    hasBeforePseudoFill: beforePseudoFill != null,
+  };
+  if (beforePseudoFill) {
+    ctx.styling.fill = beforePseudoFill.value;
+    if (beforePseudoFill.binding) ctx.bindings.fill = beforePseudoFill.binding;
+  }
 
   for (const cls of classes) {
     if (!cls) continue;
@@ -704,6 +843,9 @@ function resolveClasses(classes: string[], tokens: TokenMap): { styling: Resolve
     // overwrote the real default `bg-blue-600`. Anything with a `:` outside
     // brackets is a modifier and gets skipped.
     if (hasModifierPrefix(cls)) continue;
+    // CSS variable setters (`[--name:value]`) were captured in the pre-pass
+    // and don't need to be re-emitted as utilities.
+    if (isCssVarSetter(cls)) continue;
     if (resolveClass(cls, ctx, tokens)) continue;
     ctx.unresolved.push(cls);
   }
@@ -756,13 +898,21 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   if (cls === "flex-col" || cls === "flex-col-reverse") { ctx.styling.layout = "column"; return true; }
   if (cls === "inline-flex") return true;
 
-  // Background fill
+  // Background fill. Catalyst's optical-border pattern: when a `before:bg-`
+  // pre-pass already set the effective fill, the button's own `bg-` is the
+  // visible 1px stroke instead.
   let m = cls.match(/^bg-(.+)$/);
   if (m) {
-    const r = resolveColor(m[1], tokens);
+    const r = resolveColor(m[1], tokens, ctx.cssVars);
     if (r) {
-      ctx.styling.fill = r.value;
-      if (r.binding) ctx.bindings.fill = r.binding;
+      if (ctx.hasBeforePseudoFill) {
+        ctx.border.color = r.value;
+        ctx.border.width = ctx.border.width ?? "1px";
+        if (r.binding) ctx.bindings.borderColor = r.binding;
+      } else {
+        ctx.styling.fill = r.value;
+        if (r.binding) ctx.bindings.fill = r.binding;
+      }
       return true;
     }
     return false;
@@ -785,7 +935,7 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
 
     // Color first (only on the unsplit form, since color names don't contain `/`).
     if (slashIdx < 0) {
-      const r = resolveColor(arg, tokens);
+      const r = resolveColor(arg, tokens, ctx.cssVars);
       if (r) {
         ctx.styling.text = r.value;
         if (r.binding) ctx.bindings.text = r.binding;
@@ -959,7 +1109,7 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   if (m) { ctx.border.width = `${m[1]}px`; return true; }
   m = cls.match(/^border-(.+)$/);
   if (m) {
-    const r = resolveColor(m[1], tokens);
+    const r = resolveColor(m[1], tokens, ctx.cssVars);
     if (r) {
       ctx.border.color = r.value;
       if (r.binding) ctx.bindings.borderColor = r.binding;
@@ -1082,7 +1232,21 @@ function lengthToPx(value: string): number | null {
   return n;
 }
 
-function resolveColor(spec: string, tokens: TokenMap): ResolvedSource | null {
+function resolveColor(spec: string, tokens: TokenMap, cssVars?: Map<string, ResolvedSource>): ResolvedSource | null {
+  // CSS variable shorthand: `bg-(--btn-bg)` (Tailwind 4) or
+  // `bg-[var(--btn-bg)]` (Tailwind 3 arbitrary-value form). Look up the
+  // value the corresponding `[--btn-bg:...]` setter resolved to.
+  if (cssVars) {
+    let varName: string | null = null;
+    if (spec.startsWith("(--") && spec.endsWith(")")) varName = spec.slice(3, -1);
+    else {
+      const m = spec.match(/^\[var\(--([\w-]+)\)\]$/);
+      if (m) varName = m[1];
+    }
+    if (varName != null) {
+      return cssVars.get(varName) ?? null;
+    }
+  }
   // Arbitrary value: bg-[#ff0000] or bg-[rgb(...)] — never a token binding.
   if (spec.startsWith("[") && spec.endsWith("]")) {
     return { value: spec.slice(1, -1) };
@@ -1102,6 +1266,81 @@ function resolveColor(spec: string, tokens: TokenMap): ResolvedSource | null {
   if (def) return { value: def };
   // CSS named colors (white/black/transparent).
   if (CSS_NAMED_COLORS[base]) return { value: CSS_NAMED_COLORS[base] };
+  return null;
+}
+
+// Pre-pass that walks every class (default-mode only — modifier-prefixed
+// setters like `dark:[--btn-bg:...]` are deferred to a future Figma-modes
+// release) and builds a name → resolved-value map for `[--name:value]`
+// arbitrary-property setters.
+function collectCssVariables(classes: string[], tokens: TokenMap): Map<string, ResolvedSource> {
+  const out = new Map<string, ResolvedSource>();
+  for (const cls of classes) {
+    if (hasModifierPrefix(cls)) continue;
+    const m = cls.match(/^\[--([A-Za-z][\w-]*):([^\]]+)\](?:\/(\d+))?$/);
+    if (!m) continue;
+    const name = m[1];
+    const rawValue = m[2].trim();
+    const alphaPct = m[3] != null ? parseInt(m[3], 10) : null;
+    const resolved = resolveCssValue(rawValue, tokens);
+    if (!resolved) continue;
+    if (alphaPct != null && /^#[0-9a-fA-F]{6}$/.test(resolved.value)) {
+      // Append alpha as `%`-derived hex byte. Drops the binding since the
+      // value is no longer the literal token value.
+      const a = Math.round((alphaPct / 100) * 255).toString(16).padStart(2, "0");
+      out.set(name, { value: resolved.value + a });
+    } else {
+      out.set(name, resolved);
+    }
+  }
+  return out;
+}
+
+function isCssVarSetter(cls: string): boolean {
+  return /^\[--([A-Za-z][\w-]*):/.test(cls);
+}
+
+// Resolves the right-hand side of a `[--name:VALUE]` setter. VALUE may be a
+// bare hex literal, a `var(--token-name)` reference (resolved via tokens /
+// palette), or a token/palette/named color name.
+function resolveCssValue(value: string, tokens: TokenMap): ResolvedSource | null {
+  const v = value.trim();
+  // Hex literal: setters embed `#abcdef` directly without bracket wrapping,
+  // so resolveColor's `[...]` arbitrary-value path doesn't apply here.
+  if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return { value: v };
+  // var(--color-red-600) — references project tokens
+  const m = v.match(/^var\(--([\w-]+)\)$/);
+  if (m) {
+    const tokenName = m[1];
+    // Project token first (Catalyst projects often have `--color-primary`,
+    // `--color-foreground`, etc. in the Colors collection).
+    const fromToken = tokens.colors.get(normalizeTokenKey(tokenName));
+    if (fromToken) {
+      return { value: fromToken, binding: { token: normalizeTokenKey(tokenName), collection: "colors" } };
+    }
+    // `--color-red-600` → look up `red-600` in the bundled Tailwind palette.
+    const paletteName = tokenName.replace(/^color-/, "");
+    if (TAILWIND_PALETTE[paletteName]) return { value: TAILWIND_PALETTE[paletteName] };
+    return null;
+  }
+  // Bare token / palette name (e.g., "red-600" directly).
+  return resolveColor(v, tokens);
+}
+
+// Detects a `before:bg-...` setter and returns its resolved color. Used to
+// drive Catalyst's optical-border pattern: the before-layer is the visible
+// fill while the button's own `bg-` becomes the visible stroke.
+function detectBeforePseudoFill(
+  classes: string[],
+  tokens: TokenMap,
+  cssVars: Map<string, ResolvedSource>,
+): ResolvedSource | null {
+  for (const cls of classes) {
+    const m = cls.match(/^before:bg-(.+)$/);
+    if (!m) continue;
+    const r = resolveColor(m[1], tokens, cssVars);
+    if (r) return r;
+  }
   return null;
 }
 

@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { inspectComponent, findComponentFile, parseCvaCall, parseCnCall } from "../inspect.js";
+import {
+  inspectComponent,
+  findComponentFile,
+  parseCvaCall,
+  parseCnCall,
+  parseStyleObjectMap,
+  parseStyleMapAsCva,
+} from "../inspect.js";
 
 function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-inspect-test-"));
@@ -1056,4 +1063,171 @@ const x = cva("text-lg");
   } finally {
     cleanup(dir);
   }
+});
+
+// --- Catalyst-style style object map ---
+
+test("inspectComponent: Catalyst-style `const styles = { base, solid, colors }` map", () => {
+  // Stripped-down Catalyst Button shape: a `styles` constant declares base
+  // and per-color class arrays. Each color sets CSS custom properties via
+  // arbitrary-property setters; the button uses them via `bg-(--btn-bg)` /
+  // `bg-(--btn-border)` references. The resolver should: (1) detect the
+  // styles map, (2) synthesize a `color` variant axis, (3) collect the CSS
+  // var setters, (4) resolve the `before:bg-` as the visible fill and the
+  // direct `bg-` as the optical stroke.
+  const dir = makeProject({
+    "components/catalyst/button.tsx": `
+import clsx from 'clsx';
+const styles = {
+  base: ['inline-flex rounded-lg border'],
+  solid: [
+    'border-transparent bg-(--btn-border)',
+    'before:absolute before:inset-0 before:bg-(--btn-bg)',
+  ],
+  colors: {
+    red: [
+      'text-white [--btn-bg:var(--color-red-600)] [--btn-border:var(--color-red-700)]',
+    ],
+    blue: [
+      'text-white [--btn-bg:var(--color-blue-600)] [--btn-border:var(--color-blue-700)]',
+    ],
+  },
+};
+export const Button = ({ color = 'red' }) => (
+  <button className={clsx(styles.base, styles.solid, styles.colors[color])} />
+);
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "button");
+    assert.ok(result);
+
+    const colorVariant = result!.variants.find((v) => v.name === "color");
+    assert.ok(colorVariant, "expected a `color` variant axis");
+    assert.deepEqual(Object.keys(colorVariant!.values).sort(), ["blue", "red"]);
+    assert.equal(colorVariant!.defaultValue, "red");
+
+    // Red: fill = red-600 (from before:bg-(--btn-bg)),
+    //      stroke = red-700 (from button bg-(--btn-border)).
+    const red = colorVariant!.values.red;
+    assert.equal(red.fill, "#dc2626");
+    assert.equal(red.borderColor, "#b91c1c");
+    assert.equal(red.text, "#ffffff");
+    assert.equal(red.borderRadius, "8px");
+
+    const blue = colorVariant!.values.blue;
+    assert.equal(blue.fill, "#2563eb");
+    assert.equal(blue.borderColor, "#1d4ed8");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: CSS variable setter alpha modifier `[--name:value]/N`", () => {
+  // Catalyst writes opacity into setters as `[--btn-border:var(--color-red-700)]/90`.
+  // The slash-suffix is the alpha as a percentage; the resolved color
+  // should carry an 8-digit hex (with the alpha byte appended).
+  const dir = makeProject({
+    "components/catalyst/x.tsx": `
+const styles = {
+  base: ['rounded-md'],
+  solid: ['bg-(--btn-bg)'],
+  colors: { red: ['[--btn-bg:var(--color-red-700)]/90'] },
+};
+export const X = ({ color = 'red' }) => (
+  <div className={\`\${styles.base.join(' ')} \${styles.solid.join(' ')} \${styles.colors[color].join(' ')}\`} />
+);
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    const colorVariant = result!.variants.find((v) => v.name === "color");
+    assert.ok(colorVariant);
+    // red-700 = #b91c1c; 90% alpha = 0xe6.
+    assert.equal(colorVariant!.values.red.fill, "#b91c1ce6");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: bg-(--var) reference resolves through CSS variable setter", () => {
+  // Smaller end-to-end check: a single class string with both a setter
+  // and a reference. No styles map, no variants.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("[--my-bg:var(--color-emerald-600)] bg-(--my-bg)");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#059669");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: bg-[var(--name)] arbitrary-value form also resolves", () => {
+  // Tailwind 3 syntax for the same idea — should be handled identically.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("[--my-bg:#ff00ff] bg-[var(--my-bg)]");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fill, "#ff00ff");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("parseStyleObjectMap: extracts base, solid, outline, plain, colors arrays", () => {
+  const source = `
+const styles = {
+  base: ['a', 'b'],
+  solid: ['c'],
+  outline: ['d'],
+  plain: ['e'],
+  colors: {
+    red: ['f'],
+    blue: ['g', 'h'],
+  },
+};
+`;
+  const map = parseStyleObjectMap(source);
+  assert.ok(map);
+  assert.deepEqual(map!.base, ["a", "b"]);
+  assert.deepEqual(map!.solid, ["c"]);
+  assert.deepEqual(map!.outline, ["d"]);
+  assert.deepEqual(map!.plain, ["e"]);
+  assert.deepEqual(map!.colors, { red: ["f"], blue: ["g", "h"] });
+});
+
+test("parseStyleObjectMap: returns null when no styles declaration found", () => {
+  assert.equal(parseStyleObjectMap("export const Button = () => null;"), null);
+});
+
+test("parseStyleMapAsCva: each color value's class string includes base + solid + per-color", () => {
+  // Each variant value's class string carries the FULL styling rather than
+  // splitting base out separately — the per-color CSS variable setters need
+  // to be in the same string as the references in base/solid for the
+  // resolver's per-string CSS-variable map to wire them together.
+  const source = `
+const styles = {
+  base: ['rounded'],
+  solid: ['bg-blue-500'],
+  colors: { red: ['text-red-100'], blue: ['text-blue-100'] },
+};
+`;
+  const cva = parseStyleMapAsCva(source);
+  assert.ok(cva);
+  assert.equal(cva!.base, "");
+  assert.deepEqual(Object.keys(cva!.variants.color).sort(), ["blue", "red"]);
+  assert.equal(cva!.variants.color.red, "rounded bg-blue-500 text-red-100");
+  assert.equal(cva!.variants.color.blue, "rounded bg-blue-500 text-blue-100");
 });
