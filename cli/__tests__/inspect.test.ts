@@ -375,6 +375,172 @@ export const X = ({ variant = 'primary' }) => (
   }
 });
 
+// --- Typography expansion ---
+
+test("inspectComponent: text-{align} resolves to textAlign field", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("text-center");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.textAlign, "center");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: text-transform / text-decoration / font-style", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("uppercase italic underline");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.textTransform, "uppercase");
+    assert.equal(result!.base.fontStyle, "italic");
+    assert.equal(result!.base.textDecoration, "underline");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: font-{family} bundled fallback (no token)", () => {
+  // Without a project token, font-sans/font-mono falls back to the bundled
+  // family stack — useful as a hint to the agent, no binding.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("font-sans");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.match(result!.base.fontFamily ?? "", /sans-serif/);
+    assert.equal(result!.baseBindings.fontFamily, undefined);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: font-{custom} binds to project typography token via CSS vars", () => {
+  // The CSS-var extractor categorizes `--font-display` as typography, so
+  // `font-display` should look it up and bind.
+  const dir = makeProject({
+    "src/styles.css": `:root { --font-display: "Pretendard", sans-serif; }`,
+    "src/components/y.tsx": `
+import { cva } from "cva";
+const y = cva("font-display");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "y");
+    assert.ok(result);
+    assert.match(result!.base.fontFamily ?? "", /Pretendard/);
+    assert.deepEqual(result!.baseBindings.fontFamily, { token: "font-display", collection: "typography" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: font-{weight} keeps existing behavior, binds when token defines weight", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("font-medium");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fontWeight, "500");
+    assert.equal(result!.baseBindings.fontWeight, undefined);   // bundled, no binding
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: leading-{value} and tracking-{value}", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("leading-tight tracking-wide leading-[1.45]");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    // The arbitrary value wins because it's processed last.
+    assert.equal(result!.base.lineHeight, "1.45");
+    assert.equal(result!.base.letterSpacing, "0.025em");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: items- and justify- emit alignment fields", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("flex items-center justify-between gap-2");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.alignItems, "center");
+    assert.equal(result!.base.justifyContent, "between");
+    assert.equal(result!.base.gap, "8px");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: border-{style} resolves to borderStyle", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("border border-dashed border-zinc-200");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.borderStyle, "dashed");
+    assert.equal(result!.base.borderColor, "#e4e4e7");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: opacity-{N} normalizes to 0..1 fraction", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("opacity-50");
+`,
+    "src/components/y.tsx": `
+import { cva } from "cva";
+const y = cva("opacity-[0.85]");
+`,
+  });
+  try {
+    const xResult = inspectComponent(dir, "x");
+    const yResult = inspectComponent(dir, "y");
+    assert.equal(xResult!.base.opacity, "0.5");
+    assert.equal(yResult!.base.opacity, "0.85");
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("inspectComponent: emerald and other expanded palette colors resolve", () => {
   // The bundled palette previously omitted emerald, sky, indigo's full ramp,
   // violet, fuchsia, rose, lime, teal, cyan — common shadcn variant colors.

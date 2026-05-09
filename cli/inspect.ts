@@ -13,13 +13,24 @@ export interface ResolvedStyling {
   text?: string | null;
   border?: string | null;
   borderColor?: string | null;
+  borderStyle?: "solid" | "dashed" | "dotted" | "double" | "none" | null;
   borderRadius?: string | null;
   padding?: string | null;
+  fontFamily?: string | null;
   fontSize?: string | null;
   fontWeight?: string | null;
+  fontStyle?: "italic" | "normal" | null;
+  lineHeight?: string | null;
+  letterSpacing?: string | null;
+  textAlign?: "left" | "center" | "right" | "justify" | null;
+  textTransform?: "uppercase" | "lowercase" | "capitalize" | "none" | null;
+  textDecoration?: "underline" | "line-through" | "overline" | "none" | null;
   shadow?: string | null;
   gap?: string | null;
   layout?: "row" | "column" | null;
+  alignItems?: "start" | "end" | "center" | "stretch" | "baseline" | null;
+  justifyContent?: "start" | "end" | "center" | "between" | "around" | "evenly" | null;
+  opacity?: string | null;
 }
 
 export interface FieldBinding {
@@ -735,6 +746,11 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
     return false;
   }
 
+  // text-align (handle before color/size since `text-center` would otherwise
+  // fall into the catch-all and be unresolved).
+  m = cls.match(/^text-(left|center|right|justify)$/);
+  if (m) { ctx.styling.textAlign = m[1] as ResolvedStyling["textAlign"]; return true; }
+
   // Text color and font size — project token wins over Tailwind default
   m = cls.match(/^text-(.+)$/);
   if (m) {
@@ -755,9 +771,118 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
     return false;
   }
 
-  // Font weight
-  m = cls.match(/^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/);
-  if (m) { ctx.styling.fontWeight = String(FONT_WEIGHTS[m[1]]); return true; }
+  // text-transform / text-decoration / font-style — discrete, no token bindings.
+  if (cls === "uppercase") { ctx.styling.textTransform = "uppercase"; return true; }
+  if (cls === "lowercase") { ctx.styling.textTransform = "lowercase"; return true; }
+  if (cls === "capitalize") { ctx.styling.textTransform = "capitalize"; return true; }
+  if (cls === "normal-case") { ctx.styling.textTransform = "none"; return true; }
+  if (cls === "underline") { ctx.styling.textDecoration = "underline"; return true; }
+  if (cls === "line-through") { ctx.styling.textDecoration = "line-through"; return true; }
+  if (cls === "overline") { ctx.styling.textDecoration = "overline"; return true; }
+  if (cls === "no-underline") { ctx.styling.textDecoration = "none"; return true; }
+  if (cls === "italic") { ctx.styling.fontStyle = "italic"; return true; }
+  if (cls === "not-italic") { ctx.styling.fontStyle = "normal"; return true; }
+
+  // Unified `font-{key}` resolver: weight, family, or custom typography token.
+  // Bundled weight names take precedence (closed set). Otherwise we treat it
+  // as a font-family lookup, with project tokens winning over bundled families.
+  m = cls.match(/^font-([a-z][\w-]*)$/);
+  if (m) {
+    const key = m[1];
+    if (FONT_WEIGHTS[key] != null) {
+      ctx.styling.fontWeight = String(FONT_WEIGHTS[key]);
+      // Bind when the project explicitly redefines the weight in tokens.
+      const fromToken = tokens.typography.get(normalizeTokenKey(key));
+      if (fromToken && /^\d+$/.test(fromToken)) {
+        ctx.styling.fontWeight = fromToken;
+        ctx.bindings.fontWeight = { token: normalizeTokenKey(key), collection: "typography" };
+      }
+      return true;
+    }
+    // Family — project token first (try both `display` and `font-display`
+    // since CSS-var-derived tokens carry the `font-` prefix), then bundled.
+    const tokenKey = tokens.typography.has(normalizeTokenKey(`font-${key}`))
+      ? normalizeTokenKey(`font-${key}`)
+      : tokens.typography.has(normalizeTokenKey(key))
+      ? normalizeTokenKey(key)
+      : null;
+    if (tokenKey) {
+      ctx.styling.fontFamily = tokens.typography.get(tokenKey)!;
+      ctx.bindings.fontFamily = { token: tokenKey, collection: "typography" };
+      return true;
+    }
+    if (FONT_FAMILIES[key]) { ctx.styling.fontFamily = FONT_FAMILIES[key]; return true; }
+    return false;
+  }
+
+  // Line height (`leading-`)
+  m = cls.match(/^leading-(.+)$/);
+  if (m) {
+    const key = m[1];
+    if (key.startsWith("[") && key.endsWith("]")) {
+      ctx.styling.lineHeight = key.slice(1, -1);
+      return true;
+    }
+    const fromToken = tokens.typography.get(normalizeTokenKey(`leading-${key}`))
+      ?? tokens.typography.get(normalizeTokenKey(`line-height-${key}`))
+      ?? tokens.typography.get(normalizeTokenKey(key));
+    if (fromToken != null) {
+      ctx.styling.lineHeight = fromToken;
+      ctx.bindings.lineHeight = { token: normalizeTokenKey(key), collection: "typography" };
+      return true;
+    }
+    if (LINE_HEIGHTS[key]) { ctx.styling.lineHeight = LINE_HEIGHTS[key]; return true; }
+    // Numeric scale: leading-3 → 0.75rem → 12px
+    const n = parseFloat(key);
+    if (!isNaN(n)) { ctx.styling.lineHeight = `${Math.round(n * 4 * 100) / 100}px`; return true; }
+    return false;
+  }
+
+  // Letter spacing (`tracking-`)
+  m = cls.match(/^tracking-(.+)$/);
+  if (m) {
+    const key = m[1];
+    if (key.startsWith("[") && key.endsWith("]")) {
+      ctx.styling.letterSpacing = key.slice(1, -1);
+      return true;
+    }
+    const fromToken = tokens.typography.get(normalizeTokenKey(`tracking-${key}`))
+      ?? tokens.typography.get(normalizeTokenKey(`letter-spacing-${key}`))
+      ?? tokens.typography.get(normalizeTokenKey(key));
+    if (fromToken != null) {
+      ctx.styling.letterSpacing = fromToken;
+      ctx.bindings.letterSpacing = { token: normalizeTokenKey(key), collection: "typography" };
+      return true;
+    }
+    if (LETTER_SPACINGS[key]) { ctx.styling.letterSpacing = LETTER_SPACINGS[key]; return true; }
+    return false;
+  }
+
+  // align-items, justify-content
+  m = cls.match(/^items-(start|end|center|stretch|baseline)$/);
+  if (m) { ctx.styling.alignItems = m[1] as ResolvedStyling["alignItems"]; return true; }
+  m = cls.match(/^justify-(start|end|center|between|around|evenly)$/);
+  if (m) { ctx.styling.justifyContent = m[1] as ResolvedStyling["justifyContent"]; return true; }
+
+  // Border style (handle before the generic `border-{color}` matcher).
+  if (cls === "border-solid") { ctx.styling.borderStyle = "solid"; return true; }
+  if (cls === "border-dashed") { ctx.styling.borderStyle = "dashed"; return true; }
+  if (cls === "border-dotted") { ctx.styling.borderStyle = "dotted"; return true; }
+  if (cls === "border-double") { ctx.styling.borderStyle = "double"; return true; }
+  if (cls === "border-none") { ctx.styling.borderStyle = "none"; return true; }
+
+  // Opacity — `opacity-50` → "0.5", `opacity-[0.85]` → "0.85"
+  m = cls.match(/^opacity-(.+)$/);
+  if (m) {
+    const key = m[1];
+    if (key.startsWith("[") && key.endsWith("]")) {
+      ctx.styling.opacity = key.slice(1, -1);
+      return true;
+    }
+    const n = parseFloat(key);
+    if (!isNaN(n)) { ctx.styling.opacity = String(Math.round((n / 100) * 100) / 100); return true; }
+    return false;
+  }
 
   // Border radius — project token wins over Tailwind default
   m = cls.match(/^rounded(?:-(.+))?$/);
@@ -853,9 +978,9 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
     return false;
   }
 
-  // Items / justify — layout helpers we don't represent in ResolvedStyling
-  // but want to absorb so they don't end up in `unresolved`.
-  if (/^(items|justify|content|self|place)-(start|end|center|between|around|evenly|stretch|baseline)$/.test(cls)) return true;
+  // Other flexbox helpers we don't currently emit but want to absorb so they
+  // don't end up in `unresolved`. (items-/justify- are handled above.)
+  if (/^(content|self|place)-(start|end|center|between|around|evenly|stretch|baseline)$/.test(cls)) return true;
   if (/^(w|h|min-w|min-h|max-w|max-h)-/.test(cls)) return true; // width/height — out of scope
   if (cls === "relative" || cls === "absolute" || cls === "fixed" || cls === "sticky") return true;
   if (/^(top|right|bottom|left|inset)-/.test(cls)) return true;
@@ -924,6 +1049,22 @@ function resolveColor(spec: string, tokens: TokenMap): ResolvedSource | null {
 }
 
 // --- Tailwind defaults (subset) ---
+
+const FONT_FAMILIES: Record<string, string> = {
+  sans: "ui-sans-serif, system-ui, sans-serif",
+  serif: "ui-serif, Georgia, serif",
+  mono: "ui-monospace, SFMono-Regular, monospace",
+};
+
+const LINE_HEIGHTS: Record<string, string> = {
+  none: "1", tight: "1.25", snug: "1.375", normal: "1.5",
+  relaxed: "1.625", loose: "2",
+};
+
+const LETTER_SPACINGS: Record<string, string> = {
+  tighter: "-0.05em", tight: "-0.025em", normal: "0em",
+  wide: "0.025em", wider: "0.05em", widest: "0.1em",
+};
 
 const FONT_WEIGHTS: Record<string, number> = {
   thin: 100, extralight: 200, light: 300, normal: 400,
