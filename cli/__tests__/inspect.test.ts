@@ -541,6 +541,63 @@ const y = cva("opacity-[0.85]");
   }
 });
 
+test("inspectComponent: gap-x and gap-y resolve to gap field", () => {
+  // Tailwind splits gap into directional variants. Figma's gap is single-
+  // valued so we keep last-wins; common case is one direction or both equal.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("gap-x-1.5");
+`,
+    "src/components/y.tsx": `
+import { cva } from "cva";
+const y = cva("gap-y-3");
+`,
+  });
+  try {
+    const xResult = inspectComponent(dir, "x");
+    const yResult = inspectComponent(dir, "y");
+    assert.equal(xResult!.base.gap, "6px");
+    assert.equal(yResult!.base.gap, "12px");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: text-{size}/{lh} shorthand sets both fontSize and lineHeight", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("text-sm/5");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fontSize, "14px");        // text-sm
+    assert.equal(result!.base.lineHeight, "20px");      // /5 → 5 * 4 = 20px
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: text-{size}/{namedLh} shorthand", () => {
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("text-base/relaxed");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.fontSize, "16px");
+    assert.equal(result!.base.lineHeight, "1.625");     // named "relaxed"
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("inspectComponent: emerald and other expanded palette colors resolve", () => {
   // The bundled palette previously omitted emerald, sky, indigo's full ramp,
   // violet, fuchsia, rose, lime, teal, cyan — common shadcn variant colors.

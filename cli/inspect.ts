@@ -751,24 +751,51 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   m = cls.match(/^text-(left|center|right|justify)$/);
   if (m) { ctx.styling.textAlign = m[1] as ResolvedStyling["textAlign"]; return true; }
 
-  // Text color and font size — project token wins over Tailwind default
+  // Text color and font size — project token wins over Tailwind default.
+  // Tailwind 3+ supports `text-{size}/{lineHeight}` shorthand: split first
+  // so the size resolver doesn't try to look up "sm/5" as a color.
   m = cls.match(/^text-(.+)$/);
   if (m) {
-    const r = resolveColor(m[1], tokens);
-    if (r) {
-      ctx.styling.text = r.value;
-      if (r.binding) ctx.bindings.text = r.binding;
-      return true;
+    const arg = m[1];
+    const slashIdx = !arg.startsWith("[") ? arg.indexOf("/") : -1;
+    const sizeKey = slashIdx > 0 ? arg.slice(0, slashIdx) : arg;
+    const lhKey = slashIdx > 0 ? arg.slice(slashIdx + 1) : null;
+
+    // Color first (only on the unsplit form, since color names don't contain `/`).
+    if (slashIdx < 0) {
+      const r = resolveColor(arg, tokens);
+      if (r) {
+        ctx.styling.text = r.value;
+        if (r.binding) ctx.bindings.text = r.binding;
+        return true;
+      }
     }
-    const tFs = tokens.typography.get(normalizeTokenKey(m[1]));
+    // Font size — project token wins over bundled.
+    const tFs = tokens.typography.get(normalizeTokenKey(sizeKey));
     if (tFs != null) {
       ctx.styling.fontSize = tFs;
-      ctx.bindings.fontSize = { token: normalizeTokenKey(m[1]), collection: "typography" };
-      return true;
+      ctx.bindings.fontSize = { token: normalizeTokenKey(sizeKey), collection: "typography" };
+    } else if (TEXT_SIZES[sizeKey]) {
+      ctx.styling.fontSize = TEXT_SIZES[sizeKey];
+    } else {
+      return false;
     }
-    const fs = TEXT_SIZES[m[1]];
-    if (fs) { ctx.styling.fontSize = fs; return true; }
-    return false;
+    // Optional line-height portion (`text-sm/5` → also set lineHeight=20px).
+    if (lhKey != null) {
+      const tLh = tokens.typography.get(normalizeTokenKey(`leading-${lhKey}`))
+        ?? tokens.typography.get(normalizeTokenKey(`line-height-${lhKey}`))
+        ?? tokens.typography.get(normalizeTokenKey(lhKey));
+      if (tLh != null) {
+        ctx.styling.lineHeight = tLh;
+        ctx.bindings.lineHeight = { token: normalizeTokenKey(lhKey), collection: "typography" };
+      } else if (LINE_HEIGHTS[lhKey]) {
+        ctx.styling.lineHeight = LINE_HEIGHTS[lhKey];
+      } else {
+        const n = parseFloat(lhKey);
+        if (!isNaN(n)) ctx.styling.lineHeight = `${Math.round(n * 4 * 100) / 100}px`;
+      }
+    }
+    return true;
   }
 
   // text-transform / text-decoration / font-style — discrete, no token bindings.
@@ -952,8 +979,12 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   if ((m = cls.match(/^pb-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.b = r.px; if (r.binding) ctx.paddingBindings.b = r.binding; return true; } return false; }
   if ((m = cls.match(/^pl-(.+)$/))) { const r = resolveSpacing(m[1], tokens); if (r) { ctx.padding.l = r.px; if (r.binding) ctx.paddingBindings.l = r.binding; return true; } return false; }
 
-  // Gap
-  if ((m = cls.match(/^gap-(.+)$/))) {
+  // Gap (`gap-N`, `gap-x-N`, `gap-y-N`). Figma auto-layout has a single
+  // gap field per direction, but our ResolvedStyling has only one `gap` —
+  // we keep the last value seen, which means a class-string ordering of
+  // gap-x-1 gap-y-2 would emit gap=2 (last wins). Acceptable for the
+  // common case where authors set one direction or both equal.
+  if ((m = cls.match(/^gap(?:-[xy])?-(.+)$/))) {
     const r = resolveSpacing(m[1], tokens);
     if (r) {
       ctx.styling.gap = `${r.px}px`;
