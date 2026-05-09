@@ -1009,15 +1009,18 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
     return false;
   }
 
-  // Other flexbox helpers we don't currently emit but want to absorb so they
-  // don't end up in `unresolved`. (items-/justify- are handled above.)
+  // Utilities we deliberately don't model — silently absorbed so they don't
+  // pollute `unresolved` and force the agent to interrupt the push to ask
+  // about them. None of these are actionable in Figma's auto-layout model:
   if (/^(content|self|place)-(start|end|center|between|around|evenly|stretch|baseline)$/.test(cls)) return true;
-  if (/^(w|h|min-w|min-h|max-w|max-h)-/.test(cls)) return true; // width/height — out of scope
+  if (/^(w|h|min-w|min-h|max-w|max-h|size)-/.test(cls)) return true; // sizing — content-driven in Figma
+  if (/^(m|mx|my|mt|mr|mb|ml)-/.test(cls)) return true; // margin — Figma uses padding + gap on the parent
+  if (/^space-[xy]-/.test(cls)) return true; // sibling spacing — same as gap
   if (cls === "relative" || cls === "absolute" || cls === "fixed" || cls === "sticky") return true;
   if (/^(top|right|bottom|left|inset)-/.test(cls)) return true;
-  if (/^(opacity|transition|duration|ease|animate)-/.test(cls)) return true;
+  if (/^(transition|duration|ease|animate)-/.test(cls)) return true;
   if (cls === "cursor-pointer" || /^cursor-/.test(cls)) return true;
-  if (/^(select|outline|ring|focus|disabled|whitespace|overflow)/.test(cls)) return true;
+  if (/^(select|outline|ring|focus|disabled|whitespace|overflow|pointer-events|will-change|backdrop-)/.test(cls)) return true;
 
   return false;
 }
