@@ -45,7 +45,7 @@ export interface PlannedFile {
 export interface SetupPlan {
   client: Client;
   copies: PlannedFile[];
-  codexAppend: { dest: string; exists: boolean; alreadyHasMarker: boolean } | null;
+  codexAppend: { dest: string; exists: boolean; alreadyHasMarker: boolean; malformedMarker: boolean } | null;
 }
 
 function listClaudeFiles(projectPath: string): PlannedFile[] {
@@ -82,14 +82,17 @@ export function buildPlan(client: Client, projectPath: string): SetupPlan {
   // Codex: append to AGENTS.md if it exists, otherwise create it.
   const dest = join(projectPath, "AGENTS.md");
   const exists = existsSync(dest);
-  // Treat the storysync block as "already present" only when BOTH the start
-  // and end markers are present; a half-stamped file (manual edit, merge
-  // conflict, or interrupted prior run) is malformed and needs --force to
-  // be repaired rather than silently skipped.
   const existing = exists ? readFileSync(dest, "utf8") : "";
-  const alreadyHasMarker =
-    existing.includes(CODEX_APPEND_MARKER) && existing.includes(CODEX_APPEND_END_MARKER);
-  return { client, copies: [], codexAppend: { dest, exists, alreadyHasMarker } };
+  const hasStart = existing.includes(CODEX_APPEND_MARKER);
+  const hasEnd = existing.includes(CODEX_APPEND_END_MARKER);
+  // Three states for the existing AGENTS.md block:
+  //   - both markers present → already managed, skip unless --force
+  //   - only one marker present → malformed (truncated edit, merge conflict);
+  //     route through repair instead of appending another block
+  //   - neither marker → safe to append fresh
+  const alreadyHasMarker = hasStart && hasEnd;
+  const malformedMarker = hasStart !== hasEnd;
+  return { client, copies: [], codexAppend: { dest, exists, alreadyHasMarker, malformedMarker } };
 }
 
 function copyFile(src: string, dest: string): void {
@@ -119,8 +122,10 @@ function claudeMcpAlreadyRegistered(name: string): boolean {
   try {
     const out = execSync("claude mcp list", { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" });
     // `claude mcp list` prints lines like "storybook  http://..."; just look
-    // for the name as a word so we don't false-match a substring.
-    return new RegExp(`(^|\\s)${name}(\\s|$)`, "m").test(out);
+    // for the name as a word so we don't false-match a substring. Escape
+    // regex metacharacters in `name` defensively even though current callers
+    // only pass hardcoded "storybook"/"figma".
+    return new RegExp(`(^|\\s)${escapeRegex(name)}(\\s|$)`, "m").test(out);
   } catch {
     return false;
   }
@@ -129,10 +134,14 @@ function claudeMcpAlreadyRegistered(name: string): boolean {
 function claudePluginAlreadyInstalled(name: string): boolean {
   try {
     const out = execSync("claude plugin list", { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" });
-    return new RegExp(`(^|\\s)${name}(@|\\s|$)`).test(out);
+    return new RegExp(`(^|\\s)${escapeRegex(name)}(@|\\s|$)`).test(out);
   } catch {
     return false;
   }
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function offerClaudeMcpSetup(opts: SetupOptions): Promise<string[]> {
@@ -213,23 +222,36 @@ async function applyPlan(plan: SetupPlan, projectPath: string, opts: SetupOption
 
   // Codex append phase.
   if (plan.codexAppend) {
-    const { dest, exists, alreadyHasMarker } = plan.codexAppend;
+    const { dest, exists, alreadyHasMarker, malformedMarker } = plan.codexAppend;
     const rel = relative(projectPath, dest);
     if (alreadyHasMarker && !opts.force) {
       skipped.push(`${rel} ${chalk.dim("(storysync section already present)")}`);
+    } else if (malformedMarker && !opts.force) {
+      // Half-stamped file: refuse to silently append (would produce two
+      // managed blocks). Tell the user to repair with --force or by hand.
+      skipped.push(`${rel} ${chalk.yellow("(malformed storysync markers — re-run with --force to repair)")}`);
     } else {
       const block = buildCodexAppendBlock();
       if (opts.dryRun) {
-        appended.push(`${rel} ${chalk.dim(exists ? "(would append)" : "(would create)")}`);
-      } else if (exists && !alreadyHasMarker) {
-        appendFileSync(dest, block);
-        appended.push(`${rel} ${chalk.dim("(appended)")}`);
+        const verb = !exists ? "(would create)" : malformedMarker ? "(would repair)" : alreadyHasMarker ? "(would replace)" : "(would append)";
+        appended.push(`${rel} ${chalk.dim(verb)}`);
       } else if (alreadyHasMarker && opts.force) {
         // Replace existing storysync block in-place.
         const cur = readFileSync(dest, "utf8");
         const updated = cur.replace(/\n*<!-- storysync:start -->[\s\S]*?<!-- storysync:end -->\n*/g, block);
         writeFileSync(dest, updated.trimStart().endsWith("\n") ? updated : updated + "\n");
         appended.push(`${rel} ${chalk.dim("(replaced)")}`);
+      } else if (malformedMarker && opts.force) {
+        // Strip any orphan start/end marker fragments, then append a clean block.
+        const cur = readFileSync(dest, "utf8");
+        const cleaned = cur
+          .replace(/\n*<!-- storysync:start -->[\s\S]*$/g, "")
+          .replace(/^[\s\S]*?<!-- storysync:end -->\n*/g, "");
+        writeFileSync(dest, cleaned.trimEnd() + block);
+        appended.push(`${rel} ${chalk.dim("(repaired)")}`);
+      } else if (exists && !alreadyHasMarker) {
+        appendFileSync(dest, block);
+        appended.push(`${rel} ${chalk.dim("(appended)")}`);
       } else {
         // exists is false: write a new file with just the block (trim leading newlines).
         mkdirSync(dirname(dest), { recursive: true });

@@ -954,12 +954,14 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
     }
     // Optional line-height portion (`text-sm/5` → also set lineHeight=20px).
     if (lhKey != null) {
-      const tLh = tokens.typography.get(normalizeTokenKey(`leading-${lhKey}`))
-        ?? tokens.typography.get(normalizeTokenKey(`line-height-${lhKey}`))
-        ?? tokens.typography.get(normalizeTokenKey(lhKey));
-      if (tLh != null) {
-        ctx.styling.lineHeight = tLh;
-        ctx.bindings.lineHeight = { token: normalizeTokenKey(lhKey), collection: "typography" };
+      const lhTokenKey = [`leading-${lhKey}`, `line-height-${lhKey}`, lhKey]
+        .map(normalizeTokenKey)
+        .find((k) => tokens.typography.has(k));
+      if (lhTokenKey) {
+        ctx.styling.lineHeight = tokens.typography.get(lhTokenKey)!;
+        // Bind to the key that actually matched, not the raw suffix —
+        // downstream Figma writes need the exact variable name.
+        ctx.bindings.lineHeight = { token: lhTokenKey, collection: "typography" };
       } else if (LINE_HEIGHTS[lhKey]) {
         ctx.styling.lineHeight = LINE_HEIGHTS[lhKey];
       } else {
@@ -1022,12 +1024,12 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
       ctx.styling.lineHeight = key.slice(1, -1);
       return true;
     }
-    const fromToken = tokens.typography.get(normalizeTokenKey(`leading-${key}`))
-      ?? tokens.typography.get(normalizeTokenKey(`line-height-${key}`))
-      ?? tokens.typography.get(normalizeTokenKey(key));
-    if (fromToken != null) {
-      ctx.styling.lineHeight = fromToken;
-      ctx.bindings.lineHeight = { token: normalizeTokenKey(key), collection: "typography" };
+    const tokenKey = [`leading-${key}`, `line-height-${key}`, key]
+      .map(normalizeTokenKey)
+      .find((k) => tokens.typography.has(k));
+    if (tokenKey) {
+      ctx.styling.lineHeight = tokens.typography.get(tokenKey)!;
+      ctx.bindings.lineHeight = { token: tokenKey, collection: "typography" };
       return true;
     }
     if (LINE_HEIGHTS[key]) { ctx.styling.lineHeight = LINE_HEIGHTS[key]; return true; }
@@ -1045,12 +1047,12 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
       ctx.styling.letterSpacing = key.slice(1, -1);
       return true;
     }
-    const fromToken = tokens.typography.get(normalizeTokenKey(`tracking-${key}`))
-      ?? tokens.typography.get(normalizeTokenKey(`letter-spacing-${key}`))
-      ?? tokens.typography.get(normalizeTokenKey(key));
-    if (fromToken != null) {
-      ctx.styling.letterSpacing = fromToken;
-      ctx.bindings.letterSpacing = { token: normalizeTokenKey(key), collection: "typography" };
+    const tokenKey = [`tracking-${key}`, `letter-spacing-${key}`, key]
+      .map(normalizeTokenKey)
+      .find((k) => tokens.typography.has(k));
+    if (tokenKey) {
+      ctx.styling.letterSpacing = tokens.typography.get(tokenKey)!;
+      ctx.bindings.letterSpacing = { token: tokenKey, collection: "typography" };
       return true;
     }
     if (LETTER_SPACINGS[key]) { ctx.styling.letterSpacing = LETTER_SPACINGS[key]; return true; }

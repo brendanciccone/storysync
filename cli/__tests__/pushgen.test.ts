@@ -199,7 +199,9 @@ test("generateComponentScript: removes prior component set with same name (re-ru
     styling: makeStyling({ name: "Card" }),
   };
   const script = generateComponentScript(input);
-  assert.match(script.code, /child\.type === "COMPONENT_SET" && child\.name === "Card"/);
+  // Re-run safety: remove both prior single COMPONENT and prior COMPONENT_SET
+  // with the same name on the page.
+  assert.match(script.code, /\(child\.type === "COMPONENT_SET" \|\| child\.type === "COMPONENT"\) && child\.name === "Card"/);
   assert.match(script.code, /child\.remove\(\)/);
 });
 

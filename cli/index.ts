@@ -550,7 +550,10 @@ program
     await runSetup(client as Client, opts.project as string, {
       force: !!opts.force,
       dryRun: !!opts.dryRun,
-      yes: !!opts.yes,
+      // Non-TTY (CI / piped) implies yes — `confirm()` auto-declines when
+      // it can't read from stdin, so without this CI runs would skip
+      // every prompt despite the help text saying otherwise.
+      yes: !!opts.yes || !process.stdin.isTTY,
     });
   });
 

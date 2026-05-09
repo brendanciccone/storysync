@@ -164,7 +164,7 @@ export function generateComponentScript(input: ComponentInput): PushScript {
 
   lines.push(`  // 4) Remove any prior component set with the same name on this page so re-runs don't pile up`);
   lines.push(`  for (const child of page.children) {`);
-  lines.push(`    if (child.type === "COMPONENT_SET" && child.name === ${JSON.stringify(compName)}) child.remove();`);
+  lines.push(`    if ((child.type === "COMPONENT_SET" || child.type === "COMPONENT") && child.name === ${JSON.stringify(compName)}) child.remove();`);
   lines.push(`  }`);
   lines.push("");
 
@@ -307,9 +307,14 @@ function emitFrameStyling(styling: ResolvedStyling, bindings: Bindings): string[
     out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.gap.collection].name)}, ${JSON.stringify(bindings.gap.token)}); if (v) f.setBoundVariable("itemSpacing", v); }`);
   }
 
-  // Alignment helpers (best-effort mapping from Tailwind to Figma)
+  // Alignment helpers (best-effort mapping from Tailwind to Figma).
+  // Skip assignment entirely when there's no Figma equivalent — silently
+  // coercing `justify-around` to `MIN` (start) used to produce wrong layouts.
   if (styling.alignItems) out.push(`f.counterAxisAlignItems = ${JSON.stringify(figmaAlignment(styling.alignItems))};`);
-  if (styling.justifyContent) out.push(`f.primaryAxisAlignItems = ${JSON.stringify(figmaJustify(styling.justifyContent))};`);
+  if (styling.justifyContent) {
+    const j = figmaJustify(styling.justifyContent);
+    if (j) out.push(`f.primaryAxisAlignItems = ${JSON.stringify(j)};`);
+  }
 
   // Corner radius
   const radius = parsePxNumber(styling.borderRadius);
@@ -551,14 +556,17 @@ function figmaAlignment(value: string): string {
   }
 }
 
-function figmaJustify(value: string): string {
-  // Figma primaryAxisAlignItems: MIN | CENTER | MAX | SPACE_BETWEEN
+function figmaJustify(value: string): string | null {
+  // Figma primaryAxisAlignItems only supports MIN | CENTER | MAX | SPACE_BETWEEN.
+  // Tailwind's `justify-around`/`justify-evenly` have no Figma equivalent;
+  // returning null here causes the caller to skip the assignment and surface
+  // a warning rather than silently coercing the layout to start-aligned.
   switch (value) {
     case "start": return "MIN";
     case "end": return "MAX";
     case "center": return "CENTER";
     case "between": return "SPACE_BETWEEN";
-    default: return "MIN";
+    default: return null;
   }
 }
 
