@@ -800,10 +800,10 @@ export const button = cva("rounded-md", {
 
     // primary: fill resolved through tokens.colors → binding present.
     assert.equal(variant!.values.primary.fill, "#0066ff");
-    assert.deepEqual(variant!.bindings.primary.fill, { token: "primary", collection: "colors" });
+    assert.deepEqual(variant!.bindings.primary.fill, { token: "primary", collection: "colors", source: "token" });
 
     // danger: same shape, different token name.
-    assert.deepEqual(variant!.bindings.danger.fill, { token: "danger", collection: "colors" });
+    assert.deepEqual(variant!.bindings.danger.fill, { token: "danger", collection: "colors", source: "token" });
 
     // text: white came from CSS_NAMED_COLORS, not a project token → no binding.
     assert.equal(variant!.values.primary.text, "#ffffff");
@@ -868,7 +868,13 @@ const x = cva("rounded-md");
   }
 });
 
-test("inspectComponent: bindings absent when no project tokens", () => {
+test("inspectComponent: palette-derived bindings carry source: 'palette'; non-color/radius/shadow tokens don't bind", () => {
+  // `bg-blue-500` resolves through the bundled Tailwind palette. The
+  // resolver still emits a binding so `generatePushPlan` can mint the
+  // matching variable in the Colors collection — without that, Catalyst
+  // (which hardcodes palette colors) wouldn't bind to anything.
+  // `rounded-md` and `shadow-sm` hit bundled defaults (RADIUS/SHADOWS)
+  // which aren't first-class tokens — those stay unbound.
   const dir = makeProject({
     "src/components/x.tsx": `
 import { cva } from "cva";
@@ -879,7 +885,7 @@ const x = cva("bg-blue-500 rounded-md shadow-sm");
     const result = inspectComponent(dir, "x");
     assert.ok(result);
     assert.equal(result!.base.fill, "#3b82f6");
-    assert.equal(result!.baseBindings.fill, undefined);
+    assert.deepEqual(result!.baseBindings.fill, { token: "blue-500", collection: "colors", source: "palette" });
     assert.equal(result!.baseBindings.borderRadius, undefined);
     assert.equal(result!.baseBindings.shadow, undefined);
   } finally {

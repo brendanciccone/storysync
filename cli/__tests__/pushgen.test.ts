@@ -126,7 +126,7 @@ function makeStyling(overrides: Partial<InspectionResult> = {}): InspectionResul
   };
 }
 
-test("generateComponentScript: creates page lookup, font preload, variants array, combineAsVariants", () => {
+test("generateComponentScript: emits page lookup, font preload, and component creation in a loop", () => {
   const input: ComponentInput = {
     name: "Button",
     category: "Forms",
@@ -156,16 +156,21 @@ test("generateComponentScript: creates page lookup, font preload, variants array
   assert.match(script.code, /figma\.root\.children\.find\(\(p\) => p\.name === "Forms"\)/);
   // Font preload
   assert.match(script.code, /figma\.loadFontAsync/);
-  // Two variant frames
-  const frameMatches = script.code.match(/figma\.createFrame\(\)/g) ?? [];
-  assert.equal(frameMatches.length, 2);
+  // Data-driven loop creates one Component per payload entry
+  assert.match(script.code, /figma\.createComponent\(\)/);
+  // Two variants in the payload (primary + ghost)
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  assert.ok(payloadMatch, "expected VARIANTS payload literal");
+  const payload = JSON.parse(payloadMatch![1]);
+  assert.equal(payload.length, 2);
+  assert.deepEqual(payload.map((p: { n: string }) => p.n).sort(), ["variant=ghost", "variant=primary"]);
   // combineAsVariants for >1 variant
   assert.match(script.code, /combineAsVariants\(variants, page\)/);
-  // Set name to Button
-  assert.match(script.code, /set\.name = "Button"/);
+  // Component set name
+  assert.match(script.code, /target\.name = "Button"/);
 });
 
-test("generateComponentScript: emits setBoundVariable when bindings present", () => {
+test("generateComponentScript: payload carries binding tuples + setBoundVariableForPaint for fills", () => {
   const input: ComponentInput = {
     name: "Button",
     category: "UI",
@@ -186,10 +191,15 @@ test("generateComponentScript: emits setBoundVariable when bindings present", ()
     }),
   };
   const script = generateComponentScript(input);
-  // Look up the variable by collection + variable name at runtime.
-  assert.match(script.code, /lookupVar\("Colors", "primary"\)/);
-  // And bind the fills property.
-  assert.match(script.code, /setBoundVariable\("fills", v\)/);
+  // Fill-binding tuple appears as ["Colors", "primary"] in the payload JSON.
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  assert.ok(payloadMatch);
+  const payload = JSON.parse(payloadMatch![1]);
+  assert.deepEqual(payload[0].fb, ["Colors", "primary"]);
+  // The apply loop uses setBoundVariableForPaint (the correct API for
+  // binding a paint's color), NOT node.setBoundVariable("fills", v).
+  assert.match(script.code, /figma\.variables\.setBoundVariableForPaint\(fp, "color", v\)/);
+  assert.doesNotMatch(script.code, /setBoundVariable\("fills", v\)/);
 });
 
 test("generateComponentScript: removes prior component set with same name (re-run safety)", () => {
@@ -216,14 +226,52 @@ test("generateComponentScript: single-variant components use createComponent (no
   assert.doesNotMatch(script.code, /combineAsVariants/);
 });
 
-test("generateComponentScript: fill='transparent' produces empty fills array", () => {
+test("generateComponentScript: fill='transparent' produces no fill in payload (apply loop emits empty fills array)", () => {
   const input: ComponentInput = {
     name: "Ghost",
     variantProperties: [],
     styling: makeStyling({ base: { fill: "transparent" } }),
   };
   const script = generateComponentScript(input);
-  assert.match(script.code, /f\.fills = \[\]/);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  assert.ok(payloadMatch);
+  const payload = JSON.parse(payloadMatch![1]);
+  // No `f` (fill) in the payload — the apply loop's `c.fills = fp ? [fp] : []`
+  // branch produces an empty fills array at runtime.
+  assert.equal(payload[0].f, undefined);
+  assert.match(script.code, /c\.fills = fp \? \[fp\] : \[\]/);
+});
+
+test("generateComponentScript: variant values with `/` get sanitized to `-`", () => {
+  const input: ComponentInput = {
+    name: "Button",
+    category: "Catalyst",
+    variantProperties: [
+      { name: "color", type: "VARIANT", values: ["dark/zinc", "dark/white", "red"], defaultValue: "red" },
+    ],
+    styling: makeStyling({
+      variants: [{ name: "color", defaultValue: "red", values: { "dark/zinc": {}, "dark/white": {}, "red": {} }, bindings: { "dark/zinc": {}, "dark/white": {}, "red": {} } }],
+    }),
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  const payload = JSON.parse(payloadMatch![1]);
+  const names = payload.map((p: { n: string }) => p.n);
+  // Figma rejects `/` inside variant property values (it's the group separator).
+  assert.deepEqual(names.sort(), ["color=dark-white", "color=dark-zinc", "color=red"]);
+});
+
+test("generateComponentScript: positions new component below existing peers on the page", () => {
+  const input: ComponentInput = {
+    name: "Card",
+    variantProperties: [],
+    styling: makeStyling({ name: "Card" }),
+  };
+  const script = generateComponentScript(input);
+  // Stacking layout — find peers' bottom edge, place target below with 40px gap.
+  assert.match(script.code, /const peers = page\.children\.filter/);
+  assert.match(script.code, /Math\.max\(\.\.\.peers\.map\(\(c\) => c\.y \+ c\.height\)\)/);
+  assert.match(script.code, /target\.y = peers\.length \? bottom \+ 40 : 0/);
 });
 
 // --- generatePushPlan ---
@@ -250,4 +298,67 @@ test("generatePushPlan: warns when no token collections", () => {
   const plan = generatePushPlan({ fileKey: "x", collections: [], components: [] });
   assert.equal(plan.scripts.length, 0);
   assert.ok(plan.warnings.some((w) => w.includes("No token collections")));
+});
+
+test("generatePushPlan: palette colors used in components get added to Colors collection", () => {
+  // Catalyst pattern: a component fill that resolved through the bundled
+  // Tailwind palette (`bg-blue-500` → `#3b82f6`) should appear in the
+  // generated variables script so the component can actually bind to it.
+  const plan = generatePushPlan({
+    fileKey: "abc",
+    collections: [{ category: "colors", tokens: [{ name: "primary", value: "#0066ff" }] }],
+    components: [{
+      name: "Button",
+      category: "Catalyst",
+      variantProperties: [],
+      styling: {
+        name: "Button",
+        path: "/tmp/x.tsx",
+        base: { fill: "#3b82f6" },
+        baseBindings: { fill: { token: "blue-500", collection: "colors", source: "palette" } },
+        variants: [],
+        unresolved: [],
+        warnings: [],
+      },
+    }],
+  });
+
+  // Variables script should now include both `primary` (project token) and
+  // `blue-500` (palette color used by Button).
+  assert.equal(plan.scripts.length, 2);
+  const varsScript = plan.scripts[0];
+  assert.match(varsScript.code, /upsertVariable\(coll, "primary", "COLOR"\)/);
+  assert.match(varsScript.code, /upsertVariable\(coll, "blue-500", "COLOR"\)/);
+
+  // The Button script's fill-binding tuple references blue-500.
+  const componentScript = plan.scripts[1];
+  const payloadMatch = componentScript.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  assert.ok(payloadMatch);
+  const payload = JSON.parse(payloadMatch![1]);
+  assert.deepEqual(payload[0].fb, ["Colors", "blue-500"]);
+});
+
+test("generatePushPlan: doesn't duplicate palette colors already declared as project tokens", () => {
+  // If the project's `colors` collection already has `blue-500`, we don't
+  // re-emit it.
+  const plan = generatePushPlan({
+    fileKey: "abc",
+    collections: [{ category: "colors", tokens: [{ name: "blue-500", value: "#0066ff" }] }],
+    components: [{
+      name: "Button",
+      variantProperties: [],
+      styling: {
+        name: "Button",
+        path: "/tmp/x.tsx",
+        base: { fill: "#3b82f6" },
+        baseBindings: { fill: { token: "blue-500", collection: "colors", source: "palette" } },
+        variants: [],
+        unresolved: [],
+        warnings: [],
+      },
+    }],
+  });
+  const varsScript = plan.scripts[0];
+  const matches = varsScript.code.match(/upsertVariable\(coll, "blue-500", "COLOR"\)/g) ?? [];
+  assert.equal(matches.length, 1);
 });

@@ -168,76 +168,42 @@ export function generateComponentScript(input: ComponentInput): PushScript {
   lines.push(`  }`);
   lines.push("");
 
-  lines.push(`  const variants = [];`);
-  for (const combo of matrix) {
-    const variantName = formatVariantName(combo);
+  // Build a compact payload per variant. We emit JSON + one apply-loop
+  // instead of inlining each variant's setup so the script size scales
+  // linearly with variant count (Catalyst Button at 92 variants used to
+  // blow past use_figma's 50 000-char code limit when inlined).
+  const payloads: VariantPayload[] = matrix.map((combo) => {
     const styling = mergeStylingForCombo(input.styling, combo);
     const bindings = mergeBindingsForCombo(input.styling, combo);
-    lines.push(`  variants.push((function () {`);
-    lines.push(`    const f = figma.createFrame();`);
-    lines.push(`    f.name = ${JSON.stringify(variantName)};`);
-    lines.push(...emitFrameStyling(styling, bindings).map((l) => `    ${l}`));
-    lines.push(`    // Label so the variant is visually identifiable; agents can replace later.`);
-    lines.push(`    const label = figma.createText();`);
-    lines.push(`    label.fontName = { family: "Inter", style: ${JSON.stringify(pickFontStyle(styling))} };`);
-    lines.push(`    label.fontSize = ${JSON.stringify(parsePxNumber(styling.fontSize) ?? 14)};`);
-    lines.push(`    label.characters = ${JSON.stringify(compName)};`);
-    if (styling.text) {
-      const labelFill = paintFromStyling(styling.text);
-      if (labelFill) lines.push(`    label.fills = [${labelFill}];`);
-    }
-    if (bindings.text) {
-      lines.push(`    { const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.text.collection].name)}, ${JSON.stringify(bindings.text.token)}); if (v) label.setBoundVariable("fills", v); }`);
-    }
-    lines.push(`    f.appendChild(label);`);
-    lines.push(`    return f;`);
-    lines.push(`  })());`);
-  }
+    return buildVariantPayload(formatVariantName(combo), compName, styling, bindings);
+  });
+
+  lines.push(`  // 5) Variant payloads. Each entry is a compact descriptor of one`);
+  lines.push(`  // component variant — the loop below applies them uniformly.`);
+  lines.push(`  const VARIANTS = ${JSON.stringify(payloads)};`);
   lines.push("");
+  lines.push(...APPLY_LOOP);
+  lines.push("");
+
   if (matrix.length > 1) {
-    lines.push(`  const set = figma.combineAsVariants(variants, page);`);
-    lines.push(`  set.name = ${JSON.stringify(compName)};`);
+    lines.push(`  // 6) Combine into a component set.`);
+    lines.push(`  const target = figma.combineAsVariants(variants, page);`);
+    lines.push(`  target.name = ${JSON.stringify(compName)};`);
   } else {
-    // Single-variant path: convert the lone frame into a Component while
-    // preserving every property emitFrameStyling already set on it (auto-
-    // layout, padding, fills, radius, opacity, effects, bindings).
-    lines.push(`  const single = figma.createComponent();`);
-    lines.push(`  single.name = ${JSON.stringify(compName)};`);
-    lines.push(`  const src = variants[0];`);
-    lines.push(`  // Mirror styling from the staged frame to the component.`);
-    lines.push(`  single.layoutMode = src.layoutMode;`);
-    lines.push(`  single.primaryAxisSizingMode = src.primaryAxisSizingMode;`);
-    lines.push(`  single.counterAxisSizingMode = src.counterAxisSizingMode;`);
-    lines.push(`  single.paddingTop = src.paddingTop; single.paddingRight = src.paddingRight; single.paddingBottom = src.paddingBottom; single.paddingLeft = src.paddingLeft;`);
-    lines.push(`  single.itemSpacing = src.itemSpacing;`);
-    lines.push(`  single.counterAxisAlignItems = src.counterAxisAlignItems;`);
-    lines.push(`  single.primaryAxisAlignItems = src.primaryAxisAlignItems;`);
-    lines.push(`  single.cornerRadius = src.cornerRadius;`);
-    lines.push(`  single.fills = src.fills;`);
-    lines.push(`  single.strokes = src.strokes;`);
-    lines.push(`  single.strokeWeight = src.strokeWeight;`);
-    lines.push(`  single.dashPattern = src.dashPattern;`);
-    lines.push(`  single.effects = src.effects;`);
-    lines.push(`  single.opacity = src.opacity;`);
-    lines.push(`  // Preserve any variable bindings on the frame. fills/strokes`);
-    lines.push(`  // come back as VariableAlias[] (one per paint); scalar fields like`);
-    lines.push(`  // topLeftRadius come back as a single VariableAlias. Handle both.`);
-    lines.push(`  if (src.boundVariables) {`);
-    lines.push(`    for (const [field, binding] of Object.entries(src.boundVariables)) {`);
-    lines.push(`      if (Array.isArray(binding)) {`);
-    lines.push(`        const ref = binding.find((b) => b && b.id);`);
-    lines.push(`        const v = ref ? figma.variables.getVariableById(ref.id) : null;`);
-    lines.push(`        if (v) single.setBoundVariable(field, v);`);
-    lines.push(`      } else if (binding && binding.id) {`);
-    lines.push(`        const v = figma.variables.getVariableById(binding.id);`);
-    lines.push(`        if (v) single.setBoundVariable(field, v);`);
-    lines.push(`      }`);
-    lines.push(`    }`);
-    lines.push(`  }`);
-    lines.push(`  for (const child of [...src.children]) single.appendChild(child);`);
-    lines.push(`  src.remove();`);
-    lines.push(`  page.appendChild(single);`);
+    lines.push(`  // 6) Single-variant: append the lone component directly.`);
+    lines.push(`  page.appendChild(variants[0]);`);
+    lines.push(`  const target = variants[0];`);
   }
+
+  // 7) Position the new component below anything already on the page so
+  // re-running storysync push doesn't pile components on top of each other
+  // at (0, 0). A simple vertical layout with 40px gap is enough for V1.
+  lines.push("");
+  lines.push(`  const peers = page.children.filter((c) => c !== target && (c.type === "COMPONENT" || c.type === "COMPONENT_SET"));`);
+  lines.push(`  const bottom = peers.length ? Math.max(...peers.map((c) => c.y + c.height)) : 0;`);
+  lines.push(`  target.x = 0;`);
+  lines.push(`  target.y = peers.length ? bottom + 40 : 0;`);
+  lines.push("");
   lines.push(`  console.log("storysync: created ${compName} with ${matrix.length} variants on page ${pageName}");`);
   lines.push(`})();`);
 
@@ -245,6 +211,164 @@ export function generateComponentScript(input: ComponentInput): PushScript {
     label: `Create ${compName} (${matrix.length} variants) on ${pageName}`,
     code: lines.join("\n"),
   };
+}
+
+// Compact per-variant payload. Short keys keep the generated JSON small
+// enough for many-variant components (Catalyst Button: 92) to fit under
+// use_figma's 50KB code limit.
+interface VariantPayload {
+  n: string;                          // name
+  lm?: "HORIZONTAL" | "VERTICAL";     // layout mode
+  pt?: number; pr?: number; pb?: number; pl?: number;  // padding
+  is?: number;                        // itemSpacing
+  isb?: [string, string];             // itemSpacing binding [collection, token]
+  ai?: string;                        // counterAxisAlignItems
+  aj?: string;                        // primaryAxisAlignItems
+  cr?: number;                        // cornerRadius
+  crb?: [string, string];             // cornerRadius binding
+  f?: [number, number, number, number?];   // fill [r,g,b,a?]
+  fb?: [string, string];              // fill binding
+  s?: [number, number, number, number?];   // stroke [r,g,b,a?]
+  sw?: number;                        // strokeWeight
+  sd?: number[];                      // dashPattern
+  sb?: [string, string];              // stroke binding
+  ef?: object[];                      // effects
+  op?: number;                        // opacity
+  // Label
+  lt?: string;                        // label text
+  lff?: string;                       // label font family
+  lfs?: string;                       // label font style
+  lfz?: number;                       // label font size
+  lf?: [number, number, number];      // label fill
+  lfb?: [string, string];             // label fill binding
+}
+
+// JS code that consumes a `VARIANTS` array of payloads and produces a
+// `variants` array of Figma Components, in order. Kept as a static block
+// so the emitter doesn't repeat it per script — it's the same logic for
+// every component the user pushes.
+const APPLY_LOOP: string[] = [
+  `  const variants = [];`,
+  `  for (const d of VARIANTS) {`,
+  `    const c = figma.createComponent();`,
+  `    c.name = d.n;`,
+  `    if (d.lm) c.layoutMode = d.lm;`,
+  `    c.primaryAxisSizingMode = "AUTO";`,
+  `    c.counterAxisSizingMode = "AUTO";`,
+  `    if (d.pt != null) c.paddingTop = d.pt;`,
+  `    if (d.pr != null) c.paddingRight = d.pr;`,
+  `    if (d.pb != null) c.paddingBottom = d.pb;`,
+  `    if (d.pl != null) c.paddingLeft = d.pl;`,
+  `    if (d.is != null) c.itemSpacing = d.is;`,
+  `    if (d.isb) { const v = lookupVar(d.isb[0], d.isb[1]); if (v) c.setBoundVariable("itemSpacing", v); }`,
+  `    if (d.ai) c.counterAxisAlignItems = d.ai;`,
+  `    if (d.aj) c.primaryAxisAlignItems = d.aj;`,
+  `    if (d.cr != null) c.cornerRadius = d.cr;`,
+  `    if (d.crb) { const v = lookupVar(d.crb[0], d.crb[1]); if (v) { c.setBoundVariable("topLeftRadius", v); c.setBoundVariable("topRightRadius", v); c.setBoundVariable("bottomLeftRadius", v); c.setBoundVariable("bottomRightRadius", v); } }`,
+  `    // Fill: build the paint, optionally bind its color to a variable.`,
+  `    let fp = null;`,
+  `    if (d.f) { fp = { type: "SOLID", color: { r: d.f[0], g: d.f[1], b: d.f[2] } }; if (d.f[3] != null) fp.opacity = d.f[3]; }`,
+  `    if (d.fb && fp) { const v = lookupVar(d.fb[0], d.fb[1]); if (v) fp = figma.variables.setBoundVariableForPaint(fp, "color", v); }`,
+  `    c.fills = fp ? [fp] : [];`,
+  `    // Stroke (border).`,
+  `    let sp = null;`,
+  `    if (d.s) { sp = { type: "SOLID", color: { r: d.s[0], g: d.s[1], b: d.s[2] } }; if (d.s[3] != null) sp.opacity = d.s[3]; }`,
+  `    if (d.sb && sp) { const v = lookupVar(d.sb[0], d.sb[1]); if (v) sp = figma.variables.setBoundVariableForPaint(sp, "color", v); }`,
+  `    if (sp) { c.strokes = [sp]; if (d.sw != null) c.strokeWeight = d.sw; if (d.sd) c.dashPattern = d.sd; }`,
+  `    if (d.ef) c.effects = d.ef;`,
+  `    if (d.op != null) c.opacity = d.op;`,
+  `    // Label: placeholder text so the variant is visually identifiable.`,
+  `    if (d.lt) {`,
+  `      const lb = figma.createText();`,
+  `      lb.fontName = { family: d.lff || "Inter", style: d.lfs || "Regular" };`,
+  `      if (d.lfz != null) lb.fontSize = d.lfz;`,
+  `      lb.characters = d.lt;`,
+  `      let lfp = null;`,
+  `      if (d.lf) lfp = { type: "SOLID", color: { r: d.lf[0], g: d.lf[1], b: d.lf[2] } };`,
+  `      if (d.lfb && lfp) { const v = lookupVar(d.lfb[0], d.lfb[1]); if (v) lfp = figma.variables.setBoundVariableForPaint(lfp, "color", v); }`,
+  `      if (lfp) lb.fills = [lfp];`,
+  `      c.appendChild(lb);`,
+  `    }`,
+  `    variants.push(c);`,
+  `  }`,
+];
+
+// Builds the compact payload for one variant from its merged styling +
+// bindings. RGB tuples are rounded to 4 decimal places to keep JSON small
+// while staying visually accurate.
+function buildVariantPayload(
+  name: string,
+  compName: string,
+  styling: ResolvedStyling,
+  bindings: Bindings,
+): VariantPayload {
+  const out: VariantPayload = { n: name };
+
+  if (styling.layout) out.lm = styling.layout === "column" ? "VERTICAL" : "HORIZONTAL";
+  else out.lm = "HORIZONTAL";
+
+  const padding = parsePadding(styling.padding);
+  out.pt = padding.t; out.pr = padding.r; out.pb = padding.b; out.pl = padding.l;
+
+  const gapPx = parsePxNumber(styling.gap);
+  if (gapPx != null) out.is = gapPx;
+  if (bindings.gap) out.isb = [COLLECTION_META[bindings.gap.collection].name, bindings.gap.token];
+
+  if (styling.alignItems) out.ai = figmaAlignment(styling.alignItems);
+  if (styling.justifyContent) {
+    const j = figmaJustify(styling.justifyContent);
+    if (j) out.aj = j;
+  }
+
+  const radius = parsePxNumber(styling.borderRadius);
+  if (radius != null) out.cr = radius;
+  if (bindings.borderRadius) out.crb = [COLLECTION_META[bindings.borderRadius.collection].name, bindings.borderRadius.token];
+
+  const fill = colorToTuple(styling.fill);
+  if (fill) out.f = fill;
+  if (bindings.fill) out.fb = [COLLECTION_META[bindings.fill.collection].name, bindings.fill.token];
+
+  const strokeColor = styling.borderColor ?? extractBorderColor(styling.border);
+  const stroke = colorToTuple(strokeColor);
+  if (stroke) {
+    out.s = stroke;
+    out.sw = extractBorderWidth(styling.border) ?? 1;
+    if (styling.borderStyle === "dashed") out.sd = [6, 4];
+    else if (styling.borderStyle === "dotted") out.sd = [2, 2];
+  }
+  if (bindings.borderColor) out.sb = [COLLECTION_META[bindings.borderColor.collection].name, bindings.borderColor.token];
+
+  const shadow = parseShadow(styling.shadow);
+  if (shadow) out.ef = [shadow];
+
+  if (styling.opacity != null) {
+    const o = parseFloat(styling.opacity);
+    if (!isNaN(o)) out.op = o;
+  }
+
+  // Label
+  out.lt = compName;
+  out.lff = "Inter";
+  out.lfs = pickFontStyle(styling);
+  out.lfz = parsePxNumber(styling.fontSize) ?? 14;
+  const labelFill = colorToTuple(styling.text);
+  if (labelFill) out.lf = [labelFill[0], labelFill[1], labelFill[2]];
+  if (bindings.text) out.lfb = [COLLECTION_META[bindings.text.collection].name, bindings.text.token];
+
+  return out;
+}
+
+function colorToTuple(value: string | null | undefined): [number, number, number, number?] | null {
+  if (!value || value === "transparent") return null;
+  const rgb = parseColorToRgb(value);
+  if (!rgb) return null;
+  const r = Math.round(rgb.r * 10000) / 10000;
+  const g = Math.round(rgb.g * 10000) / 10000;
+  const b = Math.round(rgb.b * 10000) / 10000;
+  if (rgb.a != null && rgb.a < 1) {
+    return [r, g, b, Math.round(rgb.a * 10000) / 10000];
+  }
+  return [r, g, b];
 }
 
 // Cartesian product of variant properties. Each entry is a map of
@@ -263,7 +387,14 @@ function enumerateVariantMatrix(props: FigmaVariantProperty[]): Record<string, s
 }
 
 function formatVariantName(combo: Record<string, string>): string {
-  const parts = Object.entries(combo).map(([k, v]) => `${k}=${v}`);
+  const parts = Object.entries(combo).map(([k, v]) => {
+    // Figma reserves `/` as the variant group separator in component naming,
+    // so values like Catalyst's `dark/zinc` or `dark/white` are rejected
+    // when used inside a property value. Substitute with `-` so the variant
+    // name parses cleanly. Reachable from code as `<Button color="dark/zinc">`
+    // — the original prop value is untouched.
+    return `${k}=${v.replace(/\//g, "-")}`;
+  });
   return parts.length ? parts.join(", ") : "Default";
 }
 
@@ -291,87 +422,6 @@ function mergeBindingsForCombo(spec: InspectionResult, combo: Record<string, str
     if (!b) continue;
     Object.assign(out, b);
   }
-  return out;
-}
-
-// Emits the JS lines that style a frame `f` from the given styling +
-// bindings. Auto-layout is enabled by default since most components are
-// flex/inline-flex; absolute positioning is out of scope for V1.
-function emitFrameStyling(styling: ResolvedStyling, bindings: Bindings): string[] {
-  const out: string[] = [];
-  // Auto-layout
-  out.push(`f.layoutMode = ${JSON.stringify(styling.layout === "column" ? "VERTICAL" : "HORIZONTAL")};`);
-  out.push(`f.primaryAxisSizingMode = "AUTO";`);
-  out.push(`f.counterAxisSizingMode = "AUTO";`);
-
-  // Padding
-  const padding = parsePadding(styling.padding);
-  out.push(`f.paddingTop = ${padding.t}; f.paddingRight = ${padding.r}; f.paddingBottom = ${padding.b}; f.paddingLeft = ${padding.l};`);
-
-  // Gap (item spacing). Bind if available.
-  const gapPx = parsePxNumber(styling.gap) ?? 0;
-  out.push(`f.itemSpacing = ${gapPx};`);
-  if (bindings.gap) {
-    out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.gap.collection].name)}, ${JSON.stringify(bindings.gap.token)}); if (v) f.setBoundVariable("itemSpacing", v); }`);
-  }
-
-  // Alignment helpers (best-effort mapping from Tailwind to Figma).
-  // Skip assignment entirely when there's no Figma equivalent — silently
-  // coercing `justify-around` to `MIN` (start) used to produce wrong layouts.
-  if (styling.alignItems) out.push(`f.counterAxisAlignItems = ${JSON.stringify(figmaAlignment(styling.alignItems))};`);
-  if (styling.justifyContent) {
-    const j = figmaJustify(styling.justifyContent);
-    if (j) out.push(`f.primaryAxisAlignItems = ${JSON.stringify(j)};`);
-  }
-
-  // Corner radius
-  const radius = parsePxNumber(styling.borderRadius);
-  if (radius != null) {
-    out.push(`f.cornerRadius = ${radius};`);
-    if (bindings.borderRadius) {
-      out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.borderRadius.collection].name)}, ${JSON.stringify(bindings.borderRadius.token)}); if (v) { f.setBoundVariable("topLeftRadius", v); f.setBoundVariable("topRightRadius", v); f.setBoundVariable("bottomLeftRadius", v); f.setBoundVariable("bottomRightRadius", v); } }`);
-    }
-  }
-
-  // Fill
-  const fillPaint = paintFromStyling(styling.fill);
-  if (fillPaint) {
-    out.push(`f.fills = [${fillPaint}];`);
-  } else {
-    out.push(`f.fills = [];`);
-  }
-  if (bindings.fill) {
-    out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.fill.collection].name)}, ${JSON.stringify(bindings.fill.token)}); if (v) f.setBoundVariable("fills", v); }`);
-  }
-
-  // Stroke (border)
-  if (styling.borderColor || styling.border) {
-    const stroke = paintFromStyling(styling.borderColor ?? extractBorderColor(styling.border));
-    if (stroke) {
-      out.push(`f.strokes = [${stroke}];`);
-      out.push(`f.strokeWeight = ${extractBorderWidth(styling.border) ?? 1};`);
-      if (styling.borderStyle && styling.borderStyle !== "solid") {
-        const dashes = styling.borderStyle === "dashed" ? [6, 4] : styling.borderStyle === "dotted" ? [2, 2] : [];
-        if (dashes.length) out.push(`f.dashPattern = ${JSON.stringify(dashes)};`);
-      }
-    }
-  }
-  if (bindings.borderColor) {
-    out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.borderColor.collection].name)}, ${JSON.stringify(bindings.borderColor.token)}); if (v) f.setBoundVariable("strokes", v); }`);
-  }
-
-  // Effects (shadow). We only support DROP_SHADOW with a heuristic parse.
-  const shadow = parseShadow(styling.shadow);
-  if (shadow) {
-    out.push(`f.effects = [${JSON.stringify(shadow)}];`);
-  }
-
-  // Opacity
-  if (styling.opacity != null) {
-    const o = parseFloat(styling.opacity);
-    if (!isNaN(o)) out.push(`f.opacity = ${o};`);
-  }
-
   return out;
 }
 
@@ -479,17 +529,6 @@ function rgbToJsLiteral(rgb: RGB): string {
   return `{ r: ${fmt(rgb.r)}, g: ${fmt(rgb.g)}, b: ${fmt(rgb.b)} }`;
 }
 
-function paintFromStyling(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value === "transparent") return null;
-  const rgb = parseColorToRgb(value);
-  if (!rgb) return null;
-  if (rgb.a != null && rgb.a < 1) {
-    return `{ type: "SOLID", color: { r: ${rgb.r.toFixed(4)}, g: ${rgb.g.toFixed(4)}, b: ${rgb.b.toFixed(4)} }, opacity: ${rgb.a.toFixed(4)} }`;
-  }
-  return `{ type: "SOLID", color: { r: ${rgb.r.toFixed(4)}, g: ${rgb.g.toFixed(4)}, b: ${rgb.b.toFixed(4)} } }`;
-}
-
 function parsePadding(value: string | null | undefined): { t: number; r: number; b: number; l: number } {
   if (!value) return { t: 0, r: 0, b: 0, l: 0 };
   const parts = value.split(/\s+/).map((p) => parsePxNumber(p) ?? 0);
@@ -590,8 +629,16 @@ export function generatePushPlan(input: PlanInput): PushPlan {
   const scripts: PushScript[] = [];
   const warnings: string[] = [];
 
-  if (input.collections.length) {
-    scripts.push(generateVariablesScript(input.collections));
+  // Walk every component's bindings to collect Tailwind-palette colors
+  // referenced from any styling field (fill, text, borderColor, etc.).
+  // These get added to the Colors collection so components — particularly
+  // Catalyst's, which hardcode `var(--color-red-600)` etc. — can actually
+  // bind their fills to a Figma variable instead of writing a literal hex.
+  const paletteColors = collectPaletteColors(input.components);
+  const augmentedCollections = mergePaletteIntoColors(input.collections, paletteColors);
+
+  if (augmentedCollections.length) {
+    scripts.push(generateVariablesScript(augmentedCollections));
   } else {
     warnings.push("No token collections to create.");
   }
@@ -605,4 +652,54 @@ export function generatePushPlan(input: PlanInput): PushPlan {
   }
 
   return { fileKey: input.fileKey, scripts, warnings };
+}
+
+// Returns the set of Tailwind-palette names referenced as bindings across
+// every component's base + per-variant styling.
+function collectPaletteColors(components: ComponentInput[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const c of components) {
+    if (!c.styling) continue;
+    const addFromBindings = (bindings: import("./inspect.js").Bindings, styling: ResolvedStyling) => {
+      for (const [field, b] of Object.entries(bindings)) {
+        if (!b || b.source !== "palette" || b.collection !== "colors") continue;
+        // The literal value lives in the matching styling field; use that
+        // when emitting the variable's value.
+        const literal = (styling as Record<string, unknown>)[field];
+        if (typeof literal === "string") out.set(b.token, literal);
+      }
+    };
+    addFromBindings(c.styling.baseBindings, c.styling.base);
+    for (const variant of c.styling.variants) {
+      for (const [valueName, b] of Object.entries(variant.bindings)) {
+        addFromBindings(b, variant.values[valueName] ?? {});
+      }
+    }
+  }
+  return out;
+}
+
+// Merge palette colors into the user's existing colors collection (or
+// create one if absent). Existing project tokens win — we never overwrite
+// a user's `primary: #abc123` with the bundled `primary: #def`.
+function mergePaletteIntoColors(
+  collections: TokenCollection[],
+  paletteColors: Map<string, string>,
+): TokenCollection[] {
+  if (paletteColors.size === 0) return collections;
+
+  const existing = collections.find((c) => c.category === "colors");
+  const existingNames = new Set(existing?.tokens.map((t) => t.name) ?? []);
+  const additions: { name: string; value: string }[] = [];
+  for (const [name, value] of paletteColors) {
+    if (!existingNames.has(name)) additions.push({ name, value });
+  }
+  if (!additions.length) return collections;
+
+  if (existing) {
+    return collections.map((c) =>
+      c === existing ? { ...c, tokens: [...c.tokens, ...additions] } : c,
+    );
+  }
+  return [...collections, { category: "colors", tokens: additions }];
 }

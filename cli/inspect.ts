@@ -36,6 +36,16 @@ export interface ResolvedStyling {
 export interface FieldBinding {
   token: string;
   collection: "colors" | "spacing" | "radius" | "shadows" | "typography";
+  // Where the resolved value came from:
+  //   "token"   — a project-defined token (extractTokens output). The
+  //               variables collection already contains this variable; the
+  //               component just binds to it directly.
+  //   "palette" — a bundled Tailwind palette entry (e.g. `red-600`). The
+  //               project hasn't declared it, but push collects these and
+  //               adds them to the Colors collection so components can
+  //               still bind. This is what makes Catalyst's hardcoded
+  //               `var(--color-red-600)` actually wire to a variable.
+  source?: "token" | "palette";
 }
 
 // Per-field token provenance. Present only for fields whose value resolved
@@ -1367,11 +1377,16 @@ function resolveColor(spec: string, tokens: TokenMap, cssVars?: Map<string, Reso
   // Token lookup: project tokens win over the bundled palette.
   const key = normalizeTokenKey(base);
   const direct = tokens.colors.get(key);
-  if (direct) return { value: direct, binding: { token: key, collection: "colors" } };
-  // Tailwind palette default (e.g. blue-500).
+  if (direct) return { value: direct, binding: { token: key, collection: "colors", source: "token" } };
+  // Tailwind palette default (e.g. blue-500). Tag with `source: "palette"`
+  // so generatePushPlan can collect these and add them to the Colors
+  // collection — without that, Catalyst (which hardcodes Tailwind palette
+  // colors rather than using project tokens) ends up with literal hex
+  // values and no theme support.
   const def = TAILWIND_PALETTE[base];
-  if (def) return { value: def };
-  // CSS named colors (white/black/transparent).
+  if (def) return { value: def, binding: { token: base, collection: "colors", source: "palette" } };
+  // CSS named colors (white/black/transparent) — too universal to be worth
+  // wiring as variables.
   if (CSS_NAMED_COLORS[base]) return { value: CSS_NAMED_COLORS[base] };
   return null;
 }
@@ -1423,11 +1438,13 @@ function resolveCssValue(value: string, tokens: TokenMap): ResolvedSource | null
     // `--color-foreground`, etc. in the Colors collection).
     const fromToken = tokens.colors.get(normalizeTokenKey(tokenName));
     if (fromToken) {
-      return { value: fromToken, binding: { token: normalizeTokenKey(tokenName), collection: "colors" } };
+      return { value: fromToken, binding: { token: normalizeTokenKey(tokenName), collection: "colors", source: "token" } };
     }
     // `--color-red-600` → look up `red-600` in the bundled Tailwind palette.
     const paletteName = tokenName.replace(/^color-/, "");
-    if (TAILWIND_PALETTE[paletteName]) return { value: TAILWIND_PALETTE[paletteName] };
+    if (TAILWIND_PALETTE[paletteName]) {
+      return { value: TAILWIND_PALETTE[paletteName], binding: { token: paletteName, collection: "colors", source: "palette" } };
+    }
     return null;
   }
   // Bare token / palette name (e.g., "red-600" directly).
