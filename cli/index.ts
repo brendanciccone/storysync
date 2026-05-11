@@ -73,7 +73,7 @@ program
           const def = mapComponent(component);
           const result: typeof results[number] = { name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null };
           if (opts.inspect) {
-            result.styling = inspectComponent(opts.project, entry.name);
+            result.styling = inspectComponent(opts.project, entry.name, entry.category);
           }
           results.push(result);
           if (!json) {
@@ -595,7 +595,7 @@ program
         try {
           const sbComp = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(sbComp);
-          const styling = inspectComponent(opts.project, entry.name);
+          const styling = inspectComponent(opts.project, entry.name, entry.category);
           if (!styling) {
             failures.push({ name: entry.name, error: "source file not found by inspect" });
             continue;

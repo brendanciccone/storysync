@@ -65,12 +65,22 @@ export interface InspectionResult {
 
 const COMPONENT_DIRS = ["src/components", "components", "app/components", "src/ui", "ui"];
 
-export function findComponentFile(projectPath: string, nameOrPath: string): string | null {
+export function findComponentFile(projectPath: string, nameOrPath: string, category?: string): string | null {
   // If the input looks like a path that exists, use it directly.
   const direct = resolve(projectPath, nameOrPath);
   if (existsSync(direct) && statSync(direct).isFile()) return direct;
 
   const lowered = nameOrPath.toLowerCase();
+  // Category hints help disambiguate when multiple files share a basename.
+  // Storybook's `category` (the part of `Forms/Button` before the last `/`)
+  // typically maps to a directory segment in real codebases: a Catalyst
+  // Button at `components/catalyst/button.tsx` vs a UI Button at
+  // `components/ui/button.tsx`. Split slashes and dashes so multi-word
+  // categories ("Data Display") become hints `["data", "display"]`.
+  const categoryHints = (category ?? "")
+    .toLowerCase()
+    .split(/[/\s-]+/)
+    .filter(Boolean);
   const candidates: string[] = [];
 
   for (const rel of COMPONENT_DIRS) {
@@ -81,14 +91,21 @@ export function findComponentFile(projectPath: string, nameOrPath: string): stri
 
   if (!candidates.length) return null;
 
-  // Prefer exact basename match, then shortest path.
-  candidates.sort((a, b) => {
-    const aBase = basename(a, extname(a)).toLowerCase();
-    const bBase = basename(b, extname(b)).toLowerCase();
-    if (aBase === lowered && bBase !== lowered) return -1;
-    if (bBase === lowered && aBase !== lowered) return 1;
-    return a.length - b.length;
-  });
+  // Score each candidate. Higher is better.
+  //   +1000 per category segment present in the path (handles
+  //         `components/catalyst/button.tsx` vs `components/ui/button.tsx`)
+  //   +100 when basename exactly matches the requested name
+  //   -length to break ties toward shorter paths.
+  const score = (p: string) => {
+    const pathLower = p.toLowerCase();
+    const baseMatch = basename(p, extname(p)).toLowerCase() === lowered;
+    const categoryMatches = categoryHints.reduce(
+      (acc, hint) => acc + (pathLower.includes(`/${hint}/`) || pathLower.endsWith(`/${hint}`) ? 1000 : 0),
+      0,
+    );
+    return categoryMatches + (baseMatch ? 100 : 0) - p.length;
+  };
+  candidates.sort((a, b) => score(b) - score(a));
   return candidates[0];
 }
 
@@ -118,8 +135,8 @@ function walkForComponent(dir: string, target: string, out: string[], depth: num
 
 // --- Top-level inspect ---
 
-export function inspectComponent(projectPath: string, nameOrPath: string): InspectionResult | null {
-  const path = findComponentFile(projectPath, nameOrPath);
+export function inspectComponent(projectPath: string, nameOrPath: string, category?: string): InspectionResult | null {
+  const path = findComponentFile(projectPath, nameOrPath, category);
   if (!path) return null;
 
   const source = readFileSync(path, "utf8");

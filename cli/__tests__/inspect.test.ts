@@ -75,6 +75,32 @@ test("findComponentFile: returns null when missing", () => {
   }
 });
 
+test("findComponentFile: category hint disambiguates same-basename files", () => {
+  // Real-world: a project that uses both Catalyst (Tailwind UI's design
+  // system) and a hand-rolled `components/ui/` set ends up with TWO
+  // button.tsx files. Without a category hint, the shorter path won.
+  // With the hint we route by the directory segment matching the category.
+  const dir = makeProject({
+    "components/catalyst/button.tsx": "// catalyst button",
+    "components/ui/button.tsx": "// ui button",
+  });
+  try {
+    const catalyst = findComponentFile(dir, "button", "Catalyst");
+    assert.ok(catalyst);
+    assert.match(catalyst!, /catalyst[\\/]+button\.tsx$/i);
+
+    const ui = findComponentFile(dir, "button", "UI");
+    assert.ok(ui);
+    assert.match(ui!, /ui[\\/]+button\.tsx$/i);
+
+    // No hint: deterministic fallback (shortest path among ties — `ui` wins).
+    const noHint = findComponentFile(dir, "button");
+    assert.ok(noHint);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("findComponentFile: skips node_modules and dist", () => {
   const dir = makeProject({
     "node_modules/button.tsx": "//",
