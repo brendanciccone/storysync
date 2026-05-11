@@ -75,6 +75,28 @@ test("findComponentFile: returns null when missing", () => {
   }
 });
 
+test("inspectComponent: text-{color}/{opacity} resolves as color, not size", () => {
+  // Tailwind's slash modifier on text- means opacity when the base is a color
+  // (`text-zinc-900/60`) and lineHeight when it's a size (`text-sm/5`).
+  // The handler should attempt color first so the opacity form doesn't
+  // fall through to the size resolver and land in `unresolved`.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("text-zinc-900/60");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    // resolveColor strips /NN internally — we keep the base color value.
+    assert.equal(result!.base.text, "#18181b");
+    assert.equal(result!.base.fontSize, undefined);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("findComponentFile: category hint disambiguates same-basename files", () => {
   // Real-world: a project that uses both Catalyst (Tailwind UI's design
   // system) and a hand-rolled `components/ui/` set ends up with TWO

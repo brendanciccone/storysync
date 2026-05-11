@@ -219,11 +219,19 @@ export function generateComponentScript(input: ComponentInput): PushScript {
     lines.push(`  single.dashPattern = src.dashPattern;`);
     lines.push(`  single.effects = src.effects;`);
     lines.push(`  single.opacity = src.opacity;`);
-    lines.push(`  // Preserve any variable bindings on the frame.`);
+    lines.push(`  // Preserve any variable bindings on the frame. fills/strokes`);
+    lines.push(`  // come back as VariableAlias[] (one per paint); scalar fields like`);
+    lines.push(`  // topLeftRadius come back as a single VariableAlias. Handle both.`);
     lines.push(`  if (src.boundVariables) {`);
     lines.push(`    for (const [field, binding] of Object.entries(src.boundVariables)) {`);
-    lines.push(`      const v = figma.variables.getVariableById(binding.id);`);
-    lines.push(`      if (v) single.setBoundVariable(field, v);`);
+    lines.push(`      if (Array.isArray(binding)) {`);
+    lines.push(`        const ref = binding.find((b) => b && b.id);`);
+    lines.push(`        const v = ref ? figma.variables.getVariableById(ref.id) : null;`);
+    lines.push(`        if (v) single.setBoundVariable(field, v);`);
+    lines.push(`      } else if (binding && binding.id) {`);
+    lines.push(`        const v = figma.variables.getVariableById(binding.id);`);
+    lines.push(`        if (v) single.setBoundVariable(field, v);`);
+    lines.push(`      }`);
     lines.push(`    }`);
     lines.push(`  }`);
     lines.push(`  for (const child of [...src.children]) single.appendChild(child);`);
@@ -321,7 +329,7 @@ function emitFrameStyling(styling: ResolvedStyling, bindings: Bindings): string[
   if (radius != null) {
     out.push(`f.cornerRadius = ${radius};`);
     if (bindings.borderRadius) {
-      out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.borderRadius.collection].name)}, ${JSON.stringify(bindings.borderRadius.token)}); if (v) f.setBoundVariable("topLeftRadius", v); f.setBoundVariable && f.setBoundVariable("topRightRadius", v); f.setBoundVariable && f.setBoundVariable("bottomLeftRadius", v); f.setBoundVariable && f.setBoundVariable("bottomRightRadius", v); }`);
+      out.push(`{ const v = lookupVar(${JSON.stringify(COLLECTION_META[bindings.borderRadius.collection].name)}, ${JSON.stringify(bindings.borderRadius.token)}); if (v) { f.setBoundVariable("topLeftRadius", v); f.setBoundVariable("topRightRadius", v); f.setBoundVariable("bottomLeftRadius", v); f.setBoundVariable("bottomRightRadius", v); } }`);
     }
   }
 

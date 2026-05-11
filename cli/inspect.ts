@@ -941,17 +941,25 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
   if (m) { ctx.styling.textAlign = m[1] as ResolvedStyling["textAlign"]; return true; }
 
   // Text color and font size — project token wins over Tailwind default.
-  // Tailwind 3+ supports `text-{size}/{lineHeight}` shorthand: split first
-  // so the size resolver doesn't try to look up "sm/5" as a color.
+  // Tailwind 3+ supports two slash-suffix forms on `text-`:
+  //   text-zinc-900/60 — color with opacity modifier
+  //   text-sm/5        — fontSize / lineHeight shorthand
+  // We try color first (resolveColor handles the /NN opacity strip itself);
+  // only if color resolution fails do we split for the size/lh form.
   m = cls.match(/^text-(.+)$/);
   if (m) {
     const arg = m[1];
-    const slashIdx = !arg.startsWith("[") ? arg.indexOf("/") : -1;
-    const sizeKey = slashIdx > 0 ? arg.slice(0, slashIdx) : arg;
-    const lhKey = slashIdx > 0 ? arg.slice(slashIdx + 1) : null;
-
-    // Color first (only on the unsplit form, since color names don't contain `/`).
-    if (slashIdx < 0) {
+    // Color attempt on the full spec — covers `text-zinc-900/60` since
+    // resolveColor strips trailing /NN modifiers internally.
+    if (!arg.startsWith("[")) {
+      const r = resolveColor(arg, tokens, ctx.cssVars);
+      if (r) {
+        ctx.styling.text = r.value;
+        if (r.binding) ctx.bindings.text = r.binding;
+        return true;
+      }
+    } else {
+      // Arbitrary color value `text-[#hex]`.
       const r = resolveColor(arg, tokens, ctx.cssVars);
       if (r) {
         ctx.styling.text = r.value;
@@ -959,6 +967,10 @@ function resolveClass(cls: string, ctx: ResolveCtx, tokens: TokenMap): boolean {
         return true;
       }
     }
+    // Not a color — try size/lineHeight shorthand.
+    const slashIdx = !arg.startsWith("[") ? arg.indexOf("/") : -1;
+    const sizeKey = slashIdx > 0 ? arg.slice(0, slashIdx) : arg;
+    const lhKey = slashIdx > 0 ? arg.slice(slashIdx + 1) : null;
     // Font size — project token wins over bundled.
     const tFs = tokens.typography.get(normalizeTokenKey(sizeKey));
     if (tFs != null) {

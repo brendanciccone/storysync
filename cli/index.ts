@@ -261,7 +261,30 @@ program
       process.exitCode = 1;
       return;
     }
-    const result = inspectComponent(opts.project, target);
+    // When --storybook is given, consult it FIRST to learn the component's
+    // category. We use that as a hint to disambiguate same-basename files
+    // (e.g., `components/catalyst/button.tsx` vs `components/ui/button.tsx`).
+    // Without it, findComponentFile falls back to shortest-path, which can
+    // pick the wrong file silently.
+    let propMapping: { name: string; included: { type: string; values: string[] } | null; type: string }[] | undefined;
+    let categoryHint: string | undefined;
+    let storybookComponent: Awaited<ReturnType<StorybookClient["getComponent"]>> | null = null;
+    if (opts.storybook) {
+      const storybook = await connectStorybook(opts.storybook, !!opts.json);
+      try {
+        const lookupName = target.toLowerCase();
+        const entries = await storybook.listComponents();
+        const match = entries.find(
+          (e) => e.id.toLowerCase() === lookupName || e.name.toLowerCase() === lookupName,
+        );
+        categoryHint = match?.category;
+        storybookComponent = await storybook.getComponent(match?.id ?? lookupName, match?.name ?? target, match?.title, match?.category);
+      } finally {
+        await storybook.disconnect();
+      }
+    }
+
+    const result = inspectComponent(opts.project, target, categoryHint);
     if (!result) {
       if (opts.json) {
         console.log(JSON.stringify({ error: "Component not found", name: target, project: opts.project }));
@@ -273,27 +296,12 @@ program
       return;
     }
 
-    let propMapping: { name: string; included: { type: string; values: string[] } | null; type: string }[] | undefined;
-    if (opts.storybook) {
-      const storybook = await connectStorybook(opts.storybook, !!opts.json);
-      try {
-        // Use the inspected component's resolved name (e.g. "Button"), not
-        // the raw target — when the user passed a path like
-        // `src/components/button.tsx`, the path itself isn't a Storybook ID.
-        const lookupName = result.name.toLowerCase();
-        const entries = await storybook.listComponents();
-        const match = entries.find(
-          (e) => e.id.toLowerCase() === lookupName || e.name.toLowerCase() === lookupName,
-        );
-        const component = await storybook.getComponent(match?.id ?? lookupName, match?.name ?? result.name);
-        const def = mapComponent(component);
-        propMapping = component.props.map((prop) => {
-          const v = def.variantProperties.find((vp) => vp.name === prop.name);
-          return { name: prop.name, included: v ? { type: v.type, values: v.values } : null, type: prop.type.name };
-        });
-      } finally {
-        await storybook.disconnect();
-      }
+    if (storybookComponent) {
+      const def = mapComponent(storybookComponent);
+      propMapping = storybookComponent.props.map((prop) => {
+        const v = def.variantProperties.find((vp) => vp.name === prop.name);
+        return { name: prop.name, included: v ? { type: v.type, values: v.values } : null, type: prop.type.name };
+      });
     }
 
     if (opts.json) {

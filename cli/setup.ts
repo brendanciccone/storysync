@@ -239,7 +239,7 @@ async function applyPlan(plan: SetupPlan, projectPath: string, opts: SetupOption
         // Replace existing storysync block in-place.
         const cur = readFileSync(dest, "utf8");
         const updated = cur.replace(/\n*<!-- storysync:start -->[\s\S]*?<!-- storysync:end -->\n*/g, block);
-        writeFileSync(dest, updated.trimStart().endsWith("\n") ? updated : updated + "\n");
+        writeFileSync(dest, updated.endsWith("\n") ? updated : updated + "\n");
         appended.push(`${rel} ${chalk.dim("(replaced)")}`);
       } else if (malformedMarker && opts.force) {
         // Strip any orphan start/end marker fragments, then append a clean block.
