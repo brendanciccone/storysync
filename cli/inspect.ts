@@ -1255,12 +1255,88 @@ function resolveSpacing(spec: string, tokens: TokenMap): { px: number; binding?:
 function lengthToPx(value: string): number | null {
   const t = value.trim();
   const m = t.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em)?$/);
-  if (!m) return null;
-  const n = parseFloat(m[1]);
-  if (isNaN(n)) return null;
-  const unit = m[2];
-  if (unit === "rem" || unit === "em") return Math.round(n * 16 * 100) / 100;
-  return n;
+  if (m) {
+    const n = parseFloat(m[1]);
+    if (isNaN(n)) return null;
+    const unit = m[2];
+    if (unit === "rem" || unit === "em") return Math.round(n * 16 * 100) / 100;
+    return n;
+  }
+  // calc(...) — Catalyst and other Tailwind 4 components use these for
+  // optical adjustments like `px-[calc(--spacing(3.5)-1px)]`. Resolve the
+  // `--spacing(N)` function call to N * 4px (Tailwind's default 0.25rem
+  // scale step at 16px root), normalize rem/em/px literals to bare numbers,
+  // then evaluate the resulting arithmetic. Without this, components that
+  // use calc-based padding render as 0px in Figma.
+  const calc = t.match(/^calc\(([\s\S]+)\)$/);
+  if (calc) {
+    const normalized = calc[1]
+      .replace(/--spacing\(\s*(-?\d+(?:\.\d+)?)\s*\)/g, (_, n) => String(parseFloat(n) * 4))
+      .replace(/(-?\d+(?:\.\d+)?)\s*rem\b/g, (_, n) => String(parseFloat(n) * 16))
+      .replace(/(-?\d+(?:\.\d+)?)\s*em\b/g, (_, n) => String(parseFloat(n) * 16))
+      .replace(/(-?\d+(?:\.\d+)?)\s*px\b/g, "$1");
+    const result = evalArithmetic(normalized);
+    return result == null ? null : Math.round(result * 100) / 100;
+  }
+  return null;
+}
+
+// Minimal arithmetic evaluator for the normalized calc() body. Supports
+// +, -, *, /, unary minus, parentheses. Strict tokenization so a stray
+// non-arithmetic character returns null instead of evaluating anything
+// dangerous (no eval()/Function() is used).
+function evalArithmetic(expr: string): number | null {
+  const re = /\s*(\d+(?:\.\d+)?|[+\-*/()])\s*/y;
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < expr.length) {
+    re.lastIndex = i;
+    const m = re.exec(expr);
+    if (!m) return null;
+    tokens.push(m[1]);
+    i = re.lastIndex;
+  }
+  let idx = 0;
+  const peek = () => tokens[idx];
+  const consume = () => tokens[idx++];
+  const parseFactor = (): number | null => {
+    if (peek() === "-") { consume(); const v = parseFactor(); return v == null ? null : -v; }
+    if (peek() === "+") { consume(); return parseFactor(); }
+    if (peek() === "(") {
+      consume();
+      const v = parseExpr();
+      if (consume() !== ")") return null;
+      return v;
+    }
+    const t = consume();
+    if (t == null) return null;
+    const n = parseFloat(t);
+    return isNaN(n) ? null : n;
+  };
+  const parseTerm = (): number | null => {
+    let v = parseFactor();
+    if (v == null) return null;
+    while (peek() === "*" || peek() === "/") {
+      const op = consume();
+      const r = parseFactor();
+      if (r == null) return null;
+      v = op === "*" ? v * r : v / r;
+    }
+    return v;
+  };
+  const parseExpr = (): number | null => {
+    let v = parseTerm();
+    if (v == null) return null;
+    while (peek() === "+" || peek() === "-") {
+      const op = consume();
+      const r = parseTerm();
+      if (r == null) return null;
+      v = op === "+" ? v + r : v - r;
+    }
+    return v;
+  };
+  const result = parseExpr();
+  return idx === tokens.length ? result : null;
 }
 
 function resolveColor(spec: string, tokens: TokenMap, cssVars?: Map<string, ResolvedSource>): ResolvedSource | null {

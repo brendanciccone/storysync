@@ -97,6 +97,45 @@ const x = cva("text-zinc-900/60");
   }
 });
 
+test("inspectComponent: calc(--spacing(N)) arbitrary values resolve to px", () => {
+  // Catalyst's optical-padding adjustment: `px-[calc(--spacing(3.5)-1px)]`
+  // should compute to `3.5 * 4 - 1 = 13px` for both left and right. Without
+  // calc handling these classes fell into `unresolved` and Figma frames
+  // came out with zero padding.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("px-[calc(--spacing(3.5)-1px)] py-[calc(--spacing(2.5)-1px)]");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    assert.equal(result!.base.padding, "9px 13px 9px 13px");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("inspectComponent: calc() handles plain px arithmetic", () => {
+  // Sanity check for the arithmetic evaluator: nested parens, multiple
+  // operators, mixed rem/px in a single calc expression.
+  const dir = makeProject({
+    "src/components/x.tsx": `
+import { cva } from "cva";
+const x = cva("p-[calc((2rem-4px)/2)]");
+`,
+  });
+  try {
+    const result = inspectComponent(dir, "x");
+    assert.ok(result);
+    // (2*16 - 4) / 2 = 14
+    assert.equal(result!.base.padding, "14px 14px 14px 14px");
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("findComponentFile: category hint disambiguates same-basename files", () => {
   // Real-world: a project that uses both Catalyst (Tailwind UI's design
   // system) and a hand-rolled `components/ui/` set ends up with TWO
