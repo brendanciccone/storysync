@@ -57,6 +57,9 @@ runs:
       with:
         node-version: ${{ inputs.node_version }}
 
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+
     - name: Install project dependencies
       shell: bash
       run: npm ci
@@ -65,8 +68,8 @@ runs:
       shell: bash
       run: |
         cd "${{ github.action_path }}/.."
-        npm ci --ignore-scripts
-        npm run build
+        pnpm install --frozen-lockfile --ignore-scripts
+        pnpm run build
 
     - name: Start Storybook
       if: inputs.storybook_url == 'http://localhost:6006'
