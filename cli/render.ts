@@ -60,6 +60,10 @@ export interface RendererOptions {
   childDepth?: number;
   navTimeoutMs?: number;
   selectorTimeoutMs?: number;
+  // Path to write raw rendered HTML for each story (debug). Each capture
+  // appends `<storyId>--<argHash>.html` so we can see exactly what the
+  // browser observed at extraction time.
+  debugDumpDir?: string;
 }
 
 // One browser per CLI invocation, many pages — Chromium launch is the
@@ -76,6 +80,7 @@ export class StorybookRenderer {
       childDepth: opts.childDepth ?? 2,
       navTimeoutMs: opts.navTimeoutMs ?? 15_000,
       selectorTimeoutMs: opts.selectorTimeoutMs ?? 4_000,
+      debugDumpDir: opts.debugDumpDir ?? "",
     };
   }
 
@@ -114,22 +119,47 @@ export class StorybookRenderer {
     const page = await this.context.newPage();
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.opts.navTimeoutMs });
-      // Wait for the story body to mount. Storybook renders into
-      // #storybook-root (v7+) or #root (older). Either is fine.
-      await page
-        .waitForFunction(
-          () => {
-            const root = document.querySelector("#storybook-root, #root");
-            return !!root && root.children.length > 0;
-          },
-          { timeout: this.opts.selectorTimeoutMs },
-        )
-        .catch(() => {
-          // Continue even if the wait times out — some stories render
-          // synchronously and the snapshot below still gets something.
-        });
-      // Give the layout one paint to settle (transitions, font swap).
-      await page.waitForTimeout(80);
+      // Race three signals so we wait long enough but not too long:
+      //   1) Storybook's `storyRendered` event (the canonical "done"),
+      //   2) network idle (no requests for 500ms — bundle finished),
+      //   3) a fallback timer.
+      // Whichever finishes first wins. This catches both fast stories
+      // (synchronous render) and slow ones (bundle still streaming).
+      await Promise.race([
+        page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              const w = window as unknown as {
+                __STORYBOOK_PREVIEW__?: { channel?: { on: (e: string, cb: () => void) => void } };
+              };
+              const channel = w.__STORYBOOK_PREVIEW__?.channel;
+              if (!channel) return resolve();
+              const done = () => resolve();
+              channel.on("storyRendered", done);
+              channel.on("storyMissing", done);
+              channel.on("storyThrewException", done);
+              channel.on("storyErrored", done);
+              // Belt + suspenders: resolve after 2.5s no matter what.
+              setTimeout(done, 2500);
+            }),
+        ).catch(() => undefined),
+        page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => undefined),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+      // Final settle — gives transitions / font-swap a paint to land.
+      await page.waitForTimeout(200);
+      if (this.opts.debugDumpDir) {
+        try {
+          const fs = await import("node:fs/promises");
+          const pathMod = await import("node:path");
+          await fs.mkdir(this.opts.debugDumpDir, { recursive: true });
+          const safe = `${storyId}--${hashArgs(args ?? {})}.html`.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const html = await page.content();
+          await fs.writeFile(pathMod.join(this.opts.debugDumpDir, safe), `<!-- ${url} -->\n${html}`);
+        } catch {
+          // Debug dump is best-effort — failures shouldn't block the capture.
+        }
+      }
       return await page.evaluate(extractInBrowser, { childDepth: this.opts.childDepth });
     } finally {
       await page.close();
@@ -195,6 +225,15 @@ export class RenderUnavailableError extends Error {
 // URL we emit round-trips through Storybook's arg parser.
 function encodeArgPart(s: string): string {
   return String(s).replace(/[:;,!"]/g, (c) => `!${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
+
+// Short stable suffix for debug-dump filenames so different arg combos
+// don't overwrite each other.
+function hashArgs(args: Record<string, string>): string {
+  const s = Object.entries(args).sort().map(([k, v]) => `${k}=${v}`).join("&");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h).toString(36).padStart(6, "0");
 }
 
 // === Browser-side extraction =================================================

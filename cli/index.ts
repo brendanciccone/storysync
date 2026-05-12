@@ -253,6 +253,7 @@ program
   .option("--component <name>", "Legacy alias for the positional component argument")
   .option("--render", "Capture computed CSS from Storybook's rendered DOM via headless browser (requires --storybook)")
   .option("--render-max-combos <n>", "Cap variant combos sent to the renderer", "32")
+  .option("--render-debug-dir <path>", "Dump rendered HTML per story to this directory for diagnostics")
   .option("--json", "Output JSON instead of formatted text")
   .action(async (nameOrPath: string | undefined, opts) => {
     const target = nameOrPath ?? opts.component;
@@ -310,7 +311,10 @@ program
       // Optional runtime overlay. The user passes --render to confirm what
       // storysync push will see before committing to a Figma sync.
       if (opts.render && opts.storybook) {
-        const renderer = new StorybookRenderer({ storybookUrl: opts.storybook });
+        const renderer = new StorybookRenderer({
+          storybookUrl: opts.storybook,
+          debugDumpDir: opts.renderDebugDir,
+        });
         try {
           await renderer.init();
           // Prefer Storybook's argTypes for axes (they're authoritative),
