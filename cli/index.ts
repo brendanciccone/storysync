@@ -313,9 +313,21 @@ program
         const renderer = new StorybookRenderer({ storybookUrl: opts.storybook });
         try {
           await renderer.init();
-          const axes = def.variantProperties
+          // Prefer Storybook's argTypes for axes (they're authoritative),
+          // but fall back to the parser's detected axes when Storybook
+          // didn't surface them — common for Catalyst-style components
+          // whose enums live in a local `const colors = { ... }` map
+          // rather than a typed prop.
+          let axes: Array<{ name: string; values: string[]; defaultValue?: string }> = def.variantProperties
             .filter((p) => p.values.length > 0)
             .map((p) => ({ name: p.name, values: p.values, defaultValue: p.defaultValue ?? undefined }));
+          if (!axes.length && enrichedResult.variants.length) {
+            axes = enrichedResult.variants.map((v) => ({
+              name: v.name,
+              values: Object.keys(v.values),
+              defaultValue: v.defaultValue ?? undefined,
+            }));
+          }
           const storyId = storybookComponent.stories?.[0]?.id;
           if (!storyId) throw new Error("Storybook returned no stories for this component — cannot render");
           const maxCombos = Math.max(1, parseInt(String(opts.renderMaxCombos ?? "32"), 10) || 32);
@@ -672,9 +684,20 @@ program
               // Without this, render iterates the parser's axes (which can
               // differ in name or values) and pushgen looks up keys that
               // were never rendered.
-              const axes = def.variantProperties
+              let axes: Array<{ name: string; values: string[]; defaultValue?: string }> = def.variantProperties
                 .filter((p) => p.values.length > 0)
                 .map((p) => ({ name: p.name, values: p.values, defaultValue: p.defaultValue ?? undefined }));
+              // Fall back to the parser's variants when Storybook didn't
+              // enumerate them (Catalyst Badge: `color` default is a
+              // string literal, no typed enum — Storybook MCP returns
+              // nothing, but the parser found the colors map).
+              if (!axes.length && styling.variants.length) {
+                axes = styling.variants.map((v) => ({
+                  name: v.name,
+                  values: Object.keys(v.values),
+                  defaultValue: v.defaultValue ?? undefined,
+                }));
+              }
               styling = await enrichInspectionWithRender(styling, renderer, {
                 storyId: entry.storyIds[0],
                 concurrency: renderConcurrency,

@@ -317,35 +317,79 @@ function extractInBrowser(opts: { childDepth: number }): VariantSnapshot {
     if (el.childElementCount === 0) {
       const t = (el.textContent || "").trim();
       if (t) out.text = t;
-    } else if (depth > 0) {
-      const kids: ChildSnapshot[] = [];
-      for (const c of Array.from(el.children)) {
-        if (SKIP_TAGS.has(c.tagName.toLowerCase())) continue;
-        kids.push(snapshotTree(c, depth - 1));
-      }
-      if (kids.length) out.children = kids;
+      return out;
     }
+    if (depth <= 0) return out;
+    // Walk childNodes (not just element children) so direct text-node
+    // siblings of elements survive — e.g. `<div>Label<svg/>...</div>`
+    // would otherwise lose "Label". Each text node becomes its own
+    // synthetic "text" ChildSnapshot so pushgen can emit it as a leaf.
+    const kids: ChildSnapshot[] = [];
+    for (const c of Array.from(el.childNodes)) {
+      if (c.nodeType === Node.TEXT_NODE) {
+        const t = (c.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (!t) continue;
+        // Inherit the parent's font/color for the text leaf so it
+        // renders in Figma with the right typography rather than the
+        // default Inter Regular 14px fallback.
+        kids.push({
+          tag: "#text",
+          computed: { tag: "#text", fontFamily: out.computed.fontFamily, fontSize: out.computed.fontSize, fontWeight: out.computed.fontWeight, text: out.computed.text },
+          text: t,
+        });
+        continue;
+      }
+      if (c.nodeType !== Node.ELEMENT_NODE) continue;
+      const child = c as Element;
+      if (SKIP_TAGS.has(child.tagName.toLowerCase())) continue;
+      kids.push(snapshotTree(child, depth - 1));
+    }
+    if (kids.length) out.children = kids;
     return out;
   }
 
   const root = document.querySelector("#storybook-root, #root");
   if (!root) return { root: {} };
-  // Storybook wraps the story in a div; the actual component is its first
-  // meaningful element child. Skip any empty wrappers.
+  // Storybook wraps the story in one or more empty divs; the actual
+  // component is the first descendant that *carries visible styling*.
+  // We descend through transparent single-child wrappers and stop on the
+  // styled element (or a multi-child / leaf), so the snapshot reflects
+  // the component's own paint — not the wrapper's nothing.
+  function isStyled(element: Element): boolean {
+    const cs = getComputedStyle(element as HTMLElement);
+    if (cs.backgroundColor && cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent") return true;
+    if (cs.borderTopWidth !== "0px" || cs.borderRightWidth !== "0px" || cs.borderBottomWidth !== "0px" || cs.borderLeftWidth !== "0px") return true;
+    if (cs.boxShadow && cs.boxShadow !== "none") return true;
+    if (cs.paddingTop !== "0px" || cs.paddingRight !== "0px" || cs.paddingBottom !== "0px" || cs.paddingLeft !== "0px") return true;
+    if (cs.borderTopLeftRadius !== "0px" || cs.borderTopRightRadius !== "0px" || cs.borderBottomLeftRadius !== "0px" || cs.borderBottomRightRadius !== "0px") return true;
+    // Tailwind's `before:` overlay pattern (Catalyst): the visible fill
+    // lives on a `::before` pseudo-element while the host element has
+    // a transparent background. Detect by querying the pseudo and
+    // checking for a non-empty `content` + colored background.
+    try {
+      const before = getComputedStyle(element as HTMLElement, "::before");
+      if (before.content && before.content !== "none" && before.content !== "normal") {
+        const bg = before.backgroundColor;
+        if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") return true;
+      }
+    } catch {
+      // Some elements / browsers reject ::before queries — ignore.
+    }
+    return false;
+  }
+
   let target: Element = root;
-  while (target.children.length === 1 && (target.firstElementChild as HTMLElement | null)) {
-    const only = target.firstElementChild as Element;
-    const cs = getComputedStyle(only as HTMLElement);
-    // If wrapper is purely a layout container with no visible styling,
-    // descend into it so we land on the actual component root.
-    const hasStyling =
-      cs.backgroundColor !== "rgba(0, 0, 0, 0)" ||
-      cs.borderTopWidth !== "0px" ||
-      cs.boxShadow !== "none" ||
-      cs.padding !== "0px";
-    if (hasStyling) break;
-    target = only;
-    if (target.children.length === 0) break;
+  // Root itself is the storybook container — never the component. Always
+  // descend at least one level if root has exactly one child.
+  if (target.children.length === 1 && target.firstElementChild) {
+    target = target.firstElementChild;
+  }
+  // Continue descending through purely-empty single-child wrappers until
+  // we hit a styled element or a multi-child / leaf node.
+  let guard = 0;
+  while (guard++ < 12 && target.children.length === 1 && target.firstElementChild) {
+    if (isStyled(target)) break;
+    target = target.firstElementChild;
   }
 
   const result: VariantSnapshot = { root: snapshot(target) };
