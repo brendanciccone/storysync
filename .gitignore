@@ -25,3 +25,5 @@ yarn-error.log*
 
 # local settings
 .claude/*.local.json
+package-lock.json
+yarn.lock
