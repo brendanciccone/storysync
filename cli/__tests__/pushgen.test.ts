@@ -54,6 +54,39 @@ test("parseColorToRgb: shadcn bare-component HSL form", () => {
   assert.deepEqual(rgb, { r: 1, g: 1, b: 1 });
 });
 
+test("parseColorToRgb: oklab string (Tailwind 4 default color space)", () => {
+  // Tailwind 4 zinc-900 (#18181b) compiles to oklab(0.21 0.006 -0.013).
+  const rgb = parseColorToRgb("oklab(0.21 0.006 -0.013)");
+  assert.ok(rgb);
+  // Should land within a couple bytes of #18181b.
+  assert.ok(Math.abs(rgb!.r * 255 - 24) < 6, `r=${rgb!.r * 255}`);
+  assert.ok(Math.abs(rgb!.g * 255 - 24) < 6, `g=${rgb!.g * 255}`);
+  assert.ok(Math.abs(rgb!.b * 255 - 27) < 6, `b=${rgb!.b * 255}`);
+});
+
+test("parseColorToRgb: oklab carries alpha when present", () => {
+  const rgb = parseColorToRgb("oklab(0.5 0 0 / 0.5)");
+  assert.ok(rgb);
+  assert.equal(rgb!.a, 0.5);
+});
+
+test("parseColorToRgb: oklab without alpha", () => {
+  // White: oklab(1 0 0)
+  const rgb = parseColorToRgb("oklab(1 0 0)");
+  assert.ok(rgb);
+  assert.ok(rgb!.r > 0.99);
+  assert.ok(rgb!.g > 0.99);
+  assert.ok(rgb!.b > 0.99);
+  assert.equal(rgb!.a, undefined);
+});
+
+test("parseColorToRgb: oklch (polar form of oklab)", () => {
+  // Same color (white) in oklch form.
+  const rgb = parseColorToRgb("oklch(1 0 0)");
+  assert.ok(rgb);
+  assert.ok(rgb!.r > 0.99);
+});
+
 test("parseColorToRgb: transparent / white / black aliases", () => {
   assert.deepEqual(parseColorToRgb("transparent"), { r: 0, g: 0, b: 0, a: 0 });
   assert.deepEqual(parseColorToRgb("white"), { r: 1, g: 1, b: 1 });

@@ -40,6 +40,27 @@ test("normalizeColor: rgba() with fractional alpha", () => {
   assert.equal(n?.key, "#dc2626@015");
 });
 
+test("normalizeColor: oklab matches its sRGB equivalent for token lookup", () => {
+  // Tailwind 4 zinc-900 compiles to oklab(0.21 0.006 -0.013). Project
+  // tokens stored as `zinc-900: #18181b` (rgb 24,24,27) should still
+  // resolve through this normalized form.
+  const n = normalizeColor("oklab(0.21 0.006 -0.013)");
+  assert.ok(n);
+  const r = parseInt(n!.hex.slice(1, 3), 16);
+  const g = parseInt(n!.hex.slice(3, 5), 16);
+  const b = parseInt(n!.hex.slice(5, 7), 16);
+  assert.ok(Math.abs(r - 24) < 6, `r=${r}`);
+  assert.ok(Math.abs(g - 24) < 6, `g=${g}`);
+  assert.ok(Math.abs(b - 27) < 6, `b=${b}`);
+});
+
+test("normalizeColor: oklab with alpha tracks alpha separately", () => {
+  const n = normalizeColor("oklab(0.5 0 0 / 0.9)");
+  assert.ok(n);
+  assert.equal(n!.kind, "rgba");
+  assert.ok(Math.abs(n!.alpha - 0.9) < 0.01);
+});
+
 test("normalizeColor: transparent and none return null", () => {
   assert.equal(normalizeColor("transparent"), null);
   assert.equal(normalizeColor("none"), null);

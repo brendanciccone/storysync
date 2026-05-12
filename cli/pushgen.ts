@@ -742,11 +742,65 @@ export function parseColorToRgb(value: string): RGB | null {
     }
     return rgb;
   }
+  // oklab / oklch — Tailwind 4 emits colors in oklab space by default,
+  // so `bg-zinc-900` resolves to e.g. `oklab(0.141 0.00136 -0.00481 / 0.9)`.
+  // Convert via the standard sRGB transform (oklab → linear sRGB → sRGB).
+  m = v.match(/^oklab\(\s*(-?\d*\.?\d+%?)\s+(-?\d*\.?\d+)\s+(-?\d*\.?\d+)(?:\s*\/\s*(-?\d*\.?\d+%?))?\s*\)$/i);
+  if (m) {
+    return oklabComponentsToRgb(parsePercentOrNumber(m[1], 1), parseFloat(m[2]), parseFloat(m[3]), m[4] != null ? parsePercentOrNumber(m[4], 1) : undefined);
+  }
+  m = v.match(/^oklch\(\s*(-?\d*\.?\d+%?)\s+(-?\d*\.?\d+%?)\s+(-?\d*\.?\d+)(?:deg)?(?:\s*\/\s*(-?\d*\.?\d+%?))?\s*\)$/i);
+  if (m) {
+    const L = parsePercentOrNumber(m[1], 1);
+    const C = parsePercentOrNumber(m[2], 0.4); // oklch chroma is unitless, up to ~0.4
+    const hDeg = parseFloat(m[3]);
+    const h = (hDeg * Math.PI) / 180;
+    const a = C * Math.cos(h);
+    const b = C * Math.sin(h);
+    return oklabComponentsToRgb(L, a, b, m[4] != null ? parsePercentOrNumber(m[4], 1) : undefined);
+  }
   // Named special cases used by tokens
   if (v === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
   if (v === "white") return { r: 1, g: 1, b: 1 };
   if (v === "black") return { r: 0, g: 0, b: 0 };
   return null;
+}
+
+function parsePercentOrNumber(s: string, scale: number): number {
+  if (s.endsWith("%")) return (parseFloat(s) / 100) * scale;
+  return parseFloat(s);
+}
+
+// oklab → sRGB (0..1). Reference: https://bottosson.github.io/posts/oklab/
+function oklabComponentsToRgb(L: number, a: number, b: number, alpha?: number): RGB {
+  // Step 1: oklab → linear RGB (LMS intermediate)
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+  const lCubed = l_ * l_ * l_;
+  const mCubed = m_ * m_ * m_;
+  const sCubed = s_ * s_ * s_;
+  const rLin = 4.0767416621 * lCubed - 3.3077115913 * mCubed + 0.2309699292 * sCubed;
+  const gLin = -1.2684380046 * lCubed + 2.6097574011 * mCubed - 0.3413193965 * sCubed;
+  const bLin = -0.0041960863 * lCubed - 0.7034186147 * mCubed + 1.707614701 * sCubed;
+  // Step 2: linear sRGB → gamma-corrected sRGB (0..1)
+  const r = linearToSrgb(rLin);
+  const g = linearToSrgb(gLin);
+  const bComp = linearToSrgb(bLin);
+  const result: RGB = { r: clamp01(r), g: clamp01(g), b: clamp01(bComp) };
+  if (alpha != null && alpha < 1) result.a = clamp01(alpha);
+  return result;
+}
+
+function linearToSrgb(v: number): number {
+  if (v <= 0.0031308) return 12.92 * v;
+  return 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+}
+
+function clamp01(v: number): number {
+  if (v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
 }
 
 function hslToRgb(h: number, s: number, l: number): RGB {

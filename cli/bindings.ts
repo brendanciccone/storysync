@@ -183,11 +183,55 @@ export function normalizeColor(v: string): NormalizedColor | null {
     return { hex, alpha: a, kind: "rgba", key: `${hex}@${alphaBucket(a)}` };
   }
 
+  // oklab() / oklch() — Tailwind 4 emits these by default. Convert to
+  // sRGB so the binding lookup matches against project tokens stored as
+  // hex. Math reference: https://bottosson.github.io/posts/oklab/
+  m = trimmed.match(/^oklab\(\s*([\-\d.%]+)\s+([\-\d.]+)\s+([\-\d.]+)(?:\s*\/\s*([\-\d.%]+))?\s*\)$/i);
+  if (m) {
+    const L = m[1].endsWith("%") ? parseFloat(m[1]) / 100 : parseFloat(m[1]);
+    const a = parseFloat(m[2]);
+    const b = parseFloat(m[3]);
+    const alpha = m[4] != null ? (m[4].endsWith("%") ? parseFloat(m[4]) / 100 : parseFloat(m[4])) : 1;
+    return oklabToNormalized(L, a, b, alpha);
+  }
+  m = trimmed.match(/^oklch\(\s*([\-\d.%]+)\s+([\-\d.%]+)\s+([\-\d.]+)(?:deg)?(?:\s*\/\s*([\-\d.%]+))?\s*\)$/i);
+  if (m) {
+    const L = m[1].endsWith("%") ? parseFloat(m[1]) / 100 : parseFloat(m[1]);
+    const C = m[2].endsWith("%") ? (parseFloat(m[2]) / 100) * 0.4 : parseFloat(m[2]);
+    const h = (parseFloat(m[3]) * Math.PI) / 180;
+    const a = C * Math.cos(h);
+    const b = C * Math.sin(h);
+    const alpha = m[4] != null ? (m[4].endsWith("%") ? parseFloat(m[4]) / 100 : parseFloat(m[4])) : 1;
+    return oklabToNormalized(L, a, b, alpha);
+  }
   // hsl() — fall through, less common to match exactly. We don't try to
   // convert; design tokens almost never appear as raw hsl strings on the
   // wire. (CSS-var-resolved hsl is handled by tokens.ts before it reaches
   // us.)
   return null;
+}
+
+function oklabToNormalized(L: number, a: number, b: number, alpha: number): NormalizedColor {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+  const lCubed = l_ * l_ * l_;
+  const mCubed = m_ * m_ * m_;
+  const sCubed = s_ * s_ * s_;
+  const rLin = 4.0767416621 * lCubed - 3.3077115913 * mCubed + 0.2309699292 * sCubed;
+  const gLin = -1.2684380046 * lCubed + 2.6097574011 * mCubed - 0.3413193965 * sCubed;
+  const bLin = -0.0041960863 * lCubed - 0.7034186147 * mCubed + 1.707614701 * sCubed;
+  const r = clampByte(linearToSrgb(rLin) * 255);
+  const g = clampByte(linearToSrgb(gLin) * 255);
+  const bC = clampByte(linearToSrgb(bLin) * 255);
+  const hex = "#" + [r, g, bC].map((n) => n.toString(16).padStart(2, "0")).join("");
+  if (alpha >= 1) return { hex, alpha: 1, kind: "rgb", key: hex };
+  return { hex, alpha, kind: "rgba", key: `${hex}@${alphaBucket(alpha)}` };
+}
+
+function linearToSrgb(v: number): number {
+  if (v <= 0.0031308) return 12.92 * v;
+  return 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
 }
 
 // Group alpha values into 1% buckets. Slightly fuzzy on purpose: Catalyst
