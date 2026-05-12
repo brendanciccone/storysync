@@ -9,6 +9,7 @@ import {
   StorybookRenderer,
   enumerateCombos,
   enumerateCombosFromAxes,
+  normalizeStoryId,
   RenderUnavailableError,
 } from "../render.js";
 import type { InspectionResult } from "../inspect.js";
@@ -21,6 +22,23 @@ const baseSpec = (): InspectionResult => ({
   variants: [],
   unresolved: [],
   warnings: [],
+});
+
+test("normalizeStoryId: title-style with / becomes kebab", () => {
+  // Storybook MCP 0.6+ returns story IDs in title form (`Catalyst/Button--Default`).
+  // Storybook's iframe routing only resolves the canonical kebab form.
+  assert.equal(normalizeStoryId("Catalyst/Button--Default"), "catalyst-button--default");
+  assert.equal(normalizeStoryId("Forms/Buttons/Primary--Default"), "forms-buttons-primary--default");
+});
+
+test("normalizeStoryId: already-kebab IDs pass through unchanged", () => {
+  assert.equal(normalizeStoryId("catalyst-button--default"), "catalyst-button--default");
+});
+
+test("StorybookRenderer.buildStoryUrl: normalizes title-style IDs to kebab", () => {
+  const r = new StorybookRenderer({ storybookUrl: "http://localhost:6006" });
+  const url = r.buildStoryUrl("Catalyst/Button--Default");
+  assert.ok(url.includes("id=catalyst-button--default"), `got: ${url}`);
 });
 
 test("StorybookRenderer.buildStoryUrl: no args", () => {

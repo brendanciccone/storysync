@@ -201,7 +201,7 @@ export class StorybookRenderer {
 
   buildStoryUrl(storyId: string, args?: Record<string, string>): string {
     const u = new URL("/iframe.html", this.opts.storybookUrl);
-    u.searchParams.set("id", storyId);
+    u.searchParams.set("id", normalizeStoryId(storyId));
     u.searchParams.set("viewMode", "story");
     if (args && Object.keys(args).length) {
       // Storybook serializes args as `k:v;k:v`. Values are URL-encoded.
@@ -212,6 +212,19 @@ export class StorybookRenderer {
     }
     return u.toString();
   }
+}
+
+// Storybook's iframe URL routing expects story IDs in canonical kebab
+// form (`catalyst-button--default`). Some MCP server versions return the
+// title-style form (`Catalyst/Button--Default`) instead — converting
+// here lets the renderer work against either output without touching
+// the MCP parser. The transform mirrors Storybook's own `storyNameFromExport`:
+// lowercase + replace `/` and whitespace with `-`.
+export function normalizeStoryId(id: string): string {
+  return id
+    .toLowerCase()
+    .replace(/[\s/]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 export class RenderUnavailableError extends Error {
