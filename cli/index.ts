@@ -4,9 +4,11 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient } from "./storybook.js";
-import { FigmaClient } from "./figma.js";
+import { FigmaClient, extractFileKey } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
+import { inspectComponent, type FieldBinding } from "./inspect.js";
+import { generatePushPlan, type ComponentInput } from "./pushgen.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -38,6 +40,8 @@ program
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--components <names>", "Comma-separated component names")
+  .option("--inspect", "Bundle the per-component styling spec from `storysync inspect` inline (recommended for push workflows)")
+  .option("--project <path>", "Project root used when --inspect is set", ".")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any component fails or is capped")
   .action(async (opts) => {
@@ -60,19 +64,28 @@ program
         return;
       }
 
-      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
+      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; styling?: ReturnType<typeof inspectComponent>; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
       for (const entry of entries) {
         try {
           const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(component);
-          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
+          const result: typeof results[number] = { name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null };
+          if (opts.inspect) {
+            result.styling = inspectComponent(opts.project, entry.name, entry.category);
+          }
+          results.push(result);
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
             const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
             const label = entry.title ?? entry.name;
-            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            const stylingTag = opts.inspect && result.styling
+              ? chalk.dim(` styling✓${result.styling.unresolved.length ? ` ${chalk.yellow(`(${result.styling.unresolved.length} unresolved)`)}` : ""}`)
+              : opts.inspect && !result.styling
+              ? chalk.yellow(" styling✗ source not found")
+              : "";
+            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}${stylingTag}`);
           }
           total += def.variantCombinations.length;
           if (def.wasCapped) capped++;
@@ -231,40 +244,110 @@ program
 
 program
   .command("inspect")
-  .description("Show how a component's props map to Figma variants")
-  .requiredOption("--storybook <url>", "Storybook URL")
-  .requiredOption("--component <name>", "Component name or ID")
-  .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook);
-    try {
-      const entries = await storybook.listComponents();
-      const match = entries.find(
-        (e) => e.id.toLowerCase() === opts.component.toLowerCase() || e.name.toLowerCase() === opts.component.toLowerCase()
-      );
+  .description("Resolve a component's CVA/Tailwind classes into a per-variant styling spec")
+  .argument("[component]", "Component name (e.g. Button) or path to a .tsx/.jsx file")
+  .option("--project <path>", "Project root to scan", ".")
+  .option("--storybook <url>", "Optionally enrich with Storybook prop-to-variant mapping")
+  .option("--component <name>", "Legacy alias for the positional component argument")
+  .option("--json", "Output JSON instead of formatted text")
+  .action(async (nameOrPath: string | undefined, opts) => {
+    const target = nameOrPath ?? opts.component;
+    if (!target) {
+      if (opts.json) {
+        console.log(JSON.stringify({ error: "Missing component argument", hint: "Pass a component name or path." }));
+      } else {
+        console.error(chalk.red("Pass a component name or path. Example: storysync inspect Button"));
+      }
+      process.exitCode = 1;
+      return;
+    }
+    // When --storybook is given, consult it FIRST to learn the component's
+    // category. We use that as a hint to disambiguate same-basename files
+    // (e.g., `components/catalyst/button.tsx` vs `components/ui/button.tsx`).
+    // Without it, findComponentFile falls back to shortest-path, which can
+    // pick the wrong file silently.
+    let propMapping: { name: string; included: { type: string; values: string[] } | null; type: string }[] | undefined;
+    let categoryHint: string | undefined;
+    let storybookComponent: Awaited<ReturnType<StorybookClient["getComponent"]>> | null = null;
+    if (opts.storybook) {
+      const storybook = await connectStorybook(opts.storybook, !!opts.json);
+      try {
+        const lookupName = target.toLowerCase();
+        const entries = await storybook.listComponents();
+        const match = entries.find(
+          (e) => e.id.toLowerCase() === lookupName || e.name.toLowerCase() === lookupName,
+        );
+        categoryHint = match?.category;
+        storybookComponent = await storybook.getComponent(match?.id ?? lookupName, match?.name ?? target, match?.title, match?.category);
+      } finally {
+        await storybook.disconnect();
+      }
+    }
 
-      const component = await storybook.getComponent(match?.id ?? opts.component.toLowerCase(), match?.name ?? opts.component);
-      const def = mapComponent(component);
+    const result = inspectComponent(opts.project, target, categoryHint);
+    if (!result) {
+      if (opts.json) {
+        console.log(JSON.stringify({ error: "Component not found", name: target, project: opts.project }));
+      } else {
+        console.error(chalk.red(`Could not find component "${target}".`));
+        console.error(chalk.dim("  Pass an explicit path or check that the component lives under src/components, components, or app/components."));
+      }
+      process.exitCode = 1;
+      return;
+    }
 
-      console.log(`\n${chalk.bold(component.name)}\n`);
-      for (const prop of component.props) {
+    if (storybookComponent) {
+      const def = mapComponent(storybookComponent);
+      propMapping = storybookComponent.props.map((prop) => {
         const v = def.variantProperties.find((vp) => vp.name === prop.name);
-        if (v) {
-          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}]`);
+        return { name: prop.name, included: v ? { type: v.type, values: v.values } : null, type: prop.type.name };
+      });
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify({ ...result, propMapping }, null, 2));
+      return;
+    }
+    console.log(`\n${chalk.bold(result.name)} ${chalk.dim(result.path ?? "")}`);
+    for (const w of result.warnings) console.log(chalk.yellow(`  ! ${w}`));
+    const renderField = (k: string, v: unknown, binding?: FieldBinding) => {
+      const tag = binding ? chalk.dim(` ← bind to ${binding.collection}/${binding.token}`) : "";
+      console.log(`      ${k}: ${v}${tag}`);
+    };
+    if (Object.keys(result.base).length) {
+      console.log(chalk.bold("\n  Base"));
+      for (const [k, v] of Object.entries(result.base)) if (v != null) renderField(k, v, result.baseBindings[k as keyof typeof result.baseBindings]);
+    }
+    for (const variant of result.variants) {
+      console.log(chalk.bold(`\n  ${variant.name}${variant.defaultValue ? chalk.dim(` (default: ${variant.defaultValue})`) : ""}`));
+      for (const [valueName, styling] of Object.entries(variant.values)) {
+        console.log(`    ${chalk.cyan(valueName)}`);
+        const binds = variant.bindings[valueName] ?? {};
+        for (const [k, v] of Object.entries(styling)) if (v != null) renderField(k, v, binds[k as keyof typeof binds]);
+      }
+    }
+    if (result.unresolved.length) {
+      console.log(chalk.bold("\n  Unresolved utilities (ask the user before writing):"));
+      for (const u of result.unresolved) console.log(`    ${chalk.yellow(u)}`);
+    }
+    if (propMapping) {
+      console.log(chalk.bold("\n  Storybook prop mapping"));
+      for (const p of propMapping) {
+        if (p.included) {
+          console.log(`    ${chalk.green("✓")} ${p.name} (${p.type}) -> ${p.included.type} [${p.included.values.join(", ")}]`);
         } else {
-          console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped`);
+          console.log(`    ${chalk.dim("✗")} ${p.name} (${p.type}) -> skipped`);
         }
       }
-      console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);
-    } finally {
-      await storybook.disconnect();
     }
+    console.log("");
   });
 
 program
   .command("diff")
   .description("Compare Figma file against code tokens and Storybook components")
   .requiredOption("--figma <url>", "Figma MCP server URL")
-  .requiredOption("--file-key <key>", "Figma file key")
+  .requiredOption("--file-key <key>", "Figma file key or URL (e.g. 4dWAJJAwIisK5pmyOGDW7p or https://www.figma.com/design/4dWAJJAwIisK5pmyOGDW7p/...)")
   .option("--storybook <url>", "Storybook URL (enables component diff)")
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
@@ -275,28 +358,33 @@ program
   .action(async (opts) => {
     const json = !!opts.json;
 
-    // Connect to Figma MCP
-    const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
-    const figma = new FigmaClient(opts.figma as string);
+    let fileKey: string;
     try {
-      await figma.connect();
-      figmaSpinner?.succeed("Connected to Figma MCP");
+      fileKey = extractFileKey(opts.fileKey as string);
     } catch (err) {
-      figmaSpinner?.fail("Failed to connect to Figma MCP");
       console.error(chalk.red(String(err)));
       process.exit(1);
     }
 
-    // Optionally connect to Storybook MCP
+    const figma = new FigmaClient(opts.figma as string);
     let storybook: StorybookClient | null = null;
-    if (opts.storybook) {
-      storybook = await connectStorybook(opts.storybook as string, json);
-    }
-
     let figmaReadFailed = false;
 
     try {
-      const fileKey = opts.fileKey as string;
+      const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
+      try {
+        await figma.connect();
+        figmaSpinner?.succeed("Connected to Figma MCP");
+      } catch (err) {
+        figmaSpinner?.fail("Failed to connect to Figma MCP");
+        console.error(chalk.red(String(err)));
+        process.exit(1);
+      }
+
+      if (opts.storybook) {
+        storybook = await connectStorybook(opts.storybook as string, json);
+      }
+
       const mode = opts.mode as string | undefined;
 
       // --- Token diff ---
@@ -457,15 +545,97 @@ program
   .description("Drop the storysync skill, slash commands, and MCP setup notes for an AI client")
   .requiredOption("--client <name>", "AI client: claude, cursor, or codex")
   .option("--project <path>", "Project root path", ".")
-  .option("--force", "Overwrite existing files")
-  .action((opts) => {
+  .option("--force", "Overwrite existing files without prompting")
+  .option("--dry-run", "Print what would be written without making changes")
+  .option("--yes", "Accept all prompts (also implied in non-TTY environments)")
+  .action(async (opts) => {
     const client = String(opts.client).toLowerCase();
     if (client !== "claude" && client !== "cursor" && client !== "codex") {
       console.error(`Unknown client: ${opts.client}. Use one of: claude, cursor, codex.`);
       process.exitCode = 1;
       return;
     }
-    runSetup(client as Client, opts.project as string, !!opts.force);
+    await runSetup(client as Client, opts.project as string, {
+      force: !!opts.force,
+      dryRun: !!opts.dryRun,
+      // Non-TTY (CI / piped) implies yes — `confirm()` auto-declines when
+      // it can't read from stdin, so without this CI runs would skip
+      // every prompt despite the help text saying otherwise.
+      yes: !!opts.yes || !process.stdin.isTTY,
+    });
+  });
+
+program
+  .command("push")
+  .description("Generate Figma Plugin API scripts to create variable collections + component sets — agent pipes each script to use_figma verbatim")
+  .argument("<figma>", "Figma file URL or raw file key")
+  .requiredOption("--storybook <url>", "Storybook URL (with addon-mcp)")
+  .option("--project <path>", "Project root to scan for tokens + components", ".")
+  .option("--components <names>", "Comma-separated component names to include (default: all)")
+  .option("--json", "Output JSON (default — meant to be piped). Without --json, prints a human-readable summary of script labels.")
+  .action(async (figma: string, opts) => {
+    let fileKey: string;
+    try {
+      fileKey = extractFileKey(figma);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+    const json = !!opts.json || !process.stdout.isTTY;
+
+    const storybook = await connectStorybook(opts.storybook, json);
+    try {
+      // Tokens
+      const tokensResult = extractTokens(opts.project);
+
+      // Map components
+      const entries = await storybook.listComponents();
+      const filter = opts.components
+        ? new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()))
+        : null;
+      const filtered = filter
+        ? entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()))
+        : entries;
+
+      const components: ComponentInput[] = [];
+      const failures: { name: string; error: string }[] = [];
+      for (const entry of filtered) {
+        try {
+          const sbComp = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+          const def = mapComponent(sbComp);
+          const styling = inspectComponent(opts.project, entry.name, entry.category);
+          if (!styling) {
+            failures.push({ name: entry.name, error: "source file not found by inspect" });
+            continue;
+          }
+          components.push({
+            name: entry.name,
+            category: entry.category,
+            variantProperties: def.variantProperties,
+            styling,
+          });
+        } catch (err) {
+          failures.push({ name: entry.name, error: String(err) });
+        }
+      }
+
+      const plan = generatePushPlan({ fileKey, collections: tokensResult.collections, components });
+
+      if (json) {
+        console.log(JSON.stringify({ ...plan, failures }, null, 2));
+      } else {
+        console.log(chalk.bold(`\nstorysync push — ${fileKey}`));
+        console.log(chalk.dim(`  ${plan.scripts.length} script(s) to send to use_figma:`));
+        for (const [i, s] of plan.scripts.entries()) {
+          console.log(`  ${chalk.green(`${i + 1}.`)} ${s.label}`);
+        }
+        for (const w of plan.warnings) console.log(chalk.yellow(`  ! ${w}`));
+        for (const f of failures) console.log(chalk.red(`  ✗ ${f.name}: ${f.error}`));
+        console.log(chalk.dim(`\n  Run with --json to get the executable scripts.`));
+      }
+    } finally {
+      await storybook.disconnect();
+    }
   });
 
 program.parse();

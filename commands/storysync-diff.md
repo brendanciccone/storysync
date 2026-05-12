@@ -1,13 +1,15 @@
 ---
 description: Audit Figma file against code and report drift in either direction
-argument-hint: [figma-file-key]
+argument-hint: [figma-url]
 ---
 
 Compare the current Figma file against this codebase's design tokens and Storybook components, then report drift in either direction. Use the storysync skill at `.claude/skills/storysync.md` (Audit section).
 
-**Figma file key:** $ARGUMENTS
+**This is a read-only audit.** Do not modify the Figma file in any way. Use only `use_figma` calls that read state (variables, component sets, styles); never call write tools or run plugin code that mutates nodes. If you find drift, report it. Do not fix it. The user will review the report and decide what to repair separately.
 
-If the user did not provide a file key (or `$ARGUMENTS` is empty), ask for it. The file key is the part of a Figma URL between `/design/` and the next `/`.
+**Figma URL:** $ARGUMENTS
+
+If the user did not provide a value (or `$ARGUMENTS` is empty), ask for it. They'll typically paste a full Figma URL (e.g. `https://www.figma.com/design/4dWAJJAwIisK5pmyOGDW7p/Untitled?node-id=0-1`); extract the file key from the path between `/design/` (or `/file/`, `/board/`, `/proto/`, `/slides/`, `/make/`) and the next `/`. A raw file key (e.g. `4dWAJJAwIisK5pmyOGDW7p`) is also accepted as-is.
 
 Workflow:
 

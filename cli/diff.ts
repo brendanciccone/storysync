@@ -273,6 +273,28 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
 
 // --- Component diffing ---
 
+// Figma's MCP encodes boolean props as VARIANT with values ["true","false"]
+// rather than the BOOLEAN type our mapper emits, so a code BOOLEAN and a
+// Figma VARIANT["true","false"] are equivalent. Normalize both sides to
+// "BOOLEAN" before comparing so this no-op difference doesn't show as drift.
+function isBooleanShape(values: string[]): boolean {
+  if (values.length !== 2) return false;
+  const lowered = values.map((v) => v.toLowerCase()).sort();
+  return lowered[0] === "false" && lowered[1] === "true";
+}
+
+// The Figma MCP exposes boolean component properties as VARIANT with
+// `["true", "false"]` values rather than a true BOOLEAN. We treat that
+// shape as equivalent to BOOLEAN for diff purposes — but ONLY on the
+// Figma side. Code-side VARIANT should never be coerced even if it
+// happens to enumerate exactly true/false (e.g., a literal union type
+// `'true' | 'false'`), since that's a real distinction the user owns.
+function normalizeFigmaPropType(type: string, values: string[]): string {
+  if (type === "BOOLEAN") return "BOOLEAN";
+  if (type === "VARIANT" && isBooleanShape(values)) return "BOOLEAN";
+  return type;
+}
+
 export function diffComponents(
   codeComponents: FigmaComponentDefinition[],
   figmaComponents: FigmaComponentInfo[],
@@ -315,6 +337,11 @@ export function diffComponents(
     for (const [pName, codeProp] of codePropMap) {
       const figmaProp = figmaPropMap.get(pName);
       if (!figmaProp) continue;
+
+      const figmaKind = normalizeFigmaPropType(figmaProp.type, figmaProp.values);
+      // Code-side BOOLEAN ≡ Figma-side BOOLEAN-shaped VARIANT. Skip the
+      // value comparison since both sides describe the same true/false axis.
+      if (codeProp.type === "BOOLEAN" && figmaKind === "BOOLEAN") continue;
 
       const codeVals = new Set(codeProp.values.map((v) => v.toLowerCase()));
       const figmaVals = new Set(figmaProp.values.map((v) => v.toLowerCase()));

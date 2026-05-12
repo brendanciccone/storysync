@@ -22,7 +22,7 @@ export function detectPackageManager(projectPath: string): PackageManager {
 }
 
 export function findStorybookConfig(projectPath: string): StorybookConfigFile | null {
-  for (const name of ["main.ts", "main.js", "main.mts", "main.mjs"]) {
+  for (const name of ["main.ts", "main.js", "main.mts", "main.mjs", "main.cjs"]) {
     const p = join(projectPath, ".storybook", name);
     if (existsSync(p)) return { path: p, content: readFileSync(p, "utf8") };
   }
@@ -62,7 +62,78 @@ export function hasAddonMcpInPackageJson(projectPath: string): boolean {
 }
 
 export function hasAddonMcpInConfig(content: string): boolean {
-  return /["']@storybook\/addon-mcp["']/.test(content);
+  // Strip comments in a string-aware pass, then locate the addons array and
+  // only consider @storybook/addon-mcp matches inside its bracket span. The
+  // string-aware strip is necessary because naive regex stripping would also
+  // delete `//` and `/* */` sequences that appear inside string literals
+  // (e.g. `url: "http://localhost:6006/mcp"` would lose everything after `//`),
+  // which can break the bracket walker and produce false negatives.
+  const stripped = stripCommentsAware(content);
+  const m = stripped.match(/(?<![A-Za-z_$])addons\s*:\s*\[/);
+  if (!m) return false;
+  const start = (m.index ?? 0) + m[0].length;
+  let depth = 1;
+  let i = start;
+  let quote: string | null = null;
+  while (i < stripped.length && depth > 0) {
+    const ch = stripped[i];
+    if (quote) {
+      if (ch === "\\") { i += 2; continue; }
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    } else if (ch === "[") {
+      depth++;
+    } else if (ch === "]") {
+      depth--;
+    }
+    i++;
+  }
+  if (depth !== 0) return false;
+  const arrayBody = stripped.slice(start, i - 1);
+  return /["'`]@storybook\/addon-mcp["'`]/.test(arrayBody);
+}
+
+// Single-pass comment stripper that respects single-quoted strings,
+// double-quoted strings, template literals, and escape sequences.
+// Comments inside strings are left untouched.
+function stripCommentsAware(source: string): string {
+  let out = "";
+  let i = 0;
+  let quote: string | null = null;
+  let template = false;
+  while (i < source.length) {
+    const ch = source[i];
+    if (template) {
+      out += ch;
+      if (ch === "\\") { out += source[i + 1] ?? ""; i += 2; continue; }
+      if (ch === "`") template = false;
+      i++;
+      continue;
+    }
+    if (quote) {
+      out += ch;
+      if (ch === "\\") { out += source[i + 1] ?? ""; i += 2; continue; }
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; out += ch; i++; continue; }
+    if (ch === "`") { template = true; out += ch; i++; continue; }
+    if (ch === "/" && source[i + 1] === "/") {
+      const eol = source.indexOf("\n", i);
+      i = eol === -1 ? source.length : eol;
+      continue;
+    }
+    if (ch === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 export function addAddonToConfig(content: string): { content: string; ok: boolean } {
@@ -73,7 +144,13 @@ export function addAddonToConfig(content: string): { content: string; ok: boolea
   return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
 }
 
-function confirm(message: string): Promise<boolean> {
+export function confirm(message: string): Promise<boolean> {
+  // Without a TTY (CI, piped input) `rl.question` never resolves and the
+  // process hangs. Auto-decline so callers can fall back to manual setup.
+  if (!process.stdin.isTTY) {
+    console.log(`${message} ${chalk.dim("[non-TTY: declined — pass --yes to accept]")}`);
+    return Promise.resolve(false);
+  }
   return new Promise((resolveP) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     rl.question(`${message} ${chalk.dim("[Y/n]")} `, (answer) => {
