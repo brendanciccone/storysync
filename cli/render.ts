@@ -227,6 +227,54 @@ export function normalizeStoryId(id: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+// Fetches Storybook's own story index — the canonical map of every
+// story ID, title, and name. Use this instead of MCP-derived IDs:
+// MCP servers sometimes synthesize a `--default` ID even when the
+// component has no Default story (Catalyst Button: Solid, Outline,
+// Plain — no Default), which leads to 404s in the iframe.
+export async function fetchStorybookIndex(
+  storybookUrl: string,
+): Promise<Map<string, Array<{ id: string; name: string }>>> {
+  const base = storybookUrl.replace(/\/$/, "");
+  // Storybook 7+ serves `/index.json`; older versions use `/stories.json`.
+  // Try in order.
+  for (const path of ["/index.json", "/stories.json"]) {
+    try {
+      const res = await fetch(`${base}${path}`);
+      if (!res.ok) continue;
+      const data = (await res.json()) as { entries?: Record<string, { type?: string; id: string; name: string; title?: string }> };
+      const entries = data.entries;
+      if (!entries) continue;
+      const byTitle = new Map<string, Array<{ id: string; name: string }>>();
+      for (const v of Object.values(entries)) {
+        if (v.type && v.type !== "story") continue;
+        if (!v.title) continue;
+        const list = byTitle.get(v.title) ?? [];
+        list.push({ id: v.id, name: v.name });
+        byTitle.set(v.title, list);
+      }
+      return byTitle;
+    } catch {
+      continue;
+    }
+  }
+  return new Map();
+}
+
+// Picks a base story ID to render for a given component title. Prefers
+// the first non-aggregate story (`All Colors`, `All Variants`,
+// `All Sizes` are usually showcase stories that already iterate; we
+// want a single-variant base instead so arg overrides have something
+// clean to apply on top of).
+export function pickBaseStoryId(
+  stories: Array<{ id: string; name: string }>,
+): string | null {
+  if (!stories.length) return null;
+  const isAggregate = (s: { name: string }) => /^all\b/i.test(s.name);
+  const baseStory = stories.find((s) => !isAggregate(s)) ?? stories[0];
+  return baseStory.id;
+}
+
 export class RenderUnavailableError extends Error {
   constructor(message: string) {
     super(message);

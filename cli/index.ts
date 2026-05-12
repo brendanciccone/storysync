@@ -9,7 +9,7 @@ import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { inspectComponent, type FieldBinding } from "./inspect.js";
 import { generatePushPlan, type ComponentInput } from "./pushgen.js";
-import { StorybookRenderer, enrichInspectionWithRender, RenderUnavailableError } from "./render.js";
+import { StorybookRenderer, enrichInspectionWithRender, RenderUnavailableError, fetchStorybookIndex, pickBaseStoryId } from "./render.js";
 import { TokenLookup, overlayBindings } from "./bindings.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
@@ -332,8 +332,14 @@ program
               defaultValue: v.defaultValue ?? undefined,
             }));
           }
-          const storyId = storybookComponent.stories?.[0]?.id;
-          if (!storyId) throw new Error("Storybook returned no stories for this component — cannot render");
+          // Resolve story ID from Storybook's own index.json. MCP can
+          // return synthetic IDs (e.g. `<title>--default` even when no
+          // Default story exists), which 404 the iframe.
+          const indexByTitle = await fetchStorybookIndex(opts.storybook);
+          const title = storybookComponent.title ?? (storybookComponent.category ? `${storybookComponent.category}/${storybookComponent.name}` : storybookComponent.name);
+          const stories = indexByTitle.get(title) ?? [];
+          const storyId = pickBaseStoryId(stories) ?? storybookComponent.stories?.[0]?.id;
+          if (!storyId) throw new Error(`Storybook index has no story for title "${title}" — cannot render`);
           const maxCombos = Math.max(1, parseInt(String(opts.renderMaxCombos ?? "32"), 10) || 32);
           enrichedResult = await enrichInspectionWithRender(enrichedResult, renderer, {
             storyId,
@@ -661,6 +667,12 @@ program
       // once from all collections, then queried per-field as we enrich.
       const tokenLookup = new TokenLookup(tokensResult.collections);
 
+      // Canonical story index from Storybook itself. MCP-supplied story
+      // IDs can be synthetic (e.g. `catalyst-button--default` when the
+      // component only has `Solid`/`Outline`/`Plain` stories), which
+      // 404s the iframe. The index.json is the source of truth.
+      const storyIndex = renderer ? await fetchStorybookIndex(opts.storybook) : new Map();
+
       // Map components
       const entries = await storybook.listComponents();
       const filter = opts.components
@@ -681,35 +693,46 @@ program
             failures.push({ name: entry.name, error: "source file not found by inspect" });
             continue;
           }
-          if (renderer && entry.storyIds && entry.storyIds.length > 0) {
-            try {
-              // Hand Storybook's argTypes-derived axes to the renderer so
-              // the combo keys it produces match pushgen's matrix exactly.
-              // Without this, render iterates the parser's axes (which can
-              // differ in name or values) and pushgen looks up keys that
-              // were never rendered.
-              let axes: Array<{ name: string; values: string[]; defaultValue?: string }> = def.variantProperties
-                .filter((p) => p.values.length > 0)
-                .map((p) => ({ name: p.name, values: p.values, defaultValue: p.defaultValue ?? undefined }));
-              // Fall back to the parser's variants when Storybook didn't
-              // enumerate them (Catalyst Badge: `color` default is a
-              // string literal, no typed enum — Storybook MCP returns
-              // nothing, but the parser found the colors map).
-              if (!axes.length && styling.variants.length) {
-                axes = styling.variants.map((v) => ({
-                  name: v.name,
-                  values: Object.keys(v.values),
-                  defaultValue: v.defaultValue ?? undefined,
-                }));
+          if (renderer) {
+            // Resolve a story ID from index.json (canonical) keyed by
+            // Storybook title. Prefer the first non-aggregate story so
+            // arg overrides have a clean baseline. MCP-supplied IDs are
+            // only used as a last-ditch fallback.
+            const title = entry.title ?? `${entry.category}/${entry.name}`;
+            const stories = storyIndex.get(title) ?? [];
+            const storyId = pickBaseStoryId(stories) ?? entry.storyIds?.[0];
+            if (storyId) {
+              try {
+                // Hand Storybook's argTypes-derived axes to the renderer so
+                // the combo keys it produces match pushgen's matrix exactly.
+                // Without this, render iterates the parser's axes (which can
+                // differ in name or values) and pushgen looks up keys that
+                // were never rendered.
+                let axes: Array<{ name: string; values: string[]; defaultValue?: string }> = def.variantProperties
+                  .filter((p) => p.values.length > 0)
+                  .map((p) => ({ name: p.name, values: p.values, defaultValue: p.defaultValue ?? undefined }));
+                // Fall back to the parser's variants when Storybook didn't
+                // enumerate them (Catalyst Badge: `color` default is a
+                // string literal, no typed enum — Storybook MCP returns
+                // nothing, but the parser found the colors map).
+                if (!axes.length && styling.variants.length) {
+                  axes = styling.variants.map((v) => ({
+                    name: v.name,
+                    values: Object.keys(v.values),
+                    defaultValue: v.defaultValue ?? undefined,
+                  }));
+                }
+                styling = await enrichInspectionWithRender(styling, renderer, {
+                  storyId,
+                  concurrency: renderConcurrency,
+                  maxCombos: renderMaxCombos,
+                  axes,
+                });
+              } catch (err) {
+                renderWarnings.push(`render failed for ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
               }
-              styling = await enrichInspectionWithRender(styling, renderer, {
-                storyId: entry.storyIds[0],
-                concurrency: renderConcurrency,
-                maxCombos: renderMaxCombos,
-                axes,
-              });
-            } catch (err) {
-              renderWarnings.push(`render failed for ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
+            } else {
+              renderWarnings.push(`render skipped for ${entry.name}: no story found in Storybook index`);
             }
           }
           // Phase 2 overlay: for each rendered value the parser couldn't

@@ -10,6 +10,7 @@ import {
   enumerateCombos,
   enumerateCombosFromAxes,
   normalizeStoryId,
+  pickBaseStoryId,
   RenderUnavailableError,
 } from "../render.js";
 import type { InspectionResult } from "../inspect.js";
@@ -22,6 +23,30 @@ const baseSpec = (): InspectionResult => ({
   variants: [],
   unresolved: [],
   warnings: [],
+});
+
+test("pickBaseStoryId: prefers first non-aggregate story", () => {
+  // Catalyst Button: Solid/Outline/Plain/AllColors — AllColors iterates
+  // colors inside a single story (showcase), so we want `Solid` instead
+  // for the base render that arg overrides will tweak.
+  const stories = [
+    { id: "catalyst-button--all-colors", name: "All Colors" },
+    { id: "catalyst-button--solid", name: "Solid" },
+    { id: "catalyst-button--outline", name: "Outline" },
+  ];
+  assert.equal(pickBaseStoryId(stories), "catalyst-button--solid");
+});
+
+test("pickBaseStoryId: falls back to first when all are aggregates", () => {
+  const stories = [
+    { id: "x--all-colors", name: "All Colors" },
+    { id: "x--all-sizes", name: "All Sizes" },
+  ];
+  assert.equal(pickBaseStoryId(stories), "x--all-colors");
+});
+
+test("pickBaseStoryId: returns null for empty list", () => {
+  assert.equal(pickBaseStoryId([]), null);
 });
 
 test("normalizeStoryId: title-style with / becomes kebab", () => {
