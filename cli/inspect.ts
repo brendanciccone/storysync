@@ -80,14 +80,21 @@ export function findComponentFile(projectPath: string, nameOrPath: string, categ
   const direct = resolve(projectPath, nameOrPath);
   if (existsSync(direct) && statSync(direct).isFile()) return direct;
 
-  const lowered = nameOrPath.toLowerCase();
+  // Storybook-style titles like "UI/Button" arrive here as `nameOrPath`.
+  // Basenames never contain `/`, so we split: the last segment is the
+  // component name to search for, and the prefix is folded into the
+  // category hints.
+  const slashIdx = nameOrPath.lastIndexOf("/");
+  const titlePrefix = slashIdx >= 0 ? nameOrPath.slice(0, slashIdx) : "";
+  const componentName = slashIdx >= 0 ? nameOrPath.slice(slashIdx + 1) : nameOrPath;
+  const lowered = componentName.toLowerCase();
   // Category hints help disambiguate when multiple files share a basename.
   // Storybook's `category` (the part of `Forms/Button` before the last `/`)
   // typically maps to a directory segment in real codebases: a Catalyst
   // Button at `components/catalyst/button.tsx` vs a UI Button at
   // `components/ui/button.tsx`. Split slashes and dashes so multi-word
   // categories ("Data Display") become hints `["data", "display"]`.
-  const categoryHints = (category ?? "")
+  const categoryHints = `${category ?? ""} ${titlePrefix}`
     .toLowerCase()
     .split(/[/\s-]+/)
     .filter(Boolean);

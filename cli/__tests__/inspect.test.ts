@@ -162,6 +162,32 @@ test("findComponentFile: category hint disambiguates same-basename files", () =>
   }
 });
 
+test("findComponentFile: Storybook title-style 'UI/Button' resolves via prefix as category hint", () => {
+  // Users routinely pass Storybook title strings (`UI/Button`,
+  // `Forms/Button`) directly to inspect/push. Without splitting the prefix
+  // off, basename matching never succeeds since basenames don't contain `/`.
+  const dir = makeProject({
+    "components/catalyst/button.tsx": "// catalyst button",
+    "components/ui/button.tsx": "// ui button",
+  });
+  try {
+    const ui = findComponentFile(dir, "UI/Button");
+    assert.ok(ui, "expected UI/Button to resolve without an explicit category arg");
+    assert.match(ui!, /ui[\\/]+button\.tsx$/i);
+
+    const catalyst = findComponentFile(dir, "Catalyst/Button");
+    assert.ok(catalyst);
+    assert.match(catalyst!, /catalyst[\\/]+button\.tsx$/i);
+
+    // Explicit category arg still wins / is additive with the prefix.
+    const both = findComponentFile(dir, "UI/Button", "UI");
+    assert.ok(both);
+    assert.match(both!, /ui[\\/]+button\.tsx$/i);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("findComponentFile: skips node_modules and dist", () => {
   const dir = makeProject({
     "node_modules/button.tsx": "//",
