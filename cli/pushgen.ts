@@ -478,10 +478,18 @@ function formatVariantName(combo: Record<string, string>): string {
 // For a given combo, walk the inspect result and merge base + the matching
 // variant value's styling. Later values win over earlier so a variant value
 // can override a base property.
+// Merges base styling with the per-variant styling for a combo. When the
+// combo doesn't specify a value for an axis the inspect spec defines (e.g.
+// crenel's UI/Button doesn't enumerate `variant`/`size` via argTypes, so
+// storysync map returns variantProperties = [] and the matrix collapses
+// to a single {} combo), fall back to the axis's `defaultValue`. Without
+// this, the synthesized single-variant component would only get base
+// classes and miss the `variant === 'primary' && 'bg-blue-600 text-white'`
+// styling entirely — which is what produced the bare-text-label rendering.
 function mergeStylingForCombo(spec: InspectionResult, combo: Record<string, string>): ResolvedStyling {
   const out: ResolvedStyling = { ...spec.base };
   for (const variant of spec.variants) {
-    const value = combo[variant.name];
+    const value = combo[variant.name] ?? variant.defaultValue;
     if (value == null) continue;
     const v = variant.values[value];
     if (!v) continue;
@@ -493,7 +501,7 @@ function mergeStylingForCombo(spec: InspectionResult, combo: Record<string, stri
 function mergeBindingsForCombo(spec: InspectionResult, combo: Record<string, string>): Bindings {
   const out: Bindings = { ...spec.baseBindings };
   for (const variant of spec.variants) {
-    const value = combo[variant.name];
+    const value = combo[variant.name] ?? variant.defaultValue;
     if (value == null) continue;
     const b = variant.bindings[value];
     if (!b) continue;

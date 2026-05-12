@@ -262,6 +262,57 @@ test("generateComponentScript: variant values with `/` get sanitized to `-`", ()
   assert.deepEqual(names.sort(), ["color=dark-white", "color=dark-zinc", "color=red"]);
 });
 
+test("generateComponentScript: applies variant defaults when combo doesn't enumerate the axis", () => {
+  // When Storybook's variantProperties is empty (component stories don't
+  // expose variant/size via argTypes), the matrix collapses to a single
+  // {} combo. The merge logic must still apply per-variant DEFAULTS so the
+  // resulting single component carries real styling — without this the
+  // component renders as a bare text label (no fill, no padding from size).
+  const input: ComponentInput = {
+    name: "Button",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Button",
+      path: "/tmp/x.tsx",
+      base: { borderRadius: "6px", fontWeight: "500" },
+      baseBindings: {},
+      variants: [
+        {
+          name: "variant",
+          defaultValue: "primary",
+          values: {
+            primary: { fill: "#2563eb", text: "#ffffff" },
+            ghost: { fill: "transparent" },
+          },
+          bindings: { primary: {}, ghost: {} },
+        },
+        {
+          name: "size",
+          defaultValue: "md",
+          values: {
+            sm: { padding: "8px 12px 8px 12px", fontSize: "14px" },
+            md: { padding: "10px 16px 10px 16px", fontSize: "14px" },
+          },
+          bindings: { sm: {}, md: {} },
+        },
+      ],
+      unresolved: [],
+      warnings: [],
+    },
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  assert.ok(payloadMatch);
+  const payload = JSON.parse(payloadMatch![1]);
+  // Single variant emitted, with primary fill and md padding applied.
+  assert.equal(payload.length, 1);
+  assert.deepEqual(payload[0].f.slice(0, 3), [0.1451, 0.3882, 0.9216]);
+  assert.equal(payload[0].pt, 10);
+  assert.equal(payload[0].pl, 16);
+  assert.equal(payload[0].lfz, 14);
+});
+
 test("generateComponentScript: positions new component below existing peers on the page", () => {
   const input: ComponentInput = {
     name: "Card",
