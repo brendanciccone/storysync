@@ -11,7 +11,7 @@
 
 import type { TokenCollection, TokenValue } from "./tokens.js";
 import type { FigmaVariantProperty } from "./mapper.js";
-import type { InspectionResult, ResolvedStyling, Bindings } from "./inspect.js";
+import type { InspectionResult, ResolvedStyling, Bindings, RenderedChild } from "./inspect.js";
 
 export interface PushScript {
   label: string;
@@ -232,6 +232,52 @@ export function generateComponentScript(input: ComponentInput): PushScript {
   lines.push(`    return figma.variables.getLocalVariables().find((v) => v.variableCollectionId === coll.id && v.name === varName) || null;`);
   lines.push(`  };`);
   lines.push("");
+  // Recursive child builder. Created once per script and re-used for
+  // every nested frame/text inside a variant. The recursion bottoms out
+  // when a child has no inner kids — either as a text leaf (`d.t`) or
+  // an empty frame.
+  lines.push(`  // 2b) Recursive child node builder — used by variants that captured`);
+  lines.push(`  //     a DOM tree (wrapper components like Card with CardHeader/Content).`);
+  lines.push(`  const buildChild = (d) => {`);
+  lines.push(`    if (d.t != null) {`);
+  lines.push(`      const lb = figma.createText();`);
+  lines.push(`      lb.fontName = { family: d.tff || "Inter", style: d.tfs || "Regular" };`);
+  lines.push(`      if (d.tfz != null) lb.fontSize = d.tfz;`);
+  lines.push(`      lb.characters = d.t;`);
+  lines.push(`      let lfp = null;`);
+  lines.push(`      if (d.tf) lfp = { type: "SOLID", color: { r: d.tf[0], g: d.tf[1], b: d.tf[2] } };`);
+  lines.push(`      if (d.tfb && lfp) { const v = lookupVar(d.tfb[0], d.tfb[1]); if (v) lfp = figma.variables.setBoundVariableForPaint(lfp, "color", v); }`);
+  lines.push(`      if (lfp) lb.fills = [lfp];`);
+  lines.push(`      return lb;`);
+  lines.push(`    }`);
+  lines.push(`    const f = figma.createFrame();`);
+  lines.push(`    f.layoutMode = d.lm || "HORIZONTAL";`);
+  lines.push(`    f.primaryAxisSizingMode = "AUTO";`);
+  lines.push(`    f.counterAxisSizingMode = "AUTO";`);
+  lines.push(`    if (d.pt != null) f.paddingTop = d.pt;`);
+  lines.push(`    if (d.pr != null) f.paddingRight = d.pr;`);
+  lines.push(`    if (d.pb != null) f.paddingBottom = d.pb;`);
+  lines.push(`    if (d.pl != null) f.paddingLeft = d.pl;`);
+  lines.push(`    if (d.is != null) f.itemSpacing = d.is;`);
+  lines.push(`    if (d.isb) { const v = lookupVar(d.isb[0], d.isb[1]); if (v) f.setBoundVariable("itemSpacing", v); }`);
+  lines.push(`    if (d.ai) f.counterAxisAlignItems = d.ai;`);
+  lines.push(`    if (d.aj) f.primaryAxisAlignItems = d.aj;`);
+  lines.push(`    if (d.cr != null) f.cornerRadius = d.cr;`);
+  lines.push(`    if (d.crb) { const v = lookupVar(d.crb[0], d.crb[1]); if (v) { f.setBoundVariable("topLeftRadius", v); f.setBoundVariable("topRightRadius", v); f.setBoundVariable("bottomLeftRadius", v); f.setBoundVariable("bottomRightRadius", v); } }`);
+  lines.push(`    let fp = null;`);
+  lines.push(`    if (d.f) { fp = { type: "SOLID", color: { r: d.f[0], g: d.f[1], b: d.f[2] } }; if (d.f[3] != null) fp.opacity = d.f[3]; }`);
+  lines.push(`    if (d.fb && fp) { const v = lookupVar(d.fb[0], d.fb[1]); if (v) fp = figma.variables.setBoundVariableForPaint(fp, "color", v); }`);
+  lines.push(`    f.fills = fp ? [fp] : [];`);
+  lines.push(`    let sp = null;`);
+  lines.push(`    if (d.s) { sp = { type: "SOLID", color: { r: d.s[0], g: d.s[1], b: d.s[2] } }; if (d.s[3] != null) sp.opacity = d.s[3]; }`);
+  lines.push(`    if (d.sb && sp) { const v = lookupVar(d.sb[0], d.sb[1]); if (v) sp = figma.variables.setBoundVariableForPaint(sp, "color", v); }`);
+  lines.push(`    if (sp) { f.strokes = [sp]; if (d.sw != null) f.strokeWeight = d.sw; if (d.sd) f.dashPattern = d.sd; }`);
+  lines.push(`    if (d.ef) f.effects = d.ef;`);
+  lines.push(`    if (d.op != null) f.opacity = d.op;`);
+  lines.push(`    if (d.kids) for (const k of d.kids) f.appendChild(buildChild(k));`);
+  lines.push(`    return f;`);
+  lines.push(`  };`);
+  lines.push("");
 
   lines.push(`  // 3) Font preload (the only font we use for V1 labels)`);
   lines.push(`  await figma.loadFontAsync({ family: "Inter", style: "Regular" });`);
@@ -252,7 +298,20 @@ export function generateComponentScript(input: ComponentInput): PushScript {
   const payloads: VariantPayload[] = matrix.map((combo) => {
     const styling = mergeStylingForCombo(input.styling, combo);
     const bindings = mergeBindingsForCombo(input.styling, combo);
-    return buildVariantPayload(formatVariantName(combo), compName, styling, bindings);
+    const comboKey = formatVariantName(combo);
+    // Render captured a real innerText for this combo (e.g. the story's
+    // `children: "Label"` arg) — use that for the placeholder instead of
+    // the component name, so a Catalyst Badge says "Label" not "Badge".
+    const labelText = input.styling.renderedLabels?.[comboKey] ?? compName;
+    const payload = buildVariantPayload(comboKey, labelText, styling, bindings);
+    // Wrapper components (Card → CardHeader + Content) emit each child as
+    // its own frame inside the variant, so the rendered structure shows
+    // up in Figma instead of collapsing to a single styled box.
+    const kids = input.styling.renderedChildren?.[comboKey];
+    if (kids && kids.length) {
+      payload.kids = kids.map((k) => buildChildPayload(k));
+    }
+    return payload;
   });
 
   lines.push(`  // 5) Variant payloads. Each entry is a compact descriptor of one`);
@@ -311,13 +370,49 @@ interface VariantPayload {
   sb?: [string, string];              // stroke binding
   ef?: object[];                      // effects
   op?: number;                        // opacity
-  // Label
+  // Label (used only when `kids` is absent)
   lt?: string;                        // label text
   lff?: string;                       // label font family
   lfs?: string;                       // label font style
   lfz?: number;                       // label font size
   lf?: [number, number, number];      // label fill
   lfb?: [string, string];             // label fill binding
+  // Child frames captured from the rendered DOM. When present, the apply
+  // loop builds these instead of stamping a single text label, so wrapper
+  // components (Card → CardHeader + CardContent + CardFooter) render with
+  // their actual structure visible.
+  kids?: ChildPayload[];
+}
+
+// Child node — either a frame with its own layout + styling, or a text
+// leaf identified by the `t` field. Recursively contains its own kids.
+interface ChildPayload {
+  // Container fields (mirror VariantPayload's layout/styling subset)
+  lm?: "HORIZONTAL" | "VERTICAL";
+  pt?: number; pr?: number; pb?: number; pl?: number;
+  is?: number;
+  isb?: [string, string];
+  ai?: string;
+  aj?: string;
+  cr?: number;
+  crb?: [string, string];
+  f?: [number, number, number, number?];
+  fb?: [string, string];
+  s?: [number, number, number, number?];
+  sw?: number;
+  sd?: number[];
+  sb?: [string, string];
+  ef?: object[];
+  op?: number;
+  // Text-leaf fields
+  t?: string;                         // text content; presence ⇒ leaf
+  tff?: string;                       // text font family
+  tfs?: string;                       // text font style
+  tfz?: number;                       // text font size
+  tf?: [number, number, number];      // text fill
+  tfb?: [string, string];             // text fill binding
+  // Recursive
+  kids?: ChildPayload[];
 }
 
 // JS code that consumes a `VARIANTS` array of payloads and produces a
@@ -354,8 +449,12 @@ const APPLY_LOOP: string[] = [
   `    if (sp) { c.strokes = [sp]; if (d.sw != null) c.strokeWeight = d.sw; if (d.sd) c.dashPattern = d.sd; }`,
   `    if (d.ef) c.effects = d.ef;`,
   `    if (d.op != null) c.opacity = d.op;`,
-  `    // Label: placeholder text so the variant is visually identifiable.`,
-  `    if (d.lt) {`,
+  `    // Body: prefer captured child tree (wrapper components) over the`,
+  `    // single text label. When neither is present the variant ends up as`,
+  `    // a styled empty frame, which is fine — Figma autosizes it.`,
+  `    if (d.kids && d.kids.length) {`,
+  `      for (const k of d.kids) c.appendChild(buildChild(k));`,
+  `    } else if (d.lt) {`,
   `      const lb = figma.createText();`,
   `      lb.fontName = { family: d.lff || "Inter", style: d.lfs || "Regular" };`,
   `      if (d.lfz != null) lb.fontSize = d.lfz;`,
@@ -375,7 +474,7 @@ const APPLY_LOOP: string[] = [
 // while staying visually accurate.
 function buildVariantPayload(
   name: string,
-  compName: string,
+  labelText: string,
   styling: ResolvedStyling,
   bindings: Bindings,
 ): VariantPayload {
@@ -424,7 +523,7 @@ function buildVariantPayload(
   }
 
   // Label
-  out.lt = compName;
+  out.lt = labelText;
   out.lff = "Inter";
   out.lfs = pickFontStyle(styling);
   out.lfz = parsePxNumber(styling.fontSize) ?? 14;
@@ -432,6 +531,83 @@ function buildVariantPayload(
   if (labelFill) out.lf = [labelFill[0], labelFill[1], labelFill[2]];
   if (bindings.text) out.lfb = [COLLECTION_META[bindings.text.collection].name, bindings.text.token];
 
+  return out;
+}
+
+// Compact payload for one captured child node. The shape parallels
+// VariantPayload's styling subset, but text content lives in `t` (with
+// font fields prefixed `tf*`), and child kids recurse.
+function buildChildPayload(child: RenderedChild): ChildPayload {
+  const styling = child.styling;
+  const bindings: Bindings = child.bindings ?? {};
+  // Leaf: it's a text node with no children of its own.
+  if (child.text && !child.children?.length) {
+    const out: ChildPayload = {};
+    out.t = child.text;
+    out.tff = "Inter";
+    out.tfs = pickFontStyle(styling);
+    out.tfz = parsePxNumber(styling.fontSize) ?? 14;
+    const tf = colorToTuple(styling.text);
+    if (tf) out.tf = [tf[0], tf[1], tf[2]];
+    if (bindings.text) out.tfb = [COLLECTION_META[bindings.text.collection].name, bindings.text.token];
+    return out;
+  }
+  // Container.
+  const out: ChildPayload = {};
+  if (styling.layout) out.lm = styling.layout === "column" ? "VERTICAL" : "HORIZONTAL";
+  else out.lm = "HORIZONTAL";
+  const padding = parsePadding(styling.padding);
+  if (padding.t || padding.r || padding.b || padding.l) {
+    out.pt = padding.t; out.pr = padding.r; out.pb = padding.b; out.pl = padding.l;
+  }
+  const gapPx = parsePxNumber(styling.gap);
+  if (gapPx != null) out.is = gapPx;
+  if (bindings.gap) out.isb = [COLLECTION_META[bindings.gap.collection].name, bindings.gap.token];
+  if (styling.alignItems) out.ai = figmaAlignment(styling.alignItems);
+  if (styling.justifyContent) {
+    const j = figmaJustify(styling.justifyContent);
+    if (j) out.aj = j;
+  }
+  const radius = parsePxNumber(styling.borderRadius);
+  if (radius != null) out.cr = radius;
+  if (bindings.borderRadius) out.crb = [COLLECTION_META[bindings.borderRadius.collection].name, bindings.borderRadius.token];
+  const fill = colorToTuple(styling.fill);
+  if (fill) out.f = fill;
+  if (bindings.fill) out.fb = [COLLECTION_META[bindings.fill.collection].name, bindings.fill.token];
+  const strokeColor = styling.borderColor ?? extractBorderColor(styling.border);
+  const stroke = colorToTuple(strokeColor);
+  if (stroke) {
+    out.s = stroke;
+    out.sw = extractBorderWidth(styling.border) ?? 1;
+    if (styling.borderStyle === "dashed") out.sd = [6, 4];
+    else if (styling.borderStyle === "dotted") out.sd = [2, 2];
+  }
+  if (bindings.borderColor) out.sb = [COLLECTION_META[bindings.borderColor.collection].name, bindings.borderColor.token];
+  const shadow = parseShadow(styling.shadow);
+  if (shadow) out.ef = [shadow];
+  if (styling.opacity != null) {
+    const o = parseFloat(styling.opacity);
+    if (!isNaN(o)) out.op = o;
+  }
+  // If the child has no grandchildren but does carry text, embed it as a
+  // single text leaf so the frame isn't empty.
+  if (child.text && !child.children?.length) {
+    out.kids = [
+      (() => {
+        const leaf: ChildPayload = {};
+        leaf.t = child.text;
+        leaf.tff = "Inter";
+        leaf.tfs = pickFontStyle(styling);
+        leaf.tfz = parsePxNumber(styling.fontSize) ?? 14;
+        const tf = colorToTuple(styling.text);
+        if (tf) leaf.tf = [tf[0], tf[1], tf[2]];
+        if (bindings.text) leaf.tfb = [COLLECTION_META[bindings.text.collection].name, bindings.text.token];
+        return leaf;
+      })(),
+    ];
+  } else if (child.children?.length) {
+    out.kids = child.children.map((k) => buildChildPayload(k));
+  }
   return out;
 }
 
@@ -494,6 +670,16 @@ function mergeStylingForCombo(spec: InspectionResult, combo: Record<string, stri
     const v = variant.values[value];
     if (!v) continue;
     Object.assign(out, v);
+  }
+  // Overlay runtime-rendered values on top. Only non-null fields win, so
+  // the parser's structural info (layout, alignment) survives when render
+  // doesn't supply it, while concrete values (fill, padding, dimensions)
+  // come from what the browser actually painted.
+  const rendered = spec.renderedStyling?.[formatVariantName(combo)];
+  if (rendered) {
+    for (const [k, v] of Object.entries(rendered)) {
+      if (v != null) (out as Record<string, unknown>)[k] = v;
+    }
   }
   return out;
 }

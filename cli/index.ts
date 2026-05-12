@@ -9,6 +9,8 @@ import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { inspectComponent, type FieldBinding } from "./inspect.js";
 import { generatePushPlan, type ComponentInput } from "./pushgen.js";
+import { StorybookRenderer, enrichInspectionWithRender, RenderUnavailableError } from "./render.js";
+import { TokenLookup, overlayBindings } from "./bindings.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -249,6 +251,8 @@ program
   .option("--project <path>", "Project root to scan", ".")
   .option("--storybook <url>", "Optionally enrich with Storybook prop-to-variant mapping")
   .option("--component <name>", "Legacy alias for the positional component argument")
+  .option("--render", "Capture computed CSS from Storybook's rendered DOM via headless browser (requires --storybook)")
+  .option("--render-max-combos <n>", "Cap variant combos sent to the renderer", "32")
   .option("--json", "Output JSON instead of formatted text")
   .action(async (nameOrPath: string | undefined, opts) => {
     const target = nameOrPath ?? opts.component;
@@ -296,16 +300,41 @@ program
       return;
     }
 
+    let enrichedResult = result;
     if (storybookComponent) {
       const def = mapComponent(storybookComponent);
       propMapping = storybookComponent.props.map((prop) => {
         const v = def.variantProperties.find((vp) => vp.name === prop.name);
         return { name: prop.name, included: v ? { type: v.type, values: v.values } : null, type: prop.type.name };
       });
+      // Optional runtime overlay. The user passes --render to confirm what
+      // storysync push will see before committing to a Figma sync.
+      if (opts.render && opts.storybook) {
+        const renderer = new StorybookRenderer({ storybookUrl: opts.storybook });
+        try {
+          await renderer.init();
+          const axes = def.variantProperties
+            .filter((p) => p.values.length > 0)
+            .map((p) => ({ name: p.name, values: p.values, defaultValue: p.defaultValue ?? undefined }));
+          const storyId = storybookComponent.stories?.[0]?.id;
+          if (!storyId) throw new Error("Storybook returned no stories for this component — cannot render");
+          const maxCombos = Math.max(1, parseInt(String(opts.renderMaxCombos ?? "32"), 10) || 32);
+          enrichedResult = await enrichInspectionWithRender(enrichedResult, renderer, {
+            storyId,
+            maxCombos,
+            axes,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          enrichedResult = { ...enrichedResult, warnings: [...enrichedResult.warnings, `render disabled: ${msg}`] };
+        } finally {
+          await renderer.dispose();
+        }
+      }
     }
 
     if (opts.json) {
-      console.log(JSON.stringify({ ...result, propMapping }, null, 2));
+      console.log(JSON.stringify({ ...enrichedResult, propMapping }, null, 2));
       return;
     }
     console.log(`\n${chalk.bold(result.name)} ${chalk.dim(result.path ?? "")}`);
@@ -573,6 +602,9 @@ program
   .option("--project <path>", "Project root to scan for tokens + components", ".")
   .option("--components <names>", "Comma-separated component names to include (default: all)")
   .option("--json", "Output JSON (default — meant to be piped). Without --json, prints a human-readable summary of script labels.")
+  .option("--no-render", "Skip the headless-browser render step (faster, but loses Tailwind/CSS-resolved values)")
+  .option("--render-concurrency <n>", "Number of stories rendered in parallel", "4")
+  .option("--render-max-combos <n>", "Cap per-component variant combos sent through the renderer", "64")
   .action(async (figma: string, opts) => {
     let fileKey: string;
     try {
@@ -584,9 +616,34 @@ program
     const json = !!opts.json || !process.stdout.isTTY;
 
     const storybook = await connectStorybook(opts.storybook, json);
+    // Render path is opt-out via --no-render. It catches everything the
+    // parser misses (Tailwind plugin output, CSS custom-property setters,
+    // wrapper components composed from sub-components) at the cost of a
+    // ~150MB one-time Chromium download.
+    const renderEnabled = opts.render !== false;
+    let renderer: StorybookRenderer | null = null;
+    const renderConcurrency = Math.max(1, parseInt(String(opts.renderConcurrency ?? "4"), 10) || 4);
+    const renderMaxCombos = Math.max(1, parseInt(String(opts.renderMaxCombos ?? "64"), 10) || 64);
+    const renderWarnings: string[] = [];
+    if (renderEnabled) {
+      try {
+        renderer = new StorybookRenderer({ storybookUrl: opts.storybook });
+        await renderer.init();
+      } catch (err) {
+        if (err instanceof RenderUnavailableError) {
+          renderWarnings.push(`render disabled: ${err.message}`);
+        } else {
+          renderWarnings.push(`render disabled: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        renderer = null;
+      }
+    }
     try {
       // Tokens
       const tokensResult = extractTokens(opts.project);
+      // Reverse lookup for Phase 2: rendered hex → token binding. Built
+      // once from all collections, then queried per-field as we enrich.
+      const tokenLookup = new TokenLookup(tokensResult.collections);
 
       // Map components
       const entries = await storybook.listComponents();
@@ -603,11 +660,35 @@ program
         try {
           const sbComp = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(sbComp);
-          const styling = inspectComponent(opts.project, entry.name, entry.category);
+          let styling = inspectComponent(opts.project, entry.name, entry.category);
           if (!styling) {
             failures.push({ name: entry.name, error: "source file not found by inspect" });
             continue;
           }
+          if (renderer && entry.storyIds && entry.storyIds.length > 0) {
+            try {
+              // Hand Storybook's argTypes-derived axes to the renderer so
+              // the combo keys it produces match pushgen's matrix exactly.
+              // Without this, render iterates the parser's axes (which can
+              // differ in name or values) and pushgen looks up keys that
+              // were never rendered.
+              const axes = def.variantProperties
+                .filter((p) => p.values.length > 0)
+                .map((p) => ({ name: p.name, values: p.values, defaultValue: p.defaultValue ?? undefined }));
+              styling = await enrichInspectionWithRender(styling, renderer, {
+                storyId: entry.storyIds[0],
+                concurrency: renderConcurrency,
+                maxCombos: renderMaxCombos,
+                axes,
+              });
+            } catch (err) {
+              renderWarnings.push(`render failed for ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          // Phase 2 overlay: for each rendered value the parser couldn't
+          // bind, look up the project's token table by resolved value.
+          // Parser bindings always win; this only fills gaps.
+          styling = overlayBindings(styling, tokenLookup);
           components.push({
             name: entry.name,
             category: entry.category,
@@ -620,6 +701,7 @@ program
       }
 
       const plan = generatePushPlan({ fileKey, collections: tokensResult.collections, components });
+      if (renderWarnings.length) plan.warnings.push(...renderWarnings);
 
       if (json) {
         console.log(JSON.stringify({ ...plan, failures }, null, 2));
@@ -635,6 +717,7 @@ program
       }
     } finally {
       await storybook.disconnect();
+      await renderer?.dispose();
     }
   });
 

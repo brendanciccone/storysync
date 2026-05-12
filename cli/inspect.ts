@@ -69,6 +69,35 @@ export interface InspectionResult {
   variants: InspectVariant[];
   unresolved: string[];
   warnings: string[];
+  // Optional runtime-rendered overlay, keyed by the same signature
+  // pushgen's formatVariantName produces (e.g. "color=red, size=md").
+  // When present, mergeStylingForCombo prefers these values over the
+  // source-parsed ones — but bindings always come from the parser side,
+  // since runtime DOM can't tell `bg-primary` apart from a literal hex.
+  renderedStyling?: Record<string, ResolvedStyling>;
+  // Rendered label text per combo, when a story's `children` arg or DOM
+  // innerText differs from the component name. Used by pushgen to pick
+  // a meaningful placeholder instead of just stamping the component name.
+  renderedLabels?: Record<string, string>;
+  // Story ID (kebab-case) we rendered against. Reported in inspect output
+  // so the user can see which story drove the snapshot.
+  renderedStoryId?: string;
+  // Captured immediate-child DOM tree per combo. Wrapper components
+  // (Card → CardHeader + CardContent) emit each child as its own nested
+  // frame with that child's computed styles, so the Figma component
+  // visually matches the rendered DOM rather than collapsing to a single
+  // bare label.
+  renderedChildren?: Record<string, RenderedChild[]>;
+}
+
+// Compact child-tree descriptor shared across render → inspect → pushgen.
+// Mirrors ResolvedStyling for layout/styling, adds `text` for leaf text
+// content, and supports a single level of nesting via `children`.
+export interface RenderedChild {
+  styling: ResolvedStyling;
+  text?: string;
+  bindings?: Bindings;
+  children?: RenderedChild[];
 }
 
 // --- Component file lookup ---

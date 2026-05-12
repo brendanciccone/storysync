@@ -440,3 +440,202 @@ test("generatePushPlan: doesn't duplicate palette colors already declared as pro
   const matches = varsScript.code.match(/upsertVariable\(coll, "blue-500", "COLOR"\)/g) ?? [];
   assert.equal(matches.length, 1);
 });
+
+// --- Render overlay (Phase 1 integration into pushgen) ---
+
+test("renderedStyling overlay: runtime values win over parsed when present", () => {
+  // Parser sees a transparent fill (e.g. it couldn't resolve the Catalyst
+  // `bg-{color}-500/15` lookup). Render fills it in with the actual
+  // painted color. The emitted payload should carry the rendered value.
+  const input: ComponentInput = {
+    name: "Badge",
+    category: "Catalyst",
+    variantProperties: [],
+    styling: {
+      name: "Badge",
+      path: "/proj/components/catalyst/badge.tsx",
+      base: { fill: null, padding: "0 0 0 0", borderRadius: "6px" },
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      renderedStyling: {
+        Default: { fill: "#fee2e2", padding: "2px 6px 2px 6px", text: "#b91c1c" },
+      },
+    },
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  assert.ok(payloadMatch);
+  const payload = JSON.parse(payloadMatch![1]);
+  // Fill came from render, not parser.
+  assert.deepEqual(payload[0].f.slice(0, 3).map((n: number) => Math.round(n * 255)), [254, 226, 226]);
+  // Padding overrides the parsed "0 0 0 0".
+  assert.equal(payload[0].pt, 2);
+  assert.equal(payload[0].pr, 6);
+  assert.equal(payload[0].pb, 2);
+  assert.equal(payload[0].pl, 6);
+  // Label color came from render.
+  assert.deepEqual(payload[0].lf.map((n: number) => Math.round(n * 255)), [185, 28, 28]);
+});
+
+test("renderedStyling overlay: only non-null fields win; parser structure survives", () => {
+  // Render captures opaque colors but layout/alignment is structural —
+  // we should keep the parser's values when render didn't supply them.
+  const input: ComponentInput = {
+    name: "Pill",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Pill",
+      path: "/proj/components/pill.tsx",
+      base: { fill: "#000000", layout: "row", alignItems: "center", gap: "4px" },
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      renderedStyling: {
+        // Only fill is provided by render; layout/alignment are absent.
+        Default: { fill: "#ff0000" },
+      },
+    },
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  const payload = JSON.parse(payloadMatch![1]);
+  // Render fill won.
+  assert.deepEqual(payload[0].f.slice(0, 3), [1, 0, 0]);
+  // Parser's layout + align survived.
+  assert.equal(payload[0].lm, "HORIZONTAL");
+  assert.equal(payload[0].ai, "CENTER");
+  assert.equal(payload[0].is, 4);
+});
+
+test("renderedLabels: rendered innerText replaces component name in label", () => {
+  // Catalyst Badge's story sets `children: "Label"`. The rendered DOM
+  // carries that text; we should stamp it onto the variant placeholder
+  // instead of using the component name ("Badge").
+  const input: ComponentInput = {
+    name: "Badge",
+    category: "Catalyst",
+    variantProperties: [],
+    styling: {
+      name: "Badge",
+      path: "/p/badge.tsx",
+      base: { fill: "#ffffff" },
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      renderedLabels: { Default: "Label" },
+    },
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  const payload = JSON.parse(payloadMatch![1]);
+  assert.equal(payload[0].lt, "Label");
+});
+
+test("renderedChildren: emits kids array + buildChild helper in script", () => {
+  // Card with CardHeader + CardContent + CardFooter as captured children.
+  // The script should: include a buildChild helper, set d.kids on the
+  // payload, and use the kids branch instead of the single-label branch.
+  const input: ComponentInput = {
+    name: "Card",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Card",
+      path: "/p/card.tsx",
+      base: { fill: "#ffffff", borderRadius: "12px" },
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      renderedChildren: {
+        Default: [
+          {
+            styling: { padding: "24px 24px 24px 24px", layout: "column", gap: "6px" },
+            children: [
+              { styling: { fontSize: "16px", fontWeight: "600", text: "#0a0a0a" }, text: "Card Title" },
+              { styling: { fontSize: "14px", text: "#71717a" }, text: "Card description" },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  const script = generateComponentScript(input);
+  // Helper was emitted.
+  assert.match(script.code, /const buildChild = \(d\) =>/);
+  // Apply loop uses the kids branch.
+  assert.match(script.code, /if \(d\.kids && d\.kids\.length\)/);
+  // Payload carries kids tree.
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  const payload = JSON.parse(payloadMatch![1]);
+  assert.ok(payload[0].kids, "expected payload[0].kids to be set");
+  assert.equal(payload[0].kids.length, 1);
+  const cardContent = payload[0].kids[0];
+  assert.equal(cardContent.pt, 24);
+  assert.equal(cardContent.lm, "VERTICAL");
+  // CardContent has its own kids: title + description text nodes.
+  assert.ok(cardContent.kids);
+  assert.equal(cardContent.kids.length, 2);
+  assert.equal(cardContent.kids[0].t, "Card Title");
+  assert.equal(cardContent.kids[1].t, "Card description");
+});
+
+test("renderedChildren: text leaves carry font sizing + color from styling", () => {
+  const input: ComponentInput = {
+    name: "Alert",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Alert",
+      path: "/p/alert.tsx",
+      base: { fill: "#fef2f2" },
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      renderedChildren: {
+        Default: [
+          { styling: { fontSize: "13px", text: "#991b1b" }, text: "Something went wrong" },
+        ],
+      },
+    },
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  const payload = JSON.parse(payloadMatch![1]);
+  const leaf = payload[0].kids[0];
+  assert.equal(leaf.t, "Something went wrong");
+  assert.equal(leaf.tfz, 13);
+  // RGB tuple from #991b1b
+  assert.deepEqual(
+    leaf.tf.map((n: number) => Math.round(n * 255)),
+    [153, 27, 27],
+  );
+});
+
+test("renderedLabels: falls back to component name when render didn't capture text", () => {
+  const input: ComponentInput = {
+    name: "Card",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Card",
+      path: "/p/card.tsx",
+      base: { fill: "#ffffff" },
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      // No renderedLabels at all.
+    },
+  };
+  const script = generateComponentScript(input);
+  const payloadMatch = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  const payload = JSON.parse(payloadMatch![1]);
+  assert.equal(payload[0].lt, "Card");
+});

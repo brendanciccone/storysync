@@ -35,7 +35,8 @@
     "@modelcontextprotocol/sdk": "^1.15.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
-    "ora": "^8.2.0"
+    "ora": "^8.2.0",
+    "playwright-core": "^1.55.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
