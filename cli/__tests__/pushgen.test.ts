@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   generateVariablesScript,
   generateComponentScript,
+  generateSetupScript,
   generatePushPlan,
   parseColorToRgb,
   type ComponentInput,
@@ -276,27 +277,53 @@ test("generateComponentScript: positions new component below existing peers on t
 
 // --- generatePushPlan ---
 
-test("generatePushPlan: bundles variables script + per-component script", () => {
+test("generatePushPlan: bundles setup + variables + per-component scripts in order", () => {
   const plan = generatePushPlan({
     fileKey: "abc123",
     collections: [{ category: "colors", tokens: [{ name: "x", value: "#fff" }] }],
     components: [
       {
         name: "Button",
+        category: "UI",
         variantProperties: [],
         styling: makeStyling({ name: "Button" }),
       },
     ],
   });
   assert.equal(plan.fileKey, "abc123");
-  assert.equal(plan.scripts.length, 2);
-  assert.match(plan.scripts[0].label, /1 variables/);
-  assert.match(plan.scripts[1].label, /Button/);
+  assert.equal(plan.scripts.length, 3);
+  // Setup script runs first — Cover page + Page 1 cleanup.
+  assert.match(plan.scripts[0].label, /Set up Cover page/);
+  assert.match(plan.scripts[0].code, /name === "Cover"/);
+  assert.match(plan.scripts[0].code, /name === "Page 1"/);
+  // Variables next.
+  assert.match(plan.scripts[1].label, /1 variables/);
+  // Component last.
+  assert.match(plan.scripts[2].label, /Button/);
 });
 
-test("generatePushPlan: warns when no token collections", () => {
+test("generateSetupScript: cover page summary lists each component page with count", () => {
+  const script = generateSetupScript({
+    pageSummary: [
+      { name: "Catalyst", componentCount: 2 },
+      { name: "UI", componentCount: 4 },
+    ],
+    componentTotal: 6,
+    variableTotal: 42,
+  });
+  // Summary rows for each page.
+  assert.match(script.code, /Catalyst · 2 components/);
+  assert.match(script.code, /UI · 4 components/);
+  // Subtitle includes totals.
+  assert.match(script.code, /6 components/);
+  assert.match(script.code, /42 variables/);
+});
+
+test("generatePushPlan: setup script always runs; warns when no token collections", () => {
   const plan = generatePushPlan({ fileKey: "x", collections: [], components: [] });
-  assert.equal(plan.scripts.length, 0);
+  // Setup runs even with no collections (cover page + page cleanup still useful).
+  assert.equal(plan.scripts.length, 1);
+  assert.match(plan.scripts[0].label, /Set up Cover page/);
   assert.ok(plan.warnings.some((w) => w.includes("No token collections")));
 });
 
@@ -323,15 +350,15 @@ test("generatePushPlan: palette colors used in components get added to Colors co
     }],
   });
 
-  // Variables script should now include both `primary` (project token) and
-  // `blue-500` (palette color used by Button).
-  assert.equal(plan.scripts.length, 2);
-  const varsScript = plan.scripts[0];
+  // Scripts: [setup, variables, Button]. Variables should include both
+  // `primary` (project token) and `blue-500` (palette color used by Button).
+  assert.equal(plan.scripts.length, 3);
+  const varsScript = plan.scripts[1];
   assert.match(varsScript.code, /upsertVariable\(coll, "primary", "COLOR"\)/);
   assert.match(varsScript.code, /upsertVariable\(coll, "blue-500", "COLOR"\)/);
 
   // The Button script's fill-binding tuple references blue-500.
-  const componentScript = plan.scripts[1];
+  const componentScript = plan.scripts[2];
   const payloadMatch = componentScript.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
   assert.ok(payloadMatch);
   const payload = JSON.parse(payloadMatch![1]);
@@ -358,7 +385,7 @@ test("generatePushPlan: doesn't duplicate palette colors already declared as pro
       },
     }],
   });
-  const varsScript = plan.scripts[0];
+  const varsScript = plan.scripts[1];
   const matches = varsScript.code.match(/upsertVariable\(coll, "blue-500", "COLOR"\)/g) ?? [];
   assert.equal(matches.length, 1);
 });
