@@ -1,6 +1,10 @@
 # dependencies
 node_modules/
 
+# foreign lockfiles (this project uses pnpm)
+package-lock.json
+yarn.lock
+
 # build output
 dist/
 

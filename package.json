@@ -31,6 +31,10 @@
   ],
   "author": "Brendan Ciccone",
   "license": "MIT",
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": []
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",
     "chalk": "^5.4.1",
@@ -44,7 +48,8 @@
   },
   "engines": {
     "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "npm": ">=9.0.0",
+    "pnpm": ">=10.33.0"
   },
   "type": "module",
   "files": [
