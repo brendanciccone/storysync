@@ -60,6 +60,10 @@ runs:
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
 
+    - name: Install Safe Chain
+      shell: bash
+      run: curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
+
     - name: Install project dependencies
       shell: bash
       run: npm ci
