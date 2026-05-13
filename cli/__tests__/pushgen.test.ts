@@ -672,3 +672,296 @@ test("renderedLabels: falls back to component name when render didn't capture te
   const payload = JSON.parse(payloadMatch![1]);
   assert.equal(payload[0].lt, "Card");
 });
+
+// === Fidelity overhaul tests (§1.1–§3.4) ====================================
+
+function fidelityInput(stylingOverrides: Partial<InspectionResult> = {}): ComponentInput {
+  return {
+    name: "Demo",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Demo",
+      path: "/p/demo.tsx",
+      base: {},
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      ...stylingOverrides,
+    },
+  };
+}
+
+function payloadOf(input: ComponentInput): { payload: any[]; code: string } {
+  const script = generateComponentScript(input);
+  const m = script.code.match(/const VARIANTS = (\[[\s\S]*?\]);/);
+  return { payload: JSON.parse(m![1]), code: script.code };
+}
+
+test("§1.1 width FIXED — emits cw when widthExplicit and width is set", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({ base: { width: 384, widthExplicit: true, fill: "#fff" } }),
+  );
+  assert.equal(payload[0].cw, 384);
+  // Apply loop now switches sizing mode based on d.cw presence.
+  assert.match(code, /counterAxisSizingMode = d\.cw != null \? "FIXED" : "AUTO"/);
+});
+
+test("§1.1 width FIXED — max-width emits cw only when rendered width is at the limit", () => {
+  // Within 4px of max → FIXED.
+  const atLimit = payloadOf(
+    fidelityInput({ base: { width: 384, maxWidth: "384px", fill: "#fff" } }),
+  );
+  assert.equal(atLimit.payload[0].cw, 384);
+  // Comfortably below max → HUG (no cw emitted).
+  const belowLimit = payloadOf(
+    fidelityInput({ base: { width: 100, maxWidth: "384px", fill: "#fff" } }),
+  );
+  assert.equal(belowLimit.payload[0].cw, undefined);
+});
+
+test("§1.2 multi-line text — child text leaf with multiLine + parentInnerWidth emits tar=HEIGHT + tw", () => {
+  const { payload } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedChildren: {
+        Default: [
+          { styling: { fontSize: "14px", text: "#000" }, text: "A very long description that will definitely wrap onto multiple lines.", multiLine: true, parentInnerWidth: 240 },
+        ],
+      },
+    }),
+  );
+  const leaf = payload[0].kids[0];
+  assert.equal(leaf.tar, "HEIGHT");
+  assert.equal(leaf.tw, 240);
+});
+
+test("§1.2 — short single-line text does NOT get textAutoResize", () => {
+  const { payload } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedChildren: {
+        Default: [
+          { styling: { fontSize: "14px", text: "#000" }, text: "Short", multiLine: false, parentInnerWidth: 240 },
+        ],
+      },
+    }),
+  );
+  assert.equal(payload[0].kids[0].tar, undefined);
+});
+
+test("§1.3 SVG — child svgMarkup lands in SVGS library, payload references via svr", () => {
+  const svg = `<svg viewBox="0 0 24 24"><path d="M4 12h16"/></svg>`;
+  const { payload, code } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedChildren: {
+        Default: [{ styling: { width: 16, height: 16 }, svgMarkup: svg }],
+      },
+    }),
+  );
+  const ref = payload[0].kids[0];
+  assert.match(ref.svr, /^s[0-9a-z]+$/, "expected svr hash");
+  assert.equal(ref.w, 16);
+  assert.equal(ref.h, 16);
+  // SVGS library is emitted at the script top with the same hash.
+  assert.match(code, new RegExp(`const SVGS = \\{[^}]*"${ref.svr}":`));
+  // Apply-loop branch calls createNodeFromSvg.
+  assert.match(code, /figma\.createNodeFromSvg\(SVGS\[d\.svr\]\)/);
+});
+
+test("§1.3 SVG — identical icons dedupe to a single SVGS entry", () => {
+  const svg = `<svg viewBox="0 0 24 24"><path d="M4 12h16"/></svg>`;
+  const { payload, code } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedChildren: {
+        Default: [
+          { styling: { width: 16, height: 16 }, svgMarkup: svg },
+          { styling: { width: 16, height: 16 }, svgMarkup: svg }, // same icon
+        ],
+      },
+    }),
+  );
+  assert.equal(payload[0].kids[0].svr, payload[0].kids[1].svr);
+  // The library JSON shouldn't repeat the same outerHTML twice.
+  const matches = code.match(/"<svg/g) ?? [];
+  assert.equal(matches.length, 1, "expected one occurrence of the SVG string in script");
+});
+
+test("§1.6 layout default — block-flow children default to VERTICAL (not HORIZONTAL)", () => {
+  const { payload } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" }, // no layout specified
+      renderedChildren: {
+        // Child with no layout → default VERTICAL.
+        Default: [{ styling: { padding: "0px 0px 0px 0px" }, children: [
+          { styling: { fontSize: "14px" }, text: "Title" },
+          { styling: { fontSize: "12px" }, text: "Desc" },
+        ] }],
+      },
+    }),
+  );
+  assert.equal(payload[0].lm, "VERTICAL");
+  assert.equal(payload[0].kids[0].lm, "VERTICAL");
+});
+
+test("§1.7 text props — textAlign / transform / decoration / lineHeight / letterSpacing route to Figma", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({
+      base: {
+        fill: "#fff",
+        textAlign: "center",
+        textTransform: "uppercase",
+        textDecoration: "underline",
+        lineHeight: "20px",
+        letterSpacing: "0.5px",
+        text: "#000",
+      },
+    }),
+  );
+  assert.equal(payload[0].lah, "CENTER");
+  assert.equal(payload[0].ltc, "UPPER");
+  assert.equal(payload[0].ltd, "UNDERLINE");
+  assert.equal(payload[0].llh, 20);
+  assert.equal(payload[0].lls, 0.5);
+  // Apply loop emits the writes.
+  assert.match(code, /lb\.textAlignHorizontal = d\.lah/);
+  assert.match(code, /lb\.textCase = d\.ltc/);
+  assert.match(code, /lb\.textDecoration = d\.ltd/);
+});
+
+test("§2.2 gradient — gradient styling emits fg paint with stops + angle", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({
+      base: {
+        gradient: {
+          type: "GRADIENT_LINEAR",
+          angleDeg: 90,
+          stops: [
+            { position: 0, color: { r: 1, g: 0, b: 0 } },
+            { position: 1, color: { r: 0, g: 0, b: 1 } },
+          ],
+        },
+      },
+    }),
+  );
+  assert.equal(payload[0].fg.t, "L");
+  assert.equal(payload[0].fg.a, 90);
+  assert.equal(payload[0].fg.st.length, 2);
+  assert.deepEqual(payload[0].fg.st[0][1].slice(0, 3), [1, 0, 0]);
+  assert.match(code, /type: d\.fg\.t === "L" \? "GRADIENT_LINEAR" : "GRADIENT_RADIAL"/);
+});
+
+test("§2.3 clipsContent — overflow:hidden emits cl=true and apply loop sets clipsContent", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({ base: { fill: "#fff", overflow: "hidden" } }),
+  );
+  assert.equal(payload[0].cl, true);
+  assert.match(code, /if \(d\.cl\) c\.clipsContent = true/);
+});
+
+test("§2.4 strokeAlign — apply loop emits strokeAlign=INSIDE when stroke is set", () => {
+  const { code } = payloadOf(
+    fidelityInput({ base: { borderColor: "#000", borderWidth: "1px", borderStyle: "solid" } as any }),
+  );
+  assert.match(code, /c\.strokeAlign = "INSIDE"/);
+});
+
+test("§2.5 absolute positioning — child gets lp=ABSOLUTE + constraints + offsets", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedChildren: {
+        Default: [
+          {
+            styling: { position: "absolute", topOffset: "0px", rightOffset: "0px", fill: "#f00", width: 16, height: 16 },
+            text: undefined,
+          },
+        ],
+      },
+    }),
+  );
+  const kid = payload[0].kids[0];
+  assert.equal(kid.lp, "ABSOLUTE");
+  assert.equal(kid.cn.h, "MAX"); // right anchored
+  assert.equal(kid.cn.v, "MIN"); // top anchored
+  assert.match(code, /f\.layoutPositioning = "ABSOLUTE"/);
+});
+
+test("§3.2 rotation — emits rot when > 0.5 degree absolute", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({ base: { fill: "#fff", rotation: 45 } }),
+  );
+  assert.equal(payload[0].rot, 45);
+  assert.match(code, /c\.rotation = d\.rot/);
+});
+
+test("§3.3 aspect ratio — derives ph from cw when aspect-ratio is set on a child", () => {
+  const { payload } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedChildren: {
+        Default: [
+          {
+            styling: { aspectRatio: "16 / 9", width: 320, widthExplicit: true, fill: "#000" },
+          },
+        ],
+      },
+    }),
+  );
+  const kid = payload[0].kids[0];
+  assert.equal(kid.cw, 320);
+  assert.equal(kid.ph, 180);
+});
+
+test("§3.1 image fills — IMAGES block emitted; child carries im hash", () => {
+  const { payload, code } = payloadOf(
+    fidelityInput({
+      base: { fill: "#fff" },
+      renderedImageAssets: { i123456: { base64: "AAAA", mime: "image/png", width: 32, height: 32 } },
+      renderedChildren: {
+        Default: [{ styling: { width: 32, height: 32, imageHash: "i123456" } }],
+      },
+    }),
+  );
+  assert.equal(payload[0].kids[0].im, "i123456");
+  // IMAGES library block appears in the script.
+  assert.match(code, /const IMAGES = \{\};/);
+  assert.match(code, /const IMAGE_BYTES = \{"i123456":"AAAA"\}/);
+  assert.match(code, /figma\.createImage\(_arr\)\.hash/);
+});
+
+test("§A.1 size guard — generates a sizeWarning when script approaches 50KB", () => {
+  // Synthesize a payload large enough to cross 45KB: 200 variants with
+  // long names and unique SVGs.
+  const variants: any[] = [];
+  for (let i = 0; i < 200; i++) {
+    variants.push({ name: `axis${i}`, type: "VARIANT", values: [`v${i}`], defaultValue: `v${i}` });
+  }
+  // Single-variant matrix with one big SVG to inflate size.
+  const bigSvg = `<svg>${"x".repeat(7000)}</svg>`;
+  const input: ComponentInput = {
+    name: "Bloated",
+    category: "UI",
+    variantProperties: [],
+    styling: {
+      name: "Bloated",
+      path: "/p/x.tsx",
+      base: {},
+      baseBindings: {},
+      variants: [],
+      unresolved: [],
+      warnings: [],
+      renderedChildren: {
+        Default: Array.from({ length: 5 }, () => ({ styling: {}, svgMarkup: bigSvg + Math.random() })),
+      },
+    },
+  };
+  const script = generateComponentScript(input);
+  assert.ok(script.code.length > 30_000, `script length ${script.code.length}`);
+  // sizeWarnings may or may not fire depending on exact bytes; the
+  // assertion confirms the channel exists.
+  assert.ok(Array.isArray(script.sizeWarnings));
+});

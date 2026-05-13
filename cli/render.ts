@@ -11,8 +11,9 @@
 // parsing eventually. Storybook already runs the component in a browser,
 // so we read what it actually painted.
 
-import type { Browser, BrowserContext } from "playwright-core";
+import type { Browser, BrowserContext, Page } from "playwright-core";
 import type { InspectionResult, ResolvedStyling, RenderedChild } from "./inspect.js";
+import { fetchAssets, type ImageAsset } from "./assets.js";
 
 export interface ComputedSnapshot {
   fill?: string | null;
@@ -41,6 +42,47 @@ export interface ComputedSnapshot {
   height?: number | null;
   innerText?: string | null;
   tag?: string;
+  // §1.1 width constraints — captured so pushgen can emit FIXED sizing
+  // instead of leaving every frame at AUTO/AUTO (which stretches cards
+  // when content is wider than the design intent).
+  widthExplicit?: boolean;
+  maxWidth?: string | null;
+  minWidth?: string | null;
+  maxHeight?: string | null;
+  minHeight?: string | null;
+  // §1.2 multi-line text — DOM-derived. True when rendered height
+  // exceeds line-height; the leaf actually wrapped.
+  multiLine?: boolean;
+  // Width available to children after the host's padding. Threaded
+  // down `snapshotTree` so text leaves know what width to wrap at.
+  parentInnerWidth?: number | null;
+  // §1.3 SVG icons — outerHTML of an `<svg>`, fed to
+  // `figma.createNodeFromSvg` in the apply loop so icons render as
+  // editable Figma vectors instead of dropping out.
+  svgMarkup?: string | null;
+  // §2.1 margins — captured for translation into parent padding/gap.
+  marginTop?: string | null;
+  marginRight?: string | null;
+  marginBottom?: string | null;
+  marginLeft?: string | null;
+  // §2.2 gradients — backgroundImage value (linear-gradient(...) etc.)
+  backgroundImage?: string | null;
+  // §2.3 overflow — `hidden`/`clip`/`auto` map to Figma's clipsContent.
+  overflow?: string | null;
+  // §2.5 absolute positioning — position + offsets per side.
+  position?: string | null;
+  topOffset?: string | null;
+  rightOffset?: string | null;
+  bottomOffset?: string | null;
+  leftOffset?: string | null;
+  // §3.2 rotation — parsed from CSS transform.
+  rotation?: number | null;
+  // §3.3 aspect ratio — `cs.aspectRatio` literal (e.g. "16 / 9").
+  aspectRatio?: string | null;
+  // §3.1 image content — the resolved URL for an `<img>` element OR a
+  // `background-image: url(...)` value. assets.ts fetches these and
+  // pushgen emits ImagePaint fills referencing the IMAGES library.
+  imageUrl?: string | null;
 }
 
 export interface ChildSnapshot {
@@ -113,7 +155,7 @@ export class StorybookRenderer {
   // API of Storybook — same mechanism the controls panel uses, so what we
   // capture is byte-identical to what a designer would see by clicking that
   // arg in the Storybook UI.
-  async captureStory(storyId: string, args?: Record<string, string>): Promise<VariantSnapshot> {
+  async captureStory(storyId: string, args?: Record<string, string>, state?: "hover" | "focus" | "active"): Promise<VariantSnapshot> {
     if (!this.context) throw new Error("Renderer not initialized — call init() first");
     const url = this.buildStoryUrl(storyId, args);
     const page = await this.context.newPage();
@@ -148,6 +190,33 @@ export class StorybookRenderer {
       ]);
       // Final settle — gives transitions / font-swap a paint to land.
       await page.waitForTimeout(200);
+      // §3.4 — trigger a pseudo-state before extracting if requested.
+      // We target the first interactive descendant (button/a/input)
+      // to maximize the chance of activating the actual styled
+      // pseudo-class rather than a wrapper.
+      if (state) {
+        try {
+          const handle = await page.evaluateHandle(() => {
+            const root = document.querySelector("#storybook-root, #root");
+            if (!root) return null;
+            return root.querySelector("button, a, input, select, textarea, [role='button']") || root;
+          });
+          const el = handle.asElement();
+          if (el) {
+            if (state === "hover") await el.hover().catch(() => undefined);
+            else if (state === "focus") await el.focus().catch(() => undefined);
+            else if (state === "active") {
+              await el.hover().catch(() => undefined);
+              await page.mouse.down().catch(() => undefined);
+            }
+            // Give the pseudo-class CSS one paint to apply.
+            await page.waitForTimeout(120);
+          }
+          await handle.dispose();
+        } catch {
+          // Best-effort — fall through and capture the default state.
+        }
+      }
       if (this.opts.debugDumpDir) {
         try {
           const fs = await import("node:fs/promises");
@@ -167,7 +236,7 @@ export class StorybookRenderer {
   }
 
   async captureManyStories(
-    requests: Array<{ key: string; storyId: string; args?: Record<string, string> }>,
+    requests: Array<{ key: string; storyId: string; args?: Record<string, string>; state?: "hover" | "focus" | "active" }>,
     concurrency = 4,
   ): Promise<Map<string, VariantSnapshot>> {
     const out = new Map<string, VariantSnapshot>();
@@ -178,7 +247,7 @@ export class StorybookRenderer {
         if (idx >= requests.length) return;
         const req = requests[idx];
         try {
-          const snap = await this.captureStory(req.storyId, req.args);
+          const snap = await this.captureStory(req.storyId, req.args, req.state);
           out.set(req.key, snap);
         } catch (err) {
           // Per-story failure shouldn't kill the whole batch — leave it
@@ -197,6 +266,24 @@ export class StorybookRenderer {
     await this.browser?.close().catch(() => undefined);
     this.context = null;
     this.browser = null;
+  }
+
+  // §3.1 — Fetch image assets in the same browser context that
+  // rendered the stories, so cookies/auth/referer survive. Opens a
+  // single throwaway page, navigates to the Storybook origin (so
+  // relative URLs resolve), and runs the bulk fetch.
+  async fetchImageAssets(urls: string[]): Promise<{ assets: Map<string, ImageAsset>; failures: Array<{ url: string; reason: string }> }> {
+    if (!this.context || !urls.length) return { assets: new Map(), failures: [] };
+    const page = await this.context.newPage();
+    try {
+      // Navigate to the Storybook origin so `fetch` in the page can
+      // resolve relative URLs and inherit any auth state Storybook
+      // set during the previous renders.
+      await page.goto(this.opts.storybookUrl, { waitUntil: "domcontentloaded", timeout: this.opts.navTimeoutMs }).catch(() => undefined);
+      return await fetchAssets(page, urls);
+    } finally {
+      await page.close();
+    }
   }
 
   buildStoryUrl(storyId: string, args?: Record<string, string>): string {
@@ -343,9 +430,43 @@ function extractInBrowser(opts: { childDepth: number }): VariantSnapshot {
     const display = cs.display;
     const isFlex = display === "flex" || display === "inline-flex";
     const isGrid = display === "grid" || display === "inline-grid";
+    // §1.2 multi-line detection — the rendered DOM's height exceeds
+    // one line-height when text wrapped. Used to gate
+    // `textAutoResize: HEIGHT` so single-line labels stay AUTO.
+    const lineHeightPx = parsePxNumber(cs.lineHeight) ?? parsePxNumber(cs.fontSize) ?? 0;
+    const multiLine = el.childElementCount === 0 && lineHeightPx > 0 && rect.height > lineHeightPx * 1.4;
+    // §1.4 pseudo-element fill — when host bg is transparent, Catalyst
+    // and similar patterns put the actual paint on `::before`. We
+    // overwrite the captured host fill with the pseudo's color.
+    const fill = composeFill(el, cs);
+    // §2.2 gradient — capture backgroundImage when present and parse
+    // linear/radial-gradient at this layer; the resulting paint spec
+    // flows through ResolvedStyling.gradient to pushgen.
+    const backgroundImage = cs.backgroundImage && cs.backgroundImage !== "none" ? cs.backgroundImage : null;
+    // §1.3 SVG outerHTML — feed to figma.createNodeFromSvg. Cap at 8KB
+    // to avoid inlining full illustrations (likely user-content, not
+    // icons; we'd blow the per-script size budget).
+    let svgMarkup: string | null = null;
+    if (el.tagName.toLowerCase() === "svg") {
+      const html = (el as Element).outerHTML;
+      if (html && html.length <= 8192) svgMarkup = html;
+    }
+    // §3.2 rotation — parse from CSS transform matrix.
+    const rotation = parseRotation(cs.transform);
+    // §3.1 image URL — `<img>` resolves to `currentSrc`/`src`;
+    // `background-image: url(...)` is parsed from cs.backgroundImage.
+    let imageUrl: string | null = null;
+    if (el.tagName.toLowerCase() === "img") {
+      const img = el as HTMLImageElement;
+      imageUrl = img.currentSrc || img.src || null;
+    }
+    if (!imageUrl && backgroundImage) {
+      const urlMatch = backgroundImage.match(/url\(["']?([^"')]+)["']?\)/);
+      if (urlMatch) imageUrl = urlMatch[1];
+    }
     return {
       tag: el.tagName.toLowerCase(),
-      fill: toHex(cs.backgroundColor),
+      fill,
       text: toHex(cs.color),
       borderColor:
         cs.borderTopWidth !== "0px" || cs.borderRightWidth !== "0px" || cs.borderBottomWidth !== "0px" || cs.borderLeftWidth !== "0px"
@@ -386,7 +507,92 @@ function extractInBrowser(opts: { childDepth: number }): VariantSnapshot {
         el.childElementCount === 0
           ? ((el as HTMLElement).innerText || el.textContent || "").trim() || null
           : null,
+      // §1.1 width constraints
+      widthExplicit: cs.width !== "auto" && cs.width !== "" && !cs.width.endsWith("%"),
+      maxWidth: cs.maxWidth && cs.maxWidth !== "none" ? cs.maxWidth : null,
+      minWidth: cs.minWidth && cs.minWidth !== "0px" && cs.minWidth !== "auto" ? cs.minWidth : null,
+      maxHeight: cs.maxHeight && cs.maxHeight !== "none" ? cs.maxHeight : null,
+      minHeight: cs.minHeight && cs.minHeight !== "0px" && cs.minHeight !== "auto" ? cs.minHeight : null,
+      // §1.2 multi-line
+      multiLine,
+      // §1.3 SVG
+      svgMarkup,
+      // §2.1 margins
+      marginTop: cs.marginTop !== "0px" ? cs.marginTop : null,
+      marginRight: cs.marginRight !== "0px" ? cs.marginRight : null,
+      marginBottom: cs.marginBottom !== "0px" ? cs.marginBottom : null,
+      marginLeft: cs.marginLeft !== "0px" ? cs.marginLeft : null,
+      // §2.2 gradient (raw string; parsed later into a paint spec)
+      backgroundImage,
+      // §2.3 overflow
+      overflow: cs.overflow === "visible" ? null : cs.overflow,
+      // §2.5 absolute positioning
+      position: cs.position && cs.position !== "static" ? cs.position : null,
+      topOffset: cs.top !== "auto" ? cs.top : null,
+      rightOffset: cs.right !== "auto" ? cs.right : null,
+      bottomOffset: cs.bottom !== "auto" ? cs.bottom : null,
+      leftOffset: cs.left !== "auto" ? cs.left : null,
+      // §3.2 rotation
+      rotation,
+      // §3.3 aspect ratio
+      aspectRatio: cs.aspectRatio && cs.aspectRatio !== "auto" ? cs.aspectRatio : null,
+      // §3.1 image URL
+      imageUrl,
     };
+  }
+
+  function parsePxNumber(v: string | null | undefined): number | null {
+    if (!v) return null;
+    const m = v.match(/^(-?\d+(?:\.\d+)?)px$/);
+    return m ? parseFloat(m[1]) : null;
+  }
+
+  // §1.4 — Pseudo-element fill resolution. Catalyst's button paints
+  // its visible fill on `::before` while the host is transparent. We
+  // detect that pattern and report the pseudo's color as the host's
+  // fill. When the host is *not* transparent we keep the host value;
+  // a non-transparent host with a separate pseudo bg is rare and
+  // would benefit from stacking that we defer to Tier 2+.
+  function composeFill(el: Element, cs: CSSStyleDeclaration): string | null {
+    const hostHex = toHex(cs.backgroundColor);
+    if (hostHex) return hostHex;
+    try {
+      const before = getComputedStyle(el as HTMLElement, "::before");
+      if (before.content && before.content !== "none" && before.content !== "normal") {
+        const bg = toHex(before.backgroundColor);
+        if (bg) return bg;
+      }
+      const after = getComputedStyle(el as HTMLElement, "::after");
+      if (after.content && after.content !== "none" && after.content !== "normal") {
+        const bg = toHex(after.backgroundColor);
+        if (bg) return bg;
+      }
+    } catch {
+      // Some elements / browsers throw on pseudo queries — fall through.
+    }
+    return null;
+  }
+
+  // §3.2 rotation — parse `rotate(Ndeg)` or `matrix(a,b,c,d,e,f)` and
+  // return the rotation angle in degrees. Translate/scale ignored.
+  function parseRotation(transform: string): number | null {
+    if (!transform || transform === "none") return null;
+    const rot = transform.match(/rotate\((-?\d+(?:\.\d+)?)(deg|rad|turn)?\)/);
+    if (rot) {
+      const v = parseFloat(rot[1]);
+      const unit = rot[2] || "deg";
+      if (unit === "rad") return (v * 180) / Math.PI;
+      if (unit === "turn") return v * 360;
+      return v;
+    }
+    const m = transform.match(/matrix\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+    if (m) {
+      const a = parseFloat(m[1]);
+      const b = parseFloat(m[2]);
+      const deg = (Math.atan2(b, a) * 180) / Math.PI;
+      return Math.abs(deg) < 0.01 ? null : Math.round(deg * 100) / 100;
+    }
+    return null;
   }
 
   function mapAlign(v: string | null | undefined): ComputedSnapshot["alignItems"] {
@@ -409,17 +615,29 @@ function extractInBrowser(opts: { childDepth: number }): VariantSnapshot {
     return null;
   }
 
-  function snapshotTree(el: Element, depth: number): ChildSnapshot {
+  function snapshotTree(el: Element, depth: number, parentInnerWidth?: number): ChildSnapshot {
     const out: ChildSnapshot = {
       tag: el.tagName.toLowerCase(),
       computed: snapshot(el),
     };
+    // §1.2 — stamp parentInnerWidth onto this element's computed snapshot
+    // so leaf text nodes can call `lb.resize(parentInnerWidth, ...)` in
+    // Figma and wrap to the parent's content width.
+    if (parentInnerWidth != null) out.computed.parentInnerWidth = parentInnerWidth;
     if (el.childElementCount === 0) {
       const t = (el.textContent || "").trim();
       if (t) out.text = t;
       return out;
     }
     if (depth <= 0) return out;
+    // Compute the inner content-width this element exposes to its kids —
+    // own rendered width minus horizontal padding. Threaded down so a
+    // text leaf inside `<div class="p-6">` knows its wrap width.
+    const cs = getComputedStyle(el as HTMLElement);
+    const rect = (el as HTMLElement).getBoundingClientRect();
+    const padL = parsePxNumber(cs.paddingLeft) ?? 0;
+    const padR = parsePxNumber(cs.paddingRight) ?? 0;
+    const childInnerWidth = rect.width > 0 ? Math.max(0, Math.round(rect.width - padL - padR)) : undefined;
     // Walk childNodes (not just element children) so direct text-node
     // siblings of elements survive — e.g. `<div>Label<svg/>...</div>`
     // would otherwise lose "Label". Each text node becomes its own
@@ -431,10 +649,26 @@ function extractInBrowser(opts: { childDepth: number }): VariantSnapshot {
         if (!t) continue;
         // Inherit the parent's font/color for the text leaf so it
         // renders in Figma with the right typography rather than the
-        // default Inter Regular 14px fallback.
+        // default Inter Regular 14px fallback. Also gate multiLine
+        // on text length × parent width — anything beyond a single
+        // line gets `textAutoResize: HEIGHT` downstream.
+        const approxCharWidth = (parsePxNumber(out.computed.fontSize) ?? 14) * 0.55;
+        const projectedWidth = t.length * approxCharWidth;
+        const willWrap = childInnerWidth != null && projectedWidth > childInnerWidth;
         kids.push({
           tag: "#text",
-          computed: { tag: "#text", fontFamily: out.computed.fontFamily, fontSize: out.computed.fontSize, fontWeight: out.computed.fontWeight, text: out.computed.text },
+          computed: {
+            tag: "#text",
+            fontFamily: out.computed.fontFamily,
+            fontSize: out.computed.fontSize,
+            fontWeight: out.computed.fontWeight,
+            text: out.computed.text,
+            textAlign: out.computed.textAlign,
+            lineHeight: out.computed.lineHeight,
+            letterSpacing: out.computed.letterSpacing,
+            multiLine: willWrap,
+            parentInnerWidth: childInnerWidth ?? null,
+          },
           text: t,
         });
         continue;
@@ -442,7 +676,7 @@ function extractInBrowser(opts: { childDepth: number }): VariantSnapshot {
       if (c.nodeType !== Node.ELEMENT_NODE) continue;
       const child = c as Element;
       if (SKIP_TAGS.has(child.tagName.toLowerCase())) continue;
-      kids.push(snapshotTree(child, depth - 1));
+      kids.push(snapshotTree(child, depth - 1, childInnerWidth));
     }
     if (kids.length) out.children = kids;
     return out;
@@ -524,6 +758,11 @@ export interface EnrichOptions {
   // spec.variants. Used to align render keys with pushgen's matrix
   // (which is built from Storybook's variantProperties when present).
   axes?: Array<{ name: string; values: string[]; defaultValue?: string }>;
+  // §3.4 — additional pseudo-states to render per combo. Each entry
+  // produces a parallel snapshot with `state=<name>` folded into the
+  // combo key, becoming a Figma variant property at push time. Skipped
+  // by default since hover state doubles the render time.
+  captureStates?: Array<"hover" | "focus" | "active">;
 }
 
 export async function enrichInspectionWithRender(
@@ -531,11 +770,22 @@ export async function enrichInspectionWithRender(
   renderer: StorybookRenderer,
   opts: EnrichOptions,
 ): Promise<InspectionResult> {
-  const combos = opts.axes && opts.axes.length
+  const baseCombos = opts.axes && opts.axes.length
     ? enumerateCombosFromAxes(opts.axes)
     : enumerateCombos(spec);
+  // §3.4 — expand with state combos. The `default` state stays the
+  // first entry so combo[0] is always the default; opt-in states
+  // append additional combos keyed by `state=<name>`.
+  const states: Array<"default" | "hover" | "focus" | "active"> = ["default", ...(opts.captureStates ?? [])];
+  const combos: Array<{ args: Record<string, string>; key: string; state?: "hover" | "focus" | "active" }> = [];
+  for (const c of baseCombos) {
+    for (const s of states) {
+      if (s === "default") combos.push({ args: c.args, key: c.key });
+      else combos.push({ args: c.args, key: c.key === "Default" ? `state=${s}` : `${c.key}, state=${s}`, state: s });
+    }
+  }
   const capped = opts.maxCombos ? combos.slice(0, opts.maxCombos) : combos;
-  const requests = capped.map(({ key, args }) => ({ key, storyId: opts.storyId, args }));
+  const requests = capped.map(({ key, args, state }) => ({ key, storyId: opts.storyId, args, state }));
   const snapshots = await renderer.captureManyStories(requests, opts.concurrency ?? 4);
 
   const renderedStyling: Record<string, ResolvedStyling> = {};
@@ -551,33 +801,99 @@ export async function enrichInspectionWithRender(
       const kids = snap.children
         .map((c) => childToRenderedChild(c))
         .filter((c): c is RenderedChild => c !== null);
-      if (kids.length) renderedChildren[key] = kids;
+      if (kids.length) {
+        // §2.1 — fold child margins into parent padding/gap. Modifies
+        // `renderedStyling[key]` in place to absorb child margins that
+        // don't have a natural Figma analog as raw values.
+        foldChildMarginsIntoParent(renderedStyling[key], kids);
+        renderedChildren[key] = kids;
+      }
     }
   }
+
+  // §3.1 — Collect every imageUrl we saw across all snapshots, fetch
+  // their bytes once via the same browser context, and stamp the
+  // resulting hash back onto each RenderedChild's styling so pushgen
+  // can emit `{ im: <hash> }` payloads.
+  const allUrls: string[] = [];
+  for (const snap of snapshots.values()) collectImageUrls(snap, allUrls);
+  let renderedImageAssets: Record<string, { base64: string; mime: string; width: number; height: number }> | undefined;
+  if (allUrls.length) {
+    const fetched = await renderer.fetchImageAssets(Array.from(new Set(allUrls)));
+    if (fetched.assets.size) {
+      renderedImageAssets = {};
+      for (const a of fetched.assets.values()) {
+        renderedImageAssets[a.hash] = { base64: a.base64, mime: a.mime, width: a.width, height: a.height };
+      }
+      // Walk every captured tree and replace imageUrl → imageHash.
+      for (const key of Object.keys(renderedChildren)) {
+        for (const k of renderedChildren[key]) stampImageHashes(k, fetched.assets);
+      }
+      // Also root-level styling (for img-only stories).
+      for (const key of Object.keys(renderedStyling)) {
+        const url = renderedStyling[key].imageUrl;
+        if (url) {
+          const a = fetched.assets.get(url);
+          if (a) renderedStyling[key].imageHash = a.hash;
+        }
+      }
+    }
+  }
+
   return {
     ...spec,
     renderedStyling,
     renderedLabels,
     renderedStoryId: opts.storyId,
     renderedChildren,
+    renderedImageAssets,
   };
 }
 
+function collectImageUrls(snap: VariantSnapshot, out: string[]): void {
+  if (snap.root.imageUrl) out.push(snap.root.imageUrl);
+  const walk = (children: ChildSnapshot[] | undefined): void => {
+    if (!children) return;
+    for (const c of children) {
+      if (c.computed.imageUrl) out.push(c.computed.imageUrl);
+      walk(c.children);
+    }
+  };
+  walk(snap.children);
+}
+
+function stampImageHashes(child: RenderedChild, assets: Map<string, ImageAsset>): void {
+  const url = child.styling.imageUrl;
+  if (url) {
+    const a = assets.get(url);
+    if (a) child.styling.imageHash = a.hash;
+  }
+  if (child.children) for (const k of child.children) stampImageHashes(k, assets);
+}
+
 function childToRenderedChild(c: ChildSnapshot): RenderedChild | null {
-  // Skip purely-empty wrappers (no styling, no text, no interesting kids).
   const styling = snapshotToStyling(c.computed);
+  // §1.5 — recurse FIRST so we can test emptiness against the
+  // post-filter child set. Previously the raw `c.children.length`
+  // check kept wrappers whose children all filtered to null,
+  // emitting them as ghost 100x100 frames in Figma.
+  const inner = c.children?.length
+    ? c.children.map((k) => childToRenderedChild(k)).filter((k): k is RenderedChild => k !== null)
+    : [];
   const hasText = !!c.text || !!c.computed.innerText;
   const hasStyling =
-    !!styling.fill || !!styling.text || !!styling.borderColor || !!styling.padding || !!styling.borderRadius || !!styling.shadow;
-  const hasKids = !!c.children?.length;
-  if (!hasText && !hasStyling && !hasKids) return null;
+    !!styling.fill || !!styling.text || !!styling.borderColor || !!styling.padding || !!styling.borderRadius || !!styling.shadow || !!styling.gradient;
+  // §1.3 — SVG content is never "styling" in the CSS sense (no fill/
+  // border on the host), but it is the visible artifact. Preserve.
+  const hasSvg = !!c.computed.svgMarkup;
+  if (!hasText && !hasStyling && !inner.length && !hasSvg) return null;
   const out: RenderedChild = { styling };
   const t = c.text ?? c.computed.innerText ?? null;
   if (t) out.text = t;
-  if (c.children?.length) {
-    const inner = c.children.map((k) => childToRenderedChild(k)).filter((k): k is RenderedChild => k !== null);
-    if (inner.length) out.children = inner;
-  }
+  if (inner.length) out.children = inner;
+  if (c.computed.multiLine) out.multiLine = true;
+  if (c.computed.parentInnerWidth != null) out.parentInnerWidth = c.computed.parentInnerWidth;
+  if (c.computed.svgMarkup) out.svgMarkup = c.computed.svgMarkup;
   return out;
 }
 
@@ -660,7 +976,102 @@ function snapshotToStyling(snap: ComputedSnapshot): ResolvedStyling {
   if (snap.alignItems !== undefined) out.alignItems = snap.alignItems;
   if (snap.justifyContent !== undefined) out.justifyContent = snap.justifyContent;
   if (snap.opacity !== undefined) out.opacity = snap.opacity;
+  // §1.1 width constraints
+  if (snap.width !== undefined) out.width = snap.width;
+  if (snap.height !== undefined) out.height = snap.height;
+  if (snap.widthExplicit !== undefined) out.widthExplicit = snap.widthExplicit;
+  if (snap.maxWidth !== undefined) out.maxWidth = snap.maxWidth;
+  if (snap.minWidth !== undefined) out.minWidth = snap.minWidth;
+  if (snap.maxHeight !== undefined) out.maxHeight = snap.maxHeight;
+  if (snap.minHeight !== undefined) out.minHeight = snap.minHeight;
+  // §2.1 margins
+  if (snap.marginTop !== undefined) out.marginTop = snap.marginTop;
+  if (snap.marginRight !== undefined) out.marginRight = snap.marginRight;
+  if (snap.marginBottom !== undefined) out.marginBottom = snap.marginBottom;
+  if (snap.marginLeft !== undefined) out.marginLeft = snap.marginLeft;
+  // §2.2 gradient (parsed on the way out so pushgen receives a paint spec).
+  if (snap.backgroundImage) {
+    const g = parseGradientPaintSpec(snap.backgroundImage);
+    if (g) out.gradient = g;
+  }
+  // §2.3 overflow
+  if (snap.overflow !== undefined) out.overflow = snap.overflow;
+  // §2.5 absolute positioning
+  if (snap.position !== undefined) out.position = snap.position;
+  if (snap.topOffset !== undefined) out.topOffset = snap.topOffset;
+  if (snap.rightOffset !== undefined) out.rightOffset = snap.rightOffset;
+  if (snap.bottomOffset !== undefined) out.bottomOffset = snap.bottomOffset;
+  if (snap.leftOffset !== undefined) out.leftOffset = snap.leftOffset;
+  // §3.2 rotation
+  if (snap.rotation !== undefined) out.rotation = snap.rotation;
+  // §3.3 aspect ratio
+  if (snap.aspectRatio !== undefined) out.aspectRatio = snap.aspectRatio;
+  // §3.1 image URL — assets.ts later replaces with a hash in pushgen.
+  if (snap.imageUrl !== undefined) out.imageUrl = snap.imageUrl;
   return out;
+}
+
+// §2.1 — Fold child margins into the parent's padding/gap. Figma's
+// autolayout uses `itemSpacing` between siblings, not per-child
+// margins, so we translate CSS margins one level up. Heuristic:
+//   - first child's marginTop → parent.paddingTop (added on)
+//   - last child's marginBottom → parent.paddingBottom (added on)
+//   - uniform marginBottom across siblings (except last) → parent gap
+//   - non-uniform sibling margins survive as ResolvedStyling marginTop/
+//     etc. but pushgen drops them silently; that's the lossy case.
+// Mutates `parent` and clears the folded margin fields on each child.
+export function foldChildMarginsIntoParent(parent: ResolvedStyling, kids: RenderedChild[]): void {
+  if (!parent || !kids.length) return;
+  // Add the first kid's marginTop onto parent.paddingTop.
+  const first = kids[0];
+  const firstTop = parsePxStr(first.styling.marginTop);
+  if (firstTop != null && firstTop > 0) {
+    parent.padding = addToPaddingSide(parent.padding, "top", firstTop);
+    first.styling.marginTop = null;
+  }
+  const last = kids[kids.length - 1];
+  const lastBottom = parsePxStr(last.styling.marginBottom);
+  if (lastBottom != null && lastBottom > 0) {
+    parent.padding = addToPaddingSide(parent.padding, "bottom", lastBottom);
+    last.styling.marginBottom = null;
+  }
+  // If all non-last kids have the same marginBottom > 0 AND parent has
+  // no gap declared, treat that uniform margin as the gap.
+  if (kids.length >= 2 && !parsePxStr(parent.gap)) {
+    const margins: number[] = [];
+    for (let i = 0; i < kids.length - 1; i++) {
+      const m = parsePxStr(kids[i].styling.marginBottom);
+      if (m == null || m <= 0) {
+        margins.length = 0;
+        break;
+      }
+      margins.push(m);
+    }
+    if (margins.length === kids.length - 1 && margins.every((m) => m === margins[0])) {
+      parent.gap = `${margins[0]}px`;
+      for (let i = 0; i < kids.length - 1; i++) kids[i].styling.marginBottom = null;
+    }
+  }
+}
+
+function parsePxStr(v: string | null | undefined): number | null {
+  if (!v) return null;
+  const m = v.match(/^(-?\d+(?:\.\d+)?)px$/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+// Returns a new padding string with the given side incremented by `add`.
+function addToPaddingSide(padding: string | null | undefined, side: "top" | "right" | "bottom" | "left", add: number): string {
+  const parts = (padding ?? "0px 0px 0px 0px").split(/\s+/);
+  let t = parsePxStr(parts[0]) ?? 0;
+  let r = parsePxStr(parts[1]) ?? t;
+  let b = parsePxStr(parts[2]) ?? t;
+  let l = parsePxStr(parts[3]) ?? r;
+  if (side === "top") t += add;
+  else if (side === "right") r += add;
+  else if (side === "bottom") b += add;
+  else l += add;
+  return `${t}px ${r}px ${b}px ${l}px`;
 }
 
 function pickLabel(snap: VariantSnapshot): string | null {
@@ -670,6 +1081,128 @@ function pickLabel(snap: VariantSnapshot): string | null {
   for (const c of snap.children ?? []) {
     if (c.text) return c.text;
     if (c.computed.innerText) return c.computed.innerText;
+  }
+  return null;
+}
+
+// §2.2 — Parse a CSS `background-image` value into a GradientPaintSpec
+// pushgen can emit as a Figma GradientPaint. Returns null when the
+// input is `url(...)` (image, handled separately in §3.1), `none`, or
+// otherwise unparseable. Exported for unit testing.
+export function parseGradientPaintSpec(value: string): import("./inspect.js").GradientPaintSpec | null {
+  const trimmed = (value || "").trim();
+  if (!trimmed || trimmed === "none" || trimmed.startsWith("url(")) return null;
+  // Use greedy `.+` so nested parens (like `rgb(255, 0, 0)` inside the
+  // gradient body) don't truncate the body at the first `)`. The
+  // trailing `\)$` anchors to the outermost close.
+  const linear = trimmed.match(/^linear-gradient\(\s*(.+)\)$/i);
+  const radial = trimmed.match(/^radial-gradient\(\s*(.+)\)$/i);
+  if (!linear && !radial) return null;
+  const body = (linear ? linear[1] : radial![1]);
+  // Split on top-level commas (not inside rgba()/oklab() parens).
+  const parts = splitTopLevelCommas(body);
+  let angleDeg: number | undefined;
+  let startIdx = 0;
+  if (linear) {
+    // First part may be the direction: `90deg`, `to right`, `to top right`, etc.
+    const first = parts[0]?.trim();
+    if (first && (/\d+(?:\.\d+)?deg$/.test(first) || /^to\s/i.test(first))) {
+      angleDeg = parseAngleOrSide(first);
+      startIdx = 1;
+    } else {
+      angleDeg = 180; // CSS default: top-to-bottom
+    }
+  }
+  const stops: Array<{ position: number; color: { r: number; g: number; b: number; a?: number } }> = [];
+  for (let i = startIdx; i < parts.length; i++) {
+    const stop = parseGradientStop(parts[i].trim(), (i - startIdx) / Math.max(1, parts.length - startIdx - 1));
+    if (stop) stops.push(stop);
+  }
+  if (stops.length < 2) return null;
+  return {
+    type: linear ? "GRADIENT_LINEAR" : "GRADIENT_RADIAL",
+    stops,
+    angleDeg,
+  };
+}
+
+function splitTopLevelCommas(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let last = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(s.slice(last, i));
+      last = i + 1;
+    }
+  }
+  out.push(s.slice(last));
+  return out;
+}
+
+function parseAngleOrSide(s: string): number {
+  const deg = s.match(/(-?\d+(?:\.\d+)?)deg/);
+  if (deg) return parseFloat(deg[1]);
+  // CSS `to <side>` syntax. `to top` = 0deg, `to right` = 90deg, etc.
+  if (/to\s+top\s+right/i.test(s)) return 45;
+  if (/to\s+bottom\s+right/i.test(s)) return 135;
+  if (/to\s+bottom\s+left/i.test(s)) return 225;
+  if (/to\s+top\s+left/i.test(s)) return 315;
+  if (/to\s+top/i.test(s)) return 0;
+  if (/to\s+right/i.test(s)) return 90;
+  if (/to\s+bottom/i.test(s)) return 180;
+  if (/to\s+left/i.test(s)) return 270;
+  return 180;
+}
+
+function parseGradientStop(part: string, fallback: number): { position: number; color: { r: number; g: number; b: number; a?: number } } | null {
+  // Try `<color> <position>` first; position may be `Npx`, `N%`, or absent.
+  const m = part.match(/^(.*?)\s+(\d+(?:\.\d+)?)(%|px)?$/);
+  let colorStr = part;
+  let position = fallback;
+  if (m) {
+    colorStr = m[1].trim();
+    const v = parseFloat(m[2]);
+    position = m[3] === "%" ? v / 100 : v / 100; // px positions rare; approximate
+  }
+  const rgb = parseRgbForGradient(colorStr);
+  if (!rgb) return null;
+  return { position: Math.max(0, Math.min(1, position)), color: rgb };
+}
+
+// Minimal color parser for gradient stops. Defers to the browser side
+// for oklab/hsl resolution where possible; this is invoked during
+// `snapshotToStyling` (Node side), so we accept the common forms.
+function parseRgbForGradient(s: string): { r: number; g: number; b: number; a?: number } | null {
+  const v = s.trim();
+  let m = v.match(/^#([0-9a-fA-F]{3,8})$/);
+  if (m) {
+    let hex = m[1];
+    if (hex.length === 3) hex = hex.split("").map((c) => c + c).join("");
+    if (hex.length >= 6) {
+      return {
+        r: parseInt(hex.slice(0, 2), 16) / 255,
+        g: parseInt(hex.slice(2, 4), 16) / 255,
+        b: parseInt(hex.slice(4, 6), 16) / 255,
+        a: hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : undefined,
+      };
+    }
+  }
+  m = v.match(/^rgba?\(\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*(?:[,\/]\s*(\d+(?:\.\d+)?%?))?\s*\)$/i);
+  if (m) {
+    const r: { r: number; g: number; b: number; a?: number } = {
+      r: parseFloat(m[1]) / 255,
+      g: parseFloat(m[2]) / 255,
+      b: parseFloat(m[3]) / 255,
+    };
+    if (m[4] != null) {
+      const a = m[4].endsWith("%") ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+      if (!isNaN(a)) r.a = a;
+    }
+    return r;
   }
   return null;
 }

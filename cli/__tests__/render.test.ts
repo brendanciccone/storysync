@@ -11,8 +11,11 @@ import {
   enumerateCombosFromAxes,
   normalizeStoryId,
   pickBaseStoryId,
+  parseGradientPaintSpec,
+  foldChildMarginsIntoParent,
   RenderUnavailableError,
 } from "../render.js";
+import type { RenderedChild, ResolvedStyling } from "../inspect.js";
 import type { InspectionResult } from "../inspect.js";
 
 const baseSpec = (): InspectionResult => ({
@@ -219,4 +222,86 @@ test("enumerateCombos: slashes in values get hyphenated in keys (matches pushgen
   // arg parser doesn't care, but Figma's component-set namer does.
   const slashCombo = combos.find((c) => c.key === "color=dark-zinc")!;
   assert.equal(slashCombo.args.color, "dark/zinc");
+});
+
+// === Fidelity overhaul helpers (§2.1, §2.2) =================================
+
+test("parseGradientPaintSpec: linear-gradient with explicit angle", () => {
+  const g = parseGradientPaintSpec("linear-gradient(90deg, #ff0000 0%, #0000ff 100%)");
+  assert.ok(g);
+  assert.equal(g!.type, "GRADIENT_LINEAR");
+  assert.equal(g!.angleDeg, 90);
+  assert.equal(g!.stops.length, 2);
+  assert.equal(g!.stops[0].color.r, 1);
+  assert.equal(g!.stops[1].color.b, 1);
+});
+
+test("parseGradientPaintSpec: linear-gradient with `to <side>` syntax", () => {
+  const g = parseGradientPaintSpec("linear-gradient(to right, #fff 0%, #000 100%)");
+  assert.ok(g);
+  assert.equal(g!.angleDeg, 90); // to right
+});
+
+test("parseGradientPaintSpec: defaults to 180deg when no direction given", () => {
+  const g = parseGradientPaintSpec("linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))");
+  assert.ok(g);
+  assert.equal(g!.angleDeg, 180);
+  assert.equal(g!.stops.length, 2);
+});
+
+test("parseGradientPaintSpec: radial-gradient produces GRADIENT_RADIAL", () => {
+  const g = parseGradientPaintSpec("radial-gradient(#ff0000, #0000ff)");
+  assert.ok(g);
+  assert.equal(g!.type, "GRADIENT_RADIAL");
+});
+
+test("parseGradientPaintSpec: rejects url(...) (image, not gradient)", () => {
+  assert.equal(parseGradientPaintSpec("url(/img.png)"), null);
+  assert.equal(parseGradientPaintSpec("none"), null);
+  assert.equal(parseGradientPaintSpec(""), null);
+});
+
+test("foldChildMarginsIntoParent: first child marginTop folds into parent paddingTop", () => {
+  const parent: ResolvedStyling = { padding: "8px 0px 0px 0px" };
+  const kids: RenderedChild[] = [
+    { styling: { marginTop: "12px", text: "#000" } },
+    { styling: {} },
+  ];
+  foldChildMarginsIntoParent(parent, kids);
+  // 8 + 12 = 20px paddingTop. After fold, the marginTop is cleared.
+  assert.match(parent.padding ?? "", /^20px/);
+  assert.equal(kids[0].styling.marginTop, null);
+});
+
+test("foldChildMarginsIntoParent: uniform sibling marginBottom becomes parent gap", () => {
+  const parent: ResolvedStyling = { padding: "0px 0px 0px 0px" };
+  const kids: RenderedChild[] = [
+    { styling: { marginBottom: "8px" } },
+    { styling: { marginBottom: "8px" } },
+    { styling: { /* last — bottom margin handled separately */ } },
+  ];
+  foldChildMarginsIntoParent(parent, kids);
+  assert.equal(parent.gap, "8px");
+  assert.equal(kids[0].styling.marginBottom, null);
+  assert.equal(kids[1].styling.marginBottom, null);
+});
+
+test("foldChildMarginsIntoParent: non-uniform sibling margins are left alone", () => {
+  const parent: ResolvedStyling = { padding: "0px 0px 0px 0px" };
+  const kids: RenderedChild[] = [
+    { styling: { marginBottom: "4px" } },
+    { styling: { marginBottom: "12px" } },
+    { styling: {} },
+  ];
+  foldChildMarginsIntoParent(parent, kids);
+  // No gap folding when margins disagree.
+  assert.equal(parent.gap, undefined);
+  // Margins survive on the children (handed to pushgen as-is).
+  assert.equal(kids[0].styling.marginBottom, "4px");
+});
+
+test("foldChildMarginsIntoParent: empty kids list is a no-op", () => {
+  const parent: ResolvedStyling = { padding: "8px 8px 8px 8px" };
+  foldChildMarginsIntoParent(parent, []);
+  assert.equal(parent.padding, "8px 8px 8px 8px");
 });

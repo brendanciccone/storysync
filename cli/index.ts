@@ -20,6 +20,16 @@ import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
 
+// §3.4 — Validate and coerce `--capture-states` into the renderer's
+// enum form. Unknown values are dropped silently (with a warning at
+// call site if non-trivial).
+function parseCaptureStates(raw: string | undefined): Array<"hover" | "focus" | "active"> | undefined {
+  if (!raw) return undefined;
+  const valid = new Set(["hover", "focus", "active"]);
+  const states = raw.split(",").map((s) => s.trim().toLowerCase()).filter((s) => valid.has(s)) as Array<"hover" | "focus" | "active">;
+  return states.length ? states : undefined;
+}
+
 async function connectStorybook(url: string, quiet = false) {
   const spinner = quiet ? null : ora("Connecting to Storybook MCP...").start();
   const client = new StorybookClient(url);
@@ -627,6 +637,7 @@ program
   .option("--no-render", "Skip the headless-browser render step (faster, but loses Tailwind/CSS-resolved values)")
   .option("--render-concurrency <n>", "Number of stories rendered in parallel", "4")
   .option("--render-max-combos <n>", "Cap per-component variant combos sent through the renderer", "64")
+  .option("--capture-states <states>", "Comma-separated pseudo-states to capture as Figma state-axis variants (hover, focus, active). Doubles render time per state.")
   .action(async (figma: string, opts) => {
     let fileKey: string;
     try {
@@ -646,6 +657,7 @@ program
     let renderer: StorybookRenderer | null = null;
     const renderConcurrency = Math.max(1, parseInt(String(opts.renderConcurrency ?? "4"), 10) || 4);
     const renderMaxCombos = Math.max(1, parseInt(String(opts.renderMaxCombos ?? "64"), 10) || 64);
+    const captureStates = parseCaptureStates(opts.captureStates);
     const renderWarnings: string[] = [];
     if (renderEnabled) {
       try {
@@ -727,6 +739,7 @@ program
                   concurrency: renderConcurrency,
                   maxCombos: renderMaxCombos,
                   axes,
+                  captureStates,
                 });
               } catch (err) {
                 renderWarnings.push(`render failed for ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);

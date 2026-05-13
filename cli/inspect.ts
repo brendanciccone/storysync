@@ -31,6 +31,52 @@ export interface ResolvedStyling {
   alignItems?: "start" | "end" | "center" | "stretch" | "baseline" | null;
   justifyContent?: "start" | "end" | "center" | "between" | "around" | "evenly" | null;
   opacity?: string | null;
+  // §1.1 — runtime-captured width/height + explicit constraints. The
+  // raw `width`/`height` are the rendered DOM dimensions; `maxWidth`
+  // tells pushgen "the author opted into a constraint, emit FIXED
+  // sizing when the rendered width is at the limit."
+  width?: number | null;
+  height?: number | null;
+  widthExplicit?: boolean | null;
+  maxWidth?: string | null;
+  minWidth?: string | null;
+  maxHeight?: string | null;
+  minHeight?: string | null;
+  // §2.1 margins — only carried through when the parser couldn't
+  // express them via padding/gap. Mostly informational; the render
+  // path folds them into the parent.
+  marginTop?: string | null;
+  marginRight?: string | null;
+  marginBottom?: string | null;
+  marginLeft?: string | null;
+  // §2.2 gradients — already-parsed paint payload for pushgen.
+  // Captured runtime-only; the source parser doesn't emit these.
+  gradient?: GradientPaintSpec | null;
+  // §2.3 overflow — `hidden`/`clip` map to Figma clipsContent.
+  overflow?: string | null;
+  // §2.5 absolute positioning — preserved so pushgen can emit
+  // layoutPositioning:"ABSOLUTE" + Figma constraints.
+  position?: string | null;
+  topOffset?: string | null;
+  rightOffset?: string | null;
+  bottomOffset?: string | null;
+  leftOffset?: string | null;
+  // §3.2 rotation — degrees.
+  rotation?: number | null;
+  // §3.3 aspect ratio — parsed `w / h` ratio.
+  aspectRatio?: string | null;
+  // §3.1 image content — URL captured by the renderer; pushgen replaces
+  // with an IMAGES[hash] lookup after assets.ts pre-fetches bytes.
+  imageUrl?: string | null;
+  imageHash?: string | null;
+}
+
+// Compact gradient descriptor shared with pushgen. Mirrors Figma's
+// GradientPaint enough to round-trip through the compact JSON payload.
+export interface GradientPaintSpec {
+  type: "GRADIENT_LINEAR" | "GRADIENT_RADIAL";
+  stops: Array<{ position: number; color: { r: number; g: number; b: number; a?: number } }>;
+  angleDeg?: number;
 }
 
 export interface FieldBinding {
@@ -88,6 +134,10 @@ export interface InspectionResult {
   // visually matches the rendered DOM rather than collapsing to a single
   // bare label.
   renderedChildren?: Record<string, RenderedChild[]>;
+  // §3.1 image assets fetched by the renderer alongside DOM capture.
+  // Keyed by stable content hash; pushgen emits an IMAGES library in
+  // each component script and child payloads reference by hash.
+  renderedImageAssets?: Record<string, { base64: string; mime: string; width: number; height: number }>;
 }
 
 // Compact child-tree descriptor shared across render → inspect → pushgen.
@@ -98,6 +148,15 @@ export interface RenderedChild {
   text?: string;
   bindings?: Bindings;
   children?: RenderedChild[];
+  // §1.2 — true when the rendered text wrapped (height > 1 line-height).
+  // pushgen uses this to gate `textAutoResize: HEIGHT`.
+  multiLine?: boolean;
+  // Width the parent will give this child before wrap. Carried so the
+  // text-leaf payload can call `lb.resize(parentInnerWidth, ...)`.
+  parentInnerWidth?: number;
+  // §1.3 — raw outerHTML for an `<svg>` element. When set, the child
+  // is rendered via `figma.createNodeFromSvg` instead of as a frame.
+  svgMarkup?: string;
 }
 
 // --- Component file lookup ---
