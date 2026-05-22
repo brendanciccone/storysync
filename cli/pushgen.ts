@@ -770,8 +770,9 @@ function mapTextDecoration(v?: string | null): VariantPayload["ltd"] | undefined
   return undefined;
 }
 // Parse `lineHeight` into Figma's value form. Px stays numeric.
-// Unitless decimals (1.5) become PERCENT relative to the font size.
-function parseLineHeight(value?: string | null, fontSize?: string | null): VariantPayload["llh"] | undefined {
+// Unitless decimals (1.5) become PERCENT (Figma's percent is relative
+// to the font size, matching CSS unitless multiplier semantics).
+function parseLineHeight(value?: string | null, _fontSize?: string | null): VariantPayload["llh"] | undefined {
   if (!value || value === "normal") return undefined;
   const px = parsePxNumber(value);
   if (px != null) return px;
@@ -779,10 +780,8 @@ function parseLineHeight(value?: string | null, fontSize?: string | null): Varia
   const pct = value.match(/^(-?\d+(?:\.\d+)?)%$/);
   if (pct) return { unit: "PERCENT", value: parseFloat(pct[1]) };
   const num = parseFloat(value);
-  if (!isNaN(num) && fontSize) {
-    const fs = parsePxNumber(fontSize) ?? 14;
-    return { unit: "PERCENT", value: Math.round(num * 100 * 100) / 100 };
-    void fs;
+  if (!isNaN(num)) {
+    return { unit: "PERCENT", value: Math.round(num * 10000) / 100 };
   }
   return undefined;
 }
