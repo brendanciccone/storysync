@@ -296,13 +296,15 @@ export function generateComponentScript(input: ComponentInput): PushScript {
   lines.push(`    if (d.crb) { const v = lookupVar(d.crb[0], d.crb[1]); if (v) { f.setBoundVariable("topLeftRadius", v); f.setBoundVariable("topRightRadius", v); f.setBoundVariable("bottomLeftRadius", v); f.setBoundVariable("bottomRightRadius", v); } }`);
   // §1.1 — width/height FIXED for children that hit a width
   // constraint (e.g. CardContent inheriting the Card's max-w-sm).
-  lines.push(`    f.counterAxisSizingMode = d.cw != null ? "FIXED" : "AUTO";`);
-  lines.push(`    f.primaryAxisSizingMode = d.ph != null ? "FIXED" : "AUTO";`);
-  lines.push(`    if (d.cw != null || d.ph != null) {`);
-  lines.push(`      const tw = d.cw != null ? d.cw : (f.width || 100);`);
-  lines.push(`      const th = d.ph != null ? d.ph : (f.height || 100);`);
-  lines.push(`      try { f.resize(tw, th); } catch {}`);
-  lines.push(`    }`);
+  // Axis mapping mirrors the variant-root logic above.
+  lines.push(`    { const _vert = (d.lm || "VERTICAL") === "VERTICAL"; const _wMode = d.fw != null ? "FIXED" : "AUTO"; const _hMode = d.fh != null ? "FIXED" : "AUTO";`);
+  lines.push(`      f.counterAxisSizingMode = _vert ? _wMode : _hMode;`);
+  lines.push(`      f.primaryAxisSizingMode = _vert ? _hMode : _wMode;`);
+  lines.push(`      if (d.fw != null || d.fh != null) {`);
+  lines.push(`        const _w = d.fw != null ? d.fw : (f.width || 100);`);
+  lines.push(`        const _h = d.fh != null ? d.fh : (f.height || 100);`);
+  lines.push(`        try { f.resize(_w, _h); } catch {}`);
+  lines.push(`      } }`);
   // §2.2 gradient + §1.4 fill (gradient wins when both present).
   lines.push(`    let fp = null;`);
   lines.push(`    if (d.f) { fp = { type: "SOLID", color: { r: d.f[0], g: d.f[1], b: d.f[2] } }; if (d.f[3] != null) fp.opacity = d.f[3]; }`);
@@ -324,11 +326,17 @@ export function generateComponentScript(input: ComponentInput): PushScript {
   lines.push(`    if (d.op != null) f.opacity = d.op;`);
   lines.push(`    if (d.cl) f.clipsContent = true;`);                       // §2.3
   lines.push(`    if (d.rot != null) try { f.rotation = d.rot; } catch {}`); // §3.2
-  lines.push(`    if (d.kids) for (const k of d.kids) f.appendChild(buildChild(k));`);
-  // §2.5 — absolute-positioned children. Must run AFTER appendChild so
-  // the child is attached to its parent before constraints/x/y apply.
-  lines.push(`    if (d.lp === "ABSOLUTE") { try { f.layoutPositioning = "ABSOLUTE"; if (d.cn) f.constraints = d.cn; if (d.x != null) f.x = d.x; if (d.y != null) f.y = d.y; } catch {} }`);
+  lines.push(`    if (d.kids) for (const k of d.kids) attachChild(f, k);`);
   lines.push(`    return f;`);
+  lines.push(`  };`);
+  // §2.5 — append a child then apply absolute positioning. Figma only
+  // honors layoutPositioning:"ABSOLUTE" once the node is a direct child
+  // of an auto-layout frame, so this MUST run after appendChild.
+  lines.push(`  const attachChild = (parent, k) => {`);
+  lines.push(`    const ch = buildChild(k);`);
+  lines.push(`    parent.appendChild(ch);`);
+  lines.push(`    if (k.lp === "ABSOLUTE") { try { ch.layoutPositioning = "ABSOLUTE"; if (k.cn) ch.constraints = k.cn; if (k.x != null) ch.x = k.x; if (k.y != null) ch.y = k.y; } catch {} }`);
+  lines.push(`    return ch;`);
   lines.push(`  };`);
   lines.push("");
 
@@ -459,9 +467,12 @@ interface VariantPayload {
   sb?: [string, string];              // stroke binding
   ef?: object[];                      // effects
   op?: number;                        // opacity
-  // §1.1 width/height constraints → Figma FIXED sizing
-  cw?: number;                        // counter-axis (width) fixed value
-  ph?: number;                        // primary-axis (height) fixed value
+  // §1.1 width/height constraints → Figma FIXED sizing. Semantically
+  // "fixed width" / "fixed height" — the apply loop maps these onto
+  // primary/counter axes based on layoutMode (counter=width for
+  // VERTICAL, primary=width for HORIZONTAL).
+  fw?: number;                        // fixed width value
+  fh?: number;                        // fixed height value
   // §2.3 overflow: hidden → clipsContent
   cl?: true;
   // §3.2 rotation in degrees
@@ -515,9 +526,9 @@ interface ChildPayload {
   sb?: [string, string];
   ef?: object[];
   op?: number;
-  // §1.1 width/height constraints
-  cw?: number;
-  ph?: number;
+  // §1.1 width/height constraints (axis-mapped in apply loop)
+  fw?: number;
+  fh?: number;
   // §2.3 overflow: hidden
   cl?: true;
   // §2.5 absolute-positioned children
@@ -584,15 +595,17 @@ const APPLY_LOOP: string[] = [
   `    if (d.cr != null) c.cornerRadius = d.cr;`,
   `    if (d.crb) { const v = lookupVar(d.crb[0], d.crb[1]); if (v) { c.setBoundVariable("topLeftRadius", v); c.setBoundVariable("topRightRadius", v); c.setBoundVariable("bottomLeftRadius", v); c.setBoundVariable("bottomRightRadius", v); } }`,
   // §1.1 — explicit width/height switch from AUTO to FIXED so cards
-  // with `max-w-sm` don't stretch to fit long children. Always assign
-  // both sizing modes (FIXED when payload carries it, AUTO otherwise).
-  `    c.counterAxisSizingMode = d.cw != null ? "FIXED" : "AUTO";`,
-  `    c.primaryAxisSizingMode = d.ph != null ? "FIXED" : "AUTO";`,
-  `    if (d.cw != null || d.ph != null) {`,
-  `      const targetW = d.cw != null ? d.cw : (c.width || 100);`,
-  `      const targetH = d.ph != null ? d.ph : (c.height || 100);`,
-  `      try { c.resize(targetW, targetH); } catch {}`,
-  `    }`,
+  // with `max-w-sm` don't stretch to fit long children. Which Figma
+  // axis (primary/counter) is width vs height depends on layoutMode:
+  // VERTICAL → counter=width, primary=height; HORIZONTAL → swapped.
+  `    { const _vert = d.lm === "VERTICAL"; const _wMode = d.fw != null ? "FIXED" : "AUTO"; const _hMode = d.fh != null ? "FIXED" : "AUTO";`,
+  `      c.counterAxisSizingMode = _vert ? _wMode : _hMode;`,
+  `      c.primaryAxisSizingMode = _vert ? _hMode : _wMode;`,
+  `      if (d.fw != null || d.fh != null) {`,
+  `        const _w = d.fw != null ? d.fw : (c.width || 100);`,
+  `        const _h = d.fh != null ? d.fh : (c.height || 100);`,
+  `        try { c.resize(_w, _h); } catch {}`,
+  `      } }`,
   `    // Fill: solid or gradient.`,
   `    let fp = null;`,
   `    if (d.f) { fp = { type: "SOLID", color: { r: d.f[0], g: d.f[1], b: d.f[2] } }; if (d.f[3] != null) fp.opacity = d.f[3]; }`,
@@ -618,7 +631,7 @@ const APPLY_LOOP: string[] = [
   `    // single text label. When neither is present the variant ends up as`,
   `    // a styled empty frame, which is fine — Figma autosizes it.`,
   `    if (d.kids && d.kids.length) {`,
-  `      for (const k of d.kids) c.appendChild(buildChild(k));`,
+  `      for (const k of d.kids) attachChild(c, k);`,
   `    } else if (d.lt) {`,
   `      const lb = figma.createText();`,
   `      lb.fontName = { family: d.lff || "Inter", style: d.lfs || "Regular" };`,
@@ -708,9 +721,9 @@ function buildVariantPayload(
   // rendered DOM actually filled the constraint). Pure-auto layouts
   // stay HUG so labels can size to their text.
   const widthDecision = decideFixedWidth(styling);
-  if (widthDecision != null) out.cw = widthDecision;
+  if (widthDecision != null) out.fw = widthDecision;
   const heightDecision = decideFixedHeight(styling);
-  if (heightDecision != null) out.ph = heightDecision;
+  if (heightDecision != null) out.fh = heightDecision;
 
   // §2.3 clipsContent
   if (styling.overflow === "hidden" || styling.overflow === "clip" || styling.overflow === "auto") {
@@ -911,13 +924,13 @@ function buildChildPayload(child: RenderedChild, ctx?: { svgRegistry?: Map<strin
   }
   // §1.1 width/height FIXED for constrained children.
   const w = decideFixedWidth(styling);
-  if (w != null) out.cw = w;
+  if (w != null) out.fw = w;
   const h = decideFixedHeight(styling);
-  if (h != null) out.ph = h;
-  // §3.3 aspect ratio — when set, derive height from cw.
-  if (styling.aspectRatio && out.cw != null && out.ph == null) {
+  if (h != null) out.fh = h;
+  // §3.3 aspect ratio — when set, derive height from width.
+  if (styling.aspectRatio && out.fw != null && out.fh == null) {
     const ratio = parseAspectRatio(styling.aspectRatio);
-    if (ratio != null) out.ph = Math.round(out.cw / ratio);
+    if (ratio != null) out.fh = Math.round(out.fw / ratio);
   }
   // §2.3 clipsContent
   if (styling.overflow === "hidden" || styling.overflow === "clip") out.cl = true;

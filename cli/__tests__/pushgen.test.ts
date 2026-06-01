@@ -699,26 +699,27 @@ function payloadOf(input: ComponentInput): { payload: any[]; code: string } {
   return { payload: JSON.parse(m![1]), code: script.code };
 }
 
-test("§1.1 width FIXED — emits cw when widthExplicit and width is set", () => {
+test("§1.1 width FIXED — emits fw when widthExplicit and width is set", () => {
   const { payload, code } = payloadOf(
     fidelityInput({ base: { width: 384, widthExplicit: true, fill: "#fff" } }),
   );
-  assert.equal(payload[0].cw, 384);
-  // Apply loop now switches sizing mode based on d.cw presence.
-  assert.match(code, /counterAxisSizingMode = d\.cw != null \? "FIXED" : "AUTO"/);
+  assert.equal(payload[0].fw, 384);
+  // Apply loop maps fixed width onto the layout-aware axis.
+  assert.match(code, /const _wMode = d\.fw != null \? "FIXED" : "AUTO"/);
+  assert.match(code, /c\.counterAxisSizingMode = _vert \? _wMode : _hMode/);
 });
 
-test("§1.1 width FIXED — max-width emits cw only when rendered width is at the limit", () => {
+test("§1.1 width FIXED — max-width emits fw only when rendered width is at the limit", () => {
   // Within 4px of max → FIXED.
   const atLimit = payloadOf(
     fidelityInput({ base: { width: 384, maxWidth: "384px", fill: "#fff" } }),
   );
-  assert.equal(atLimit.payload[0].cw, 384);
-  // Comfortably below max → HUG (no cw emitted).
+  assert.equal(atLimit.payload[0].fw, 384);
+  // Comfortably below max → HUG (no fw emitted).
   const belowLimit = payloadOf(
     fidelityInput({ base: { width: 100, maxWidth: "384px", fill: "#fff" } }),
   );
-  assert.equal(belowLimit.payload[0].cw, undefined);
+  assert.equal(belowLimit.payload[0].fw, undefined);
 });
 
 test("§1.2 multi-line text — child text leaf with multiLine + parentInnerWidth emits tar=HEIGHT + tw", () => {
@@ -887,7 +888,10 @@ test("§2.5 absolute positioning — child gets lp=ABSOLUTE + constraints + offs
   assert.equal(kid.lp, "ABSOLUTE");
   assert.equal(kid.cn.h, "MAX"); // right anchored
   assert.equal(kid.cn.v, "MIN"); // top anchored
-  assert.match(code, /f\.layoutPositioning = "ABSOLUTE"/);
+  // Positioning is applied via attachChild AFTER appendChild (Figma
+  // requires the node to already be in an auto-layout parent).
+  assert.match(code, /const attachChild = \(parent, k\) =>/);
+  assert.match(code, /parent\.appendChild\(ch\);[\s\S]*?ch\.layoutPositioning = "ABSOLUTE"/);
 });
 
 test("§3.2 rotation — emits rot when > 0.5 degree absolute", () => {
@@ -898,7 +902,7 @@ test("§3.2 rotation — emits rot when > 0.5 degree absolute", () => {
   assert.match(code, /c\.rotation = d\.rot/);
 });
 
-test("§3.3 aspect ratio — derives ph from cw when aspect-ratio is set on a child", () => {
+test("§3.3 aspect ratio — derives fh from fw when aspect-ratio is set on a child", () => {
   const { payload } = payloadOf(
     fidelityInput({
       base: { fill: "#fff" },
@@ -912,8 +916,18 @@ test("§3.3 aspect ratio — derives ph from cw when aspect-ratio is set on a ch
     }),
   );
   const kid = payload[0].kids[0];
-  assert.equal(kid.cw, 320);
-  assert.equal(kid.ph, 180);
+  assert.equal(kid.fw, 320);
+  assert.equal(kid.fh, 180);
+});
+
+test("§1.1 axis mapping — HORIZONTAL layout fixes width on the PRIMARY axis", () => {
+  // Regression guard for the counter/primary swap: a horizontal
+  // component with an explicit width must fix the primary axis, not
+  // the counter axis (which would fix height instead).
+  const { code } = payloadOf(fidelityInput({ base: { fill: "#fff" } }));
+  // Both root and child builders use the layout-aware mapping.
+  assert.match(code, /c\.primaryAxisSizingMode = _vert \? _hMode : _wMode/);
+  assert.match(code, /f\.primaryAxisSizingMode = _vert \? _hMode : _wMode/);
 });
 
 test("§3.1 image fills — IMAGES block emitted; child carries im hash", () => {
