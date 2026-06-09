@@ -319,6 +319,21 @@ test("parseStorySnippets: ignores spread and unknown expressions", () => {
   assert.deepEqual(variant!.control?.options, ["primary", "secondary"]);
 });
 
+test("parseStorySnippets: aria-*/data-* and DOM plumbing never become variant axes", () => {
+  // Two stories with different aria-labels and hrefs — accessibility
+  // and content attributes, not design variants. Without the filter
+  // these fabricated an `aria-label` axis with values Save/Delete.
+  const text = `<Button aria-label="Save" data-testid="btn-save" href="/save" variant="solid">Save</Button>
+<Button aria-label="Delete" data-testid="btn-delete" href="/delete" variant="ghost">Delete</Button>`;
+  const props = parseStorySnippets(text, "Button");
+  assert.equal(props.find((p) => p.name === "aria-label"), undefined);
+  assert.equal(props.find((p) => p.name === "data-testid"), undefined);
+  assert.equal(props.find((p) => p.name === "href"), undefined);
+  const variant = props.find((p) => p.name === "variant");
+  assert.ok(variant, "real variant axis survives the filter");
+  assert.deepEqual(variant!.control?.options, ["solid", "ghost"]);
+});
+
 test("parseStorySnippets: multi-line JSX attributes", () => {
   const text = `<Button
   variant="primary"

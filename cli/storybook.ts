@@ -363,6 +363,23 @@ export function parseArgTable(text: string): StorybookProp[] {
 // for components whose props live in stories' argTypes (no TS type), since
 // the official addon-mcp omits those entirely. We accumulate values across
 // snippets and emit a prop only when we see enough signal to be useful.
+// JSX attributes that vary across stories without being design variants:
+// accessibility/test plumbing (`aria-*`, `data-*`), DOM content attributes
+// (href, alt, placeholder...), and React wiring. Without this filter, two
+// stories with different `aria-label`s would fabricate an aria-label
+// variant axis in Figma.
+const NON_VARIANT_ATTRS = new Set([
+  "id", "href", "src", "alt", "title", "name", "value", "placeholder",
+  "children", "className", "class", "style", "ref", "key", "as",
+  "role", "tabindex", "tabIndex", "htmlFor", "target", "rel", "form",
+]);
+
+function isNonVariantAttribute(name: string): boolean {
+  if (/^(aria|data)-/i.test(name)) return true;
+  if (/^on[A-Z]/.test(name)) return true; // event handlers as string attrs
+  return NON_VARIANT_ATTRS.has(name);
+}
+
 export function parseStorySnippets(text: string, componentName?: string): StorybookProp[] {
   if (!componentName) return [];
 
@@ -394,6 +411,7 @@ export function parseStorySnippets(text: string, componentName?: string): Storyb
     const attrs = readAttributesUntilTagEnd(text, match.index + match[0].length);
     if (!attrs) continue;
     for (const { name, value, kind } of parseJsxAttributes(attrs)) {
+      if (isNonVariantAttribute(name)) continue;
       const a = ensure(name);
       if (kind === "string") a.stringValues.add(value as string);
       else if (kind === "boolean-shorthand") a.sawBooleanShorthand = true;
