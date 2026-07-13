@@ -1,6 +1,6 @@
 ---
 description: Audit Figma file against code and report drift in either direction
-argument-hint: [figma-file-key]
+argument-hint: "[figma-file-key]"
 ---
 
 Compare the current Figma file against this codebase's design tokens and Storybook components, then report drift in either direction. Use the storysync skill at `.claude/skills/storysync.md` (Audit section).
