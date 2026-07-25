@@ -27,6 +27,16 @@ export interface FigmaVariantProperty {
   defaultValue: string;
 }
 
+// Details about a truncated variant expansion. Present only when `wasCapped`.
+export interface CapInfo {
+  maxCombinations: number;
+  totalPossible: number;
+  generated: number;
+  droppedCount: number;
+  /** First few dropped combinations, in cartesian order, for reporting. */
+  droppedSample: Record<string, string>[];
+}
+
 export interface FigmaComponentDefinition {
   name: string;
   title?: string;
@@ -34,6 +44,7 @@ export interface FigmaComponentDefinition {
   variantProperties: FigmaVariantProperty[];
   variantCombinations: Record<string, string>[];
   wasCapped: boolean;
+  cap?: CapInfo;
 }
 
 export interface StorybookComponent {
@@ -45,6 +56,7 @@ export interface StorybookComponent {
 }
 
 const MAX_COMBINATIONS = 256;
+const DROPPED_SAMPLE_SIZE = 20;
 
 const SKIP_PROPS = new Set([
   "children", "className", "class", "style", "ref", "key", "as",
@@ -67,7 +79,7 @@ function stripQuotes(s: string): string {
   return r;
 }
 
-function resolveDefault(raw: unknown): string | null {
+export function resolveDefault(raw: unknown): string | null {
   if (raw == null) return null;
   if (typeof raw === "string") return stripQuotes(raw);
   if (typeof raw === "boolean") return String(raw);
@@ -80,7 +92,7 @@ function resolveDefault(raw: unknown): string | null {
   return null;
 }
 
-function shouldSkip(prop: StorybookProp): boolean {
+export function shouldSkip(prop: StorybookProp): boolean {
   if (SKIP_PROPS.has(prop.name)) return true;
   if (/^on[A-Z]/.test(prop.name)) return true;
   if (prop.name.startsWith("aria-") || prop.name.startsWith("data-")) return true;
@@ -102,7 +114,7 @@ function isLiteral(member: PropType): boolean {
   return false;
 }
 
-function extractEnumValues(prop: StorybookProp): string[] | null {
+export function extractEnumValues(prop: StorybookProp): string[] | null {
   // argType options are the most reliable source
   if (prop.control?.options?.length) {
     return prop.control.options.map((v) => stripQuotes(String(v)));
@@ -150,7 +162,7 @@ function extractEnumValues(prop: StorybookProp): string[] | null {
   return null;
 }
 
-function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
+export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
   if (shouldSkip(prop)) return null;
 
   if (prop.type.name === "bool" || prop.type.name === "boolean" || prop.control?.type === "boolean") {
@@ -168,28 +180,133 @@ function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
   return null;
 }
 
-function cartesian(properties: FigmaVariantProperty[]): { combinations: Record<string, string>[]; wasCapped: boolean } {
+// Total size of the full cartesian product, clamped so a pathological
+// component can't overflow into a meaningless number.
+export function totalCombinations(properties: FigmaVariantProperty[]): number {
+  let total = 1;
+  for (const prop of properties) {
+    if (!prop.values.length) return 0;
+    total *= prop.values.length;
+    if (total > Number.MAX_SAFE_INTEGER) return Number.MAX_SAFE_INTEGER;
+  }
+  return total;
+}
+
+// Enumerates the full product in property order, last property varying
+// fastest — the same order the previous nested-loop implementation produced.
+export function* enumerateCombinations(
+  properties: FigmaVariantProperty[],
+): Generator<Record<string, string>> {
+  if (!properties.length) {
+    yield {};
+    return;
+  }
+  if (properties.some((p) => !p.values.length)) return;
+
+  const indices = new Array(properties.length).fill(0);
+  for (;;) {
+    const combo: Record<string, string> = {};
+    for (let i = 0; i < properties.length; i++) {
+      combo[properties[i].name] = properties[i].values[indices[i]];
+    }
+    yield combo;
+
+    let i = properties.length - 1;
+    for (; i >= 0; i--) {
+      indices[i]++;
+      if (indices[i] < properties[i].values.length) break;
+      indices[i] = 0;
+    }
+    if (i < 0) return;
+  }
+}
+
+// Identity of a combination, for de-duplication. NUL is the separator because
+// variant values may legitimately contain spaces ("Data Display"), which would
+// otherwise let ["a b", "c"] and ["a", "b c"] collide.
+function combinationKey(properties: FigmaVariantProperty[], combo: Record<string, string>): string {
+  return properties.map((p) => combo[p.name]).join("\u0000");
+}
+
+// When the full product exceeds the cap, pick combinations by usefulness
+// instead of truncating mid-expansion:
+//   1. every property at its default — the canonical variant;
+//   2. one-property sweeps — each value once against defaults, so every
+//      declared value is represented somewhere in the output;
+//   3. the remainder in cartesian order, to fill the budget.
+// Every emitted combination carries every property key.
+function generateCapped(
+  properties: FigmaVariantProperty[],
+  max: number,
+): { combinations: Record<string, string>[]; seen: Set<string> } {
+  const combinations: Record<string, string>[] = [];
+  const seen = new Set<string>();
+
+  const push = (combo: Record<string, string>): void => {
+    if (combinations.length >= max) return;
+    const key = combinationKey(properties, combo);
+    if (seen.has(key)) return;
+    seen.add(key);
+    combinations.push(combo);
+  };
+
+  // Built in `properties` order so every combination has identical key order.
+  const defaults: Record<string, string> = {};
+  for (const prop of properties) defaults[prop.name] = prop.defaultValue;
+
+  push({ ...defaults });
+
+  for (const prop of properties) {
+    for (const value of prop.values) {
+      if (value === prop.defaultValue) continue;
+      push({ ...defaults, [prop.name]: value });
+      if (combinations.length >= max) break;
+    }
+    if (combinations.length >= max) break;
+  }
+
+  for (const combo of enumerateCombinations(properties)) {
+    if (combinations.length >= max) break;
+    push(combo);
+  }
+
+  return { combinations, seen };
+}
+
+export function cartesian(
+  properties: FigmaVariantProperty[],
+): { combinations: Record<string, string>[]; wasCapped: boolean; cap?: CapInfo } {
   if (!properties.length) return { combinations: [{}], wasCapped: false };
 
-  let combos: Record<string, string>[] = [{}];
-  for (const prop of properties) {
-    const next: Record<string, string>[] = [];
-    for (const existing of combos) {
-      for (const value of prop.values) {
-        next.push({ ...existing, [prop.name]: value });
-        if (next.length >= MAX_COMBINATIONS) {
-          return { combinations: next, wasCapped: true };
-        }
-      }
-    }
-    combos = next;
+  const totalPossible = totalCombinations(properties);
+  if (totalPossible <= MAX_COMBINATIONS) {
+    return { combinations: [...enumerateCombinations(properties)], wasCapped: false };
   }
-  return { combinations: combos, wasCapped: false };
+
+  const { combinations, seen } = generateCapped(properties, MAX_COMBINATIONS);
+
+  const droppedSample: Record<string, string>[] = [];
+  for (const combo of enumerateCombinations(properties)) {
+    if (droppedSample.length >= DROPPED_SAMPLE_SIZE) break;
+    if (!seen.has(combinationKey(properties, combo))) droppedSample.push(combo);
+  }
+
+  return {
+    combinations,
+    wasCapped: true,
+    cap: {
+      maxCombinations: MAX_COMBINATIONS,
+      totalPossible,
+      generated: combinations.length,
+      droppedCount: totalPossible - combinations.length,
+      droppedSample,
+    },
+  };
 }
 
 export function mapComponent(component: StorybookComponent): FigmaComponentDefinition {
   const variantProperties = component.props.map(mapProp).filter((v): v is FigmaVariantProperty => v != null);
-  const { combinations, wasCapped } = cartesian(variantProperties);
+  const { combinations, wasCapped, cap } = cartesian(variantProperties);
   return {
     name: component.name,
     title: component.title,
@@ -197,5 +314,6 @@ export function mapComponent(component: StorybookComponent): FigmaComponentDefin
     variantProperties,
     variantCombinations: combinations,
     wasCapped,
+    ...(cap ? { cap } : {}),
   };
 }

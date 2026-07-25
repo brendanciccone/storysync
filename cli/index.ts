@@ -12,7 +12,7 @@ import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
 import type { TokenBaseline } from "./tokens.js";
-import type { FigmaComponentDefinition } from "./mapper.js";
+import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
 
@@ -60,19 +60,22 @@ program
         return;
       }
 
-      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
+      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
       for (const entry of entries) {
         try {
           const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(component);
-          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
+          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
-            const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
+            const tag = def.cap ? chalk.yellow(` [CAPPED ${def.cap.generated}/${def.cap.totalPossible}]`) : "";
             const label = entry.title ?? entry.name;
             console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            if (def.cap) {
+              console.log(chalk.dim(`      ${def.cap.droppedCount} combinations not emitted, e.g. ${JSON.stringify(def.cap.droppedSample[0])}`));
+            }
           }
           total += def.variantCombinations.length;
           if (def.wasCapped) capped++;
