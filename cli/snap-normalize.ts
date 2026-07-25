@@ -424,6 +424,19 @@ const STYLE_KEYS = [
   "fontWeight", "lineHeight", "letterSpacing", "boxShadow", "opacity", "text",
 ] as const satisfies readonly (keyof NormalizedStyles)[];
 
+/**
+ * Compile-time guard that STYLE_KEYS covers every field of NormalizedStyles.
+ *
+ * `satisfies` above only checks that each listed key is valid, not that none
+ * are missing. A field added to NormalizedStyles but omitted here would be
+ * silently excluded from every delta — variants differing only in that field
+ * would look identical, which would both drop the property from the Figma
+ * output and falsely trip the identical-variant warning. Adding a field
+ * without listing it here fails the build, naming the missing key.
+ */
+type AssertNever<T extends never> = T;
+type _AllStyleKeysCovered = AssertNever<Exclude<keyof NormalizedStyles, (typeof STYLE_KEYS)[number]>>;
+
 /** Structural equality via canonical JSON — all values here are plain data. */
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);

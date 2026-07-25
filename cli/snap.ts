@@ -71,6 +71,13 @@ export interface SnapResult {
     variants: number;
     rendered: number;
     failed: number;
+    /**
+     * Components that produced no variants at all — no stories, unreadable
+     * documentation, or a failed browser session. Counted separately because
+     * such a component contributes nothing to `failed`, which would otherwise
+     * let a total failure pass `--strict` unnoticed.
+     */
+    componentsFailed: number;
     componentsWithWarnings: number;
   };
 }
@@ -127,16 +134,21 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   const progress = deps.onProgress ?? (() => {});
   const entries = await listSelectedComponents(deps.storybook, opts.components);
 
-  const { browser, via } = await deps.launch({ headless: true });
-  progress(`Browser: ${via}`);
-
   const components: SnapComponent[] = [];
-  try {
-    for (const entry of entries) {
-      components.push(await snapComponent(entry, opts, deps, browser, progress));
+
+  // Launching only when there is something to render keeps a typo in
+  // `--components` from surfacing as a browser-resolution failure on a machine
+  // that has no browser at all.
+  if (entries.length) {
+    const { browser, via } = await deps.launch({ headless: true });
+    progress(`Browser: ${via}`);
+    try {
+      for (const entry of entries) {
+        components.push(await snapComponent(entry, opts, deps, browser, progress));
+      }
+    } finally {
+      await browser.close().catch(() => { /* already gone */ });
     }
-  } finally {
-    await browser.close().catch(() => { /* already gone */ });
   }
 
   // Deterministic ordering so repeated runs produce identical output.
@@ -154,6 +166,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
       variants: allVariants.length,
       rendered: allVariants.filter((v) => v.status === "ok").length,
       failed: allVariants.filter((v) => v.status !== "ok").length,
+      componentsFailed: components.filter((c) => c.error != null).length,
       componentsWithWarnings: components.filter((c) => c.warnings.length > 0).length,
     },
   };
@@ -212,10 +225,15 @@ async function snapComponent(
   }
 
   const combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
-  const context = await createContext(browser);
-  const page = await context.newPage();
 
+  // Context creation is inside the guarded block so a failure here is recorded
+  // against this component rather than abandoning the whole run, and so a
+  // context whose first page fails to open still gets closed.
+  let context: Awaited<ReturnType<typeof createContext>> | null = null;
   try {
+    context = await createContext(browser);
+    const page = await context.newPage();
+
     for (const combination of combinations) {
       const slug = slugifyCombination(combination);
       const { param, unsupported } = encodeStoryArgs(combination, definition.variantProperties);
@@ -261,15 +279,23 @@ async function snapComponent(
 
       shell.variants.push(variant);
     }
+  } catch (err) {
+    shell.error = `browser session failed: ${String(err)}`;
   } finally {
-    await context.close().catch(() => { /* already gone */ });
+    await context?.close().catch(() => { /* already gone */ });
   }
 
   const identical = detectIdenticalVariants(shell.variants);
   if (identical) shell.warnings.push(identical);
 
+  const label = entry.title ?? entry.name;
+  if (shell.error) {
+    progress(`  ✗ ${label}: ${shell.error}`);
+    return shell;
+  }
+
   const ok = shell.variants.filter((v) => v.status === "ok").length;
-  progress(`  ${ok === shell.variants.length ? "✓" : "!"} ${entry.title ?? entry.name} ${ok}/${shell.variants.length} variants measured`);
+  progress(`  ${ok === shell.variants.length ? "✓" : "!"} ${label} ${ok}/${shell.variants.length} variants measured`);
   return shell;
 }
 
@@ -279,11 +305,11 @@ function writeScreenshot(
   slug: string,
   png: Buffer,
 ): string {
-  const relative = join(componentSlug(entry.name, entry.title), `${slug}.png`);
-  const absolute = join(outDir, relative);
-  mkdirSync(dirname(absolute), { recursive: true });
-  writeFileSync(absolute, png);
-  return join(outDir, relative).split("\\").join("/");
+  const path = join(outDir, componentSlug(entry.name, entry.title), `${slug}.png`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, png);
+  // Posix separators so the recorded path is stable across platforms.
+  return path.split("\\").join("/");
 }
 
 /**

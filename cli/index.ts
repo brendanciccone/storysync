@@ -76,7 +76,9 @@ program
             const label = entry.title ?? entry.name;
             console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
             if (def.cap) {
-              console.log(chalk.dim(`      ${def.cap.droppedCount} combinations not emitted, e.g. ${JSON.stringify(def.cap.droppedSample[0])}`));
+              const example = def.cap.droppedSample[0];
+              const suffix = example ? `, e.g. ${JSON.stringify(example)}` : "";
+              console.log(chalk.dim(`      ${def.cap.droppedCount} combinations not emitted${suffix}`));
             }
           }
           total += def.variantCombinations.length;
@@ -157,6 +159,9 @@ program
             console.log(chalk.yellow(`\n  ! ${component.title ?? component.name}: ${warning}`));
           }
         }
+        for (const component of result.components.filter((c) => c.error != null)) {
+          console.log(chalk.yellow(`\n  ✗ ${component.title ?? component.name}: ${component.error}`));
+        }
         const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
         if (failed.length) {
           console.log(chalk.yellow(`\n  ${failed.length} variants not measured:`));
@@ -167,7 +172,9 @@ program
         }
       }
 
-      if (opts.strict && result.summary.failed > 0) process.exitCode = 1;
+      if (opts.strict && (result.summary.failed > 0 || result.summary.componentsFailed > 0)) {
+        process.exitCode = 1;
+      }
     } catch (err) {
       if (json) console.log(JSON.stringify({ error: String(err) }));
       else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
