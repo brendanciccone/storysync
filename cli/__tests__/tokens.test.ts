@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift } from "../tokens.js";
+import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-test-"));
@@ -308,4 +309,93 @@ test("Tailwind: var() with no match and no fallback stays as raw var()", () => {
     const colors = result.collections.find((c) => c.category === "colors");
     assert.equal(colors!.tokens[0].value, "hsl(var(--missing))");
   } finally { cleanup(dir); }
+});
+
+// --- Source detection ---
+
+test("detectTokenSource: finds tailwind config", () => {
+  const dir = makeProject({
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+  });
+  try {
+    const source = detectTokenSource(dir);
+    assert.equal(source?.type, "tailwind");
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: finds CSS custom properties", () => {
+  const dir = makeProject({
+    "src/styles.css": `:root { --color-primary: #3b82f6; }`,
+  });
+  try {
+    const source = detectTokenSource(dir);
+    assert.equal(source?.type, "css");
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: returns null when nothing found", () => {
+  const dir = makeProject({ "README.md": "# nothing here" });
+  try {
+    assert.equal(detectTokenSource(dir), null);
+  } finally { cleanup(dir); }
+});
+
+// --- Drift detection ---
+
+const FIXED_TIMESTAMP = "2026-01-01T00:00:00.000Z";
+
+test("drift: detects added and removed tokens", () => {
+  const baseline: TokenBaseline = {
+    version: 1,
+    source: "tailwind",
+    sourcePath: "/fake",
+    collections: [{ category: "colors", tokens: [{ name: "old", value: "#000" }] }],
+    generatedAt: FIXED_TIMESTAMP,
+  };
+  const current = {
+    source: "tailwind" as const,
+    sourcePath: "/fake",
+    collections: [{ category: "colors" as const, tokens: [{ name: "new", value: "#fff" }] }],
+    warnings: [],
+  };
+  const drift = compareTokens(baseline, current);
+  assert.ok(hasDrift(drift));
+  assert.ok(drift.added.some((a) => a.tokens.some((t) => t.name === "new")));
+  assert.ok(drift.removed.some((r) => r.tokens.some((t) => t.name === "old")));
+});
+
+test("drift: detects changed values", () => {
+  const baseline: TokenBaseline = {
+    version: 1,
+    source: "css",
+    sourcePath: "/fake",
+    collections: [{ category: "colors", tokens: [{ name: "primary", value: "#000" }] }],
+    generatedAt: FIXED_TIMESTAMP,
+  };
+  const current = {
+    source: "css" as const,
+    sourcePath: "/fake",
+    collections: [{ category: "colors" as const, tokens: [{ name: "primary", value: "#fff" }] }],
+    warnings: [],
+  };
+  const drift = compareTokens(baseline, current);
+  assert.ok(hasDrift(drift));
+  assert.equal(drift.changed.length, 1);
+  assert.equal(drift.changed[0].from, "#000");
+  assert.equal(drift.changed[0].to, "#fff");
+});
+
+test("drift: identical tokens report no drift", () => {
+  const collections = [{ category: "colors" as const, tokens: [{ name: "primary", value: "#000" }] }];
+  const baseline: TokenBaseline = {
+    version: 1,
+    source: "css",
+    sourcePath: "/fake",
+    collections,
+    generatedAt: FIXED_TIMESTAMP,
+  };
+  const drift = compareTokens(baseline, {
+    source: "css" as const, sourcePath: "/fake", collections, warnings: [],
+  });
+  assert.equal(hasDrift(drift), false);
 });
