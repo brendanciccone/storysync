@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # Only the default branch on push. Branch work is covered by `pull_request`,
+  # and listening to both would run the whole matrix twice on the same commit
+  # for any branch that has a PR open.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
