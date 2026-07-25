@@ -5,7 +5,6 @@
 // styles out of the page.
 
 import { existsSync } from "node:fs";
-import { chromium } from "playwright-core";
 import type { Browser, BrowserContext, Page, ElementHandle } from "playwright-core";
 import { CAPTURED_PROPERTIES, TEXT_PROPERTIES } from "./snap-normalize.js";
 import type { RawComputedStyles } from "./snap-normalize.js";
@@ -37,6 +36,31 @@ export interface LaunchResult {
   via: string;
 }
 
+/** playwright-core refuses to load below this and exits the process. */
+const MINIMUM_NODE_MAJOR = 20;
+
+/**
+ * Loads playwright lazily.
+ *
+ * playwright-core requires Node 20+ and terminates the process on import when
+ * it is older. Importing it at module scope would therefore break every
+ * command — `tokens`, `map`, `diff` — for anyone on Node 18, even though only
+ * `snap` needs a browser at all. Keeping the import inside this function means
+ * the version requirement applies to `snap` alone.
+ */
+async function loadChromium(): Promise<typeof import("playwright-core")["chromium"]> {
+  const major = Number(process.versions.node.split(".")[0]);
+  if (Number.isFinite(major) && major < MINIMUM_NODE_MAJOR) {
+    throw new Error(
+      `storysync snap needs Node ${MINIMUM_NODE_MAJOR} or newer (running ${process.versions.node}), ` +
+        "because it renders stories with playwright.\n" +
+        "Every other storysync command still works on Node 18.",
+    );
+  }
+  const { chromium } = await import("playwright-core");
+  return chromium;
+}
+
 /**
  * Finds and launches a Chromium-based browser.
  *
@@ -48,6 +72,7 @@ export interface LaunchResult {
 export async function resolveAndLaunch(opts: { headless?: boolean } = {}): Promise<LaunchResult> {
   const headless = opts.headless ?? true;
   const attempts: string[] = [];
+  const chromium = await loadChromium();
 
   const tryLaunch = async (
     label: string,

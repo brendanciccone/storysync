@@ -269,6 +269,8 @@ Writes `<out>/styles.json` containing, per component, full styles for a base var
 
 **Variant selection.** `representative` measures every declared value once against the other properties' defaults, so cost scales with the *sum* of variant values rather than their product — a `3 × 2 × 2` button is 5 renders instead of 12. That is enough to build a correct Figma component set, since variants compose. Use `--variants all` for the full product.
 
+**Requires Node 20+**, because Playwright does. Every other storysync command still runs on Node 18 — Playwright is loaded only when `snap` runs, so nothing else is affected.
+
 **Browser.** storysync depends on `playwright-core`, which downloads no browsers, so one is located at runtime: `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then an installed Chrome, then Edge, then a Playwright-managed download, then common system paths. If none is found the error lists every attempt. To install one:
 
 ```bash
@@ -361,8 +363,9 @@ storysync deliberately splits deterministic extraction (the CLI) from Figma writ
 
 - **Storybook 10.1+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`). Storybook 9.x only supports token extraction — the docs tools that `list`/`map`/`inspect` depend on require Storybook 10's component manifests.
 - **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
-- **Node.js 18+**
+- **Node.js 18+** — except `storysync snap`, which needs **Node 20+** because Playwright does. Playwright is loaded only when `snap` runs, so every other command works on Node 18.
 - Must be the **dev server** (`storybook dev`), not a static build
+- A Chromium-based browser, for `storysync snap` only — see [`storysync snap`](#storysync-snap)
 
 ### Figma (for writing via Claude Code / Cursor)
 
