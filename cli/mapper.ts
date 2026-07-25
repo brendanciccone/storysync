@@ -228,12 +228,47 @@ function combinationKey(properties: FigmaVariantProperty[], combo: Record<string
   return properties.map((p) => combo[p.name]).join("\u0000");
 }
 
+/**
+ * The smallest set that still exercises every declared value: every property
+ * at its default, then each remaining value once against those defaults.
+ *
+ * Size is the *sum* of value counts rather than their product — 1 + Σ(values-1)
+ * — which is why `snap` can measure a component in a handful of renders instead
+ * of one per combination. It is also the leading section of the capped ordering
+ * below, so the two stay consistent by construction.
+ */
+export function representativeCombinations(
+  properties: FigmaVariantProperty[],
+): Record<string, string>[] {
+  if (!properties.length) return [{}];
+
+  const combinations: Record<string, string>[] = [];
+  const seen = new Set<string>();
+  const push = (combo: Record<string, string>): void => {
+    const key = combinationKey(properties, combo);
+    if (seen.has(key)) return;
+    seen.add(key);
+    combinations.push(combo);
+  };
+
+  // Built in `properties` order so every combination has identical key order.
+  const defaults: Record<string, string> = {};
+  for (const prop of properties) defaults[prop.name] = prop.defaultValue;
+
+  push({ ...defaults });
+  for (const prop of properties) {
+    for (const value of prop.values) {
+      if (value === prop.defaultValue) continue;
+      push({ ...defaults, [prop.name]: value });
+    }
+  }
+  return combinations;
+}
+
 // When the full product exceeds the cap, pick combinations by usefulness
 // instead of truncating mid-expansion:
-//   1. every property at its default — the canonical variant;
-//   2. one-property sweeps — each value once against defaults, so every
-//      declared value is represented somewhere in the output;
-//   3. the remainder in cartesian order, to fill the budget.
+//   1. the representative set above — defaults, then every declared value;
+//   2. the remainder in cartesian order, to fill the budget.
 // Every emitted combination carries every property key.
 function generateCapped(
   properties: FigmaVariantProperty[],
@@ -250,20 +285,7 @@ function generateCapped(
     combinations.push(combo);
   };
 
-  // Built in `properties` order so every combination has identical key order.
-  const defaults: Record<string, string> = {};
-  for (const prop of properties) defaults[prop.name] = prop.defaultValue;
-
-  push({ ...defaults });
-
-  for (const prop of properties) {
-    for (const value of prop.values) {
-      if (value === prop.defaultValue) continue;
-      push({ ...defaults, [prop.name]: value });
-      if (combinations.length >= max) break;
-    }
-    if (combinations.length >= max) break;
-  }
+  for (const combo of representativeCombinations(properties)) push(combo);
 
   for (const combo of enumerateCombinations(properties)) {
     if (combinations.length >= max) break;

@@ -8,6 +8,8 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { runSnap } from "./snap.js";
+import { resolveAndLaunch } from "./snap-browser.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
@@ -94,6 +96,82 @@ program
       }
 
       if (opts.strict && (failed > 0 || capped > 0)) process.exitCode = 1;
+    } finally {
+      await storybook.disconnect();
+    }
+  });
+
+program
+  .command("snap")
+  .description("Measure each component variant's rendered styles from a running Storybook")
+  .requiredOption("--storybook <url>", "Storybook URL")
+  .option("--components <names>", "Comma-separated component names")
+  .option("--out <dir>", "Output directory", ".storysync/snaps")
+  .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
+  .option("--screenshots", "Also save a PNG per variant (off by default)")
+  .option("--timeout <ms>", "Per-story timeout in milliseconds", "10000")
+  .option("--selector <css>", "Override the component root selector")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--strict", "Exit with code 1 if any variant could not be measured")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const variants = opts.variants as string;
+    if (variants !== "representative" && variants !== "all") {
+      console.error(chalk.red(`--variants must be "representative" or "all", received "${variants}"`));
+      process.exit(1);
+    }
+
+    const timeoutMs = Number(opts.timeout);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      console.error(chalk.red(`--timeout must be a positive number of milliseconds, received "${opts.timeout}"`));
+      process.exit(1);
+    }
+
+    const storybook = await connectStorybook(opts.storybook, json);
+    try {
+      const result = await runSnap(
+        {
+          storybookUrl: opts.storybook as string,
+          components: opts.components ? (opts.components as string).split(",") : undefined,
+          outDir: opts.out as string,
+          screenshots: !!opts.screenshots,
+          timeoutMs,
+          selector: opts.selector as string | undefined,
+          variants,
+        },
+        {
+          storybook,
+          launch: resolveAndLaunch,
+          onProgress: json ? undefined : (m) => console.log(m),
+        },
+      );
+
+      if (json) {
+        console.log(JSON.stringify(result));
+      } else {
+        const { summary } = result;
+        console.log(`\n${summary.rendered}/${summary.variants} variants measured across ${summary.components} components`);
+        console.log(chalk.dim(`  Styles written to ${opts.out}/styles.json`));
+        for (const component of result.components) {
+          for (const warning of component.warnings) {
+            console.log(chalk.yellow(`\n  ! ${component.title ?? component.name}: ${warning}`));
+          }
+        }
+        const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
+        if (failed.length) {
+          console.log(chalk.yellow(`\n  ${failed.length} variants not measured:`));
+          for (const { c, v } of failed.slice(0, 10)) {
+            console.log(chalk.dim(`    ${c.name} ${v.slug} [${v.status}] ${v.error ?? ""}`));
+          }
+          if (failed.length > 10) console.log(chalk.dim(`    ... and ${failed.length - 10} more`));
+        }
+      }
+
+      if (opts.strict && result.summary.failed > 0) process.exitCode = 1;
+    } catch (err) {
+      if (json) console.log(JSON.stringify({ error: String(err) }));
+      else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+      process.exitCode = 1;
     } finally {
       await storybook.disconnect();
     }
