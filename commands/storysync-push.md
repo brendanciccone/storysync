@@ -1,6 +1,6 @@
 ---
 description: Sync Storybook components and design tokens from code to Figma
-argument-hint: [figma-file-key]
+argument-hint: "[figma-file-key]"
 ---
 
 Push design tokens and Storybook components from this codebase into Figma using the storysync skill at `.claude/skills/storysync.md`.
