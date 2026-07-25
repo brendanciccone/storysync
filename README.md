@@ -1,5 +1,8 @@
 # storysync
 
+[![CI](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml/badge.svg)](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/storysync)](https://www.npmjs.com/package/storysync)
+
 Sync your design system from code to Figma — and diff Figma back against code — using Storybook MCP and Figma MCP.
 
 ## What it does
