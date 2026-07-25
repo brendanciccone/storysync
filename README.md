@@ -9,12 +9,14 @@ Sync your design system from code to Figma — and diff Figma back against code 
 
 Reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), then creates Figma variable collections and component sets via [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/).
 
+Component styling is **measured, not guessed**: `storysync snap` renders each variant in a headless browser and reads the computed styles, so the fills, spacing, radii, and type that land in Figma come from the real render rather than from an AI's reading of your source.
+
 | Method | What it does |
 |---|---|
-| **Claude Code skill** | Runs `storysync tokens` and `storysync map` to extract structured data from your codebase, then writes Figma variables and styled components via `use_figma`. Can also audit Figma against code. |
+| **Claude Code skill** | Runs `storysync tokens`, `map`, and `snap` to extract structured data and measured styles from your codebase, then writes Figma variables and styled components via `use_figma`. Can also audit Figma against code. |
 | **Cursor rules** | Same as above, from Cursor |
 | **Codex** | Same as above, from Codex |
-| **CLI** | Extract tokens, map components, preview mappings locally, or diff Figma against code |
+| **CLI** | Extract tokens, map components, measure rendered styles, preview mappings locally, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
 > **Why skill files?** Writing to Figma requires the `use_figma` tool, which only works through [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others) that can complete Figma's OAuth flow. The skill files instruct these clients to run storysync CLI commands (`tokens --json`, `map --json`) to get deterministic, structured data from your codebase, then use that data to create Figma variables and components via `use_figma`. This means storysync handles the extraction logic and the AI client handles the Figma writes — each doing what it's best at.
@@ -246,6 +248,37 @@ Options:
   --strict               Exit with code 1 if any component fails or is capped
 ```
 
+### `storysync snap`
+
+Measure what each component variant actually looks like, by rendering the story in a headless browser and reading `getComputedStyle`. This replaces guessing styles from source: the AI client translates measured values instead of interpreting Tailwind classes, `cva` calls, or theme indirection.
+
+```text
+Options:
+  --storybook <url>      URL of the running Storybook instance (required)
+  --components <names>   Comma-separated component names (default: all)
+  --out <dir>            Output directory (default: ".storysync/snaps")
+  --variants <mode>      representative (default) or all
+  --screenshots          Also save a PNG per variant (off by default)
+  --timeout <ms>         Per-story timeout (default: 10000)
+  --selector <css>       Override the component root selector
+  --json                 Output JSON instead of formatted text
+  --strict               Exit with code 1 if any variant could not be measured
+```
+
+Writes `<out>/styles.json` containing, per component, full styles for a base variant plus only the properties each other variant changes. The file carries no timestamp, so repeat runs against unchanged code are byte-identical and it can be committed and diffed.
+
+**Variant selection.** `representative` measures every declared value once against the other properties' defaults, so cost scales with the *sum* of variant values rather than their product — a `3 × 2 × 2` button is 5 renders instead of 12. That is enough to build a correct Figma component set, since variants compose. Use `--variants all` for the full product.
+
+**Browser.** storysync depends on `playwright-core`, which downloads no browsers, so one is located at runtime: `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then an installed Chrome, then Edge, then a Playwright-managed download, then common system paths. If none is found the error lists every attempt. To install one:
+
+```bash
+npx playwright@latest install chromium     # note: the full `playwright` package
+```
+
+**Stories must pass args through.** snap sets variant values via Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or wraps the component in a decorator that drops them will render its default state for *every* variant. snap warns when all of a component's variants measure identically, which catches the common cases — but a story whose variants happen to differ only in unmeasured ways would not be flagged. Plain CSF3 args-driven stories are the reliable shape.
+
+Values Storybook cannot carry in a URL are reported rather than measured. Its allowed character set is `[a-zA-Z0-9 _-]`, so an option like `Data Display` works while `Nav/Primary` is rejected — those variants are marked `args_unsupported` instead of silently recording the default render.
+
 ### `storysync list`
 
 List all components available in Storybook.
@@ -305,6 +338,22 @@ The reverse-direction (Figma → code) features have known constraints that you 
 - **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
 - **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`).
 - **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used.
+- **Story args wiring**: `storysync snap` varies variants through Storybook's `?args=` URL, so a story that ignores its args measures its default state for every variant. snap warns when all of a component's variants measure identically. See [`storysync snap`](#storysync-snap).
+- **Variant values must be URL-safe**: Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so an option value containing e.g. `/` cannot be measured and is reported as `args_unsupported`.
+- **Props without declared options**: A prop typed as a bare `string` or `number` with no `options` in its argType becomes no Figma variant property, so it is not measured. Storybook's documentation response does not always surface argType options.
+
+## What's measured vs. inferred
+
+storysync deliberately splits deterministic extraction (the CLI) from Figma writes (the AI client). Where a value comes from matters, so:
+
+| Step | How it's produced |
+|---|---|
+| Design tokens | **Measured** — parsed from your Tailwind config, CSS custom properties, or theme file |
+| Component variant structure | **Measured** — derived from Storybook prop types and argType options |
+| Component styling | **Measured** — `getComputedStyle` on the real render, via `storysync snap` |
+| Drift reports | **Measured** — deterministic comparison, normalized on both sides |
+| Figma writes | **Agent-driven** — the client writes Plugin API code; storysync never writes to Figma |
+| Layout and composition | **Interpreted** — snap measures properties, not whether a label sits correctly inside its button |
 
 ## Requirements
 
