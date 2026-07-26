@@ -49,10 +49,16 @@ test("CLI: tokens --json returns valid JSON", () => {
 test("CLI: tokens --strict exits 1 when no tokens found", () => {
   const dir = makeTempProject();
   try {
-    run("tokens", "--project", dir, "--strict");
-    assert.fail("should have exited with code 1");
-  } catch (err) {
-    assert.equal((err as { status?: number }).status, 1);
+    // Captured rather than asserted inside the catch: `assert.fail` there would
+    // be swallowed by the same catch, reporting "undefined !== 1" instead of
+    // the actual problem.
+    let status: number | "exited cleanly" = "exited cleanly";
+    try {
+      run("tokens", "--project", dir, "--strict");
+    } catch (err) {
+      status = (err as { status?: number }).status ?? -1;
+    }
+    assert.equal(status, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

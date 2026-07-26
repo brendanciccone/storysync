@@ -278,8 +278,10 @@ export class StorybookClient {
 // through to the guessed fallback below.
 //
 // Requiring the `--` separator is what keeps this from also matching the
-// component's own `ID: forms-button` line.
-const STORY_ID_PATTERN = /(?:story[\s_-]*id|storyid|id)\s*:\s*[`"']?([A-Za-z0-9][A-Za-z0-9_-]*--[A-Za-z0-9_-]+)[`"']?/gi;
+// component's own `ID: forms-button` line. The leading `\b` matters just as
+// much: without it the bare `id` alternative matches the tail of any word
+// ending in those letters, so `grid: layout--wide` would be read as a story.
+const STORY_ID_PATTERN = /\b(?:story[\s_-]*id|storyid|id)\s*:\s*[`"']?([A-Za-z0-9][A-Za-z0-9_-]*--[A-Za-z0-9_-]+)[`"']?/gi;
 
 /**
  * Extracts story IDs from a documentation response.

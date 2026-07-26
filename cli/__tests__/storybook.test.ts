@@ -75,3 +75,20 @@ test("parseStories: falls back to the documentation ID, not the component name",
     { id: "forms-button--default", name: "Default" },
   ]);
 });
+
+test("parseStories: ignores words that merely end in \"id\"", () => {
+  // Without a word boundary the bare `id` alternative matches the tail of
+  // `grid`, `valid`, `pyramid`, ... turning ordinary prop docs into stories.
+  for (const line of ["grid: layout--wide", "valid: some--thing", "pyramid: a--b"]) {
+    assert.deepEqual(
+      parseStories("forms-x", line),
+      [{ id: "forms-x--default", name: "Default" }],
+      `"${line}" should not yield a story ID`,
+    );
+  }
+});
+
+test("parseStories: still matches a genuine label preceded by punctuation", () => {
+  assert.deepEqual(parseStories("x", "(id: forms-button--primary)")[0].id, "forms-button--primary");
+  assert.deepEqual(parseStories("x", "- **Ghost** (storyId: `a-b--ghost`)")[0].id, "a-b--ghost");
+});
