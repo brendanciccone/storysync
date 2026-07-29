@@ -10,6 +10,9 @@ import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tok
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
+import { verify, loadJsonFile, formatFidelity } from "./verify.js";
+import type { ReadbackFile } from "./verify.js";
+import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
@@ -191,6 +194,61 @@ program
       process.exitCode = 1;
     } finally {
       await storybook.disconnect();
+    }
+  });
+
+program
+  .command("verify")
+  .description("Compare what was written to Figma against the styles measured by snap")
+  .option("--snap <path>", "Path to snap output", ".storysync/snaps/styles.json")
+  .option("--readback <path>", "Path to the properties read back from Figma", ".storysync/figma-readback.json")
+  .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--strict", "Exit with code 1 if any variant drifted or is missing from Figma")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const tolerance = Number(opts.tolerance);
+    if (!Number.isFinite(tolerance) || tolerance < 0) {
+      console.error(chalk.red(`--tolerance must be a non-negative number, received "${opts.tolerance}"`));
+      process.exit(1);
+    }
+
+    try {
+      const snap = loadJsonFile<SnapResult>(opts.snap as string, "snap output");
+      const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
+      const result = verify(snap, readback, tolerance);
+
+      if (json) {
+        console.log(JSON.stringify(result));
+      } else {
+        const { summary } = result;
+        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}`);
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma, across ${summary.variants} variants\n`);
+
+        for (const variant of result.variants) {
+          if (variant.status === "verified") continue;
+          if (variant.status === "missing_from_figma") {
+            console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
+            continue;
+          }
+          console.log(`  ${chalk.red("~")} ${variant.component} ${chalk.dim(variant.slug)}`);
+          for (const d of variant.differences) {
+            console.log(chalk.dim(`      ${d.property}: measured ${JSON.stringify(d.measured)}, Figma ${JSON.stringify(d.figma)}`));
+          }
+        }
+
+        if (!result.variants.some((v) => v.status !== "verified")) {
+          console.log(chalk.green("  Figma matches the measured styles."));
+        }
+      }
+
+      if (opts.strict && (result.summary.drifted > 0 || result.summary.missingFromFigma > 0)) {
+        process.exitCode = 1;
+      }
+    } catch (err) {
+      if (json) console.log(JSON.stringify({ error: String(err) }));
+      else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+      process.exitCode = 1;
     }
   });
 
