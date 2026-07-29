@@ -44,36 +44,28 @@ This outputs structured JSON with each component's variant properties (name, typ
 npx storysync inspect --storybook http://localhost:6006 --component Button
 ```
 
-3. **REQUIRED — Extract concrete styling values from source.** Do not skip. Do not proceed to step 5 without these values. A `use_figma` call with only variant names and no actual styling will produce a useless library.
+3. **REQUIRED — Measure the styling, don't infer it.** Do not proceed to step 5 without concrete values. A `use_figma` call with only variant names produces a useless library.
 
-   For each component, read the source file (`.tsx` / `.jsx`) and any imported style files. Build a styling spec with these fields, per variant where applicable:
-   - **Background fill** (hex)
-   - **Text color** (hex)
-   - **Border** (width + color hex, or `none`)
-   - **Border radius** (px)
-   - **Padding** (px horizontal + vertical)
-   - **Font size** (px) and **weight** (numeric)
-   - **Shadow** (offset + blur + color, or `none`)
-   - **Auto-layout direction** (horizontal / vertical) and **gap** (px)
+```bash
+npx storysync snap --storybook http://localhost:6006 --json
+```
 
-   Source patterns:
-   - **Tailwind classes** — translate to Figma properties (e.g. `bg-blue-600` → fill `#2563EB`, `rounded-md` → 6px corner radius, `px-4` → 16px horizontal padding, `py-2` → 8px vertical padding, `text-sm` → 14px font size, `font-semibold` → 600 weight, `border` → 1px border, `shadow-sm` → drop shadow). Resolve `cva`/`clsx`/`cn` calls and pull base + per-variant class sets.
-   - **CSS module imports** — follow the `.module.css` / `.module.scss` import, read that file, and extract the actual property values used for each class.
-   - **Styled-component definitions** — read the tagged-template CSS in `styled.div`, `styled(Base)`, etc. and pull out colors, spacing, typography, and borders.
-   - **Inline styles** — capture any `style={{ ... }}` objects with literal values.
-   - **Theme token references** — if the component uses tokens like `theme.colors.primary` or CSS custom properties (`var(--color-primary)`), trace them back to the theme definition file and resolve to concrete values.
+   Renders every variant in a real browser and reports what it actually computed. Run it *now*, in this session — do not reuse an earlier `styles.json`, which may describe code that has since changed.
 
-   Edge cases:
-   - **Source file not found** — fall back to documentation values and note as inferred.
-   - **Dynamic/conditional styling** — for simple ternaries (e.g. `isPrimary ? 'bg-blue-600' : 'bg-gray-200'`), capture both values as variants. For runtime-computed expressions, extract literal fragments and flag the rest for manual review.
-   - **Source vs. documentation conflicts** — prefer explicit literal values from source. If both differ, use source and note the discrepancy in the summary.
+   Output is a base variant plus per-variant deltas; a variant's full styles are the base with its `delta` applied. Translate directly: `backgroundColor` → fill (`null` means no fill, not black), `color`/`text.color` → text fill, `padding` → auto-layout padding, `gap.column` → `itemSpacing`, `borderRadiusUniform` (else `borderRadius`) → `cornerRadius`, `borderUniform` → stroke (`null` means none), `boxShadow[]` → `DROP_SHADOW` effects, `display: flex` + `flexDirection` → auto-layout direction, `fontSize`/`fontWeight`/`fontFamily` → text style.
 
-   **Checkpoint before step 5**: confirm a styling spec exists for every component and every variant value. If you only have variant names with no concrete values per variant, go back and read the source. Do not call `use_figma` with placeholder styling.
+   **Variants whose `status` is not `"ok"` were not measured.** Only for those, read the component source (`.tsx`/`.jsx`, CSS modules, styled-components, inline styles, `cva`/`clsx`/`cn`) and resolve tokens through `npx storysync tokens --json` or the project's own config — never from a memorised class-to-value table, which is wrong for any custom palette.
+
+   **Record every fallback.** Step 6 writes a `source` of `"measured"` or `"inferred"` per variant. A run inspected later must be able to tell them apart without this conversation.
+
+   **Checkpoint before step 5**: every variant has measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` warned that the story isn't passing its args through — say so rather than treating the values as real.
+
 4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page matching its category. This mirrors the Storybook sidebar so designers find things where they expect them, and keeps duplicate leaf names (e.g. two `Button`s under different categories) distinct.
 
-5. Write with `use_figma` — find or create the target page, then create the component set on it. Use the variant data from `storysync map` and the visual details from the source code. Include full visual styling in the instruction, not just variant structure: background colors, text colors, font sizes, padding, border radius, borders. Use `skillNames: "figma-use"`.
-6. Verify each component visually after creation. Fix any styling issues with a follow-up `use_figma` call.
-7. Summarize: token collections created, components synced grouped by page/category, variant counts, visual details applied, failures, caps.
+5. Write with `use_figma` — find or create the target page, then create the component set on it, embedding the measured values from step 3. **Update an existing set of the same name rather than creating a duplicate**; a second push must not produce two `Button`s. End the plugin code by reading the created nodes' actual properties back (fills, `cornerRadius`, padding, `strokeWeight`, `itemSpacing`, `opacity`, and the text child's `fontSize`/`fontName`) and returning them as JSON keyed by the snap variant slug — read them off the nodes, don't echo what you sent. Use `skillNames: "figma-use"`.
+6. Merge those readbacks into `.storysync/figma-readback.json`, keyed by component title then snap variant slug, each carrying `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, and re-run. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
+7. Summarize: token collections created, components grouped by page, variant counts, the fidelity score, measured versus inferred counts, any story that didn't pass its args through, failures, caps.
+
 
 ## Variable binding
 
@@ -121,8 +113,8 @@ npx storysync map --storybook http://localhost:6006 --json
 
 ## Visual accuracy guidelines
 
-- Match the real component's appearance as closely as possible. The goal is a usable Figma library, not just variant scaffolding.
-- Use documentation, prop types, defaults, and color/sizing info to inform visuals.
-- When docs lack exact values, infer from context: "primary" = bold/colored, "destructive" = red, "small" = less padding/smaller font.
-- Use auto-layout so components resize properly.
-- Add text layers with representative labels inside components.
+- **Measured values from `snap` are ground truth.** They come from a real browser rendering the real component. Where they disagree with your reading of the source, the measurement is right — computed style accounts for the cascade, inheritance, and anything a class name doesn't reveal.
+- **Never invent a value that could be measured.** Guessing that "primary" means blue produces a library that looks plausible and is wrong, which is worse than one that's visibly incomplete. If a variant couldn't be measured, derive it from source and record it as `inferred`.
+- The goal is a Figma library a designer can use directly, not variant scaffolding.
+- Use auto-layout so components resize properly; measured `display`, `flexDirection`, `padding` and `gap` map onto it directly.
+- Add text layers with representative labels, styled from the measured `text` values where present.

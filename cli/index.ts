@@ -207,6 +207,7 @@ program
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant drifted or is missing from Figma")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
+  .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
   .action(async (opts) => {
     const json = !!opts.json;
     const tolerance = Number(opts.tolerance);
@@ -251,7 +252,27 @@ program
           // Name what was checked. On a clean run this is otherwise the only
           // output, and "it matches" is not much use without saying what did.
           const names = [...new Set(result.variants.map((v) => v.component))];
-          console.log(chalk.green(`  Figma matches the measured styles for ${names.join(", ") || "no components"}.`));
+          // Only claim "measured" when everything actually was. Saying it of a
+          // partly-inferred run is the conflation the provenance line exists
+          // to prevent.
+          const allMeasured = result.summary.inferred === 0 && result.summary.unrecorded === 0;
+          const kind = allMeasured ? "measured" : "expected";
+          console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ") || "no components"}.`));
+        }
+
+        // Provenance before age: a component styled by guesswork matters more
+        // than one measured a while ago, and this is the line that separates
+        // "produced a result" from "produced a measured result".
+        const { inferred, unrecorded } = result.summary;
+        if (inferred > 0 || unrecorded > 0) {
+          const parts: string[] = [];
+          if (inferred > 0) parts.push(`${inferred} inferred from source rather than measured`);
+          if (unrecorded > 0) parts.push(`${unrecorded} with no recorded provenance`);
+          const line = `  Provenance: ${parts.join(", ")}`;
+          console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
+          for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
+            console.log(chalk.dim(`      ${v.component} ${v.slug} [${v.source}]`));
+          }
         }
 
         const age = result.snapAge;
@@ -270,15 +291,18 @@ program
         }
       }
 
-      const strict = !!opts.strict || !!opts.strictAge;
+      const strict = !!opts.strict || !!opts.strictAge || !!opts.strictMeasured;
       const hasDrift = result.summary.drifted > 0 || result.summary.missingFromFigma > 0;
+      // Unrecorded counts as not-measured, for the same reason an unknown age
+      // counts as stale: the absent state must not read as the good one.
+      const notMeasured = result.summary.inferred > 0 || result.summary.unrecorded > 0;
       // An age that cannot be established is not a pass. `meta.json` is the
       // file most likely to be gitignored, so failing open here would make
       // --strict-age succeed unconditionally in exactly the CI setup the
       // determinism guarantee is designed to enable.
       const ageFailsStrict = !!opts.strictAge && (!result.snapAge?.known || result.snapAge.stale);
 
-      if ((strict && hasDrift) || ageFailsStrict) {
+      if ((strict && hasDrift) || ageFailsStrict || (opts.strictMeasured && notMeasured)) {
         process.exitCode = 1;
       }
     } catch (err) {

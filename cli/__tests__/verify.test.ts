@@ -335,3 +335,62 @@ test("readSnapAge: no limit means never stale", () => {
     assert.equal(age.known && age.stale, false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// --- provenance ---
+
+test("verifyVariant: records the writer's declared source", () => {
+  const measured = verifyVariant("C", "s", BASE, { source: "measured", fontSize: 12 }, 0.5);
+  assert.equal(measured.source, "measured");
+  const inferred = verifyVariant("C", "s", BASE, { source: "inferred", fontSize: 12 }, 0.5);
+  assert.equal(inferred.source, "inferred");
+});
+
+// "It produced a result" and "it produced a measured result" must not look the
+// same, so an absent marker is its own state rather than an optimistic default.
+test("verifyVariant: an absent source is unrecorded, not measured", () => {
+  const v = verifyVariant("C", "s", BASE, { fontSize: 12 }, 0.5);
+  assert.equal(v.source, "unrecorded");
+});
+
+test("verifyVariant: a nonsense source value is unrecorded", () => {
+  const v = verifyVariant("C", "s", BASE, { source: "vibes", fontSize: 12 } as never, 0.5);
+  assert.equal(v.source, "unrecorded");
+});
+
+test("verifyVariant: source is not scored as a style property", () => {
+  // `source` sits alongside the styles, so it must not inflate the denominator.
+  const v = verifyVariant("C", "s", BASE, { source: "measured", fontSize: 12 }, 0.5);
+  assert.equal(v.matched, 1);
+  assert.equal(v.mismatched, 0);
+});
+
+test("verify: counts inferred and unrecorded variants separately", () => {
+  const result = verify(
+    snapWith([
+      { slug: "a" },
+      { slug: "b", delta: { backgroundColor: "#dc2626" } },
+      { slug: "c", delta: { backgroundColor: "#10b981" } },
+    ]),
+    readbackWith({
+      a: { source: "measured", backgroundColor: "#2563eb" },
+      b: { source: "inferred", backgroundColor: "#dc2626" },
+      c: { backgroundColor: "#10b981" },
+    }),
+    0.5,
+  );
+  assert.equal(result.summary.inferred, 1);
+  assert.equal(result.summary.unrecorded, 1);
+  // Provenance is orthogonal to correctness: all three still match.
+  assert.equal(result.fidelity, 1);
+  assert.equal(result.summary.verified, 3);
+});
+
+test("verify: a variant missing from Figma is not also counted as unrecorded", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]),
+    readbackWith({ a: { source: "measured", backgroundColor: "#2563eb" } }),
+    0.5,
+  );
+  assert.equal(result.summary.missingFromFigma, 1);
+  assert.equal(result.summary.unrecorded, 0);
+});

@@ -24,7 +24,19 @@ export const READBACK_SCHEMA_VERSION = 1;
  * `lineHeight: "normal"`, `display`, or measured `width`/`height` on an
  * auto-layout frame, so comparing them would manufacture mismatches.
  */
+/**
+ * Where the styling written to Figma came from.
+ *
+ * Recorded per variant rather than reported once, because "it produced a
+ * result" and "it produced a *measured* result" look identical from the
+ * outside. A run inspected later, or by CI, must be able to tell them apart
+ * without scrollback — an unrecorded state reads as the good one.
+ */
+export type StyleSource = "measured" | "inferred";
+
 export interface ReadbackStyles {
+  /** Omitted by older writers; treated as `unrecorded`, never as measured. */
+  source?: StyleSource;
   backgroundColor?: string | null;
   color?: string | null;
   borderRadiusUniform?: number | null;
@@ -69,6 +81,8 @@ export interface VariantVerdict {
   component: string;
   slug: string;
   status: "verified" | "drifted" | "missing_from_figma";
+  /** `unrecorded` when the writer did not say — not the same as measured. */
+  source: StyleSource | "unrecorded";
   matched: number;
   mismatched: number;
   differences: PropertyDiff[];
@@ -117,6 +131,10 @@ export interface VerifyResult {
     missingFromFigma: number;
     propertiesCompared: number;
     propertiesMatched: number;
+    /** Variants whose styling was inferred from source rather than measured. */
+    inferred: number;
+    /** Variants whose writer recorded no provenance at all. */
+    unrecorded: number;
   };
   variants: VariantVerdict[];
 }
@@ -213,9 +231,14 @@ export function verifyVariant(
   tolerance: number,
 ): VariantVerdict {
   if (!figma) {
-    return { component, slug, status: "missing_from_figma", matched: 0, mismatched: 0, differences: [] };
+    return {
+      component, slug, status: "missing_from_figma", source: "unrecorded",
+      matched: 0, mismatched: 0, differences: [],
+    };
   }
 
+  const source: StyleSource | "unrecorded" =
+    figma.source === "measured" || figma.source === "inferred" ? figma.source : "unrecorded";
   const differences: PropertyDiff[] = [];
   let matched = 0;
   let mismatched = 0;
@@ -236,7 +259,7 @@ export function verifyVariant(
   return {
     component, slug,
     status: mismatched > 0 ? "drifted" : "verified",
-    matched, mismatched, differences,
+    source, matched, mismatched, differences,
   };
 }
 
@@ -280,6 +303,10 @@ export function verify(snap: SnapResult, readback: ReadbackFile, tolerance: numb
       missingFromFigma: verdicts.filter((v) => v.status === "missing_from_figma").length,
       propertiesCompared,
       propertiesMatched,
+      inferred: verdicts.filter((v) => v.source === "inferred").length,
+      // Only count variants Figma actually has; a missing variant is a
+      // different problem and is already reported as one.
+      unrecorded: verdicts.filter((v) => v.source === "unrecorded" && v.status !== "missing_from_figma").length,
     },
     variants: verdicts,
   };
