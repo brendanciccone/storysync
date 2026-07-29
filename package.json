@@ -18,8 +18,9 @@
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "lint": "tsc --noEmit",
-    "test": "tsc && node --test dist/cli/__tests__/*.test.js",
-    "prepublishOnly": "tsc && node --test dist/cli/__tests__/*.test.js"
+    "test": "pnpm clean && tsc && node --test dist/cli/__tests__/*.test.js",
+    "prepublishOnly": "pnpm clean && tsc && node --test dist/cli/__tests__/*.test.js",
+    "clean": "rm -rf dist"
   },
   "keywords": [
     "storybook",

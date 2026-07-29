@@ -115,6 +115,7 @@ program
   .option("--selector <css>", "Override the component root selector")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant could not be measured")
+  .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
   .action(async (opts) => {
     const json = !!opts.json;
     const variants = opts.variants as string;
@@ -172,7 +173,16 @@ program
         }
       }
 
-      if (opts.strict && (result.summary.failed > 0 || result.summary.componentsFailed > 0)) {
+      // Warnings are deliberately outside plain --strict. A component whose
+      // variants legitimately render identically (aliased option values, say)
+      // would otherwise fail every build. But a story silently ignoring its
+      // args is exactly the thing worth failing CI over, so --strict-warnings
+      // makes that opt-in.
+      const strict = !!opts.strict || !!opts.strictWarnings;
+      const hasFailures = result.summary.failed > 0 || result.summary.componentsFailed > 0;
+      const hasWarnings = result.summary.componentsWithWarnings > 0;
+
+      if ((strict && hasFailures) || (opts.strictWarnings && hasWarnings)) {
         process.exitCode = 1;
       }
     } catch (err) {

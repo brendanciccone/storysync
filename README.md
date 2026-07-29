@@ -263,7 +263,10 @@ Options:
   --selector <css>       Override the component root selector
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant could not be measured
+  --strict-warnings      Implies --strict, and also fails on warnings
 ```
+
+`--strict` fails on variants that could not be measured. Warnings are separate and opt-in via `--strict-warnings`, because a component whose variants legitimately render the same (aliased option values, for instance) would otherwise fail every build. In CI, `--strict-warnings` is usually what you want: it turns "this story silently ignores its args" into a build failure rather than a line of output nobody reads.
 
 Writes `<out>/styles.json` containing, per component, full styles for a base variant plus only the properties each other variant changes. The file carries no timestamp, so repeat runs against unchanged code are byte-identical and it can be committed and diffed.
 
