@@ -74,7 +74,8 @@ export interface VariantVerdict {
   differences: PropertyDiff[];
 }
 
-export interface SnapAge {
+export interface SnapAgeKnown {
+  known: true;
   measuredAt: string;
   ageMs: number;
   storybookUrl?: string;
@@ -82,12 +83,32 @@ export interface SnapAge {
   stale: boolean;
 }
 
+/**
+ * Why the age could not be established.
+ *
+ * Modelled explicitly rather than as an absent value: `meta.json` is the file a
+ * consuming project is most likely to gitignore, precisely because it churns
+ * every run — which is the whole reason the timestamp lives outside
+ * `styles.json`. An unknown age silently passing would mean the intended usage
+ * pattern produces a repository where `--strict-age` succeeds unconditionally,
+ * forever, on a measurement of unknown vintage.
+ */
+export interface SnapAgeUnknown {
+  known: false;
+  reason: string;
+}
+
+export type SnapAgeInfo = SnapAgeKnown | SnapAgeUnknown;
+
+/** A `measuredAt` this far ahead of now means a bad clock, not a fresh snap. */
+const MAX_CLOCK_SKEW_MS = 60_000;
+
 export interface VerifyResult {
   version: number;
   /** Share of compared properties that matched, 0-1. Null when nothing compared. */
   fidelity: number | null;
-  /** Present when the snap directory carried a meta.json. */
-  snapAge?: SnapAge;
+  /** Age of the measurement, or why it could not be established. */
+  snapAge?: SnapAgeInfo;
   summary: {
     components: number;
     variants: number;
@@ -315,23 +336,47 @@ export function readSnapAge(
   snapPath: string,
   maxAgeMs: number | null,
   now: number = Date.now(),
-): SnapAge | undefined {
-  let meta: { measuredAt?: string; storybookUrl?: string };
+): SnapAgeInfo {
+  const metaPath = join(dirname(snapPath), SNAP_META_FILENAME);
+
+  let meta: { measuredAt?: unknown; storybookUrl?: unknown };
   try {
-    meta = JSON.parse(readFileSync(join(dirname(snapPath), SNAP_META_FILENAME), "utf8"));
-  } catch {
-    return undefined; // Older snaps, or a hand-assembled file.
+    meta = JSON.parse(readFileSync(metaPath, "utf8"));
+  } catch (err) {
+    const missing = (err as NodeJS.ErrnoException).code === "ENOENT";
+    return {
+      known: false,
+      reason: missing
+        ? `no ${SNAP_META_FILENAME} beside ${snapPath}`
+        : `${metaPath} could not be read: ${firstLine(err)}`,
+    };
   }
-  if (!meta.measuredAt) return undefined;
+
+  if (typeof meta.measuredAt !== "string" || !meta.measuredAt) {
+    return { known: false, reason: `${metaPath} has no measuredAt` };
+  }
 
   const measured = Date.parse(meta.measuredAt);
-  if (!Number.isFinite(measured)) return undefined;
+  if (!Number.isFinite(measured)) {
+    return { known: false, reason: `${metaPath} has an unparseable measuredAt (${meta.measuredAt})` };
+  }
+
+  // Clamping a future date to "0s ago" would report a skewed clock as
+  // maximally fresh, which is the wrong way to be wrong.
+  if (measured > now + MAX_CLOCK_SKEW_MS) {
+    return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}) — check the clock` };
+  }
 
   const ageMs = Math.max(0, now - measured);
   return {
+    known: true,
     measuredAt: meta.measuredAt,
     ageMs,
-    storybookUrl: meta.storybookUrl,
+    storybookUrl: typeof meta.storybookUrl === "string" ? meta.storybookUrl : undefined,
     stale: maxAgeMs != null && ageMs > maxAgeMs,
   };
+}
+
+function firstLine(err: unknown): string {
+  return String(err instanceof Error ? err.message : err).split("\n")[0].trim();
 }

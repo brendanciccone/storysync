@@ -254,20 +254,31 @@ program
           console.log(chalk.green(`  Figma matches the measured styles for ${names.join(", ") || "no components"}.`));
         }
 
-        if (result.snapAge) {
-          const age = formatAge(result.snapAge.ageMs);
-          const line = `  Measured ${age} ago${result.snapAge.storybookUrl ? ` from ${result.snapAge.storybookUrl}` : ""}`;
-          if (result.snapAge.stale) {
+        const age = result.snapAge;
+        if (age?.known) {
+          const line = `  Measured ${formatAge(age.ageMs)} ago${age.storybookUrl ? ` from ${age.storybookUrl}` : ""}`;
+          if (age.stale) {
             console.log(chalk.yellow(`${line} — re-run \`storysync snap\` if the code has changed since.`));
           } else {
             console.log(chalk.dim(line));
           }
+        } else if (age) {
+          // Always say something. Printing nothing would let an unchecked age
+          // pass for a checked one.
+          const line = `  Snap age unknown: ${age.reason}`;
+          console.log(opts.strictAge ? chalk.red(line) : chalk.dim(line));
         }
       }
 
       const strict = !!opts.strict || !!opts.strictAge;
       const hasDrift = result.summary.drifted > 0 || result.summary.missingFromFigma > 0;
-      if ((strict && hasDrift) || (opts.strictAge && result.snapAge?.stale)) {
+      // An age that cannot be established is not a pass. `meta.json` is the
+      // file most likely to be gitignored, so failing open here would make
+      // --strict-age succeed unconditionally in exactly the CI setup the
+      // determinism guarantee is designed to enable.
+      const ageFailsStrict = !!opts.strictAge && (!result.snapAge?.known || result.snapAge.stale);
+
+      if ((strict && hasDrift) || ageFailsStrict) {
         process.exitCode = 1;
       }
     } catch (err) {

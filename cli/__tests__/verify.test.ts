@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge } from "../verify.js";
+import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const BASE: NormalizedStyles = {
   display: "inline-flex",
@@ -246,4 +249,89 @@ test("formatAge: scales the unit to the magnitude", () => {
   assert.equal(formatAge(120_000), "2m");
   assert.equal(formatAge(9_000_000), "2.5h");
   assert.equal(formatAge(172_800_000), "2.0d");
+});
+
+// --- readSnapAge ---
+
+function snapDir(meta?: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-age-"));
+  writeFileSync(join(dir, "styles.json"), "{}");
+  if (meta !== undefined) writeFileSync(join(dir, "meta.json"), JSON.stringify(meta));
+  return dir;
+}
+
+const NOW = Date.parse("2026-03-04T12:00:00.000Z");
+
+test("readSnapAge: reports age from a well-formed sidecar", () => {
+  const dir = snapDir({ measuredAt: "2026-03-04T11:00:00.000Z", storybookUrl: "http://localhost:6006" });
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.equal(age.known, true);
+    assert.equal(age.known && age.ageMs, 3_600_000);
+    assert.equal(age.known && age.storybookUrl, "http://localhost:6006");
+    assert.equal(age.known && age.stale, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("readSnapAge: marks a snap past the limit stale", () => {
+  const dir = snapDir({ measuredAt: "2026-03-04T06:00:00.000Z" });
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.equal(age.known && age.stale, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// meta.json is the file a consuming project is most likely to gitignore, so an
+// absent sidecar must read as "unknown", never as "fresh".
+test("readSnapAge: a missing sidecar is unknown, not fresh", () => {
+  const dir = snapDir();
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.equal(age.known, false);
+    assert.match(age.known === false ? age.reason : "", /no meta\.json/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("readSnapAge: malformed sidecars are unknown, with a reason", () => {
+  for (const [meta, pattern] of [
+    [{}, /no measuredAt/],
+    [{ measuredAt: "" }, /no measuredAt/],
+    [{ measuredAt: 12345 }, /no measuredAt/],
+    [{ measuredAt: "not-a-date" }, /unparseable measuredAt/],
+  ] as const) {
+    const dir = snapDir(meta);
+    try {
+      const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+      assert.equal(age.known, false, `${JSON.stringify(meta)} should be unknown`);
+      assert.match(age.known === false ? age.reason : "", pattern);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+// Clamping a future date to "0s ago" would report a skewed clock as maximally
+// fresh — the wrong way to be wrong.
+test("readSnapAge: a future measuredAt is unknown, not maximally fresh", () => {
+  const dir = snapDir({ measuredAt: "2026-03-04T21:00:00.000Z" });
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.equal(age.known, false);
+    assert.match(age.known === false ? age.reason : "", /in the future/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("readSnapAge: tolerates trivial clock skew", () => {
+  const dir = snapDir({ measuredAt: "2026-03-04T12:00:10.000Z" }); // 10s ahead
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.equal(age.known, true);
+    assert.equal(age.known && age.ageMs, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("readSnapAge: no limit means never stale", () => {
+  const dir = snapDir({ measuredAt: "2020-01-01T00:00:00.000Z" });
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), null, NOW);
+    assert.equal(age.known && age.stale, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

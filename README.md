@@ -314,6 +314,8 @@ Only properties the readback actually reports are scored. Figma has no equivalen
 
 **Staleness.** `snap` writes a `meta.json` beside `styles.json` recording when the measurement was taken and against which Storybook. It is deliberately a separate file: `styles.json` is meant to be committed and diffed, and an embedded timestamp would churn on every run and bury the changes that matter. `verify` uses it to notice it is scoring a measurement taken before the code changed — the one drift case nothing else catches, since every property matches and the score reads 100%.
 
+`--strict-age` fails when the age cannot be established at all — a missing or malformed `meta.json`, or one dated in the future. That matters because `meta.json` is exactly the file a project is likely to gitignore, being the one that churns; treating an unknown age as a pass would make the check succeed unconditionally in the setup it exists to protect. Age is reported on every run, so an unchecked one never passes for a checked one.
+
 ### `storysync list`
 
 List all components available in Storybook.
