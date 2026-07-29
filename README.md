@@ -284,6 +284,36 @@ npx playwright@latest install chromium     # note: the full `playwright` package
 
 Values Storybook cannot carry in a URL are reported rather than measured. Its allowed character set is `[a-zA-Z0-9 _-]`, so an option like `Data Display` works while `Nav/Primary` is rejected — those variants are marked `args_unsupported` instead of silently recording the default render.
 
+### `storysync verify`
+
+Compare what was written to Figma against the styles `snap` measured, and report a fidelity score. The agent writes a component, has the plugin read the created node's real properties back out to `.storysync/figma-readback.json`, and this scores the result.
+
+```text
+Options:
+  --snap <path>          Snap output (default: ".storysync/snaps/styles.json")
+  --readback <path>      Properties read back from Figma (default: ".storysync/figma-readback.json")
+  --tolerance <px>       Allowed difference for lengths (default: 0.5)
+  --max-age <duration>   Warn when the snap is older than this (default: "2h")
+  --json                 Output JSON instead of formatted text
+  --strict               Exit with code 1 if any variant drifted or is missing from Figma
+  --strict-age           Implies --strict, and also fails on a stale snap
+```
+
+```text
+Fidelity: 95.0% (38/40 properties)
+4 verified, 1 drifted, 0 missing from Figma, across 5 variants
+
+  ~ Forms/Button variant-outline--size-sm--disabled-false
+      backgroundColor: measured null, Figma "#ff00ff"
+      borderRadiusUniform: measured 3, Figma 8
+```
+
+Comparison is numeric rather than visual: measured values diff deterministically and cost nothing, where comparing screenshots means paying a model to render a judgement that won't reproduce.
+
+Only properties the readback actually reports are scored. Figma has no equivalent for `lineHeight: "normal"` or a measured width on an auto-layout frame, so counting those would manufacture drift. Variants Figma never received are reported separately rather than dragging the score down — a missing variant is a different problem from a wrong one.
+
+**Staleness.** `snap` writes a `meta.json` beside `styles.json` recording when the measurement was taken and against which Storybook. It is deliberately a separate file: `styles.json` is meant to be committed and diffed, and an embedded timestamp would churn on every run and bury the changes that matter. `verify` uses it to notice it is scoring a measurement taken before the code changed — the one drift case nothing else catches, since every property matches and the score reads 100%.
+
 ### `storysync list`
 
 List all components available in Storybook.

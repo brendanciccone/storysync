@@ -87,7 +87,31 @@ export interface SnapDeps {
   launch: typeof resolveAndLaunch;
   /** Called with human-readable progress; no-op under --json. */
   onProgress?: (message: string) => void;
+  /** Injectable clock, so tests can assert on the recorded time. */
+  now?: () => number;
 }
+
+/**
+ * Volatile metadata about a snap run.
+ *
+ * Kept beside `styles.json` rather than inside it: `styles.json` is meant to be
+ * committed and diffed, so an embedded timestamp would churn on every run and
+ * bury the changes that matter. This file carries the things that legitimately
+ * change run to run, and is what lets `verify` notice it is reading a stale
+ * measurement.
+ */
+export interface SnapMeta {
+  version: number;
+  measuredAt: string;
+  storysyncVersion: string;
+  storybookUrl: string;
+  variantSelection: VariantSelection;
+  components: number;
+  variants: number;
+}
+
+export const SNAP_META_FILENAME = "meta.json";
+export const SNAP_STYLES_FILENAME = "styles.json";
 
 /**
  * Prefer an explicit Default story, since it is the least decorated.
@@ -172,6 +196,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   };
 
   writeStylesJson(opts.outDir, result);
+  writeMetaJson(opts.outDir, result, new Date(deps.now?.() ?? Date.now()).toISOString());
   return result;
 }
 
@@ -318,8 +343,24 @@ function writeScreenshot(
  * committed and diffed.
  */
 function writeStylesJson(outDir: string, result: SnapResult): string {
-  const path = join(outDir, "styles.json");
+  const path = join(outDir, SNAP_STYLES_FILENAME);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(path, `${JSON.stringify(result, null, 2)}\n`);
+  return path;
+}
+
+function writeMetaJson(outDir: string, result: SnapResult, measuredAt: string): string {
+  const meta: SnapMeta = {
+    version: SNAP_SCHEMA_VERSION,
+    measuredAt,
+    storysyncVersion: result.storysyncVersion,
+    storybookUrl: result.storybookUrl,
+    variantSelection: result.variantSelection,
+    components: result.summary.components,
+    variants: result.summary.variants,
+  };
+  const path = join(outDir, SNAP_META_FILENAME);
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`);
   return path;
 }

@@ -9,8 +9,10 @@
 // values is deterministic, cheap, and reproducible.
 
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { applyDelta } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
+import { SNAP_META_FILENAME } from "./snap.js";
 import type { SnapResult } from "./snap.js";
 
 export const READBACK_SCHEMA_VERSION = 1;
@@ -72,10 +74,20 @@ export interface VariantVerdict {
   differences: PropertyDiff[];
 }
 
+export interface SnapAge {
+  measuredAt: string;
+  ageMs: number;
+  storybookUrl?: string;
+  /** True once older than the configured limit. */
+  stale: boolean;
+}
+
 export interface VerifyResult {
   version: number;
   /** Share of compared properties that matched, 0-1. Null when nothing compared. */
   fidelity: number | null;
+  /** Present when the snap directory carried a meta.json. */
+  snapAge?: SnapAge;
   summary: {
     components: number;
     variants: number;
@@ -271,4 +283,55 @@ export function loadJsonFile<T>(path: string, label: string): T {
 
 export function formatFidelity(fidelity: number | null): string {
   return fidelity == null ? "n/a" : `${(fidelity * 100).toFixed(1)}%`;
+}
+
+/** Parses `30m`, `2h`, `7d`, or a bare number of minutes. Null if unparseable. */
+export function parseDuration(input: string): number | null {
+  const m = input.trim().match(/^(\d+(?:\.\d+)?)\s*([smhd]?)$/i);
+  if (!m) return null;
+  const value = Number(m[1]);
+  if (!Number.isFinite(value)) return null;
+  const unit = (m[2] || "m").toLowerCase();
+  const scale = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit];
+  return scale == null ? null : value * scale;
+}
+
+export function formatAge(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  return `${(ms / 86_400_000).toFixed(1)}d`;
+}
+
+/**
+ * Reads the sidecar written beside `styles.json`.
+ *
+ * A stale snap of the *right* component is the one drift case nothing else
+ * catches: every property matches, the score reads 100%, and it is describing
+ * code that has since changed. Comparing against the wrong component is loud
+ * — everything reports missing — but this is silent, so it needs the clock.
+ */
+export function readSnapAge(
+  snapPath: string,
+  maxAgeMs: number | null,
+  now: number = Date.now(),
+): SnapAge | undefined {
+  let meta: { measuredAt?: string; storybookUrl?: string };
+  try {
+    meta = JSON.parse(readFileSync(join(dirname(snapPath), SNAP_META_FILENAME), "utf8"));
+  } catch {
+    return undefined; // Older snaps, or a hand-assembled file.
+  }
+  if (!meta.measuredAt) return undefined;
+
+  const measured = Date.parse(meta.measuredAt);
+  if (!Number.isFinite(measured)) return undefined;
+
+  const ageMs = Math.max(0, now - measured);
+  return {
+    measuredAt: meta.measuredAt,
+    ageMs,
+    storybookUrl: meta.storybookUrl,
+    stale: maxAgeMs != null && ageMs > maxAgeMs,
+  };
 }

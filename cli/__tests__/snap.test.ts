@@ -184,3 +184,73 @@ test("runSnap: styles.json carries no timestamp, so runs are reproducible", asyn
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runSnap: writes volatile metadata beside styles.json, not inside it", async () => {
+  const dir = tempDir();
+  try {
+    const FIXED = Date.parse("2026-03-04T05:06:07.000Z");
+    const deps = {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({
+          name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+          close: async () => {},
+        },
+      }) as never,
+      now: () => FIXED,
+    };
+
+    await runSnap(options(dir), deps);
+
+    const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+    assert.equal(meta.measuredAt, "2026-03-04T05:06:07.000Z");
+    assert.equal(meta.storybookUrl, "http://localhost:6006");
+    assert.equal(meta.variantSelection, "representative");
+
+    // The timestamp must stay out of styles.json, which is meant to be
+    // committed and diffed.
+    const styles = readFileSync(join(dir, "styles.json"), "utf8");
+    assert.doesNotMatch(styles, /measuredAt|\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: styles.json stays byte-identical even as the clock moves", async () => {
+  const dir = tempDir();
+  try {
+    const build = (now: number) => ({
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({
+          name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+          close: async () => {},
+        },
+      }) as never,
+      now: () => now,
+    });
+
+    await runSnap(options(dir), build(1_000_000));
+    const first = readFileSync(join(dir, "styles.json"), "utf8");
+    const firstMeta = readFileSync(join(dir, "meta.json"), "utf8");
+
+    await runSnap(options(dir), build(9_999_999));
+    assert.equal(readFileSync(join(dir, "styles.json"), "utf8"), first);
+    // The sidecar is where the churn is allowed to live.
+    assert.notEqual(readFileSync(join(dir, "meta.json"), "utf8"), firstMeta);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

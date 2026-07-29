@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity } from "../verify.js";
+import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
@@ -222,4 +222,28 @@ test("formatFidelity: renders a percentage, or n/a", () => {
   assert.equal(formatFidelity(1), "100.0%");
   assert.equal(formatFidelity(0.9412), "94.1%");
   assert.equal(formatFidelity(null), "n/a");
+});
+
+// --- snap age ---
+
+test("parseDuration: accepts common units and defaults to minutes", () => {
+  assert.equal(parseDuration("30s"), 30_000);
+  assert.equal(parseDuration("30m"), 1_800_000);
+  assert.equal(parseDuration("2h"), 7_200_000);
+  assert.equal(parseDuration("7d"), 604_800_000);
+  assert.equal(parseDuration("45"), 2_700_000);
+  assert.equal(parseDuration(" 2h "), 7_200_000);
+});
+
+test("parseDuration: rejects nonsense", () => {
+  for (const bad of ["abc", "2y", "", "-5m", "2 hours"]) {
+    assert.equal(parseDuration(bad), null, `"${bad}" should not parse`);
+  }
+});
+
+test("formatAge: scales the unit to the magnitude", () => {
+  assert.equal(formatAge(5_000), "5s");
+  assert.equal(formatAge(120_000), "2m");
+  assert.equal(formatAge(9_000_000), "2.5h");
+  assert.equal(formatAge(172_800_000), "2.0d");
 });

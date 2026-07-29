@@ -10,7 +10,7 @@ import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tok
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
-import { verify, loadJsonFile, formatFidelity } from "./verify.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
 import type { ReadbackFile } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
@@ -203,8 +203,10 @@ program
   .option("--snap <path>", "Path to snap output", ".storysync/snaps/styles.json")
   .option("--readback <path>", "Path to the properties read back from Figma", ".storysync/figma-readback.json")
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
+  .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant drifted or is missing from Figma")
+  .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .action(async (opts) => {
     const json = !!opts.json;
     const tolerance = Number(opts.tolerance);
@@ -213,10 +215,18 @@ program
       process.exit(1);
     }
 
+    const maxAgeMs = parseDuration(opts.maxAge as string);
+    if (maxAgeMs == null) {
+      console.error(chalk.red(`--max-age must be a duration like 30m, 2h or 7d, received "${opts.maxAge}"`));
+      process.exit(1);
+    }
+
     try {
-      const snap = loadJsonFile<SnapResult>(opts.snap as string, "snap output");
+      const snapPath = opts.snap as string;
+      const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
       const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
       const result = verify(snap, readback, tolerance);
+      result.snapAge = readSnapAge(snapPath, maxAgeMs);
 
       if (json) {
         console.log(JSON.stringify(result));
@@ -238,11 +248,26 @@ program
         }
 
         if (!result.variants.some((v) => v.status !== "verified")) {
-          console.log(chalk.green("  Figma matches the measured styles."));
+          // Name what was checked. On a clean run this is otherwise the only
+          // output, and "it matches" is not much use without saying what did.
+          const names = [...new Set(result.variants.map((v) => v.component))];
+          console.log(chalk.green(`  Figma matches the measured styles for ${names.join(", ") || "no components"}.`));
+        }
+
+        if (result.snapAge) {
+          const age = formatAge(result.snapAge.ageMs);
+          const line = `  Measured ${age} ago${result.snapAge.storybookUrl ? ` from ${result.snapAge.storybookUrl}` : ""}`;
+          if (result.snapAge.stale) {
+            console.log(chalk.yellow(`${line} — re-run \`storysync snap\` if the code has changed since.`));
+          } else {
+            console.log(chalk.dim(line));
+          }
         }
       }
 
-      if (opts.strict && (result.summary.drifted > 0 || result.summary.missingFromFigma > 0)) {
+      const strict = !!opts.strict || !!opts.strictAge;
+      const hasDrift = result.summary.drifted > 0 || result.summary.missingFromFigma > 0;
+      if ((strict && hasDrift) || (opts.strictAge && result.snapAge?.stale)) {
         process.exitCode = 1;
       }
     } catch (err) {
