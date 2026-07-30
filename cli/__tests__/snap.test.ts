@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory } from "../snap.js";
+import { runSnap, pickStory, detectFontSubstitution } from "../snap.js";
 import type { SnapOptions } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
@@ -253,4 +253,58 @@ test("runSnap: styles.json stays byte-identical even as the clock moves", async 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- font substitution warning ---
+
+function componentWithFonts(
+  baseAvailable: boolean | null,
+  variantDeltas: Record<string, unknown>[] = [],
+): Parameters<typeof detectFontSubstitution>[0] {
+  return {
+    name: "Button", title: "Forms/Button", storyId: "b--default",
+    variantProperties: [], warnings: [], error: null,
+    base: {
+      combination: {}, slug: "a",
+      styles: { fontFamily: "Inter", fontAvailable: baseAvailable } as never,
+    },
+    variants: variantDeltas.map((delta, i) => ({
+      combination: {}, slug: `v${i}`, status: "ok" as const, error: null, delta: delta as never,
+    })),
+  };
+}
+
+test("detectFontSubstitution: silent when the font resolved", () => {
+  assert.equal(detectFontSubstitution(componentWithFonts(true)), null);
+  assert.equal(detectFontSubstitution(componentWithFonts(null)), null);
+});
+
+test("detectFontSubstitution: names an unavailable base font", () => {
+  const warning = detectFontSubstitution(componentWithFonts(false));
+  assert.match(warning!, /could not render "Inter"/);
+  assert.match(warning!, /cannot install fonts into Figma/);
+});
+
+// A variant that switches family carries its own availability in its delta;
+// inspecting only the base would record the substitution without reporting it.
+test("detectFontSubstitution: catches a variant-only substitution", () => {
+  const warning = detectFontSubstitution(
+    componentWithFonts(true, [{ fontAvailable: false, fontFamily: "Helvetica" }]),
+  );
+  assert.match(warning!, /could not render "Helvetica"/);
+});
+
+test("detectFontSubstitution: names every distinct unavailable family once", () => {
+  const warning = detectFontSubstitution(componentWithFonts(false, [
+    { fontAvailable: false, fontFamily: "Helvetica" },
+    { fontAvailable: false, fontFamily: "Helvetica" },
+  ]));
+  assert.match(warning!, /"Inter"/);
+  assert.match(warning!, /"Helvetica"/);
+  assert.equal((warning!.match(/Helvetica/g) ?? []).length, 1);
+});
+
+test("detectFontSubstitution: a variant delta without a family falls back to the base name", () => {
+  const warning = detectFontSubstitution(componentWithFonts(true, [{ fontAvailable: false }]));
+  assert.match(warning!, /could not render "Inter"/);
 });

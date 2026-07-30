@@ -255,7 +255,9 @@ program
           // Only claim "measured" when everything actually was. Saying it of a
           // partly-inferred run is the conflation the provenance line exists
           // to prevent.
-          const allMeasured = result.summary.inferred === 0 && result.summary.unrecorded === 0;
+          const allMeasured = result.summary.inferred === 0
+            && result.summary.unrecorded === 0
+            && result.summary.unmeasured === 0;
           const kind = allMeasured ? "measured" : "expected";
           console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ") || "no components"}.`));
         }
@@ -263,15 +265,19 @@ program
         // Provenance before age: a component styled by guesswork matters more
         // than one measured a while ago, and this is the line that separates
         // "produced a result" from "produced a measured result".
-        const { inferred, unrecorded } = result.summary;
-        if (inferred > 0 || unrecorded > 0) {
+        const { inferred, unrecorded, unmeasured } = result.summary;
+        if (inferred > 0 || unrecorded > 0 || unmeasured > 0) {
           const parts: string[] = [];
           if (inferred > 0) parts.push(`${inferred} inferred from source rather than measured`);
           if (unrecorded > 0) parts.push(`${unrecorded} with no recorded provenance`);
+          if (unmeasured > 0) parts.push(`${unmeasured} in Figma that snap never measured`);
           const line = `  Provenance: ${parts.join(", ")}`;
           console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
           for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
             console.log(chalk.dim(`      ${v.component} ${v.slug} [${v.source}]`));
+          }
+          for (const u of result.unmeasuredInFigma) {
+            console.log(chalk.dim(`      ${u.component} ${u.slug} [unmeasured — written to Figma but never scored]`));
           }
         }
 
@@ -295,7 +301,9 @@ program
       const hasDrift = result.summary.drifted > 0 || result.summary.missingFromFigma > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one.
-      const notMeasured = result.summary.inferred > 0 || result.summary.unrecorded > 0;
+      const notMeasured = result.summary.inferred > 0
+        || result.summary.unrecorded > 0
+        || result.summary.unmeasured > 0;
       // An age that cannot be established is not a pass. `meta.json` is the
       // file most likely to be gitignored, so failing open here would make
       // --strict-age succeed unconditionally in exactly the CI setup the

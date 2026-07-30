@@ -163,11 +163,26 @@ function detectIdenticalVariants(variants: SnapVariant[]): string | null {
  * different typeface. Worth saying out loud, because the resulting Figma text
  * will be wrong in a way no numeric comparison can see.
  */
-function detectFontSubstitution(component: SnapComponent): string | null {
+export function detectFontSubstitution(component: SnapComponent): string | null {
   const base = component.base?.styles;
-  if (!base || base.fontAvailable !== false || !base.fontFamily) return null;
+  if (!base) return null;
+
+  // Check every variant, not just the base — a variant that switches font
+  // family carries its own `fontAvailable` in its delta, and inspecting only
+  // the base would record the substitution without ever reporting it.
+  const families = new Set<string>();
+  if (base.fontAvailable === false && base.fontFamily) families.add(base.fontFamily);
+  for (const variant of component.variants) {
+    const delta = variant.delta;
+    if (!delta || delta.fontAvailable !== false) continue;
+    const family = delta.fontFamily ?? base.fontFamily;
+    if (family) families.add(family);
+  }
+  if (!families.size) return null;
+
+  const named = [...families].map((f) => `"${f}"`).join(", ");
   return (
-    `the browser could not render "${base.fontFamily}", so the measurements describe a ` +
+    `the browser could not render ${named}, so the measurements describe a ` +
     `substituted typeface. Load the font in Storybook (a preview-head.html <link> is enough), ` +
     `or expect the Figma text to differ. Figma also needs the font available to its editor — ` +
     `storysync cannot install fonts into Figma.`

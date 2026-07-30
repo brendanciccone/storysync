@@ -426,3 +426,47 @@ test("verify: geometry participates in the score when the readback reports it", 
   assert.equal(result.summary.propertiesCompared, 2);
   assert.equal(result.fidelity, 1);
 });
+
+// --- unmeasured Figma content ---
+
+// The mirror of missing_from_figma. Without this, snap failing for a whole
+// component and the agent inferring it wholesale produces a readback entry
+// nothing scores — and a run that reports a clean match.
+test("verify: reports readback components snap never measured", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }]),
+    {
+      version: 1,
+      components: {
+        "Forms/Button": { variants: { a: { source: "measured", backgroundColor: "#2563eb" } } as never },
+        "Forms/Ghost": { variants: { z: { source: "measured", backgroundColor: "#ff0000" } } as never },
+      },
+    },
+    0.5,
+  );
+  assert.equal(result.summary.unmeasured, 1);
+  assert.deepEqual(result.unmeasuredInFigma, [{ component: "Forms/Ghost", slug: "z" }]);
+});
+
+test("verify: reports individual variant slugs snap never measured", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }]),
+    readbackWith({
+      a: { source: "measured", backgroundColor: "#2563eb" },
+      typo: { source: "measured", backgroundColor: "#2563eb" },
+    }),
+    0.5,
+  );
+  assert.equal(result.summary.unmeasured, 1);
+  assert.deepEqual(result.unmeasuredInFigma, [{ component: "Forms/Button", slug: "typo" }]);
+});
+
+test("verify: a fully matched readback reports nothing unmeasured", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }]),
+    readbackWith({ a: { source: "measured", backgroundColor: "#2563eb" } }),
+    0.5,
+  );
+  assert.equal(result.summary.unmeasured, 0);
+  assert.deepEqual(result.unmeasuredInFigma, []);
+});

@@ -155,7 +155,18 @@ export interface VerifyResult {
     inferred: number;
     /** Variants whose writer recorded no provenance at all. */
     unrecorded: number;
+    /** Variants present in Figma that snap never measured, so nothing scored them. */
+    unmeasured: number;
   };
+  /**
+   * Readback entries with no corresponding measurement.
+   *
+   * These are written to Figma but unscored, so without listing them a run can
+   * report a clean match while a whole component went unchecked — which is
+   * exactly what happens when snap fails for a component and the agent falls
+   * back to inferring it wholesale.
+   */
+  unmeasuredInFigma: { component: string; slug: string }[];
   variants: VariantVerdict[];
 }
 
@@ -313,6 +324,16 @@ export function verify(snap: SnapResult, readback: ReadbackFile, tolerance: numb
     }
   }
 
+  // The mirror of missing_from_figma: something Figma has that we never
+  // measured, and therefore never scored.
+  const unmeasuredInFigma: { component: string; slug: string }[] = [];
+  for (const [component, entry] of Object.entries(readback.components ?? {})) {
+    const measured = measuredByComponent.get(component);
+    for (const slug of Object.keys(entry?.variants ?? {})) {
+      if (!measured?.has(slug)) unmeasuredInFigma.push({ component, slug });
+    }
+  }
+
   const propertiesMatched = verdicts.reduce((n, v) => n + v.matched, 0);
   const propertiesCompared = propertiesMatched + verdicts.reduce((n, v) => n + v.mismatched, 0);
 
@@ -331,7 +352,9 @@ export function verify(snap: SnapResult, readback: ReadbackFile, tolerance: numb
       // Only count variants Figma actually has; a missing variant is a
       // different problem and is already reported as one.
       unrecorded: verdicts.filter((v) => v.source === "unrecorded" && v.status !== "missing_from_figma").length,
+      unmeasured: unmeasuredInFigma.length,
     },
+    unmeasuredInFigma,
     variants: verdicts,
   };
 }
