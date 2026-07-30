@@ -153,6 +153,12 @@ export interface CaptureResult {
   screenshot: Buffer | null;
   /** What the root-element heuristic settled on, for debugging. */
   matchedSelector: string | null;
+  /**
+   * Whether the browser could render the element's first declared font family,
+   * or null when it could not be determined. A declared font that never loaded
+   * would otherwise be measured as though it had been used.
+   */
+  fontAvailable: boolean | null;
 }
 
 const ROOT_SELECTORS = ["#storybook-root > *", "#root > *"] as const;
@@ -169,7 +175,8 @@ export async function captureStory(
   opts: { timeoutMs: number; selector?: string; screenshot: boolean },
 ): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
-    raw: null, textRaw: null, boundingBox: null, screenshot: null, matchedSelector: null,
+    raw: null, textRaw: null, boundingBox: null, screenshot: null,
+    matchedSelector: null, fontAvailable: null,
   };
 
   try {
@@ -193,14 +200,15 @@ export async function captureStory(
 
     const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
     const textRaw = await readTextStyles(page, target, TEXT_PROPERTIES);
+    const fontAvailable = await readFontAvailability(page, target);
     const boundingBox = await target.boundingBox();
     const screenshot = opts.screenshot ? await target.screenshot({ type: "png" }) : null;
 
     if (!boundingBox) {
-      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw };
+      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, fontAvailable };
     }
 
-    return { status: "ok", error: null, raw, textRaw, boundingBox, screenshot, matchedSelector: rootSelector };
+    return { status: "ok", error: null, raw, textRaw, boundingBox, screenshot, matchedSelector: rootSelector, fontAvailable };
   } catch (err) {
     const message = firstLine(err);
     const isTimeout = /timeout|timed out/i.test(message);
@@ -323,4 +331,39 @@ async function readTextStyles(
     },
     [handle, properties] as const,
   );
+}
+
+/**
+ * Whether the first declared font family can actually be rendered.
+ *
+ * `getComputedStyle` reports the font stack as authored, not what the browser
+ * resolved to, so a project naming a font it never loaded measures identically
+ * to one that loaded it — and would score full marks against Figma while the
+ * screenshots showed a different typeface.
+ *
+ * `document.fonts.check` is the honest signal available here. It answers "could
+ * this be rendered", which catches the common case of a webfont that failed to
+ * load. It cannot detect a system-level alias silently satisfying the request,
+ * so a true result is weaker evidence than a false one.
+ */
+async function readFontAvailability(
+  page: Page,
+  handle: ElementHandle<Element>,
+): Promise<boolean | null> {
+  return page.evaluate((node) => {
+    try {
+      const cs = getComputedStyle(node as Element);
+      const first = (cs.fontFamily || "").split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
+      if (!first) return null;
+      // Generic families are always satisfiable; reporting on them is noise.
+      if (["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui"].includes(first.toLowerCase())) {
+        return null;
+      }
+      const size = cs.fontSize || "16px";
+      const weight = cs.fontWeight || "400";
+      return document.fonts.check(`${weight} ${size} "${first}"`);
+    } catch {
+      return null;
+    }
+  }, handle);
 }

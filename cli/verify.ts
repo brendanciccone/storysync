@@ -50,6 +50,9 @@ export interface ReadbackStyles {
   gap?: { row: number; column: number } | null;
   flexDirection?: string | null;
   opacity?: number;
+  /** From the node's render bounds, so an OUTSIDE stroke is included. */
+  width?: number;
+  height?: number;
 }
 
 export interface ReadbackFile {
@@ -66,7 +69,24 @@ export interface ReadbackFile {
 export const COMPARABLE_PROPERTIES = [
   "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
   "boxShadow", "fontSize", "fontWeight", "fontFamily", "gap", "flexDirection", "opacity",
+  "width", "height",
 ] as const;
+
+/**
+ * Geometry gets its own floor.
+ *
+ * Auto-layout derives width and height from font metrics and padding, and Figma
+ * rounds text advance to whole pixels where the browser reports fractions, so
+ * sub-pixel disagreement is expected rather than drift. A floor of 1px keeps
+ * that from flagging nearly every variant, while still catching the real
+ * failure this check exists for — variants stacked at the same position inside
+ * a box that was never grown to fit them.
+ *
+ * The readback must supply these from the node's render bounds, not `node.width`,
+ * which excludes an OUTSIDE stroke and would under-report by the border on
+ * every outlined variant.
+ */
+const MIN_GEOMETRY_TOLERANCE_PX = 1;
 
 export type ComparableProperty = (typeof COMPARABLE_PROPERTIES)[number];
 
@@ -202,6 +222,10 @@ export function propertyMatches(
     case "opacity":
       if (measured == null || figma == null) return (measured ?? null) === (figma ?? null);
       return closeEnough(Number(measured), Number(figma), tolerance);
+    case "width":
+    case "height":
+      if (measured == null || figma == null) return (measured ?? null) === (figma ?? null);
+      return closeEnough(Number(measured), Number(figma), Math.max(tolerance, MIN_GEOMETRY_TOLERANCE_PX));
     case "fontWeight":
       return Number(measured ?? 0) === Number(figma ?? 0);
     case "fontFamily":

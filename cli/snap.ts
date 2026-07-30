@@ -154,6 +154,26 @@ function detectIdenticalVariants(variants: SnapVariant[]): string | null {
   );
 }
 
+/**
+ * Flags a declared font the browser could not render.
+ *
+ * The measured `fontFamily` is the first *declared* family, not the resolved
+ * one, so a project naming a font it never loaded measures identically to one
+ * that loaded it — and would score full marks against Figma while rendering a
+ * different typeface. Worth saying out loud, because the resulting Figma text
+ * will be wrong in a way no numeric comparison can see.
+ */
+function detectFontSubstitution(component: SnapComponent): string | null {
+  const base = component.base?.styles;
+  if (!base || base.fontAvailable !== false || !base.fontFamily) return null;
+  return (
+    `the browser could not render "${base.fontFamily}", so the measurements describe a ` +
+    `substituted typeface. Load the font in Storybook (a preview-head.html <link> is enough), ` +
+    `or expect the Figma text to differ. Figma also needs the font available to its editor — ` +
+    `storysync cannot install fonts into Figma.`
+  );
+}
+
 export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapResult> {
   const progress = deps.onProgress ?? (() => {});
   const entries = await listSelectedComponents(deps.storybook, opts.components);
@@ -284,7 +304,7 @@ async function snapComponent(
         continue;
       }
 
-      const styles = normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw);
+      const styles = normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable);
       const variant: SnapVariant = {
         combination, slug, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },
@@ -312,6 +332,9 @@ async function snapComponent(
 
   const identical = detectIdenticalVariants(shell.variants);
   if (identical) shell.warnings.push(identical);
+
+  const substituted = detectFontSubstitution(shell);
+  if (substituted) shell.warnings.push(substituted);
 
   const label = entry.title ?? entry.name;
   if (shell.error) {

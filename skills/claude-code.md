@@ -160,6 +160,13 @@ npx storysync snap --storybook http://localhost:6006 --json
    | `boxShadow[]` | `DROP_SHADOW` effects |
    | `display: flex` + `flexDirection` | auto-layout direction |
    | `fontSize` / `fontWeight` / `fontFamily` | text style |
+   | `boxSizing` | `strokeAlign`: `content-box` → `OUTSIDE`, `border-box` → `INSIDE` |
+
+   Three mappings that are wrong by default and will not show up as drift unless you get them right:
+
+   - **`strokeAlign` follows `boxSizing`.** Figma defaults strokes to `INSIDE`, which eats padding. A CSS border on a `content-box` element grows the box outward, so those need `strokeAlign = 'OUTSIDE'`. Only `border-box` elements match Figma's default.
+   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant (a simple grid or row with spacing) and size the set to contain them.
+   - **`fontAvailable: false` means the measurement describes a substituted typeface.** `fontFamily` is the family the code *asked for*; if the browser could not load it, the geometry and text you measured are not the intended font's. Say so in the summary. If Figma also lacks the font, name it explicitly — "Figma has no *Inter*; install it or map it" — rather than letting it surface as unexplained text drift. storysync cannot install fonts into Figma; that is a manual step in the desktop app.
 
    **Variants where `status` is not `"ok"` were not measured.** Only for those, fall back to reading the component's source (`.tsx`/`.jsx`, CSS modules, styled-components, inline styles, `cva`/`clsx`/`cn` calls) and resolve any design tokens through `npx storysync tokens --json` or the project's own config — never from a memorised class-to-value table, which is wrong for any project with a custom palette.
 
@@ -223,6 +230,10 @@ use_figma({
         fontWeight: text ? text.fontName.style === 'Bold' ? 700 : 400 : undefined,
         gap: { row: child.itemSpacing, column: child.itemSpacing },
         opacity: child.opacity,
+        // Render bounds, not node.width — that excludes an OUTSIDE stroke and
+        // would under-report by the border width on every outlined variant.
+        width: (child.absoluteRenderBounds || child).width,
+        height: (child.absoluteRenderBounds || child).height,
       };
     }
     return JSON.stringify({ id: componentSet.id, name: componentSet.name, readback });

@@ -358,3 +358,27 @@ test("applyDelta: round-trips back to the original variant", () => {
   }), { width: 90, height: 44 });
   assert.deepEqual(applyDelta(base, diffFromBase(base, variant)), variant);
 });
+
+// --- box-sizing and font availability ---
+
+test("normalizeStyles: records box-sizing, defaulting to content-box", () => {
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX).boxSizing, "content-box");
+  assert.equal(normalizeStyles(withOverrides({ "box-sizing": "border-box" }), BOX).boxSizing, "border-box");
+  const { "box-sizing": _omitted, ...without } = withOverrides({});
+  assert.equal(normalizeStyles(without, BOX).boxSizing, "content-box");
+});
+
+// The measured fontFamily is the *declared* first family, so a project naming a
+// font it never loaded measures identically to one that did. Availability is
+// what keeps that visible.
+test("normalizeStyles: carries font availability through, defaulting to unknown", () => {
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX).fontAvailable, null);
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, null, true).fontAvailable, true);
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, null, false).fontAvailable, false);
+});
+
+test("diffFromBase: a font that stopped resolving shows up as a delta", () => {
+  const base = normalizeStyles(PRIMARY_SM, BOX, null, true);
+  const variant = normalizeStyles(PRIMARY_SM, BOX, null, false);
+  assert.deepEqual(diffFromBase(base, variant), { fontAvailable: false });
+});

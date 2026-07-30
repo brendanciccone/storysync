@@ -31,6 +31,8 @@ const BASE: NormalizedStyles = {
   boxShadow: [],
   opacity: 1,
   text: null,
+  boxSizing: "content-box",
+  fontAvailable: true,
 };
 
 function snapWith(variants: { slug: string; delta?: Record<string, unknown>; status?: string }[]): SnapResult {
@@ -393,4 +395,34 @@ test("verify: a variant missing from Figma is not also counted as unrecorded", (
   );
   assert.equal(result.summary.missingFromFigma, 1);
   assert.equal(result.summary.unrecorded, 0);
+});
+
+// --- geometry ---
+
+// Auto-layout derives size from font metrics and padding, and Figma rounds text
+// advance to whole pixels where the browser reports fractions.
+test("propertyMatches: geometry tolerates sub-pixel text rounding", () => {
+  assert.equal(propertyMatches("width", 54.19, 55, 0.5), true);
+  assert.equal(propertyMatches("height", 23.4, 23, 0.5), true);
+});
+
+test("propertyMatches: geometry still catches a real mismatch", () => {
+  // The overlapping-variants failure: a box never grown to fit its contents.
+  assert.equal(propertyMatches("width", 220, 55, 0.5), false);
+  assert.equal(propertyMatches("height", 23, 120, 0.5), false);
+});
+
+test("propertyMatches: an explicit tolerance above the floor is honoured", () => {
+  assert.equal(propertyMatches("width", 55, 58, 0.5), false);
+  assert.equal(propertyMatches("width", 55, 58, 4), true);
+});
+
+test("verify: geometry participates in the score when the readback reports it", () => {
+  const result = verify(
+    snapWith([{ slug: "primary" }]),
+    readbackWith({ primary: { source: "measured", width: 61.5, height: 24 } }),
+    0.5,
+  );
+  assert.equal(result.summary.propertiesCompared, 2);
+  assert.equal(result.fidelity, 1);
 });

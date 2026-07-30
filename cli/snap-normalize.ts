@@ -59,6 +59,22 @@ export interface NormalizedStyles {
   boxShadow: BoxShadowLayer[];
   opacity: number;
   text: TextStyles | null;
+  /**
+   * `content-box` or `border-box`. Decides whether a border sits outside the
+   * declared size or inside it, which is what Figma's `strokeAlign` has to
+   * mirror — the default `INSIDE` eats padding on a `content-box` element.
+   */
+  boxSizing: string;
+  /**
+   * Whether the browser could actually render `fontFamily`, or null when
+   * undetermined.
+   *
+   * `fontFamily` is the *declared* first family, not the resolved one, so a
+   * project naming a font it never loaded would otherwise measure and score as
+   * though that font were used while rendering a fallback. Recording
+   * availability keeps the substitution visible instead of silent.
+   */
+  fontAvailable: boolean | null;
 }
 
 /** The CSS longhands the browser side is asked to read. */
@@ -73,7 +89,7 @@ export const CAPTURED_PROPERTIES: readonly string[] = [
   "border-bottom-right-radius", "border-bottom-left-radius",
   "padding-top", "padding-right", "padding-bottom", "padding-left",
   "font-family", "font-size", "font-weight", "line-height", "letter-spacing",
-  "box-shadow",
+  "box-shadow", "box-sizing",
 ];
 
 export const TEXT_PROPERTIES: readonly string[] = ["color", "font-family", "font-size", "font-weight"];
@@ -244,6 +260,7 @@ export function normalizeStyles(
   raw: RawComputedStyles,
   box: { width: number; height: number },
   textRaw?: RawComputedStyles | null,
+  fontAvailable: boolean | null = null,
 ): NormalizedStyles {
   const border = {
     top: parseBorderSide(raw["border-top-width"], raw["border-top-style"], raw["border-top-color"]),
@@ -303,6 +320,8 @@ export function normalizeStyles(
     letterSpacing: normalizeLetterSpacing(raw["letter-spacing"]),
     boxShadow: parseBoxShadow(raw["box-shadow"]),
     opacity: Number.isFinite(opacity) ? round2(opacity) : 1,
+    boxSizing: (raw["box-sizing"] ?? "content-box").trim(),
+    fontAvailable,
     text: textRaw
       ? {
           color: normalizeColor(textRaw["color"]),
@@ -422,6 +441,7 @@ const STYLE_KEYS = [
   "width", "height", "backgroundColor", "color", "border", "borderUniform",
   "borderRadius", "borderRadiusUniform", "padding", "fontFamily", "fontSize",
   "fontWeight", "lineHeight", "letterSpacing", "boxShadow", "opacity", "text",
+  "boxSizing", "fontAvailable",
 ] as const satisfies readonly (keyof NormalizedStyles)[];
 
 /**
