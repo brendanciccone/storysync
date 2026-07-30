@@ -73,20 +73,44 @@ export const COMPARABLE_PROPERTIES = [
 ] as const;
 
 /**
- * Geometry gets its own floor.
+ * Geometry needs a proportional allowance, not a fixed one.
  *
- * Auto-layout derives width and height from font metrics and padding, and Figma
- * rounds text advance to whole pixels where the browser reports fractions, so
- * sub-pixel disagreement is expected rather than drift. A floor of 1px keeps
- * that from flagging nearly every variant, while still catching the real
- * failure this check exists for — variants stacked at the same position inside
- * a box that was never grown to fit them.
+ * Figma re-lays out text with its own metrics and rounds each text node to
+ * whole pixels, and a hugging frame's width is padding plus that text width —
+ * so the disagreement grows with font size and string length rather than
+ * staying within a sub-pixel band. Measured against a real push: 1.19px at a
+ * 12px font, 1.72px at 18px. A fixed floor tight enough to be useful at 12px
+ * produces false drift at 18px.
  *
- * The readback must supply these from the node's render bounds, not `node.width`,
- * which excludes an OUTSIDE stroke and would under-report by the border on
- * every outlined variant.
+ * The readback must supply these from the node's render bounds, not
+ * `node.width`, which excludes an OUTSIDE stroke and would under-report by the
+ * border on every outlined variant.
  */
 const MIN_GEOMETRY_TOLERANCE_PX = 1;
+const GEOMETRY_TOLERANCE_RATIO = 0.03;
+
+function geometryTolerance(explicit: number, a: unknown, b: unknown): number {
+  const largest = Math.max(Number(a) || 0, Number(b) || 0);
+  return Math.max(explicit, MIN_GEOMETRY_TOLERANCE_PX, largest * GEOMETRY_TOLERANCE_RATIO);
+}
+
+/**
+ * Whether a measured element's own width and height mean anything.
+ *
+ * A block-level element fills its container, so the browser reports the
+ * viewport width — 1248px for a component that renders 30px wide. That is not
+ * an imprecise measurement of the component, it is a measurement of something
+ * else, and comparing it would light up every card, row, and layout wrapper in
+ * a real design system with drift that is not there.
+ *
+ * Only shrink-to-fit elements — inline, inline-block, inline-flex, and inline
+ * grid — have an intrinsic size that Figma's hugging auto-layout is trying to
+ * reproduce.
+ */
+export function hasIntrinsicSize(display: string | undefined): boolean {
+  const d = (display ?? "").trim().toLowerCase();
+  return d.startsWith("inline") || d === "table" || d === "inline-table";
+}
 
 export type ComparableProperty = (typeof COMPARABLE_PROPERTIES)[number];
 
@@ -236,7 +260,7 @@ export function propertyMatches(
     case "width":
     case "height":
       if (measured == null || figma == null) return (measured ?? null) === (figma ?? null);
-      return closeEnough(Number(measured), Number(figma), Math.max(tolerance, MIN_GEOMETRY_TOLERANCE_PX));
+      return closeEnough(Number(measured), Number(figma), geometryTolerance(tolerance, measured, figma));
     case "fontWeight":
       return Number(measured ?? 0) === Number(figma ?? 0);
     case "fontFamily":
@@ -278,8 +302,12 @@ export function verifyVariant(
   let matched = 0;
   let mismatched = 0;
 
+  const geometryMeaningful = hasIntrinsicSize(measured.display);
+
   for (const property of COMPARABLE_PROPERTIES) {
     if (!(property in figma)) continue;
+    // A block element's measured size is its container's, not its own.
+    if ((property === "width" || property === "height") && !geometryMeaningful) continue;
     const figmaValue = (figma as Record<string, unknown>)[property];
     const measuredValue = (measured as unknown as Record<string, unknown>)[property];
 

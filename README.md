@@ -280,6 +280,8 @@ Writes `<out>/styles.json` containing, per component, full styles for a base var
 npx playwright@latest install chromium     # note: the full `playwright` package
 ```
 
+**Font substitution is detected.** The measured `fontFamily` is the family the code *asked for*, so a project naming a font it never loaded would otherwise measure — and score — as though that font were used while the browser rendered a fallback. snap probes whether the family actually applied and warns when it did not, naming it. Note that Figma needs the font available to its own editor too; storysync cannot install fonts into Figma, as the Plugin API has no such capability.
+
 **Stories must pass args through.** snap sets variant values via Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or wraps the component in a decorator that drops them will render its default state for *every* variant. snap warns when all of a component's variants measure identically, which catches the common cases — but a story whose variants happen to differ only in unmeasured ways would not be flagged. Plain CSF3 args-driven stories are the reliable shape.
 
 Values Storybook cannot carry in a URL are reported rather than measured. Its allowed character set is `[a-zA-Z0-9 _-]`, so an option like `Data Display` works while `Nav/Primary` is rejected — those variants are marked `args_unsupported` instead of silently recording the default render.

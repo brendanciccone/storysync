@@ -341,10 +341,19 @@ async function readTextStyles(
  * to one that loaded it — and would score full marks against Figma while the
  * screenshots showed a different typeface.
  *
- * `document.fonts.check` is the honest signal available here. It answers "could
- * this be rendered", which catches the common case of a webfont that failed to
- * load. It cannot detect a system-level alias silently satisfying the request,
- * so a true result is weaker evidence than a false one.
+ * Two signals, because neither is sufficient alone:
+ *
+ *   - `document.fonts.check` returns *true* for any family not declared via
+ *     `@font-face`, including names that categorically do not exist. It is
+ *     therefore useless for missing system fonts, and only meaningful when it
+ *     returns false — which happens for a declared webfont whose file failed
+ *     to load, the one case the canvas probe cannot see.
+ *   - A canvas width probe renders a string as `"X", monospace` and again as
+ *     `monospace`. Identical advance widths mean X never applied. This is what
+ *     actually catches a missing system font.
+ *
+ * Two fallbacks are probed because a family whose metrics happen to coincide
+ * with one base would be misread as absent.
  */
 async function readFontAvailability(
   page: Page,
@@ -355,13 +364,31 @@ async function readFontAvailability(
       const cs = getComputedStyle(node as Element);
       const first = (cs.fontFamily || "").split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
       if (!first) return null;
-      // Generic families are always satisfiable; reporting on them is noise.
-      if (["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui"].includes(first.toLowerCase())) {
-        return null;
-      }
+
+      const GENERIC = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace"];
+      if (GENERIC.includes(first.toLowerCase())) return null;
+
       const size = cs.fontSize || "16px";
       const weight = cs.fontWeight || "400";
-      return document.fonts.check(`${weight} ${size} "${first}"`);
+
+      // A declared webfont that failed to load is definitively unavailable.
+      if (document.fonts.check(`${weight} ${size} "${first}"`) === false) return false;
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+
+      const PROBE = "mmmmmmmmmmlliWWQQ@#%&08";
+      const widthWith = (family: string) => {
+        ctx.font = `${weight} 72px ${family}`;
+        return ctx.measureText(PROBE).width;
+      };
+
+      // Applied if it changes the advance width against *either* base.
+      for (const base of ["monospace", "serif"]) {
+        if (widthWith(`"${first}", ${base}`) !== widthWith(base)) return true;
+      }
+      return false;
     } catch {
       return null;
     }

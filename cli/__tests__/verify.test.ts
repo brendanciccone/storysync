@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge } from "../verify.js";
+import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
@@ -469,4 +469,50 @@ test("verify: a fully matched readback reports nothing unmeasured", () => {
   );
   assert.equal(result.summary.unmeasured, 0);
   assert.deepEqual(result.unmeasuredInFigma, []);
+});
+
+// --- geometry meaningfulness and tolerance ---
+
+// A block element fills its container, so the browser reports the viewport
+// width — 1248px for a component that renders 30px wide. Comparing that would
+// flag every card, row and layout wrapper in a real design system.
+test("hasIntrinsicSize: only shrink-to-fit displays have a comparable size", () => {
+  for (const d of ["inline", "inline-block", "inline-flex", "inline-grid", "table"]) {
+    assert.equal(hasIntrinsicSize(d), true, `${d} should be comparable`);
+  }
+  for (const d of ["block", "flex", "grid", "flow-root", "", undefined]) {
+    assert.equal(hasIntrinsicSize(d), false, `${d} should not be comparable`);
+  }
+});
+
+test("verify: geometry is skipped for block elements", () => {
+  const snap = snapWith([{ slug: "a", delta: { display: "block", width: 1248 } }]);
+  const result = verify(snap, readbackWith({ a: { source: "measured", width: 30, height: 24 } }), 0.5);
+  // Width and height dropped out; nothing else was offered, so nothing scored.
+  assert.equal(result.summary.propertiesCompared, 0);
+  assert.equal(result.fidelity, null);
+});
+
+test("verify: geometry is compared for inline-flex elements", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }]),
+    readbackWith({ a: { source: "measured", width: 61.5, height: 24 } }),
+    0.5,
+  );
+  assert.equal(result.summary.propertiesCompared, 2);
+  assert.equal(result.fidelity, 1);
+});
+
+// Figma re-lays out text with its own metrics, so disagreement scales with size
+// rather than staying in a sub-pixel band.
+test("propertyMatches: geometry tolerance scales with the dimension", () => {
+  assert.equal(propertyMatches("width", 54.19, 55, 0.5), true);      // 0.81px at ~55
+  assert.equal(propertyMatches("width", 58.19, 57, 0.5), true);      // 1.19px at ~58
+  assert.equal(propertyMatches("width", 105.28, 107, 0.5), true);    // 1.72px at ~107
+});
+
+test("propertyMatches: geometry still catches a real mismatch at every scale", () => {
+  assert.equal(propertyMatches("width", 55, 107, 0.5), false);
+  assert.equal(propertyMatches("height", 23, 46, 0.5), false);
+  assert.equal(propertyMatches("width", 30, 1248, 0.5), false);
 });
