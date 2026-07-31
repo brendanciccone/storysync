@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@fontsource/inter':
+        specifier: ^5.0.0
+        version: 5.3.0
       '@storybook/addon-mcp':
         specifier: ^0.7.0
         version: 0.7.0(storybook@10.5.5(@types/react@19.2.18)(react@19.2.8))(typescript@7.0.2)
@@ -310,6 +313,9 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@fontsource/inter@5.3.0':
+    resolution: {integrity: sha512-RofMylZmjlJEfELXeNHFWBRcSs75rGU/6bV2S2jfnvv/3rPXPGe0LgUJTklcHZ9lM4OZmAVFhcJPnACfb91A3g==}
 
   '@joshwooding/vite-plugin-react-docgen-typescript@0.7.0':
     resolution: {integrity: sha512-qvsTEwEFefhdirGOPnu9Wp6ChfIwy2dBCRuETU3uE+4cC+PFoxMSiiEhxk4lOluA34eARHA0OxqsEUYDqRMgeQ==}
@@ -1844,6 +1850,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.1':
     optional: true
+
+  '@fontsource/inter@5.3.0': {}
 
   '@joshwooding/vite-plugin-react-docgen-typescript@0.7.0(typescript@7.0.2)(vite@8.2.0(esbuild@0.28.1))':
     dependencies:

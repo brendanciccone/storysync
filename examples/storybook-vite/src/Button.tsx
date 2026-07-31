@@ -34,7 +34,7 @@ export function Button({
         display: "inline-flex",
         alignItems: "center",
         gap: "6px",
-        fontFamily: "Arial, sans-serif",
+        fontFamily: "Inter, sans-serif",
         fontWeight: 600,
       }}
     >
