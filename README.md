@@ -16,14 +16,14 @@ Component styling is **measured, not guessed**: `storysync snap` renders each va
 | **Claude Code skill** | Runs `storysync tokens`, `map`, and `snap` to extract structured data and measured styles from your codebase, then writes Figma variables and styled components via `use_figma`. Can also audit Figma against code. |
 | **Cursor rules** | Same as above, from Cursor |
 | **Codex** | Same as above, from Codex |
-| **CLI** | Extract tokens, map components, measure rendered styles, preview mappings locally, or diff Figma against code |
+| **CLI** | Extract tokens, map components, measure rendered styles, score a push, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
-> **Why skill files?** Writing to Figma requires the `use_figma` tool, which only works through [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others) that can complete Figma's OAuth flow. The skill files instruct these clients to run storysync CLI commands (`tokens --json`, `map --json`) to get deterministic, structured data from your codebase, then use that data to create Figma variables and components via `use_figma`. This means storysync handles the extraction logic and the AI client handles the Figma writes — each doing what it's best at.
+> **Why skill files?** Writing to Figma requires the `use_figma` tool, which only works through [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others) that can complete Figma's OAuth flow. The skill files instruct these clients to run storysync CLI commands (`tokens --json`, `map --json`, `snap --json`) to get deterministic, measured data from your codebase, then use that data to create Figma variables and components via `use_figma`. This means storysync handles the extraction logic and the AI client handles the Figma writes — each doing what it's best at.
 
 ## Quick start
 
-storysync ships three workflows: **push** (code → Figma), **diff** (audit drift in either direction), and **pull** (Figma → code, _coming in v0.3_).
+storysync ships three workflows: **push** (code → Figma), **verify** (score what landed against what rendered), and **diff** (audit drift in either direction). It is deliberately one-way: nothing writes code. See [Non-goals](#non-goals).
 
 Install storysync once, then drop the right config into your project for the AI client you use:
 
@@ -36,6 +36,10 @@ npx storysync setup --client claude     # or: --client cursor   --client codex
 ```
 
 `setup` writes the skill file (and slash commands, for Claude) into the right place and prints the MCP setup commands you still need to run.
+
+### Try it without a project of your own
+
+[`examples/storybook-vite`](examples/storybook-vite) is a runnable Storybook you can point storysync at in two commands. It includes one component that measures cleanly and one whose story is broken on purpose, so you can see the warning fire rather than read about it.
 
 ### Claude Code
 
@@ -89,7 +93,7 @@ Start Storybook and say:
 |---|---|
 | Code → Figma | "Push my Storybook to Figma (file key `<key>`)" |
 | Audit drift | "Diff Figma against code (file key `<key>`)" or "Check if Figma is in sync" |
-| Figma → code | _Coming in v0.3_ |
+| Score the last push | "Verify the Figma file against the measured styles" |
 
 ### GitHub Action (validate in CI)
 
@@ -119,12 +123,19 @@ jobs:
   storysync extracts         Structured token JSON       Variant definitions JSON
   colors, spacing,           (deterministic output)      (props, combinations)
   typography, radius,              ↓                           ↓
-  shadows                   AI client reads JSON,        AI client reads source
-         ↓                  creates Figma variables      for visual styling
-  preview with CLI          via use_figma                      ↓
-  (storysync tokens)              ↓                      creates styled component
-                            components bind to           sets via use_figma
-                            variables
+  shadows                   AI client reads JSON,        storysync snap --json
+         ↓                  creates Figma variables            ↓
+  preview with CLI          via use_figma           renders each variant in a
+  (storysync tokens)              ↓                 browser, records computed
+                            components bind to      styles — measured, not read
+                            variables                          ↓
+                                                     creates styled component
+                                                     sets via use_figma
+                                                               ↓
+                                                     plugin returns real node
+                                                     properties
+                                                               ↓
+                                                     storysync verify → fidelity %
 
   Audit
 
@@ -299,7 +310,18 @@ Options:
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant drifted or is missing from Figma
   --strict-age           Implies --strict, and also fails on a stale snap
+  --strict-measured      Implies --strict, and also fails on anything not measured
 ```
+
+The three strict flags cover different questions, and each is opt-in because each has a legitimate reason to be noisy:
+
+| Flag | Fails on |
+|---|---|
+| `--strict` | Properties that disagree, and variants Figma never received |
+| `--strict-age` | A snap older than `--max-age`, or one whose age can't be established |
+| `--strict-measured` | Variants inferred from source, unrecorded, or present in Figma but never measured |
+
+`--strict-measured` is the one that matters in CI: it turns "this component's styling was guessed" into a build failure rather than a line of output nobody reads.
 
 ```text
 Fidelity: 95.0% (38/40 properties)
@@ -393,6 +415,12 @@ storysync deliberately splits deterministic extraction (the CLI) from Figma writ
 | Drift reports | **Measured** — deterministic comparison, normalized on both sides |
 | Figma writes | **Agent-driven** — the client writes Plugin API code; storysync never writes to Figma |
 | Layout and composition | **Interpreted** — snap measures properties, not whether a label sits correctly inside its button |
+
+## Non-goals
+
+- **Figma → code.** storysync never writes source. That direction is where an LLM's mistakes are hardest to notice, and Figma's own MCP already attempts it via `get_design_context`. Drift in that direction is *reported* by `storysync diff`; it is not applied.
+- **Installing fonts into Figma.** The Plugin API has no such capability. `snap` will tell you when a font is missing on either side; putting it there is manual.
+- **Pixel-perfect layout reproduction.** `verify` scores properties — fills, spacing, radii, type, shadows. Whether a label sits correctly inside its button is interpreted, not measured.
 
 ## Requirements
 
