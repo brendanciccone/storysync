@@ -32,3 +32,7 @@ yarn-error.log*
 
 # storysync output written when developing against a local Storybook
 .storysync/
+
+# example project dependencies and output
+examples/*/node_modules/
+examples/*/.storysync/
