@@ -213,6 +213,28 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   // Deterministic ordering so repeated runs produce identical output.
   components.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name));
 
+  // Components are keyed by `title ?? name` everywhere downstream — the
+  // readback, verify's expansion, the skills' file organisation. Two
+  // components sharing that key would silently collapse into one during
+  // verification, so the collision has to be said out loud here, where the
+  // data is produced. (Storybook rejects duplicate titles, so this arises
+  // mainly with untitled components sharing a name.)
+  const byKey = new Map<string, SnapComponent[]>();
+  for (const component of components) {
+    const key = component.title ?? component.name;
+    byKey.set(key, [...(byKey.get(key) ?? []), component]);
+  }
+  for (const [key, sharing] of byKey) {
+    if (sharing.length < 2) continue;
+    for (const component of sharing) {
+      component.warnings.push(
+        `${sharing.length} components share the key "${key}", which identifies a component in ` +
+          `the readback and during verification — their variants will collide and only one will ` +
+          `be scored. Give them distinct Storybook titles.`,
+      );
+    }
+  }
+
   const allVariants = components.flatMap((c) => c.variants);
   const result: SnapResult = {
     version: SNAP_SCHEMA_VERSION,

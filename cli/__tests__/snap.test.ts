@@ -308,3 +308,67 @@ test("detectFontSubstitution: a variant delta without a family falls back to the
   const warning = detectFontSubstitution(componentWithFonts(true, [{ fontAvailable: false }]));
   assert.match(warning!, /could not render "Inter"/);
 });
+
+// Components are keyed by `title ?? name` in the readback and during
+// verification, so two components sharing that key silently collapse into one
+// downstream — a measured component vanishing from the score with no signal.
+test("runSnap: warns when two components share an identity key", async () => {
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir), {
+      storybook: {
+        // Untitled components sharing a name — the realistic collision, since
+        // Storybook itself rejects duplicate titles.
+        listComponents: async () => [
+          { id: "a-button", name: "Button" },
+          { id: "b-button", name: "Button" },
+        ],
+        getComponent: async (id: string) => ({
+          name: "Button", props: [], stories: [{ id: `${id}--default`, name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+          close: async () => {},
+        },
+      }) as never,
+    });
+
+    assert.equal(result.summary.componentsWithWarnings, 2);
+    for (const component of result.components) {
+      assert.ok(component.warnings.some((w) => /share the key "Button"/.test(w)), "collision warning missing");
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: distinct titles produce no collision warning", async () => {
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir), {
+      storybook: {
+        listComponents: async () => [
+          { id: "forms-button", name: "Button", title: "Forms/Button" },
+          { id: "marketing-button", name: "Button", title: "Marketing/Button" },
+        ],
+        getComponent: async (id: string) => ({
+          name: "Button", props: [], stories: [{ id: `${id}--default`, name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+          close: async () => {},
+        },
+      }) as never,
+    });
+
+    assert.equal(result.summary.componentsWithWarnings, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
