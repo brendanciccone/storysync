@@ -102,7 +102,7 @@ export class StorybookClient {
   async getComponent(id: string, displayName?: string, title?: string, category?: string): Promise<StorybookComponent> {
     const text = await this.call("get-documentation", { id });
     const name = displayName ?? id;
-    return { name, title, category, props: this.parseProps(text), stories: this.parseStories(name, text) };
+    return { name, title, category, props: this.parseProps(text), stories: this.parseStories(id, text) };
   }
 
   private async call(tool: string, args: Record<string, unknown>): Promise<string> {
@@ -267,25 +267,47 @@ export class StorybookClient {
     return props;
   }
 
-  private parseStories(componentName: string, text: string): { id: string; name: string }[] {
-    const stories: { id: string; name: string }[] = [];
-    const seen = new Set<string>();
-
-    for (const line of text.split("\n")) {
-      const ids = line.match(/(?:id:\s*|storyId:\s*)[`"']([^`"']+)[`"']/g);
-      if (!ids) continue;
-      for (const raw of ids) {
-        const id = raw.replace(/.*[`"']([^`"']+)[`"'].*/, "$1");
-        if (seen.has(id) || !id.includes("--")) continue;
-        seen.add(id);
-        const slug = id.split("--").pop() ?? id;
-        stories.push({ id, name: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) });
-      }
-    }
-
-    if (!stories.length) {
-      stories.push({ id: `${componentName.toLowerCase()}--default`, name: "Default" });
-    }
-    return stories;
+  private parseStories(docId: string, text: string): { id: string; name: string }[] {
+    return parseStories(docId, text);
   }
+}
+
+// Matches an ID label followed by a story ID, quoted or bare. Storybook's
+// addon-mcp writes `Story ID: forms-button--default` unquoted, so requiring
+// quotes here (as an earlier version did) missed every real story and fell
+// through to the guessed fallback below.
+//
+// Requiring the `--` separator is what keeps this from also matching the
+// component's own `ID: forms-button` line. The leading `\b` matters just as
+// much: without it the bare `id` alternative matches the tail of any word
+// ending in those letters, so `grid: layout--wide` would be read as a story.
+const STORY_ID_PATTERN = /\b(?:story[\s_-]*id|storyid|id)\s*:\s*[`"']?([A-Za-z0-9][A-Za-z0-9_-]*--[A-Za-z0-9_-]+)[`"']?/gi;
+
+/**
+ * Extracts story IDs from a documentation response.
+ *
+ * `docId` is the documentation ID (`forms-button`) — the kebab-cased title
+ * path. Story IDs extend it (`forms-button--default`), which makes it the right
+ * basis for the fallback; a bare lowercased component name would guess
+ * `button--default` and miss for any component under a title path.
+ *
+ * Prefer the story IDs from `listComponents`, which come from Storybook's own
+ * index, when they are available.
+ */
+export function parseStories(docId: string, text: string): { id: string; name: string }[] {
+  const stories: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const match of text.matchAll(STORY_ID_PATTERN)) {
+    const id = match[1];
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const slug = id.split("--").pop() ?? id;
+    stories.push({ id, name: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) });
+  }
+
+  if (!stories.length) {
+    stories.push({ id: `${docId}--default`, name: "Default" });
+  }
+  return stories;
 }

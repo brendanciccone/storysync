@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  # Only the default branch on push. Branch work is covered by `pull_request`,
+  # and listening to both would run the whole matrix twice on the same commit
+  # for any branch that has a PR open.
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json declares engines.node >=18, so all three are supported.
+        node: ['18', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from package.json's `packageManager` field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Type-check (including tests)
+        run: pnpm lint
+
+      # Compiles to dist/ and runs the suite. The CLI smoke tests exercise the
+      # compiled dist/cli/index.js, so this covers the published artifact too.
+      - name: Test
+        run: pnpm test

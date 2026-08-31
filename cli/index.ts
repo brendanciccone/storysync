@@ -8,11 +8,16 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { runSnap } from "./snap.js";
+import { resolveAndLaunch } from "./snap-browser.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
+import type { ReadbackFile } from "./verify.js";
+import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
 import type { TokenBaseline } from "./tokens.js";
-import type { FigmaComponentDefinition } from "./mapper.js";
+import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
 
@@ -60,19 +65,24 @@ program
         return;
       }
 
-      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; error: string | null }[] = [];
+      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
       for (const entry of entries) {
         try {
           const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(component);
-          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, error: null });
+          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
-            const tag = def.wasCapped ? chalk.yellow(" [CAPPED]") : "";
+            const tag = def.cap ? chalk.yellow(` [CAPPED ${def.cap.generated}/${def.cap.totalPossible}]`) : "";
             const label = entry.title ?? entry.name;
             console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            if (def.cap) {
+              const example = def.cap.droppedSample[0];
+              const suffix = example ? `, e.g. ${JSON.stringify(example)}` : "";
+              console.log(chalk.dim(`      ${def.cap.droppedCount} combinations not emitted${suffix}`));
+            }
           }
           total += def.variantCombinations.length;
           if (def.wasCapped) capped++;
@@ -93,6 +103,220 @@ program
       if (opts.strict && (failed > 0 || capped > 0)) process.exitCode = 1;
     } finally {
       await storybook.disconnect();
+    }
+  });
+
+program
+  .command("snap")
+  .description("Measure each component variant's rendered styles from a running Storybook")
+  .requiredOption("--storybook <url>", "Storybook URL")
+  .option("--components <names>", "Comma-separated component names")
+  .option("--out <dir>", "Output directory", ".storysync/snaps")
+  .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
+  .option("--screenshots", "Also save a PNG per variant (off by default)")
+  .option("--timeout <ms>", "Per-story timeout in milliseconds", "10000")
+  .option("--selector <css>", "Override the component root selector")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--strict", "Exit with code 1 if any variant could not be measured")
+  .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const variants = opts.variants as string;
+    if (variants !== "representative" && variants !== "all") {
+      console.error(chalk.red(`--variants must be "representative" or "all", received "${variants}"`));
+      process.exit(1);
+    }
+
+    const timeoutMs = Number(opts.timeout);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      console.error(chalk.red(`--timeout must be a positive number of milliseconds, received "${opts.timeout}"`));
+      process.exit(1);
+    }
+
+    const storybook = await connectStorybook(opts.storybook, json);
+    try {
+      const result = await runSnap(
+        {
+          storybookUrl: opts.storybook as string,
+          components: opts.components ? (opts.components as string).split(",") : undefined,
+          outDir: opts.out as string,
+          screenshots: !!opts.screenshots,
+          timeoutMs,
+          selector: opts.selector as string | undefined,
+          variants,
+        },
+        {
+          storybook,
+          launch: resolveAndLaunch,
+          onProgress: json ? undefined : (m) => console.log(m),
+        },
+      );
+
+      if (json) {
+        console.log(JSON.stringify(result));
+      } else {
+        const { summary } = result;
+        console.log(`\n${summary.rendered}/${summary.variants} variants measured across ${summary.components} components`);
+        console.log(chalk.dim(`  Styles written to ${opts.out}/styles.json`));
+        for (const component of result.components) {
+          for (const warning of component.warnings) {
+            console.log(chalk.yellow(`\n  ! ${component.title ?? component.name}: ${warning}`));
+          }
+        }
+        for (const component of result.components.filter((c) => c.error != null)) {
+          console.log(chalk.yellow(`\n  ✗ ${component.title ?? component.name}: ${component.error}`));
+        }
+        const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
+        if (failed.length) {
+          console.log(chalk.yellow(`\n  ${failed.length} variants not measured:`));
+          for (const { c, v } of failed.slice(0, 10)) {
+            console.log(chalk.dim(`    ${c.name} ${v.slug} [${v.status}] ${v.error ?? ""}`));
+          }
+          if (failed.length > 10) console.log(chalk.dim(`    ... and ${failed.length - 10} more`));
+        }
+      }
+
+      // Warnings are deliberately outside plain --strict. A component whose
+      // variants legitimately render identically (aliased option values, say)
+      // would otherwise fail every build. But a story silently ignoring its
+      // args is exactly the thing worth failing CI over, so --strict-warnings
+      // makes that opt-in.
+      const strict = !!opts.strict || !!opts.strictWarnings;
+      const hasFailures = result.summary.failed > 0 || result.summary.componentsFailed > 0;
+      const hasWarnings = result.summary.componentsWithWarnings > 0;
+
+      if ((strict && hasFailures) || (opts.strictWarnings && hasWarnings)) {
+        process.exitCode = 1;
+      }
+    } catch (err) {
+      if (json) console.log(JSON.stringify({ error: String(err) }));
+      else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+      process.exitCode = 1;
+    } finally {
+      await storybook.disconnect();
+    }
+  });
+
+program
+  .command("verify")
+  .description("Compare what was written to Figma against the styles measured by snap")
+  .option("--snap <path>", "Path to snap output", ".storysync/snaps/styles.json")
+  .option("--readback <path>", "Path to the properties read back from Figma", ".storysync/figma-readback.json")
+  .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
+  .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
+  .option("--json", "Output JSON instead of formatted text")
+  .option("--strict", "Exit with code 1 if any variant drifted or is missing from Figma")
+  .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
+  .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const tolerance = Number(opts.tolerance);
+    if (!Number.isFinite(tolerance) || tolerance < 0) {
+      console.error(chalk.red(`--tolerance must be a non-negative number, received "${opts.tolerance}"`));
+      process.exit(1);
+    }
+
+    const maxAgeMs = parseDuration(opts.maxAge as string);
+    if (maxAgeMs == null) {
+      console.error(chalk.red(`--max-age must be a duration like 30m, 2h or 7d, received "${opts.maxAge}"`));
+      process.exit(1);
+    }
+
+    try {
+      const snapPath = opts.snap as string;
+      const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
+      const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
+      const result = verify(snap, readback, tolerance);
+      result.snapAge = readSnapAge(snapPath, maxAgeMs);
+
+      if (json) {
+        console.log(JSON.stringify(result));
+      } else {
+        const { summary } = result;
+        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}`);
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma, across ${summary.variants} variants\n`);
+
+        for (const variant of result.variants) {
+          if (variant.status === "verified") continue;
+          if (variant.status === "missing_from_figma") {
+            console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
+            continue;
+          }
+          console.log(`  ${chalk.red("~")} ${variant.component} ${chalk.dim(variant.slug)}`);
+          for (const d of variant.differences) {
+            console.log(chalk.dim(`      ${d.property}: measured ${JSON.stringify(d.measured)}, Figma ${JSON.stringify(d.figma)}`));
+          }
+        }
+
+        if (!result.variants.some((v) => v.status !== "verified")) {
+          // Name what was checked. On a clean run this is otherwise the only
+          // output, and "it matches" is not much use without saying what did.
+          const names = [...new Set(result.variants.map((v) => v.component))];
+          // Only claim "measured" when everything actually was. Saying it of a
+          // partly-inferred run is the conflation the provenance line exists
+          // to prevent.
+          const allMeasured = result.summary.inferred === 0
+            && result.summary.unrecorded === 0
+            && result.summary.unmeasured === 0;
+          const kind = allMeasured ? "measured" : "expected";
+          console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ") || "no components"}.`));
+        }
+
+        // Provenance before age: a component styled by guesswork matters more
+        // than one measured a while ago, and this is the line that separates
+        // "produced a result" from "produced a measured result".
+        const { inferred, unrecorded, unmeasured } = result.summary;
+        if (inferred > 0 || unrecorded > 0 || unmeasured > 0) {
+          const parts: string[] = [];
+          if (inferred > 0) parts.push(`${inferred} inferred from source rather than measured`);
+          if (unrecorded > 0) parts.push(`${unrecorded} with no recorded provenance`);
+          if (unmeasured > 0) parts.push(`${unmeasured} in Figma that snap never measured`);
+          const line = `  Provenance: ${parts.join(", ")}`;
+          console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
+          for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
+            console.log(chalk.dim(`      ${v.component} ${v.slug} [${v.source}]`));
+          }
+          for (const u of result.unmeasuredInFigma) {
+            console.log(chalk.dim(`      ${u.component} ${u.slug} [unmeasured — written to Figma but never scored]`));
+          }
+        }
+
+        const age = result.snapAge;
+        if (age?.known) {
+          const line = `  Measured ${formatAge(age.ageMs)} ago${age.storybookUrl ? ` from ${age.storybookUrl}` : ""}`;
+          if (age.stale) {
+            console.log(chalk.yellow(`${line} — re-run \`storysync snap\` if the code has changed since.`));
+          } else {
+            console.log(chalk.dim(line));
+          }
+        } else if (age) {
+          // Always say something. Printing nothing would let an unchecked age
+          // pass for a checked one.
+          const line = `  Snap age unknown: ${age.reason}`;
+          console.log(opts.strictAge ? chalk.red(line) : chalk.dim(line));
+        }
+      }
+
+      const strict = !!opts.strict || !!opts.strictAge || !!opts.strictMeasured;
+      const hasDrift = result.summary.drifted > 0 || result.summary.missingFromFigma > 0;
+      // Unrecorded counts as not-measured, for the same reason an unknown age
+      // counts as stale: the absent state must not read as the good one.
+      const notMeasured = result.summary.inferred > 0
+        || result.summary.unrecorded > 0
+        || result.summary.unmeasured > 0;
+      // An age that cannot be established is not a pass. `meta.json` is the
+      // file most likely to be gitignored, so failing open here would make
+      // --strict-age succeed unconditionally in exactly the CI setup the
+      // determinism guarantee is designed to enable.
+      const ageFailsStrict = !!opts.strictAge && (!result.snapAge?.known || result.snapAge.stale);
+
+      if ((strict && hasDrift) || ageFailsStrict || (opts.strictMeasured && notMeasured)) {
+        process.exitCode = 1;
+      }
+    } catch (err) {
+      if (json) console.log(JSON.stringify({ error: String(err) }));
+      else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+      process.exitCode = 1;
     }
   });
 
