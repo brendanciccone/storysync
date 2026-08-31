@@ -40,9 +40,11 @@ Those values should match `src/Button.tsx` exactly — `#2563eb`, `12`, `4/8`, `
 Two more properties worth a look:
 
 - `"backgroundColor": null` on the outline variant. Transparent is recorded as *no fill*, not as black.
-- `"fontAvailable": true`. The components use Arial deliberately: it is present in browsers and in Figma without any webfont, so the example needs no network and the round-trip is genuinely one-to-one.
+- `"fontAvailable": true`. The components use Inter, bundled from npm via `@fontsource/inter` and imported in `.storybook/preview.ts` — nothing is fetched at runtime.
 
-  Change it to a font that is not installed — `fontFamily: "Inter, sans-serif"` with nothing loading Inter — and it flips to `false` with a warning naming the family. That matters because `fontFamily` records the family the code *asked for*, not the one that rendered, so without this check a project would score full marks on a typeface the screenshots would show is different. To use a webfont for real, add `.storybook/preview-head.html` with a `<link>` to it; note that a blocking stylesheet the browser cannot reach will stall page load and time the variants out.
+  The font choice is load-bearing, because it has to satisfy two constraints at once. The browser must actually render it, or `snap` measures a fallback. And Figma's *plugin* context — where `use_figma` writes — must have it: that context exposes only Google Fonts, so system fonts like Arial or Helvetica that a designer sees in the desktop app's picker are unavailable to the agent doing the push, and Figma substitutes (Arial becomes Arimo, which has no SemiBold, so the weight drifts too). Bundling a Google font from npm is the one arrangement that satisfies both with no network.
+
+  To see the substitution detector fire, point `fontFamily` at a font that is not installed and delete the `preview.ts` imports: `fontAvailable` flips to `false` with a warning naming the family. That matters because `fontFamily` records the family the code *asked for*, not the one that rendered — without this check, a project would score full marks on a typeface the screenshots would show is different.
 
 Run it twice and diff `styles.json`: byte-identical. The timestamp lives in `meta.json` beside it, so the measurements stay diffable in review.
 
