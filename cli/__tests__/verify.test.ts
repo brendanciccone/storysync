@@ -158,6 +158,21 @@ test("expandSnap: rebuilds each variant from base plus delta", () => {
   assert.equal(button.get("danger")!.fontSize, 12);
 });
 
+// Variants are keyed by slug, so two sharing one would collapse — and because
+// the lost variant leaves the denominator too, the score would read *higher*
+// for having measured less. `assignVariantSlugs` is what keeps them apart; this
+// pins the property expandSnap depends on.
+test("expandSnap: distinct slugs each survive into the map", () => {
+  const expanded = expandSnap(snapWith([
+    { slug: "size-small" },
+    { slug: "size-small--2", delta: { fontSize: 18 } },
+  ]));
+  const button = expanded.get("Forms/Button")!;
+  assert.equal(button.size, 2);
+  assert.equal(button.get("size-small")!.fontSize, 12);
+  assert.equal(button.get("size-small--2")!.fontSize, 18);
+});
+
 test("expandSnap: skips variants that were never measured", () => {
   const expanded = expandSnap(snapWith([
     { slug: "primary" },

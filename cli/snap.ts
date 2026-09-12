@@ -13,9 +13,9 @@ import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
 import type { ComponentEntry, StorybookClient } from "./storybook.js";
 import {
   normalizeStyles, encodeStoryArgs, buildStoryUrl,
-  slugifyCombination, componentSlug, diffFromBase,
+  assignVariantSlugs, componentSlug, diffFromBase,
 } from "./snap-normalize.js";
-import type { NormalizedStyles, StyleDelta } from "./snap-normalize.js";
+import type { NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
 import { resolveAndLaunch, createContext, captureStory } from "./snap-browser.js";
 import type { CaptureStatus } from "./snap-browser.js";
 
@@ -151,6 +151,33 @@ function detectIdenticalVariants(variants: SnapVariant[]): string | null {
     `all ${measured.length} rendered variants measured identically — the story may not pass args ` +
     `through to the component (hardcoded props, a custom render function, or a decorator). ` +
     `Measured values may describe only the default state.`
+  );
+}
+
+/**
+ * Reports variant names that had to be renumbered to stay distinct.
+ *
+ * Renumbering keeps the measurements intact, but the slug is the name the
+ * variant carries into Figma, so the designer sees `size-small--2` with nothing
+ * saying which of the two declared values it came from. Naming the combination
+ * makes the mapping recoverable, and points at the fix — the clash is in the
+ * declared values, not in storysync.
+ */
+export function describeSlugCollisions(collisions: SlugCollision[]): string | null {
+  if (!collisions.length) return null;
+
+  const named = collisions
+    .map((c) => {
+      const pairs = Object.entries(c.combination).map(([k, v]) => `${k}=${v}`).join(", ");
+      return `${pairs || "the default combination"} became "${c.slug}" rather than "${c.base}"`;
+    })
+    .join("; ");
+
+  return (
+    `${collisions.length} variant ${collisions.length === 1 ? "name collides" : "names collide"} with ` +
+    `an earlier one, because names ignore case and punctuation: ${named}. The measurements are correct, ` +
+    `but the renumbered name is what reaches Figma. Rename the declared values so they differ by more ` +
+    `than case or punctuation.`
   );
 }
 
@@ -308,6 +335,14 @@ async function snapComponent(
 
   const combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
 
+  // Slugs are assigned up front, for the whole set at once, because uniqueness
+  // is a property of the set rather than of any one combination. This is also
+  // why it happens before the browser starts: the clash is in the declared
+  // values, so it is worth reporting even if nothing renders.
+  const { slugs, collisions } = assignVariantSlugs(combinations);
+  const collided = describeSlugCollisions(collisions);
+  if (collided) shell.warnings.push(collided);
+
   // Context creation is inside the guarded block so a failure here is recorded
   // against this component rather than abandoning the whole run, and so a
   // context whose first page fails to open still gets closed.
@@ -316,8 +351,8 @@ async function snapComponent(
     context = await createContext(browser);
     const page = await context.newPage();
 
-    for (const combination of combinations) {
-      const slug = slugifyCombination(combination);
+    for (const [index, combination] of combinations.entries()) {
+      const slug = slugs[index];
       const { param, unsupported } = encodeStoryArgs(combination, definition.variantProperties);
 
       if (unsupported.length) {

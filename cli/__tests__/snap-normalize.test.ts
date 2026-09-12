@@ -12,6 +12,7 @@ import {
   buildStoryUrl,
   isEncodableArgValue,
   slugifyCombination,
+  assignVariantSlugs,
   componentSlug,
   diffFromBase,
   applyDelta,
@@ -319,6 +320,65 @@ test("slugifyCombination: stable, filesystem-safe names", () => {
   assert.equal(slugifyCombination({ variant: "default", size: "sm" }), "variant-default--size-sm");
   assert.equal(slugifyCombination({ tone: "Data Display" }), "tone-data-display");
   assert.equal(slugifyCombination({}), "default");
+});
+
+test("assignVariantSlugs: distinct combinations keep their natural names", () => {
+  const { slugs, collisions } = assignVariantSlugs([
+    { variant: "primary" },
+    { variant: "secondary" },
+  ]);
+  assert.deepEqual(slugs, ["variant-primary", "variant-secondary"]);
+  assert.deepEqual(collisions, []);
+});
+
+test("assignVariantSlugs: values differing only by case stay distinct", () => {
+  // Storybook treats these as two values, but slugifying lowercases both.
+  const { slugs, collisions } = assignVariantSlugs([{ size: "Small" }, { size: "small" }]);
+
+  assert.deepEqual(slugs, ["size-small", "size-small--2"]);
+  assert.equal(collisions.length, 1);
+  assert.deepEqual(collisions[0], {
+    base: "size-small",
+    slug: "size-small--2",
+    combination: { size: "small" },
+  });
+});
+
+test("assignVariantSlugs: values differing only by punctuation stay distinct", () => {
+  const { slugs } = assignVariantSlugs([{ size: "x-large" }, { size: "x large" }]);
+  assert.deepEqual(slugs, ["size-x-large", "size-x-large--2"]);
+});
+
+test("assignVariantSlugs: three-way collisions keep counting", () => {
+  const { slugs, collisions } = assignVariantSlugs([
+    { tone: "Warning" },
+    { tone: "warning" },
+    { tone: "WARNING" },
+  ]);
+  assert.deepEqual(slugs, ["tone-warning", "tone-warning--2", "tone-warning--3"]);
+  assert.equal(collisions.length, 2);
+});
+
+test("assignVariantSlugs: every slug is distinct, whatever the input", () => {
+  // The invariant the rest of the pipeline relies on, over input chosen to be
+  // awkward: empty keys and values, punctuation that collapses to nothing, and
+  // several spellings of one word.
+  const { slugs } = assignVariantSlugs([
+    { size: "Small" },
+    { size: "small" },
+    { size: "SMALL" },
+    { size: "s m a l l" },
+    { size: "small", extra: "" },
+    { "": "" },
+    {},
+    {},
+  ]);
+  assert.equal(new Set(slugs).size, slugs.length, `expected distinct slugs, got ${slugs.join(", ")}`);
+});
+
+test("assignVariantSlugs: assignment is stable across runs", () => {
+  const combos = [{ size: "Small" }, { size: "small" }, { size: "SMALL" }];
+  assert.deepEqual(assignVariantSlugs(combos).slugs, assignVariantSlugs(combos).slugs);
 });
 
 test("componentSlug: flattens titles into a single segment", () => {

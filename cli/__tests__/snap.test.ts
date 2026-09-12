@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory, detectFontSubstitution } from "../snap.js";
+import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions } from "../snap.js";
 import type { SnapOptions } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
@@ -309,6 +309,37 @@ test("detectFontSubstitution: a variant delta without a family falls back to the
   assert.match(warning!, /could not render "Inter"/);
 });
 
+// --- describeSlugCollisions ---
+
+test("describeSlugCollisions: silent when every name is already distinct", () => {
+  assert.equal(describeSlugCollisions([]), null);
+});
+
+test("describeSlugCollisions: names the combination and both slugs", () => {
+  const warning = describeSlugCollisions([
+    { base: "size-small", slug: "size-small--2", combination: { size: "small" } },
+  ]);
+  assert.match(warning!, /size=small/);
+  assert.match(warning!, /"size-small--2"/);
+  assert.match(warning!, /"size-small"/);
+  // The measurements are fine; only the name changed. Saying so keeps this
+  // from reading as a measurement failure.
+  assert.match(warning!, /measurements are correct/);
+});
+
+test("describeSlugCollisions: counts and pluralizes", () => {
+  const one = describeSlugCollisions([
+    { base: "a", slug: "a--2", combination: { x: "1" } },
+  ]);
+  assert.match(one!, /^1 variant name collides/);
+
+  const two = describeSlugCollisions([
+    { base: "a", slug: "a--2", combination: { x: "1" } },
+    { base: "b", slug: "b--2", combination: { y: "2" } },
+  ]);
+  assert.match(two!, /^2 variant names collide/);
+});
+
 // Components are keyed by `title ?? name` in the readback and during
 // verification, so two components sharing that key silently collapse into one
 // downstream — a measured component vanishing from the score with no signal.
@@ -340,6 +371,50 @@ test("runSnap: warns when two components share an identity key", async () => {
     for (const component of result.components) {
       assert.ok(component.warnings.some((w) => /share the key "Button"/.test(w)), "collision warning missing");
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The formatter is unit-tested above; this pins the wiring — that a collision
+// detected while assigning names actually reaches the component's warnings, and
+// so the `--strict-warnings` gate, rather than being computed and dropped.
+test("runSnap: a variant name collision reaches the warnings and the strict gate", async () => {
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button", title: "Forms/Button" }],
+        getComponent: async () => ({
+          name: "Button",
+          // Two values Storybook treats as distinct that slugify identically.
+          props: [{
+            name: "size",
+            type: { name: "string" },
+            control: { type: "select", options: ["Small", "small"] },
+          }],
+          stories: [{ id: "forms-button--default", name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+          close: async () => {},
+        },
+      }) as never,
+    });
+
+    const [button] = result.components;
+    assert.ok(
+      button.warnings.some((w) => /variant name collides/.test(w)),
+      `expected a collision warning, got: ${JSON.stringify(button.warnings)}`,
+    );
+    assert.equal(result.summary.componentsWithWarnings, 1);
+
+    // And the two variants really do carry different names.
+    const slugs = button.variants.map((v) => v.slug);
+    assert.equal(new Set(slugs).size, slugs.length, `slugs not distinct: ${slugs.join(", ")}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

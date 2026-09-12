@@ -427,6 +427,54 @@ export function componentSlug(name: string, title?: string): string {
   return slugSegment(title ? title.replace(/\//g, "-") : name) || "component";
 }
 
+/** One combination that had to be renamed because its slug was already taken. */
+export interface SlugCollision {
+  /** The name it shares with an earlier combination. */
+  base: string;
+  /** The distinct name it was recorded under instead. */
+  slug: string;
+  combination: Record<string, string>;
+}
+
+/**
+ * Slugs for a list of combinations, guaranteed distinct.
+ *
+ * `slugifyCombination` lowercases and collapses punctuation, so two declared
+ * values that Storybook treats as different — `Small` and `small`, `x-large`
+ * and `x large` — reduce to the same slug. That slug is the key joining a
+ * measurement to the Figma node built from it, and the screenshot filename, so
+ * a duplicate is not cosmetic: `expandSnap` keys a Map by it and keeps
+ * whichever variant came last, dropping the other from the score. Losing a
+ * variant shrinks the denominator, so a collision makes fidelity read *higher*.
+ *
+ * Numbering follows combination order, which is itself deterministic, so the
+ * assignment is stable across runs. Collisions come back separately rather than
+ * being resolved quietly — a renumbered slug is the name that reaches Figma.
+ */
+export function assignVariantSlugs(
+  combinations: Record<string, string>[],
+): { slugs: string[]; collisions: SlugCollision[] } {
+  const used = new Set<string>();
+  const slugs: string[] = [];
+  const collisions: SlugCollision[] = [];
+
+  for (const combination of combinations) {
+    const base = slugifyCombination(combination);
+    let slug = base;
+    // Keeps counting while the invented name is itself taken. Today
+    // `slugifyCombination` cannot emit `<base>--<n>` — every pair it joins
+    // contains a literal `-`, so a bare numeric trailing segment is
+    // unreachable — but the loop costs nothing and makes distinctness hold
+    // unconditionally rather than by way of that argument.
+    for (let suffix = 2; used.has(slug); suffix++) slug = `${base}--${suffix}`;
+    if (slug !== base) collisions.push({ base, slug, combination });
+    used.add(slug);
+    slugs.push(slug);
+  }
+
+  return { slugs, collisions };
+}
+
 // --- Base + delta encoding --------------------------------------------------
 
 /**
