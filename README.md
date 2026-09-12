@@ -297,6 +297,8 @@ npx playwright@latest install chromium     # note: the full `playwright` package
 
 Values Storybook cannot carry in a URL are reported rather than measured. Its allowed character set is `[a-zA-Z0-9 _-]`, so an option like `Data Display` works while `Nav/Primary` is rejected — those variants are marked `args_unsupported` instead of silently recording the default render.
 
+**Variant names ignore case and punctuation.** Each variant is named from its combination, lowercased with punctuation collapsed, and that name is the key joining a measurement to the Figma node built from it. Two declared values that differ only in those respects — `Small` and `small`, `x-large` and `x large` — would therefore produce one name for two variants. snap numbers the duplicate (`size-small--2`) so nothing is lost, and warns, because the numbered name is what reaches Figma and says nothing about which value it came from. Renaming the declared values is the real fix.
+
 ### `storysync verify`
 
 Compare what was written to Figma against the styles `snap` measured, and report a fidelity score. The agent writes a component, has the plugin read the created node's real properties back out to `.storysync/figma-readback.json`, and this scores the result.
