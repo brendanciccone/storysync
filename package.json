@@ -20,7 +20,8 @@
     "lint": "tsc --noEmit",
     "test": "pnpm clean && tsc && node --test dist/cli/__tests__/*.test.js",
     "prepublishOnly": "pnpm clean && tsc && node --test dist/cli/__tests__/*.test.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "acceptance": "node scripts/acceptance.mjs"
   },
   "keywords": [
     "storybook",
