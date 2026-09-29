@@ -59,9 +59,11 @@ npx storysync setup --client claude
 Then `/storysync-push <figma-file-key>`. The agent runs `snap`, writes the measured values into Figma, reads the created nodes' real properties back, and scores them:
 
 ```text
-Fidelity: 100.0% (100/100 properties)
-5 verified, 0 drifted, 0 missing from Figma, across 5 variants
+Fidelity: 100.0% (82/82 properties)
+8 verified, 0 drifted, 0 missing from Figma, across 8 variants
 ```
+
+That is 5 Button variants and 3 Frozen ones. Frozen's three are identical on purpose — its story ignores its args, and the summary should say so rather than restyle it from source. The property count depends on what the readback reports; the variant count should not.
 
 Verify it yourself afterwards, without re-pushing:
 
@@ -69,7 +71,7 @@ Verify it yourself afterwards, without re-pushing:
 npx storysync verify --strict-measured --strict-age
 ```
 
-Nudge a corner radius in Figma and re-run — it should report exactly that property as drifted. If it still says 100%, the readback echoed the values it sent rather than reading them off the nodes, and the score means nothing.
+To prove the score is real, change a corner radius in Figma by hand, then have the agent **re-read** the nodes into `.storysync/figma-readback.json` and run `verify` again. It should report exactly that property as drifted. Re-running `verify` alone is not enough: it compares two local files and never contacts Figma, so it will report 100% whatever you changed. If the re-read still says 100%, the readback echoed the values it sent rather than reading them off the nodes, and the score means nothing.
 
 ## Requirements
 

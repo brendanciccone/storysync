@@ -229,7 +229,7 @@ Example:
 
 ```bash
 npx storysync setup --client claude
-# writes .claude/skills/storysync.md and .claude/commands/storysync-{push,diff}.md
+# writes .claude/skills/storysync/SKILL.md and .claude/commands/storysync-{push,diff}.md
 ```
 
 ### `storysync tokens`
@@ -266,20 +266,21 @@ Measure what each component variant actually looks like, by rendering the story 
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --components <names>   Comma-separated component names (default: all)
+  --components <names>   Comma-separated component names or IDs (default: all);
+                         a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
   --variants <mode>      representative (default) or all
   --screenshots          Also save a PNG per variant (off by default)
   --timeout <ms>         Per-story timeout (default: 10000)
   --selector <css>       Override the component root selector
   --json                 Output JSON instead of formatted text
-  --strict               Exit with code 1 if any variant could not be measured
+  --strict               Exit with code 1 if any variant or component could not be measured, or none were
   --strict-warnings      Implies --strict, and also fails on warnings
 ```
 
-`--strict` fails on variants that could not be measured. Warnings are separate and opt-in via `--strict-warnings`, because a component whose variants legitimately render the same (aliased option values, for instance) would otherwise fail every build. In CI, `--strict-warnings` is usually what you want: it turns "this story silently ignores its args" into a build failure rather than a line of output nobody reads.
+`--strict` fails on variants or components that could not be measured, and on a run that measured nothing at all — snap still writes `styles.json` and a fresh `meta.json` in that case, so an empty result must not read as a clean one. A `--components` name that matches nothing is an error whatever the flags, and writes nothing. Warnings are separate and opt-in via `--strict-warnings`, because a component whose variants legitimately render the same (aliased option values, for instance) would otherwise fail every build. In CI, `--strict-warnings` is usually what you want: it turns "this story silently ignores its args" into a build failure rather than a line of output nobody reads.
 
-Writes `<out>/styles.json` containing, per component, full styles for a base variant plus only the properties each other variant changes. The file carries no timestamp, so repeat runs against unchanged code are byte-identical and it can be committed and diffed.
+Writes `<out>/styles.json` containing, per component, full styles for a base variant plus only the properties each other variant changes. The file carries no timestamp, so repeat runs against unchanged code are byte-identical and it can be committed and diffed. With `--screenshots`, PNGs are written under `<out>/<component>/` and each variant's `screenshot` path is recorded relative to `styles.json`, so the file stays the same whichever directory or machine produced it.
 
 **Variant selection.** `representative` measures every declared value once against the other properties' defaults, so cost scales with the *sum* of variant values rather than their product — a `3 × 2 × 2` button is 5 renders instead of 12. That is enough to build a correct Figma component set, since variants compose. Use `--variants all` for the full product.
 
@@ -310,7 +311,8 @@ Options:
   --tolerance <px>       Allowed difference for lengths (default: 0.5)
   --max-age <duration>   Warn when the snap is older than this (default: "2h")
   --json                 Output JSON instead of formatted text
-  --strict               Exit with code 1 if any variant drifted or is missing from Figma
+  --strict               Exit with code 1 if any variant drifted, is missing from Figma, or reported
+                         nothing comparable, or if the snap recorded a component failure
   --strict-age           Implies --strict, and also fails on a stale snap
   --strict-measured      Implies --strict, and also fails on anything not measured
 ```
@@ -319,7 +321,7 @@ The three strict flags cover different questions, and each is opt-in because eac
 
 | Flag | Fails on |
 |---|---|
-| `--strict` | Properties that disagree, and variants Figma never received |
+| `--strict` | Properties that disagree; variants Figma never received; variants Figma reported with nothing comparable (`unscored`); a run that compared nothing at all; and a component the snap failed to measure, or a snap with no components |
 | `--strict-age` | A snap older than `--max-age`, or one whose age can't be established |
 | `--strict-measured` | Variants inferred from source, unrecorded, or present in Figma but never measured |
 
@@ -337,6 +339,10 @@ Fidelity: 95.0% (38/40 properties)
 Comparison is numeric rather than visual: measured values diff deterministically and cost nothing, where comparing screenshots means paying a model to render a judgement that won't reproduce.
 
 Only properties the readback actually reports are scored. Figma has no equivalent for `lineHeight: "normal"` or a measured width on an auto-layout frame, so counting those would manufacture drift. Variants Figma never received are reported separately rather than dragging the score down — a missing variant is a different problem from a wrong one.
+
+Reporting *nothing* is not a pass, though. A variant Figma reported without a single comparable property is `unscored` rather than verified, and fails `--strict`: otherwise the writer being graded would choose its own denominator and score a perfect nothing. Likewise a snap that recorded a component failure, or no components at all, fails `--strict` and is printed as `! snap recorded a failure`. A single variant snap could not measure is reported but not failed on its own — some are expected (`args_unsupported`), and those built from source are already caught by `--strict-measured`.
+
+`color`, `fontSize`, `fontWeight` and `fontFamily` are compared with the styles snap measured on the element that owns the text, matching the Figma TEXT node the readback reads. Opacity uses a fixed 0.01 allowance rather than `--tolerance`, which is a pixel budget. A measured `null` gap and a reported gap of zero count as the same rendering.
 
 **Staleness.** `snap` writes a `meta.json` beside `styles.json` recording when the measurement was taken and against which Storybook. It is deliberately a separate file: `styles.json` is meant to be committed and diffed, and an embedded timestamp would churn on every run and bury the changes that matter. `verify` uses it to notice it is scoring a measurement taken before the code changed — the one drift case nothing else catches, since every property matches and the score reads 100%.
 
@@ -399,7 +405,7 @@ The reverse-direction (Figma → code) features have known constraints that you 
 - **Multi-mode variables**: By default, only the first mode of each Figma variable collection is read. Use `--mode <name>` on the CLI (or instruct the agent in chat) to read a specific mode like "Light" or "Dark".
 - **Variable aliases**: Aliases are resolved up to 8 levels deep; cycles are detected. Aliases pointing at variables in remote/team libraries are not resolved.
 - **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
-- **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`).
+- **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`). Two code components sharing a name (e.g. `Forms/Button` and `Nav/Button`) can't both be paired with Figma's single `Button`; `diff` reports them as `ambiguous` and fails `--strict` rather than silently comparing one.
 - **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used.
 - **Story args wiring**: `storysync snap` varies variants through Storybook's `?args=` URL, so a story that ignores its args measures its default state for every variant. snap warns when all of a component's variants measure identically. See [`storysync snap`](#storysync-snap).
 - **Variant values must be URL-safe**: Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so an option value containing e.g. `/` cannot be measured and is reported as `args_unsupported`.
