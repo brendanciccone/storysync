@@ -8,7 +8,7 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 - Storybook MCP configured in `.codex/config.toml` (HTTP server at `http://localhost:6006/mcp`)
 - Figma MCP configured in `.codex/config.toml` (HTTP server at `https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
-- storysync installed: `npm install -g storysync` or `npx storysync`
+- storysync 0.3.0 or later, run as `npx storysync` — 0.2.0 and earlier have no `snap` or `verify`
 
 ## Tokens
 
@@ -36,7 +36,7 @@ This auto-detects the token source (Tailwind config, CSS custom properties, or t
 npx storysync map --storybook http://localhost:6006 --json
 ```
 
-This outputs structured JSON with each component's variant properties (name, type, values, default), combination count, and a `title`/`category` reflecting the component's place in Storybook's sidebar (e.g. `title: "Forms/Button"`, `category: "Forms"`). Use the category to organize the Figma file — see "Organization" below.
+This outputs structured JSON with each component's variant properties (name, type, values, default), combination count, and a `title`/`category` reflecting the component's place in Storybook's sidebar (e.g. `title: "Forms/Button"`, `category: "Forms"`). Use the category to organize the Figma file — see step 4 below.
 
 2. **Inspect individual components** — for detailed prop-to-variant mapping:
 
@@ -50,13 +50,13 @@ npx storysync inspect --storybook http://localhost:6006 --component Button
 npx storysync snap --storybook http://localhost:6006 --json
 ```
 
-   Renders every variant in a real browser and reports what it actually computed. Run it *now*, in this session — do not reuse an earlier `styles.json`, which may describe code that has since changed.
+   Renders each variant in a real browser and reports what it actually computed. By default it measures a representative set — every value of every property at least once — not the full product. **Build exactly the variants in snap's output, one Figma variant per snap variant, whatever its status.** If you want every combination in Figma, run snap with `--variants all` so each one you build is measured; a Figma variant snap never produced cannot be scored. Run it *now*, in this session — do not reuse an earlier `styles.json`, which may describe code that has since changed.
 
    Output is a base variant plus per-variant deltas; a variant's full styles are the base with its `delta` applied. Translate directly: `backgroundColor` → fill (`null` means no fill, not black), `color`/`text.color` → text fill, `padding` → auto-layout padding, `gap.column` → `itemSpacing`, `borderRadiusUniform` (else `borderRadius`) → `cornerRadius`, `borderUniform` → stroke (`null` means none), `boxShadow[]` → `DROP_SHADOW` effects, `display: flex` + `flexDirection` → auto-layout direction, `fontSize`/`fontWeight`/`fontFamily` → text style.
 
    Three mappings that are wrong by default and won't surface as drift unless you get them right:
 
-   - **`strokeAlign` follows the measured `boxSizing`.** Figma defaults strokes to `INSIDE`, which eats padding. A CSS border on a `content-box` element grows the box outward, so those need `strokeAlign = 'OUTSIDE'`; only `border-box` matches Figma's default.
+   - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's rendered size must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`.
    - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant and size the set to contain them.
    - **Assert the layout before returning.** After positioning, check that no two variants' bounding boxes intersect and that the set's bounds contain every child. Geometry comparison catches variants clipped by an undersized frame, but two same-sized variants stacked inside an adequately sized one measure correctly and stay invisible — so the check has to happen here, at write time.
    - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no Times. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them. If the measured `fontFamily` is not a Google font, say so and name the substitute you used rather than letting Figma pick one silently: the substitution usually cascades, since e.g. Arimo (Figma's suggestion for Arial) has no SemiBold, so a 600 weight lands as 700 and drifts twice.
@@ -66,12 +66,12 @@ npx storysync snap --storybook http://localhost:6006 --json
 
    **Record every fallback.** Step 6 writes a `source` of `"measured"` or `"inferred"` per variant. A run inspected later must be able to tell them apart without this conversation.
 
-   **Checkpoint before step 5**: every variant has measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` warned that the story isn't passing its args through — say so rather than treating the values as real.
+   **Checkpoint before step 5**: every variant has measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` warned that the story isn't passing its args through — still write the measured values and label them `measured` — they are what the story actually renders — and say so in the summary. Do not substitute values from source: the fix belongs in the story, and a variant styled from source would be scored against a measurement it does not match.
 
 4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page matching its category. This mirrors the Storybook sidebar so designers find things where they expect them, and keeps duplicate leaf names (e.g. two `Button`s under different categories) distinct.
 
-5. Write with `use_figma` — find or create the target page, then create the component set on it, embedding the measured values from step 3. **Update an existing set of the same name rather than creating a duplicate**; a second push must not produce two `Button`s. End the plugin code by reading the created nodes' actual properties back (fills, `cornerRadius`, padding, `strokeWeight`, `itemSpacing`, `opacity`, and the text child's `fontSize`/`fontName`) and returning them as JSON keyed by the snap variant slug — read them off the nodes, don't echo what you sent. Take width and height from `absoluteRenderBounds`, not `node.width`, which excludes an OUTSIDE stroke and under-reports by the border on every outlined variant. Use `skillNames: "figma-use"`.
-6. Merge those readbacks into `.storysync/figma-readback.json`, keyed by component title then snap variant slug, each carrying `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, and re-run. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
+5. Write with `use_figma` — find or create the target page, then create the component set on it, embedding the measured values from step 3. **Update an existing set of the same name rather than creating a duplicate**; a second push must not produce two `Button`s. End the plugin code by reading the created nodes' actual properties back (fills, `cornerRadius`, padding, `strokeWeight`, `itemSpacing`, `opacity`, and the text child's `fontSize`/`fontName`) and returning them as JSON keyed by the snap variant slug — read them off the nodes, don't echo what you sent. Take each slug from the snap output (record it against the Figma variant name when you create the variant); never rebuild it from the name, because snap lowercases, collapses punctuation, and numbers collisions (`--2`), so a rebuilt slug silently fails to match and the variant goes unscored. Take width and height from `absoluteRenderBounds`, not `node.width`, which excludes an OUTSIDE stroke and under-reports by the border on every outlined variant. Map `fontName.style` to a numeric weight by name — Figma says `"Semi Bold"` where CSS says `600`, and `fontWeight` is compared exactly, so treating anything that is not `"Bold"` as `400` drifts on every non-Bold variant. Report `gap` only for nodes that actually have auto-layout (verify treats a measured `null` gap and `{row:0,column:0}` as the same rendering, so zero spacing still matches a block element). Use `skillNames: "figma-use"`.
+6. Merge those readbacks into `.storysync/figma-readback.json`, keyed by component title then snap variant slug, each carrying `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; a recorded snap failure means re-run `snap`. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
 7. Summarize: token collections created, components grouped by page, variant counts, the fidelity score, measured versus inferred counts, any story that didn't pass its args through, failures, caps.
 
 
@@ -112,7 +112,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - Both exist but values differ → **value mismatch** (show both values)
    - Normalize before comparing: lowercase hex, convert rem→px, strip units for numerics.
 
-6. **Compare components** — match by name (case-insensitive). For each:
+6. **Compare components** — match by name (case-insensitive). If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), report them as ambiguous rather than comparing only one. For each:
    - In code/Storybook but not in Figma → **code only**
    - In Figma but not in code/Storybook → **Figma only**
    - Both exist → compare variant properties: missing props, extra props, missing/extra values.
@@ -125,4 +125,4 @@ npx storysync map --storybook http://localhost:6006 --json
 - **Never invent a value that could be measured.** Guessing that "primary" means blue produces a library that looks plausible and is wrong, which is worse than one that's visibly incomplete. If a variant couldn't be measured, derive it from source and record it as `inferred`.
 - The goal is a Figma library a designer can use directly, not variant scaffolding.
 - Use auto-layout so components resize properly; measured `display`, `flexDirection`, `padding` and `gap` map onto it directly.
-- Add text layers with representative labels, styled from the measured `text` values where present.
+- Add a text layer carrying the text the story actually renders — the story's args if they set the content, otherwise the component's default children (e.g. `children = "Button"`). Read it from source if you need to: the rule against reading source is about styles, not labels. Inline components are scored on width, so a different label reads as drift. Style it from the measured `text` values where present.
