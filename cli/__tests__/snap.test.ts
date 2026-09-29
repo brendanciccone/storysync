@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions } from "../snap.js";
+import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot } from "../snap.js";
 import type { SnapOptions } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
@@ -62,22 +62,46 @@ test("pickStory: returns null when there is nothing to render", () => {
 
 // --- runSnap ---
 
-test("runSnap: does not launch a browser when no components match", async () => {
+test("runSnap: a --components name that matches nothing is an error, not an empty run", async () => {
   const dir = tempDir();
   try {
-    // A typo in --components must not surface as a browser failure on a
-    // machine that has no browser installed.
-    const result = await runSnap(options(dir, { components: ["Nonexistent"] }), {
-      storybook: {
-        listComponents: async () => [{ id: "forms-button", name: "Button" }],
-        getComponent: async () => { throw new Error("should not be reached"); },
-      } as never,
-      launch: launchShouldNotHappen as never,
-    });
+    // Silently filtering to zero produced an empty styles.json alongside a
+    // freshly-stamped meta.json, so the pipeline went green having measured
+    // nothing. The failure must still arrive before the browser launches: a
+    // typo must not surface as a browser error on a machine without one.
+    await assert.rejects(
+      () => runSnap(options(dir, { components: ["Nonexistent"] }), {
+        storybook: {
+          listComponents: async () => [{ id: "forms-button", name: "Button" }],
+          getComponent: async () => { throw new Error("should not be reached"); },
+        } as never,
+        launch: launchShouldNotHappen as never,
+      }),
+      /matched no component named "nonexistent".*Available: Button/s,
+    );
 
-    assert.equal(result.components.length, 0);
-    assert.equal(result.summary.variants, 0);
-    assert.ok(existsSync(join(dir, "styles.json")));
+    // Nothing was written, so no stale snap is left behind to be scored later.
+    assert.equal(existsSync(join(dir, "styles.json")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a partial --components typo fails rather than silently dropping the name", async () => {
+  const dir = tempDir();
+  try {
+    // The more dangerous shape: one name matches, so the run looks populated
+    // while the misspelled component is never measured.
+    await assert.rejects(
+      () => runSnap(options(dir, { components: ["Button", "Buton"] }), {
+        storybook: {
+          listComponents: async () => [{ id: "forms-button", name: "Button" }],
+          getComponent: async () => { throw new Error("should not be reached"); },
+        } as never,
+        launch: launchShouldNotHappen as never,
+      }),
+      /matched no component named "buton"/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -443,6 +467,21 @@ test("runSnap: distinct titles produce no collision warning", async () => {
     });
 
     assert.equal(result.summary.componentsWithWarnings, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeScreenshot: records the PNG path relative to styles.json, never absolute", () => {
+  // styles.json is committed and diffed. An absolute path differs between
+  // machines and checkouts for identical code, and writes the local
+  // filesystem layout — username included — into the file.
+  const dir = tempDir();
+  try {
+    const recorded = writeScreenshot(dir, { id: "forms-button", name: "Button", title: "Forms/Button" } as never,
+      "variant-primary", Buffer.from("png"));
+    assert.equal(recorded, "forms-button/variant-primary.png");
+    assert.ok(existsSync(join(dir, recorded)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

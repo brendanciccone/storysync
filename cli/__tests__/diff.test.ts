@@ -323,3 +323,22 @@ test("extractFirstBalancedArray: no array returns null", () => {
 test("extractFirstBalancedArray: unbalanced returns null", () => {
   assert.equal(extractFirstBalancedArray('[1,2,3'), null);
 });
+
+test("diffComponents: two code components sharing a bare name are flagged, not silently dropped", () => {
+  // Forms/Button and Nav/Button are ordinary in a real design system. Keyed on
+  // the bare name, one would overwrite the other and `diff --strict` would
+  // report "no differences" for a library it never fully read.
+  const code = [
+    { name: "Button", variantProperties: [{ name: "variant", type: "VARIANT", values: ["a"] }] },
+    { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm"] }] },
+  ] as never[];
+  const figma = [
+    { name: "Button", variantProperties: [{ name: "variant", type: "VARIANT", values: ["a"] }] },
+  ] as never[];
+
+  const entries = diffComponents(code, figma);
+  const ambiguous = entries.filter((e) => e.status === "ambiguous");
+  assert.equal(ambiguous.length, 1);
+  assert.match(ambiguous[0].details.join(" "), /share this name/);
+  assert.equal(hasDifferences(computeDiffSummary([], entries)), true);
+});

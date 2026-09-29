@@ -18,7 +18,7 @@ export interface TokenDiffEntry {
 
 export interface ComponentDiffEntry {
   name: string;
-  status: "match" | "variant_mismatch" | "code_only" | "figma_only";
+  status: "match" | "variant_mismatch" | "code_only" | "figma_only" | "ambiguous";
   details: string[];
 }
 
@@ -39,6 +39,8 @@ export interface DiffSummary {
   componentsMismatched: number;
   componentsCodeOnly: number;
   componentsFigmaOnly: number;
+  /** Code components sharing a bare name, so only one could be compared. */
+  componentsAmbiguous: number;
 }
 
 // --- Collection name → token category mapping ---
@@ -279,7 +281,32 @@ export function diffComponents(
 ): ComponentDiffEntry[] {
   const entries: ComponentDiffEntry[] = [];
 
-  const codeMap = new Map(codeComponents.map((c) => [c.name.toLowerCase(), c]));
+  // Components are paired on their bare name, which two distinct components can
+  // share — `Forms/Button` and `Nav/Button` are ordinary in a real design
+  // system. Building the map alone would let the second silently overwrite the
+  // first, so one component would be dropped before any comparison and `diff
+  // --strict` would report "no differences" for a library it never fully read.
+  const codeMap = new Map<string, FigmaComponentDefinition>();
+  const ambiguous = new Map<string, string[]>();
+  for (const component of codeComponents) {
+    const key = component.name.toLowerCase();
+    const existing = codeMap.get(key);
+    if (existing) {
+      const seen = ambiguous.get(key) ?? [existing.name];
+      seen.push(component.name);
+      ambiguous.set(key, seen);
+      continue;
+    }
+    codeMap.set(key, component);
+  }
+  for (const [, names] of ambiguous) {
+    entries.push({
+      name: names[0],
+      status: "ambiguous",
+      details: [`${names.length} components share this name; only one can be compared against Figma's single match`],
+    });
+  }
+
   const figmaMap = new Map(figmaComponents.map((c) => [c.name.toLowerCase(), c]));
 
   for (const [key, code] of codeMap) {
@@ -359,6 +386,7 @@ export function computeDiffSummary(tokens: TokenDiffEntry[], components: Compone
     componentsMismatched: components.filter((c) => c.status === "variant_mismatch").length,
     componentsCodeOnly: components.filter((c) => c.status === "code_only").length,
     componentsFigmaOnly: components.filter((c) => c.status === "figma_only").length,
+    componentsAmbiguous: components.filter((c) => c.status === "ambiguous").length,
   };
 }
 
@@ -369,6 +397,8 @@ export function hasDifferences(summary: DiffSummary): boolean {
     summary.tokensMissingFromCode > 0 ||
     summary.componentsMismatched > 0 ||
     summary.componentsCodeOnly > 0 ||
-    summary.componentsFigmaOnly > 0
+    summary.componentsFigmaOnly > 0 ||
+    // A component that could not be compared is not a component that matched.
+    summary.componentsAmbiguous > 0
   );
 }

@@ -6,7 +6,7 @@
 // results out on disk.
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
 import { mapComponent, representativeCombinations } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
@@ -42,7 +42,7 @@ export interface SnapVariant {
   error: string | null;
   /** Differences from the component's base styles. Empty for the base itself. */
   delta?: StyleDelta;
-  /** Project-relative PNG path, when screenshots are enabled. */
+  /** PNG path relative to the directory containing styles.json, when screenshots are enabled. */
   screenshot?: string;
   boundingBox?: { width: number; height: number };
 }
@@ -290,8 +290,24 @@ async function listSelectedComponents(
 ): Promise<ComponentEntry[]> {
   const entries = await storybook.listComponents();
   if (!filter?.length) return entries;
-  const wanted = new Set(filter.map((s) => s.trim().toLowerCase()));
-  return entries.filter((e) => wanted.has(e.name.toLowerCase()) || wanted.has(e.id.toLowerCase()));
+  const wanted = filter.map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const matches = (e: ComponentEntry, name: string) =>
+    e.name.toLowerCase() === name || e.id.toLowerCase() === name;
+
+  // A name that matches nothing is a typo, not a request for zero components.
+  // Left to filter silently it produces an empty snap that still stamps a
+  // fresh `measuredAt`, so the whole pipeline goes green having measured
+  // nothing — and a partial typo is worse, because the run looks populated.
+  const unmatched = wanted.filter((name) => !entries.some((e) => matches(e, name)));
+  if (unmatched.length) {
+    const available = entries.map((e) => e.name).sort().join(", ") || "none";
+    throw new Error(
+      `--components matched no component named ${unmatched.map((n) => `"${n}"`).join(", ")}. ` +
+      `Available: ${available}`,
+    );
+  }
+
+  return entries.filter((e) => wanted.some((name) => matches(e, name)));
 }
 
 async function snapComponent(
@@ -419,7 +435,7 @@ async function snapComponent(
   return shell;
 }
 
-function writeScreenshot(
+export function writeScreenshot(
   outDir: string,
   entry: ComponentEntry,
   slug: string,
@@ -428,8 +444,11 @@ function writeScreenshot(
   const path = join(outDir, componentSlug(entry.name, entry.title), `${slug}.png`);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, png);
-  // Posix separators so the recorded path is stable across platforms.
-  return path.split("\\").join("/");
+  // Recorded relative to the directory holding styles.json, with posix
+  // separators. styles.json is meant to be committed and diffed; an absolute
+  // path would differ between machines and checkouts for identical code, and
+  // would write the local filesystem layout — username included — into it.
+  return relative(outDir, path).split("\\").join("/");
 }
 
 /**

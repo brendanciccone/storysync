@@ -110,14 +110,14 @@ program
   .command("snap")
   .description("Measure each component variant's rendered styles from a running Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .option("--components <names>", "Comma-separated component names")
+  .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
   .option("--out <dir>", "Output directory", ".storysync/snaps")
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
   .option("--screenshots", "Also save a PNG per variant (off by default)")
   .option("--timeout <ms>", "Per-story timeout in milliseconds", "10000")
   .option("--selector <css>", "Override the component root selector")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant could not be measured")
+  .option("--strict", "Exit with code 1 if any variant or component could not be measured, or none were")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
   .action(async (opts) => {
     const json = !!opts.json;
@@ -182,7 +182,12 @@ program
       // args is exactly the thing worth failing CI over, so --strict-warnings
       // makes that opt-in.
       const strict = !!opts.strict || !!opts.strictWarnings;
-      const hasFailures = result.summary.failed > 0 || result.summary.componentsFailed > 0;
+      // Measuring nothing is a failure, not a clean run: snap still writes a
+      // styles.json and a freshly-stamped meta.json, so downstream freshness
+      // checks would read an empty result as a good one.
+      const hasFailures = result.summary.failed > 0
+        || result.summary.componentsFailed > 0
+        || result.summary.components === 0;
       const hasWarnings = result.summary.componentsWithWarnings > 0;
 
       if ((strict && hasFailures) || (opts.strictWarnings && hasWarnings)) {
@@ -205,7 +210,7 @@ program
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant drifted or is missing from Figma")
+  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, or if the snap recorded a component failure")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
   .action(async (opts) => {
@@ -234,12 +239,24 @@ program
       } else {
         const { summary } = result;
         console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}`);
-        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma, across ${summary.variants} variants\n`);
+        const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}, across ${summary.variants} variants\n`);
+
+        for (const issue of result.snapIssues ?? []) {
+          console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
+        }
+        for (const warning of result.snapWarnings ?? []) {
+          console.log(`  ${chalk.yellow("!")} ${warning}`);
+        }
 
         for (const variant of result.variants) {
           if (variant.status === "verified") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
+            continue;
+          }
+          if (variant.status === "unscored") {
+            console.log(`  ${chalk.red("!")} ${variant.component} ${chalk.dim(variant.slug)} reported no comparable properties — nothing was scored`);
             continue;
           }
           console.log(`  ${chalk.red("~")} ${variant.component} ${chalk.dim(variant.slug)}`);
@@ -248,7 +265,12 @@ program
           }
         }
 
-        if (!result.variants.some((v) => v.status !== "verified")) {
+        // Only on a run that genuinely passed: a snap that recorded failures or
+        // a run that compared nothing must not end on a green "matches".
+        const cleanRun = !result.variants.some((v) => v.status !== "verified")
+          && (result.snapIssues?.length ?? 0) === 0
+          && result.summary.propertiesCompared > 0;
+        if (cleanRun) {
           // Name what was checked. On a clean run this is otherwise the only
           // output, and "it matches" is not much use without saying what did.
           const names = [...new Set(result.variants.map((v) => v.component))];
@@ -298,7 +320,14 @@ program
       }
 
       const strict = !!opts.strict || !!opts.strictAge || !!opts.strictMeasured;
-      const hasDrift = result.summary.drifted > 0 || result.summary.missingFromFigma > 0;
+      // A variant Figma reported without any comparable property, and a run
+      // that compared nothing at all, are both absent measurements rather than
+      // passing ones — the same reasoning as an unknown snap age.
+      const scoredNothing = result.summary.unscored > 0 || result.summary.propertiesCompared === 0;
+      const hasDrift = result.summary.drifted > 0
+        || result.summary.missingFromFigma > 0
+        || scoredNothing
+        || (result.snapIssues?.length ?? 0) > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one.
       const notMeasured = result.summary.inferred > 0
@@ -632,6 +661,8 @@ program
             } else if (c.status === "variant_mismatch") {
               console.log(`  ${chalk.red("~")} ${chalk.bold(c.name)}`);
               for (const d of c.details) console.log(`      ${chalk.dim(d)}`);
+            } else if (c.status === "ambiguous") {
+              console.log(`  ${chalk.red("?")} ${chalk.bold(c.name)} ${chalk.red("ambiguous")} ${chalk.dim(c.details.join(", "))}`);
             }
           }
         } else if (storybook && !figmaReadFailed) {
@@ -653,6 +684,7 @@ program
           if (summary.componentsMismatched) cParts.push(chalk.red(`${summary.componentsMismatched} mismatched`));
           if (summary.componentsCodeOnly) cParts.push(chalk.yellow(`${summary.componentsCodeOnly} code-only`));
           if (summary.componentsFigmaOnly) cParts.push(chalk.cyan(`${summary.componentsFigmaOnly} Figma-only`));
+          if (summary.componentsAmbiguous) cParts.push(chalk.red(`${summary.componentsAmbiguous} ambiguous`));
           if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
         }
 

@@ -531,3 +531,86 @@ test("propertyMatches: geometry still catches a real mismatch at every scale", (
   assert.equal(propertyMatches("height", 23, 46, 0.5), false);
   assert.equal(propertyMatches("width", 30, 1248, 0.5), false);
 });
+
+// --- an absent measurement must not read as a passing one ---
+
+test("verify: a variant Figma reports with no comparable property is unscored, not verified", () => {
+  // Only properties the readback volunteers are compared, so a writer that
+  // reports nothing would otherwise choose its own denominator and score a
+  // perfect nothing. This is the default failure mode, not an attack: a plugin
+  // read that came back empty still yields `{ source: "measured" }`.
+  const result = verify(
+    snapWith([{ slug: "a" }]),
+    readbackWith({ a: { source: "measured" } }),
+    0.5,
+  );
+  assert.equal(result.variants[0].status, "unscored");
+  assert.equal(result.summary.verified, 0);
+  assert.equal(result.summary.unscored, 1);
+  assert.equal(result.fidelity, null);
+});
+
+test("verify: a populated readback still verifies normally", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }]),
+    readbackWith({ a: { source: "measured", backgroundColor: "#2563eb", fontSize: 12 } }),
+    0.5,
+  );
+  assert.equal(result.variants[0].status, "verified");
+  assert.equal(result.summary.unscored, 0);
+  assert.equal(result.fidelity, 1);
+});
+
+test("verify: surfaces failures the snap recorded about itself", () => {
+  // styles.json is built to be committed, so verify routinely runs against a
+  // snap from a job where nobody saw snap's exit code.
+  const snap = snapWith([{ slug: "a" }]);
+  snap.summary.failed = 2;
+  snap.summary.componentsFailed = 1;
+  const result = verify(snap, readbackWith({ a: { source: "measured", fontSize: 12 } }), 0.5);
+  // A failed component is a --strict failure; a failed variant is reported
+  // only, because some are expected and provenance already gates them.
+  assert.equal(result.snapIssues.length, 1);
+  assert.match(result.snapIssues[0], /component\(s\) failed/);
+  assert.equal(result.snapWarnings.length, 1);
+  assert.match(result.snapWarnings[0], /2 variant\(s\) could not be measured/);
+});
+
+test("verify: a snap with no components at all is reported as an issue", () => {
+  const empty = { ...snapWith([{ slug: "a" }]), components: [] } as unknown as SnapResult;
+  const result = verify(empty, readbackWith({}), 0.5);
+  assert.match(result.snapIssues.join(" "), /no components at all/);
+});
+
+test("propertyMatches: opacity does not borrow the pixel tolerance", () => {
+  // --tolerance is a pixel budget; sharing it would let a variant twice as
+  // opaque as measured pass, and any --tolerance >= 1 would disable the check.
+  assert.equal(propertyMatches("opacity", 0.4, 0.8, 0.5), false);
+  assert.equal(propertyMatches("opacity", 0.4, 1, 2), false);
+  // A float-rounding difference still matches.
+  assert.equal(propertyMatches("opacity", 0.4, 0.4000000059604645, 0.5), true);
+});
+
+test("verify: text properties are scored against the measured text node, not the root", () => {
+  // snap measures these twice because they differ when the text lives in a
+  // child; the readback reads Figma's TEXT node, so it must be compared to the
+  // text side.
+  const snap = snapWith([{ slug: "a" }]);
+  (snap.components[0].base as { styles: NormalizedStyles }).styles = {
+    ...BASE,
+    color: "#111111",
+    text: { color: "#ffffff", fontFamily: "Helvetica", fontSize: 12, fontWeight: 600 },
+  };
+  const result = verify(snap, readbackWith({ a: { source: "measured", color: "#ffffff" } }), 0.5);
+  assert.equal(result.variants[0].status, "verified");
+});
+
+test("propertyMatches: a zero gap and no gap are the same rendering", () => {
+  // Figma needs auto-layout to express padding, so it always reports an
+  // itemSpacing; a block element measures null because CSS gap does not apply.
+  assert.equal(propertyMatches("gap", null, { row: 0, column: 0 }, 0.5), true);
+  assert.equal(propertyMatches("gap", { row: 0, column: 0 }, null, 0.5), true);
+  // A real gap against none is still a mismatch.
+  assert.equal(propertyMatches("gap", null, { row: 6, column: 6 }, 0.5), false);
+  assert.equal(propertyMatches("gap", { row: 6, column: 6 }, { row: 6, column: 6 }, 0.5), true);
+});
