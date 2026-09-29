@@ -36,17 +36,42 @@ interface SetupResult {
   notes: string[];
 }
 
+/**
+ * Claude Code loads a skill from `skills/<name>/SKILL.md`, not a flat
+ * `skills/<name>.md`, and requires YAML frontmatter with a name and
+ * description. Written as a bare file the skill is silently never loaded —
+ * `setup` reports success, the slash commands still work because commands do
+ * accept flat files, and the plain-English trigger does nothing at all.
+ */
+const CLAUDE_SKILL_FRONTMATTER = [
+  "---",
+  "name: storysync",
+  "description: Sync Storybook components and design tokens from code to Figma, measuring each variant's rendered styles rather than inferring them. Use when pushing a component library to Figma, scoring what landed against what rendered, or auditing drift between code and a Figma file.",
+  "---",
+  "",
+].join("\n");
+
 function setupClaude(projectPath: string, force: boolean): SetupResult {
   const skillsSrc = join(PACKAGE_ROOT, "skills", "claude-code.md");
-  const skillsDest = join(projectPath, ".claude", "skills", "storysync.md");
+  const skillsDest = join(projectPath, ".claude", "skills", "storysync", "SKILL.md");
+  const legacySkillPath = join(projectPath, ".claude", "skills", "storysync.md");
   const commandsSrcDir = join(PACKAGE_ROOT, "commands");
   const commandsDestDir = join(projectPath, ".claude", "commands");
 
   const written: string[] = [];
   const skipped: string[] = [];
+  const extraNotes: string[] = [];
 
-  if (copyIfMissing(skillsSrc, skillsDest, force) === "wrote") written.push(relative(projectPath, skillsDest));
-  else skipped.push(relative(projectPath, skillsDest));
+  if (existsSync(skillsDest) && !force) {
+    skipped.push(relative(projectPath, skillsDest));
+  } else {
+    const body = readFileSync(skillsSrc, "utf8");
+    mkdirSync(dirname(skillsDest), { recursive: true });
+    writeFileSync(skillsDest, body.startsWith("---") ? body : CLAUDE_SKILL_FRONTMATTER + body);
+    written.push(relative(projectPath, skillsDest));
+  }
+
+
 
   if (existsSync(commandsSrcDir)) {
     for (const file of readdirSync(commandsSrcDir)) {
@@ -58,10 +83,34 @@ function setupClaude(projectPath: string, force: boolean): SetupResult {
     }
   }
 
+  // Commands kept from an earlier setup still send the agent to the old flat
+  // skill path. Without --force they are skipped, so say so — otherwise the
+  // skill is updated but the command that points at it is not.
+  const staleCommands = existsSync(commandsDestDir)
+    ? readdirSync(commandsDestDir).filter((file) =>
+        file.startsWith("storysync") &&
+        readFileSync(join(commandsDestDir, file), "utf8").includes(".claude/skills/storysync.md"))
+    : [];
+  if (staleCommands.length) {
+    extraNotes.push(
+      `${staleCommands.join(", ")} still point at .claude/skills/storysync.md. Re-run with --force to update them.`,
+    );
+  }
+  // Earlier versions wrote the flat path, which never loaded. Only suggest
+  // removing it once nothing points at it any more.
+  if (existsSync(legacySkillPath)) {
+    extraNotes.push(
+      staleCommands.length
+        ? `Then remove ${relative(projectPath, legacySkillPath)} — it predates the skill directory layout and is never loaded.`
+        : `Remove ${relative(projectPath, legacySkillPath)} — it predates the skill directory layout and is never loaded.`,
+    );
+  }
+
   return {
     written,
     skipped,
     notes: [
+      ...extraNotes,
       "Add Storybook MCP:  claude mcp add --transport http storybook http://localhost:6006/mcp",
       "Add Figma plugin:    claude plugin install figma@claude-plugins-official",
       "Then in Claude Code: /storysync-push <figma-file-key>",
