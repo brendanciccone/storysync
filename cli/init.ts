@@ -22,7 +22,10 @@ const MIN_STORYBOOK_MAJOR = 10;
 // Storybook 10. An unpinned install takes `latest`, which on a 10.5 project
 // fails with ERESOLVE under npm — or, with `storybook@^10.5.0` in
 // package.json, quietly upgrades storybook past its framework package.
-const ADDON_MCP_LOCKSTEP_MINOR = 6;
+//
+// The first lockstep release was 10.6.0-alpha.4: Storybook's 10.6.0-alpha.0
+// to alpha.3 have no addon-mcp of their own version, so they get 0.7 too.
+const ADDON_MCP_FIRST_LOCKSTEP = "10.6.0-alpha.4";
 const ADDON_MCP_PRE_LOCKSTEP_RANGE = "^0.7.0";
 
 export function detectPackageManager(projectPath: string): PackageManager {
@@ -74,15 +77,48 @@ export function getInstalledStorybookVersion(projectPath: string): string | null
   }
 }
 
+interface ParsedVersion {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string[];
+  floor: string;
+}
+
 /**
  * Reads an installed version (`10.6.0`) or a declared range (`^10.6.0`) as the
  * lowest version it allows. Null for anything else (`latest`, `workspace:*`).
  */
-function parseStorybookVersion(version: string | null): { major: number; minor: number; floor: string } | null {
-  const m = version?.replace(/^[\^~>=<\s]*/, "").match(/^(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?/);
+function parseStorybookVersion(version: string | null): ParsedVersion | null {
+  const m = version?.replace(/^[\^~>=<\s]*/, "").match(/^(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/);
   if (!m) return null;
-  return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10), floor: `${m[1]}.${m[2]}.${m[3] ?? "0"}${m[4] ?? ""}` };
+  return {
+    major: parseInt(m[1], 10),
+    minor: parseInt(m[2], 10),
+    patch: parseInt(m[3] ?? "0", 10),
+    prerelease: m[4] ? m[4].split(".") : [],
+    floor: `${m[1]}.${m[2]}.${m[3] ?? "0"}${m[4] ? `-${m[4]}` : ""}`,
+  };
 }
+
+/** Orders two parsed versions by semver precedence: negative when `a` is older. */
+function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
+  const core = a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+  if (core) return core;
+  // A release is newer than any of its prereleases (10.6.0 > 10.6.0-beta.3).
+  if (!a.prerelease.length || !b.prerelease.length) return b.prerelease.length - a.prerelease.length;
+  for (let i = 0; i < Math.max(a.prerelease.length, b.prerelease.length); i++) {
+    const x = a.prerelease[i];
+    const y = b.prerelease[i];
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    const numeric = /^\d+$/.test(x) && /^\d+$/.test(y);
+    const order = numeric ? parseInt(x, 10) - parseInt(y, 10) : x < y ? -1 : x > y ? 1 : 0;
+    if (order) return order;
+  }
+  return 0;
+}
+
+const FIRST_LOCKSTEP = parseStorybookVersion(ADDON_MCP_FIRST_LOCKSTEP)!;
 
 export function isStorybookVersionOk(version: string | null): boolean {
   const v = parseStorybookVersion(version);
@@ -99,7 +135,7 @@ export function isStorybookVersionOk(version: string | null): boolean {
 export function addonMcpInstallSpec(storybookVersion: string | null): string {
   const v = parseStorybookVersion(storybookVersion);
   if (!v) return "@storybook/addon-mcp";
-  const lockstep = v.major > MIN_STORYBOOK_MAJOR || (v.major === MIN_STORYBOOK_MAJOR && v.minor >= ADDON_MCP_LOCKSTEP_MINOR);
+  const lockstep = compareVersions(v, FIRST_LOCKSTEP) >= 0;
   return `@storybook/addon-mcp@${lockstep ? v.floor : ADDON_MCP_PRE_LOCKSTEP_RANGE}`;
 }
 
@@ -136,10 +172,17 @@ function confirm(message: string): Promise<boolean> {
   });
 }
 
+/**
+ * The command that installs `spec`, as run and as printed for running by
+ * hand. A spec with a range in it is quoted: zsh with extendedglob reads
+ * `^0.7.0` as a glob and fails with "no matches found". Double quotes, since
+ * cmd.exe, which runs it on Windows, keeps single quotes as part of the name.
+ */
 export function installCommand(pm: PackageManager, spec: string): string {
-  if (pm === "pnpm") return `pnpm add -D ${spec}`;
-  if (pm === "yarn") return `yarn add -D ${spec}`;
-  return `npm install -D ${spec}`;
+  const arg = /^[\w@/.:+-]+$/.test(spec) ? spec : `"${spec}"`;
+  if (pm === "pnpm") return `pnpm add -D ${arg}`;
+  if (pm === "yarn") return `yarn add -D ${arg}`;
+  return `npm install -D ${arg}`;
 }
 
 function upgradeCommand(pm: PackageManager): string {

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -234,6 +235,19 @@ test("addonMcpInstallSpec: a declared range uses its lowest version", () => {
 
 test("addonMcpInstallSpec: keeps a prerelease tag", () => {
   assert.equal(addonMcpInstallSpec("10.7.0-beta.1"), "@storybook/addon-mcp@10.7.0-beta.1");
+  assert.equal(addonMcpInstallSpec("10.6.0-beta.3"), "@storybook/addon-mcp@10.6.0-beta.3");
+  assert.equal(addonMcpInstallSpec("10.6.0-alpha.4"), "@storybook/addon-mcp@10.6.0-alpha.4");
+  assert.equal(addonMcpInstallSpec("11.0.0-alpha.1"), "@storybook/addon-mcp@11.0.0-alpha.1");
+});
+
+test("addonMcpInstallSpec: a 10.6 prerelease from before addon-mcp's first lockstep release gets 0.7", () => {
+  // addon-mcp's first release in lockstep with Storybook was 10.6.0-alpha.4;
+  // there is no @storybook/addon-mcp@10.6.0-alpha.0 to .3.
+  for (const version of ["10.6.0-alpha.0", "10.6.0-alpha.3", "^10.6.0-alpha.2"]) {
+    assert.equal(addonMcpInstallSpec(version), "@storybook/addon-mcp@^0.7.0", version);
+  }
+  // Numeric identifiers compare as numbers, not text.
+  assert.equal(addonMcpInstallSpec("10.6.0-alpha.10"), "@storybook/addon-mcp@10.6.0-alpha.10");
 });
 
 test("addonMcpInstallSpec: Storybook before 10.6 gets addon-mcp 0.7", () => {
@@ -247,8 +261,23 @@ test("addonMcpInstallSpec: unpinned when the version can't be read", () => {
   assert.equal(addonMcpInstallSpec("workspace:*"), "@storybook/addon-mcp");
 });
 
-test("installCommand: passes the spec to each package manager", () => {
+test("installCommand: passes the spec to each package manager, quoting a range", () => {
   assert.equal(installCommand("pnpm", "@storybook/addon-mcp@10.6.0"), "pnpm add -D @storybook/addon-mcp@10.6.0");
-  assert.equal(installCommand("yarn", "@storybook/addon-mcp@^0.7.0"), "yarn add -D @storybook/addon-mcp@^0.7.0");
-  assert.equal(installCommand("npm", "@storybook/addon-mcp@^0.7.0"), "npm install -D @storybook/addon-mcp@^0.7.0");
+  assert.equal(installCommand("pnpm", "@storybook/addon-mcp@10.6.0-beta.3"), "pnpm add -D @storybook/addon-mcp@10.6.0-beta.3");
+  assert.equal(installCommand("pnpm", "@storybook/addon-mcp@^0.7.0"), `pnpm add -D "@storybook/addon-mcp@^0.7.0"`);
+  assert.equal(installCommand("yarn", "@storybook/addon-mcp@^0.7.0"), `yarn add -D "@storybook/addon-mcp@^0.7.0"`);
+  assert.equal(installCommand("npm", "@storybook/addon-mcp@^0.7.0"), `npm install -D "@storybook/addon-mcp@^0.7.0"`);
+});
+
+const hasZsh = spawnSync("zsh", ["-c", "true"]).status === 0;
+
+test("installCommand: survives zsh with extendedglob, where an unquoted ^ is a glob", { skip: !hasZsh && "zsh is not installed" }, () => {
+  // `pnpm` stands in for the package manager and prints what it was given.
+  const run = (command: string) =>
+    spawnSync("zsh", ["-f", "-c", `setopt extendedglob; pnpm() { print -rl -- "$@"; }; ${command}`], { encoding: "utf8" });
+  const quoted = run(installCommand("pnpm", "@storybook/addon-mcp@^0.7.0"));
+  assert.equal(quoted.status, 0, quoted.stderr);
+  assert.equal(quoted.stdout, "add\n-D\n@storybook/addon-mcp@^0.7.0\n");
+  // The failure the quotes prevent.
+  assert.match(run("pnpm add -D @storybook/addon-mcp@^0.7.0").stderr, /no matches found/);
 });

@@ -239,6 +239,8 @@ Options:
   --project <path>     Project root path (default: ".")
 ```
 
+The addon-mcp it installs matches the Storybook in `node_modules`, or before an install the lowest version `package.json` allows. addon-mcp now releases in lockstep with Storybook, and each release needs a Storybook at least as new as itself, so Storybook 10.6 and later get the addon-mcp of the same version. Earlier versions, and 10.6 prereleases older than addon-mcp's first lockstep release (10.6.0-alpha.4), get `^0.7.0`.
+
 ### `storysync setup`
 
 Drop the storysync skill, slash commands, and MCP setup notes into your project for the AI client you use.
