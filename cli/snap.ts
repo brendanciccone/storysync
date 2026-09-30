@@ -66,7 +66,10 @@ export interface SnapComponent {
    * a subset covering every value was measured. Whoever builds from this must
    * decide how to proceed rather than treat the subset as the whole component.
    */
-  cap?: CapInfo;
+  cap?: CapInfo & {
+    /** Declared values no measured combination includes, as `prop=value`. */
+    uncovered: string[];
+  };
 }
 
 export interface SnapResult {
@@ -154,11 +157,30 @@ export function selectCombinations(
   return [full[index], ...full.slice(0, index), ...full.slice(index + 1)];
 }
 
+/**
+ * Declared values that no combination in the set includes, as `prop=value`.
+ *
+ * A capped subset is chosen to cover every value, but a limit below the number
+ * of combinations that takes cannot — so coverage is checked, not assumed.
+ */
+export function uncoveredValues(properties: FigmaVariantProperty[], combinations: Record<string, string>[]): string[] {
+  const missing: string[] = [];
+  for (const prop of properties) {
+    for (const value of prop.values) {
+      if (!combinations.some((combo) => combo[prop.name] === value)) missing.push(`${prop.name}=${value}`);
+    }
+  }
+  return missing;
+}
+
 /** Warning for a component measured as a subset because it exceeds the ceiling. */
-export function describeCap(name: string, cap: CapInfo): string {
+export function describeCap(name: string, cap: CapInfo & { uncovered?: string[] }): string {
+  const coverage = cap.uncovered?.length
+    ? `, which leave out ${cap.uncovered.join(", ")} entirely`
+    : " that cover every value";
   return (
     `${name} has ${cap.totalPossible} variant combinations, more than the limit of ${cap.maxCombinations}, ` +
-    `so ${cap.generated} were measured that cover every value. Building the full set needs ` +
+    `so ${cap.generated} were measured${coverage}. Building the full set needs ` +
     `--max-combinations ${cap.totalPossible}; otherwise build the subset or narrow which props are variants.`
   );
 }
@@ -381,8 +403,8 @@ async function snapComponent(
   // Only the full product can exceed the ceiling; representative mode measures
   // one value at a time and never approaches it.
   if (opts.variants === "all" && definition.cap) {
-    shell.cap = definition.cap;
-    shell.warnings.push(describeCap(entry.title ?? entry.name, definition.cap));
+    shell.cap = { ...definition.cap, uncovered: uncoveredValues(definition.variantProperties, combinations) };
+    shell.warnings.push(describeCap(entry.title ?? entry.name, shell.cap));
   }
 
   // Slugs are assigned up front, for the whole set at once, because uniqueness

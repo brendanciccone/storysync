@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap } from "../snap.js";
+import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues } from "../snap.js";
 import type { SnapOptions } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
@@ -581,4 +581,25 @@ test("describeCap: names the total, the limit, and how to build the full set", (
   });
   assert.match(message, /Forms\/Button has 300 variant combinations, more than the limit of 256/);
   assert.match(message, /--max-combinations 300/);
+});
+
+test("uncoveredValues: names declared values no combination includes", () => {
+  // Covering every value of this Button takes 5 combinations; a limit of 4 cannot,
+  // and the capped subset measured in practice had no disabled variant at all.
+  const measured = [
+    { variant: "primary", size: "sm", disabled: "false" },
+    { variant: "danger", size: "sm", disabled: "false" },
+    { variant: "outline", size: "sm", disabled: "false" },
+    { variant: "primary", size: "lg", disabled: "false" },
+  ];
+  assert.deepEqual(uncoveredValues(SIZE_PROPS, measured), ["disabled=true"]);
+  assert.deepEqual(uncoveredValues(SIZE_PROPS, [...measured, { variant: "primary", size: "sm", disabled: "true" }]), []);
+});
+
+test("describeCap: never claims coverage the subset does not have", () => {
+  const cap = { maxCombinations: 4, totalPossible: 12, generated: 4, droppedCount: 8, droppedSample: [] };
+  const short = describeCap("Forms/Button", { ...cap, uncovered: ["disabled=true"] });
+  assert.match(short, /which leave out disabled=true entirely/);
+  assert.doesNotMatch(short, /cover every value/);
+  assert.match(describeCap("Forms/Button", { ...cap, uncovered: [] }), /cover every value/);
 });

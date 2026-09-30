@@ -309,7 +309,11 @@ async function main() {
     const button = readJson(join(out, "styles.json")).components[0];
     assert(button.cap?.totalPossible === 12 && button.cap?.maxCombinations === 4, `cap: ${JSON.stringify(button.cap)}`);
     assert(/12 variant combinations, more than the limit of 4/.test(r.out), "no cap warning printed");
-    return "12 over a limit of 4: warned, recorded, --strict failed";
+    // Four slots cannot cover every value of this Button, so the warning must
+    // say what was left out instead of claiming coverage.
+    assert(JSON.stringify(button.cap.uncovered) === JSON.stringify(["disabled=true"]), `uncovered: ${JSON.stringify(button.cap.uncovered)}`);
+    assert(/leave out disabled=true/.test(r.out) && !/cover every value/.test(r.out), "warning claims coverage the subset lacks");
+    return "12 over a limit of 4: warned, recorded, gap named, --strict failed";
   });
 
   await check("snapshots are stamped with the running version", () => {
