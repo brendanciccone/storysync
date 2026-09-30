@@ -1,7 +1,7 @@
 // Design token extraction from project source files.
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type TokenSourceType = "tailwind" | "css" | "theme";
 
@@ -610,6 +610,47 @@ export interface TokenBaseline {
   sourcePath: string;
   collections: TokenCollection[];
   generatedAt: string;
+}
+
+/**
+ * Reads a baseline for `tokens --check`. `tokens --json` writes one: only its
+ * `collections` are compared. Null when the file does not exist, which the
+ * caller reports; throws when it exists but is not a baseline — for instance
+ * the saved output of a passing `--check --json`, which is only `{"drift":false}`.
+ */
+export function readTokenBaseline(path: string): TokenBaseline | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`Could not read the token baseline at ${path}: ${String(err)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`The token baseline at ${path} is not valid JSON: ${String(err)}`);
+  }
+  if (!Array.isArray((parsed as Partial<TokenBaseline> | null)?.collections)) {
+    throw new Error(`The token baseline at ${path} has no "collections", so it is not a baseline`);
+  }
+  return parsed as TokenBaseline;
+}
+
+/**
+ * The shell command that writes a baseline `--check` can read, for the same
+ * project and source. The directory is created first because the default,
+ * `.storysync/`, need not exist yet, and a redirect into it would fail.
+ */
+export function baselineCommand(path: string, opts: { project?: string; source?: string } = {}): string {
+  const quote = (s: string) => (/^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+  const args = ["storysync", "tokens"];
+  if (opts.project && opts.project !== ".") args.push("--project", quote(opts.project));
+  if (opts.source) args.push("--source", quote(opts.source));
+  args.push("--json", ">", quote(path));
+  const dir = dirname(path);
+  return `${dir === "." ? "" : `mkdir -p ${quote(dir)} && `}${args.join(" ")}`;
 }
 
 export interface TokenDrift {

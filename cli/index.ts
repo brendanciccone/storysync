@@ -6,7 +6,7 @@ import ora from "ora";
 import { StorybookClient, selectComponents } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
-import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
+import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
@@ -403,8 +403,8 @@ program
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
   .option("--json", "Output JSON instead of formatted text")
   .option("--all", "Show all tokens instead of truncating")
-  .option("--check", "Compare against baseline and detect drift")
-  .option("--baseline <path>", "Path to token baseline JSON", ".storysync/tokens-baseline.json")
+  .option("--check", "Compare against baseline and detect drift; a missing baseline is an error")
+  .option("--baseline <path>", "Path to token baseline JSON, as written by tokens --json", ".storysync/tokens-baseline.json")
   .option("--strict", "Exit with code 1 if no tokens found or drift detected")
   .action(async (opts) => {
     const json = !!opts.json;
@@ -437,21 +437,31 @@ program
 
     if (opts.check) {
       const baselinePath = opts.baseline as string;
-      let baseline: TokenBaseline;
+      const create = baselineCommand(baselinePath, { project: projectPath, source: opts.source as string | undefined });
+      let baseline: TokenBaseline | null;
       try {
-        const { readFileSync } = await import("node:fs");
-        baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as TokenBaseline;
+        baseline = readTokenBaseline(baselinePath);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          if (json) {
-            console.log(JSON.stringify({ drift: "new", ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
-          } else {
-            console.log(chalk.yellow(`\nNo baseline found at ${baselinePath} - first run`));
-            console.log(chalk.dim("Save current output with --json to create a baseline."));
-          }
-          return;
+        reportError(new Error(`${err instanceof Error ? err.message : String(err)}. Recreate it with \`${create}\`.`), json);
+        process.exitCode = 1;
+        return;
+      }
+
+      // A missing baseline is an error whatever the flags, not a first run.
+      // Treated as one, a wrong --baseline path would pass every run, --strict
+      // included, having compared nothing.
+      if (!baseline) {
+        const message =
+          `No token baseline at ${baselinePath}, so there is nothing to check against. ` +
+          `Create one with \`${create}\` and commit it, or point --baseline at the one you have.`;
+        if (json) {
+          // Still the full extraction, so the output parses as it always has.
+          console.log(JSON.stringify({ drift: "new", error: message, ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
+        } else {
+          console.error(chalk.red(`\n${message}`));
         }
-        throw err;
+        process.exitCode = 1;
+        return;
       }
 
       const drift = compareTokens(baseline, result);

@@ -244,10 +244,19 @@ Options:
   --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted)
   --json               Output JSON instead of formatted text
   --all                Show all tokens instead of truncating
-  --check              Compare against baseline and detect drift
-  --baseline <path>    Path to token baseline JSON (default: .storysync/tokens-baseline.json)
+  --check              Compare against baseline and detect drift; a missing baseline is an error
+  --baseline <path>    Path to token baseline JSON, as written by tokens --json
+                       (default: .storysync/tokens-baseline.json)
   --strict             Exit with code 1 if no tokens found or drift detected
 ```
+
+`--check` compares the current tokens against a committed baseline and lists what was added, removed or changed; `--strict` makes drift fail. The baseline is the `--json` output, taken with the same `--project` and `--source` as the check:
+
+```bash
+mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.json
+```
+
+A missing baseline is an error whatever the flags, and the message gives that command. Treated as a first run instead, a wrong `--baseline` path would pass every check, `--strict` included, having compared nothing. Under `--json` the extraction is still printed, with `"drift": "new"` and an `error`, so the output parses.
 
 ### `storysync map`
 

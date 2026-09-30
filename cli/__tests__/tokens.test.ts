@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand } from "../tokens.js";
 import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -398,4 +398,53 @@ test("drift: identical tokens report no drift", () => {
     source: "css" as const, sourcePath: "/fake", collections, warnings: [],
   });
   assert.equal(hasDrift(drift), false);
+});
+
+// --- Baseline files ---
+
+test("readTokenBaseline: returns null for a missing file, for the caller to report", () => {
+  const dir = makeProject({});
+  try {
+    assert.equal(readTokenBaseline(join(dir, "nope.json")), null);
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: reads the output of tokens --json", () => {
+  const dir = makeProject({
+    "baseline.json": JSON.stringify({ source: "css", sourcePath: "tokens.css", collections: [{ category: "colors", tokens: [] }], warnings: [], summary: {} }),
+  });
+  try {
+    assert.equal(readTokenBaseline(join(dir, "baseline.json"))?.collections[0].category, "colors");
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: rejects JSON that is not a baseline, such as a saved passing --check", () => {
+  const dir = makeProject({ "check.json": `{"drift":false}`, "broken.json": "{" });
+  try {
+    assert.throws(() => readTokenBaseline(join(dir, "check.json")), /has no "collections", so it is not a baseline/);
+    assert.throws(() => readTokenBaseline(join(dir, "broken.json")), /is not valid JSON/);
+  } finally { cleanup(dir); }
+});
+
+test("baselineCommand: creates the directory the redirect writes into", () => {
+  assert.equal(
+    baselineCommand(".storysync/tokens-baseline.json"),
+    "mkdir -p .storysync && storysync tokens --json > .storysync/tokens-baseline.json",
+  );
+  assert.equal(baselineCommand("baseline.json"), "storysync tokens --json > baseline.json");
+});
+
+test("baselineCommand: repeats --project and --source so the baseline matches what --check extracts", () => {
+  assert.equal(
+    baselineCommand("b.json", { project: "packages/ui", source: "css" }),
+    "storysync tokens --project packages/ui --source css --json > b.json",
+  );
+  assert.equal(baselineCommand("b.json", { project: "." }), "storysync tokens --json > b.json");
+});
+
+test("baselineCommand: quotes paths the shell would split", () => {
+  assert.equal(
+    baselineCommand("my tokens/base's.json"),
+    `mkdir -p 'my tokens' && storysync tokens --json > 'my tokens/base'\\''s.json'`,
+  );
 });
