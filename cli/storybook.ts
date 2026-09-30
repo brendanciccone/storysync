@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { VERSION } from "./version.js";
 import type { StorybookComponent, StorybookProp, PropType } from "./mapper.js";
 
@@ -48,18 +49,72 @@ export function deriveCategoryFromId(id: string, name: string): string | undefin
     .join(" ");
 }
 
+/** The Storybook MCP tools that list components and return one's documentation. */
+export interface DocsTools {
+  list: string;
+  show: string;
+}
+
+// @storybook/addon-mcp renamed its docs tools when it moved into the Storybook
+// monorepo at 10.6: `list-all-documentation` became `docs-list` and
+// `get-documentation` became `docs-show`, with the same arguments and the same
+// markdown. Both names stay in use, since 10.6 requires Storybook 10.6 and
+// projects on 10.1–10.5 keep 0.7, so they come from the server's own tool list
+// rather than being assumed.
+const DOCS_TOOL_NAMES = {
+  list: ["docs-list", "list-all-documentation"],
+  show: ["docs-show", "get-documentation"],
+};
+
+/** Picks the docs tool names a Storybook MCP server offers, or null if it lacks either. */
+export function resolveDocsTools(available: string[]): DocsTools | null {
+  const pick = (names: string[]) => names.find((name) => available.includes(name));
+  const list = pick(DOCS_TOOL_NAMES.list);
+  const show = pick(DOCS_TOOL_NAMES.show);
+  return list && show ? { list, show } : null;
+}
+
+/**
+ * Returns the text of a tool result, or throws if the server flagged it as an
+ * error.
+ *
+ * A failed tool call is not a protocol error: the server answers normally, with
+ * `isError: true` and the reason as text. Read as documentation, that text
+ * parses to nothing, which is how calling a renamed tool reported "0
+ * components" and exited 0, and how a mistyped component ID came back as a
+ * component with no props.
+ */
+export function toolResultText(tool: string, result: unknown): string {
+  const r = result as { isError?: boolean; content?: { type: string; text?: string }[] };
+  const texts = r.content?.filter((c) => c.type === "text" && c.text).map((c) => c.text!) ?? [];
+  if (r.isError) {
+    throw new Error(`Storybook MCP tool "${tool}" failed: ${texts.join("\n") || "no reason given"}`);
+  }
+  if (!texts.length) {
+    throw new Error(`Storybook MCP tool "${tool}" returned no text content. Raw result: ${JSON.stringify(result).slice(0, 200)}`);
+  }
+  return texts.join("\n");
+}
+
 export class StorybookClient {
   private client: Client | null = null;
+  private docsTools: DocsTools | null = null;
   private url: string;
 
   constructor(url: string) {
     this.url = url;
   }
 
-  async connect(): Promise<void> {
+  // `transport` is for tests, which connect to an in-memory server.
+  async connect(transport?: Transport): Promise<void> {
     this.client = new Client({ name: "storysync", version: VERSION }, {});
-    const mcpUrl = new URL("/mcp", this.url);
+    this.docsTools = null;
+    if (transport) {
+      await this.client.connect(transport);
+      return;
+    }
 
+    const mcpUrl = new URL("/mcp", this.url);
     try {
       await this.client.connect(new StreamableHTTPClientTransport(mcpUrl));
     } catch {
@@ -70,6 +125,7 @@ export class StorybookClient {
   async disconnect(): Promise<void> {
     await this.client?.close();
     this.client = null;
+    this.docsTools = null;
   }
 
   async listAvailableTools(): Promise<string[]> {
@@ -79,44 +135,38 @@ export class StorybookClient {
   }
 
   async listComponents(): Promise<ComponentEntry[]> {
-    try {
-      const result = await this.call("list-all-documentation", { withStoryIds: true });
-      return this.parseComponentList(result);
-    } catch (err) {
-      let toolMissing = false;
-      try {
-        const tools = await this.listAvailableTools();
-        toolMissing = !tools.includes("list-all-documentation");
-      } catch { /* tool listing failed */ }
-      if (toolMissing) {
-        throw new Error(
-          "Storybook MCP is missing the docs tools (list-all-documentation, get-documentation).\n" +
-            "  The docs tools require Storybook 10.1+ — they are not available in Storybook 9.x.\n" +
-            "  Run `storysync init` to check your setup, or upgrade with: pnpm dlx storybook@latest upgrade",
-        );
-      }
-      throw err;
-    }
+    const { list } = await this.getDocsTools();
+    return this.parseComponentList(await this.call(list, { withStoryIds: true }));
   }
 
   async getComponent(id: string, displayName?: string, title?: string, category?: string): Promise<StorybookComponent> {
-    const text = await this.call("get-documentation", { id });
+    const { show } = await this.getDocsTools();
+    const text = await this.call(show, { id });
     const name = displayName ?? id;
     return { name, title, category, props: this.parseProps(text), stories: this.parseStories(id, text) };
   }
 
-  private async call(tool: string, args: Record<string, unknown>): Promise<string> {
-    if (!this.client) throw new Error("Not connected");
-    const result = await this.client.callTool({ name: tool, arguments: args });
-    const r = result as { content?: { type: string; text?: string }[] };
-    const texts = r.content?.filter((c) => c.type === "text" && c.text).map((c) => c.text!) ?? [];
-    if (!texts.length) {
-      throw new Error(`Storybook MCP tool "${tool}" returned no text content. Raw result: ${JSON.stringify(result).slice(0, 200)}`);
+  private async getDocsTools(): Promise<DocsTools> {
+    if (this.docsTools) return this.docsTools;
+    const tools = resolveDocsTools(await this.listAvailableTools());
+    if (!tools) {
+      throw new Error(
+        "Storybook MCP is missing the docs tools (docs-list and docs-show, or list-all-documentation and get-documentation before addon-mcp 10.6).\n" +
+          "  The docs tools require Storybook 10.1+ — they are not available in Storybook 9.x.\n" +
+          "  Run `storysync init` to check your setup, or upgrade with: pnpm dlx storybook@latest upgrade",
+      );
     }
-    return texts.join("\n");
+    this.docsTools = tools;
+    return tools;
   }
 
-  // Parses the markdown list from list-all-documentation.
+  private async call(tool: string, args: Record<string, unknown>): Promise<string> {
+    if (!this.client) throw new Error("Not connected");
+    return toolResultText(tool, await this.client.callTool({ name: tool, arguments: args }));
+  }
+
+  // Parses the markdown list from the docs list tool (`docs-list`, formerly
+  // `list-all-documentation`).
   // Category is derived from the component ID prefix (Storybook IDs are
   // kebab-case versions of the title, so `ui-button` → category "UI").
   // Falls back to slashed names (`Forms/Button`) and section headings

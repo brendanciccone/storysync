@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveCategoryFromId, parseStories } from "../storybook.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  deriveCategoryFromId,
+  parseStories,
+  resolveDocsTools,
+  toolResultText,
+  StorybookClient,
+  type DocsTools,
+} from "../storybook.js";
 
 test("deriveCategoryFromId: single-word category", () => {
   assert.equal(deriveCategoryFromId("ui-button", "Button"), "UI");
@@ -91,4 +101,128 @@ test("parseStories: ignores words that merely end in \"id\"", () => {
 test("parseStories: still matches a genuine label preceded by punctuation", () => {
   assert.deepEqual(parseStories("x", "(id: forms-button--primary)")[0].id, "forms-button--primary");
   assert.deepEqual(parseStories("x", "- **Ghost** (storyId: `a-b--ghost`)")[0].id, "a-b--ghost");
+});
+
+// --- docs tool names ---
+
+const ADDON_MCP_0_7: DocsTools = { list: "list-all-documentation", show: "get-documentation" };
+const ADDON_MCP_10_6: DocsTools = { list: "docs-list", show: "docs-show" };
+
+test("resolveDocsTools: reads addon-mcp 10.6's renamed tools", () => {
+  const tools = ["stories-preview", "get-storybook-story-instructions", "docs-list", "docs-show", "docs-show-story"];
+  assert.deepEqual(resolveDocsTools(tools), ADDON_MCP_10_6);
+});
+
+test("resolveDocsTools: still reads the names addon-mcp used through 0.7", () => {
+  const tools = ["preview-stories", "get-storybook-story-instructions", "list-all-documentation", "get-documentation"];
+  assert.deepEqual(resolveDocsTools(tools), ADDON_MCP_0_7);
+});
+
+test("resolveDocsTools: null without both docs tools", () => {
+  // Storybook 9, or the docs toolset turned off, lists only the dev tools.
+  assert.equal(resolveDocsTools(["preview-stories", "get-storybook-story-instructions"]), null);
+  assert.equal(resolveDocsTools(["docs-list"]), null);
+});
+
+// --- toolResultText ---
+
+test("toolResultText: an isError result throws rather than being read as documentation", () => {
+  // What addon-mcp 10.6 answers when called by a pre-10.6 tool name.
+  const result = { content: [{ type: "text", text: "Tool list-all-documentation not found" }], isError: true };
+  assert.throws(() => toolResultText("list-all-documentation", result), /"list-all-documentation" failed: Tool list-all-documentation not found/);
+});
+
+test("toolResultText: joins the text parts of a successful result", () => {
+  const result = { content: [{ type: "text", text: "a" }, { type: "image", data: "" }, { type: "text", text: "b" }] };
+  assert.equal(toolResultText("docs-show", result), "a\nb");
+});
+
+test("toolResultText: a result with no text throws", () => {
+  assert.throws(() => toolResultText("docs-show", { content: [] }), /returned no text content/);
+});
+
+// --- StorybookClient against both addon-mcp generations ---
+
+// Captured from the example project, whose responses are identical under
+// addon-mcp 0.7 and 10.6 apart from the tool names.
+const EXAMPLE_LIST = [
+  "# Components", "",
+  "- Button (forms-button)", "  - Default (forms-button--default)",
+  "- Frozen (forms-frozen)", "  - Default (forms-frozen--default)",
+].join("\n");
+const EXAMPLE_BUTTON_DOC = [
+  "# Button", "", "ID: forms-button", "", "## Stories", "", "### Default", "", "Story ID: forms-button--default", "",
+  "## Props", "", "```", "export type Props = {",
+  '  variant?: "primary" | "danger" | "outline" = "primary";',
+  '  size?: "sm" | "lg" = "sm";',
+  "  disabled?: boolean = false;",
+  "}", "```",
+].join("\n");
+
+/**
+ * Connects a StorybookClient to an in-memory stand-in for addon-mcp that
+ * offers `tools`. Like the real server, a call it can't answer (an unknown
+ * tool or component) is an `isError` result, not a protocol error.
+ */
+async function connectToFakeAddon(tools: DocsTools | null): Promise<StorybookClient> {
+  const server = new Server({ name: "fake-addon-mcp", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const names = tools ? [tools.list, tools.show] : ["preview-stories"];
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: names.map((name) => ({ name, inputSchema: { type: "object" as const } })),
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+    const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+    if (!names.includes(params.name)) return fail(`Tool ${params.name} not found`);
+    if (params.name === tools?.list) return { content: [{ type: "text" as const, text: EXAMPLE_LIST }] };
+    if (params.arguments?.id !== "forms-button") return fail(`Component or Docs Entry not found: "${params.arguments?.id}".`);
+    return { content: [{ type: "text" as const, text: EXAMPLE_BUTTON_DOC }] };
+  });
+
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverSide);
+  const client = new StorybookClient("http://localhost:6006");
+  await client.connect(clientSide);
+  return client;
+}
+
+async function assertReadsExample(tools: DocsTools) {
+  const client = await connectToFakeAddon(tools);
+  try {
+    const entries = await client.listComponents();
+    assert.deepEqual(entries.map((e) => [e.id, e.name, e.storyIds]), [
+      ["forms-button", "Button", ["forms-button--default"]],
+      ["forms-frozen", "Frozen", ["forms-frozen--default"]],
+    ]);
+    const button = await client.getComponent("forms-button", "Button");
+    assert.deepEqual(button.props.map((p) => p.name), ["variant", "size", "disabled"]);
+    assert.deepEqual(button.stories, [{ id: "forms-button--default", name: "Default" }]);
+  } finally {
+    await client.disconnect();
+  }
+}
+
+test("StorybookClient: reads components through addon-mcp 0.7's tool names", async () => {
+  await assertReadsExample(ADDON_MCP_0_7);
+});
+
+test("StorybookClient: reads components through addon-mcp 10.6's tool names", async () => {
+  await assertReadsExample(ADDON_MCP_10_6);
+});
+
+test("StorybookClient: a server without the docs tools fails listComponents with setup advice", async () => {
+  const client = await connectToFakeAddon(null);
+  try {
+    await assert.rejects(client.listComponents(), /missing the docs tools[\s\S]*storysync init/);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test("StorybookClient: an unknown component ID is an error, not a component with no props", async () => {
+  const client = await connectToFakeAddon(ADDON_MCP_10_6);
+  try {
+    await assert.rejects(client.getComponent("forms-buton"), /"docs-show" failed: Component or Docs Entry not found: "forms-buton"/);
+  } finally {
+    await client.disconnect();
+  }
 });
