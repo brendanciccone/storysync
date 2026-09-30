@@ -118,10 +118,10 @@ npx storysync inspect --storybook http://localhost:6006 --component Button
 3. **REQUIRED — Measure the styling. Do not infer it.** Do not proceed to step 5 without concrete values. A `use_figma` call containing only variant names produces a useless component library.
 
 ```bash
-npx storysync snap --storybook http://localhost:6006 --json
+npx storysync snap --storybook http://localhost:6006 --variants all --json
 ```
 
-   This renders each variant in a real browser and reports what the browser actually computed, so the values are measured rather than guessed. By default it measures a representative set — every value of every property at least once — not the full product. **Build exactly the variants in snap's output, one Figma variant per snap variant, whatever its status.** If you want every combination in Figma, run snap with `--variants all` so each one you build is measured; a Figma variant snap never produced cannot be scored. Run it *now*, in this session — do not reuse a `styles.json` from an earlier run, which may describe code that has since changed.
+   This renders each variant in a real browser and reports what the browser actually computed, so the values are measured rather than guessed. This measures **every combination** of the component's variant props, so every Figma variant you build is measured rather than guessed. **Build one Figma variant per snap variant, whatever its status** — a Figma component set needs every combination to exist, or the variant picker has nothing to switch to. **If a component carries a `cap` field** (its combinations exceed the limit, 256 by default), snap measured only a subset covering every value and warned about it. **Stop and ask the user before building that component.** Tell them its total and the limit, and offer: build the measured subset; re-run snap with `--max-combinations <total>` to measure all of them (very large component sets get slow in Figma); or narrow which props are variants. Do not choose for them. Run it *now*, in this session — do not reuse a `styles.json` from an earlier run, which may describe code that has since changed.
 
    The output gives, per component, full styles for a base variant plus only the properties each other variant changes:
 
@@ -167,7 +167,7 @@ npx storysync snap --storybook http://localhost:6006 --json
    Three mappings that are wrong by default and will not show up as drift unless you get them right:
 
    - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's rendered size must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`.
-   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant (a simple grid or row with spacing) and size the set to contain them.
+   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable.
    - **Assert the layout before returning.** After positioning, check that no two variants' bounding boxes intersect and that the set's bounds contain every child. Geometry comparison catches variants clipped by an undersized frame, but two same-sized variants stacked inside an adequately sized one measure correctly and stay invisible — so the check has to happen here, at write time.
    - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no Times. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them. If the measured `fontFamily` is not a Google font, say so and name the substitute you used rather than letting Figma pick one silently: the substitution usually cascades, since e.g. Arimo (Figma's suggestion for Arial) has no SemiBold, so a 600 weight lands as 700 and drifts twice.
    - **`fontAvailable: false` means the measurement describes a substituted typeface.** `fontFamily` is the family the code *asked for*; if the browser could not load it, the geometry and text you measured are not the intended font's. Say so in the summary. If Figma also lacks the font, name it explicitly — "Figma has no *Inter*; install it or map it" — rather than letting it surface as unexplained text drift. storysync cannot install fonts into Figma; that is a manual step in the desktop app.
@@ -278,6 +278,10 @@ use_figma({
         borderUniform: stroke ? { width: child.strokeWeight, style: 'solid', color: toHex(stroke.color) } : null,
         fontSize: text ? text.fontSize : undefined,
         fontWeight: text ? weightOf(text.fontName.style) : undefined,
+        // Report the family Figma actually used: the plugin context has only
+        // Google Fonts, so a system font the code asks for gets substituted, and
+        // without this line the substitution would never be scored.
+        fontFamily: text ? text.fontName.family : undefined,
         // Only report gap where the layout actually has one. (verify treats a
         // measured null gap and {0,0} as the same rendering, so an auto-layout
         // frame with zero spacing still matches a block-level element.)

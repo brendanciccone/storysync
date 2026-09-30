@@ -59,11 +59,11 @@ npx storysync setup --client claude
 Then `/storysync-push <figma-file-key>`. The agent runs `snap`, writes the measured values into Figma, reads the created nodes' real properties back, and scores them:
 
 ```text
-Fidelity: 100.0% (82/82 properties)
-8 verified, 0 drifted, 0 missing from Figma, across 8 variants
+Fidelity: 100.0% (174/174 properties)
+15 verified, 0 drifted, 0 missing from Figma, across 15 variants
 ```
 
-That is 5 Button variants and 3 Frozen ones. Frozen's three are identical on purpose — its story ignores its args, and the summary should say so rather than restyle it from source. The property count depends on what the readback reports; the variant count should not.
+That is all 12 Button combinations (3 variants × 2 sizes × 2 disabled states) and 3 Frozen ones. Frozen's three are identical on purpose — its story ignores its args, and the summary should say so rather than restyle it from source. The property count depends on what the readback reports; the variant count should not.
 
 Verify it yourself afterwards, without re-pushing:
 

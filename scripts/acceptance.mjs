@@ -278,7 +278,7 @@ async function main() {
   heading("Measurement");
 
   await check("snap measures every variant of the example", () => {
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots"]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all"]);
     assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
     const snap = readJson(join(snapDir, "styles.json"));
     const byName = Object.fromEntries(snap.components.map((c) => [c.name, c]));
@@ -286,6 +286,30 @@ async function main() {
     assert(snap.summary.rendered === snap.summary.variants && snap.summary.failed === 0,
       `rendered ${snap.summary.rendered}/${snap.summary.variants}, ${snap.summary.failed} failed`);
     return `${snap.summary.rendered}/${snap.summary.variants} variants across ${snap.summary.components} components`;
+  });
+
+  await check("the push measures every Button combination, with the defaults as the base", () => {
+    // Button declares 3 variants x 2 sizes x 2 disabled states. A Figma component
+    // set needs all 12 to exist, or the variant picker has nothing to switch to.
+    const snap = readJson(join(snapDir, "styles.json"));
+    const button = snap.components.find((c) => c.name === "Button");
+    assert(button.variants.length === 12, `measured ${button.variants.length} Button combinations, expected all 12`);
+    assert(!button.cap, "Button reported as capped at 12 combinations");
+    const base = button.base.combination;
+    assert(base.variant === "primary" && base.size === "sm" && base.disabled === "false",
+      `base is ${JSON.stringify(base)}, expected the default combination`);
+    return "12/12, base primary/sm/enabled";
+  });
+
+  await check("a component over the combination limit is flagged and fails --strict", () => {
+    const out = join(WORK, "capped");
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--variants", "all",
+      "--max-combinations", "4", "--out", out, "--strict"]);
+    assert(r.status === 1, `--strict exited ${r.status} on a capped component`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    assert(button.cap?.totalPossible === 12 && button.cap?.maxCombinations === 4, `cap: ${JSON.stringify(button.cap)}`);
+    assert(/12 variant combinations, more than the limit of 4/.test(r.out), "no cap warning printed");
+    return "12 over a limit of 4: warned, recorded, --strict failed";
   });
 
   await check("snapshots are stamped with the running version", () => {
@@ -331,7 +355,7 @@ async function main() {
     // meant to be committed and diffed, so neither a rerun nor a different
     // --out (another machine, another checkout) may change a byte of it.
     const again = join(WORK, "elsewhere", "snap-again");
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots"]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all"]);
     assert(r.status === 0, `second snap exited ${r.status}`);
     const first = readFileSync(join(snapDir, "styles.json"), "utf8");
     const second = readFileSync(join(again, "styles.json"), "utf8");
@@ -427,7 +451,7 @@ async function main() {
     const path = join(WORK, "readback-edited.json");
     writeJson(path, buildReadback(snapDir, {
       mutate(node, v, component) {
-        if (component.name === "Button" && v.slug.includes("danger")) {
+        if (component.name === "Button" && v.slug === "variant-danger--size-sm--disabled-false") {
           node.cornerRadius = 8;
           node.fills = [{ type: "SOLID", color: { r: 1, g: 0, b: 1 } }];
         }
@@ -440,6 +464,25 @@ async function main() {
     assert(props === "backgroundColor, borderRadiusUniform", `flagged ${props}`);
     assert(exitOf(snapDir, path, ["--strict"]) === 1, "--strict passed");
     return "flagged backgroundColor and borderRadiusUniform only";
+  });
+
+  await check("a substituted font is scored as drift", () => {
+    // Figma's plugin context has only Google Fonts, so a system font gets
+    // swapped. The template must report the family it actually used.
+    const path = join(WORK, "readback-font.json");
+    writeJson(path, buildReadback(snapDir, {
+      mutate(node, v, component) {
+        if (component.name === "Button" && v.slug === "variant-danger--size-sm--disabled-false") {
+          const text = node.findOne(() => true);
+          text.fontName = { ...text.fontName, family: "Arimo" };
+        }
+      },
+    }));
+    const v = verifyJson(snapDir, path);
+    const drifted = v.json.variants.filter((x) => x.status === "drifted");
+    const props = drifted.flatMap((x) => x.differences.map((d) => d.property));
+    assert(drifted.length === 1 && props.join() === "fontFamily", `drifted: ${JSON.stringify(drifted.map((x) => [x.slug, props]))}`);
+    return "fontFamily flagged on exactly the substituted variant";
   });
 
   await check("a readback with no comparable properties scores nothing, not 100%", () => {
@@ -561,6 +604,20 @@ async function main() {
     }
     assert(referenced > 0, "commands reference no .claude/ paths — the check found nothing to verify");
     return `${referenced} references`;
+  });
+
+  await check("the push instructions measure every combination", () => {
+    // Sampling a subset is fine for a quick check but leaves holes in a Figma
+    // component set. Every instruction that runs snap for a push must ask for
+    // the full product, or the library ships missing variants.
+    const files = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"];
+    for (const file of files) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const runs = [...text.matchAll(/npx storysync snap [^`\n]*/g)].map((m) => m[0]);
+      assert(runs.length > 0, `${file} never runs snap`);
+      for (const run of runs) assert(/--variants all/.test(run), `${file}: "${run}" measures a sample, not every combination`);
+    }
+    return `${files.length} files`;
   });
 
   await check("every use_figma code example in the skill parses", () => {

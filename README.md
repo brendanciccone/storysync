@@ -255,6 +255,7 @@ Map all components to Figma variant definitions.
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --components <names>   Comma-separated component names (default: all)
+  --max-combinations <n> Most combinations to generate per component before capping (default: 256)
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any component fails or is capped
 ```
@@ -270,19 +271,24 @@ Options:
                          a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
   --variants <mode>      representative (default) or all
+  --max-combinations <n> With --variants all, most combinations per component before
+                         capping (default: 256)
   --screenshots          Also save a PNG per variant (off by default)
   --timeout <ms>         Per-story timeout (default: 10000)
   --selector <css>       Override the component root selector
   --json                 Output JSON instead of formatted text
-  --strict               Exit with code 1 if any variant or component could not be measured, or none were
+  --strict               Exit with code 1 if any variant or component could not be measured, none were,
+                         or a component was capped
   --strict-warnings      Implies --strict, and also fails on warnings
 ```
 
-`--strict` fails on variants or components that could not be measured, and on a run that measured nothing at all — snap still writes `styles.json` and a fresh `meta.json` in that case, so an empty result must not read as a clean one. A `--components` name that matches nothing is an error whatever the flags, and writes nothing. Warnings are separate and opt-in via `--strict-warnings`, because a component whose variants legitimately render the same (aliased option values, for instance) would otherwise fail every build. In CI, `--strict-warnings` is usually what you want: it turns "this story silently ignores its args" into a build failure rather than a line of output nobody reads.
+`--strict` fails on variants or components that could not be measured, on a component measured only in part because it was capped, and on a run that measured nothing at all — snap still writes `styles.json` and a fresh `meta.json` in that case, so an empty result must not read as a clean one. A `--components` name that matches nothing is an error whatever the flags, and writes nothing. Warnings are separate and opt-in via `--strict-warnings`, because a component whose variants legitimately render the same (aliased option values, for instance) would otherwise fail every build. In CI, `--strict-warnings` is usually what you want: it turns "this story silently ignores its args" into a build failure rather than a line of output nobody reads.
 
 Writes `<out>/styles.json` containing, per component, full styles for a base variant plus only the properties each other variant changes. The file carries no timestamp, so repeat runs against unchanged code are byte-identical and it can be committed and diffed. With `--screenshots`, PNGs are written under `<out>/<component>/` and each variant's `screenshot` path is recorded relative to `styles.json`, so the file stays the same whichever directory or machine produced it.
 
-**Variant selection.** `representative` measures every declared value once against the other properties' defaults, so cost scales with the *sum* of variant values rather than their product — a `3 × 2 × 2` button is 5 renders instead of 12. That is enough to build a correct Figma component set, since variants compose. Use `--variants all` for the full product.
+**Variant selection.** `representative` measures every declared value once against the other properties' defaults, so cost scales with the *sum* of variant values rather than their product — a `3 × 2 × 2` button is 5 renders instead of 12. That is useful for a quick check, but it is not enough to build a Figma component set: a set needs every combination to exist, or the variant picker has nothing to switch to. So the push runs `--variants all`, which measures the full product and makes the default combination the base.
+
+**The combination limit.** Combinations multiply — four props of four values is already 256 — and a Figma component set with thousands of variants is unusable. Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap` on that component, warns, and fails `--strict`. It never drops combinations silently. The skill has the agent stop and ask how to proceed: build the covering subset, re-run with a higher `--max-combinations`, or narrow which props are variants.
 
 **Requires Node 20+**, because Playwright does. Every other storysync command still runs on Node 18 — Playwright is loaded only when `snap` runs, so nothing else is affected.
 
