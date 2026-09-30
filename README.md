@@ -1,3 +1,5 @@
+<img src="assets/logo.png" alt="storysync logo" width="88" height="88">
+
 # storysync
 
 [![CI](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml/badge.svg)](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml)
