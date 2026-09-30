@@ -16,7 +16,7 @@ import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
-import type { TokenBaseline } from "./tokens.js";
+import type { TokenBaseline, TokenExtractionResult } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
@@ -396,6 +396,68 @@ program
     }
   });
 
+/** `tokens --check`: compares an extraction, which may be empty, against the baseline. */
+function checkTokens(
+  result: TokenExtractionResult,
+  opts: { baselinePath: string; project: string; source?: string; json: boolean; strict: boolean },
+): void {
+  const { baselinePath, json } = opts;
+  const create = baselineCommand(baselinePath, { project: opts.project, source: opts.source });
+  let baseline: TokenBaseline | null;
+  try {
+    baseline = readTokenBaseline(baselinePath);
+  } catch (err) {
+    reportError(new Error(`${err instanceof Error ? err.message : String(err)}. Recreate it with \`${create}\`.`), json);
+    process.exitCode = 1;
+    return;
+  }
+
+  // A missing baseline is an error whatever the flags, not a first run.
+  // Treated as one, a wrong --baseline path would pass every run, --strict
+  // included, having compared nothing.
+  if (!baseline) {
+    // Following the advice with nothing extracted would commit an empty
+    // baseline, which the same mistake then matches on every run.
+    const empty = result.collections.length
+      ? ""
+      : " No tokens were found either, so check --project and --source first, or the baseline will be empty.";
+    const message =
+      `No token baseline at ${baselinePath}, so there is nothing to check against. ` +
+      `Create one with \`${create}\` and commit it, or point --baseline at the one you have.${empty}`;
+    if (json) {
+      // Still the full extraction, so the output parses as it always has.
+      console.log(JSON.stringify({ drift: "new", error: message, ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
+    } else {
+      console.error(chalk.red(`\n${message}`));
+    }
+    process.exitCode = 1;
+    return;
+  }
+
+  const drift = compareTokens(baseline, result);
+  if (!hasDrift(drift)) {
+    if (json) console.log(JSON.stringify({ drift: false }));
+    else console.log(chalk.green("\nNo token drift detected."));
+    return;
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed }));
+  } else {
+    console.log(chalk.red("\nToken drift detected:\n"));
+    for (const a of drift.added) {
+      console.log(`  ${chalk.green("+")} ${a.category}: ${a.tokens.map((t) => t.name).join(", ")}`);
+    }
+    for (const r of drift.removed) {
+      console.log(`  ${chalk.red("-")} ${r.category}: ${r.tokens.map((t) => t.name).join(", ")}`);
+    }
+    for (const c of drift.changed) {
+      console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}: ${c.from} → ${c.to}`);
+    }
+  }
+  if (opts.strict) process.exitCode = 1;
+}
+
 program
   .command("tokens")
   .description("Extract design tokens from project source and preview Figma variable collections")
@@ -410,82 +472,50 @@ program
     const json = !!opts.json;
     const projectPath = opts.project as string;
 
+    // --check reads its baseline whatever the extraction found. Finding no
+    // tokens (a mistyped --project, say) is not a pass: a missing baseline is
+    // still an error, and against one that exists, every token it holds was
+    // removed.
+    let detected = true;
     if (!json) {
       const spinner = ora("Detecting token source...").start();
-      const detected = detectTokenSource(projectPath);
-      if (detected) {
-        spinner.succeed(`Detected: ${detected.type} (${detected.path})`);
+      const source = detectTokenSource(projectPath);
+      if (source) {
+        spinner.succeed(`Detected: ${source.type} (${source.path})`);
       } else {
         spinner.fail("No token source found");
-        if (opts.strict) process.exitCode = 1;
-        return;
+        detected = false;
+        if (!opts.check) {
+          if (opts.strict) process.exitCode = 1;
+          return;
+        }
       }
     }
 
     const result = extractTokens(projectPath, opts.source as "tailwind" | "css" | "theme" | undefined);
+    const found = result.collections.length > 0;
 
-    if (!result.collections.length) {
-      if (json) {
-        console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
-      } else {
+    if (!found) {
+      if (opts.strict) process.exitCode = 1;
+      if (!json && detected) {
         console.log(chalk.yellow("\nNo tokens found."));
         for (const w of result.warnings) console.log(chalk.dim(`  ${w}`));
       }
-      if (opts.strict) process.exitCode = 1;
-      return;
     }
 
     if (opts.check) {
-      const baselinePath = opts.baseline as string;
-      const create = baselineCommand(baselinePath, { project: projectPath, source: opts.source as string | undefined });
-      let baseline: TokenBaseline | null;
-      try {
-        baseline = readTokenBaseline(baselinePath);
-      } catch (err) {
-        reportError(new Error(`${err instanceof Error ? err.message : String(err)}. Recreate it with \`${create}\`.`), json);
-        process.exitCode = 1;
-        return;
-      }
+      checkTokens(result, {
+        baselinePath: opts.baseline as string,
+        project: projectPath,
+        source: opts.source as string | undefined,
+        json,
+        strict: !!opts.strict,
+      });
+      return;
+    }
 
-      // A missing baseline is an error whatever the flags, not a first run.
-      // Treated as one, a wrong --baseline path would pass every run, --strict
-      // included, having compared nothing.
-      if (!baseline) {
-        const message =
-          `No token baseline at ${baselinePath}, so there is nothing to check against. ` +
-          `Create one with \`${create}\` and commit it, or point --baseline at the one you have.`;
-        if (json) {
-          // Still the full extraction, so the output parses as it always has.
-          console.log(JSON.stringify({ drift: "new", error: message, ...result, summary: { totalTokens: result.collections.reduce((s, c) => s + c.tokens.length, 0), collections: result.collections.length } }));
-        } else {
-          console.error(chalk.red(`\n${message}`));
-        }
-        process.exitCode = 1;
-        return;
-      }
-
-      const drift = compareTokens(baseline, result);
-      if (!hasDrift(drift)) {
-        if (json) console.log(JSON.stringify({ drift: false }));
-        else console.log(chalk.green("\nNo token drift detected."));
-        return;
-      }
-
-      if (json) {
-        console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed }));
-      } else {
-        console.log(chalk.red("\nToken drift detected:\n"));
-        for (const a of drift.added) {
-          console.log(`  ${chalk.green("+")} ${a.category}: ${a.tokens.map((t) => t.name).join(", ")}`);
-        }
-        for (const r of drift.removed) {
-          console.log(`  ${chalk.red("-")} ${r.category}: ${r.tokens.map((t) => t.name).join(", ")}`);
-        }
-        for (const c of drift.changed) {
-          console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}: ${c.from} → ${c.to}`);
-        }
-      }
-      if (opts.strict) process.exitCode = 1;
+    if (!found) {
+      if (json) console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
       return;
     }
 

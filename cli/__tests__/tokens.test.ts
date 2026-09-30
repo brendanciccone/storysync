@@ -426,6 +426,33 @@ test("readTokenBaseline: rejects JSON that is not a baseline, such as a saved pa
   } finally { cleanup(dir); }
 });
 
+test("readTokenBaseline: rejects collections and tokens that are not what tokens --json writes", () => {
+  const dir = makeProject({
+    "empty-collection.json": `{"collections":[{}]}`,
+    "no-tokens.json": `{"collections":[{"category":"colors"}]}`,
+    "no-category.json": `{"collections":[{"tokens":[]}]}`,
+    "null-collection.json": `{"collections":[null]}`,
+    "unnamed-token.json": `{"collections":[{"category":"colors","tokens":[{"value":"#fff"}]}]}`,
+    "numeric-value.json": `{"collections":[{"category":"spacing","tokens":[{"name":"4","value":4}]}]}`,
+    "null-token.json": `{"collections":[{"category":"colors","tokens":[null]}]}`,
+  });
+  try {
+    for (const name of ["empty-collection", "no-tokens", "no-category", "null-collection"]) {
+      assert.throws(() => readTokenBaseline(join(dir, `${name}.json`)), /has a collection without a "category" and a "tokens" list, so it is not a baseline$/, name);
+    }
+    assert.throws(() => readTokenBaseline(join(dir, "unnamed-token.json")), /has a colors token without a "name" and a "value", so it is not a baseline$/);
+    assert.throws(() => readTokenBaseline(join(dir, "numeric-value.json")), /has a spacing token without a "name" and a "value"/);
+    assert.throws(() => readTokenBaseline(join(dir, "null-token.json")), /has a colors token without/);
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: an empty collections list is a baseline", () => {
+  const dir = makeProject({ "empty.json": `{"collections":[]}` });
+  try {
+    assert.deepEqual(readTokenBaseline(join(dir, "empty.json"))?.collections, []);
+  } finally { cleanup(dir); }
+});
+
 test("baselineCommand: creates the directory the redirect writes into", () => {
   assert.equal(
     baselineCommand(".storysync/tokens-baseline.json"),

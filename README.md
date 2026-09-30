@@ -279,7 +279,7 @@ Options:
 mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.json
 ```
 
-A missing baseline is an error whatever the flags, and the message gives that command. Treated as a first run instead, a wrong `--baseline` path would pass every check, `--strict` included, having compared nothing. Under `--json` the extraction is still printed, with `"drift": "new"` and an `error`, so the output parses.
+A missing baseline is an error whatever the flags, and the message gives that command. Treated as a first run instead, a wrong `--baseline` path would pass every check, `--strict` included, having compared nothing. Under `--json` the extraction is still printed, with `"drift": "new"` and an `error`, so the output parses. Finding no tokens doesn't skip the check: the baseline is still read, so a mistyped `--project` fails on a missing baseline, or against an existing one reports every token in it as removed. A file that is not a baseline, such as a saved `--check --json`, fails with the command to recreate it.
 
 ### `storysync map`
 

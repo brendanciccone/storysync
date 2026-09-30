@@ -617,6 +617,11 @@ export interface TokenBaseline {
  * `collections` are compared. Null when the file does not exist, which the
  * caller reports; throws when it exists but is not a baseline — for instance
  * the saved output of a passing `--check --json`, which is only `{"drift":false}`.
+ *
+ * Every collection needs a `category` and a `tokens` list, and every token a
+ * `name` and a `value`, all as `tokens --json` writes them. `{"collections":[{}]}`
+ * used to crash the text report and pass under --json, listing a removed
+ * collection with no name.
  */
 export function readTokenBaseline(path: string): TokenBaseline | null {
   let raw: string;
@@ -632,8 +637,18 @@ export function readTokenBaseline(path: string): TokenBaseline | null {
   } catch (err) {
     throw new Error(`The token baseline at ${path} is not valid JSON: ${String(err)}`);
   }
-  if (!Array.isArray((parsed as Partial<TokenBaseline> | null)?.collections)) {
+  const collections = (parsed as Partial<TokenBaseline> | null)?.collections;
+  if (!Array.isArray(collections)) {
     throw new Error(`The token baseline at ${path} has no "collections", so it is not a baseline`);
+  }
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+  for (const collection of collections as unknown[]) {
+    if (!isRecord(collection) || typeof collection.category !== "string" || !Array.isArray(collection.tokens)) {
+      throw new Error(`The token baseline at ${path} has a collection without a "category" and a "tokens" list, so it is not a baseline`);
+    }
+    if (!collection.tokens.every((t: unknown) => isRecord(t) && typeof t.name === "string" && typeof t.value === "string")) {
+      throw new Error(`The token baseline at ${path} has a ${collection.category} token without a "name" and a "value", so it is not a baseline`);
+    }
   }
   return parsed as TokenBaseline;
 }
