@@ -8,7 +8,7 @@ branding:
 
 inputs:
   storybook_url:
-    description: "URL of the running Storybook dev server"
+    description: "URL of the running Storybook dev server. With the default, the action starts Storybook itself"
     required: false
     default: "http://localhost:6006"
   components:
@@ -18,12 +18,24 @@ inputs:
     description: "Node.js version to use"
     required: false
     default: "22"
+  working_directory:
+    description: "Directory of the project to check, relative to the repository root. Dependencies are installed, Storybook is started and tokens are read there, and the baseline paths and the files the action writes are relative to it"
+    required: false
+    default: "."
+  install_command:
+    description: "Command that installs the project's dependencies, run in working_directory (default: chosen from the lockfile)"
+    required: false
+    default: ""
   baseline:
     description: "Path to baseline mapping JSON for drift detection"
     required: false
     default: ".storysync/baseline.json"
   create_issue:
     description: "Create or update a GitHub issue when drift is detected"
+    required: false
+    default: "false"
+  fail_on_drift:
+    description: "Fail the job when component or token drift is detected. A missing baseline is not drift. Any issue is filed first"
     required: false
     default: "false"
   token_source:
@@ -40,7 +52,7 @@ outputs:
     description: "Whether component drift was detected (true/false/new)"
     value: ${{ steps.drift.outputs.result }}
   token_drift:
-    description: "Whether token drift was detected (true/false/new)"
+    description: "Whether token drift was detected (true/false/new, or none when the project has no tokens)"
     value: ${{ steps.token-drift.outputs.result }}
   json:
     description: "JSON mapping output"
@@ -53,14 +65,34 @@ runs:
   using: "composite"
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ inputs.node_version }}
+        # setup-node caches on its own when the workspace's package.json names
+        # npm, keyed on a lockfile it expects at the root. That is the
+        # consumer's repository, which this action shouldn't cache behind
+        # its back, and whose lockfile may be in a subdirectory.
+        package-manager-cache: false
+
+    # pnpm/action-setup reads the version from a package.json's packageManager
+    # field. Pointed at storysync's own, it installs the pnpm storysync builds
+    # with. Given a `version` instead, it would compare that with the
+    # consumer's packageManager and fail on any difference, even a +sha512
+    # suffix. The path has to be relative to the workspace.
+    - name: Locate storysync
+      id: storysync
+      shell: bash
+      run: |
+        node -e '
+          const path = require("path");
+          const pkg = path.resolve(process.env.GITHUB_ACTION_PATH, "..", "package.json");
+          console.log("package_json=" + path.relative(process.env.GITHUB_WORKSPACE, pkg));
+        ' >> "$GITHUB_OUTPUT"
 
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
       with:
-        version: 10.33.0
+        package_json_file: ${{ steps.storysync.outputs.package_json }}
 
     - name: Install Safe Chain
       shell: bash
@@ -68,29 +100,147 @@ runs:
 
     - name: Install project dependencies
       shell: bash
-      run: npm ci
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install_command }}
+      run: |
+        if [ -n "$INSTALL_COMMAND" ]; then
+          echo "$INSTALL_COMMAND"
+          eval "$INSTALL_COMMAND"
+          exit 0
+        fi
+
+        # The lockfile says which package manager the project uses. In a
+        # workspace it sits at the root rather than beside the package, so
+        # look upward from working_directory as far as the repository root.
+        start="$(pwd -P)"
+        root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        dir="$start"
+        lockfile=""
+        while [ -z "$lockfile" ]; do
+          for name in pnpm-lock.yaml yarn.lock package-lock.json npm-shrinkwrap.json bun.lock bun.lockb; do
+            if [ -f "$dir/$name" ]; then
+              lockfile="$name"
+              break
+            fi
+          done
+          if [ -n "$lockfile" ] || [ "$dir" = "$root" ] || [ "$dir" = / ]; then
+            break
+          fi
+          dir="$(dirname "$dir")"
+        done
+
+        if [ -z "$lockfile" ]; then
+          echo "::error::No lockfile in $start or any directory above it up to the repository root. Commit pnpm-lock.yaml, yarn.lock, package-lock.json or bun.lock, or set install_command."
+          exit 1
+        fi
+
+        cd "$dir"
+        echo "Found $lockfile in $dir"
+        case "$lockfile" in
+          pnpm-lock.yaml)
+            cmd=(pnpm install --frozen-lockfile)
+            ;;
+          yarn.lock)
+            # corepack runs the Yarn version package.json's packageManager
+            # names. Node 25 stopped bundling it; without it, whatever yarn is
+            # on PATH has to do.
+            if command -v corepack > /dev/null; then
+              corepack enable yarn
+              export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+            fi
+            if ! command -v yarn > /dev/null; then
+              echo "::error::Found yarn.lock, but yarn isn't installed and this Node has no corepack to provide it. Install Yarn before this action, or set install_command."
+              exit 1
+            fi
+            # Yarn 1 writes a v1 lockfile and spells the flag differently.
+            if grep -q '^# yarn lockfile v1' yarn.lock; then
+              cmd=(yarn install --frozen-lockfile)
+            else
+              cmd=(yarn install --immutable)
+            fi
+            ;;
+          package-lock.json | npm-shrinkwrap.json)
+            cmd=(npm ci)
+            ;;
+          bun.lock | bun.lockb)
+            if ! command -v bun > /dev/null; then
+              echo "::error::Found $lockfile, but bun isn't installed. Add oven-sh/setup-bun before this action, or set install_command."
+              exit 1
+            fi
+            cmd=(bun install --frozen-lockfile)
+            ;;
+        esac
+        echo "${cmd[*]}"
+        "${cmd[@]}"
 
     - name: Build storysync
       shell: bash
       run: |
-        cd "${{ github.action_path }}/.."
+        cd "$GITHUB_ACTION_PATH/.."
         pnpm install --frozen-lockfile --ignore-scripts
         pnpm run build
 
     - name: Start Storybook
       if: inputs.storybook_url == 'http://localhost:6006'
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        STORYBOOK_URL: ${{ inputs.storybook_url }}
       run: |
-        npx storybook dev --port 6006 --ci &
-        npx wait-on http://localhost:6006 --timeout 120000
+        # The binary the install linked, here or in a parent: npm and Yarn
+        # workspaces hoist it to the root. Running it directly rather than
+        # through npx means a missing Storybook is an error, not a download.
+        root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        dir="$(pwd -P)"
+        storybook=""
+        while :; do
+          if [ -x "$dir/node_modules/.bin/storybook" ]; then
+            storybook="$dir/node_modules/.bin/storybook"
+            break
+          fi
+          if [ "$dir" = "$root" ] || [ "$dir" = / ]; then
+            break
+          fi
+          dir="$(dirname "$dir")"
+        done
+        if [ -z "$storybook" ]; then
+          echo "::error::Storybook isn't installed: there is no node_modules/.bin/storybook in $(pwd -P) or above it. Add storybook to the project's devDependencies, or start Storybook yourself and set storybook_url. Yarn Plug'n'Play projects need nodeLinker: node-modules."
+          exit 1
+        fi
+
+        log="$RUNNER_TEMP/storysync-storybook.log"
+        "$storybook" dev --port 6006 --ci > "$log" 2>&1 &
+        pid=$!
+
+        # Polled with curl because `npx wait-on` fetches an unpinned package
+        # on every run.
+        deadline=$((SECONDS + 120))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          if curl -fs -o /dev/null --max-time 5 "$STORYBOOK_URL"; then
+            cat "$log"
+            echo "Storybook is serving $STORYBOOK_URL"
+            exit 0
+          fi
+          if ! kill -0 "$pid" 2> /dev/null; then
+            cat "$log"
+            echo "::error::Storybook exited before it started serving. Its output is above."
+            exit 1
+          fi
+          sleep 1
+        done
+        cat "$log"
+        echo "::error::Storybook didn't answer at $STORYBOOK_URL within 120 seconds. Its output is above."
+        exit 1
 
     - name: Extract tokens
       id: tokens
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         TOKEN_SOURCE: ${{ inputs.token_source }}
-        STORYSYNC_CLI: ${{ github.action_path }}/../dist/cli/index.js
       run: |
+        STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--project . --json)
         if [ "$TOKEN_SOURCE" != "auto" ]; then
           ARGS+=(--source "$TOKEN_SOURCE")
@@ -105,6 +255,7 @@ runs:
     - name: Detect token drift
       id: token-drift
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         TOKEN_BASELINE_PATH: ${{ inputs.token_baseline }}
       run: |
@@ -188,11 +339,12 @@ runs:
     - name: Map components
       id: map
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
-        STORYSYNC_CLI: ${{ github.action_path }}/../dist/cli/index.js
       run: |
+        STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--storybook "$STORYBOOK_URL" --json)
         if [ -n "$COMPONENTS" ]; then
           ARGS+=(--components "$COMPONENTS")
@@ -207,6 +359,7 @@ runs:
     - name: Detect drift
       id: drift
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         BASELINE_PATH: ${{ inputs.baseline }}
       run: |
@@ -277,6 +430,7 @@ runs:
     - name: Create or update issue
       if: inputs.create_issue == 'true' && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
@@ -302,3 +456,21 @@ runs:
             --body-file storysync-combined-drift.md \
             --label storysync-drift
         fi
+
+    # Last, so a drift issue is still filed before the job fails.
+    - name: Fail on drift
+      if: inputs.fail_on_drift == 'true' && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
+      shell: bash
+      env:
+        DRIFT: ${{ steps.drift.outputs.result }}
+        TOKEN_DRIFT: ${{ steps.token-drift.outputs.result }}
+        BASELINE_PATH: ${{ inputs.baseline }}
+        TOKEN_BASELINE_PATH: ${{ inputs.token_baseline }}
+      run: |
+        if [ "$DRIFT" = true ]; then
+          echo "::error::Component variants differ from $BASELINE_PATH. Detect drift lists the changes; if they're intended, replace the baseline with storysync-current.json."
+        fi
+        if [ "$TOKEN_DRIFT" = true ]; then
+          echo "::error::Design tokens differ from $TOKEN_BASELINE_PATH. Detect token drift lists the changes; if they're intended, replace the baseline with storysync-tokens-current.json."
+        fi
+        exit 1

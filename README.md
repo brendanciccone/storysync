@@ -108,10 +108,33 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: brendanciccone/storysync/action@main
+        with:
+          fail_on_drift: true
 ```
+
+The action installs your project's dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to the repo. The first run has nothing to compare against, so it reports `new` and writes `storysync-current.json` and `storysync-tokens-current.json`; commit those as `.storysync/baseline.json` and `.storysync/tokens-baseline.json`, or write them locally with `storysync map --storybook http://localhost:6006 --json` and `storysync tokens --json`. Once it works for you, pin `@main` to a commit SHA.
+
+| Input | Default | |
+|---|---|---|
+| `working_directory` | `.` | The project to check, relative to the repository root. Dependencies are installed, Storybook is started and tokens are read there, and the baseline paths and the files the action writes are relative to it. |
+| `install_command` | from the lockfile | By default the lockfile picks the install, looking upward from `working_directory` to the repository root: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` for Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Set it to `true` to skip the install when an earlier step already did it. |
+| `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook itself. Anything else is used as is, so start that Storybook in an earlier step. |
+| `components` | all | Comma-separated component names to map. |
+| `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
+| `baseline` | `.storysync/baseline.json` | Component baseline. |
+| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline. |
+| `fail_on_drift` | `false` | Fail the job when components or tokens differ from their baseline. A missing baseline is not drift. |
+| `create_issue` | `false` | Open or update an issue labelled `storysync-drift` when drift is found. Needs `issues: write`. Filed before `fail_on_drift` fails the job. |
+| `node_version` | `22` | Node.js version to run on. |
+
+Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is no baseline yet (`token_drift` is `none` when the project has no tokens); `json` and `tokens_json` carry the `map --json` and `tokens --json` output.
 
 ## How it works
 
