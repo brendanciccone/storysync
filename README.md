@@ -127,7 +127,7 @@ npx storysync@<version> map --storybook http://localhost:6006 --json > .storysyn
 npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 ```
 
-and commit them. `<version>` is the storysync version that matches the ref you use the action at: the `version` in this repository's [`package.json`](package.json) at that ref. The action builds storysync from its ref, and a baseline written by another version can differ from what it maps. Plain `npx storysync` runs whatever npm has: 0.2.0 finds no components with addon-mcp 10.6, so its baseline is empty and never matches. The action's warnings and errors give these commands with the version filled in. Or skip npx and save the action's `json` and `tokens_json` outputs, which hold the JSON it compared. If you set `components` or `token_source`, pass the same to `map --components` and `tokens --source`. A project with no tokens can leave out the token baseline. Without a baseline, drift is `new` and a warning says it isn't being checked; with `fail_on_drift` the job fails, and the error gives the command that writes the missing baseline. Once it works for you, pin `@main` to a commit SHA.
+and commit them. `<version>` is the storysync version that matches the ref you use the action at: the `version` in this repository's [`package.json`](package.json) at that ref. The action builds storysync from its ref, and a baseline written by another version can differ from what it maps. Plain `npx storysync` runs whatever npm has: 0.2.0 finds no components with addon-mcp 10.6, so its baseline is empty and never matches. The action's warnings and errors give these commands with the version filled in. Or skip npx and save the action's `json` and `tokens_json` outputs, which hold the JSON it compared. If you set `components` or `token_source`, pass the same to `map --components` and `tokens --source`. A project with no tokens can leave out the token baseline, and one that checks only components can set `token_baseline: ''` to leave tokens out. Without a baseline, drift is `new` and a warning says it isn't being checked; with `fail_on_drift` the job fails, and the error gives the command that writes the missing baseline. Once it works for you, pin `@main` to a commit SHA.
 
 | Input | Default | |
 |---|---|---|
@@ -137,12 +137,12 @@ and commit them. `<version>` is the storysync version that matches the ref you u
 | `components` | all | Comma-separated component names or IDs to map. A name that matches no component fails the job, and the error lists the names there are. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
 | `baseline` | `.storysync/baseline.json` | Component baseline, as `map --json` writes it. |
-| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline, as `tokens --json` writes it. |
-| `fail_on_drift` | `false` | Fail the job when components or tokens differ from their baseline, or when a baseline is missing, since then nothing was compared. A `token_drift` of `none` doesn't fail. |
+| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline, as `tokens --json` writes it. Set it to `''` to check components only: tokens aren't extracted, `token_drift` is `skipped`, and `fail_on_drift` doesn't fail on them. |
+| `fail_on_drift` | `false` | Fail the job when components or tokens differ from their baseline, or when a baseline is missing, since then nothing was compared. A `token_drift` of `none` or `skipped` doesn't fail. |
 | `create_issue` | `false` | Open or update an issue labelled `storysync-drift` when drift is found. Needs `issues: write`. Filed before `fail_on_drift` fails the job. |
 | `node_version` | `22` | Node.js version to run on. |
 
-Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is no baseline. `token_drift` is `none` when there is neither a token baseline nor any tokens; with a baseline, tokens that have all gone are drift. `json` and `tokens_json` carry the `map --json` and `tokens --json` output.
+Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is no baseline. `token_drift` is `none` when there is neither a token baseline nor any tokens; with a baseline, tokens that have all gone are drift. It is `skipped` when `token_baseline` is `''`. `json` and `tokens_json` carry the `map --json` and `tokens --json` output; `tokens_json` is empty when tokens are skipped.
 
 ## How it works
 

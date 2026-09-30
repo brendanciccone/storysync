@@ -35,7 +35,7 @@ inputs:
     required: false
     default: "false"
   fail_on_drift:
-    description: "Fail the job when component or token drift is detected, or when a baseline is missing, since then nothing was compared. Any issue is filed first"
+    description: "Fail the job when component or token drift is detected, or when a baseline is missing, since then nothing was compared. Any issue is filed first. To check only components, set token_baseline to ''"
     required: false
     default: "false"
   token_source:
@@ -43,7 +43,7 @@ inputs:
     required: false
     default: "auto"
   token_baseline:
-    description: "Path to token baseline JSON for drift detection, as written by storysync tokens --json"
+    description: "Path to token baseline JSON for drift detection, as written by storysync tokens --json. Empty leaves tokens out, for a project that checks only components: they aren't extracted, token_drift is skipped, and fail_on_drift doesn't fail on them"
     required: false
     default: ".storysync/tokens-baseline.json"
 
@@ -52,13 +52,13 @@ outputs:
     description: "Whether component drift was detected (true/false, or new when there is no baseline)"
     value: ${{ steps.drift.outputs.result }}
   token_drift:
-    description: "Whether token drift was detected (true/false, new when there is no baseline, or none when there is neither a baseline nor any tokens)"
+    description: "Whether token drift was detected (true/false, new when there is no baseline, none when there is neither a baseline nor any tokens, or skipped when token_baseline is empty)"
     value: ${{ steps.token-drift.outputs.result }}
   json:
     description: "JSON mapping output"
     value: ${{ steps.map.outputs.json }}
   tokens_json:
-    description: "JSON token extraction output"
+    description: "JSON token extraction output (empty when token_baseline is empty)"
     value: ${{ steps.tokens.outputs.json }}
 
 runs:
@@ -310,6 +310,7 @@ runs:
 
     - name: Extract tokens
       id: tokens
+      if: inputs.token_baseline != ''
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
@@ -359,6 +360,14 @@ runs:
         const where = wd === "." ? "the repository root" : wd;
 
         const baselinePath = process.env.TOKEN_BASELINE_PATH;
+        // An empty token_baseline opts out of tokens, so a project that checks
+        // only components can use fail_on_drift whatever tokens it has.
+        if (!baselinePath) {
+          console.log("token_baseline is empty, so tokens aren't extracted or checked");
+          output("result", "skipped");
+          process.exit(0);
+        }
+
         const current = JSON.parse(fs.readFileSync("storysync-tokens-current.json", "utf8"));
         const collections = current.collections || [];
 
