@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot } from "../snap.js";
+import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap } from "../snap.js";
 import type { SnapOptions } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
@@ -485,4 +485,100 @@ test("writeScreenshot: records the PNG path relative to styles.json, never absol
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- every combination, and the cap ---
+
+const SIZE_PROPS = [
+  { name: "variant", type: "VARIANT", values: ["primary", "danger", "outline"], defaultValue: "primary" },
+  { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+  { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+] as never[];
+
+test("selectCombinations: under --variants all, the default combination leads, so it becomes the base", () => {
+  // In cartesian order a boolean declared [true, false] would make the disabled
+  // variant the base, and every enabled variant would read as a delta from it.
+  const full = [
+    { variant: "primary", size: "sm", disabled: "true" },
+    { variant: "primary", size: "sm", disabled: "false" },
+    { variant: "danger", size: "sm", disabled: "true" },
+  ];
+  const picked = selectCombinations("all", SIZE_PROPS, full);
+  assert.deepEqual(picked[0], { variant: "primary", size: "sm", disabled: "false" });
+  assert.equal(picked.length, full.length);
+  assert.deepEqual(new Set(picked.map((c) => JSON.stringify(c))), new Set(full.map((c) => JSON.stringify(c))));
+});
+
+test("selectCombinations: representative mode is unchanged by the reordering", () => {
+  const picked = selectCombinations("representative", SIZE_PROPS, []);
+  assert.deepEqual(picked[0], { variant: "primary", size: "sm", disabled: "false" });
+  assert.equal(picked.length, 5);
+});
+
+test("runSnap: a component over the limit is recorded as capped, warned about, and counted", async () => {
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir, { variants: "all", maxCombinations: 4 }), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button", title: "Forms/Button" }],
+        getComponent: async () => ({
+          name: "Button",
+          props: [
+            { name: "variant", type: { name: "string" }, control: { type: "select", options: ["a", "b", "c"] } },
+            { name: "size", type: { name: "string" }, control: { type: "select", options: ["sm", "md", "lg"] } },
+          ],
+          stories: [{ id: "forms-button--default", name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+          close: async () => {},
+        },
+      }) as never,
+    });
+
+    const [button] = result.components;
+    // 3 x 3 = 9 combinations against a limit of 4: a subset was measured, and
+    // whoever builds from it has to be told rather than handed it as the whole.
+    assert.equal(button.cap?.totalPossible, 9);
+    assert.equal(button.cap?.maxCombinations, 4);
+    assert.ok(button.warnings.some((w) => /9 variant combinations, more than the limit of 4/.test(w)), JSON.stringify(button.warnings));
+    assert.equal(result.summary.componentsCapped, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a component within the limit is not capped", async () => {
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir, { variants: "all" }), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({
+          name: "Button",
+          props: [{ name: "size", type: { name: "string" }, control: { type: "select", options: ["sm", "lg"] } }],
+          stories: [{ id: "forms-button--default", name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => ({}), close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    assert.equal(result.components[0].cap, undefined);
+    assert.equal(result.summary.componentsCapped, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("describeCap: names the total, the limit, and how to build the full set", () => {
+  const message = describeCap("Forms/Button", {
+    maxCombinations: 256, totalPossible: 300, generated: 256, droppedCount: 44, droppedSample: [],
+  });
+  assert.match(message, /Forms\/Button has 300 variant combinations, more than the limit of 256/);
+  assert.match(message, /--max-combinations 300/);
 });

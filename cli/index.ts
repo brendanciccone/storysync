@@ -5,7 +5,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
-import { mapComponent } from "./mapper.js";
+import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
 import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
@@ -38,15 +38,27 @@ async function connectStorybook(url: string, quiet = false) {
 const program = new Command();
 program.name("storysync").description("Sync design tokens and Storybook components to Figma").version(VERSION);
 
+/** Parses --max-combinations, exiting with a clear message on anything but a positive integer. */
+function parseMaxCombinations(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    console.error(chalk.red(`--max-combinations must be a positive whole number, received "${value}"`));
+    process.exit(1);
+  }
+  return n;
+}
+
 program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--components <names>", "Comma-separated component names")
   .option("--json", "Output JSON instead of formatted text")
+  .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--strict", "Exit with code 1 if any component fails or is capped")
   .action(async (opts) => {
     const json = !!opts.json;
+    const maxCombinations = parseMaxCombinations(opts.maxCombinations);
     const storybook = await connectStorybook(opts.storybook, json);
     try {
       const spinner = json ? null : ora("Reading components...").start();
@@ -71,7 +83,7 @@ program
       for (const entry of entries) {
         try {
           const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
-          const def = mapComponent(component);
+          const def = mapComponent(component, maxCombinations);
           results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
@@ -113,11 +125,12 @@ program
   .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
   .option("--out <dir>", "Output directory", ".storysync/snaps")
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
+  .option("--max-combinations <n>", "With --variants all, most combinations to measure per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--screenshots", "Also save a PNG per variant (off by default)")
   .option("--timeout <ms>", "Per-story timeout in milliseconds", "10000")
   .option("--selector <css>", "Override the component root selector")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant or component could not be measured, or none were")
+  .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
   .action(async (opts) => {
     const json = !!opts.json;
@@ -132,6 +145,7 @@ program
       console.error(chalk.red(`--timeout must be a positive number of milliseconds, received "${opts.timeout}"`));
       process.exit(1);
     }
+    const maxCombinations = parseMaxCombinations(opts.maxCombinations);
 
     const storybook = await connectStorybook(opts.storybook, json);
     try {
@@ -144,6 +158,7 @@ program
           timeoutMs,
           selector: opts.selector as string | undefined,
           variants,
+          maxCombinations,
         },
         {
           storybook,
@@ -185,9 +200,12 @@ program
       // Measuring nothing is a failure, not a clean run: snap still writes a
       // styles.json and a freshly-stamped meta.json, so downstream freshness
       // checks would read an empty result as a good one.
+      // A capped component was measured as a subset; building from it as if it
+      // were the whole component is the silent gap --strict exists to stop.
       const hasFailures = result.summary.failed > 0
         || result.summary.componentsFailed > 0
-        || result.summary.components === 0;
+        || result.summary.components === 0
+        || result.summary.componentsCapped > 0;
       const hasWarnings = result.summary.componentsWithWarnings > 0;
 
       if ((strict && hasFailures) || (opts.strictWarnings && hasWarnings)) {

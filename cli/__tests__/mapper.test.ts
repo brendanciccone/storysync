@@ -371,3 +371,18 @@ test("mapComponent: surfaces cap info when the product is truncated", () => {
   assert.equal(def.cap?.totalPossible, 400);
   assert.equal(def.variantCombinations.length, 256);
 });
+
+test("cartesian: honours a custom ceiling", () => {
+  const props = [
+    { name: "a", type: "VARIANT", values: ["1", "2", "3"], defaultValue: "1" },
+    { name: "b", type: "VARIANT", values: ["x", "y", "z"], defaultValue: "x" },
+  ] as never[];
+  const capped = cartesian(props, 4);
+  assert.equal(capped.wasCapped, true);
+  assert.equal(capped.combinations.length, 4);
+  assert.equal(capped.cap?.maxCombinations, 4);
+  // Raising the ceiling above the product yields every combination.
+  const full = cartesian(props, 9);
+  assert.equal(full.wasCapped, false);
+  assert.equal(full.combinations.length, 9);
+});

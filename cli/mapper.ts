@@ -55,7 +55,14 @@ export interface StorybookComponent {
   stories: { id: string; name: string }[];
 }
 
-const MAX_COMBINATIONS = 256;
+/**
+ * Default ceiling on combinations generated for one component.
+ *
+ * Combinations multiply — four props of four values is already 256 — and a Figma
+ * component set with thousands of variants is unusable. Above the ceiling a
+ * covering subset is generated and the cap reported, never applied silently.
+ */
+export const DEFAULT_MAX_COMBINATIONS = 256;
 const DROPPED_SAMPLE_SIZE = 20;
 
 const SKIP_PROPS = new Set([
@@ -297,15 +304,16 @@ function generateCapped(
 
 export function cartesian(
   properties: FigmaVariantProperty[],
+  maxCombinations: number = DEFAULT_MAX_COMBINATIONS,
 ): { combinations: Record<string, string>[]; wasCapped: boolean; cap?: CapInfo } {
   if (!properties.length) return { combinations: [{}], wasCapped: false };
 
   const totalPossible = totalCombinations(properties);
-  if (totalPossible <= MAX_COMBINATIONS) {
+  if (totalPossible <= maxCombinations) {
     return { combinations: [...enumerateCombinations(properties)], wasCapped: false };
   }
 
-  const { combinations, seen } = generateCapped(properties, MAX_COMBINATIONS);
+  const { combinations, seen } = generateCapped(properties, maxCombinations);
 
   const droppedSample: Record<string, string>[] = [];
   for (const combo of enumerateCombinations(properties)) {
@@ -317,7 +325,7 @@ export function cartesian(
     combinations,
     wasCapped: true,
     cap: {
-      maxCombinations: MAX_COMBINATIONS,
+      maxCombinations,
       totalPossible,
       generated: combinations.length,
       droppedCount: totalPossible - combinations.length,
@@ -326,9 +334,12 @@ export function cartesian(
   };
 }
 
-export function mapComponent(component: StorybookComponent): FigmaComponentDefinition {
+export function mapComponent(
+  component: StorybookComponent,
+  maxCombinations: number = DEFAULT_MAX_COMBINATIONS,
+): FigmaComponentDefinition {
   const variantProperties = component.props.map(mapProp).filter((v): v is FigmaVariantProperty => v != null);
-  const { combinations, wasCapped, cap } = cartesian(variantProperties);
+  const { combinations, wasCapped, cap } = cartesian(variantProperties, maxCombinations);
   return {
     name: component.name,
     title: component.title,

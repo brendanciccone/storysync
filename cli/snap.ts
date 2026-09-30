@@ -8,7 +8,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
-import { mapComponent, representativeCombinations } from "./mapper.js";
+import { mapComponent, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
 import type { ComponentEntry, StorybookClient } from "./storybook.js";
 import {
@@ -31,6 +32,8 @@ export interface SnapOptions {
   timeoutMs: number;
   selector?: string;
   variants: VariantSelection;
+  /** Ceiling on combinations measured per component under `variants: "all"`. */
+  maxCombinations?: number;
 }
 
 export type SnapVariantStatus = CaptureStatus | "args_unsupported";
@@ -58,6 +61,12 @@ export interface SnapComponent {
   variants: SnapVariant[];
   warnings: string[];
   error: string | null;
+  /**
+   * Present when the component has more combinations than the ceiling, so only
+   * a subset covering every value was measured. Whoever builds from this must
+   * decide how to proceed rather than treat the subset as the whole component.
+   */
+  cap?: CapInfo;
 }
 
 export interface SnapResult {
@@ -79,6 +88,8 @@ export interface SnapResult {
      */
     componentsFailed: number;
     componentsWithWarnings: number;
+    /** Components with more combinations than the ceiling, measured as a subset. */
+    componentsCapped: number;
   };
 }
 
@@ -128,12 +139,28 @@ export function pickStory(
   return candidates.find((id) => id.toLowerCase().endsWith("--default")) ?? candidates[0];
 }
 
-function selectCombinations(
+export function selectCombinations(
   selection: VariantSelection,
   properties: FigmaVariantProperty[],
   full: Record<string, string>[],
 ): Record<string, string>[] {
-  return selection === "all" ? full : representativeCombinations(properties);
+  if (selection !== "all") return representativeCombinations(properties);
+  // Lead with the all-defaults combination so it becomes the base, as it does in
+  // representative mode. In cartesian order the first value of every prop would
+  // be the base instead — for a boolean declared [true, false], the disabled
+  // variant — and every enabled variant would read as a delta from it.
+  const index = full.findIndex((combo) => properties.every((p) => combo[p.name] === p.defaultValue));
+  if (index <= 0) return full;
+  return [full[index], ...full.slice(0, index), ...full.slice(index + 1)];
+}
+
+/** Warning for a component measured as a subset because it exceeds the ceiling. */
+export function describeCap(name: string, cap: CapInfo): string {
+  return (
+    `${name} has ${cap.totalPossible} variant combinations, more than the limit of ${cap.maxCombinations}, ` +
+    `so ${cap.generated} were measured that cover every value. Building the full set needs ` +
+    `--max-combinations ${cap.totalPossible}; otherwise build the subset or narrow which props are variants.`
+  );
 }
 
 /**
@@ -276,6 +303,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
       failed: allVariants.filter((v) => v.status !== "ok").length,
       componentsFailed: components.filter((c) => c.error != null).length,
       componentsWithWarnings: components.filter((c) => c.warnings.length > 0).length,
+      componentsCapped: components.filter((c) => c.cap != null).length,
     },
   };
 
@@ -338,7 +366,7 @@ async function snapComponent(
     return shell;
   }
 
-  const definition = mapComponent(component);
+  const definition = mapComponent(component, opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS);
   const storyId = pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;
@@ -350,6 +378,12 @@ async function snapComponent(
   }
 
   const combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
+  // Only the full product can exceed the ceiling; representative mode measures
+  // one value at a time and never approaches it.
+  if (opts.variants === "all" && definition.cap) {
+    shell.cap = definition.cap;
+    shell.warnings.push(describeCap(entry.title ?? entry.name, definition.cap));
+  }
 
   // Slugs are assigned up front, for the whole set at once, because uniqueness
   // is a property of the set rather than of any one combination. This is also
