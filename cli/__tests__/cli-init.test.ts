@@ -84,6 +84,27 @@ test("init CLI: a Storybook prerelease older than the first lockstep addon-mcp i
   });
 });
 
+test("init CLI: each piped answer goes to its own prompt", () => {
+  // One readline per prompt used to swallow the second answer with the first,
+  // so "n\ny\n" skipped the install and never registered the addon either.
+  withProject({ storybook: "10.5.5" }, (dir) => {
+    const r = init(dir, "n\ny\n");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /Skipped\. Run manually/);
+    assert.match(r.out, /Updated \.storybook\/main\.ts/);
+    assert.match(readFileSync(join(dir, ".storybook", "main.ts"), "utf8"), /addons: \[\n\s+\{ name: "@storybook\/addon-mcp"/);
+  });
+});
+
+test("init CLI: input that ends before an answer declines, rather than hanging or agreeing", () => {
+  withProject({ storybook: "10.5.5" }, (dir) => {
+    const r = init(dir, "");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /Skipped\. Run manually/);
+    assert.equal(readFileSync(join(dir, ".storybook", "main.ts"), "utf8"), MAIN_WITHOUT_ADDON);
+  });
+});
+
 test("init CLI: addon-mcp 10.6 on Storybook 10.5 is reported, not passed as good", () => {
   // What init installed from 2026-09-02 until it pinned the version:
   // registered and in package.json, so every check passed, while Storybook

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { createInterface } from "node:readline";
+import type { Interface } from "node:readline";
 import chalk from "chalk";
 
 export type PackageManager = "pnpm" | "yarn" | "npm";
@@ -185,15 +186,32 @@ export function addAddonToConfig(content: string): { content: string; ok: boolea
   return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
 }
 
-function confirm(message: string): Promise<boolean> {
-  return new Promise((resolveP) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(`${message} ${chalk.dim("[Y/n]")} `, (answer) => {
-      rl.close();
-      const a = answer.trim().toLowerCase();
-      resolveP(a === "" || a === "y" || a === "yes");
-    });
-  });
+// One reader of stdin for every prompt. A readline interface per prompt lost
+// piped answers: given "n\ny\n", the first read both lines, took its answer
+// and closed, and the second prompt was left waiting for input already gone,
+// so init exited without registering the addon.
+let answers: { rl: Interface; lines: AsyncIterableIterator<string> } | null = null;
+
+async function confirm(message: string): Promise<boolean> {
+  process.stdout.write(`${message} ${chalk.dim("[Y/n]")} `);
+  if (!answers) {
+    const rl = createInterface({ input: process.stdin, terminal: false });
+    answers = { rl, lines: rl[Symbol.asyncIterator]() };
+  }
+  const next = await answers.lines.next();
+  if (next.done) {
+    // Input ended with no answer: nothing was agreed to.
+    process.stdout.write("\n");
+    return false;
+  }
+  const a = next.value.trim().toLowerCase();
+  return a === "" || a === "y" || a === "yes";
+}
+
+/** Stops reading stdin, if a prompt started to, so the process can exit. */
+function closeAnswers(): void {
+  answers?.rl.close();
+  answers = null;
 }
 
 /**
@@ -233,6 +251,14 @@ function upgradeCommand(pm: PackageManager): string {
 }
 
 export async function runInit(projectInput: string): Promise<void> {
+  try {
+    await checkAndFix(projectInput);
+  } finally {
+    closeAnswers();
+  }
+}
+
+async function checkAndFix(projectInput: string): Promise<void> {
   const projectPath = resolve(projectInput);
   console.log(chalk.bold("\nstorysync init"));
   console.log(chalk.dim(`Project: ${projectPath}\n`));
