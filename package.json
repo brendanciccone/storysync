@@ -11,7 +11,7 @@
     "url": "https://github.com/brendanciccone/storysync/issues"
   },
   "bin": {
-    "storysync": "./dist/cli/index.js"
+    "storysync": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",
