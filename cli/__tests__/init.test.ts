@@ -11,6 +11,9 @@ import {
   hasAddonMcpInPackageJson,
   hasAddonMcpInConfig,
   addAddonToConfig,
+  getInstalledStorybookVersion,
+  addonMcpInstallSpec,
+  installCommand,
 } from "../init.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -179,4 +182,73 @@ test("addAddonToConfig: inserts entry with toolsets.docs", () => {
 test("addAddonToConfig: returns ok=false when no addons array found", () => {
   const result = addAddonToConfig(`const config = { framework: '@storybook/nextjs-vite' };`);
   assert.equal(result.ok, false);
+});
+
+test("getInstalledStorybookVersion: reads the version from node_modules", () => {
+  const dir = makeProject({
+    "package.json": JSON.stringify({ devDependencies: { storybook: "^10.5.0" } }),
+    "node_modules/storybook/package.json": JSON.stringify({ name: "storybook", version: "10.6.0" }),
+  });
+  try {
+    assert.equal(getInstalledStorybookVersion(dir), "10.6.0");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("getInstalledStorybookVersion: finds a workspace root's hoisted install", () => {
+  const dir = makeProject({
+    "node_modules/storybook/package.json": JSON.stringify({ name: "storybook", version: "10.5.5" }),
+    "packages/ui/package.json": JSON.stringify({ devDependencies: { storybook: "^10.5.0" } }),
+  });
+  try {
+    assert.equal(getInstalledStorybookVersion(join(dir, "packages", "ui")), "10.5.5");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("getInstalledStorybookVersion: null before install", () => {
+  const dir = makeProject({ "package.json": JSON.stringify({ devDependencies: { storybook: "^10.5.0" } }) });
+  try {
+    assert.equal(getInstalledStorybookVersion(dir), null);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// addon-mcp 10.6.0 peers on storybook ^10.6.0; 0.7.0 on any Storybook 10.
+test("addonMcpInstallSpec: Storybook 10.6+ gets the addon version equal to its own", () => {
+  assert.equal(addonMcpInstallSpec("10.6.0"), "@storybook/addon-mcp@10.6.0");
+  assert.equal(addonMcpInstallSpec("10.6.3"), "@storybook/addon-mcp@10.6.3");
+  assert.equal(addonMcpInstallSpec("11.0.0"), "@storybook/addon-mcp@11.0.0");
+});
+
+test("addonMcpInstallSpec: a declared range uses its lowest version", () => {
+  // Anything newer than the floor could require a newer Storybook than the
+  // range guarantees.
+  assert.equal(addonMcpInstallSpec("^10.6.2"), "@storybook/addon-mcp@10.6.2");
+  assert.equal(addonMcpInstallSpec("~10.7"), "@storybook/addon-mcp@10.7.0");
+  assert.equal(addonMcpInstallSpec(">=10.6.0 <11"), "@storybook/addon-mcp@10.6.0");
+});
+
+test("addonMcpInstallSpec: keeps a prerelease tag", () => {
+  assert.equal(addonMcpInstallSpec("10.7.0-beta.1"), "@storybook/addon-mcp@10.7.0-beta.1");
+});
+
+test("addonMcpInstallSpec: Storybook before 10.6 gets addon-mcp 0.7", () => {
+  assert.equal(addonMcpInstallSpec("10.5.5"), "@storybook/addon-mcp@^0.7.0");
+  assert.equal(addonMcpInstallSpec("^10.1.0"), "@storybook/addon-mcp@^0.7.0");
+  assert.equal(addonMcpInstallSpec("9.1.20"), "@storybook/addon-mcp@^0.7.0");
+});
+
+test("addonMcpInstallSpec: unpinned when the version can't be read", () => {
+  assert.equal(addonMcpInstallSpec(null), "@storybook/addon-mcp");
+  assert.equal(addonMcpInstallSpec("workspace:*"), "@storybook/addon-mcp");
+});
+
+test("installCommand: passes the spec to each package manager", () => {
+  assert.equal(installCommand("pnpm", "@storybook/addon-mcp@10.6.0"), "pnpm add -D @storybook/addon-mcp@10.6.0");
+  assert.equal(installCommand("yarn", "@storybook/addon-mcp@^0.7.0"), "yarn add -D @storybook/addon-mcp@^0.7.0");
+  assert.equal(installCommand("npm", "@storybook/addon-mcp@^0.7.0"), "npm install -D @storybook/addon-mcp@^0.7.0");
 });

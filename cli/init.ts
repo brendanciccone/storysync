@@ -1,7 +1,7 @@
 // `storysync init` — detect Storybook MCP setup gaps and offer to fix them.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { dirname, join, resolve, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
@@ -14,6 +14,16 @@ export interface StorybookConfigFile {
 }
 
 const MIN_STORYBOOK_MAJOR = 10;
+
+// addon-mcp moved into the Storybook monorepo at 10.6 and now releases in
+// lockstep with it: each version requires Storybook at or above its own
+// (10.6.0 peers on `storybook@^10.6.0`) and imports Storybook internals that
+// 10.5 does not ship. 0.7, the last release on its own numbering, accepts any
+// Storybook 10. An unpinned install takes `latest`, which on a 10.5 project
+// fails with ERESOLVE under npm — or, with `storybook@^10.5.0` in
+// package.json, quietly upgrades storybook past its framework package.
+const ADDON_MCP_LOCKSTEP_MINOR = 6;
+const ADDON_MCP_PRE_LOCKSTEP_RANGE = "^0.7.0";
 
 export function detectPackageManager(projectPath: string): PackageManager {
   if (existsSync(join(projectPath, "pnpm-lock.yaml"))) return "pnpm";
@@ -42,13 +52,55 @@ export function getStorybookVersion(projectPath: string): string | null {
   return framework?.[1] ?? null;
 }
 
+/**
+ * The version of Storybook installed for the project, read from
+ * node_modules. Looks upward, the way Node resolves it, so a workspace package
+ * finds a hoisted install. Null before the project has been installed.
+ */
+export function getInstalledStorybookVersion(projectPath: string): string | null {
+  let dir = resolve(projectPath);
+  for (;;) {
+    const pkgPath = join(dir, "node_modules", "storybook", "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        return (JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string }).version ?? null;
+      } catch {
+        return null;
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Reads an installed version (`10.6.0`) or a declared range (`^10.6.0`) as the
+ * lowest version it allows. Null for anything else (`latest`, `workspace:*`).
+ */
+function parseStorybookVersion(version: string | null): { major: number; minor: number; floor: string } | null {
+  const m = version?.replace(/^[\^~>=<\s]*/, "").match(/^(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?/);
+  if (!m) return null;
+  return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10), floor: `${m[1]}.${m[2]}.${m[3] ?? "0"}${m[4] ?? ""}` };
+}
+
 export function isStorybookVersionOk(version: string | null): boolean {
-  if (!version) return false;
-  const m = version.replace(/^[\^~>=<]*/, "").match(/^(\d+)\.(\d+)/);
-  if (!m) return false;
-  const major = parseInt(m[1], 10);
-  const minor = parseInt(m[2], 10);
-  return major > MIN_STORYBOOK_MAJOR || (major === MIN_STORYBOOK_MAJOR && minor >= 1);
+  const v = parseStorybookVersion(version);
+  if (!v) return false;
+  return v.major > MIN_STORYBOOK_MAJOR || (v.major === MIN_STORYBOOK_MAJOR && v.minor >= 1);
+}
+
+/**
+ * The `@storybook/addon-mcp` install spec that fits a project's Storybook
+ * version: from 10.6 the addon's version equal to Storybook's, since a later
+ * one would require a later Storybook; before that, 0.7. Unpinned when the
+ * version is unknown.
+ */
+export function addonMcpInstallSpec(storybookVersion: string | null): string {
+  const v = parseStorybookVersion(storybookVersion);
+  if (!v) return "@storybook/addon-mcp";
+  const lockstep = v.major > MIN_STORYBOOK_MAJOR || (v.major === MIN_STORYBOOK_MAJOR && v.minor >= ADDON_MCP_LOCKSTEP_MINOR);
+  return `@storybook/addon-mcp@${lockstep ? v.floor : ADDON_MCP_PRE_LOCKSTEP_RANGE}`;
 }
 
 export function hasAddonMcpInPackageJson(projectPath: string): boolean {
@@ -84,10 +136,10 @@ function confirm(message: string): Promise<boolean> {
   });
 }
 
-function installCommand(pm: PackageManager): string {
-  if (pm === "pnpm") return "pnpm add -D @storybook/addon-mcp";
-  if (pm === "yarn") return "yarn add -D @storybook/addon-mcp";
-  return "npm install -D @storybook/addon-mcp";
+export function installCommand(pm: PackageManager, spec: string): string {
+  if (pm === "pnpm") return `pnpm add -D ${spec}`;
+  if (pm === "yarn") return `yarn add -D ${spec}`;
+  return `npm install -D ${spec}`;
 }
 
 function upgradeCommand(pm: PackageManager): string {
@@ -112,7 +164,9 @@ export async function runInit(projectInput: string): Promise<void> {
 
   const pm = detectPackageManager(projectPath);
 
-  const sbVersion = getStorybookVersion(projectPath);
+  // The installed version when there is one: `^10.5.0` in package.json may
+  // well be 10.6 on disk, and the addon has to match what actually runs.
+  const sbVersion = getInstalledStorybookVersion(projectPath) ?? getStorybookVersion(projectPath);
   const sbOk = isStorybookVersionOk(sbVersion);
   const hasAddon = hasAddonMcpInPackageJson(projectPath);
   const inConfig = hasAddonMcpInConfig(config.content);
@@ -139,10 +193,12 @@ export async function runInit(projectInput: string): Promise<void> {
   let installed = false;
 
   if (!hasAddon) {
-    const yes = await confirm(`Install @storybook/addon-mcp via ${pm}?`);
+    const spec = addonMcpInstallSpec(sbVersion);
+    const command = installCommand(pm, spec);
+    const yes = await confirm(`Install ${spec} via ${pm}?`);
     if (yes) {
       try {
-        execSync(installCommand(pm), { cwd: projectPath, stdio: "inherit" });
+        execSync(command, { cwd: projectPath, stdio: "inherit" });
         installed = true;
       } catch (err) {
         console.log(chalk.red(`Install failed: ${String(err)}`));
@@ -150,7 +206,7 @@ export async function runInit(projectInput: string): Promise<void> {
         return;
       }
     } else {
-      console.log(chalk.dim(`  Skipped. Run manually: ${installCommand(pm)}`));
+      console.log(chalk.dim(`  Skipped. Run manually: ${command}`));
     }
   }
 
