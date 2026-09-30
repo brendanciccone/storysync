@@ -1,8 +1,8 @@
-// Runs the compiled CLI's --components handling end to end, against a
-// stand-in MCP server: just enough JSON-RPC over HTTP for Storybook's two
-// documentation tools and Figma's use_figma, so this needs no network, no
-// running Storybook and no Figma file. The acceptance suite checks map against
-// the real Storybook.
+// Runs the compiled CLI's --components handling, and its errors from a
+// Storybook that fails, end to end against stand-in MCP servers: just enough
+// JSON-RPC over HTTP for Storybook's two documentation tools and Figma's
+// use_figma, so this needs no network, no running Storybook and no Figma file.
+// The acceptance suite checks map against the real Storybook.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -39,31 +39,47 @@ const FIGMA_COMPONENTS = [
 
 type Rpc = { id?: number; method: string; params?: { protocolVersion?: string; name?: string; arguments?: { id?: string; code?: string } } };
 
-function toolText(name: string | undefined, args: { id?: string; code?: string } = {}): string {
-  if (name === "list-all-documentation") return LIST;
-  if (name === "get-documentation") return DOCS[args.id ?? ""] ?? "";
-  // use_figma: the component read, or an empty variable read.
-  return JSON.stringify(args.code?.includes("COMPONENT_SET") ? FIGMA_COMPONENTS : []);
+interface StandIn {
+  url: string;
+  /** Every tool called, with the component ID where there is one: `docs-show forms-button`. */
+  calls: string[];
+  server: Server;
 }
 
-function respond(message: Rpc): unknown {
-  switch (message.method) {
-    case "initialize":
-      return { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake-storybook", version: "0" } };
-    case "tools/list":
-      return { tools: ["list-all-documentation", "get-documentation", "use_figma"].map((name) => ({ name, inputSchema: { type: "object" } })) };
-    case "tools/call":
-      return { content: [{ type: "text", text: toolText(message.params?.name, message.params?.arguments) }] };
-    default:
-      return {};
+/**
+ * Serves a stand-in Storybook (and Figma) MCP server. `docs` names its docs
+ * tools, 0.7's or 10.6's, or null for a server without them. A tool named in
+ * `failing` answers as addon-mcp does when it can't: an `isError` result
+ * with the reason as text, not a protocol error.
+ */
+async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = []): Promise<StandIn> {
+  const calls: string[] = [];
+  const tools = [...(docs ? [docs.list, docs.show] : ["preview-stories"]), "use_figma"];
+
+  function call(name = "", args: { id?: string; code?: string } = {}): unknown {
+    calls.push(args.id ? `${name} ${args.id}` : name);
+    const text = (t: string) => ({ content: [{ type: "text", text: t }] });
+    if (failing.includes(name)) return { ...text(`Storybook index could not be built (${name})`), isError: true };
+    if (name === docs?.list) return text(LIST);
+    if (name === docs?.show) return text(DOCS[args.id ?? ""] ?? "");
+    // use_figma: the component read, or an empty variable read.
+    return text(JSON.stringify(args.code?.includes("COMPONENT_SET") ? FIGMA_COMPONENTS : []));
   }
-}
 
-let server: Server;
-let storybook: string;
+  function respond(message: Rpc): unknown {
+    switch (message.method) {
+      case "initialize":
+        return { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake-storybook", version: "0" } };
+      case "tools/list":
+        return { tools: tools.map((name) => ({ name, inputSchema: { type: "object" } })) };
+      case "tools/call":
+        return call(message.params?.name, message.params?.arguments);
+      default:
+        return {};
+    }
+  }
 
-before(async () => {
-  server = createServer((req, res) => {
+  const server = createServer((req, res) => {
     // No standalone event stream: the client asks for one and carries on
     // without it when refused.
     if (req.method !== "POST") {
@@ -83,11 +99,27 @@ before(async () => {
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  storybook = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, server };
+}
+
+const ADDON_MCP_0_7 = { list: "list-all-documentation", show: "get-documentation" };
+const ADDON_MCP_10_6 = { list: "docs-list", show: "docs-show" };
+
+let standIns: StandIn[] = [];
+/** A working Storybook, and Figma for diff. */
+let storybook: string;
+/** Storybook whose docs list fails, as addon-mcp 10.6 does when its index can't be built. */
+let listFails: StandIn;
+
+before(async () => {
+  const good = await startStandIn(ADDON_MCP_0_7);
+  listFails = await startStandIn(ADDON_MCP_10_6, ["docs-list"]);
+  standIns = [good, listFails];
+  storybook = good.url;
 });
 
 after(() => {
-  server.close();
+  for (const s of standIns) s.server.close();
 });
 
 /** Runs the CLI without blocking, since the stand-in Storybook shares this process. */
@@ -124,14 +156,22 @@ test("map CLI: matches names and IDs as snap does, ignoring case and spacing", a
   assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 2], ["Card", 1]]);
 });
 
-/** Runs diff against the stand-in for both sides, in a project with no tokens, so only components differ. */
-async function diff(...args: string[]) {
+/**
+ * Runs diff in a project with no tokens, so only components differ, reading
+ * Figma from the working stand-in and Storybook from `storybookUrl`.
+ */
+async function diffWith(storybookUrl: string, ...args: string[]) {
   const project = mkdtempSync(join(tmpdir(), "storysync-diff-cli-"));
   try {
-    return await run("diff", "--figma", `${storybook}/mcp`, "--file-key", "x", "--storybook", storybook, "--project", project, ...args);
+    return await run("diff", "--figma", `${storybook}/mcp`, "--file-key", "x", "--storybook", storybookUrl, "--project", project, ...args);
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
+}
+
+/** Runs diff against the working stand-in for both sides. */
+function diff(...args: string[]) {
+  return diffWith(storybook, ...args);
 }
 
 test("diff CLI: a --components name in neither Storybook nor Figma fails whatever the flags", async () => {
@@ -163,4 +203,47 @@ test("diff CLI: --components without --storybook fails instead of being ignored"
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /--components selects the components to diff, which needs --storybook/);
   assert.doesNotMatch(r.out, /Figma MCP/);
+});
+
+test("diff CLI: --components without --storybook fails under --json with an error that still parses", async () => {
+  const r = await run("diff", "--figma", "http://127.0.0.1:9", "--file-key", "x", "--components", "Button", "--json");
+  assert.equal(r.status, 1, r.out);
+  const data = JSON.parse(r.stdout) as { error?: string };
+  assert.match(data.error ?? "", /--components selects the components to diff, which needs --storybook/);
+});
+
+type DiffJson = { components: { name: string; status: string }[]; storybookReadFailed: boolean; figmaReadFailed: boolean };
+
+test("diff CLI: when Storybook can't be listed, --components still narrows Figma and the run is partial", async () => {
+  // Unnarrowed, Card and Badge were reported not in code too, though nobody
+  // asked about them and the code side was never read.
+  const r = await diffWith(listFails.url, "--components", "Button");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /Failed to list Storybook components/);
+  assert.match(r.out, /"docs-list" failed: Storybook index could not be built/);
+  assert.match(r.out, /Storybook listing failed — component results are partial/);
+  assert.doesNotMatch(r.out, /matched no component/);
+  assert.doesNotMatch(r.out, /Card|Badge|No differences found|Components in sync/);
+
+  const strict = await diffWith(listFails.url, "--components", "Button", "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  const data = JSON.parse(strict.stdout) as DiffJson;
+  assert.equal(data.storybookReadFailed, true);
+  assert.equal(data.figmaReadFailed, false);
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Button", "figma_only"]]);
+});
+
+test("diff CLI: when Storybook can't be listed, a --components name is not rejected as a typo", async () => {
+  // An ID names a component only Storybook could confirm. With the list
+  // unread, rejecting it would blame the name for the listing failure.
+  const r = await diffWith(listFails.url, "--components", "forms-button");
+  assert.match(r.out, /"docs-list" failed/);
+  assert.doesNotMatch(r.out, /matched no component/);
+  assert.match(r.out, /component results are partial/);
+});
+
+test("diff CLI: a working Storybook reports storybookReadFailed false", async () => {
+  const r = await diff("--components", "Button", "--json");
+  assert.equal(r.status, 0, r.out);
+  assert.equal((JSON.parse(r.stdout) as DiffJson).storybookReadFailed, false);
 });

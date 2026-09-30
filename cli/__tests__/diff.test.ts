@@ -8,6 +8,7 @@ import {
   diffTokens,
   diffComponents,
   selectDiffComponents,
+  narrowFigmaComponents,
   computeDiffSummary,
   hasDifferences,
 } from "../diff.js";
@@ -394,4 +395,18 @@ test("selectDiffComponents: no names leaves both sides whole", () => {
   const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, [" "]);
   assert.equal(entries, STORYBOOK);
   assert.equal(figmaComponents, FIGMA);
+});
+
+// --- narrowFigmaComponents ---
+
+test("narrowFigmaComponents: keeps the named Figma components, by name, without rejecting any name", () => {
+  // For a diff whose Storybook listing failed: an ID, or a name Figma lacks,
+  // can't be told from a typo, so it narrows to nothing rather than throwing.
+  const kept = narrowFigmaComponents(FIGMA, [" button", "forms-card", "Nope"]);
+  assert.deepEqual(kept.map((c) => c.name), ["Button"]);
+});
+
+test("narrowFigmaComponents: no names leaves Figma whole", () => {
+  assert.equal(narrowFigmaComponents(FIGMA, ["", " "]), FIGMA);
+  assert.equal(narrowFigmaComponents(FIGMA, undefined), FIGMA);
 });

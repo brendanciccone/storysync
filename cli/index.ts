@@ -7,7 +7,7 @@ import { StorybookClient, selectComponents } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand } from "./tokens.js";
-import { diffTokens, diffComponents, selectDiffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
@@ -593,15 +593,16 @@ program
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
   .option("--components <names>", "Comma-separated component names or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any differences found or Figma reads fail")
+  .option("--strict", "Exit with code 1 if any differences found or a Figma or Storybook read fails")
   .action(async (opts) => {
     const json = !!opts.json;
 
     // Without --storybook there is no component diff for --components to
     // narrow, so the flag would be ignored and the run pass having diffed none.
     if (opts.components && !opts.storybook) {
-      console.error(chalk.red("--components selects the components to diff, which needs --storybook"));
-      process.exit(1);
+      reportError(new Error("--components selects the components to diff, which needs --storybook"), json);
+      process.exitCode = 1;
+      return;
     }
 
     // Connect to Figma MCP
@@ -623,6 +624,7 @@ program
     }
 
     let figmaReadFailed = false;
+    let storybookReadFailed = false;
 
     try {
       const fileKey = opts.fileKey as string;
@@ -663,25 +665,30 @@ program
         if (!componentReadFailed) {
           const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
           let entries: Awaited<ReturnType<StorybookClient["listComponents"]>> = [];
-          let listed = false;
           try {
             entries = await storybook.listComponents();
-            listed = true;
           } catch (err) {
+            storybookReadFailed = true;
             mapSpinner?.fail("Failed to list Storybook components");
             console.error(chalk.red(String(err)));
-            if (opts.strict) process.exitCode = 1;
           }
-          // Names are checked only against a list that was read: when listing
-          // failed, that is the error, and every name would look like a typo.
-          if (listed && opts.components) {
-            try {
-              ({ entries, figmaComponents } = selectDiffComponents(entries, figmaComponents, (opts.components as string).split(",")));
-            } catch (err) {
-              mapSpinner?.stop();
-              reportError(err, json);
-              process.exitCode = 1;
-              return;
+          if (opts.components) {
+            const names = (opts.components as string).split(",");
+            if (storybookReadFailed) {
+              // Names are checked only against a list that was read: when
+              // listing failed, that is the error, and every name would look
+              // like a typo. Figma is still narrowed to them, or every Figma
+              // component left out would be reported as not in code.
+              figmaComponents = narrowFigmaComponents(figmaComponents, names);
+            } else {
+              try {
+                ({ entries, figmaComponents } = selectDiffComponents(entries, figmaComponents, names));
+              } catch (err) {
+                mapSpinner?.stop();
+                reportError(err, json);
+                process.exitCode = 1;
+                return;
+              }
             }
           }
 
@@ -695,7 +702,7 @@ program
               mappingFailures.push({ name: entry.name, error: String(err) });
             }
           }
-          mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
+          if (!storybookReadFailed) mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
           if (!json && mappingFailures.length) {
             console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors.`));
           }
@@ -714,10 +721,14 @@ program
           summary,
           hasDifferences: hasDifferences(summary),
           figmaReadFailed,
+          storybookReadFailed,
         }));
       } else {
         if (figmaReadFailed) {
           console.log(chalk.yellow("\nFigma read failed — diff results above are partial. See errors for details."));
+        }
+        if (storybookReadFailed) {
+          console.log(chalk.yellow("\nStorybook listing failed — component results are partial: nothing in code was read to match Figma against. See errors for details."));
         }
 
         const mismatched = tokenDiffs.filter((t) => t.status !== "match");
@@ -751,7 +762,7 @@ program
               console.log(`  ${chalk.red("?")} ${chalk.bold(c.name)} ${chalk.red("ambiguous")} ${chalk.dim(c.details.join(", "))}`);
             }
           }
-        } else if (storybook && !figmaReadFailed) {
+        } else if (storybook && !figmaReadFailed && !storybookReadFailed) {
           console.log(chalk.green(componentDiffs.length ? "\nComponents in sync." : "\nNo components to diff."));
         }
 
@@ -774,12 +785,12 @@ program
           if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
         }
 
-        if (!figmaReadFailed && !hasDifferences(summary)) {
+        if (!figmaReadFailed && !storybookReadFailed && !hasDifferences(summary)) {
           console.log(chalk.green("\nNo differences found."));
         }
       }
 
-      if (opts.strict && (figmaReadFailed || hasDifferences(summary) || mappingFailures.length)) process.exitCode = 1;
+      if (opts.strict && (figmaReadFailed || storybookReadFailed || hasDifferences(summary) || mappingFailures.length)) process.exitCode = 1;
     } finally {
       await figma.disconnect();
       if (storybook) await storybook.disconnect();

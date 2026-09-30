@@ -297,8 +297,24 @@ export function selectDiffComponents(
   const selected = selectComponents(entries, names, figmaComponents.map((c) => c.name));
   const wanted = componentNames(names);
   if (!wanted.length) return { entries, figmaComponents };
-  const keep = new Set([...wanted, ...selected.map((e) => e.name)].map((n) => n.toLowerCase()));
-  return { entries: selected, figmaComponents: figmaComponents.filter((c) => keep.has(c.name.toLowerCase())) };
+  return { entries: selected, figmaComponents: narrowFigmaComponents(figmaComponents, [...wanted, ...selected.map((e) => e.name)]) };
+}
+
+/**
+ * Narrows Figma's components to the names given with `--components`, by name,
+ * ignoring case, and without checking any name for a typo. On its own, it is
+ * for a diff whose Storybook listing failed: with the code side unknown, a
+ * name can't be told from a typo, but the components left out must still not
+ * all be reported as missing from code.
+ */
+export function narrowFigmaComponents(
+  figmaComponents: FigmaComponentInfo[],
+  names: readonly string[] | undefined,
+): FigmaComponentInfo[] {
+  const wanted = componentNames(names);
+  if (!wanted.length) return figmaComponents;
+  const keep = new Set(wanted.map((n) => n.toLowerCase()));
+  return figmaComponents.filter((c) => keep.has(c.name.toLowerCase()));
 }
 
 export function diffComponents(

@@ -415,7 +415,7 @@ Options:
   --components <names>   Comma-separated component names or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
   --json                 Output JSON instead of formatted text
-  --strict               Exit with code 1 if any differences found or Figma reads fail
+  --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails
 ```
 
 Example:
@@ -428,7 +428,7 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
 ```
 
-`--components` narrows both sides. Storybook components are selected as `snap` and `map` select them, and Figma's to the same names, so a component left out of the diff is not reported as missing from code. A name only Figma has is not a typo: it is reported as not in code, which fails `--strict`, since that is the answer to asking about it. A name neither side has is an error whatever the flags, as is `--components` without `--storybook`.
+`--components` narrows both sides. Storybook components are selected as `snap` and `map` select them, and Figma's to the same names, so a component left out of the diff is not reported as missing from code. A name only Figma has is not a typo: it is reported as not in code, which fails `--strict`, since that is the answer to asking about it. When both sides were read, a name neither side has is an error whatever the flags. When Storybook can't be listed, no name can be told from a typo, so none is rejected: Figma is still narrowed to the names given, and the run is reported as partial, with `"storybookReadFailed": true` under `--json`, which fails `--strict`. `--components` without `--storybook` is an error too.
 
 ### `storysync inspect`
 
