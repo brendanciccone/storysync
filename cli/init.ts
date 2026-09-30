@@ -56,14 +56,14 @@ export function getStorybookVersion(projectPath: string): string | null {
 }
 
 /**
- * The version of Storybook installed for the project, read from
- * node_modules. Looks upward, the way Node resolves it, so a workspace package
- * finds a hoisted install. Null before the project has been installed.
+ * The version of a package installed for the project, read from node_modules.
+ * Looks upward, the way Node resolves it, so a workspace package finds a
+ * hoisted install. Null before the project has been installed.
  */
-export function getInstalledStorybookVersion(projectPath: string): string | null {
+function getInstalledVersion(projectPath: string, name: string): string | null {
   let dir = resolve(projectPath);
   for (;;) {
-    const pkgPath = join(dir, "node_modules", "storybook", "package.json");
+    const pkgPath = join(dir, "node_modules", name, "package.json");
     if (existsSync(pkgPath)) {
       try {
         return (JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string }).version ?? null;
@@ -75,6 +75,16 @@ export function getInstalledStorybookVersion(projectPath: string): string | null
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/** The version of Storybook installed for the project; see getInstalledVersion. */
+export function getInstalledStorybookVersion(projectPath: string): string | null {
+  return getInstalledVersion(projectPath, "storybook");
+}
+
+/** The version of @storybook/addon-mcp installed for the project; see getInstalledVersion. */
+export function getInstalledAddonMcpVersion(projectPath: string): string | null {
+  return getInstalledVersion(projectPath, "@storybook/addon-mcp");
 }
 
 interface ParsedVersion {
@@ -139,6 +149,20 @@ export function addonMcpInstallSpec(storybookVersion: string | null): string {
   return `@storybook/addon-mcp@${lockstep ? v.floor : ADDON_MCP_PRE_LOCKSTEP_RANGE}`;
 }
 
+/**
+ * Whether an installed addon-mcp requires a newer Storybook than the project
+ * has: a lockstep release (10.6 on) newer than Storybook, which it peers on
+ * at its own version or later. Storybook fails to load its preset, so the
+ * addon looks installed while nothing works. An older init installed it
+ * unpinned, which put 10.6 on Storybook 10.5 projects.
+ */
+export function addonMcpNeedsNewerStorybook(addonVersion: string | null, storybookVersion: string | null): boolean {
+  const addon = parseStorybookVersion(addonVersion);
+  const storybook = parseStorybookVersion(storybookVersion);
+  if (!addon || !storybook) return false;
+  return compareVersions(addon, FIRST_LOCKSTEP) >= 0 && compareVersions(addon, storybook) > 0;
+}
+
 export function hasAddonMcpInPackageJson(projectPath: string): boolean {
   const pkgPath = join(projectPath, "package.json");
   if (!existsSync(pkgPath)) return false;
@@ -185,6 +209,23 @@ export function installCommand(pm: PackageManager, spec: string): string {
   return `npm install -D ${arg}`;
 }
 
+/** Asks before installing `spec`. A failed install ends init with exit code 1. */
+async function offerInstall(pm: PackageManager, spec: string, projectPath: string): Promise<"installed" | "skipped" | "failed"> {
+  const command = installCommand(pm, spec);
+  if (!(await confirm(`Install ${spec} via ${pm}?`))) {
+    console.log(chalk.dim(`  Skipped. Run manually: ${command}`));
+    return "skipped";
+  }
+  try {
+    execSync(command, { cwd: projectPath, stdio: "inherit" });
+    return "installed";
+  } catch (err) {
+    console.log(chalk.red(`Install failed: ${String(err)}`));
+    process.exitCode = 1;
+    return "failed";
+  }
+}
+
 function upgradeCommand(pm: PackageManager): string {
   if (pm === "pnpm") return "pnpm dlx storybook@latest upgrade";
   if (pm === "yarn") return "npx storybook@latest upgrade";
@@ -212,14 +253,18 @@ export async function runInit(projectInput: string): Promise<void> {
   const sbVersion = getInstalledStorybookVersion(projectPath) ?? getStorybookVersion(projectPath);
   const sbOk = isStorybookVersionOk(sbVersion);
   const hasAddon = hasAddonMcpInPackageJson(projectPath);
+  const addonVersion = hasAddon ? getInstalledAddonMcpVersion(projectPath) : null;
+  // Installed, but a release for a newer Storybook, so it doesn't load.
+  const addonTooNew = addonMcpNeedsNewerStorybook(addonVersion, sbVersion);
   const inConfig = hasAddonMcpInConfig(config.content);
 
+  const addonMark = addonTooNew ? chalk.red("✖") : hasAddon ? chalk.green("✔") : chalk.yellow("✖");
   console.log(`${sbOk ? chalk.green("✔") : chalk.red("✖")} Storybook 10.1+ ${chalk.dim(sbVersion ? `(found ${sbVersion})` : "(not found)")}`);
-  console.log(`${hasAddon ? chalk.green("✔") : chalk.yellow("✖")} @storybook/addon-mcp installed`);
+  console.log(`${addonMark} @storybook/addon-mcp installed${addonVersion ? ` ${chalk.dim(`(found ${addonVersion})`)}` : ""}`);
   console.log(`${inConfig ? chalk.green("✔") : chalk.yellow("✖")} addon-mcp registered in addons array`);
   console.log("");
 
-  if (sbOk && hasAddon && inConfig) {
+  if (sbOk && hasAddon && !addonTooNew && inConfig) {
     console.log(chalk.green("Everything looks good. Restart Storybook if it's running."));
     return;
   }
@@ -235,21 +280,21 @@ export async function runInit(projectInput: string): Promise<void> {
   let configChanged = false;
   let installed = false;
 
-  if (!hasAddon) {
+  if (!hasAddon || addonTooNew) {
     const spec = addonMcpInstallSpec(sbVersion);
-    const command = installCommand(pm, spec);
-    const yes = await confirm(`Install ${spec} via ${pm}?`);
-    if (yes) {
-      try {
-        execSync(command, { cwd: projectPath, stdio: "inherit" });
-        installed = true;
-      } catch (err) {
-        console.log(chalk.red(`Install failed: ${String(err)}`));
-        process.exitCode = 1;
-        return;
-      }
-    } else {
-      console.log(chalk.dim(`  Skipped. Run manually: ${command}`));
+    if (addonTooNew) {
+      console.log(chalk.red(
+        `@storybook/addon-mcp ${addonVersion} needs Storybook ${addonVersion} or later, ` +
+        `but this project has Storybook ${sbVersion}, so Storybook can't load the addon.`,
+      ));
+    }
+    const outcome = await offerInstall(pm, spec, projectPath);
+    if (outcome === "failed") return;
+    installed = outcome === "installed";
+    if (addonTooNew && !installed) {
+      // Declined: the addon is left as it is, and it still doesn't load.
+      console.log(chalk.dim(`  Or upgrade Storybook: ${upgradeCommand(pm)}`));
+      process.exitCode = 1;
     }
   }
 

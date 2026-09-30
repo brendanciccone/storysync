@@ -13,7 +13,9 @@ import {
   hasAddonMcpInConfig,
   addAddonToConfig,
   getInstalledStorybookVersion,
+  getInstalledAddonMcpVersion,
   addonMcpInstallSpec,
+  addonMcpNeedsNewerStorybook,
   installCommand,
 } from "../init.js";
 
@@ -280,4 +282,35 @@ test("installCommand: survives zsh with extendedglob, where an unquoted ^ is a g
   assert.equal(quoted.stdout, "add\n-D\n@storybook/addon-mcp@^0.7.0\n");
   // The failure the quotes prevent.
   assert.match(run("pnpm add -D @storybook/addon-mcp@^0.7.0").stderr, /no matches found/);
+});
+
+test("getInstalledAddonMcpVersion: reads the scoped package from node_modules", () => {
+  const dir = makeProject({
+    "node_modules/@storybook/addon-mcp/package.json": JSON.stringify({ name: "@storybook/addon-mcp", version: "10.6.0" }),
+    "packages/ui/package.json": "{}",
+  });
+  try {
+    assert.equal(getInstalledAddonMcpVersion(dir), "10.6.0");
+    assert.equal(getInstalledAddonMcpVersion(join(dir, "packages", "ui")), "10.6.0");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("addonMcpNeedsNewerStorybook: a lockstep addon-mcp newer than Storybook", () => {
+  // Each lockstep release peers on Storybook at its own version or later.
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0", "10.5.5"), true);
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.1", "10.6.0"), true);
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0", "10.6.0-beta.3"), true);
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0-alpha.4", "10.5.5"), true);
+  assert.equal(addonMcpNeedsNewerStorybook("11.0.0-alpha.1", "10.6.0"), true);
+});
+
+test("addonMcpNeedsNewerStorybook: not for a matching or older addon, 0.7, or an unknown version", () => {
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0", "10.6.0"), false);
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0", "10.7.1"), false);
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0-beta.3", "10.6.0"), false);
+  assert.equal(addonMcpNeedsNewerStorybook("0.7.0", "10.5.5"), false);
+  assert.equal(addonMcpNeedsNewerStorybook(null, "10.5.5"), false);
+  assert.equal(addonMcpNeedsNewerStorybook("10.6.0", null), false);
 });

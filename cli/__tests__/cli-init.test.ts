@@ -1,13 +1,13 @@
 // Runs the compiled `init` against fixture projects, answering its prompts on
 // stdin, so the wiring from the installed Storybook to the addon-mcp release
 // it offers is covered end to end. Nothing is installed: every answer to an
-// install is no.
+// install is no, except where a stand-in package manager on PATH records it.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from "node:fs";
+import { join, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -82,4 +82,50 @@ test("init CLI: a Storybook prerelease older than the first lockstep addon-mcp i
     const r = init(dir, "n\nn\n");
     assert.match(r.out, /Skipped\. Run manually: pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"$/m);
   });
+});
+
+test("init CLI: addon-mcp 10.6 on Storybook 10.5 is reported, not passed as good", () => {
+  // What init installed from 2026-09-02 until it pinned the version:
+  // registered and in package.json, so every check passed, while Storybook
+  // could not load its preset.
+  withProject({ storybook: "10.5.5", addon: "10.6.0" }, (dir) => {
+    const pkg = readFileSync(join(dir, "package.json"), "utf8");
+    const r = init(dir, "n\n");
+    assert.equal(r.status, 1, r.out);
+    assert.doesNotMatch(r.out, /Everything looks good/);
+    assert.match(r.out, /✖ @storybook\/addon-mcp installed \(found 10\.6\.0\)/);
+    assert.match(r.out, /@storybook\/addon-mcp 10\.6\.0 needs Storybook 10\.6\.0 or later, but this project has Storybook 10\.5\.5, so Storybook can't load the addon\./);
+    assert.match(r.out, /Install @storybook\/addon-mcp@\^0\.7\.0 via pnpm\?/);
+    assert.match(r.out, /Skipped\. Run manually: pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"/);
+    assert.match(r.out, /Or upgrade Storybook: pnpm dlx storybook@latest upgrade/);
+    // Declining leaves it alone.
+    assert.equal(readFileSync(join(dir, "package.json"), "utf8"), pkg);
+  });
+});
+
+test("init CLI: accepting installs the matching addon-mcp, and the quoted spec reaches the package manager intact", { skip: process.platform === "win32" }, () => {
+  withProject({ storybook: "10.5.5", addon: "10.6.0" }, (dir) => {
+    // A stand-in pnpm that records its arguments, one per line.
+    const bin = join(dir, ".bin-stand-in");
+    const log = join(dir, "pnpm-args.txt");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "pnpm"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\n`);
+    chmodSync(join(bin, "pnpm"), 0o755);
+
+    const r = init(dir, "y\n", { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` });
+    assert.equal(r.status, 0, r.out);
+    assert.equal(readFileSync(log, "utf8"), "add\n-D\n@storybook/addon-mcp@^0.7.0\n");
+    assert.match(r.out, /Restart Storybook to apply changes/);
+  });
+});
+
+test("init CLI: an addon-mcp release that matches Storybook, or 0.7 on any Storybook 10, looks good", () => {
+  for (const fixture of [{ storybook: "10.6.0", addon: "10.6.0" }, { storybook: "10.6.2", addon: "10.6.0" }, { storybook: "10.5.5", addon: "0.7.0" }]) {
+    withProject(fixture, (dir) => {
+      const r = init(dir, "");
+      assert.equal(r.status, 0, r.out);
+      assert.match(r.out, /✔ @storybook\/addon-mcp installed/);
+      assert.match(r.out, /Everything looks good/);
+    });
+  }
 });
