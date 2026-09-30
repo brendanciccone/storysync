@@ -50,3 +50,53 @@ jobs:
       # compiled dist/cli/index.js, so this covers the published artifact too.
       - name: Test
         run: pnpm test
+
+  # Runs the drift-check action the way a consumer does, against the example
+  # project: install from its lockfile, start its Storybook, map it. With no
+  # baseline committed, drift has to come back `new`.
+  action-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: storysync
+        uses: ./action
+        with:
+          working_directory: examples/storybook-vite
+
+      - name: Check the action's outputs
+        env:
+          DRIFT: ${{ steps.storysync.outputs.drift }}
+          TOKEN_DRIFT: ${{ steps.storysync.outputs.token_drift }}
+          MAP_JSON: ${{ steps.storysync.outputs.json }}
+          TOKENS_JSON: ${{ steps.storysync.outputs.tokens_json }}
+        run: |
+          set -euo pipefail
+          echo "drift=$DRIFT token_drift=$TOKEN_DRIFT"
+          if [ "$DRIFT" != new ]; then
+            echo "::error::drift is '$DRIFT', expected 'new': the example has no baseline"
+            exit 1
+          fi
+          # none while the example has no token source, new once it has one.
+          if [ "$TOKEN_DRIFT" != none ] && [ "$TOKEN_DRIFT" != new ]; then
+            echo "::error::token_drift is '$TOKEN_DRIFT', expected 'none' or 'new'"
+            exit 1
+          fi
+          if [ -z "$TOKENS_JSON" ]; then
+            echo "::error::tokens_json is empty"
+            exit 1
+          fi
+          node -e '
+            const tokens = JSON.parse(process.env.TOKENS_JSON);
+            if (!Array.isArray(tokens.collections)) throw new Error("tokens_json has no collections array");
+            const map = JSON.parse(process.env.MAP_JSON);
+            const names = map.components.map((c) => c.name);
+            console.log("Mapped: " + names.join(", "));
+            if (!names.includes("Button")) throw new Error("json does not list Button");
+            if (map.summary.failed) throw new Error(map.summary.failed + " component(s) failed to map");
+          '
