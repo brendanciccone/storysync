@@ -105,7 +105,11 @@ jobs:
 
       # examples/storybook-vite/.storysync/baseline.json is `storysync map
       # --json` of the example, so a change to its components or stories has
-      # to regenerate it, with the command this step's failure gives.
+      # to regenerate it. Use this checkout's build rather than the npx
+      # command this step's failure gives, which runs the release on npm. With
+      # the example's Storybook running on 6006:
+      #
+      #   pnpm build && cd examples/storybook-vite && node ../../dist/cli/index.js map --storybook http://localhost:6006 --json > .storysync/baseline.json
       - id: baseline
         uses: ./action
         with:

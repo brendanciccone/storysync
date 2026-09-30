@@ -79,6 +79,10 @@ runs:
     # with. Given a `version` instead, it would compare that with the
     # consumer's packageManager and fail on any difference, even a +sha512
     # suffix. The path has to be relative to the workspace.
+    #
+    # The version is the storysync this action builds, for the baseline
+    # commands it prints. Plain `npx storysync` runs whatever npm has, which
+    # can map differently: 0.2.0 finds no components with addon-mcp 10.6.
     - name: Locate storysync
       id: storysync
       shell: bash
@@ -87,6 +91,7 @@ runs:
           const path = require("path");
           const pkg = path.resolve(process.env.GITHUB_ACTION_PATH, "..", "package.json");
           console.log("package_json=" + path.relative(process.env.GITHUB_WORKSPACE, pkg));
+          console.log("version=" + require(pkg).version);
         ' >> "$GITHUB_OUTPUT"
 
     - name: Setup pnpm
@@ -340,6 +345,7 @@ runs:
         TOKEN_BASELINE_PATH: ${{ inputs.token_baseline }}
         TOKEN_SOURCE: ${{ inputs.token_source }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
         node << 'SCRIPT'
         const fs = require("fs");
@@ -356,8 +362,9 @@ runs:
         const current = JSON.parse(fs.readFileSync("storysync-tokens-current.json", "utf8"));
         const collections = current.collections || [];
 
-        // The command that writes the baseline, as the action extracts tokens.
-        let command = "npx storysync tokens";
+        // The command that writes the baseline, as the action extracts tokens,
+        // with the storysync it runs.
+        let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " tokens";
         if (process.env.TOKEN_SOURCE !== "auto") command += " --source " + quote(process.env.TOKEN_SOURCE);
         command += " --json > " + quote(baselinePath);
         if (path.dirname(baselinePath) !== ".") command = "mkdir -p " + quote(path.dirname(baselinePath)) + " && " + command;
@@ -498,6 +505,7 @@ runs:
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
         node << 'SCRIPT'
         const fs = require("fs");
@@ -513,8 +521,9 @@ runs:
         const baselinePath = process.env.BASELINE_PATH;
         const current = JSON.parse(fs.readFileSync("storysync-current.json", "utf8"));
 
-        // The command that writes the baseline, as the action maps components.
-        let command = "npx storysync map --storybook " + quote(process.env.STORYBOOK_URL);
+        // The command that writes the baseline, as the action maps components,
+        // with the storysync it runs.
+        let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " map --storybook " + quote(process.env.STORYBOOK_URL);
         if (process.env.COMPONENTS) command += " --components " + quote(process.env.COMPONENTS);
         command += " --json > " + quote(baselinePath);
         if (path.dirname(baselinePath) !== ".") command = "mkdir -p " + quote(path.dirname(baselinePath)) + " && " + command;

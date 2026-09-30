@@ -123,11 +123,11 @@ The action installs your project's dependencies, starts Storybook on port 6006, 
 
 ```bash
 mkdir -p .storysync
-npx storysync map --storybook http://localhost:6006 --json > .storysync/baseline.json
-npx storysync tokens --json > .storysync/tokens-baseline.json
+npx storysync@<version> map --storybook http://localhost:6006 --json > .storysync/baseline.json
+npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 ```
 
-and commit them. If you set `components` or `token_source`, pass the same to `map --components` and `tokens --source`. A project with no tokens can leave out the token baseline. Without a baseline, drift is `new` and a warning says it isn't being checked; with `fail_on_drift` the job fails, and the error gives the command that writes the missing baseline. The action's `json` and `tokens_json` outputs hold the same JSON, if you'd rather save it from a run. Once it works for you, pin `@main` to a commit SHA.
+and commit them. `<version>` is the storysync version that matches the ref you use the action at: the `version` in this repository's [`package.json`](package.json) at that ref. The action builds storysync from its ref, and a baseline written by another version can differ from what it maps. Plain `npx storysync` runs whatever npm has: 0.2.0 finds no components with addon-mcp 10.6, so its baseline is empty and never matches. The action's warnings and errors give these commands with the version filled in. Or skip npx and save the action's `json` and `tokens_json` outputs, which hold the JSON it compared. If you set `components` or `token_source`, pass the same to `map --components` and `tokens --source`. A project with no tokens can leave out the token baseline. Without a baseline, drift is `new` and a warning says it isn't being checked; with `fail_on_drift` the job fails, and the error gives the command that writes the missing baseline. Once it works for you, pin `@main` to a commit SHA.
 
 | Input | Default | |
 |---|---|---|
