@@ -47,14 +47,32 @@ export function selectComponents(
 
   const unmatched = wanted.filter(({ key }) => !known.has(key) && !entries.some((e) => matches(e, key)));
   if (unmatched.length) {
-    const available = [...new Set([...entries.map((e) => e.name), ...alsoKnown])].sort().join(", ") || "none";
     throw new Error(
       `--components matched no component named ${unmatched.map(({ name }) => `"${name}"`).join(", ")}. ` +
-      `Available: ${available}`,
+      `Available: ${available([...entries.map((e) => e.name), ...alsoKnown])}`,
     );
   }
 
   return entries.filter((e) => wanted.some(({ key }) => matches(e, key)));
+}
+
+/**
+ * Finds the one component `inspect --component` names, by name or ID, ignoring
+ * case and surrounding space. A name that matches nothing throws, naming what
+ * is available as `selectComponents` does, rather than asking Storybook for the
+ * documentation of a component it never listed.
+ */
+export function findComponent(entries: ComponentEntry[], name: string): ComponentEntry {
+  const key = name.trim().toLowerCase();
+  const match = entries.find((e) => e.id.toLowerCase() === key || e.name.toLowerCase() === key);
+  if (!match) {
+    throw new Error(`No component named "${name.trim()}". Available: ${available(entries.map((e) => e.name))}`);
+  }
+  return match;
+}
+
+function available(names: string[]): string {
+  return [...new Set(names)].sort().join(", ") || "none";
 }
 
 // Derives a Figma-friendly category label from a Storybook ID by stripping

@@ -3,7 +3,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { StorybookClient, selectComponents } from "./storybook.js";
+import { StorybookClient, selectComponents, findComponent } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand } from "./tokens.js";
@@ -20,6 +20,7 @@ import type { TokenBaseline, TokenExtractionResult } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
+import type { ComponentEntry } from "./storybook.js";
 
 async function connectStorybook(url: string, quiet = false) {
   const spinner = quiet ? null : ora("Connecting to Storybook MCP...").start();
@@ -68,19 +69,19 @@ program
     const storybook = await connectStorybook(opts.storybook, json);
     try {
       const spinner = json ? null : ora("Reading components...").start();
-      let entries = await storybook.listComponents();
+      let entries: ComponentEntry[];
+      try {
+        entries = await storybook.listComponents();
+      } catch (err) {
+        spinner?.fail("Failed to read components");
+        throw err;
+      }
       spinner?.succeed(`Found ${entries.length} components`);
 
       if (opts.components) {
         // A typo'd name is an error whatever the flags. Filtered out silently,
         // map would exit 0 with an empty or partial mapping and CI go green.
-        try {
-          entries = selectComponents(entries, (opts.components as string).split(","));
-        } catch (err) {
-          reportError(err, json);
-          process.exitCode = 1;
-          return;
-        }
+        entries = selectComponents(entries, (opts.components as string).split(","));
         if (!json) console.log(chalk.dim(`  Filtered to ${entries.length}`));
       }
 
@@ -126,6 +127,11 @@ program
       }
 
       if (opts.strict && (failed > 0 || capped > 0)) process.exitCode = 1;
+    } catch (err) {
+      // A failed listing (a server without the docs tools, or a tool that
+      // answered with an error) ends the run with its reason, not a stack trace.
+      reportError(err, json);
+      process.exitCode = 1;
     } finally {
       await storybook.disconnect();
     }
@@ -391,6 +397,9 @@ program
         const stories = e.storyIds?.length ? chalk.dim(` (${e.storyIds.length} stories)`) : "";
         console.log(`  ${e.name} ${chalk.dim(e.id)}${stories}`);
       }
+    } catch (err) {
+      reportError(err, false);
+      process.exitCode = 1;
     } finally {
       await storybook.disconnect();
     }
@@ -555,16 +564,14 @@ program
   .command("inspect")
   .description("Show how a component's props map to Figma variants")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .requiredOption("--component <name>", "Component name or ID")
+  .requiredOption("--component <name>", "Component name or ID; a name that matches nothing is an error")
   .action(async (opts) => {
     const storybook = await connectStorybook(opts.storybook);
     try {
-      const entries = await storybook.listComponents();
-      const match = entries.find(
-        (e) => e.id.toLowerCase() === opts.component.toLowerCase() || e.name.toLowerCase() === opts.component.toLowerCase()
-      );
-
-      const component = await storybook.getComponent(match?.id ?? opts.component.toLowerCase(), match?.name ?? opts.component);
+      // A name that matches nothing fails here, naming what exists, before
+      // asking Storybook for the documentation of a component it never listed.
+      const entry = findComponent(await storybook.listComponents(), opts.component as string);
+      const component = await storybook.getComponent(entry.id, entry.name);
       const def = mapComponent(component);
 
       console.log(`\n${chalk.bold(component.name)}\n`);
@@ -577,6 +584,9 @@ program
         }
       }
       console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);
+    } catch (err) {
+      reportError(err, false);
+      process.exitCode = 1;
     } finally {
       await storybook.disconnect();
     }

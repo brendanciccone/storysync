@@ -2,7 +2,7 @@
 // Storybook that fails, end to end against stand-in MCP servers: just enough
 // JSON-RPC over HTTP for Storybook's two documentation tools and Figma's
 // use_figma, so this needs no network, no running Storybook and no Figma file.
-// The acceptance suite checks map against the real Storybook.
+// The acceptance suite checks map and inspect against the real Storybook.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -110,11 +110,17 @@ let standIns: StandIn[] = [];
 let storybook: string;
 /** Storybook whose docs list fails, as addon-mcp 10.6 does when its index can't be built. */
 let listFails: StandIn;
+/** Storybook whose docs list works but whose docs-show fails. */
+let showFails: StandIn;
+/** Storybook without the docs tools, as on Storybook 9 or with the docs toolset off. */
+let noDocs: StandIn;
 
 before(async () => {
   const good = await startStandIn(ADDON_MCP_0_7);
   listFails = await startStandIn(ADDON_MCP_10_6, ["docs-list"]);
-  standIns = [good, listFails];
+  showFails = await startStandIn(ADDON_MCP_10_6, ["docs-show"]);
+  noDocs = await startStandIn(null);
+  standIns = [good, listFails, showFails, noDocs];
   storybook = good.url;
 });
 
@@ -246,4 +252,60 @@ test("diff CLI: a working Storybook reports storybookReadFailed false", async ()
   const r = await diff("--components", "Button", "--json");
   assert.equal(r.status, 0, r.out);
   assert.equal((JSON.parse(r.stdout) as DiffJson).storybookReadFailed, false);
+});
+
+// --- Errors from Storybook end list, map and inspect cleanly ---
+
+/** A Node stack trace: what an uncaught error printed before these commands caught it. */
+const STACK = /^\s+at .+\(.*:\d+:\d+\)$/m;
+
+test("list CLI: a docs list that fails ends with the server's reason and exit 1, not a stack trace", async () => {
+  const r = await run("list", "--storybook", listFails.url);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Storybook MCP tool "docs-list" failed: Storybook index could not be built/);
+  assert.doesNotMatch(r.out, STACK);
+});
+
+test("list CLI: a Storybook without the docs tools gets the setup advice, not a stack trace", async () => {
+  const r = await run("list", "--storybook", noDocs.url);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Storybook MCP is missing the docs tools[\s\S]*storysync init/);
+  assert.doesNotMatch(r.out, STACK);
+});
+
+test("map CLI: a docs list that fails ends with the reason, as JSON under --json", async () => {
+  const text = await run("map", "--storybook", listFails.url);
+  assert.equal(text.status, 1, text.out);
+  assert.match(text.out, /Failed to read components/);
+  assert.match(text.out, /"docs-list" failed: Storybook index could not be built/);
+  assert.doesNotMatch(text.out, STACK);
+
+  const json = await run("map", "--storybook", noDocs.url, "--json");
+  assert.equal(json.status, 1, json.out);
+  assert.match((JSON.parse(json.stdout) as { error: string }).error, /missing the docs tools/);
+});
+
+test("inspect CLI: a name that matches nothing names what exists, without asking for its documentation", async () => {
+  const before = showFails.calls.length;
+  const r = await run("inspect", "--storybook", showFails.url, "--component", "Buton");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /No component named "Buton"\. Available: Button, Card/);
+  assert.doesNotMatch(r.out, STACK);
+  assert.deepEqual(showFails.calls.slice(before), ["docs-list"]);
+});
+
+test("inspect CLI: a docs-show that fails ends with the server's reason, not a stack trace", async () => {
+  const r = await run("inspect", "--storybook", showFails.url, "--component", "Button");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Storybook MCP tool "docs-show" failed: Storybook index could not be built/);
+  assert.doesNotMatch(r.out, STACK);
+});
+
+test("inspect CLI: finds a component by name or ID, ignoring case", async () => {
+  for (const name of ["button", "FORMS-BUTTON"]) {
+    const r = await run("inspect", "--storybook", storybook, "--component", name);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /^Button$/m);
+    assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\]/);
+  }
 });

@@ -8,6 +8,7 @@ import {
   parseStories,
   resolveDocsTools,
   selectComponents,
+  findComponent,
   toolResultText,
   StorybookClient,
   type DocsTools,
@@ -272,4 +273,19 @@ test("selectComponents: names from the other side count as matched without selec
 
 test("selectComponents: an empty Storybook says so rather than listing nothing", () => {
   assert.throws(() => selectComponents([], ["Button"]), /Available: none$/);
+});
+
+// --- findComponent ---
+
+test("findComponent: finds inspect's one component by name or ID, ignoring case and surrounding space", () => {
+  assert.equal(findComponent(ENTRIES, " iconbutton ").id, "forms-icon-button");
+  assert.equal(findComponent(ENTRIES, "DATA-DISPLAY-CARD").name, "Card");
+});
+
+test("findComponent: a name that matches nothing throws, listing what exists as selectComponents does", () => {
+  assert.throws(
+    () => findComponent(ENTRIES, "Buton"),
+    { message: 'No component named "Buton". Available: Button, Card, IconButton' },
+  );
+  assert.throws(() => findComponent([], "Button"), /Available: none$/);
 });

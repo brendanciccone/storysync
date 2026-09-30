@@ -414,10 +414,26 @@ async function main() {
   });
 
   await check("map selects by name or ID, ignoring case, as snap does", () => {
-    const r = cli(["map", "--storybook", STORYBOOK, "--components", " button ", "--json"]);
+    // Button by name, Frozen by its ID, each in the wrong case.
+    const r = cli(["map", "--storybook", STORYBOOK, "--components", " button ,FORMS-FROZEN", "--json"]);
     assert(r.status === 0, `map exited ${r.status}\n${r.out.trim()}`);
-    const names = JSON.parse(r.out).components.map((c) => c.name);
-    assert(names.length === 1 && names[0] === "Button", `selected ${names.join(", ") || "nothing"}`);
+    const names = JSON.parse(r.out).components.map((c) => c.name).sort();
+    assert(names.join(", ") === "Button, Frozen", `selected ${names.join(", ") || "nothing"}`);
+  });
+
+  heading("Inspect guards");
+
+  await check("inspect rejects a misspelled --component, naming what exists", () => {
+    const r = cli(["inspect", "--storybook", STORYBOOK, "--component", "Buton"]);
+    assert(r.status === 1, `inspect exited ${r.status}\n${r.out.trim()}`);
+    assert(/No component named "Buton"\. Available: .*Button/.test(r.out), `error does not name the typo and what exists\n${r.out.trim()}`);
+    assert(!/^\s+at /m.test(r.out), `printed a stack trace\n${r.out.trim()}`);
+  });
+
+  await check("inspect reads a component by ID, ignoring case", () => {
+    const r = cli(["inspect", "--storybook", STORYBOOK, "--component", "FORMS-BUTTON"]);
+    assert(r.status === 0, `inspect exited ${r.status}\n${r.out.trim()}`);
+    assert(/variant \(union\) -> VARIANT \[primary, danger, outline\]/.test(r.out), `variant not mapped\n${r.out.trim()}`);
   });
 
   heading("Round trip through the shipped skill template");

@@ -437,7 +437,8 @@ Inspect one component's props and show how each maps to Figma.
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --component <name>     Component name or ID to inspect (required)
+  --component <name>     Component name or ID to inspect (required);
+                         a name that matches nothing is an error
 ```
 
 ## Limitations
