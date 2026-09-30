@@ -424,6 +424,7 @@ Options:
   --mode <name>          Figma variable mode to read (default: each collection's first mode)
   --components <names>   Comma-separated component names or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
+                         when both were read
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails
 ```

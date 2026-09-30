@@ -246,6 +246,12 @@ test("diff CLI: when Storybook can't be listed, a --components name is not rejec
   assert.match(r.out, /"docs-list" failed/);
   assert.doesNotMatch(r.out, /matched no component/);
   assert.match(r.out, /component results are partial/);
+  // Figma has no forms-button, so nothing is left to diff: the run must not
+  // read as clean, and only the failed read can fail --strict.
+  assert.doesNotMatch(r.out, /No differences found|No components to diff/);
+  const strict = await diffWith(listFails.url, "--components", "forms-button", "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  assert.equal((JSON.parse(strict.stdout) as DiffJson).storybookReadFailed, true);
 });
 
 test("diff CLI: a working Storybook reports storybookReadFailed false", async () => {
