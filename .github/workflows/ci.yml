@@ -52,8 +52,9 @@ jobs:
         run: pnpm test
 
   # Runs the drift-check action the way a consumer does, against the example
-  # project: install from its lockfile, start its Storybook, map it. With no
-  # baseline committed, drift has to come back `new`.
+  # project: install from its lockfile, start its Storybook, map it, compare.
+  # Twice: with no baseline, drift has to come back `new`; against the
+  # committed one, `false`, with fail_on_drift failing the job otherwise.
   action-smoke:
     runs-on: ubuntu-latest
     permissions:
@@ -64,22 +65,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - id: storysync
+      - id: no-baseline
         uses: ./action
         with:
           working_directory: examples/storybook-vite
+          baseline: .storysync/missing.json
 
-      - name: Check the action's outputs
+      - name: Check the outputs without a baseline
         env:
-          DRIFT: ${{ steps.storysync.outputs.drift }}
-          TOKEN_DRIFT: ${{ steps.storysync.outputs.token_drift }}
-          MAP_JSON: ${{ steps.storysync.outputs.json }}
-          TOKENS_JSON: ${{ steps.storysync.outputs.tokens_json }}
+          DRIFT: ${{ steps.no-baseline.outputs.drift }}
+          TOKEN_DRIFT: ${{ steps.no-baseline.outputs.token_drift }}
+          MAP_JSON: ${{ steps.no-baseline.outputs.json }}
+          TOKENS_JSON: ${{ steps.no-baseline.outputs.tokens_json }}
         run: |
           set -euo pipefail
           echo "drift=$DRIFT token_drift=$TOKEN_DRIFT"
           if [ "$DRIFT" != new ]; then
-            echo "::error::drift is '$DRIFT', expected 'new': the example has no baseline"
+            echo "::error::drift is '$DRIFT', expected 'new': there is no baseline at .storysync/missing.json"
             exit 1
           fi
           # none while the example has no token source, new once it has one.
@@ -100,3 +102,29 @@ jobs:
             if (!names.includes("Button")) throw new Error("json does not list Button");
             if (map.summary.failed) throw new Error(map.summary.failed + " component(s) failed to map");
           '
+
+      # examples/storybook-vite/.storysync/baseline.json is `storysync map
+      # --json` of the example, so a change to its components or stories has
+      # to regenerate it, with the command this step's failure gives.
+      - id: baseline
+        uses: ./action
+        with:
+          working_directory: examples/storybook-vite
+          fail_on_drift: 'true'
+
+      - name: Check the outputs against the baseline
+        env:
+          DRIFT: ${{ steps.baseline.outputs.drift }}
+          TOKEN_DRIFT: ${{ steps.baseline.outputs.token_drift }}
+        run: |
+          set -euo pipefail
+          echo "drift=$DRIFT token_drift=$TOKEN_DRIFT"
+          if [ "$DRIFT" != false ]; then
+            echo "::error::drift is '$DRIFT', expected 'false' against examples/storybook-vite/.storysync/baseline.json"
+            exit 1
+          fi
+          # With fail_on_drift, a token_drift of new would have failed the action.
+          if [ "$TOKEN_DRIFT" != none ] && [ "$TOKEN_DRIFT" != false ]; then
+            echo "::error::token_drift is '$TOKEN_DRIFT', expected 'none' or 'false'"
+            exit 1
+          fi

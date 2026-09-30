@@ -30,9 +30,12 @@ yarn-error.log*
 # local settings
 .claude/*.local.json
 
-# storysync output written when developing against a local Storybook
-.storysync/
+# storysync output written when developing against a local Storybook.
+# Its contents rather than the directory, so a file in it can be let back in.
+**/.storysync/*
 
-# example project dependencies and output
+# example project dependencies
 examples/*/node_modules/
-examples/*/.storysync/
+
+# the baseline CI runs the drift-check action against
+!examples/storybook-vite/.storysync/baseline.json
