@@ -13,6 +13,50 @@ export interface ComponentEntry {
   storyIds?: string[];
 }
 
+/** The names in a `--components` list, trimmed, with empty entries dropped. */
+export function componentNames(names: readonly string[] | undefined): string[] {
+  return (names ?? []).map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Narrows a component list to the names given with `--components`, as snap,
+ * map and diff all do. A name matches a component's name or its ID, ignoring
+ * case. A list with no names in it selects everything, as leaving the flag off
+ * does, rather than nothing.
+ *
+ * A name that matches nothing is a typo, not a request for zero components.
+ * Left to filter silently it produces an empty run that still exits cleanly,
+ * so the whole pipeline goes green having checked nothing — and a partial typo
+ * is worse, because the run looks populated. So it throws, naming what is
+ * available.
+ *
+ * `alsoKnown` names count as matched without selecting an entry: diff passes
+ * Figma's components, since a name found only there is a difference to report
+ * rather than a typo.
+ */
+export function selectComponents(
+  entries: ComponentEntry[],
+  names: readonly string[] | undefined,
+  alsoKnown: readonly string[] = [],
+): ComponentEntry[] {
+  const wanted = componentNames(names).map((name) => ({ name, key: name.toLowerCase() }));
+  if (!wanted.length) return entries;
+  const matches = (e: ComponentEntry, key: string) =>
+    e.name.toLowerCase() === key || e.id.toLowerCase() === key;
+  const known = new Set(alsoKnown.map((n) => n.toLowerCase()));
+
+  const unmatched = wanted.filter(({ key }) => !known.has(key) && !entries.some((e) => matches(e, key)));
+  if (unmatched.length) {
+    const available = [...new Set([...entries.map((e) => e.name), ...alsoKnown])].sort().join(", ") || "none";
+    throw new Error(
+      `--components matched no component named ${unmatched.map(({ name }) => `"${name}"`).join(", ")}. ` +
+      `Available: ${available}`,
+    );
+  }
+
+  return entries.filter((e) => wanted.some(({ key }) => matches(e, key)));
+}
+
 // Derives a Figma-friendly category label from a Storybook ID by stripping
 // the kebab-cased component name from the end. Storybook IDs are
 // `kebab(title)`, so `ui-icon-button` for component `IconButton` yields

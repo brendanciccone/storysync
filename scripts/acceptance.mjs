@@ -405,6 +405,21 @@ async function main() {
     assert(r.status !== 0, "exited 0 with Buton silently dropped");
   });
 
+  heading("Map guards");
+
+  await check("map rejects a misspelled --components name the same way", () => {
+    const r = cli(["map", "--storybook", STORYBOOK, "--components", "Button,Buton"]);
+    assert(r.status === 1, `map exited ${r.status} with Buton silently dropped`);
+    assert(/no component named "Buton"\. Available: .*Button/.test(r.out), `error does not name the typo and what exists\n${r.out.trim()}`);
+  });
+
+  await check("map selects by name or ID, ignoring case, as snap does", () => {
+    const r = cli(["map", "--storybook", STORYBOOK, "--components", " button ", "--json"]);
+    assert(r.status === 0, `map exited ${r.status}\n${r.out.trim()}`);
+    const names = JSON.parse(r.out).components.map((c) => c.name);
+    assert(names.length === 1 && names[0] === "Button", `selected ${names.join(", ") || "nothing"}`);
+  });
+
   heading("Round trip through the shipped skill template");
 
   const perfect = join(WORK, "readback-perfect.json");

@@ -256,7 +256,8 @@ Map all components to Figma variant definitions.
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --components <names>   Comma-separated component names (default: all)
+  --components <names>   Comma-separated component names or IDs (default: all);
+                         a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any component fails or is capped
@@ -379,7 +380,8 @@ Options:
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted)
   --mode <name>          Figma variable mode to read (default: each collection's first mode)
-  --components <names>   Comma-separated component names to diff
+  --components <names>   Comma-separated component names or IDs to diff, with --storybook
+                         (default: all); a name in neither Storybook nor Figma is an error
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any differences found or Figma reads fail
 ```
@@ -393,6 +395,8 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
 # Diff tokens + components
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
 ```
+
+`--components` narrows both sides. Storybook components are selected as `snap` and `map` select them, and Figma's to the same names, so a component left out of the diff is not reported as missing from code. A name only Figma has is not a typo: it is reported as not in code, which fails `--strict`, since that is the answer to asking about it. A name neither side has is an error whatever the flags, as is `--components` without `--storybook`.
 
 ### `storysync inspect`
 

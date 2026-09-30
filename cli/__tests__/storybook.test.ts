@@ -7,6 +7,7 @@ import {
   deriveCategoryFromId,
   parseStories,
   resolveDocsTools,
+  selectComponents,
   toolResultText,
   StorybookClient,
   type DocsTools,
@@ -225,4 +226,50 @@ test("StorybookClient: an unknown component ID is an error, not a component with
   } finally {
     await client.disconnect();
   }
+});
+
+// --- selectComponents ---
+// Shared by snap, map and diff, so a --components list means the same thing
+// to each of them.
+
+const ENTRIES = [
+  { id: "forms-button", name: "Button" },
+  { id: "forms-icon-button", name: "IconButton" },
+  { id: "data-display-card", name: "Card" },
+];
+
+test("selectComponents: matches a name or an ID, ignoring case and surrounding space", () => {
+  const picked = selectComponents(ENTRIES, [" button", "DATA-DISPLAY-CARD "]);
+  assert.deepEqual(picked.map((e) => e.name), ["Button", "Card"]);
+});
+
+test("selectComponents: no list, or a list of only empty entries, selects everything", () => {
+  assert.equal(selectComponents(ENTRIES, undefined), ENTRIES);
+  // `--components ","` used to filter to nothing and pass; it names nothing,
+  // so it means what leaving the flag off means.
+  assert.equal(selectComponents(ENTRIES, ["", " "]), ENTRIES);
+  assert.deepEqual(selectComponents(ENTRIES, ["Card", ""]).map((e) => e.name), ["Card"]);
+});
+
+test("selectComponents: a name that matches nothing throws, quoting it as typed and listing what exists", () => {
+  assert.throws(
+    () => selectComponents(ENTRIES, ["Buton"]),
+    { message: '--components matched no component named "Buton". Available: Button, Card, IconButton' },
+  );
+});
+
+test("selectComponents: a partial typo throws rather than silently dropping the name", () => {
+  assert.throws(() => selectComponents(ENTRIES, ["Button", "Crad", "Card"]), /no component named "Crad"\./);
+});
+
+test("selectComponents: names from the other side count as matched without selecting anything", () => {
+  assert.deepEqual(selectComponents(ENTRIES, ["Button", "Badge"], ["Badge"]).map((e) => e.name), ["Button"]);
+  assert.throws(
+    () => selectComponents(ENTRIES, ["Bdage"], ["Badge", "Button"]),
+    { message: '--components matched no component named "Bdage". Available: Badge, Button, Card, IconButton' },
+  );
+});
+
+test("selectComponents: an empty Storybook says so rather than listing nothing", () => {
+  assert.throws(() => selectComponents([], ["Button"]), /Available: none$/);
 });

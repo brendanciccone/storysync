@@ -3,11 +3,11 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { StorybookClient } from "./storybook.js";
+import { StorybookClient, selectComponents } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift } from "./tokens.js";
-import { diffTokens, diffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { diffTokens, diffComponents, selectDiffComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
@@ -38,6 +38,12 @@ async function connectStorybook(url: string, quiet = false) {
 const program = new Command();
 program.name("storysync").description("Sync design tokens and Storybook components to Figma").version(VERSION);
 
+/** Prints an error that ends a command: as JSON on stdout under --json, so the output still parses. */
+function reportError(err: unknown, json: boolean): void {
+  if (json) console.log(JSON.stringify({ error: String(err) }));
+  else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+}
+
 /** Parses --max-combinations, exiting with a clear message on anything but a positive integer. */
 function parseMaxCombinations(value: unknown): number {
   const n = Number(value);
@@ -52,7 +58,7 @@ program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .option("--components <names>", "Comma-separated component names")
+  .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--strict", "Exit with code 1 if any component fails or is capped")
@@ -66,8 +72,15 @@ program
       spinner?.succeed(`Found ${entries.length} components`);
 
       if (opts.components) {
-        const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
-        entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
+        // A typo'd name is an error whatever the flags. Filtered out silently,
+        // map would exit 0 with an empty or partial mapping and CI go green.
+        try {
+          entries = selectComponents(entries, (opts.components as string).split(","));
+        } catch (err) {
+          reportError(err, json);
+          process.exitCode = 1;
+          return;
+        }
         if (!json) console.log(chalk.dim(`  Filtered to ${entries.length}`));
       }
 
@@ -212,8 +225,7 @@ program
         process.exitCode = 1;
       }
     } catch (err) {
-      if (json) console.log(JSON.stringify({ error: String(err) }));
-      else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+      reportError(err, json);
       process.exitCode = 1;
     } finally {
       await storybook.disconnect();
@@ -361,8 +373,7 @@ program
         process.exitCode = 1;
       }
     } catch (err) {
-      if (json) console.log(JSON.stringify({ error: String(err) }));
-      else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+      reportError(err, json);
       process.exitCode = 1;
     }
   });
@@ -540,11 +551,18 @@ program
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
-  .option("--components <names>", "Comma-separated component names to diff")
+  .option("--components <names>", "Comma-separated component names or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any differences found or Figma reads fail")
   .action(async (opts) => {
     const json = !!opts.json;
+
+    // Without --storybook there is no component diff for --components to
+    // narrow, so the flag would be ignored and the run pass having diffed none.
+    if (opts.components && !opts.storybook) {
+      console.error(chalk.red("--components selects the components to diff, which needs --storybook"));
+      process.exit(1);
+    }
 
     // Connect to Figma MCP
     const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
@@ -605,16 +623,26 @@ program
         if (!componentReadFailed) {
           const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
           let entries: Awaited<ReturnType<StorybookClient["listComponents"]>> = [];
+          let listed = false;
           try {
             entries = await storybook.listComponents();
+            listed = true;
           } catch (err) {
             mapSpinner?.fail("Failed to list Storybook components");
             console.error(chalk.red(String(err)));
             if (opts.strict) process.exitCode = 1;
           }
-          if (opts.components) {
-            const filter = new Set((opts.components as string).split(",").map((s: string) => s.trim().toLowerCase()));
-            entries = entries.filter((e) => filter.has(e.name.toLowerCase()) || filter.has(e.id.toLowerCase()));
+          // Names are checked only against a list that was read: when listing
+          // failed, that is the error, and every name would look like a typo.
+          if (listed && opts.components) {
+            try {
+              ({ entries, figmaComponents } = selectDiffComponents(entries, figmaComponents, (opts.components as string).split(",")));
+            } catch (err) {
+              mapSpinner?.stop();
+              reportError(err, json);
+              process.exitCode = 1;
+              return;
+            }
           }
 
           const codeComponents: FigmaComponentDefinition[] = [];

@@ -7,6 +7,7 @@ import {
   figmaCollectionToCategory,
   diffTokens,
   diffComponents,
+  selectDiffComponents,
   computeDiffSummary,
   hasDifferences,
 } from "../diff.js";
@@ -341,4 +342,56 @@ test("diffComponents: two code components sharing a bare name are flagged, not s
   assert.equal(ambiguous.length, 1);
   assert.match(ambiguous[0].details.join(" "), /share this name/);
   assert.equal(hasDifferences(computeDiffSummary([], entries)), true);
+});
+
+// --- selectDiffComponents ---
+
+const STORYBOOK = [
+  { id: "forms-button", name: "Button" },
+  { id: "data-display-card", name: "Card" },
+];
+
+function figmaComponent(name: string): FigmaComponentInfo {
+  return { name, variantProperties: [], variantCount: 1 };
+}
+
+const FIGMA = [figmaComponent("Button"), figmaComponent("Card"), figmaComponent("Badge")];
+
+/** Diffs the selection the way the diff command does, with no variant props on either side. */
+function diffSelection(names: string[]) {
+  const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, names);
+  const code = entries.map((e) => ({ name: e.name, variantProperties: [], variantCombinations: [], wasCapped: false }));
+  return diffComponents(code, figmaComponents);
+}
+
+test("selectDiffComponents: narrows Figma too, so unselected components are not reported missing from code", () => {
+  // Card is in code; it was only left out of the diff. Reporting it (and Badge)
+  // as figma_only made `diff --components Button --strict` fail on any file
+  // holding more than Button.
+  const diffs = diffSelection(["Button"]);
+  assert.deepEqual(diffs.map((d) => [d.name, d.status]), [["Button", "match"]]);
+});
+
+test("selectDiffComponents: a name picked by Storybook ID carries over to Figma by name", () => {
+  const diffs = diffSelection(["data-display-card"]);
+  assert.deepEqual(diffs.map((d) => [d.name, d.status]), [["Card", "match"]]);
+});
+
+test("selectDiffComponents: a name only Figma has is reported as not in code, not rejected as a typo", () => {
+  const diffs = diffSelection(["Button", "badge"]);
+  assert.deepEqual(diffs.map((d) => [d.name, d.status]), [["Button", "match"], ["Badge", "figma_only"]]);
+  assert.equal(hasDifferences(computeDiffSummary([], diffs)), true);
+});
+
+test("selectDiffComponents: a name neither side has is an error listing both sides", () => {
+  assert.throws(
+    () => selectDiffComponents(STORYBOOK, FIGMA, ["Button", "Buton"]),
+    { message: '--components matched no component named "Buton". Available: Badge, Button, Card' },
+  );
+});
+
+test("selectDiffComponents: no names leaves both sides whole", () => {
+  const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, [" "]);
+  assert.equal(entries, STORYBOOK);
+  assert.equal(figmaComponents, FIGMA);
 });

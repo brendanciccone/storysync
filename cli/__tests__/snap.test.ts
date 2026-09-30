@@ -77,7 +77,7 @@ test("runSnap: a --components name that matches nothing is an error, not an empt
         } as never,
         launch: launchShouldNotHappen as never,
       }),
-      /matched no component named "nonexistent".*Available: Button/s,
+      /matched no component named "Nonexistent".*Available: Button/s,
     );
 
     // Nothing was written, so no stale snap is left behind to be scored later.
@@ -100,7 +100,7 @@ test("runSnap: a partial --components typo fails rather than silently dropping t
         } as never,
         launch: launchShouldNotHappen as never,
       }),
-      /matched no component named "buton"/,
+      /matched no component named "Buton"/,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

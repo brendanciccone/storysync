@@ -3,6 +3,8 @@
 import type { TokenCollection, TokenCategory } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
+import { componentNames, selectComponents } from "./storybook.js";
+import type { ComponentEntry } from "./storybook.js";
 
 // --- Token diff ---
 
@@ -274,6 +276,30 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
 }
 
 // --- Component diffing ---
+
+/**
+ * Narrows both sides of a component diff to the names given with `--components`.
+ *
+ * Storybook components are selected exactly as snap and map select them. A
+ * name found only in Figma is not a typo, though: it asks whether that
+ * component exists in code yet, and the answer is a `figma_only` entry, which
+ * fails `--strict`. So only a name neither side has is an error.
+ *
+ * Figma is narrowed to the same components, by name — including those picked
+ * by Storybook ID. Left whole, every Figma component outside the selection
+ * would be reported as missing from code when it was only left out of the diff.
+ */
+export function selectDiffComponents(
+  entries: ComponentEntry[],
+  figmaComponents: FigmaComponentInfo[],
+  names: readonly string[] | undefined,
+): { entries: ComponentEntry[]; figmaComponents: FigmaComponentInfo[] } {
+  const selected = selectComponents(entries, names, figmaComponents.map((c) => c.name));
+  const wanted = componentNames(names);
+  if (!wanted.length) return { entries, figmaComponents };
+  const keep = new Set([...wanted, ...selected.map((e) => e.name)].map((n) => n.toLowerCase()));
+  return { entries: selected, figmaComponents: figmaComponents.filter((c) => keep.has(c.name.toLowerCase())) };
+}
 
 export function diffComponents(
   codeComponents: FigmaComponentDefinition[],

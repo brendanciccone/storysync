@@ -11,6 +11,7 @@ import { VERSION } from "./version.js";
 import { mapComponent, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
+import { selectComponents } from "./storybook.js";
 import type { ComponentEntry, StorybookClient } from "./storybook.js";
 import {
   normalizeStyles, encodeStoryArgs, buildStoryUrl,
@@ -267,7 +268,9 @@ export function detectFontSubstitution(component: SnapComponent): string | null 
 
 export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapResult> {
   const progress = deps.onProgress ?? (() => {});
-  const entries = await listSelectedComponents(deps.storybook, opts.components);
+  // A typo'd name throws here rather than filtering to nothing, which would
+  // still stamp a fresh `measuredAt` over an empty snap.
+  const entries = selectComponents(await deps.storybook.listComponents(), opts.components);
 
   const components: SnapComponent[] = [];
 
@@ -332,32 +335,6 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   writeStylesJson(opts.outDir, result);
   writeMetaJson(opts.outDir, result, new Date(deps.now?.() ?? Date.now()).toISOString());
   return result;
-}
-
-async function listSelectedComponents(
-  storybook: StorybookClient,
-  filter?: string[],
-): Promise<ComponentEntry[]> {
-  const entries = await storybook.listComponents();
-  if (!filter?.length) return entries;
-  const wanted = filter.map((s) => s.trim().toLowerCase()).filter(Boolean);
-  const matches = (e: ComponentEntry, name: string) =>
-    e.name.toLowerCase() === name || e.id.toLowerCase() === name;
-
-  // A name that matches nothing is a typo, not a request for zero components.
-  // Left to filter silently it produces an empty snap that still stamps a
-  // fresh `measuredAt`, so the whole pipeline goes green having measured
-  // nothing — and a partial typo is worse, because the run looks populated.
-  const unmatched = wanted.filter((name) => !entries.some((e) => matches(e, name)));
-  if (unmatched.length) {
-    const available = entries.map((e) => e.name).sort().join(", ") || "none";
-    throw new Error(
-      `--components matched no component named ${unmatched.map((n) => `"${n}"`).join(", ")}. ` +
-      `Available: ${available}`,
-    );
-  }
-
-  return entries.filter((e) => wanted.some((name) => matches(e, name)));
 }
 
 async function snapComponent(
