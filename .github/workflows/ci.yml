@@ -55,6 +55,8 @@ jobs:
   # project: install from its lockfile, start its Storybook, map it, compare.
   # Twice: with no baseline, drift has to come back `new`; against the
   # committed one, `false`, with fail_on_drift failing the job otherwise.
+  # Then twice more, reusing the install, where the action has to fail:
+  # fail_on_drift with no baseline, and port 6006 already taken.
   action-smoke:
     runs-on: ubuntu-latest
     permissions:
@@ -132,3 +134,68 @@ jobs:
             echo "::error::token_drift is '$TOKEN_DRIFT', expected 'none' or 'false'"
             exit 1
           fi
+
+      # With nothing to compare against, fail_on_drift has to fail: a green
+      # job would mean a misnamed baseline passes forever.
+      - id: missing-baseline
+        uses: ./action
+        continue-on-error: true
+        with:
+          working_directory: examples/storybook-vite
+          install_command: 'true'
+          baseline: .storysync/missing.json
+          fail_on_drift: 'true'
+
+      - name: Check the action failed without a baseline
+        env:
+          OUTCOME: ${{ steps.missing-baseline.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != failure ]; then
+            echo "::error::the action's outcome is '$OUTCOME', expected 'failure': fail_on_drift has to fail when there is no baseline at .storysync/missing.json"
+            exit 1
+          fi
+
+      # Something else on 6006: the action has to fail at Start Storybook
+      # rather than map whatever answers there.
+      - id: port-server
+        name: Serve something else on port 6006
+        run: |
+          python3 -m http.server 6006 --bind 127.0.0.1 --directory "$RUNNER_TEMP" > /dev/null 2>&1 &
+          echo "pid=$!" >> "$GITHUB_OUTPUT"
+          for _ in $(seq 1 20); do
+            if curl -fs -o /dev/null http://localhost:6006; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "::error::python3 -m http.server didn't start serving on port 6006"
+          exit 1
+
+      - id: port-taken
+        uses: ./action
+        continue-on-error: true
+        with:
+          working_directory: examples/storybook-vite
+          install_command: 'true'
+
+      - name: Check the action failed on the taken port
+        env:
+          OUTCOME: ${{ steps.port-taken.outcome }}
+          SERVER_PID: ${{ steps.port-server.outputs.pid }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != failure ]; then
+            echo "::error::the action's outcome is '$OUTCOME', expected 'failure': something else was already serving port 6006"
+            exit 1
+          fi
+          if ! kill -0 "$SERVER_PID" 2> /dev/null; then
+            echo "::error::the server on port 6006 is gone: the action should have left it alone"
+            exit 1
+          fi
+
+      - name: Stop the server on port 6006
+        if: always() && steps.port-server.outputs.pid != ''
+        env:
+          SERVER_PID: ${{ steps.port-server.outputs.pid }}
+        run: kill "$SERVER_PID" 2> /dev/null || true
