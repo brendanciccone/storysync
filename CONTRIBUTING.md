@@ -16,12 +16,7 @@ pnpm test
 
 This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time — defense against npm supply-chain attacks like Shai-Hulud.
 
-One-time install:
-
-```bash
-curl -fsSL https://safechain.aikido.dev/install.sh | bash
-# then restart your terminal
-```
+Install it once with the command in [its README's Installation section](https://github.com/AikidoSec/safe-chain#installation). It downloads the install script from a pinned release and checks its SHA-256 before running it. The version and checksum change with every release, so copy the command from there. Then restart your terminal, and `pnpm safe-chain-verify` should print `OK: Safe-chain works!`.
 
 No tokens or config required. Free and open source.
 
