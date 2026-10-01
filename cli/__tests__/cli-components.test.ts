@@ -328,3 +328,66 @@ test("inspect CLI: finds a component by name or ID, ignoring case", async () => 
     assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\]/);
   }
 });
+
+// --- A Storybook or Figma that can't be reached ---
+
+/** A URL nothing answers at: a port the system handed out and has taken back. */
+async function unreachable(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return `http://127.0.0.1:${port}`;
+}
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("map, snap and diff CLI: a Storybook that can't be reached is an error that parses under --json", async () => {
+  // The reason went only to stderr, so a script piping the output to jq got
+  // nothing at all to parse.
+  const url = await unreachable();
+  const out = mkdtempSync(join(tmpdir(), "storysync-unreachable-"));
+  try {
+    for (const command of [["map"], ["snap", "--out", out]]) {
+      const r = await run(...command, "--storybook", url, "--json");
+      assert.equal(r.status, 1, r.out);
+      const data = JSON.parse(r.stdout) as { error?: string };
+      assert.match(data.error ?? "", new RegExp(`^Error: Failed to connect to Storybook MCP at ${escapeRegExp(url)}: \\S`), command[0]);
+    }
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+
+  // Figma is reached, so Storybook is the server it names.
+  const r = await diffWith(url, "--json");
+  assert.equal(r.status, 1, r.out);
+  assert.match((JSON.parse(r.stdout) as { error?: string }).error ?? "", new RegExp(`^Error: Failed to connect to Storybook MCP at ${escapeRegExp(url)}: \\S`));
+});
+
+test("diff CLI: a Figma that can't be reached is an error that parses under --json", async () => {
+  const url = `${await unreachable()}/mcp`;
+  const r = await run("diff", "--figma", url, "--file-key", "x", "--storybook", storybook, "--json");
+  assert.equal(r.status, 1, r.out);
+  assert.match((JSON.parse(r.stdout) as { error?: string }).error ?? "", new RegExp(`^Error: Failed to connect to Figma MCP at ${escapeRegExp(url)}: \\S`));
+});
+
+test("list, inspect, map, snap and diff CLI: a Storybook that can't be reached fails on stderr without --json", async () => {
+  const url = await unreachable();
+  const out = mkdtempSync(join(tmpdir(), "storysync-unreachable-"));
+  try {
+    for (const command of [["list"], ["inspect", "--component", "Button"], ["map"], ["snap", "--out", out]]) {
+      const r = await run(...command, "--storybook", url);
+      assert.equal(r.status, 1, r.out);
+      assert.equal(r.stdout, "", command[0]);
+      assert.match(r.out, /Failed to connect to Storybook MCP/, command[0]);
+      assert.doesNotMatch(r.out, STACK, command[0]);
+    }
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+
+  const r = await diffWith(url);
+  assert.equal(r.status, 1, r.out);
+  assert.equal(r.stdout, "");
+  assert.match(r.out, /Connected to Figma MCP[\s\S]*Failed to connect to Storybook MCP/);
+});

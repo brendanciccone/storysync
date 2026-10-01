@@ -238,6 +238,8 @@ If no matching CSS variable is found (and no fallback is provided), the raw `var
 
 The CLI exists for two purposes: **setup** (the `init` and `setup` commands wire your project up for an AI client) and **preview / CI** (the `tokens`, `map`, `list`, `inspect`, and `diff` commands give you deterministic output you can inspect locally or run in GitHub Actions). Day-to-day Figma syncing happens through the AI client using the skill + slash commands above — the CLI does not write to Figma directly.
 
+A command that can't reach Storybook, or `diff` Figma, exits 1. Under `--json` it says why on stdout, as `{"error": "Failed to connect to Storybook MCP at <url>: ..."}`, so a script reading the output still gets JSON to parse.
+
 ### `storysync init`
 
 Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version (10.1+ required for component sync), whether `@storybook/addon-mcp` is installed, and whether it's registered in `addons` — then prompts before applying each fix to your `.storybook/main.ts`.

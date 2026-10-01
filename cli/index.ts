@@ -22,18 +22,35 @@ import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
 import type { ComponentEntry } from "./storybook.js";
 
-async function connectStorybook(url: string, quiet = false) {
-  const spinner = quiet ? null : ora("Connecting to Storybook MCP...").start();
-  const client = new StorybookClient(url);
+/**
+ * Connects to a Storybook or Figma MCP server, or ends the run with exit code
+ * 1 when it can't be reached. Under --json the reason is printed as JSON on
+ * stdout, as reportError prints one, naming the server, since no spinner says
+ * which failed. On stderr alone, a script piping the output to jq got nothing
+ * to parse. It exits rather than returning, since a transport that failed to
+ * connect can leave a reconnect timer running, and only after stdout has taken
+ * the JSON: on a pipe the write can still be pending when the process exits.
+ */
+async function connectMcp<T extends { connect(): Promise<void> }>(client: T, server: string, url: string, json: boolean): Promise<T> {
+  const spinner = json ? null : ora(`Connecting to ${server}...`).start();
   try {
     await client.connect();
-    spinner?.succeed("Connected to Storybook MCP");
+    spinner?.succeed(`Connected to ${server}`);
     return client;
   } catch (err) {
-    spinner?.fail("Failed to connect to Storybook MCP");
-    console.error(chalk.red(String(err)));
+    spinner?.fail(`Failed to connect to ${server}`);
+    if (json) {
+      const error = new Error(`Failed to connect to ${server} at ${url}: ${err instanceof Error ? err.message : String(err)}`);
+      await new Promise<void>((resolve) => process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`, () => resolve()));
+    } else {
+      console.error(chalk.red(String(err)));
+    }
     process.exit(1);
   }
+}
+
+function connectStorybook(url: string, json = false): Promise<StorybookClient> {
+  return connectMcp(new StorybookClient(url), "Storybook MCP", url, json);
 }
 
 const program = new Command();
@@ -637,17 +654,7 @@ program
       return;
     }
 
-    // Connect to Figma MCP
-    const figmaSpinner = json ? null : ora("Connecting to Figma MCP...").start();
-    const figma = new FigmaClient(opts.figma as string);
-    try {
-      await figma.connect();
-      figmaSpinner?.succeed("Connected to Figma MCP");
-    } catch (err) {
-      figmaSpinner?.fail("Failed to connect to Figma MCP");
-      console.error(chalk.red(String(err)));
-      process.exit(1);
-    }
+    const figma = await connectMcp(new FigmaClient(opts.figma as string), "Figma MCP", opts.figma as string, json);
 
     // Optionally connect to Storybook MCP
     let storybook: StorybookClient | null = null;
