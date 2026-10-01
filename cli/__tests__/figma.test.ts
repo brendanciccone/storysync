@@ -6,10 +6,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import type { Server } from "node:http";
-import { FigmaClient, RESPONSE_GUARD } from "../figma.js";
+import { FigmaClient, FigmaRateLimitError, RESPONSE_GUARD } from "../figma.js";
 import type { FigmaComponentInfo } from "../figma.js";
 import { startFigmaStandIn, useFigma, set, component, frame, divider, pageId, CODE_LIMIT, RESPONSE_LIMIT } from "./figma-standin.js";
-import type { FileSpec, UseFigmaCall } from "./figma-standin.js";
+import type { FileSpec, RateLimit, UseFigmaCall } from "./figma-standin.js";
 
 const servers: Server[] = [];
 
@@ -18,8 +18,8 @@ after(() => {
 });
 
 /** Connects a FigmaClient to a stand-in serving `file`, runs `read`, and returns what it read or threw, with every call made. */
-async function read<T>(file: Parameters<typeof startFigmaStandIn>[0], what: (client: FigmaClient) => Promise<T>) {
-  const standIn = await startFigmaStandIn(file);
+async function read<T>(file: Parameters<typeof startFigmaStandIn>[0], what: (client: FigmaClient) => Promise<T>, limit?: RateLimit) {
+  const standIn = await startFigmaStandIn(file, limit);
   servers.push(standIn.server);
   const client = new FigmaClient(standIn.url);
   await client.connect();
@@ -34,7 +34,7 @@ async function read<T>(file: Parameters<typeof startFigmaStandIn>[0], what: (cli
 
 const components = (client: FigmaClient) => client.getComponents("file-key");
 
-/** The calls that read a page's components: those that switch page. */
+/** The calls that read a page's components on their own: those that switch page. */
 const pageCalls = (calls: UseFigmaCall[], id?: string) => calls.filter((c) => c.switches.length && (!id || c.switches[0] === id));
 
 // A library as the push leaves one: each Storybook category on its own page,
@@ -60,20 +60,22 @@ test("getComponents: finds the components on every page, a page a call, switchin
   const { result, error, calls } = await read(LIBRARY, components);
   assert.equal(error, null);
   assert.deepEqual(result, LIBRARY_COMPONENTS);
-  // One call lists the pages, then one reads each page.
-  assert.equal(calls.length, 1 + LIBRARY.pages.length);
+  // One call lists the pages and reads the first, which every call starts on,
+  // loaded; then one reads each other page.
+  assert.equal(calls.length, LIBRARY.pages.length);
   assert.deepEqual(calls[0].switches, []);
-  assert.deepEqual(calls.slice(1).map((c) => c.switches), LIBRARY.pages.map((_, i) => [pageId(i)]));
+  assert.deepEqual(calls.slice(1).map((c) => c.switches), LIBRARY.pages.slice(1).map((_, i) => [pageId(i + 1)]));
   assert.ok(calls.every((c) => !c.error && c.code.length <= CODE_LIMIT));
 });
 
 test("getComponents: a search from figma.root, as diff made before, misses every page but the first", async () => {
   // The stand-in loads pages as use_figma does, so the test above passes only
-  // because each call switches to its page and searches that page. Run the
-  // same calls with either step undone and the other pages go missing.
+  // because each call past the first page's switches to its page and searches
+  // that page. Run the same calls with either step undone and the other pages
+  // go missing.
   const { calls } = await read(LIBRARY, components);
   const reads = pageCalls(calls);
-  assert.equal(reads.length, LIBRARY.pages.length);
+  assert.equal(reads.length, LIBRARY.pages.length - 1);
   async function names(mutate: (code: string) => string): Promise<string[]> {
     const found: string[] = [];
     for (const call of reads) {
@@ -90,13 +92,13 @@ test("getComponents: a search from figma.root, as diff made before, misses every
 
   // diff's old read: no switch, a search from figma.root. Every call sees the
   // first page and nothing else.
-  assert.deepEqual(await names((code) => rooted(unswitched(code))), Array(LIBRARY.pages.length).fill(["Button", "Input"]).flat());
+  assert.deepEqual(await names((code) => rooted(unswitched(code))), Array(reads.length).fill(["Button", "Input"]).flat());
   // Switching, but searching from figma.root: the first page's components
   // come back from every page.
   const fromRoot = await names(rooted);
-  assert.equal(fromRoot.filter((n) => n === "Button").length, LIBRARY.pages.length);
+  assert.equal(fromRoot.filter((n) => n === "Button").length, reads.length);
   // Searching the page without switching to it: nothing past the first page.
-  assert.deepEqual(await names(unswitched), ["Button", "Input"]);
+  assert.deepEqual(await names(unswitched), []);
 });
 
 test("getComponents: reads a page too big for one response in slices, each as full as the guard allows", async () => {
@@ -117,6 +119,39 @@ test("getComponents: reads a page too big for one response in slices, each as fu
   // entry of the guard, so the page takes as few calls as it can.
   const entry = Math.max(...(result ?? []).map((c) => Buffer.byteLength(JSON.stringify(c)) + 1));
   assert.ok(slices.slice(0, -1).every((c) => c.bytes > RESPONSE_GUARD - entry), `${slices.map((c) => c.bytes).join(", ")}, entries up to ${entry} bytes`);
+});
+
+test("getComponents: reads as much of the first page as fits in the page list's call, and the rest in calls of its own", async () => {
+  const appearance = Array.from({ length: 8 }, (_, i) => `appearance-option-${i}`);
+  const library = Array.from({ length: 300 }, (_, i) => set(`Component ${i}`, { appearance, size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
+  const file: FileSpec = { pages: [{ name: "Library", nodes: library }, { name: "Brand", nodes: [component("Logo")] }] };
+  const { result, error, calls } = await read(file, components);
+  assert.equal(error, null);
+  assert.deepEqual(result?.map((c) => c.name), [...library.map((s) => s.name), "Logo"]);
+  // The list's call, switching nowhere, comes within an entry of the guard;
+  // the first page goes on from there in calls switching to it.
+  const entry = Math.max(...(result ?? []).map((c) => Buffer.byteLength(JSON.stringify(c)) + 1));
+  assert.deepEqual(calls[0].switches, []);
+  assert.ok(calls[0].bytes > RESPONSE_GUARD - entry && calls[0].bytes <= RESPONSE_GUARD, String(calls[0].bytes));
+  const rest = pageCalls(calls, pageId(0));
+  assert.ok(rest.length > 1);
+  assert.equal(calls.length, 1 + rest.length + 1);
+  assert.ok(calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD), calls.map((c) => c.bytes).join(", "));
+});
+
+test("getComponents: a first page with no room beside the page list is read in a call of its own", async () => {
+  // The page list takes about half the guard, and the icon set more than the
+  // other half, though it fits in a call alone.
+  const icons = Array.from({ length: 500 }, (_, i) => `icon-glyph-${i}`);
+  const others = Array.from({ length: 20 }, (_, i) => ({ name: `${"A page with a very long name ".repeat(14)}${i}`, nodes: [] }));
+  const file: FileSpec = { pages: [{ name: "Icons", nodes: [set("Icon", { name: icons })] }, ...others] };
+  const { result, error, calls } = await read(file, components);
+  assert.equal(error, null);
+  assert.deepEqual(result?.map((c) => [c.name, c.variantCount]), [["Icon", 500]]);
+  assert.ok(calls[0].bytes > RESPONSE_GUARD / 2 && !calls[0].switches.length, String(calls[0].bytes));
+  assert.equal(pageCalls(calls, pageId(0)).length, 1);
+  assert.equal(calls.length, 1 + file.pages.length);
+  assert.ok(calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD), calls.map((c) => c.bytes).join(", "));
 });
 
 test("getComponents: measures a slice in bytes, so names in other scripts still fit under 20kb", async () => {
@@ -145,10 +180,13 @@ test("getComponents: a component too big for any response fails the read, naming
 });
 
 test("getComponents: a page that can't be read fails the read, naming the page", async () => {
-  const file: FileSpec = { ...LIBRARY, failingPages: { Navigation: "Page could not be loaded" } };
-  const { result, error } = await read(file, components);
-  assert.equal(result, null);
-  assert.equal(error?.message, 'Failed to read page "Navigation" of the Figma file: Figma MCP tool "use_figma" failed: Error: Page could not be loaded');
+  // The first page too, though the page list's call reads it as well.
+  for (const name of ["Forms", "Navigation"]) {
+    const file: FileSpec = { ...LIBRARY, failingPages: { [name]: "Page could not be loaded" } };
+    const { result, error } = await read(file, components);
+    assert.equal(result, null);
+    assert.equal(error?.message, `Failed to read page "${name}" of the Figma file: Figma MCP tool "use_figma" failed: Error: Page could not be loaded`);
+  }
 });
 
 test("getComponents: skips page dividers, which hold nothing and can't be switched to", async () => {
@@ -160,7 +198,7 @@ test("getComponents: skips page dividers, which hold nothing and can't be switch
   const { result, error, calls } = await read(file, components);
   assert.equal(error, null);
   assert.deepEqual(result, LIBRARY_COMPONENTS);
-  assert.equal(calls.length, 1 + LIBRARY.pages.length);
+  assert.equal(calls.length, LIBRARY.pages.length);
   assert.ok(calls.every((c) => !c.error && !c.switches.some((id) => dividers.includes(id))), calls.map((c) => c.error).join(", "));
   const listed = await read(file, (client) => client.getPages("file-key"));
   assert.deepEqual(listed.result?.map((p) => p.id), [0, 2, 3, 5].map(pageId));
@@ -243,4 +281,22 @@ test("reads: a total that changes between slices is an error, since items would 
 test("reads: a response that isn't a slice fails with what came back", async () => {
   const { error } = await read(async () => ({ content: [{ type: "text", text: "[]" }] }), components);
   assert.match(error?.message ?? "", /^Failed to parse Figma pages response\. .* Got: \[\]$/);
+});
+
+test("reads: a call refused for the rate limit fails the read saying so, and to run diff later, not as a page that can't be read", async () => {
+  // Figma's MCP server caps a seat's tool calls a minute and a day, and past
+  // the cap refuses each call, with HTTP 429 or a message saying so.
+  for (const refuse of ["http", "result", "rpc"] as const) {
+    // LIBRARY takes four calls: the third, reading the Feedback page, is refused.
+    const { result, error, calls } = await read(LIBRARY, components, { calls: 2, refuse });
+    assert.equal(result, null);
+    assert.ok(error instanceof FigmaRateLimitError, `${refuse}: ${error?.message}`);
+    assert.match(error.message, /^Figma's MCP server rate limit was hit: it caps each seat's tool calls a minute and a day \(.*\)\. Run diff again later\. Figma said: \S/);
+    assert.doesNotMatch(error.message, /Failed to read page/);
+    // The read stopped at the refusal rather than calling on.
+    assert.deepEqual(calls.map((c) => c.error ?? null), [null, null, "rate limited"]);
+
+    const variables = await read(TOKENS, (client) => client.getVariables("file-key"), { calls: 0, refuse });
+    assert.ok(variables.error instanceof FigmaRateLimitError, `${refuse}: ${variables.error?.message}`);
+  }
 });

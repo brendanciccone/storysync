@@ -18,7 +18,9 @@
 //   as 20,000 bytes of that JSON, fails the call.
 //
 // A failed call answers as an MCP tool does when it can't: an `isError` result
-// with the reason as text.
+// with the reason as text. The server can also be given a rate limit, past
+// which it refuses every call, as Figma's MCP server does past a seat's
+// limit.
 
 import { createServer } from "node:http";
 import type { Server } from "node:http";
@@ -218,12 +220,26 @@ type Rpc = { id?: number; method: string; params?: { protocolVersion?: string; n
 
 type UseFigmaResult = Awaited<ReturnType<typeof useFigma>>;
 
+/** What Figma's MCP server has been reported to answer past a seat's limit. */
+export const RATE_LIMIT_MESSAGE = "You've reached the Figma MCP tool call limit for your seat type or plan. You can upgrade for more tool calls.";
+
+/**
+ * A rate limit: the server answers the first `calls` use_figma calls and
+ * refuses every one after, with HTTP 429 and no body, or saying the seat
+ * reached its limit in an `isError` result or a JSON-RPC error. A refused
+ * call is recorded with the error "rate limited".
+ */
+export interface RateLimit {
+  calls: number;
+  refuse: "http" | "result" | "rpc";
+}
+
 /**
  * Serves the file over just enough MCP, JSON-RPC over HTTP, for use_figma. Or,
  * given a function instead, answers each use_figma call with what it returns,
  * for a server that misbehaves in a particular way.
  */
-export async function startFigmaStandIn(file: FileSpec | ((code: string, calls: UseFigmaCall[]) => Promise<UseFigmaResult>)): Promise<FigmaStandIn> {
+export async function startFigmaStandIn(file: FileSpec | ((code: string, calls: UseFigmaCall[]) => Promise<UseFigmaResult>), limit?: RateLimit): Promise<FigmaStandIn> {
   const calls: UseFigmaCall[] = [];
   const answer = typeof file === "function" ? file : (code: string, c: UseFigmaCall[]) => useFigma(file, code, c);
 
@@ -255,7 +271,22 @@ export async function startFigmaStandIn(file: FileSpec | ((code: string, calls: 
         res.writeHead(202).end();
         return;
       }
-      const result = await respond(message);
+      let result: unknown;
+      if (message.method === "tools/call" && limit && calls.length >= limit.calls) {
+        calls.push({ code: message.params?.arguments?.code ?? "", switches: [], bytes: 0, error: "rate limited" });
+        if (limit.refuse === "http") {
+          res.writeHead(429, { "retry-after": "60" }).end();
+          return;
+        }
+        if (limit.refuse === "rpc") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: RATE_LIMIT_MESSAGE } }));
+          return;
+        }
+        result = { content: [{ type: "text", text: RATE_LIMIT_MESSAGE }], isError: true };
+      } else {
+        result = await respond(message);
+      }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });

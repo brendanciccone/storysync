@@ -16,14 +16,18 @@
 //   lists the pages, leaving out dividers, then each call switches to one
 //   page, once, as Figma's guidance says, and searches only that page.
 //
-// Figma's guidance has an agent issue the per-page calls together. The CLI
-// makes them one after another instead: Figma's MCP server rate-limits tool
-// calls per seat, by the minute and by the day (developers.figma.com/docs/
-// figma-mcp-server/rate-limits-access), and a burst of one call per page is the
-// likeliest way to meet the per-minute limit. Each slice is filled as far as
-// the guard allows, rather than to a fixed count, to keep the calls few: one
-// for the variables, one for the pages, and one per page, for a file whose
-// pages and palette each fit in one response.
+// Figma's guidance has an agent issue the per-page calls together; the CLI
+// makes them one after another. Either way each call counts toward the seat's
+// limits on Figma's MCP server, by the minute and by the day (developers.
+// figma.com/docs/figma-mcp-server/rate-limits-access), and a file of many
+// pages may meet the per-minute one. So the reads save calls where it costs
+// nothing. Each slice is filled as far as the guard allows, rather than to a
+// fixed count. And every call starts on the first page, already loaded, so the
+// call that lists the pages reads that page's components too, as many as fit
+// beside the list. A file whose pages and palette each fit in one response
+// takes one call for the variables, one for the page list and the first page,
+// and one for each other page. A call refused for the limit fails the read,
+// saying so, rather than as a page that can't be read.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -106,16 +110,66 @@ async function slice(items, describe, wrap, label) {
 }
 `.trim();
 
+/**
+ * Shared by the component reads: `readComponents(page, around)` returns a
+ * loaded page's component sets, and its components outside any set, as a
+ * slice from START, and `around(slice)` what the call returns.
+ */
+const COMPONENTS_PLUGIN_CODE = `
+function describeComponent(node) {
+  if (node.type !== 'COMPONENT_SET') {
+    return { name: node.name, variantProperties: [], variantCount: 1 };
+  }
+  const defs = node.componentPropertyDefinitions || {};
+  const props = [];
+  for (const [key, def] of Object.entries(defs)) {
+    if (def.type === 'VARIANT') {
+      props.push({ name: key, type: 'VARIANT', values: def.variantOptions || [] });
+    } else if (def.type === 'BOOLEAN') {
+      props.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
+    }
+  }
+  return { name: node.name, variantProperties: props, variantCount: node.children.length };
+}
+
+async function readComponents(page, around) {
+  const nodes = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
+    .filter(n => n.type === 'COMPONENT_SET' || (n.parent && n.parent.type !== 'COMPONENT_SET'));
+  return slice(
+    nodes,
+    describeComponent,
+    (items, next, total) => around({ page: page.name, total, next, items }),
+    c => 'Component "' + c.name + '" on page "' + page.name + '"'
+  );
+}
+`.trim();
+
 const LIST_PAGES_PLUGIN_CODE = `
+${COMPONENTS_PLUGIN_CODE}
+
 // A page divider is a page with nothing on it, only a line in the page list
 // (PageNode.isPageDivider): there is nothing to read, and no call to spend on
 // switching to it. Left out here, so every slice is cut from the same list.
-return await slice(
+const list = await slice(
   figma.root.children.filter(p => !p.isPageDivider),
   p => ({ id: p.id, name: p.name }),
   (items, next, total) => ({ total, next, items }),
   p => 'Page "' + p.name + '"'
 );
+
+// The call starts on a page already loaded, the first, so the call that lists
+// the pages from the start reads its components too, from 0, as many as fit
+// beside the list. The client reads the rest, or the whole page if none fit
+// or it can't be read here, in calls of the page's own.
+if (START === 0) {
+  const page = figma.currentPage;
+  try {
+    return await readComponents(page, first => ({ ...list, first: { id: page.id, ...first } }));
+  } catch {
+    // Read again in a call of the page's own, which says why if it fails.
+  }
+}
+return list;
 `.trim();
 
 const READ_VARIABLES_PLUGIN_CODE = `
@@ -181,6 +235,8 @@ return await slice(
 `.trim();
 
 const READ_COMPONENTS_PLUGIN_CODE = `
+${COMPONENTS_PLUGIN_CODE}
+
 const page = await figma.getNodeByIdAsync(PAGE_ID);
 if (!page || page.type !== 'PAGE') {
   throw new Error('No page with id ' + PAGE_ID);
@@ -188,31 +244,7 @@ if (!page || page.type !== 'PAGE') {
 // The page's nodes load only once the call switches to it, and only this page
 // is searched: a search from figma.root would find the first page's too.
 await figma.setCurrentPageAsync(page);
-const nodes = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
-  .filter(n => n.type === 'COMPONENT_SET' || (n.parent && n.parent.type !== 'COMPONENT_SET'));
-
-function describe(node) {
-  if (node.type !== 'COMPONENT_SET') {
-    return { name: node.name, variantProperties: [], variantCount: 1 };
-  }
-  const defs = node.componentPropertyDefinitions || {};
-  const props = [];
-  for (const [key, def] of Object.entries(defs)) {
-    if (def.type === 'VARIANT') {
-      props.push({ name: key, type: 'VARIANT', values: def.variantOptions || [] });
-    } else if (def.type === 'BOOLEAN') {
-      props.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
-    }
-  }
-  return { name: node.name, variantProperties: props, variantCount: node.children.length };
-}
-
-return await slice(
-  nodes,
-  describe,
-  (items, next, total) => ({ page: page.name, total, next, items }),
-  c => 'Component "' + c.name + '" on page "' + page.name + '"'
-);
+return await readComponents(page, s => s);
 `.trim();
 
 /** One call's plugin code: the read's constants, the slicing, then the read. */
@@ -226,6 +258,28 @@ interface Slice<T> {
   next: number | null;
   items: T[];
 }
+
+/** The components the page list's first call read on the page it started on, that page's id with them. */
+type FirstPage = Slice<FigmaComponentInfo> & { id: string };
+
+/**
+ * A call Figma's MCP server refused for the seat's rate limit. Every read
+ * fails with it as it is, not as a page that can't be read, since reading
+ * again later, not fixing the file, is what gets past it.
+ */
+export class FigmaRateLimitError extends Error {
+  constructor(reason: string) {
+    super(`Figma's MCP server rate limit was hit: it caps each seat's tool calls a minute and a day (developers.figma.com/docs/figma-mcp-server/rate-limits-access). Run diff again later. Figma said: ${reason}`);
+  }
+}
+
+/**
+ * A refusal for the rate limit, in a tool result's text or a request's error:
+ * Figma's MCP server has been reported to say a seat reached its "tool call
+ * limit", or that a rate limit was hit. The SSE transport words an HTTP 429
+ * as "HTTP 429"; the Streamable HTTP one gives the status as the error's code.
+ */
+const RATE_LIMITED = /tool call limit|rate.?limit|too many requests|\bHTTP 429\b/i;
 
 export class FigmaClient {
   private client: Client | null = null;
@@ -258,25 +312,40 @@ export class FigmaClient {
 
   /** Lists the file's pages, in order, leaving out page dividers. Reading them loads none. */
   async getPages(fileKey: string): Promise<FigmaPage[]> {
-    return this.readAll<FigmaPage>(fileKey, "pages", "List the pages of the file",
-      (start) => pluginCode({ START: start }, LIST_PAGES_PLUGIN_CODE));
+    return (await this.listPages(fileKey)).pages;
+  }
+
+  /**
+   * Lists the pages, with the components the first call read on the page it
+   * started on, as far as they fit beside the list, or null if none did.
+   */
+  private async listPages(fileKey: string): Promise<{ pages: FigmaPage[]; first: FirstPage | null }> {
+    const description = "List the pages of the file, and read the component sets on the first";
+    const codeFor = (start: number) => pluginCode({ START: start }, LIST_PAGES_PLUGIN_CODE);
+    const opening = parseSlice<FigmaPage>(await this.callFigma(fileKey, codeFor(0), description), "pages") as Slice<FigmaPage> & { first?: unknown };
+    const pages = await this.readAll<FigmaPage>(fileKey, "pages", description, codeFor, opening);
+    const first = opening.first as FirstPage | undefined;
+    return { pages, first: first && isSlice(first) && typeof first.id === "string" ? first : null };
   }
 
   /**
    * Reads the component sets, and the components outside any set, on every
-   * page, a page at a time and in page order. A page that can't be read fails
-   * the whole read, naming the page, rather than leave its components to be
-   * reported as missing from Figma.
+   * page, a page at a time and in page order, the first page's starting with
+   * what the page list's call read. A page that can't be read fails the whole
+   * read, naming the page, rather than leave its components to be reported as
+   * missing from Figma.
    */
   async getComponents(fileKey: string): Promise<FigmaComponentInfo[]> {
-    const pages = await this.getPages(fileKey);
+    const { pages, first } = await this.listPages(fileKey);
     const components: FigmaComponentInfo[] = [];
     for (const page of pages) {
       try {
         components.push(...await this.readAll<FigmaComponentInfo>(fileKey, `components on page "${page.name}"`,
           `Read the component sets and variant properties on page "${page.name}", a slice at a time`,
-          (start) => pluginCode({ PAGE_ID: page.id, START: start }, READ_COMPONENTS_PLUGIN_CODE)));
+          (start) => pluginCode({ PAGE_ID: page.id, START: start }, READ_COMPONENTS_PLUGIN_CODE),
+          first?.id === page.id ? first : undefined));
       } catch (err) {
+        if (err instanceof FigmaRateLimitError) throw err;
         throw new Error(`Failed to read page "${page.name}" of the Figma file: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
@@ -284,16 +353,17 @@ export class FigmaClient {
   }
 
   /**
-   * Calls a read from 0, then from each `next` it returns until that is null,
-   * and joins the slices. A slice that doesn't move on, or a total that
-   * changes between calls, as when someone edits the file mid-read, is an
-   * error: either would leave items read twice or not at all.
+   * Calls a read from 0, or takes `first` as the slice from 0 when another
+   * call read it, then from each `next` it returns until that is null, and
+   * joins the slices. A slice that doesn't move on, or a total that changes
+   * between calls, as when someone edits the file mid-read, is an error:
+   * either would leave items read twice or not at all.
    */
-  private async readAll<T>(fileKey: string, label: string, description: string, codeFor: (start: number) => string): Promise<T[]> {
+  private async readAll<T>(fileKey: string, label: string, description: string, codeFor: (start: number) => string, first?: Slice<T>): Promise<T[]> {
     const items: T[] = [];
     let total: number | null = null;
     for (let start: number | null = 0; start !== null;) {
-      const slice: Slice<T> = parseSlice<T>(await this.callFigma(fileKey, codeFor(start), description), label);
+      const slice: Slice<T> = start === 0 && first ? first : parseSlice<T>(await this.callFigma(fileKey, codeFor(start), description), label);
       if (total !== null && slice.total !== total) {
         throw new Error(`The Figma file changed while its ${label} were read: ${total} at first, then ${slice.total}. Run diff again.`);
       }
@@ -309,18 +379,31 @@ export class FigmaClient {
 
   private async callFigma(fileKey: string, code: string, description: string): Promise<string[]> {
     if (!this.client) throw new Error("Not connected");
-    const result = await this.client.callTool({
-      name: "use_figma",
-      arguments: { code, description, fileKey, skillNames: "figma-use" },
-    });
+    let result: unknown;
+    try {
+      result = await this.client.callTool({
+        name: "use_figma",
+        arguments: { code, description, fileKey, skillNames: "figma-use" },
+      });
+    } catch (err) {
+      // Past the limit, the server may refuse the request itself, with HTTP
+      // 429, which the transport's error carries as its code.
+      const reason = err instanceof Error ? err.message : String(err);
+      if ((err as { code?: unknown } | null)?.code === 429) throw new FigmaRateLimitError(`HTTP 429, ${reason.trim()}`);
+      if (RATE_LIMITED.test(reason)) throw new FigmaRateLimitError(reason);
+      throw err;
+    }
     const r = result as { isError?: boolean; content?: { type: string; text?: string }[] };
     const texts = r.content?.filter((c) => c.type === "text" && c.text).map((c) => c.text!) ?? [];
     // An error thrown in the plugin code, such as a slice refused as too big,
     // comes back as a result flagged isError, with the reason as text, not as
     // a protocol error. Read as a slice, that text would fail to parse and
-    // hide the reason.
+    // hide the reason. The server's own refusal past the rate limit can come
+    // back the same way.
     if (r.isError) {
-      throw new Error(`Figma MCP tool "use_figma" failed: ${texts.join("\n") || "no reason given"}`);
+      const reason = texts.join("\n") || "no reason given";
+      if (RATE_LIMITED.test(reason)) throw new FigmaRateLimitError(reason);
+      throw new Error(`Figma MCP tool "use_figma" failed: ${reason}`);
     }
     if (!texts.length) {
       throw new Error(`use_figma returned no text content. Raw result: ${JSON.stringify(result).slice(0, 200)}`);

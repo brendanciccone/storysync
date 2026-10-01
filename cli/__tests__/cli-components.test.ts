@@ -313,8 +313,9 @@ test("diff CLI: compares the components on every page of the Figma file, not onl
   assert.equal(data.figmaReadFailed, false);
   assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
   assert.equal(data.summary.componentsMatched, 2);
-  // The variables, the page list, then each page once, switching to it once.
-  assert.deepEqual(standIn.figmaCalls.map((c) => c.switches), [[], [], ["0:1"], ["0:2"], ["0:3"]]);
+  // The variables, the page list with the first page, already loaded, then
+  // each other page once, switching to it once.
+  assert.deepEqual(standIn.figmaCalls.map((c) => c.switches), [[], [], ["0:2"], ["0:3"]]);
   assert.ok(standIn.figmaCalls.every((c) => !c.error));
 });
 
