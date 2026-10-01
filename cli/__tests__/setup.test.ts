@@ -477,7 +477,11 @@ test("every push instruction reads a variant's size from its geometry and keeps 
 test("every push instruction reports a pixel of text width as a font-rendering difference", () => {
   // The same push drifted on 8 small bold Chips that Figma set 40 wide where
   // Chrome measured 38.59. Nothing in the node is wrong, and squeezing the
-  // text box to fit would only trade the drift for a clipped label.
+  // text box to fit would only trade the drift for a clipped label. But an
+  // INSIDE stroke on a frame that hugs its text leaves it exactly twice the
+  // border short, 2px for a 1px border, as does a transparent border built
+  // with no stroke, so the rule holds only for a stroke OUTSIDE or none, and
+  // a difference other than twice the border.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -493,6 +497,8 @@ test("every push instruction reports a pixel of text width as a font-rendering d
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /`width` a pixel or two off on a variant that hugs its text[^\n]*font-rendering difference[^\n]*clip the label/,
         `${path} never says to report a pixel of text width as a font-rendering difference`);
+      assert.match(text, /font-rendering difference[^\n]*only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight\. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border/,
+        `${path} calls a stroke built INSIDE a font-rendering difference`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
