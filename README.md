@@ -156,7 +156,7 @@ and commit them. `<version>` is the storysync version that matches the ref you u
 
 Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is no baseline. `token_drift` is `none` when there is neither a token baseline nor any tokens; with a baseline, tokens that have all gone are drift. It is `skipped` when `token_baseline` is `''`. `json` and `tokens_json` carry the `map --json` and `tokens --json` output; `tokens_json` is empty when tokens are skipped.
 
-The action installs with your package manager as it finds it on `PATH`, and puts nothing in front of it. To have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain#usage-in-cicd) check that install for malware, add its CI setup as a step before this one, pinned to a release as its README shows.
+[Aikido Safe Chain](https://github.com/AikidoSec/safe-chain#usage-in-cicd) set up in an earlier step doesn't check the action's installs. The action sets up Node and pnpm itself, and each setup puts its directory on `PATH` ahead of Safe Chain's shims, so the action's `npm ci`, `pnpm install` or `yarn install` runs the package manager directly, and so does its install of storysync's own dependencies. To have Safe Chain check your dependencies for malware, install them in your own steps the way its [GitHub Actions example](https://github.com/AikidoSec/safe-chain#github-actions-example) does: set up Node, at the version `node_version` names, and your package manager, then Safe Chain's CI setup, pinned to a release, then your install. Then set `install_command: 'true'`, so the action uses that install rather than running its own. Install before the action rather than after it: its Node and pnpm stay ahead of Safe Chain's shims for the rest of the job.
 
 ## How it works
 
