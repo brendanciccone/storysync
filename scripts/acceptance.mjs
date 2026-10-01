@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(process.env.STORYSYNC_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
 const CLI = join(ROOT, "dist", "cli", "index.js");
@@ -181,15 +181,99 @@ function figmaVariantName(combination) {
 
 const AsyncFunction = (async () => {}).constructor;
 
+// use_figma's limits: its input schema caps `code` at 50,000 characters, and
+// Figma documents a 20kb output response limit per call. The templates refuse
+// to return a slice whose encoded JSON passes GUARD.
+const CODE_LIMIT = 50000;
+const RESPONSE_LIMIT = 20000;
+const GUARD = 17000;
+
+/** Every use_figma code block in the skill, with the description it is sent with. */
+function useFigmaBlocks() {
+  const md = readFileSync(SKILL, "utf8");
+  const blocks = [];
+  let at = 0;
+  while ((at = md.indexOf("code: `", at)) >= 0) {
+    const start = at + "code: `".length;
+    const end = md.indexOf("`,", start);
+    const description = /description: "([^"]*)"/.exec(md.slice(end, end + 400))?.[1] ?? "";
+    blocks.push({ code: md.slice(start, end), description, start });
+    at = end;
+  }
+  return blocks;
+}
+
+/** The one use_figma code block whose description matches. */
+function useFigmaBlock(pattern) {
+  const found = useFigmaBlocks().filter((b) => pattern.test(b.description));
+  assert(found.length === 1, `expected one use_figma example described as ${pattern}, found ${found.length}`);
+  return found[0].code;
+}
+
+const constant = (name) => new RegExp(`const ${name} = [^;\\n]*;`);
+
+/** A template's code with `const NAME = ...;` set to each given value. */
+function withConstants(code, values) {
+  let out = code;
+  for (const [name, value] of Object.entries(values)) {
+    assert(constant(name).test(out), `the template defines no ${name}`);
+    out = out.replace(constant(name), () => `const ${name} = ${JSON.stringify(value)};`);
+  }
+  return out;
+}
+
+/** A template's code with its 20kb guard lifted, to measure what it would return. */
+function liftGuard(code) {
+  const guards = code.match(/\b17000\b/g) ?? [];
+  assert(guards.length === 1, `the template has ${guards.length} guards at ${GUARD} characters, expected one`);
+  return code.replace(/\b17000\b/, "Infinity");
+}
+
+/** A lookup table written the way the template shows one: an entry a line. */
+function jsTable(entries) {
+  return `{\n${Object.entries(entries).map(([k, v]) => `      ${JSON.stringify(k)}: ${JSON.stringify(v)},`).join("\n")}\n    }`;
+}
+
 /**
- * The readback template from the shipped skill, as a callable function.
+ * The smallest slice whose encoded size passes the guard, measured with the
+ * guard lifted, then run as shipped: it has to be refused, and the slice one
+ * smaller returned. It lands under 20kb, and under the guard before encoding,
+ * so a guard loosened towards 20kb, or one measuring the string before
+ * use_figma encodes it, returns it and fails here. `run(n, guarded)` makes one
+ * call over the first n items and returns the string the template returns.
+ */
+async function assertGuardRefuses(run, max) {
+  let over = null;
+  for (let n = 1; n <= max && !over; n++) {
+    const raw = await run(n, false);
+    if (JSON.stringify(raw).length > GUARD) over = { n, raw: raw.length, encoded: JSON.stringify(raw).length };
+  }
+  assert(over, `no slice of up to ${max} items passes ${GUARD} characters encoded`);
+  assert(over.encoded < RESPONSE_LIMIT && over.raw <= GUARD,
+    `the smallest slice over the guard is ${over.raw} characters, ${over.encoded} encoded: not between the guard and 20kb`);
+  let error = null;
+  try {
+    await run(over.n, true);
+  } catch (err) {
+    error = err;
+  }
+  assert(error && /lower BATCH/.test(error.message),
+    `returned ${over.n} items, ${over.encoded} characters encoded${error ? `, failing with: ${error.message}` : ""}`);
+  await run(over.n - 1, true);
+  return `${over.n} items, ${over.raw} characters and ${over.encoded} encoded, refused; ${over.n - 1} returned`;
+}
+
+/**
+ * The readback template from the shipped skill.
  *
  * Extracted from skills/claude-code.md rather than copied, so this exercises
  * exactly what an agent is told to paste: the whole use_figma code block, run
  * against a figma that serves the simulated set by its id. The two lookup
- * tables the agent is told to fill in from snap output are replaced with ones
- * built from snap output here, and SET_ID, START and BATCH with the call's
- * own; everything else runs verbatim. `batch` is the template's own BATCH.
+ * tables the agent is told to fill in from snap output are replaced with this
+ * call's slice of them, written an entry a line as the template shows, and
+ * SET_ID and BATCH with the call's own; everything else runs verbatim.
+ * `batch` is the template's own BATCH, `code()` the code an agent would send,
+ * and `read()` what that call returns, parsed.
  */
 function loadSkillReadback() {
   const md = readFileSync(SKILL, "utf8");
@@ -208,33 +292,46 @@ function loadSkillReadback() {
   assert(/\breturn\b[^\n]*;\s*$/.test(block), "skill template has no readback return statement");
 
   const table = (name) => new RegExp(`const ${name} = \\{[\\s\\S]*?\\n\\s*\\};`);
-  const constant = (name) => new RegExp(`const ${name} = [^;\\n]*;`);
   assert(table("SLUG_BY_NAME").test(block), "could not locate the SLUG_BY_NAME table in the skill template");
   assert(table("SOURCE_BY_SLUG").test(block), "skill template defines no SOURCE_BY_SLUG, so provenance is not derived from snap status");
-  for (const name of ["SET_ID", "START", "BATCH"]) {
+  for (const name of ["SET_ID", "BATCH"]) {
     assert(constant(name).test(block), `skill template defines no ${name}, so it cannot read a set back a slice at a time`);
   }
+  const batch = Number(/const BATCH = (\d+);/.exec(block)?.[1]);
+  assert(batch > 0, "skill template's BATCH is not a number");
 
-  const readbackOf = async (componentSet, slugByName, sourceBySlug, { start, batch }) => {
-    const body = block
-      .replace(table("SLUG_BY_NAME"), `const SLUG_BY_NAME = ${JSON.stringify(slugByName)};`)
-      .replace(table("SOURCE_BY_SLUG"), `const SOURCE_BY_SLUG = ${JSON.stringify(sourceBySlug)};`)
-      .replace(constant("SET_ID"), `const SET_ID = ${JSON.stringify(componentSet.id)};`)
-      .replace(constant("START"), `const START = ${start};`)
-      .replace(constant("BATCH"), `const BATCH = ${batch};`);
-    const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
-    return JSON.parse(await new AsyncFunction("figma", body)(figma));
+  const code = (setId, slugByName, sourceBySlug, { batch: callBatch = batch, guarded = true } = {}) => {
+    const body = withConstants(block, { SET_ID: setId, BATCH: callBatch })
+      .replace(table("SLUG_BY_NAME"), () => `const SLUG_BY_NAME = ${jsTable(slugByName)};`)
+      .replace(table("SOURCE_BY_SLUG"), () => `const SOURCE_BY_SLUG = ${jsTable(sourceBySlug)};`);
+    return guarded ? body : liftGuard(body);
   };
-  readbackOf.batch = Number(/const BATCH = (\d+);/.exec(block)?.[1]);
-  assert(readbackOf.batch > 0, "skill template's BATCH is not a number");
-  return readbackOf;
+  const run = async (componentSet, slugByName, sourceBySlug, opts) => {
+    const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
+    return new AsyncFunction("figma", code(componentSet.id, slugByName, sourceBySlug, opts))(figma);
+  };
+  const read = async (...args) => JSON.parse(await run(...args));
+  return { batch, code, run, read };
 }
 
 /**
  * Smaller than the template's own BATCH, so the 12-variant Button is read in
- * three calls and merging the slices is part of every round trip.
+ * three calls and merging the slices is part of every round trip. It divides
+ * 12, so the last slice ends exactly on the set's last variant.
  */
-const READ_BATCH = 5;
+const READ_BATCH = 4;
+
+/** The entries of `table` for these keys, in their order. */
+function pick(table, keys) {
+  return Object.fromEntries(keys.filter((key) => key in table).map((key) => [key, table[key]]));
+}
+
+/** Names in snap's variant order, cut into slices of at most `batch`. */
+function slices(names, batch) {
+  const out = [];
+  for (let start = 0; start < names.length; start += batch) out.push(names.slice(start, start + batch));
+  return out;
+}
 
 /** One simulated component set per measured component, as the skill builds it. */
 function simulatedSets(snapDir, { mutate, withholdSource } = {}) {
@@ -256,32 +353,82 @@ function simulatedSets(snapDir, { mutate, withholdSource } = {}) {
 }
 
 /**
+ * Reads a whole set back the way the skill says to: the variants snap
+ * measured, in its order, `batch` a call, each call carrying only its own
+ * slice of the two tables. Every call has to read back exactly the variants it
+ * named and report the set's size; returns the merged readback, the calls
+ * made and the set's `total`. `onSlice(slice)` sees each call's result.
+ */
+async function readSet(readback, { componentSet, slugByName, sourceBySlug }, batch, onSlice) {
+  const variants = {};
+  let calls = 0;
+  let total = null;
+  for (const names of slices(Object.keys(slugByName), batch)) {
+    const slugs = names.map((name) => slugByName[name]);
+    const slice = await readback.read(componentSet, pick(slugByName, names), pick(sourceBySlug, slugs), { batch });
+    calls++;
+    onSlice?.(slice);
+    const read = Object.keys(slice.readback);
+    assert(read.join() === slugs.join(), `a call naming ${slugs.join(", ")} read back ${read.join(", ") || "nothing"}`);
+    for (const slug of read) assert(!(slug in variants), `${slug} was read back in two slices`);
+    assert(slice.total === componentSet.children.length,
+      `the slice reports a total of ${slice.total}, but the set holds ${componentSet.children.length} variants`);
+    Object.assign(variants, slice.readback);
+    total = slice.total;
+  }
+  return { variants, calls, total };
+}
+
+/**
  * Builds figma-readback.json the way the skill does: one simulated component
  * set per measured component, read back slice by slice by the skill's own
  * template, the slices merged under the component's title.
  * `mutate(node, variant, component)` edits a node after creation, the way a
- * designer might edit Figma by hand; `onSlice(slice, component)` sees each
- * call's result.
+ * designer might edit Figma by hand; `onRead(component, calls)` sees how many
+ * calls each set took.
  */
-async function buildReadback(snapDir, { mutate, withholdSource, onSlice } = {}) {
-  const readbackOf = loadSkillReadback();
+async function buildReadback(snapDir, { mutate, withholdSource, onRead } = {}) {
+  const readback = loadSkillReadback();
   const components = {};
-  for (const { component, componentSet, slugByName, sourceBySlug } of simulatedSets(snapDir, { mutate, withholdSource })) {
-    const variants = {};
-    for (let start = 0; start !== null;) {
-      const slice = await readbackOf(componentSet, slugByName, sourceBySlug, { start, batch: READ_BATCH });
-      onSlice?.(slice, component);
-      const slugs = Object.keys(slice.readback);
-      assert(slugs.length > 0 && slugs.length <= READ_BATCH,
-        `the slice of ${component.name} from ${start} read back ${slugs.length} variants, with BATCH ${READ_BATCH}`);
-      for (const slug of slugs) assert(!(slug in variants), `${slug} was read back in two slices`);
-      assert(slice.next === null || slice.next > start, `the slice of ${component.name} from ${start} says to read next from ${slice.next}`);
-      Object.assign(variants, slice.readback);
-      start = slice.next;
-    }
-    components[component.title ?? component.name] = { nodeId: componentSet.id, variants };
+  for (const set of simulatedSets(snapDir, { mutate, withholdSource })) {
+    const { variants, calls, total } = await readSet(readback, set, READ_BATCH);
+    assert(Object.keys(variants).length === total, `${set.component.name}: read ${Object.keys(variants).length} of ${total} variants`);
+    onRead?.(set.component, calls);
+    components[set.component.title ?? set.component.name] = { nodeId: set.componentSet.id, variants };
   }
   return { version: 1, fileKey: "acceptance", components };
+}
+
+/**
+ * A 256-variant set named the way snap names one: four properties of four
+ * long-ish values each, slugged by snap's own code, every variant styled from
+ * one of the example Button's measured variants.
+ */
+async function realisticSet(snapDir) {
+  const { assignVariantSlugs } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-normalize.js")).href);
+  const axes = {
+    variant: ["primary-action", "secondary-action", "destructive-action", "subtle-outline"],
+    size: ["extra-small", "small", "medium", "extra-large"],
+    state: ["default", "hovered", "focus-visible", "pressed"],
+    iconPlacement: ["leading-icon", "trailing-icon", "icon-only", "without-icon"],
+  };
+  let combinations = [{}];
+  for (const [prop, values] of Object.entries(axes)) {
+    combinations = combinations.flatMap((c) => values.map((value) => ({ ...c, [prop]: value })));
+  }
+  const { slugs } = assignVariantSlugs(combinations);
+  const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+  const styles = expandVariants(button).map((v) => v.styles);
+  const slugByName = {};
+  const sourceBySlug = {};
+  const children = combinations.map((combination, i) => {
+    const name = figmaVariantName(combination);
+    slugByName[name] = slugs[i];
+    sourceBySlug[slugs[i]] = "measured";
+    return figmaNode(name, styles[i % styles.length]);
+  });
+  const componentSet = { id: "set:Realistic", type: "COMPONENT_SET", name: "Button", children };
+  return { componentSet, slugByName, sourceBySlug, styles };
 }
 
 // --- Checks --------------------------------------------------------------------
@@ -481,10 +628,13 @@ async function main() {
   await check("a faithful Figma reproduction scores 100%", async () => {
     const calls = {};
     writeJson(perfect, await buildReadback(snapDir, {
-      onSlice: (slice, component) => { calls[component.name] = (calls[component.name] ?? 0) + 1; },
+      onRead: (component, n) => { calls[component.name] = n; },
     }));
     // Read in slices, as the skill has to: the merge is part of what scores.
-    assert(calls.Button >= 2, `the Button set was read in ${calls.Button} call(s), so no slices were merged`);
+    // 12 is a multiple of READ_BATCH, so the last slice ends on the set's
+    // last variant, and a call past it would be one too many.
+    assert(12 % READ_BATCH === 0, `READ_BATCH ${READ_BATCH} does not divide the Button's 12 variants`);
+    assert(calls.Button === 12 / READ_BATCH, `the Button set was read in ${calls.Button} calls, not ${12 / READ_BATCH}`);
     const v = verifyJson(snapDir, perfect);
     assert(v.json, `verify produced no JSON\n${v.out}`);
     const { summary, fidelity } = v.json;
@@ -510,44 +660,120 @@ async function main() {
     assert(exitOf(snapDir, path, ["--strict"]) === 0, "--strict failed on provenance alone");
   });
 
+  await check("a slice reads the variants it names, and fails on one the set lacks or holds twice", async () => {
+    const readback = loadSkillReadback();
+    const set = simulatedSets(snapDir).find((s) => s.component.name === "Button");
+    const [first] = slices(Object.keys(set.slugByName), READ_BATCH);
+    const tables = [pick(set.slugByName, first), pick(set.sourceBySlug, first.map((n) => set.slugByName[n]))];
+    const failure = async (componentSet, slug = tables[0], source = tables[1]) => {
+      try {
+        await readback.read(componentSet, slug, source, { batch: READ_BATCH });
+      } catch (err) {
+        return err.message;
+      }
+      return null;
+    };
+
+    // A variant the build never made: named, but not in the set.
+    const lacking = { ...set.componentSet, children: set.componentSet.children.filter((c) => c.name !== first[1]) };
+    const missing = await failure(lacking);
+    assert(missing?.includes(first[1]), `a slice naming a variant the set lacks ${missing ? `failed with: ${missing}` : "was returned"}`);
+
+    // A variant a retried build made twice: reading either would be a guess.
+    const twice = { ...set.componentSet, children: [...set.componentSet.children, { ...set.componentSet.children[0] }] };
+    const doubled = await failure(twice);
+    assert(doubled?.includes(first[0]), `a slice naming a variant the set holds twice ${doubled ? `failed with: ${doubled}` : "was returned"}`);
+
+    // A call that names nothing reads nothing: a wasted call, refused.
+    assert(await failure(set.componentSet, {}, {}), "a call naming no variants was returned");
+
+    // A variant snap never measured is read by no slice, but counted in total.
+    const extra = { ...set.componentSet, children: [...set.componentSet.children, { ...set.componentSet.children[0], name: "variant=ghost" }] };
+    const { variants, total } = await readSet(readback, { ...set, componentSet: extra }, READ_BATCH);
+    assert(total === Object.keys(variants).length + 1, `read ${Object.keys(variants).length} variants of a set of ${total}, which holds one more`);
+    return "missing and doubled variants named, an empty call refused, an unmeasured variant counted in total";
+  });
+
   await check("a full slice of the template's BATCH fits in one use_figma response", async () => {
     // use_figma returns at most 20kb per call, and a string the plugin code
     // returns is JSON-encoded again on the way out. Price a full slice at the
     // largest variant the template read back, and leave room for what the
     // simulation lacks, longer variant names and Figma's float32 numbers (an
     // opacity of 0.4 reads back as 0.4000000059604645): at most 60% of it.
-    const readbackOf = loadSkillReadback();
+    const readback = loadSkillReadback();
     const { componentSet, slugByName, sourceBySlug } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
-    const all = await readbackOf(componentSet, slugByName, sourceBySlug, { start: 0, batch: componentSet.children.length });
+    const all = await readback.read(componentSet, slugByName, sourceBySlug, { batch: componentSet.children.length });
     const sizes = Object.entries(all.readback).map(([slug, v]) => JSON.stringify(JSON.stringify({ [slug]: v })).length);
-    const slice = readbackOf.batch * Math.max(...sizes) + 200;
-    assert(slice <= 12000, `${readbackOf.batch} variants of up to ${Math.max(...sizes)} bytes come to ${slice}, too close to 20kb`);
-    return `${readbackOf.batch} variants ≈ ${(slice / 1000).toFixed(1)}kb, at up to ${Math.max(...sizes)} bytes a variant`;
+    const slice = readback.batch * Math.max(...sizes) + 200;
+    assert(slice <= 12000, `${readback.batch} variants of up to ${Math.max(...sizes)} bytes come to ${slice}, too close to 20kb`);
+    return `${readback.batch} variants ≈ ${(slice / 1000).toFixed(1)}kb, at up to ${Math.max(...sizes)} bytes a variant`;
   });
 
   await check("a slice too big for one use_figma response fails instead of being cut short", async () => {
-    // Five copies of every Button variant under new names, read in one slice:
-    // around 20kb, which the template must refuse to return.
-    const readbackOf = loadSkillReadback();
+    // Five copies of every Button variant under new names, read in one slice,
+    // one variant more each time until the slice passes the guard.
+    const readback = loadSkillReadback();
     const { componentSet, slugByName, sourceBySlug } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
     const children = [];
     const names = {};
+    const sources = {};
     for (let copy = 1; copy <= 5; copy++) {
       for (const child of componentSet.children) {
         const name = `${child.name}, copy=${copy}`;
         names[name] = `${slugByName[child.name]}--copy-${copy}`;
+        sources[names[name]] = sourceBySlug[slugByName[child.name]];
         children.push({ ...child, name });
       }
     }
     const big = { ...componentSet, children };
-    let error = null;
-    try {
-      await readbackOf(big, names, sourceBySlug, { start: 0, batch: children.length });
-    } catch (err) {
-      error = err;
-    }
-    assert(error && /lower BATCH/.test(error.message), `returned ${children.length} variants in one slice${error ? `, failing with: ${error.message}` : ""}`);
-    return error.message;
+    const order = Object.keys(names);
+    return assertGuardRefuses((n, guarded) => {
+      const named = order.slice(0, n);
+      return readback.run(big, pick(names, named), pick(sources, named.map((name) => names[name])), { batch: n, guarded });
+    }, children.length);
+  });
+
+  await check("every call that reads back a 256-variant set fits use_figma's code limit", async () => {
+    // snap measures up to 256 combinations by default. Each call carries its
+    // own slice of the two tables, so its code stays the same size however
+    // big the set; tables for the whole set would pass 50,000 characters on
+    // their own. At most 60% of the limit leaves room for longer names.
+    const readback = loadSkillReadback();
+    const set = await realisticSet(snapDir);
+    const codes = [];
+    const responses = [];
+    const { variants, calls, total } = await readSet({
+      ...readback,
+      read: async (componentSet, slugTable, sourceTable, opts) => {
+        codes.push(readback.code(componentSet.id, slugTable, sourceTable, opts).length);
+        return readback.read(componentSet, slugTable, sourceTable, opts);
+      },
+    }, set, readback.batch, (slice) => responses.push(JSON.stringify(JSON.stringify(slice)).length));
+    assert(total === 256 && Object.keys(variants).length === 256, `read ${Object.keys(variants).length} of ${total} variants`);
+    const largest = Math.max(...codes);
+    assert(largest <= CODE_LIMIT * 0.6, `a readback call's code is ${largest} characters, too close to use_figma's ${CODE_LIMIT}`);
+    const whole = readback.code(set.componentSet.id, set.slugByName, set.sourceBySlug, { batch: 256 }).length;
+    return `${calls} calls of up to ${largest} characters, returning up to ${Math.max(...responses)} encoded; ` +
+      `the whole set's tables in one call would be ${whole}`;
+  });
+
+  await check("a part of a set built the way the skill says fits use_figma's code limit", async () => {
+    // The skill builds a large set in parts. Price one part at the build
+    // template plus a table of that many variants' names and full measured
+    // styles, each as large as the example's largest: the agent's own Plugin
+    // API code has to fit in what is left, at least 40% of the limit.
+    const md = readFileSync(SKILL, "utf8");
+    const part = Number(/in parts of at most (\d+) variants/.exec(md)?.[1]);
+    assert(part > 0, "the skill gives no number of variants to build a set in parts of");
+    const build = useFigmaBlock(/^Create or update/);
+    const set = await realisticSet(snapDir);
+    const largest = set.styles.reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
+    const table = (names) => `\n    const VARIANTS = [\n${names.map((name) => `      { name: ${JSON.stringify(name)}, styles: ${JSON.stringify(largest)} },`).join("\n")}\n    ];\n`;
+    const names = Object.keys(set.slugByName);
+    const code = build + table(names.slice(0, part));
+    assert(code.length <= CODE_LIMIT * 0.6, `${part} variants come to ${code.length} characters before the agent's own code, too close to ${CODE_LIMIT}`);
+    const whole = (build + table(names)).length;
+    return `${part} variants a call: ${code.length} characters before the agent's own code; all 256 would be ${whole}`;
   });
 
   heading("Scoring contract");
@@ -740,22 +966,16 @@ async function main() {
   });
 
   await check("every use_figma code example in the skill parses", () => {
-    const md = readFileSync(SKILL, "utf8");
-    let at = 0;
-    let count = 0;
-    while ((at = md.indexOf("code: `", at)) >= 0) {
-      const start = at + "code: `".length;
-      const end = md.indexOf("`,", start);
+    const blocks = useFigmaBlocks();
+    for (const { code, start } of blocks) {
       try {
-        new AsyncFunction("figma", md.slice(start, end));
+        new AsyncFunction("figma", code);
       } catch (err) {
         throw new Error(`example at character ${start}: ${err.message}`);
       }
-      count++;
-      at = end;
     }
-    assert(count > 0, "found no use_figma examples");
-    return `${count} examples`;
+    assert(blocks.length > 0, "found no use_figma examples");
+    return `${blocks.length} examples`;
   });
 
   // --- Summary ---

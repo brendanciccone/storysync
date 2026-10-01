@@ -106,6 +106,7 @@ url = "https://mcp.figma.com/mcp"
 tool_timeout_sec = 600
 ```
 
+
 With Storybook running, say (or, in the CLI, type `$storysync` to name the skill):
 
 - **"Push my Storybook to Figma (file key abc123)"** — code → Figma
@@ -388,7 +389,7 @@ Values Storybook cannot carry in a URL are reported rather than measured. Its al
 
 ### `storysync verify`
 
-Compare what was written to Figma against the styles `snap` measured, and report a fidelity score. The agent writes a component, has the plugin read the created node's real properties back out to `.storysync/figma-readback.json`, and this scores the result.
+Compare what was written to Figma against the styles `snap` measured, and report a fidelity score. The agent writes a component, reads the created nodes' real properties back in separate `use_figma` calls, a slice of the set at a time, into `.storysync/figma-readback.json`, and this scores the result.
 
 ```text
 Options:

@@ -246,6 +246,35 @@ test("the Cursor rule names no step Cursor can't take", () => {
   }
 });
 
+test("every push instruction keeps each use_figma call inside Figma's limits", () => {
+  // use_figma takes at most 50,000 characters of code and returns at most
+  // 20kb per call. A build that returned its own readback, or one call that
+  // carried a whole set's slugs, stopped fitting well short of the 256
+  // combinations snap measures by default.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /50,000 characters of code/, `${path} never names use_figma's code limit`);
+      assert.match(text, /20kb/, `${path} never names use_figma's response limit`);
+      assert.doesNotMatch(text, /plugin code by reading/i, `${path} still has the build call read its own result back`);
+      assert.match(text, /set's id/, `${path} never has the build return the set's id`);
+      assert.match(text, /`total`/, `${path} never checks the slices against the set's total`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("setup --client codex installs a skill Codex discovers and leaves AGENTS.md alone", () => {
   const project = tempProject();
   try {

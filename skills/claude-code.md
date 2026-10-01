@@ -75,7 +75,7 @@ use_figma({
 
    Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
 
-   A `use_figma` call that runs too long fails with `Script exceeded time limit`, and creating variables is slow. Split a large collection — a full colour palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created rather than creating another.
+   A `use_figma` call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow. Split a large collection — a full colour palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created rather than creating another.
 
 4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
 
@@ -187,7 +187,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
 
-   **Split a set too big for one call.** A call that runs too long fails with `Script exceeded time limit`, and building hundreds of variants at once can. If it does, check what the call left on the canvas before retrying, then build the set across calls: the first creates it with some of the variants, each later one finds it by id and adds the next, and the last lays out and checks the whole set.
+   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first creates the set with the first 25, each later call finds it by id and adds the next 25, and the last lays out and checks the whole set. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
 
 ```js
 use_figma({
@@ -216,7 +216,9 @@ use_figma({
     //   size=md: 14px font, 16px/8px padding
     //   size=lg: 16px font, 24px/12px padding
 
-    // ... Figma Plugin API code to create or update the component set.
+    // ... Figma Plugin API code to create or update the component set, from a
+    // table of this call's variants and their measured values — at most 25,
+    // since use_figma takes at most 50,000 characters of code per call.
     // Name every variant from its snap combination: each key is a variant
     // property, BOOLEAN ones included, written key=value and joined with ", "
     // in the combination's key order.
@@ -231,27 +233,29 @@ use_figma({
 })
 ```
 
-6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` returns at most 20kb per call, so the template below reads a set a slice at a time — 25 variants, about half that. Call it with `START = 0`, then again from the `next` it returns until `next` is `null`. It throws if a slice comes too close to the limit; lower `BATCH` and read that slice again.
+6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call: a set's readback passes 20kb at a few dozen variants, and the table of its names and slugs can pass 50,000 characters at under two hundred. So the template below reads a set a slice at a time, and each call names the variants it reads — at most `BATCH`, 25, in snap's variant order: the first 25, then the next 25, until you have read every variant snap measured. It reads exactly the variants you name, finding each by name, and throws if the set has no variant of a name you gave, or two. It also throws if a slice comes too close to 20kb; lower `BATCH` and read those variants in two calls.
+
+   Each call returns `total`, the number of variants in the set. If the slices add up to fewer, the set holds variants snap never measured — one an earlier push built for a value the code has since dropped, say. `verify` cannot see those, so find them in the set and report them.
 
 ```js
 use_figma({
   code: `
-    // Reads one slice of a component set back off the nodes. use_figma
-    // returns at most 20kb per call, so read BATCH variants at a time: START
-    // 0 first, then again from the next this returns, until next is null.
+    // Reads one slice of a component set back off the nodes. use_figma takes
+    // at most 50,000 characters of code and returns at most 20kb per call, so
+    // each call names the variants it reads: at most BATCH, in snap's variant
+    // order — the first BATCH, then the next, until every variant is read.
     const SET_ID = '12:34'; // the id step 5 returned
-    const START = 0;
     const BATCH = 25;
 
-    // The snap slug for each Figma variant, keyed by the name step 5 gave it,
-    // for every variant in the set — not only this slice's.
+    // The snap slug for each Figma variant this call reads, keyed by the name
+    // step 5 gave it: this slice's variants only, not the whole set's.
     // Copy each slug from the snap output — never rebuild it from the name.
     // snap lowercases, collapses punctuation, and numbers collisions ("--2"),
     // none of which is recoverable from a Figma variant name; a rebuilt slug
     // that differs by one character makes the variant unscorable.
     const SLUG_BY_NAME = {
       'variant=default, size=sm, disabled=false': 'variant-default--size-sm--disabled-false',
-      // ... one entry per variant in the set
+      // ... one entry per variant in this slice
     };
     const slugFor = (child) => {
       const slug = SLUG_BY_NAME[child.name];
@@ -266,17 +270,30 @@ use_figma({
     // variant indistinguishable from a rendered one.
     const SOURCE_BY_SLUG = {
       'variant-default--size-sm--disabled-false': 'measured',
-      // ... one entry per variant in the set
+      // ... one entry per variant in this slice
     };
 
+    const names = Object.keys(SLUG_BY_NAME);
+    if (names.length === 0 || names.length > BATCH) {
+      throw new Error('This call names ' + names.length + ' variants: name between 1 and BATCH (' + BATCH + ')');
+    }
     const componentSet = await figma.getNodeByIdAsync(SET_ID);
     if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
       throw new Error('No component set with id ' + SET_ID);
     }
+    // Exactly the variants named above. One the set lacks, or holds twice,
+    // fails here rather than leaving a gap or a guess in the readback.
+    const children = names.map((name) => {
+      const found = componentSet.children.filter((child) => child.name === name);
+      if (found.length !== 1) {
+        throw new Error('The set has ' + found.length + ' variants named "' + name + '", not one');
+      }
+      return found[0];
+    });
 
     // Read back what is actually there, keyed by the snap variant slug.
     const readback = {};
-    for (const child of componentSet.children.slice(START, START + BATCH)) {
+    for (const child of children) {
       const fill = child.fills && child.fills[0];
       const stroke = child.strokes && child.strokes[0];
       const toHex = (c) => '#' + [c.r, c.g, c.b]
@@ -327,12 +344,16 @@ use_figma({
         height: (child.absoluteRenderBounds || child).height,
       };
     }
+    // total counts every variant in the set, read or not: if the slices add up
+    // to fewer, the set holds variants snap never measured.
     const total = componentSet.children.length;
-    const next = START + BATCH < total ? START + BATCH : null;
-    const result = JSON.stringify({ id: componentSet.id, name: componentSet.name, total, next, readback });
-    // Fail rather than return a slice the 20kb limit would cut short.
-    if (result.length > 17000) {
-      throw new Error('This slice is ' + result.length + ' characters, too close to 20kb: lower BATCH and read it again');
+    const result = JSON.stringify({ id: componentSet.id, name: componentSet.name, total, readback });
+    // use_figma JSON-encodes what this returns, escaping every quote, so
+    // measure the encoded string. Fail rather than return a slice the 20kb
+    // limit would cut short.
+    const size = JSON.stringify(result).length;
+    if (size > 17000) {
+      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: lower BATCH and read these variants in two calls');
     }
     return result;
   `,
