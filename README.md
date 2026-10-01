@@ -502,7 +502,9 @@ Options:
 
 ## Limitations
 
-The reverse-direction (Figma → code) features have known constraints that you should be aware of before relying on the diff output:
+Both directions have known constraints worth knowing before you rely on their output: the Figma → code diff and audit, and the code → Figma push, from what `snap` measures to what `verify` scores.
+
+### Figma → code: `diff` and the audit
 
 - **Figma MCP auth**: The CLI `diff` command needs an authenticated Figma MCP endpoint. Most Figma MCP setups require browser-based OAuth that only supported MCP clients can complete. Use the skill file's audit flow inside Claude Code / Cursor / Codex if the CLI returns `401`/`403`.
 - **`use_figma` return contract**: The audit relies on `use_figma` surfacing the plugin code's return value as MCP tool output. This works when run from a supported MCP client; behavior from third-party CLIs is not guaranteed. If `use_figma` doesn't return values, the skill agent is instructed to look for read-only tools or fall back to a user-exported JSON snapshot.
@@ -510,7 +512,10 @@ The reverse-direction (Figma → code) features have known constraints that you 
 - **Variable aliases**: Aliases are resolved up to 8 levels deep; cycles are detected. Aliases pointing at variables in remote/team libraries are not resolved.
 - **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
 - **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`). Two code components sharing a name (e.g. `Forms/Button` and `Nav/Button`) can't both be paired with Figma's single `Button`; `diff` reports them as `ambiguous` and fails `--strict` rather than silently comparing one. The same goes for a name repeated across Figma pages, such as an archived copy of `Button` or one pushed to two categories' pages: `diff` compares the first page's, reports the name as `ambiguous`, and fails `--strict`.
-- **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used.
+- **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used, for the variables a push creates as well as for `diff`.
+
+### Code → Figma: `snap`, the push and `verify`
+
 - **Story args wiring**: `storysync snap` varies variants through Storybook's `?args=` URL, so a story that ignores its args measures its default state for every variant. snap warns when all of a component's variants measure identically. See [`storysync snap`](#storysync-snap).
 - **Variant values must be URL-safe**: Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so an option value containing e.g. `/` cannot be measured and is reported as `args_unsupported`.
 - **Props without declared options**: A prop typed as a bare `string` or `number` with no `options` in its argType becomes no Figma variant property, so it is not measured. Storybook's documentation response does not always surface argType options.
