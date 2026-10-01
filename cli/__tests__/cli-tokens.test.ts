@@ -186,7 +186,7 @@ test("tokens CLI: an unknown --source fails naming the ones there are, rather th
 test("tokens CLI: an unknown --source fails under --json with an error that still parses", () => {
   withProject((dir) => {
     // An empty value, as `--source "$UNSET"` gives, is not leaving it out.
-    for (const source of ["scss", "CSS", ""]) {
+    for (const source of ["scss", "CSS", "AUTO", ""]) {
       for (const flags of [[], ["--check"]]) {
         const r = tokens(dir, "--source", source, "--json", ...flags);
         assert.equal(r.status, 1, r.out);
@@ -208,5 +208,27 @@ test("tokens CLI: each --source there is still reads that source", () => {
       // Only the Tailwind config exists, so only it finds tokens.
       assert.equal(data.summary.totalTokens, source === "tailwind" ? 1 : 0);
     }
+  });
+});
+
+test("tokens CLI: --source auto detects the source, as leaving it out does", () => {
+  // auto is the drift-check action's token_source default, which the README
+  // tells action users to pass on to --source when they write the baseline.
+  withProject((dir) => {
+    const auto = tokens(dir, "--source", "auto", "--json");
+    assert.equal(auto.status, 0, auto.out);
+    assert.equal(auto.stdout, tokens(dir, "--json").stdout);
+
+    // The command it gives for a missing baseline detects too, without --source.
+    const missing = tokens(dir, "--source", "auto", "--check");
+    assert.equal(missing.status, 1, missing.out);
+    assert.match(missing.out, /`mkdir -p \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`/);
+
+    // And a baseline written without --source checks clean against it.
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), auto.stdout);
+    const check = tokens(dir, "--source", "auto", "--check", "--strict");
+    assert.equal(check.status, 0, check.out);
+    assert.match(check.out, /No token drift detected/);
   });
 });

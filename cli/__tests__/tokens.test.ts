@@ -28,13 +28,20 @@ test("parseTokenSource: takes each source there is, and nothing for detection", 
   assert.equal(parseTokenSource(undefined), undefined);
 });
 
+test("parseTokenSource: auto detects, as leaving it out does", () => {
+  // auto is the drift-check action's token_source default, and its users
+  // are told to pass token_source on to --source for their baseline.
+  assert.equal(parseTokenSource("auto"), undefined);
+});
+
 test("parseTokenSource: an unknown source throws, naming the ones there are, rather than detecting one", () => {
   // extractTokens has no case for one and detects a source, so it passed as
-  // a run on whatever the project had first.
-  for (const source of ["scss", "CSS", "auto", ""]) {
+  // a run on whatever the project had first. Matched as written, as the
+  // sources are, so AUTO is not auto.
+  for (const source of ["scss", "CSS", "AUTO", ""]) {
     assert.throws(
       () => parseTokenSource(source),
-      { message: `--source must be "tailwind", "css" or "theme", received "${source}". Leave it out to detect the source.` },
+      { message: `--source must be "tailwind", "css" or "theme", received "${source}". Leave it out, or pass "auto", to detect the source.` },
       source,
     );
   }
