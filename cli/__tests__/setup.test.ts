@@ -290,6 +290,38 @@ test("every push instruction keeps each use_figma call inside Figma's limits", (
   }
 });
 
+test("every push instruction re-pushes in place and says what to do when a readback throws", () => {
+  // A part that only added its variants doubled every one of them on a second
+  // push. The readback throws on a variant the set lacks or holds twice, and
+  // on a slice too big to return, and each needs its own remedy: lowering
+  // BATCH alone does not shrink a call that already carries its names.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /adds only the ones the set lacks/, `${path} never has a part add only the variants the set lacks`);
+      assert.match(text, /never creates a second variant/, `${path} lets a part create a variant the set already has`);
+      assert.doesNotMatch(text, /finds it by id and adds the next 25/, `${path} still has each part add its variants`);
+      assert.match(text, /only if the user asks/, `${path} never says to ask before deleting a variant snap no longer has`);
+      assert.match(text, /`The set has 0 variants named …`[^\n]*re-run the build part/, `${path} gives no remedy for a variant the set lacks`);
+      assert.match(text, /`The set has 2 variants named …`[^\n]*(?:ask the user|which one is current)/, `${path} gives no remedy for a variant made twice`);
+      assert.match(text, /split its names across two calls/, `${path} says only to lower BATCH for a slice too big to return`);
+      assert.match(text, /children\.slice\(START, START \+ (?:BATCH|100)\)/, `${path} never lists the set's names a slice at a time`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("the Codex skill says how to raise the tool timeout however Figma was added", () => {
   // codex mcp add writes a [mcp_servers.figma] table; Figma's plugin writes
   // none, and its server has no timeout setting of its own.

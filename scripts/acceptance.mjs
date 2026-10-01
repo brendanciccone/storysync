@@ -3,7 +3,7 @@
 //
 // Unit tests prove the pieces; this proves the pipeline. It drives the built
 // CLI against a live Storybook serving examples/storybook-vite, and it runs the
-// readback and audit code blocks from the shipped Claude skill against
+// build, readback and audit code blocks from the shipped Claude skill against
 // simulated Figma nodes — so a regression in the skill's templates fails here,
 // not in someone's Figma file.
 //
@@ -240,9 +240,10 @@ function jsTable(entries) {
  * smaller returned. It lands under 20kb, and under the guard before encoding,
  * so a guard loosened towards 20kb, or one measuring the string before
  * use_figma encodes it, returns it and fails here. `run(n, guarded)` makes one
- * call over the first n items and returns the string the template returns.
+ * call over the first n items and returns the string the template returns;
+ * the refusal has to say what to do, matching `remedy`.
  */
-async function assertGuardRefuses(run, max) {
+async function assertGuardRefuses(run, max, remedy = /lower BATCH/) {
   let over = null;
   for (let n = 1; n <= max && !over; n++) {
     const raw = await run(n, false);
@@ -257,7 +258,7 @@ async function assertGuardRefuses(run, max) {
   } catch (err) {
     error = err;
   }
-  assert(error && /lower BATCH/.test(error.message),
+  assert(error && remedy.test(error.message),
     `returned ${over.n} items, ${over.encoded} characters encoded${error ? `, failing with: ${error.message}` : ""}`);
   await run(over.n - 1, true);
   return `${over.n} items, ${over.raw} characters and ${over.encoded} encoded, refused; ${over.n - 1} returned`;
@@ -429,6 +430,139 @@ async function realisticSet(snapDir) {
   });
   const componentSet = { id: "set:Realistic", type: "COMPONENT_SET", name: "Button", children };
   return { componentSet, slugByName, sourceBySlug, styles };
+}
+
+const KIDS = Symbol("children");
+
+/**
+ * A Figma document that keeps what each use_figma call builds, for the build
+ * template. `call()` gives each call its own figma, as use_figma does: it
+ * starts on the first page with only that page loaded, and another page's
+ * children show once the call switches to it. `nodes(type)` lists every node
+ * of a type, wherever it is, for the checks to inspect.
+ */
+function figmaDocument() {
+  let count = 0;
+  let loaded = new Set();
+  const byId = new Map();
+  const pages = [];
+  const create = (type, name) => {
+    const node = { id: `${count++}:1`, type, name, parent: null };
+    byId.set(node.id, node);
+    return node;
+  };
+  const adopt = (parent, child) => {
+    if (child.parent) child.parent[KIDS].splice(child.parent[KIDS].indexOf(child), 1);
+    child.parent = parent;
+    parent[KIDS].push(child);
+  };
+  const container = (type, name) => {
+    const node = create(type, name);
+    node[KIDS] = [];
+    Object.defineProperty(node, "children", {
+      enumerable: true,
+      get: () => (type === "PAGE" && !loaded.has(node.id) ? [] : node[KIDS]),
+    });
+    node.appendChild = (child) => {
+      if (type === "COMPONENT_SET" && child.type !== "COMPONENT") {
+        throw new Error(`a component set takes components, not a ${child.type}`);
+      }
+      adopt(node, child);
+    };
+    return node;
+  };
+  const page = (name) => {
+    const node = container("PAGE", name);
+    pages.push(node);
+    return node;
+  };
+  page("Page 1");
+  const call = () => {
+    loaded = new Set([pages[0].id]);
+    const figma = {
+      root: { children: pages },
+      currentPage: pages[0],
+      createPage: () => page(`Page ${pages.length + 1}`),
+      setCurrentPageAsync: async (p) => {
+        loaded.add(p.id);
+        figma.currentPage = p;
+      },
+      getNodeByIdAsync: async (id) => byId.get(id) ?? null,
+      createComponent: () => {
+        const component = create("COMPONENT", "Component 1");
+        adopt(figma.currentPage, component);
+        return component;
+      },
+      combineAsVariants: (components, parent) => {
+        if (components.length === 0 || components.some((c) => c.type !== "COMPONENT")) {
+          throw new Error("combineAsVariants takes one or more components");
+        }
+        const set = container("COMPONENT_SET", "Component 1");
+        adopt(parent, set);
+        for (const component of components) adopt(set, component);
+        return set;
+      },
+    };
+    return figma;
+  };
+  const nodes = (type) => [...byId.values()].filter((n) => n.type === type);
+  return { call, nodes };
+}
+
+/**
+ * The build template from the shipped skill: one part of a set.
+ *
+ * Its VARIANTS table is replaced with the part's own variants, written an
+ * entry a line, and PAGE_NAME, SET_NAME, SET_ID and PART with the call's own.
+ * applyStyles is where the agent writes the Plugin API code that styles a
+ * variant; `run()` gives it the simulated node of figmaNode() for those
+ * styles, so the readback template reads back exactly what the part sent.
+ * Everything else, finding the set and its variants and creating what is
+ * missing, runs verbatim. `code(..., { styled: false })` leaves applyStyles
+ * as the skill ships it, for pricing what an agent would send.
+ */
+function loadSkillBuild() {
+  const block = useFigmaBlock(/^Create or update/);
+  const list = /const VARIANTS = \[[\s\S]*?\n\s*\];/;
+  const styler = /const applyStyles = async \(variant, styles\) => \{[\s\S]*?\n\s*\};/;
+  assert(list.test(block), "the build template has no VARIANTS table to loop over");
+  assert(styler.test(block), "the build template has no applyStyles for the agent's styling code");
+  for (const name of ["PAGE_NAME", "SET_NAME", "SET_ID", "PART"]) {
+    assert(constant(name).test(block), `the build template defines no ${name}`);
+  }
+  const part = Number(/const PART = (\d+);/.exec(block)?.[1]);
+  assert(part > 0, "the build template's PART is not a number");
+  const code = (variants, constants, { styled = true } = {}) => {
+    const body = withConstants(block, constants)
+      .replace(list, () => `const VARIANTS = [\n${variants.map(({ name, styles }) => `      ${JSON.stringify({ name, styles })},`).join("\n")}\n    ];`);
+    return styled
+      ? body.replace(styler, () => "const applyStyles = async (variant, styles) => {\n      Object.assign(variant, look(variant.name, styles));\n    };")
+      : body;
+  };
+  const look = (name, styles) => {
+    const { name: _, ...node } = figmaNode(name, styles);
+    return node;
+  };
+  const run = async (figma, variants, constants) =>
+    JSON.parse(await new AsyncFunction("figma", "look", code(variants, constants))(figma, look));
+  return { part, code, run };
+}
+
+/**
+ * Pushes one set the way the skill says to: `variants` in snap's order, in
+ * parts of `part`, the first part finding the set by name and every later one
+ * by the id the first returned. Returns what each part returned.
+ */
+async function pushSet(build, doc, { page, set, variants, part }) {
+  const parts = [];
+  let id = null;
+  for (const named of slices(variants, part)) {
+    const result = await build.run(doc.call(), named, { PAGE_NAME: page, SET_NAME: set, SET_ID: id, PART: part });
+    assert(id === null || result.id === id, `a part returned the set ${result.id}, not ${id}`);
+    id = result.id;
+    parts.push(result);
+  }
+  return parts;
 }
 
 // --- Simulated Figma for the audit -------------------------------------------
@@ -814,7 +948,7 @@ async function main() {
     return assertGuardRefuses((n, guarded) => {
       const named = order.slice(0, n);
       return readback.run(big, pick(names, named), pick(sources, named.map((name) => names[name])), { batch: n, guarded });
-    }, children.length);
+    }, children.length, /split its names across two calls/);
   });
 
   await check("every call that reads back a 256-variant set fits use_figma's code limit", async () => {
@@ -843,21 +977,152 @@ async function main() {
 
   await check("a part of a set built the way the skill says fits use_figma's code limit", async () => {
     // The skill builds a large set in parts. Price one part at the build
-    // template plus a table of that many variants' names and full measured
-    // styles, each as large as the example's largest: the agent's own Plugin
-    // API code has to fit in what is left, at least 40% of the limit.
+    // template with its table filled in with that many variants' names and
+    // full measured styles, each as large as the example's largest: the
+    // agent's own Plugin API code has to fit in what is left, at least 40% of
+    // the limit.
     const md = readFileSync(SKILL, "utf8");
     const part = Number(/in parts of at most (\d+) variants/.exec(md)?.[1]);
     assert(part > 0, "the skill gives no number of variants to build a set in parts of");
-    const build = useFigmaBlock(/^Create or update/);
+    const build = loadSkillBuild();
+    assert(build.part === part, `the build template's PART is ${build.part}, but the skill says to build in parts of ${part}`);
     const set = await realisticSet(snapDir);
     const largest = set.styles.reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
-    const table = (names) => `\n    const VARIANTS = [\n${names.map((name) => `      { name: ${JSON.stringify(name)}, styles: ${JSON.stringify(largest)} },`).join("\n")}\n    ];\n`;
-    const names = Object.keys(set.slugByName);
-    const code = build + table(names.slice(0, part));
-    assert(code.length <= CODE_LIMIT * 0.6, `${part} variants come to ${code.length} characters before the agent's own code, too close to ${CODE_LIMIT}`);
-    const whole = (build + table(names)).length;
-    return `${part} variants a call: ${code.length} characters before the agent's own code; all 256 would be ${whole}`;
+    const variants = Object.keys(set.slugByName).map((name) => ({ name, styles: largest }));
+    const constants = { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: "12:34", PART: part };
+    const code = build.code(variants.slice(0, part), constants, { styled: false }).length;
+    assert(code <= CODE_LIMIT * 0.6, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
+    const whole = build.code(variants, constants, { styled: false }).length;
+    return `${part} variants a call: ${code} characters before the agent's own code; all 256 would be ${whole}`;
+  });
+
+  await check("pushing a set again updates its variants in place and adds none twice", async () => {
+    // Every part of a second push finds the set an earlier one built and each
+    // of its variants by name: it restyles those, adds only what the set
+    // lacks, and leaves alone what snap no longer measures. Parts of 5 split
+    // the Button's 12 variants 5, 5 and 2.
+    const build = loadSkillBuild();
+    const readback = loadSkillReadback();
+    const { component, slugByName, sourceBySlug } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
+    const measured = expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
+    const PART = 5;
+    const doc = figmaDocument();
+    const push = (variants) => pushSet(build, doc, { page: "Forms", set: "Button", variants, part: PART });
+    const sum = (parts, key) => parts.reduce((n, p) => n + p[key], 0);
+    const theSet = ({ doubled = 0 } = {}) => {
+      const sets = doc.nodes("COMPONENT_SET").filter((s) => s.name === "Button");
+      assert(sets.length === 1, `the document holds ${sets.length} Button sets`);
+      const names = sets[0].children.map((c) => c.name);
+      const twice = names.filter((name, i) => names.indexOf(name) !== i);
+      assert(twice.length === doubled, `the set holds ${twice.length} variants twice: ${twice.join("; ")}`);
+      return sets[0];
+    };
+
+    const first = await push(measured);
+    assert(first.length === 3 && sum(first, "added") === 12 && sum(first, "updated") === 0,
+      `the first push made ${first.length} calls, adding ${sum(first, "added")} and updating ${sum(first, "updated")}`);
+    const id = theSet().id;
+
+    // The code changed every fill. The second push starts afresh, with no id.
+    const restyled = measured.map((v) => ({ ...v, styles: { ...v.styles, backgroundColor: "#0f766e" } }));
+    const second = await push(restyled);
+    assert(sum(second, "added") === 0 && sum(second, "updated") === 12,
+      `the second push added ${sum(second, "added")} and updated ${sum(second, "updated")} of 12`);
+    const set = theSet();
+    assert(set.id === id && set.children.length === 12, `the second push left set ${set.id} of ${set.children.length} variants, not ${id} of 12`);
+    const { variants } = await readSet(readback, { componentSet: set, slugByName, sourceBySlug }, READ_BATCH);
+    const stale = Object.entries(variants).filter(([, v]) => v.backgroundColor !== "#0f766e").map(([slug]) => slug);
+    assert(stale.length === 0, `read back ${stale.length} variants with their old fill: ${stale.join(", ")}`);
+
+    // snap dropped one variant and measured a new one: one part adds it, and
+    // the one snap no longer has stays for step 6 to report.
+    const dropped = measured[measured.length - 1].name;
+    const added = { name: "variant=ghost, size=sm, disabled=false", styles: measured[0].styles };
+    const third = await push([...measured.slice(0, -1), added]);
+    assert(sum(third, "added") === 1 && sum(third, "updated") === 11,
+      `with one variant dropped and one new, the push added ${sum(third, "added")} and updated ${sum(third, "updated")}`);
+    const names = theSet().children.map((c) => c.name);
+    assert(names.length === 13 && names.includes(dropped) && names.includes(added.name),
+      `the set holds ${names.length} variants${names.includes(dropped) ? "" : `, without ${dropped}`}`);
+
+    // A part of more than PART variants or naming one twice, or a set an
+    // older push left with a variant twice: refused before anything changes.
+    const refusal = async (attempt, doubled = 0) => {
+      const state = () => JSON.stringify(theSet({ doubled }).children.map((c) => [c.name, c.fills]));
+      const before = state();
+      let error = null;
+      try {
+        await attempt();
+      } catch (err) {
+        error = err;
+      }
+      assert(state() === before, "a refused part changed the set");
+      return error?.message ?? null;
+    };
+    const purple = measured.map((v) => ({ ...v, styles: { ...v.styles, backgroundColor: "#7c3aed" } }));
+    const oversized = await refusal(() =>
+      build.run(doc.call(), purple.slice(0, PART + 1), { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: null, PART }));
+    assert(oversized && new RegExp(`names ${PART + 1} variants`).test(oversized),
+      `a part of ${PART + 1} variants at a PART of ${PART} ${oversized ? `failed with: ${oversized}` : "was built"}`);
+    const repeated = await refusal(() => push([purple[0], purple[1], purple[0]]));
+    assert(repeated && /twice/.test(repeated), `a part naming a variant twice ${repeated ? `failed with: ${repeated}` : "was built"}`);
+    const copy = doc.call().createComponent();
+    Object.assign(copy, figmaNode(measured[2].name, measured[2].styles));
+    theSet().appendChild(copy);
+    const doubled = await refusal(() => push(purple), 1);
+    assert(doubled && doubled.includes(`2 variants named "${measured[2].name}"`), `a push onto a set holding a variant twice ${doubled ? `failed with: ${doubled}` : "was built"}`);
+    return `12 added, then 12 updated and none added, then 1 added beside 1 snap dropped; a part too big, one naming a variant twice and a doubled variant refused`;
+  });
+
+  await check("the set's variant names are listed a slice at a time, within both limits", async () => {
+    // When the readback's slices add up to fewer than total, the skill lists
+    // the set's names and compares them with snap's. The 256 measured
+    // variants, with variants snap no longer has, make a set that ends
+    // exactly on a slice, so a call past the last slice is one too many, and
+    // one that ends part way through a slice, which must still be listed.
+    const code = useFigmaBlock(/^List the variant names/);
+    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
+    assert(batch > 0, "the name listing defines no BATCH");
+    const set = await realisticSet(snapDir);
+    const measured = new Set(Object.keys(set.slugByName));
+    const retiredTo = (total) => Array.from({ length: total - 256 }, (_, i) => `variant=retired-${i}, size=medium, state=default, iconPlacement=without-icon`);
+    const setOf = (total) => ({ ...set.componentSet, children: [...set.componentSet.children, ...retiredTo(total).map((name) => ({ name }))] });
+    const all = Math.ceil(259 / batch) * batch;
+    const listings = [];
+    const sizes = [];
+    let componentSet = null;
+    const figmaFor = () => ({ getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) });
+    for (const total of [all, 259]) {
+      const retired = retiredTo(total);
+      componentSet = setOf(total);
+      const { children } = componentSet;
+      const read = await readAllSlices(code, figmaFor, { SET_ID: componentSet.id });
+      for (const slice of read) sizes.push(JSON.stringify(JSON.stringify(slice)).length);
+      assert(read.length === Math.ceil(total / batch), `listed ${total} names in ${read.length} calls, with BATCH ${batch}`);
+      const listed = read.flatMap((s) => s.names);
+      assert(listed.join("\n") === children.map((c) => c.name).join("\n") && read.every((s) => s.total === total),
+        `listed ${listed.length} names of ${total}`);
+      const extra = listed.filter((name) => !measured.has(name));
+      assert(extra.join("\n") === retired.join("\n"), `found ${extra.length} names snap does not have, not the ${retired.length} retired`);
+      listings.push(`${total} in ${read.length} calls, ${extra.length} snap does not have`);
+    }
+
+    // The larger set's names in one call would not come back whole.
+    componentSet = setOf(all);
+    const one = await new AsyncFunction("figma", withConstants(liftGuard(code), { SET_ID: componentSet.id, START: 0, BATCH: all }))(figmaFor());
+    assert(JSON.stringify(one).length > GUARD, `all ${all} names in one call come to ${JSON.stringify(one).length} encoded, under the guard`);
+
+    // Names of about 130 characters, four properties with long values.
+    const long = Array.from({ length: 200 }, (_, i) => ({
+      name: `variant=destructive-action-${String(i).padStart(3, "0")}, size=extra-large-touch-target, state=focus-visible-pressed, iconPlacement=trailing-icon-with-badge`,
+    }));
+    const longSet = { id: "set:Long", type: "COMPONENT_SET", name: "Long", children: long };
+    const refused = await assertGuardRefuses((n, guarded) => {
+      const body = withConstants(guarded ? code : liftGuard(code), { SET_ID: longSet.id, START: 0, BATCH: n });
+      return new AsyncFunction("figma", body)({ getNodeByIdAsync: async () => longSet });
+    }, long.length);
+    return `${listings.join("; ")}; calls return up to ${Math.max(...sizes)} encoded, ` +
+      `all ${all} in one would be ${JSON.stringify(one).length}; ${refused}`;
   });
 
   heading("Audit through the shipped skill template");

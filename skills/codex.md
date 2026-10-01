@@ -198,18 +198,25 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
 
-   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first creates the set with the first 25, each later call finds it by id and adds the next 25, and the last lays out and checks the whole set. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
+   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set on its page by name, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and the last lays out and checks the whole set. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
+
+   **A part updates the variants it names and adds only the ones the set lacks.** On a set an earlier push built, or one a failed call left half done, each part finds each of its variants among the set's children by name, restyles it if it is there and creates it if it is not. It never creates a second variant of a name the set already has: it refuses, before changing anything, a part that names a variant twice, and a set that already holds two of one name — with the error step 6's readback gives for that, and the same remedy. So a part can be retried, and a push repeated, without duplicating anything. A variant in Figma that snap no longer has — one for a value the code has since dropped — is named by no part, so the build leaves it alone: step 6 finds it, and you report it. Delete it only if the user asks; a designer may have built on it.
 
 ```js
 use_figma({
   code: `
     // Component: Button (title: Forms/Button, category: Forms)
+    const PAGE_NAME = 'Forms';
+    const SET_NAME = 'Button';
+    // null on the first part; the id the first part returned on every later one.
+    const SET_ID = null;
+    const PART = 25;
     //
     // Find or create the 'Forms' page; place the component set there.
-    let page = figma.root.children.find(p => p.name === 'Forms');
+    let page = figma.root.children.find(p => p.name === PAGE_NAME);
     if (!page) {
       page = figma.createPage();
-      page.name = 'Forms';
+      page.name = PAGE_NAME;
     }
     await figma.setCurrentPageAsync(page);
     //
@@ -227,26 +234,96 @@ use_figma({
     //   size=md: 14px font, 16px/8px padding
     //   size=lg: 16px font, 24px/12px padding
 
-    // ... Figma Plugin API code to create or update the component set, from a
-    // table of this call's variants and their measured values — at most 25,
-    // since use_figma takes at most 50,000 characters of code per call.
-    // Name every variant from its snap combination: each key is a variant
-    // property, BOOLEAN ones included, written key=value and joined with ", "
-    // in the combination's key order.
+    // This part's variants and their measured values: at most PART, since
+    // use_figma takes at most 50,000 characters of code per call, in snap's
+    // variant order. Name every variant from its snap combination: each key is
+    // a variant property, BOOLEAN ones included, written key=value and joined
+    // with ", " in the combination's key order. styles is the variant's full
+    // measured styles, the base with its delta applied.
+    const VARIANTS = [
+      { name: 'variant=default, size=sm, disabled=false', styles: { backgroundColor: '#1ea7fd', color: '#ffffff', padding: { top: 4, right: 8, bottom: 4, left: 8 }, borderRadiusUniform: 6, fontSize: 12, fontWeight: 600 } },
+      // ... one entry per variant in this part
+    ];
 
-    // The set's id, for step 6 to read the variants back from. Not the
-    // readback itself: use_figma returns at most 20kb per call.
-    return JSON.stringify({ id: componentSet.id, name: componentSet.name, variants: componentSet.children.length });
+    // Style one variant from its measured values: fill, text, padding, radius,
+    // border, font and shadow, as step 3's table maps them. It runs on the
+    // variants this part creates and on ones an earlier push made, so set
+    // every property, not only those a new node lacks.
+    const applyStyles = async (variant, styles) => {
+      // ... Figma Plugin API code
+    };
+
+    const names = VARIANTS.map((v) => v.name);
+    if (names.length === 0 || names.length > PART) {
+      throw new Error('This part names ' + names.length + ' variants: name between 1 and PART (' + PART + ')');
+    }
+    if (new Set(names).size !== names.length) {
+      throw new Error('This part names a variant twice: name each once');
+    }
+    // The set: by id after the first part; on the first, the one an earlier
+    // push left on this page, if there is one.
+    let componentSet = null;
+    if (SET_ID) {
+      componentSet = await figma.getNodeByIdAsync(SET_ID);
+      if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
+        throw new Error('No component set with id ' + SET_ID);
+      }
+    } else {
+      const sets = page.children.filter((n) => n.type === 'COMPONENT_SET' && n.name === SET_NAME);
+      if (sets.length > 1) {
+        throw new Error('The page has ' + sets.length + ' component sets named "' + SET_NAME + '": ask the user which to update');
+      }
+      componentSet = sets[0] || null;
+    }
+    // Each named variant the set already has, found by name. Check them all
+    // before changing anything: a part that fails here leaves the set as it was.
+    const existing = new Map();
+    for (const name of names) {
+      const found = componentSet ? componentSet.children.filter((child) => child.name === name) : [];
+      if (found.length > 1) {
+        throw new Error('The set has ' + found.length + ' variants named "' + name + '", not one');
+      }
+      existing.set(name, found[0] || null);
+    }
+
+    // Update the variants the set has; create only the ones it lacks.
+    const created = [];
+    for (const { name, styles } of VARIANTS) {
+      let variant = existing.get(name);
+      if (!variant) {
+        variant = figma.createComponent();
+        variant.name = name;
+        created.push(variant);
+      }
+      await applyStyles(variant, styles);
+    }
+    if (!componentSet) {
+      componentSet = figma.combineAsVariants(created, page);
+      componentSet.name = SET_NAME;
+    } else {
+      for (const variant of created) componentSet.appendChild(variant);
+    }
+
+    // On the last part only: lay the whole set out and check it, as "Lay the
+    // variants out" and "Assert the layout before returning" describe.
+
+    // The set's id, for the next part and for step 6 to read the variants
+    // back from. Not the readback itself: use_figma returns at most 20kb per
+    // call. variants counts the whole set, added and updated this part.
+    return JSON.stringify({
+      id: componentSet.id, name: componentSet.name, variants: componentSet.children.length,
+      added: created.length, updated: names.length - created.length,
+    });
   `,
-  description: "Create or update the Button component set on 'Forms' page, styled from measured values",
+  description: "Create or update variants 1-25 of the Button component set on 'Forms' page, styled from measured values",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
 ```
 
-6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call: a set's readback passes 20kb at a few dozen variants, and the table of its names and slugs can pass 50,000 characters at under two hundred. So the template below reads a set a slice at a time, and each call names the variants it reads — at most `BATCH`, 25, in snap's variant order: the first 25, then the next 25, until you have read every variant snap measured. It reads exactly the variants you name, finding each by name, and throws if the set has no variant of a name you gave, or two. It also throws if a slice comes too close to 20kb; lower `BATCH` and read those variants in two calls.
+6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call: a set's readback passes 20kb at a few dozen variants, and the table of its names and slugs can pass 50,000 characters at under two hundred. So the template below reads a set a slice at a time, and each call names the variants it reads — at most `BATCH`, 25, in snap's variant order: the first 25, then the next 25, until you have read every variant snap measured. It reads exactly the variants you name, finding each by name, and throws if the set has no variant of a name you gave, or two. It also throws if a slice comes too close to 20kb. A call that throws returns nothing; below the template is what to do about each error.
 
-   Each call returns `total`, the number of variants in the set. If the slices add up to fewer, the set holds variants snap never measured — one an earlier push built for a value the code has since dropped, say. `verify` cannot see those, so find them in the set and report them.
+   Each call returns `total`, the number of variants in the set. If the slices add up to fewer, the set holds variants snap never measured — one an earlier push built for a value the code has since dropped, say. `verify` cannot see those, so list the set's names as the second template below does, find them, and report them.
 
 ```js
 use_figma({
@@ -364,11 +441,53 @@ use_figma({
     // limit would cut short.
     const size = JSON.stringify(result).length;
     if (size > 17000) {
-      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: lower BATCH and read these variants in two calls');
+      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: split its names across two calls, and lower BATCH for the slices after them');
     }
     return result;
   `,
   description: "Read back variants 1-25 of the Button component set",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
+   **If a readback call throws, it has returned nothing.** Deal with what it names, then make the call again:
+
+   - `No component set with id …` — `SET_ID` is not the id step 5 returned, or the set has since been deleted. Re-run step 5's first part, which finds the set on its page by name, and read with the id it returns.
+   - `This call names N variants …` — name between 1 and `BATCH`.
+   - `No snap slug recorded …` — the table gives a variant no slug; copy it from the snap output.
+   - `The set has 0 variants named …` — the build never made that variant: a part failed or was skipped. Add it to the set by id — re-run the build part that names it, which adds only the variants the set lacks — and read that slice again.
+   - `The set has 2 variants named …` — a part ran twice, in an earlier push or a retry that did not check what the set held, and made the variant twice; step 5 refuses to build on the set until one is gone. Report it. Remove the stale copy only after checking which one is current — `componentSet.children.filter((child) => child.name === name)` gives both, and you can read each by id and compare it with snap's values — or ask the user which to keep. Then read that slice again.
+   - `This slice is N characters encoded …` — `BATCH` only caps how many names a call may carry, so lowering it does not shrink a call that already carries them. Split this call's names, and its two tables, across two calls, and lower `BATCH` so the slices after them are smaller too.
+
+   **Find the variants snap does not have.** When the slices add up to fewer than `total`, list the set's variant names and compare them with snap's yourself: a name snap has no variant for is one it does not measure. Listing them all in one call can pass 20kb — 256 names of about 140 characters come to some 37,000 characters encoded — so the call below lists them a slice at a time: call it with `START = 0`, then again from the `next` it returns until `next` is `null`. A name listed twice is a variant made twice, as above. Report each variant snap does not have, by name, and delete one only if the user asks.
+
+```js
+use_figma({
+  code: `
+    // Lists one slice of a component set's variant names, to compare with
+    // snap's. use_figma returns at most 20kb per call, which a whole set's
+    // names can pass, so call this from START = 0, then from each next it
+    // returns until next is null.
+    const SET_ID = '12:34'; // the id step 5 returned
+    const START = 0;
+    const BATCH = 100;
+    const componentSet = await figma.getNodeByIdAsync(SET_ID);
+    if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
+      throw new Error('No component set with id ' + SET_ID);
+    }
+    const children = componentSet.children;
+    const names = children.slice(START, START + BATCH).map((child) => child.name);
+    const next = START + BATCH < children.length ? START + BATCH : null;
+    const result = JSON.stringify({ total: children.length, next, names });
+    // use_figma JSON-encodes what this returns: measure the encoded string.
+    const size = JSON.stringify(result).length;
+    if (size > 17000) {
+      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: lower BATCH and read it again');
+    }
+    return result;
+  `,
+  description: "List the variant names in the Button component set, a slice at a time",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
