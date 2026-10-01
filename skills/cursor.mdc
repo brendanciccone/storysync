@@ -33,7 +33,7 @@ This auto-detects the token source (Tailwind config, CSS custom properties, or t
 
 2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) for a human-readable preview, or add `--all` to show every token.
 
-3. **Create Figma variable collections** — use the JSON output to create Figma variables via `use_figma` (with the file key and `skillNames: "figma-use"`), one collection at a time. Reuse a collection of the same name rather than creating a second. Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
+3. **Create Figma variable collections** — use the JSON output to create Figma variables via `use_figma` (with the file key and `skillNames: "figma-use"`), one collection at a time. Reuse a collection of the same name rather than creating a second. A call that runs too long fails with `Script exceeded time limit`, and creating variables is slow, so split a large collection (a full colour palette runs to hundreds) across calls of a few dozen variables each. Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
 
 4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
 
@@ -81,7 +81,8 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
 5. Write with `use_figma` — find or create the target page, then create the component set on it. The plugin code must embed the measured values from step 3: every variant gets a concrete fill, text colour, padding, radius, border, font size and shadow. A call that only references variant names is a bug; refuse it and re-read the snap output. Name each variant from its snap combination: every key, BOOLEAN ones included, as `key=value`, joined with `, ` in the combination's key order. **Update an existing set of the same name rather than creating a duplicate**; a second push must not produce two `Button`s.
 
-   End the plugin code by reading the created nodes' actual properties back and returning them as JSON keyed by the snap variant slug — read them off the nodes, don't echo what you sent. Use snap's property names, because `verify` compares only those; a Figma name like `fills` or `cornerRadius` is ignored, and a variant with nothing comparable is `unscored`:
+   End the plugin code by returning the component set's id (`componentSet.id`): step 6 reads the variants back from it, and fixes target it. A call that runs too long fails with `Script exceeded time limit`, and building hundreds of variants at once can. If it does, check what the call left on the canvas before retrying, then build the set across calls: the first creates it with some of the variants, each later one finds it by id and adds the next, and the last lays out and checks the whole set.
+6. Read the variants back in separate `use_figma` calls, a slice at a time: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants. Each call gets the set by the id step 5 returned (`figma.getNodeByIdAsync`), reads the actual properties back from 25 of its variants (`children.slice(start, start + 25)`), and returns them as JSON keyed by the snap variant slug, with the `next` start, or `null` after the last slice. Call it again from `next` until it is `null`; if a slice's JSON comes near 20kb, read fewer at a time. Read the properties off the nodes, don't echo what you sent. Use snap's property names, because `verify` compares only those; a Figma name like `fills` or `cornerRadius` is ignored, and a variant with nothing comparable is `unscored`:
 
    - `backgroundColor` — the SOLID fill as `#rrggbb`, `null` for none
    - `color` — the text child's fill as `#rrggbb`
@@ -93,8 +94,9 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    - `opacity`, `width`, `height`
    - `source` — `"measured"` if the variant's snap status was `"ok"`, `"inferred"` if you fell back to source. Set it per variant from snap's output; defaulting it to `"measured"` makes a guessed variant indistinguishable from a rendered one.
 
-   Take each slug from the snap output (record it against the Figma variant name when you create the variant, and throw if a variant has none); never rebuild it from the name, because snap lowercases, collapses punctuation, and numbers collisions (`--2`), so a rebuilt slug silently fails to match and the variant goes unscored. Take width and height from `absoluteRenderBounds`, not `node.width`, which excludes an OUTSIDE stroke and under-reports by the border on every outlined variant. Map `fontName.style` to a numeric weight by name (Thin 100, Extra/Ultra Light 200, Light 300, Regular/Normal/Book 400, Medium 500, Semi/Demi Bold 600, Bold 700, Extra/Ultra Bold 800, Black/Heavy 900, ignoring spaces and a trailing Italic) — Figma says `"Semi Bold"` where CSS says `600`, and `fontWeight` is compared exactly, so treating anything that is not `"Bold"` as `400` drifts on every non-Bold variant. Pass the file key and `skillNames: "figma-use"`.
-6. Merge those readbacks into `.storysync/figma-readback.json`, keyed by component title then snap variant slug:
+   Take each slug from the snap output (give every readback call a table of each variant's name and slug, and throw if a variant has none); never rebuild it from the name, because snap lowercases, collapses punctuation, and numbers collisions (`--2`), so a rebuilt slug silently fails to match and the variant goes unscored. Take width and height from `absoluteRenderBounds`, not `node.width`, which excludes an OUTSIDE stroke and under-reports by the border on every outlined variant. Map `fontName.style` to a numeric weight by name (Thin 100, Extra/Ultra Light 200, Light 300, Regular/Normal/Book 400, Medium 500, Semi/Demi Bold 600, Bold 700, Extra/Ultra Bold 800, Black/Heavy 900, ignoring spaces and a trailing Italic) — Figma says `"Semi Bold"` where CSS says `600`, and `fontWeight` is compared exactly, so treating anything that is not `"Bold"` as `400` drifts on every non-Bold variant. Pass the file key and `skillNames: "figma-use"`.
+
+   Merge every slice into `.storysync/figma-readback.json`, keyed by component title then snap variant slug, with the set's id as `nodeId`:
 
 ```json
 {
@@ -111,7 +113,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 }
 ```
 
-   Every variant carries `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; a recorded snap failure means re-run `snap`. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
+   Every variant carries `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, read the set back again, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; a recorded snap failure means re-run `snap`. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
 7. Summarize: token collections created, components grouped by page, variant counts, the fidelity score, measured versus inferred counts, any story that didn't pass its args through, failures, caps.
 
 
@@ -132,9 +134,9 @@ Compare the current Figma file against code to find drift in either direction. U
 
 If `use_figma` doesn't return plugin return values, fall back to the Figma MCP's read-only tools that Cursor lists for the server (such as `get_metadata` and `get_variable_defs`), or ask the user to export Figma state to JSON.
 
-1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value in the collection's first mode, unless the user names a mode. Convert COLOR values to hex strings.
+1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value in the collection's first mode, unless the user names a mode. Convert COLOR values to hex strings. `use_figma` returns at most 20kb per call, which a full palette passes, so read 100 variables per call and return where the next call should start, calling again until none remain.
 
-2. **Read Figma components** — call `use_figma` to enumerate component sets using `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })`. For each, read `componentPropertyDefinitions`: a VARIANT property's values are its `variantOptions`, a BOOLEAN's are `true` and `false`.
+2. **Read Figma components** — call `use_figma` to enumerate component sets using `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })`. For each, read `componentPropertyDefinitions`: a VARIANT property's values are its `variantOptions`, a BOOLEAN's are `true` and `false`. Read 25 sets per call, the same way.
 
 3. **Extract code tokens** — run storysync:
 

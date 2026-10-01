@@ -84,6 +84,8 @@ use_figma({
 
    Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
 
+   A `use_figma` call that runs too long fails with `Script exceeded time limit`, and creating variables is slow. Split a large collection — a full colour palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created rather than creating another.
+
 4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
 
 ## Components
@@ -192,7 +194,9 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Update in place rather than duplicating.** Before creating a component set, look for one with the same name on the target page and update it if found. Running a push twice must not produce two `Button`s. The same applies to variable collections — reuse a collection of the same name instead of creating a second.
 
-   **Return the node's real properties.** The plugin code must end by reading back what was actually created and returning it as JSON, so step 6 can score it. Read them off the created nodes rather than echoing the values you sent — echoing proves nothing.
+   **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
+
+   **Split a set too big for one call.** A call that runs too long fails with `Script exceeded time limit`, and building hundreds of variants at once can. If it does, check what the call left on the canvas before retrying, then build the set across calls: the first creates it with some of the variants, each later one finds it by id and adds the next, and the last lays out and checks the whole set.
 
 ```js
 use_figma({
@@ -221,19 +225,42 @@ use_figma({
     //   size=md: 14px font, 16px/8px padding
     //   size=lg: 16px font, 24px/12px padding
 
-    // ... Figma Plugin API code to create or update the component set
-
-    // The snap slug for each Figma variant, keyed by the variant name you gave
-    // it. Name every variant from its snap combination: each key is a variant
+    // ... Figma Plugin API code to create or update the component set.
+    // Name every variant from its snap combination: each key is a variant
     // property, BOOLEAN ones included, written key=value and joined with ", "
     // in the combination's key order.
+
+    // The set's id, for step 6 to read the variants back from. Not the
+    // readback itself: use_figma returns at most 20kb per call.
+    return JSON.stringify({ id: componentSet.id, name: componentSet.name, variants: componentSet.children.length });
+  `,
+  description: "Create or update the Button component set on 'Forms' page, styled from measured values",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
+6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` returns at most 20kb per call, so the template below reads a set a slice at a time — 25 variants, about half that. Call it with `START = 0`, then again from the `next` it returns until `next` is `null`. It throws if a slice comes too close to the limit; lower `BATCH` and read that slice again.
+
+```js
+use_figma({
+  code: `
+    // Reads one slice of a component set back off the nodes. use_figma
+    // returns at most 20kb per call, so read BATCH variants at a time: START
+    // 0 first, then again from the next this returns, until next is null.
+    const SET_ID = '12:34'; // the id step 5 returned
+    const START = 0;
+    const BATCH = 25;
+
+    // The snap slug for each Figma variant, keyed by the name step 5 gave it,
+    // for every variant in the set — not only this slice's.
     // Copy each slug from the snap output — never rebuild it from the name.
     // snap lowercases, collapses punctuation, and numbers collisions ("--2"),
     // none of which is recoverable from a Figma variant name; a rebuilt slug
     // that differs by one character makes the variant unscorable.
     const SLUG_BY_NAME = {
       'variant=default, size=sm, disabled=false': 'variant-default--size-sm--disabled-false',
-      // ... one entry per variant you created
+      // ... one entry per variant in the set
     };
     const slugFor = (child) => {
       const slug = SLUG_BY_NAME[child.name];
@@ -248,12 +275,17 @@ use_figma({
     // variant indistinguishable from a rendered one.
     const SOURCE_BY_SLUG = {
       'variant-default--size-sm--disabled-false': 'measured',
-      // ... one entry per variant you are writing
+      // ... one entry per variant in the set
     };
 
-    // Read back what was actually created, keyed by the snap variant slug.
+    const componentSet = await figma.getNodeByIdAsync(SET_ID);
+    if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
+      throw new Error('No component set with id ' + SET_ID);
+    }
+
+    // Read back what is actually there, keyed by the snap variant slug.
     const readback = {};
-    for (const child of componentSet.children) {
+    for (const child of componentSet.children.slice(START, START + BATCH)) {
       const fill = child.fills && child.fills[0];
       const stroke = child.strokes && child.strokes[0];
       const toHex = (c) => '#' + [c.r, c.g, c.b]
@@ -304,15 +336,22 @@ use_figma({
         height: (child.absoluteRenderBounds || child).height,
       };
     }
-    return JSON.stringify({ id: componentSet.id, name: componentSet.name, readback });
+    const total = componentSet.children.length;
+    const next = START + BATCH < total ? START + BATCH : null;
+    const result = JSON.stringify({ id: componentSet.id, name: componentSet.name, total, next, readback });
+    // Fail rather than return a slice the 20kb limit would cut short.
+    if (result.length > 17000) {
+      throw new Error('This slice is ' + result.length + ' characters, too close to 20kb: lower BATCH and read it again');
+    }
+    return result;
   `,
-  description: "Create or update the Button component set on 'Forms' page, styled from measured values",
+  description: "Read back variants 1-25 of the Button component set",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
 ```
 
-6. **Score the result.** Merge each component's returned `readback` into `.storysync/figma-readback.json`, keyed by the component title and the snap variant slug:
+   Merge every slice's `readback` into `.storysync/figma-readback.json`, keyed by the component title and the snap variant slug, with the set's id as `nodeId`:
 
 ```json
 {
@@ -344,7 +383,7 @@ npx storysync verify --strict-age
 
    This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement.
 
-   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then re-run `verify`. Two things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node — and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
+   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Two things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node — and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
 7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, and any failures or caps.
 
@@ -365,32 +404,36 @@ Compare the current Figma file against code to find drift in either direction. U
 
 If the `use_figma` tool doesn't return the plugin code's return value in a usable form, fall back to reading Figma state via any available `get-*` / `list-*` tools on the Figma MCP server (call `tools/list` first to see what's available), or ask the user to export Figma variables/components to JSON and diff against that.
 
+Both reads below return a slice per call, because `use_figma` returns at most 20kb per call and a full palette or library passes that. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices.
+
 1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
 
 ```js
 use_figma({
   code: `
+    const START = 0;
+    const BATCH = 100;
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const all = collections.flatMap(coll => coll.variableIds.map(varId => ({ coll, varId })));
     const results = [];
-    for (const coll of collections) {
-      for (const varId of coll.variableIds) {
-        const v = await figma.variables.getVariableByIdAsync(varId);
-        if (!v) continue;
-        const mode = coll.modes[0];
-        const raw = v.valuesByMode[mode.modeId];
-        let value = '';
-        if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
-          const r = Math.round(raw.r * 255);
-          const g = Math.round(raw.g * 255);
-          const b = Math.round(raw.b * 255);
-          value = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
-        } else {
-          value = String(raw);
-        }
-        results.push({ name: v.name, type: v.resolvedType, value, collection: coll.name });
+    for (const { coll, varId } of all.slice(START, START + BATCH)) {
+      const v = await figma.variables.getVariableByIdAsync(varId);
+      if (!v) continue;
+      const mode = coll.modes[0];
+      const raw = v.valuesByMode[mode.modeId];
+      let value = '';
+      if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
+        const r = Math.round(raw.r * 255);
+        const g = Math.round(raw.g * 255);
+        const b = Math.round(raw.b * 255);
+        value = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+      } else {
+        value = String(raw);
       }
+      results.push({ name: v.name, type: v.resolvedType, value, collection: coll.name });
     }
-    return JSON.stringify(results);
+    const next = START + BATCH < all.length ? START + BATCH : null;
+    return JSON.stringify({ total: all.length, next, variables: results });
   `,
   description: "Read all variable collections and values from Figma file",
   fileKey: "<file-key>",
@@ -403,9 +446,11 @@ use_figma({
 ```js
 use_figma({
   code: `
+    const START = 0;
+    const BATCH = 25;
     const componentSets = figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] });
     const results = [];
-    for (const cs of componentSets) {
+    for (const cs of componentSets.slice(START, START + BATCH)) {
       const defs = cs.componentPropertyDefinitions;
       const props = [];
       for (const [key, def] of Object.entries(defs)) {
@@ -417,7 +462,8 @@ use_figma({
       }
       results.push({ name: cs.name, variantProperties: props, variantCount: cs.children.length });
     }
-    return JSON.stringify(results);
+    const next = START + BATCH < componentSets.length ? START + BATCH : null;
+    return JSON.stringify({ total: componentSets.length, next, componentSets: results });
   `,
   description: "Read all component sets and variant properties from Figma file",
   fileKey: "<file-key>",

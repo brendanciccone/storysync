@@ -179,57 +179,70 @@ function figmaVariantName(combination) {
   return entries.length ? entries.map(([k, v]) => `${k}=${v}`).join(", ") : "default";
 }
 
+const AsyncFunction = (async () => {}).constructor;
+
 /**
- * The readback code block from the shipped skill, as a callable function.
+ * The readback template from the shipped skill, as a callable function.
  *
  * Extracted from skills/claude-code.md rather than copied, so this exercises
- * exactly what an agent is told to paste. The two lookup tables the agent is
- * told to fill in from snap output are replaced with ones built from snap
- * output here; everything else runs verbatim.
+ * exactly what an agent is told to paste: the whole use_figma code block, run
+ * against a figma that serves the simulated set by its id. The two lookup
+ * tables the agent is told to fill in from snap output are replaced with ones
+ * built from snap output here, and SET_ID, START and BATCH with the call's
+ * own; everything else runs verbatim. `batch` is the template's own BATCH.
  */
 function loadSkillReadback() {
   const md = readFileSync(SKILL, "utf8");
-  const start = md.indexOf("const SLUG_BY_NAME");
-  if (start < 0) {
+  const at = md.indexOf("const SLUG_BY_NAME");
+  if (at < 0) {
     throw new Error(
       "skill template defines no SLUG_BY_NAME, so it has no way to map a Figma variant back to its snap slug " +
       "(it calls slugFor() without defining it)",
     );
   }
-  const endMarker = "return JSON.stringify({ id: componentSet.id";
-  const end = md.indexOf(endMarker, start);
-  assert(end > 0, "skill template has no readback return statement");
-  let block = md.slice(start, md.indexOf("\n", end));
+  const open = md.lastIndexOf("code: `", at);
+  const close = md.indexOf("`,", at);
+  assert(open >= 0 && close > 0, "the skill's readback template is not inside a use_figma code literal");
+  const block = md.slice(open + "code: `".length, close);
   assert(!block.includes("`"), "skill template contains a backtick, which would close the use_figma code literal early");
+  assert(/\breturn\b[^\n]*;\s*$/.test(block), "skill template has no readback return statement");
 
   const table = (name) => new RegExp(`const ${name} = \\{[\\s\\S]*?\\n\\s*\\};`);
+  const constant = (name) => new RegExp(`const ${name} = [^;\\n]*;`);
   assert(table("SLUG_BY_NAME").test(block), "could not locate the SLUG_BY_NAME table in the skill template");
   assert(table("SOURCE_BY_SLUG").test(block), "skill template defines no SOURCE_BY_SLUG, so provenance is not derived from snap status");
+  for (const name of ["SET_ID", "START", "BATCH"]) {
+    assert(constant(name).test(block), `skill template defines no ${name}, so it cannot read a set back a slice at a time`);
+  }
 
-  return (componentSet, slugByName, sourceBySlug) => {
+  const readbackOf = async (componentSet, slugByName, sourceBySlug, { start, batch }) => {
     const body = block
       .replace(table("SLUG_BY_NAME"), `const SLUG_BY_NAME = ${JSON.stringify(slugByName)};`)
-      .replace(table("SOURCE_BY_SLUG"), `const SOURCE_BY_SLUG = ${JSON.stringify(sourceBySlug)};`);
-    return JSON.parse(new Function("componentSet", body)(componentSet)).readback;
+      .replace(table("SOURCE_BY_SLUG"), `const SOURCE_BY_SLUG = ${JSON.stringify(sourceBySlug)};`)
+      .replace(constant("SET_ID"), `const SET_ID = ${JSON.stringify(componentSet.id)};`)
+      .replace(constant("START"), `const START = ${start};`)
+      .replace(constant("BATCH"), `const BATCH = ${batch};`);
+    const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
+    return JSON.parse(await new AsyncFunction("figma", body)(figma));
   };
+  readbackOf.batch = Number(/const BATCH = (\d+);/.exec(block)?.[1]);
+  assert(readbackOf.batch > 0, "skill template's BATCH is not a number");
+  return readbackOf;
 }
 
 /**
- * Builds figma-readback.json the way the skill does: one simulated component
- * set per measured component, read back by the skill's own template.
- * `mutate(node, variant, component)` edits a node after creation, the way a
- * designer might edit Figma by hand.
+ * Smaller than the template's own BATCH, so the 12-variant Button is read in
+ * three calls and merging the slices is part of every round trip.
  */
-function buildReadback(snapDir, { mutate, withholdSource } = {}) {
+const READ_BATCH = 5;
+
+/** One simulated component set per measured component, as the skill builds it. */
+function simulatedSets(snapDir, { mutate, withholdSource } = {}) {
   const snap = readJson(join(snapDir, "styles.json"));
-  const readbackOf = loadSkillReadback();
-  const components = {};
-  for (const component of snap.components) {
-    if (!component.base) continue;
-    const variants = expandVariants(component);
+  return snap.components.filter((component) => component.base).map((component) => {
     const slugByName = {};
     const sourceBySlug = {};
-    const children = variants.map((v) => {
+    const children = expandVariants(component).map((v) => {
       const name = figmaVariantName(v.combination);
       slugByName[name] = v.slug;
       if (v.slug !== withholdSource) sourceBySlug[v.slug] = "measured";
@@ -237,11 +250,36 @@ function buildReadback(snapDir, { mutate, withholdSource } = {}) {
       mutate?.(node, v, component);
       return node;
     });
-    const componentSet = { id: `set:${component.name}`, name: component.name, children };
-    components[component.title ?? component.name] = {
-      nodeId: componentSet.id,
-      variants: readbackOf(componentSet, slugByName, sourceBySlug),
-    };
+    const componentSet = { id: `set:${component.name}`, type: "COMPONENT_SET", name: component.name, children };
+    return { component, componentSet, slugByName, sourceBySlug };
+  });
+}
+
+/**
+ * Builds figma-readback.json the way the skill does: one simulated component
+ * set per measured component, read back slice by slice by the skill's own
+ * template, the slices merged under the component's title.
+ * `mutate(node, variant, component)` edits a node after creation, the way a
+ * designer might edit Figma by hand; `onSlice(slice, component)` sees each
+ * call's result.
+ */
+async function buildReadback(snapDir, { mutate, withholdSource, onSlice } = {}) {
+  const readbackOf = loadSkillReadback();
+  const components = {};
+  for (const { component, componentSet, slugByName, sourceBySlug } of simulatedSets(snapDir, { mutate, withholdSource })) {
+    const variants = {};
+    for (let start = 0; start !== null;) {
+      const slice = await readbackOf(componentSet, slugByName, sourceBySlug, { start, batch: READ_BATCH });
+      onSlice?.(slice, component);
+      const slugs = Object.keys(slice.readback);
+      assert(slugs.length > 0 && slugs.length <= READ_BATCH,
+        `the slice of ${component.name} from ${start} read back ${slugs.length} variants, with BATCH ${READ_BATCH}`);
+      for (const slug of slugs) assert(!(slug in variants), `${slug} was read back in two slices`);
+      assert(slice.next === null || slice.next > start, `the slice of ${component.name} from ${start} says to read next from ${slice.next}`);
+      Object.assign(variants, slice.readback);
+      start = slice.next;
+    }
+    components[component.title ?? component.name] = { nodeId: componentSet.id, variants };
   }
   return { version: 1, fileKey: "acceptance", components };
 }
@@ -440,8 +478,13 @@ async function main() {
 
   const perfect = join(WORK, "readback-perfect.json");
 
-  await check("a faithful Figma reproduction scores 100%", () => {
-    writeJson(perfect, buildReadback(snapDir));
+  await check("a faithful Figma reproduction scores 100%", async () => {
+    const calls = {};
+    writeJson(perfect, await buildReadback(snapDir, {
+      onSlice: (slice, component) => { calls[component.name] = (calls[component.name] ?? 0) + 1; },
+    }));
+    // Read in slices, as the skill has to: the merge is part of what scores.
+    assert(calls.Button >= 2, `the Button set was read in ${calls.Button} call(s), so no slices were merged`);
     const v = verifyJson(snapDir, perfect);
     assert(v.json, `verify produced no JSON\n${v.out}`);
     const { summary, fidelity } = v.json;
@@ -451,19 +494,60 @@ async function main() {
         .join("\n"));
     const status = exitOf(snapDir, perfect, ["--strict", "--strict-age", "--strict-measured"]);
     assert(status === 0, `all strict flags exited ${status}`);
-    return `${summary.verified}/${summary.variants} variants, ${summary.propertiesCompared} properties`;
+    const total = Object.values(calls).reduce((a, b) => a + b, 0);
+    return `${summary.verified}/${summary.variants} variants, ${summary.propertiesCompared} properties, read in ${total} slices`;
   });
 
-  await check("a variant the agent did not mark measured is recorded as inferred", () => {
+  await check("a variant the agent did not mark measured is recorded as inferred", async () => {
     const snap = readJson(join(snapDir, "styles.json"));
     const withheld = snap.components.find((c) => c.name === "Button").variants[0].slug;
     const path = join(WORK, "readback-withheld.json");
-    writeJson(path, buildReadback(snapDir, { withholdSource: withheld }));
+    writeJson(path, await buildReadback(snapDir, { withholdSource: withheld }));
     const v = verifyJson(snapDir, path);
     const variant = v.json?.variants.find((x) => x.slug === withheld);
     assert(variant?.source === "inferred", `recorded as ${variant?.source}; omission must not read as measured`);
     assert(exitOf(snapDir, path, ["--strict-measured"]) === 1, "--strict-measured passed");
     assert(exitOf(snapDir, path, ["--strict"]) === 0, "--strict failed on provenance alone");
+  });
+
+  await check("a full slice of the template's BATCH fits in one use_figma response", async () => {
+    // use_figma returns at most 20kb per call, and a string the plugin code
+    // returns is JSON-encoded again on the way out. Price a full slice at the
+    // largest variant the template read back, and leave room for what the
+    // simulation lacks, longer variant names and Figma's float32 numbers (an
+    // opacity of 0.4 reads back as 0.4000000059604645): at most 60% of it.
+    const readbackOf = loadSkillReadback();
+    const { componentSet, slugByName, sourceBySlug } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
+    const all = await readbackOf(componentSet, slugByName, sourceBySlug, { start: 0, batch: componentSet.children.length });
+    const sizes = Object.entries(all.readback).map(([slug, v]) => JSON.stringify(JSON.stringify({ [slug]: v })).length);
+    const slice = readbackOf.batch * Math.max(...sizes) + 200;
+    assert(slice <= 12000, `${readbackOf.batch} variants of up to ${Math.max(...sizes)} bytes come to ${slice}, too close to 20kb`);
+    return `${readbackOf.batch} variants ≈ ${(slice / 1000).toFixed(1)}kb, at up to ${Math.max(...sizes)} bytes a variant`;
+  });
+
+  await check("a slice too big for one use_figma response fails instead of being cut short", async () => {
+    // Five copies of every Button variant under new names, read in one slice:
+    // around 20kb, which the template must refuse to return.
+    const readbackOf = loadSkillReadback();
+    const { componentSet, slugByName, sourceBySlug } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
+    const children = [];
+    const names = {};
+    for (let copy = 1; copy <= 5; copy++) {
+      for (const child of componentSet.children) {
+        const name = `${child.name}, copy=${copy}`;
+        names[name] = `${slugByName[child.name]}--copy-${copy}`;
+        children.push({ ...child, name });
+      }
+    }
+    const big = { ...componentSet, children };
+    let error = null;
+    try {
+      await readbackOf(big, names, sourceBySlug, { start: 0, batch: children.length });
+    } catch (err) {
+      error = err;
+    }
+    assert(error && /lower BATCH/.test(error.message), `returned ${children.length} variants in one slice${error ? `, failing with: ${error.message}` : ""}`);
+    return error.message;
   });
 
   heading("Scoring contract");
@@ -479,12 +563,12 @@ async function main() {
     assert(exitOf(snapDir, reference, ["--strict", "--strict-age", "--strict-measured"]) === 0, "strict flags failed on an exact readback");
   });
 
-  await check("an edit made in Figma is reported as exactly that drift", () => {
+  await check("an edit made in Figma is reported as exactly that drift", async () => {
     // The falsification test: change the Figma nodes, re-read them, and the
     // score must name what changed. A readback that echoed the values it was
     // sent would still read 100%.
     const path = join(WORK, "readback-edited.json");
-    writeJson(path, buildReadback(snapDir, {
+    writeJson(path, await buildReadback(snapDir, {
       mutate(node, v, component) {
         if (component.name === "Button" && v.slug === "variant-danger--size-sm--disabled-false") {
           node.cornerRadius = 8;
@@ -501,11 +585,11 @@ async function main() {
     return "flagged backgroundColor and borderRadiusUniform only";
   });
 
-  await check("a substituted font is scored as drift", () => {
+  await check("a substituted font is scored as drift", async () => {
     // Figma's plugin context has only Google Fonts, so a system font gets
     // swapped. The template must report the family it actually used.
     const path = join(WORK, "readback-font.json");
-    writeJson(path, buildReadback(snapDir, {
+    writeJson(path, await buildReadback(snapDir, {
       mutate(node, v, component) {
         if (component.name === "Button" && v.slug === "variant-danger--size-sm--disabled-false") {
           const text = node.findOne(() => true);
@@ -656,7 +740,6 @@ async function main() {
   });
 
   await check("every use_figma code example in the skill parses", () => {
-    const AsyncFunction = (async () => {}).constructor;
     const md = readFileSync(SKILL, "utf8");
     let at = 0;
     let count = 0;
@@ -664,7 +747,7 @@ async function main() {
       const start = at + "code: `".length;
       const end = md.indexOf("`,", start);
       try {
-        new AsyncFunction("figma", "componentSet", md.slice(start, end));
+        new AsyncFunction("figma", md.slice(start, end));
       } catch (err) {
         throw new Error(`example at character ${start}: ${err.message}`);
       }
