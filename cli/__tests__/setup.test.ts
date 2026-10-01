@@ -499,6 +499,35 @@ test("every push instruction reports a pixel of text width as a font-rendering d
   }
 });
 
+test("every push instruction reads a translucent colour back with its alpha, and a hidden paint as null", () => {
+  // snap writes a translucent colour as #rrggbbaa, a soft Chip's background
+  // #4b556322, and verify compares colours as written. The readback converted
+  // only the paint's colour, so every translucent fill and stroke drifted:
+  // Figma keeps the alpha in the paint's opacity. A paint hidden with the eye
+  // icon draws nothing at any opacity, as snap records a transparent border.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /toHex\((?:fill|stroke|text\.fills\[0\])\.color\)|fill as `#rrggbb`/, `${path} still reads a colour without its alpha`);
+      assert.match(text, /alpha[^\n]*(?:as )?two more (?:lowercase )?hex digits/, `${path} never appends a translucent colour's alpha`);
+      assert.match(text, /`?#rrggbbaa`?[^\n]*`?opacity`?/, `${path} never says a translucent colour's alpha is its paint's opacity`);
+      assert.match(text, /visible: false/, `${path} never reads a hidden paint as drawing nothing`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
   // diff reads every page now, so Figma can repeat a name too, an archived
   // copy or each category's Button, and reports it as ambiguous. Comparing

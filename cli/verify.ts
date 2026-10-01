@@ -37,6 +37,10 @@ export type StyleSource = "measured" | "inferred";
 export interface ReadbackStyles {
   /** Omitted by older writers; treated as `unrecorded`, never as measured. */
   source?: StyleSource;
+  /**
+   * Colours as snap writes them: `#rrggbb`, `#rrggbbaa` when translucent, and
+   * null when nothing is drawn, so a Figma paint's opacity is the alpha byte.
+   */
   backgroundColor?: string | null;
   color?: string | null;
   borderRadiusUniform?: number | null;

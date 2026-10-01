@@ -145,6 +145,22 @@ function alpha01(hex) {
   return h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
 }
 
+/**
+ * A SOLID paint of a colour snap measured, as Figma holds it: the colour's
+ * alpha, from `#rrggbbaa`, in the paint's opacity, and each number a 32-bit
+ * float, as Figma reports them. `extra` overrides the paint's own fields.
+ */
+function solidPaint(hex, extra = {}) {
+  const { r, g, b } = rgb01(hex);
+  return {
+    type: "SOLID",
+    color: { r: Math.fround(r), g: Math.fround(g), b: Math.fround(b) },
+    opacity: Math.fround(alpha01(hex)),
+    visible: true,
+    ...extra,
+  };
+}
+
 /** What Figma reports as a frame's strokeWeight when its sides' weights differ. */
 const MIXED = Symbol("figma.mixed");
 const SIDES = ["Top", "Right", "Bottom", "Left"];
@@ -184,15 +200,17 @@ function renderBounds(node) {
  * strokeWeight of 1 Figma gives every node. A box shadow becomes an effect.
  * As in Figma, the node's own width and height leave out the stroke outside
  * them, so they are the measured border box less that stroke, and
- * absoluteRenderBounds is what Figma's would be. `strokeAlign` builds the
- * stroke another way: INSIDE, at the measured size, as the skill says to for
- * a frame given a fixed size, or CENTER.
+ * absoluteRenderBounds is what Figma's would be. A translucent colour's alpha
+ * is its paint's opacity. `strokeAlign` builds the stroke another way: INSIDE,
+ * at the measured size, as the skill says to for a frame given a fixed size,
+ * or CENTER. `strokeHidden` builds a transparent border's stroke as a designer
+ * might, a paint of full opacity hidden with the eye icon, `visible: false`.
  */
-function figmaNode(name, st, { strokeAlign = "OUTSIDE" } = {}) {
+function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
   const textNode = {
     type: "TEXT",
-    fills: text.color ? [{ type: "SOLID", color: rgb01(text.color) }] : [],
+    fills: text.color ? [solidPaint(text.color)] : [],
     fontSize: text.fontSize,
     // What Figma actually reports: a style *name*, e.g. Inter 600 is "Semi Bold".
     fontName: { family: text.fontFamily, style: STYLE_NAME[text.fontWeight] ?? "Regular" },
@@ -203,8 +221,10 @@ function figmaNode(name, st, { strokeAlign = "OUTSIDE" } = {}) {
   const share = drawn ? OUTSIDE_SHARE[strokeAlign] : 0;
   const node = {
     name,
-    fills: st.backgroundColor ? [{ type: "SOLID", color: rgb01(st.backgroundColor) }] : [],
-    strokes: drawn ? [{ type: "SOLID", color: rgb01(drawn.color ?? "#000000"), opacity: drawn.color ? 1 : 0 }] : [],
+    fills: st.backgroundColor ? [solidPaint(st.backgroundColor)] : [],
+    strokes: !drawn ? []
+      : strokeHidden ? [solidPaint(drawn.color ?? "#9ca3af", { visible: false })]
+      : [drawn.color ? solidPaint(drawn.color) : solidPaint("#000000", { opacity: 0 })],
     strokeWeight: new Set(Object.values(weight)).size === 1 ? weight.Top : MIXED,
     ...Object.fromEntries(SIDES.map((side) => [`stroke${side}Weight`, weight[side]])),
     strokeAlign,
@@ -470,12 +490,17 @@ async function buildReadback(snapDir, { mutate, withholdSource, onRead } = {}) {
 }
 
 /**
- * Variants whose border box Figma's render bounds get wrong, each one of the
- * example Button's measured variants changed as snap would measure the
- * change, with how the push builds it. A transparent 1px border is in the
- * border box, 2px each way, though it paints nothing; a box shadow is not; a
- * border on one side only makes Figma report strokeWeight as mixed; and the
- * outline Button's 2px border is built INSIDE at a fixed size, and CENTER.
+ * Variants a readback can get wrong, each one of the example Button's
+ * measured variants changed as snap would measure the change, with how the
+ * push builds it. Figma's render bounds get the first five's border box
+ * wrong: a transparent 1px border is in the border box, 2px each way, though
+ * it paints nothing; a box shadow is not; a border on one side only makes
+ * Figma report strokeWeight as mixed; and the outline Button's 2px border is
+ * built INSIDE at a fixed size, and CENTER. The same transparent border built
+ * with its paint hidden by the eye icon, visible at full opacity but for
+ * `visible: false`, draws nothing either. And a translucent fill, border and
+ * text colour, snap's `#rrggbbaa` (the soft Chip's background is #4b556322),
+ * are Figma paints whose opacity holds the alpha.
  */
 function edgeVariants(snapDir) {
   const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
@@ -487,12 +512,23 @@ function edgeVariants(snapDir) {
   const grown = (dx, dy) => ({ width: Math.round((plain.width + dx) * 100) / 100, height: plain.height + dy });
   const clear = { width: 1, style: "solid", color: null };
   const under = { width: 2, style: "solid", color: "#9ca3af" };
+  const tinted = { width: 2, style: "solid", color: "#2563eb4d" };
+  const ink = "#111827b3";
+  const transparent = { ...plain, ...grown(2, 2), border: { top: clear, right: clear, bottom: clear, left: clear }, borderUniform: clear };
   return [
-    { edge: "transparent-border", styles: { ...plain, ...grown(2, 2), border: { top: clear, right: clear, bottom: clear, left: clear }, borderUniform: clear } },
+    { edge: "transparent-border", styles: transparent },
     { edge: "box-shadow", styles: { ...plain, boxShadow: [{ offsetX: 0, offsetY: 4, blur: 12, spread: 0, color: "#0000001a", inset: false }] } },
     { edge: "bottom-border", styles: { ...plain, ...grown(0, 2), border: { top: null, right: null, bottom: under, left: null }, borderUniform: null } },
     { edge: "inside-stroke", styles: outline, strokeAlign: "INSIDE" },
     { edge: "center-stroke", styles: outline, strokeAlign: "CENTER" },
+    { edge: "hidden-stroke", styles: transparent, strokeHidden: true },
+    {
+      edge: "translucent",
+      styles: {
+        ...outline, backgroundColor: "#4b556322", color: ink, ...(outline.text ? { text: { ...outline.text, color: ink } } : {}),
+        border: { top: tinted, right: tinted, bottom: tinted, left: tinted }, borderUniform: tinted,
+      },
+    },
   ];
 }
 
@@ -525,7 +561,7 @@ async function scoreEdges(snapDir, readback) {
     const name = `edge=${e.edge}`;
     slugByName[name] = slug(e);
     sourceBySlug[slug(e)] = "measured";
-    return figmaNode(name, e.styles, { strokeAlign: e.strokeAlign });
+    return figmaNode(name, e.styles, { strokeAlign: e.strokeAlign, strokeHidden: e.strokeHidden });
   });
   const componentSet = { id: "set:Edges", type: "COMPONENT_SET", name: "Edges", children };
   const { variants } = await readSet(readback, { componentSet, slugByName, sourceBySlug }, READ_BATCH);
@@ -1398,30 +1434,71 @@ async function main() {
     // node's own size plus the stroke outside it, by strokeAlign.
     const edges = edgeVariants(snapDir);
     const node = (edge, align) => {
-      const { styles, strokeAlign } = edges.find((e) => e.edge === edge);
-      return figmaNode(edge, styles, { strokeAlign: align ?? strokeAlign });
+      const { styles, strokeAlign, strokeHidden } = edges.find((e) => e.edge === edge);
+      return figmaNode(edge, styles, { strokeAlign: align ?? strokeAlign, strokeHidden });
     };
     const beyond = (n) => `${n.absoluteRenderBounds.width - n.width},${n.absoluteRenderBounds.height - n.height}`;
     const clear = node("transparent-border");
     assert(clear.strokes.length === 1 && clear.strokeWeight === 1 && beyond(clear) === "0,0",
       `a transparent 1px border's render bounds reach ${beyond(clear)} past the node, not 0,0`);
+    // The same border with its paint hidden by the eye icon: full opacity,
+    // but visible: false, so it draws nothing and its render bounds leave it out.
+    const hidden = node("hidden-stroke");
+    const [paint] = hidden.strokes;
+    assert(hidden.strokes.length === 1 && paint.visible === false && paint.opacity === 1 && beyond(hidden) === "0,0",
+      `a 1px stroke hidden with visible: false is ${JSON.stringify(paint)}, its render bounds reaching ${beyond(hidden)} past the node, not 0,0`);
     const shadow = node("box-shadow");
     assert(beyond(shadow) === "24,24", `a shadow 4px down with a 12px blur reaches ${beyond(shadow)} past the node, not 24,24`);
     const reach = ["OUTSIDE", "CENTER", "INSIDE"].map((align) => beyond(node("inside-stroke", align))).join("; ");
     assert(reach === "4,4; 2,2; 0,0", `a visible 2px stroke reaches ${reach} past the node, OUTSIDE, CENTER and INSIDE`);
     assertEdges(await scoreEdges(snapDir, loadSkillReadback()));
-    return `render bounds would read the transparent border 2px short and the shadow 24px over; ` +
+    return `render bounds would read the transparent border 2px short, hidden or not, and the shadow 24px over; ` +
       `all ${edges.length}, with the one-sided border and strokes INSIDE and CENTER, scored with no size drift`;
   });
 
-  await check("a readback that reads render bounds, or gets a stroke wrong, fails these checks", async () => {
+  await check("a translucent fill, stroke and text colour read back as snap writes them, alpha and all", async () => {
+    // snap writes a translucent colour as #rrggbbaa, a soft Chip's background
+    // #4b556322, and verify compares colours as written. Figma keeps a
+    // paint's alpha in its opacity, so a readback that converts only the
+    // paint's colour reads #4b5563, and every translucent paint drifts. And a
+    // stroke hidden with the eye icon reads as null, as snap records a
+    // transparent border, whatever its paint's opacity.
+    const edges = Object.fromEntries(edgeVariants(snapDir).map((e) => [e.edge, e]));
+    const { styles } = edges.translucent;
+    const want = { backgroundColor: "#4b556322", color: "#111827b3", border: "#2563eb4d" };
+    assert(styles.backgroundColor === want.backgroundColor && (styles.text?.color ?? styles.color) === want.color
+      && styles.borderUniform?.color === want.border, "the translucent edge variant no longer carries the colours this check reads");
+    const built = figmaNode("translucent", styles);
+    const opacities = [built.fills[0], built.strokes[0], built.findOne(() => true).fills[0]].map((p) => Math.round(p.opacity * 255));
+    assert(opacities.join() === "34,77,179", `the simulated paints' opacities come to ${opacities.join()} of 255, not 34,77,179`);
+    const readback = loadSkillReadback();
+    const verdicts = await scoreEdges(snapDir, readback);
+    assertEdges(verdicts);
+    const slice = await readback.read(
+      { id: "set:One", type: "COMPONENT_SET", name: "One", children: [built, figmaNode("hidden", edges["hidden-stroke"].styles, { strokeHidden: true })] },
+      { translucent: "edge-translucent", hidden: "edge-hidden-stroke" },
+      { "edge-translucent": "measured", "edge-hidden-stroke": "measured" },
+    );
+    const read = slice.readback["edge-translucent"];
+    const got = { backgroundColor: read.backgroundColor, color: read.color, border: read.borderUniform?.color };
+    assert(JSON.stringify(got) === JSON.stringify(want), `read back ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    const hidden = slice.readback["edge-hidden-stroke"].borderUniform;
+    assert(hidden?.width === 1 && hidden.color === null, `a stroke hidden with visible: false read back as ${JSON.stringify(hidden)}`);
+    return `fill ${got.backgroundColor}, stroke ${got.border}, text ${got.color}; a hidden 1px stroke null; ` +
+      `${verdicts.translucent.status} and ${verdicts["hidden-stroke"].status}`;
+  });
+
+  await check("a readback that reads render bounds, or gets a stroke or a colour wrong, fails these checks", async () => {
     // Each mutant rewrites the shipped readback template, and has to fail
-    // the check above, which the template passes.
+    // the checks above, which the template passes.
     const T = {
       size: "width: child.width + edge('Left') + edge('Right'),\n        height: child.height + edge('Top') + edge('Bottom'),",
       outside: "const outside = stroke ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;",
       side: "return outside * (typeof own === 'number' ? own : child.strokeWeight);",
-      colour: "color: shows(stroke) ? toHex(stroke.color) : null",
+      colour: "color: hexOf(stroke) }",
+      hidden: "if (paint.visible === false) return null;",
+      alpha: "+ (alpha < 255 ? byte(alpha) : '');",
+      opacity: "* (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255);",
     };
     const mutants = {
       "reads the size from absoluteRenderBounds, as the live push did": (code) => code.replace(T.size,
@@ -1432,9 +1509,13 @@ async function main() {
       "counts the strokeWeight of a node with no stroke": (code) => code.replace(T.outside,
         "const outside = { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0;"),
       "counts a stroke only while its paint shows": (code) => code.replace(T.outside,
-        "const outside = stroke && shows(stroke) ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;"),
+        "const outside = stroke && hexOf(stroke) ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;"),
       "reads strokeWeight, never each side's weight": (code) => code.replace(T.side, "return outside * child.strokeWeight;"),
-      "reports the colour of a stroke that paints nothing": (code) => code.replace(T.colour, "color: toHex(stroke.color)"),
+      "reports the colour of a stroke that paints nothing": (code) => code.replace(T.colour,
+        "color: hexOf({ ...stroke, visible: true, opacity: 1 }) }"),
+      "reports the colour of a stroke hidden with visible: false": (code) => code.replace(T.hidden, ""),
+      "drops a translucent colour's alpha, as toHex(paint.color) did": (code) => code.replace(T.alpha, ";"),
+      "reads a paint's colour without its opacity": (code) => code.replace(T.opacity, "* 255);"),
     };
     const failed = [];
     for (const [mutant, mutate] of Object.entries(mutants)) {

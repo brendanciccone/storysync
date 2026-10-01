@@ -166,6 +166,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | `gap.column` | `itemSpacing` |
    | `borderRadiusUniform`, else `borderRadius` | `cornerRadius`, else per-corner |
    | `borderUniform` | stroke weight + colour (`null` means no stroke; a `color` of `null` is a transparent border, a stroke with an invisible paint: see below) |
+   | a colour written `#rrggbbaa` | a translucent colour: `#rrggbb` with the paint's `opacity` at `aa` / 255, so `#4b556322` is `#4b5563` at an opacity of 34 / 255, about 0.133; for a shadow, the effect colour's `a` |
    | `boxShadow[]` | `DROP_SHADOW` effects |
    | `display: flex` + `flexDirection` | auto-layout direction |
    | `fontSize` / `fontWeight` / `fontFamily` | text style |
@@ -472,11 +473,24 @@ use_figma({
     for (const child of children) {
       const fill = child.fills && child.fills[0];
       const stroke = child.strokes && child.strokes[0];
-      const toHex = (c) => '#' + [c.r, c.g, c.b]
-        .map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
-      // snap records a transparent border's colour as null, so read a stroke
-      // whose paint draws nothing as null too.
-      const shows = (paint) => paint.visible !== false && paint.opacity !== 0;
+      // A paint's colour as snap writes one, since verify compares colours
+      // as written: #rrggbb, then the alpha as two more hex digits, rounded
+      // from alpha x 255, when they come to less than ff (a soft Chip's
+      // background is #4b556322), and null when they come to 00, as snap
+      // records a transparent border. Figma keeps a paint's alpha in its
+      // opacity and an effect colour's in its a, so combine both; and a
+      // paint hidden with the eye icon, visible: false, draws nothing at any
+      // opacity, so it reads as null too.
+      const byte = (n) => n.toString(16).padStart(2, '0');
+      const hexOf = (paint) => {
+        if (paint.visible === false) return null;
+        const c = paint.color;
+        const alpha = Math.round((typeof c.a === 'number' ? c.a : 1)
+          * (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255);
+        if (alpha === 0) return null;
+        return '#' + [c.r, c.g, c.b].map((x) => byte(Math.round(x * 255))).join('')
+          + (alpha < 255 ? byte(alpha) : '');
+      };
       // Size from the geometry, never absoluteRenderBounds. snap's width and
       // height are the browser's border box: a border takes its space there
       // even when transparent, and a box-shadow takes none. Render bounds
@@ -513,12 +527,14 @@ use_figma({
         // SOURCE_BY_SLUG above from that step's status, so a variant snap
         // could not measure cannot be labelled measured by omission.
         source: SOURCE_BY_SLUG[slugFor(child)] || 'inferred',
-        backgroundColor: fill && fill.type === 'SOLID' ? toHex(fill.color) : null,
-        color: text && text.fills[0] ? toHex(text.fills[0].color) : null,
+        backgroundColor: fill && fill.type === 'SOLID' ? hexOf(fill) : null,
+        color: text && text.fills[0] ? hexOf(text.fills[0]) : null,
         borderRadiusUniform: typeof child.cornerRadius === 'number' ? child.cornerRadius : null,
         padding: { top: child.paddingTop, right: child.paddingRight,
                    bottom: child.paddingBottom, left: child.paddingLeft },
-        borderUniform: stroke ? { width: child.strokeWeight, style: 'solid', color: shows(stroke) ? toHex(stroke.color) : null } : null,
+        // A stroke whose paint draws nothing is a transparent border: its
+        // colour reads as null, and its weight still counts, as above.
+        borderUniform: stroke ? { width: child.strokeWeight, style: 'solid', color: hexOf(stroke) } : null,
         fontSize: text ? text.fontSize : undefined,
         fontWeight: text ? weightOf(text.fontName.style) : undefined,
         // Report the family Figma actually used: the plugin context has only
