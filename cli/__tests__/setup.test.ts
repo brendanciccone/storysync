@@ -355,7 +355,7 @@ test("every push instruction lays the set out again after re-running a part", ()
         `${path} adds a missing variant without laying the set out again`);
       // A part refused for a variant the set holds twice changed nothing, so
       // the slice it would have built is still to build.
-      assert.match(text, /`The set has 2 variants named …`[^\n]*raised it, the refused part changed nothing, so re-run that build part, and then the last part, before reading the slice again/,
+      assert.match(text, /`The set has 2 variants named …`[^\n]*raised it, the refused part changed nothing, and the parts after it never ran: re-run that build part and every part after it, through the last part, then read the slices/,
         `${path} never re-runs a build part the doubled variant refused`);
     }
   } finally {
