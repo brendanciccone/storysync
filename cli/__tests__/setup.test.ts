@@ -334,9 +334,10 @@ test("every push instruction re-pushes in place and says what to do when a readb
 });
 
 test("every push instruction lays the set out again after re-running a part", () => {
-  // Only the build's last part lays the set out and checks it. A part re-run
-  // afterwards, to add a variant the readback found missing, appends it at
-  // 0,0 on top of another, where nothing checks for overlaps.
+  // A part re-run to add a variant the readback found missing appended it at
+  // 0,0 on top of another, where nothing checked for overlaps, when only the
+  // last part laid the set out. Every part lays the whole set out now, so a
+  // part re-run on its own leaves the set laid out.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -350,13 +351,49 @@ test("every push instruction lays the set out again after re-running a part", ()
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
-      assert.match(text, /any part re-run after the last part must be followed by the last part again/, `${path} lets a part re-run after the last one leave the set unlaid`);
-      assert.match(text, /`The set has 0 variants named …`[^`]*re-run the build part[^`]*then re-run the last part, which lays the whole set out and checks it, before reading that slice again/,
+      assert.match(text, /every part lays the whole set out again and checks it, so a part re-run on its own leaves the set laid out/i, `${path} lets a re-run part leave the set unlaid`);
+      assert.doesNotMatch(text, /only the last part lays/i, `${path} still has only the last part lay the set out`);
+      assert.match(text, /`The set has 0 variants named …`[^`]*re-run the build part that names it, which adds only [^`]*and lays the whole set out again[^`]*then read that slice again/,
         `${path} adds a missing variant without laying the set out again`);
       // A part refused for a variant the set holds twice changed nothing, so
       // the slice it would have built is still to build.
       assert.match(text, /`The set has 2 variants named …`[^\n]*raised it, the refused part changed nothing, and the parts after it never ran: re-run that build part and every part after it, through the last part, then read the slices/,
         `${path} never re-runs a build part the doubled variant refused`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction lays a set out in snap's order, not its children's", () => {
+  // A re-push laid a set out in the order an earlier build had left its
+  // children in, so the primary row's columns read sm, lg, sm disabled, lg
+  // disabled and the others' sm, sm disabled, lg disabled, lg. The layout
+  // follows snap's variantProperties, each property's default first, and the
+  // layers panel, which shows the last child at the top, reads the same way.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /`variantProperties`[^\n]*copied as they are/, `${path} never has each part carry snap's variantProperties`);
+      assert.match(text, /never by the set's children/, `${path} lets the layout follow the set's child order`);
+      assert.match(text, /default first[^\n]*top-left, where Figma takes a set's default variant from/, `${path} never puts the default variant top-left`);
+      assert.match(text, /snap's `true, false` with a `false` default reads `false, true`|snap lists its values `true, false`, so with a `false` default it reads `false, true`/,
+        `${path} never says how a BOOLEAN property is ordered`);
+      assert.match(text, /With one property, each value is a row of one/i, `${path} never says how one property is laid out`);
+      assert.match(text, /three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled/, `${path} gives no example of the grid`);
+      assert.match(text, /a row of its own below the others/, `${path} never says where a variant snap does not have goes`);
+      assert.match(text, /last child at the top/, `${path} never says the layers panel shows the last child at the top`);
+      assert.match(text, /`extra`/, `${path} never has the build count the variants snap does not have`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });

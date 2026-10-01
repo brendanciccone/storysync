@@ -429,7 +429,8 @@ async function realisticSet(snapDir) {
     return figmaNode(name, styles[i % styles.length]);
   });
   const componentSet = { id: "set:Realistic", type: "COMPONENT_SET", name: "Button", children };
-  return { componentSet, slugByName, sourceBySlug, styles };
+  const properties = Object.entries(axes).map(([name, values]) => ({ name, type: "VARIANT", values, defaultValue: values[0] }));
+  return { componentSet, slugByName, sourceBySlug, styles, properties };
 }
 
 const KIDS = Symbol("children");
@@ -442,7 +443,10 @@ const KIDS = Symbol("children");
  * findAllWithCriteria searches everything under it, in sections and frames
  * too. `nodes(type)` lists every node of a type, wherever it is, for the
  * checks to inspect, and `container(type, name, parent)` adds a section or
- * frame for a designer's moves.
+ * frame for a designer's moves. Nodes have a position and a size, a new
+ * component 100 by 100 at 0,0 as in Figma; children are kept back to front,
+ * so appendChild moves a child already there to the end, the top of the
+ * layers panel.
  */
 function figmaDocument() {
   let count = 0;
@@ -450,7 +454,7 @@ function figmaDocument() {
   const byId = new Map();
   const pages = [];
   const create = (type, name) => {
-    const node = { id: `${count++}:1`, type, name, parent: null };
+    const node = { id: `${count++}:1`, type, name, parent: null, x: 0, y: 0, width: 100, height: 100 };
     byId.set(node.id, node);
     return node;
   };
@@ -471,6 +475,10 @@ function figmaDocument() {
         throw new Error(`a component set takes components, not a ${child.type}`);
       }
       adopt(node, child);
+    };
+    node.resizeWithoutConstraints = (width, height) => {
+      if (!(width > 0 && height > 0)) throw new Error(`cannot resize a ${type} to ${width} by ${height}`);
+      Object.assign(node, { width, height });
     };
     node.findAllWithCriteria = ({ types }) => node.children.flatMap((child) => [
       ...(types.includes(child.type) ? [child] : []),
@@ -507,6 +515,9 @@ function figmaDocument() {
         const set = container("COMPONENT_SET", "Component 1");
         adopt(parent, set);
         for (const component of components) adopt(set, component);
+        // Figma sizes a new set to its variants where they stand.
+        set.width = Math.max(...components.map((c) => c.x + c.width));
+        set.height = Math.max(...components.map((c) => c.y + c.height));
         return set;
       },
     };
@@ -524,28 +535,37 @@ function figmaDocument() {
 /**
  * The build template from the shipped skill: one part of a set.
  *
- * Its VARIANTS table is replaced with the part's own variants, written an
- * entry a line, and PAGE_NAME, SET_NAME, SET_ID and PART with the call's own.
- * applyStyles is where the agent writes the Plugin API code that styles a
- * variant; `run()` gives it the simulated node of figmaNode() for those
- * styles, so the readback template reads back exactly what the part sent.
- * Everything else, finding the set and its variants and creating what is
- * missing, runs verbatim. `code(..., { styled: false })` leaves applyStyles
- * as the skill ships it, for pricing what an agent would send.
+ * Its VARIANTS table is replaced with the part's own variants, and its
+ * PROPERTIES table with the component's variantProperties from snap, each
+ * written an entry a line, and PAGE_NAME, SET_NAME, SET_ID and PART with the
+ * call's own. applyStyles is where the agent writes the Plugin API code that
+ * styles a variant; `run()` gives it the simulated node of figmaNode() for
+ * those styles, sized to the measured width and height, so the readback
+ * template reads back exactly what the part sent. Everything else, finding
+ * the set and its variants, creating what is missing, and laying the set out,
+ * runs verbatim. `code(..., { styled: false })` leaves applyStyles as the
+ * skill ships it, for pricing what an agent would send. `mutate` rewrites the
+ * shipped code, to show a check fails a template that gets something wrong.
  */
-function loadSkillBuild() {
+function loadSkillBuild(mutate = null) {
   const block = useFigmaBlock(/^Create or update/);
   const list = /const VARIANTS = \[[\s\S]*?\n\s*\];/;
+  const table = /const PROPERTIES = \[[\s\S]*?\n\s*\];/;
   const styler = /const applyStyles = async \(variant, styles\) => \{[\s\S]*?\n\s*\};/;
   assert(list.test(block), "the build template has no VARIANTS table to loop over");
+  assert(table.test(block), "the build template has no PROPERTIES table to lay the set out by");
   assert(styler.test(block), "the build template has no applyStyles for the agent's styling code");
   for (const name of ["PAGE_NAME", "SET_NAME", "SET_ID", "PART"]) {
     assert(constant(name).test(block), `the build template defines no ${name}`);
   }
   const part = Number(/const PART = (\d+);/.exec(block)?.[1]);
   assert(part > 0, "the build template's PART is not a number");
-  const code = (variants, constants, { styled = true } = {}) => {
-    const body = withConstants(block, constants)
+  const shipped = mutate ? mutate(block) : block;
+  assert(!mutate || shipped !== block, "the mutation no longer matches the build template");
+  const code = (variants, constants, properties, { styled = true } = {}) => {
+    assert(Array.isArray(properties), "a build part needs the component's variantProperties");
+    const body = withConstants(shipped, constants)
+      .replace(table, () => `const PROPERTIES = [\n${properties.map((p) => `      ${JSON.stringify(p)},`).join("\n")}\n    ];`)
       .replace(list, () => `const VARIANTS = [\n${variants.map(({ name, styles }) => `      ${JSON.stringify({ name, styles })},`).join("\n")}\n    ];`);
     return styled
       ? body.replace(styler, () => "const applyStyles = async (variant, styles) => {\n      Object.assign(variant, look(variant.name, styles));\n    };")
@@ -553,28 +573,41 @@ function loadSkillBuild() {
   };
   const look = (name, styles) => {
     const { name: _, ...node } = figmaNode(name, styles);
-    return node;
+    return { ...node, width: Math.round(styles.width), height: Math.round(styles.height) };
   };
-  const run = async (figma, variants, constants) =>
-    JSON.parse(await new AsyncFunction("figma", "look", code(variants, constants))(figma, look));
-  return { part, code, run };
+  const run = async (figma, variants, constants, properties) =>
+    JSON.parse(await new AsyncFunction("figma", "look", code(variants, constants, properties))(figma, look));
+  return { part, code, run, look };
 }
 
 /**
  * Pushes one set the way the skill says to: `variants` in snap's order, in
  * parts of `part`, the first part finding the set by name and every later one
- * by the id the first returned. Returns what each part returned.
+ * by the id the first returned, each carrying the component's `properties`.
+ * Returns what each part returned.
  */
-async function pushSet(build, doc, { page, set, variants, part }) {
+async function pushSet(build, doc, { page, set, variants, part, properties }) {
   const parts = [];
   let id = null;
   for (const named of slices(variants, part)) {
-    const result = await build.run(doc.call(), named, { PAGE_NAME: page, SET_NAME: set, SET_ID: id, PART: part });
+    const result = await build.run(doc.call(), named, { PAGE_NAME: page, SET_NAME: set, SET_ID: id, PART: part }, properties);
     assert(id === null || result.id === id, `a part returned the set ${result.id}, not ${id}`);
     id = result.id;
     parts.push(result);
   }
   return parts;
+}
+
+/** Throws unless no two of a set's variants intersect and the set contains them all. */
+function assertLaidOut(set) {
+  const boxes = set.children.map((n) => ({ name: n.name, x: n.x, y: n.y, r: n.x + n.width, b: n.y + n.height }));
+  boxes.forEach((a, i) => {
+    assert(a.x >= 0 && a.y >= 0 && a.r <= set.width && a.b <= set.height,
+      `"${a.name}" at ${a.x},${a.y} to ${a.r},${a.b} is outside the set's ${set.width} by ${set.height}`);
+    for (const b of boxes.slice(i + 1)) {
+      assert(!(a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b), `"${a.name}" and "${b.name}" overlap`);
+    }
+  });
 }
 
 // --- Simulated Figma for the audit -------------------------------------------
@@ -990,9 +1023,13 @@ async function main() {
   await check("a part of a set built the way the skill says fits use_figma's code limit", async () => {
     // The skill builds a large set in parts. Price one part at the build
     // template with its table filled in with that many variants' names and
-    // full measured styles, each as large as the example's largest: the
-    // agent's own Plugin API code has to fit in what is left, at least 40% of
-    // the limit.
+    // full measured styles, each as large as the example's largest, and its
+    // properties table with the set's: the agent's own Plugin API code has to
+    // fit in what is left, at least 15,000 characters. Every part carries the
+    // layout, which lays out and checks the whole set, so push all 256
+    // variants through the simulated document too: each part has to return
+    // counts small enough for one response, and leave every variant in the
+    // grid of 4 rows of 64.
     const md = readFileSync(SKILL, "utf8");
     const part = Number(/in parts of at most (\d+) variants/.exec(md)?.[1]);
     assert(part > 0, "the skill gives no number of variants to build a set in parts of");
@@ -1002,10 +1039,24 @@ async function main() {
     const largest = set.styles.reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
     const variants = Object.keys(set.slugByName).map((name) => ({ name, styles: largest }));
     const constants = { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: "12:34", PART: part };
-    const code = build.code(variants.slice(0, part), constants, { styled: false }).length;
-    assert(code <= CODE_LIMIT * 0.6, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
-    const whole = build.code(variants, constants, { styled: false }).length;
-    return `${part} variants a call: ${code} characters before the agent's own code; all 256 would be ${whole}`;
+    const code = build.code(variants.slice(0, part), constants, set.properties, { styled: false }).length;
+    assert(code <= CODE_LIMIT - 15000, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
+    const whole = build.code(variants, constants, set.properties, { styled: false }).length;
+
+    const doc = figmaDocument();
+    const named = Object.keys(set.slugByName).map((name, i) => ({ name, styles: set.styles[i % set.styles.length] }));
+    const parts = await pushSet(build, doc, { page: "Forms", set: "Button", variants: named, part, properties: set.properties });
+    const response = Math.max(...parts.map((r) => JSON.stringify(JSON.stringify(r)).length));
+    assert(response < 1000, `a part returns ${response} characters encoded: it should return counts, not names`);
+    const last = parts[parts.length - 1];
+    assert(parts.length === 11 && last.variants === 256 && last.rows === 4 && last.columns === 64 && last.extra === 0,
+      `${parts.length} parts left ${last.variants} variants in ${last.rows} rows of ${last.columns}, ${last.extra} extra`);
+    const [built] = doc.nodes("COMPONENT_SET");
+    const panel = [...built.children].reverse().map((n) => n.name);
+    assert(panel.join("\n") === named.map((v) => v.name).join("\n"), "the layers panel does not read in snap's order");
+    assertLaidOut(built);
+    return `${part} variants a call: ${code} characters before the agent's own code; all 256 would be ${whole}; ` +
+      `256 pushed in ${parts.length} parts returning up to ${response} encoded, laid out in 4 rows of 64`;
   });
 
   await check("pushing a set again updates its variants in place and adds none twice", async () => {
@@ -1019,7 +1070,9 @@ async function main() {
     const measured = expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
     const PART = 5;
     const doc = figmaDocument();
-    const push = (variants) => pushSet(build, doc, { page: "Forms", set: "Button", variants, part: PART });
+    const properties = component.variantProperties;
+    const push = (variants, props = properties) =>
+      pushSet(build, doc, { page: "Forms", set: "Button", variants, part: PART, properties: props });
     const sum = (parts, key) => parts.reduce((n, p) => n + p[key], 0);
     const theSet = ({ doubled = 0 } = {}) => {
       const sets = doc.nodes("COMPONENT_SET").filter((s) => s.name === "Button");
@@ -1055,7 +1108,8 @@ async function main() {
     // the one snap no longer has stays for step 6 to report.
     const dropped = measured[measured.length - 1].name;
     const added = { name: "variant=ghost, size=sm, disabled=false", styles: measured[0].styles };
-    const third = await push([...measured.slice(0, -1), added]);
+    const ghost = properties.map((p) => (p.name === "variant" ? { ...p, values: [...p.values, "ghost"] } : p));
+    const third = await push([...measured.slice(0, -1), added], ghost);
     assert(sum(third, "added") === 1 && sum(third, "updated") === 11,
       `with one variant dropped and one new, the push added ${sum(third, "added")} and updated ${sum(third, "updated")}`);
     const names = theSet().children.map((c) => c.name);
@@ -1079,7 +1133,7 @@ async function main() {
     };
     const purple = measured.map((v) => ({ ...v, styles: { ...v.styles, backgroundColor: "#7c3aed" } }));
     const oversized = await refusal(() =>
-      build.run(doc.call(), purple.slice(0, PART + 1), { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: null, PART }));
+      build.run(doc.call(), purple.slice(0, PART + 1), { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: null, PART }, properties));
     assert(oversized && new RegExp(`names ${PART + 1} variants`).test(oversized),
       `a part of ${PART + 1} variants at a PART of ${PART} ${oversized ? `failed with: ${oversized}` : "was built"}`);
     const repeated = await refusal(() => push([purple[0], purple[1], purple[0]]));
@@ -1108,6 +1162,121 @@ async function main() {
       `a push onto a page holding two Button sets ${ambiguous ? `failed with: ${ambiguous}` : "was built"}, leaving ${sets.length} sets`);
     return `12 added, then 12 updated and none added, then 1 added beside 1 snap dropped with the set in a section; ` +
       `a part too big, one naming a variant twice, a doubled variant and two sets of its name refused`;
+  });
+
+  await check("every part lays the set out in snap's order, whatever order its variants are in", async () => {
+    // A re-push into a set an earlier build had left in another order laid it
+    // out in that order: the primary row read sm, lg, sm disabled, lg disabled
+    // and the others sm, sm disabled, lg disabled, lg. The layout orders the
+    // set by the variantProperties snap records instead, each property's
+    // default first: rows primary, danger and outline, columns sm, sm
+    // disabled, lg, lg disabled, the layers panel reading the same way, and a
+    // variant snap does not have in a row of its own below. Here the set
+    // starts with its variants stacked at 0,0 in a scrambled order, the extra
+    // one among them, and is pushed in parts of 5.
+    const { component } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
+    const properties = component.variantProperties;
+    const declared = properties.map((p) => `${p.name}=${p.values.join("|")} (${p.defaultValue})`).join(", ");
+    assert(declared === "variant=primary|danger|outline (primary), size=sm|lg (sm), disabled=true|false (false)",
+      `snap records the Button's properties as ${declared}`);
+    const ROWS = ["primary", "danger", "outline"];
+    const COLUMNS = ["size=sm, disabled=false", "size=sm, disabled=true", "size=lg, disabled=false", "size=lg, disabled=true"];
+    const reading = ROWS.flatMap((row) => COLUMNS.map((col) => `variant=${row}, ${col}`));
+    const measured = expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
+    const EXTRA = "variant=ghost, size=sm, disabled=false";
+    const SCRAMBLE = [9, 2, 6, 11, 0, 4, 8, 1, 10, 5, 3, 7];
+    assert([...SCRAMBLE].sort((a, b) => a - b).join() === measured.map((_, i) => i).join(), "SCRAMBLE is not an order of the 12 variants");
+    const PART = 5;
+
+    const pushInto = async (build, order) => {
+      // The set an earlier build left on its page.
+      const doc = figmaDocument();
+      const call = doc.call();
+      const page = call.createPage();
+      page.name = "Forms";
+      await call.setCurrentPageAsync(page);
+      const earlier = SCRAMBLE.map((i) => measured[i]);
+      earlier.splice(4, 0, { name: EXTRA, styles: measured[0].styles });
+      const set = call.combineAsVariants(earlier.map(({ name, styles }) => {
+        const node = call.createComponent();
+        Object.assign(node, build.look(name, styles), { name });
+        return node;
+      }), page);
+      set.name = "Button";
+      const parts = await pushSet(build, doc, { page: "Forms", set: "Button", variants: order, part: PART, properties });
+      return { set, parts };
+    };
+    const assertGrid = ({ set, parts }) => {
+      const last = parts[parts.length - 1];
+      assert(last.id === set.id && last.variants === 13 && last.rows === 3 && last.columns === 4 && last.extra === 1,
+        `the last part returned ${JSON.stringify(last)}`);
+      const at = new Map(set.children.map((n) => [n.name, n]));
+      for (const row of ROWS) {
+        const read = set.children.filter((n) => n.name.startsWith(`variant=${row}, `)).sort((a, b) => a.x - b.x);
+        const columns = read.map((n) => n.name.slice(`variant=${row}, `.length));
+        assert(columns.join("; ") === COLUMNS.join("; "), `the ${row} row reads ${columns.join("; ")}`);
+        assert(new Set(read.map((n) => n.y)).size === 1, `the ${row} row's variants are at ${read.map((n) => n.y).join(", ")} down`);
+      }
+      const rowY = ROWS.map((row) => at.get(`variant=${row}, ${COLUMNS[0]}`).y);
+      assert(rowY.every((y, r) => r === 0 || y > rowY[r - 1]), `the rows run ${ROWS.join(", ")} at ${rowY.join(", ")} down`);
+      for (const col of COLUMNS) {
+        const xs = ROWS.map((row) => at.get(`variant=${row}, ${col}`).x);
+        assert(new Set(xs).size === 1, `the ${col} column is at ${xs.join(", ")} across`);
+      }
+      assertLaidOut(set);
+      const extra = at.get(EXTRA);
+      const bottom = Math.max(...reading.map((name) => at.get(name).y + at.get(name).height));
+      assert(extra.y >= bottom, `${EXTRA} is at ${extra.y} down, inside the grid, which ends at ${bottom}`);
+      const panel = [...set.children].reverse().map((n) => n.name);
+      assert(panel.join("; ") === [...reading, EXTRA].join("; "), `the layers panel reads ${panel.join("; ")}`);
+      return set.children.map((n) => [n.name, n.x, n.y]);
+    };
+
+    const build = loadSkillBuild();
+    const first = await pushInto(build, measured);
+    const laid = assertGrid(first);
+    assert(first.parts.every((p) => p.added === 0), "the push added a variant the set already had");
+    // Parts carrying the variants in another order lay the set out the same.
+    const reversed = await pushInto(build, [...measured].reverse());
+    assert(JSON.stringify(assertGrid(reversed)) === JSON.stringify(laid), "parts in another order laid the set out differently");
+
+    // With one property, each value is a row of one: Frozen's a, b and c.
+    const frozen = simulatedSets(snapDir).find((s) => s.component.name === "Frozen").component;
+    const single = figmaDocument();
+    const [only] = await pushSet(build, single, {
+      page: "Forms", set: "Frozen", part: PART, properties: frozen.variantProperties,
+      variants: expandVariants(frozen).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles })).reverse(),
+    });
+    const [column] = single.nodes("COMPONENT_SET");
+    const down = [...column.children].sort((a, b) => a.y - b.y);
+    assert(only.rows === 3 && only.columns === 1 && new Set(down.map((n) => n.x)).size === 1 &&
+      down.map((n) => n.name).join("; ") === "variant=a; variant=b; variant=c",
+      `Frozen's one property laid out as ${only.rows} rows of ${only.columns}: ${down.map((n) => `${n.name} at ${n.x},${n.y}`).join("; ")}`);
+    assertLaidOut(column);
+
+    // The check fails a layout that gets the order wrong. Each mutant rewrites
+    // the shipped template, and has to fail where the template passes.
+    const mutants = {
+      "lays the variants out in the set's child order, as the live push did": (code) => code.replace(
+        "const take = (name) => (free.get(name) || []).shift() || null;",
+        "const take = () => { for (const list of free.values()) if (list.length) return list.shift(); return null; };"),
+      "takes each property's values in the order snap lists them, not default first": (code) => code.replace(
+        "[p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]", "p.values"),
+      "appends the variants first to last, so the layers panel reads bottom-up": (code) => code
+        .replace("[...order].reverse()", "order")
+        .replace("order[order.length - 1 - i]", "order[i]"),
+    };
+    for (const [mutant, mutate] of Object.entries(mutants)) {
+      let failure = null;
+      try {
+        assertGrid(await pushInto(loadSkillBuild(mutate), measured));
+      } catch (err) {
+        failure = err.message;
+      }
+      assert(failure, `a template that ${mutant} passed`);
+    }
+    return `3 rows of 4 in snap's order and the extra variant below, from a scrambled set and from parts in reverse; ` +
+      `one property in a column of 3; ${Object.keys(mutants).length} mutants fail`;
   });
 
   await check("the set's variant names are listed a slice at a time, within both limits", async () => {

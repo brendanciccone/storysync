@@ -131,6 +131,11 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 {
   "components": [{
     "title": "Forms/Button",
+    "variantProperties": [
+      { "name": "variant", "type": "VARIANT", "values": ["primary", "danger", "outline"], "defaultValue": "primary" },
+      { "name": "size", "type": "VARIANT", "values": ["sm", "lg"], "defaultValue": "sm" },
+      { "name": "disabled", "type": "BOOLEAN", "values": ["true", "false"], "defaultValue": "false" }
+    ],
     "base": {
       "combination": { "variant": "primary", "size": "sm", "disabled": "false" },
       "slug": "variant-primary--size-sm--disabled-false",
@@ -151,7 +156,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 }
 ```
 
-   A variant's full styles are the base with its `delta` applied. Translate directly:
+   A variant's full styles are the base with its `delta` applied. `variantProperties` lists the component's variant properties in order, each with its values and its default: step 5 lays the set out by it. Translate directly:
 
    | Measured | Figma |
    |---|---|
@@ -169,7 +174,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    Five things that go wrong by default, in ways `verify` either will not catch or will not explain:
 
    - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's rendered size must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`.
-   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable.
+   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable. **Order the grid by snap's `variantProperties`, never by the set's children**: their order is whatever an earlier push or a designer left, and a set laid out in it gets rows whose columns disagree. Take the properties in snap's order and each one's values default first, then the rest in snap's order, so the all-defaults variant sits top-left, where Figma takes a set's default variant from. Each column is then one combination of the other properties in every row, and the layers panel lists the variants in the same order. Step 5's build template does all of this; give it the properties and leave its layout as it is.
    - **Assert the layout before returning.** After positioning, check that no two variants' bounding boxes intersect and that the set's bounds contain every child. Geometry comparison catches variants clipped by an undersized frame, but two same-sized variants stacked inside an adequately sized one measure correctly and stay invisible — so the check has to happen here, at write time.
    - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no Times. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them. If the measured `fontFamily` is not a Google font, say so and name the substitute you used rather than letting Figma pick one silently: the substitution usually cascades, since e.g. Arimo (Figma's suggestion for Arial) has no SemiBold, so a 600 weight lands as 700 and drifts twice.
    - **`fontAvailable: false` means the measurement describes a substituted typeface.** `fontFamily` is the family the code *asked for*; if the browser could not load it, the geometry and text you measured are not the intended font's. Say so in the summary. If Figma also lacks the font, name it explicitly — "Figma has no *Inter*; install it or map it" — rather than letting it surface as unexplained text drift. storysync cannot install fonts into Figma; that is a manual step in the desktop app.
@@ -187,9 +192,17 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
 
-   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set by name anywhere on its page, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and the last lays out and checks the whole set. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
+   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set by name anywhere on its page, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and every part lays out and checks the whole set as it then stands, so the last leaves it laid out in full. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
 
-   **A part updates the variants it names and adds only the ones the set lacks.** On a set an earlier push built, or one a failed call left half done, each part finds each of its variants among the set's children by name, restyles it if it is there and creates it if it is not. It never creates a second variant of a name the set already has: it refuses, before changing anything, a part that names a variant twice, and a part whose set already holds two of a name it carries — with the error step 6's readback gives for that, and the same remedy. So a part can be retried, and a push repeated, without duplicating anything; but only the last part lays the set out and checks it, so any part re-run after the last part must be followed by the last part again. A variant in Figma that snap no longer has — one for a value the code has since dropped — is named by no part, so the build leaves it alone: step 6 finds it, and you report it. Delete it only if the user asks; a designer may have built on it.
+   **A part updates the variants it names and adds only the ones the set lacks.** On a set an earlier push built, or one a failed call left half done, each part finds each of its variants among the set's children by name, restyles it if it is there and creates it if it is not. It never creates a second variant of a name the set already has: it refuses, before changing anything, a part that names a variant twice, and a part whose set already holds two of a name it carries — with the error step 6's readback gives for that, and the same remedy. So a part can be retried, and a push repeated, without duplicating anything; and every part lays the whole set out again and checks it, so a part re-run on its own leaves the set laid out. A variant in Figma that snap no longer has — one for a value the code has since dropped — is named by no part, so the build leaves it alone, laid out in a row of its own below the others: step 6 finds it, and you report it. Delete it only if the user asks; a designer may have built on it.
+
+   **Every part lays the whole set out in snap's order, and checks it.** Give each part the component's `variantProperties` from snap's output as `PROPERTIES`, copied as they are: the same table on every part, a few hundred characters even for 256 variants. Leave the template's layout as it is. It orders the set by `PROPERTIES`, never by the set's children, whose order is whatever an earlier push or a designer left:
+
+   - Each property's values run default first, then the rest in snap's order, so the all-defaults variant, snap's base, sits top-left, where Figma takes a set's default variant from. A `BOOLEAN` property is ordered the same way: snap lists its values `true, false`, so with a `false` default it reads `false, true`.
+   - The first property's values are the rows, top to bottom; the combinations of the other properties, in their order with the last varying fastest, are the columns, left to right. With one property, each value is a row of one. A combination the set lacks leaves a gap, so the columns still line up, and a row or column no variant fills at all is left out. Each column is as wide as its widest variant and each row as tall as its tallest, 20 apart. The Button in step 3's snap output — `variant` primary, danger, outline; `size` sm, lg; `disabled` — is three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled.
+   - A variant whose name no combination gives, one snap does not have, goes in a row of its own below the others, in name order, and is counted in the `extra` the part returns; so does a second variant of a name.
+   - Figma's layers panel shows a set's last child at the top, so the layout appends the variants last to first: the panel then reads top-down in the grid's order, row by row, with that extra row last.
+   - It grows the set to fit, then checks that the layers are in that order, that no two variants' boxes intersect, and that the set contains every one, and throws if not. It returns counts, not names: the set's `rows`, `columns` and `extra`.
 
 ```js
 use_figma({
@@ -208,11 +221,15 @@ use_figma({
       page.name = PAGE_NAME;
     }
     await figma.setCurrentPageAsync(page);
-    //
-    // Variant properties (from storysync map output):
-    //   - variant (VARIANT): [default, destructive, outline]
-    //   - size (VARIANT): [sm, md, lg]
-    //   - disabled (BOOLEAN): [true, false]
+
+    // The component's variantProperties from step 3's snap output, copied as
+    // they are and in their order: the same on every part. The layout below
+    // orders the set by them.
+    const PROPERTIES = [
+      { name: 'variant', type: 'VARIANT', values: ['default', 'destructive', 'outline'], defaultValue: 'default' },
+      { name: 'size', type: 'VARIANT', values: ['sm', 'md', 'lg'], defaultValue: 'md' },
+      { name: 'disabled', type: 'BOOLEAN', values: ['true', 'false'], defaultValue: 'false' },
+    ];
     //
     // Visual spec (from step 3's snap output — each variant's base styles with its delta applied):
     //   All variants: rounded corners (6px radius), horizontal auto-layout, centered text
@@ -296,15 +313,70 @@ use_figma({
       for (const variant of created) componentSet.appendChild(variant);
     }
 
-    // On the last part only: lay the whole set out and check it, as "Lay the
-    // variants out" and "Assert the layout before returning" describe.
+    // Lay the whole set out, on every part, by PROPERTIES and never by the
+    // set's child order, which an earlier push or a designer may have left
+    // in any order. Leave this as it is. Each property's values run default
+    // first, then the rest in snap's order, so the all-defaults variant sits
+    // top-left, where Figma takes the set's default variant from. Rows are
+    // the first property's values; columns are the combinations of the rest,
+    // the last varying fastest. A row or column no variant fills is left out.
+    // A variant no combination names, or a second of a name, goes in a row of
+    // its own below, by name.
+    const GAP = 20;
+    const axes = PROPERTIES.map((p) => [p.name, [p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]]);
+    const rowNames = axes.length ? axes[0][1].map((v) => axes[0][0] + '=' + v) : [''];
+    const colNames = axes.slice(1).reduce((cols, [key, values]) =>
+      cols.flatMap((col) => values.map((v) => (col ? col + ', ' : '') + key + '=' + v)), ['']);
+    const free = new Map();
+    for (const child of componentSet.children) free.set(child.name, [...(free.get(child.name) || []), child]);
+    const take = (name) => (free.get(name) || []).shift() || null;
+    let grid = rowNames.map((row) => colNames.map((col) => take([row, col].filter(Boolean).join(', '))));
+    grid = grid.filter((row) => row.some(Boolean));
+    const filled = colNames.map((_, c) => grid.some((row) => row[c]));
+    grid = grid.map((row) => row.filter((_, c) => filled[c]));
+    const extra = [...free.values()].flat().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const widths = (grid[0] || []).map((_, c) => Math.max(...grid.map((row) => (row[c] ? row[c].width : 0))));
+    let y = GAP;
+    for (const row of [...grid, extra].filter((r) => r.length)) {
+      let x = GAP;
+      row.forEach((node, c) => {
+        if (node) { node.x = x; node.y = y; }
+        x += (row === extra ? node.width : widths[c]) + GAP;
+      });
+      y += Math.max(...row.map((node) => (node ? node.height : 0))) + GAP;
+    }
+    const order = [...grid.flat().filter(Boolean), ...extra];
+    componentSet.resizeWithoutConstraints(Math.max(...order.map((n) => n.x + n.width)) + GAP, y);
+    // The layers panel shows the last child at the top: append last to first,
+    // so the panel reads top-down in the grid's order, the extra row last.
+    for (const node of [...order].reverse()) componentSet.appendChild(node);
+
+    // Check the layout before returning: the layers in that order, no two
+    // variants' boxes intersecting, and the set containing every one.
+    const kids = componentSet.children;
+    if (kids.length !== order.length || kids.some((n, i) => n.id !== order[order.length - 1 - i].id)) {
+      throw new Error("The set's layers are not in the order it was laid out in");
+    }
+    const boxes = kids.map((n) => ({ name: n.name, x: n.x, y: n.y, r: n.x + n.width, b: n.y + n.height }));
+    boxes.forEach((a, i) => {
+      if (a.x < 0 || a.y < 0 || a.r > componentSet.width || a.b > componentSet.height) {
+        throw new Error('Variant "' + a.name + '" lies outside the set');
+      }
+      for (const b of boxes.slice(i + 1)) {
+        if (a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b) {
+          throw new Error('Variants "' + a.name + '" and "' + b.name + '" overlap');
+        }
+      }
+    });
 
     // The set's id, for the next part and for step 6 to read the variants
     // back from. Not the readback itself: use_figma returns at most 20kb per
-    // call. variants counts the whole set, added and updated this part.
+    // call. variants counts the whole set, added and updated this part; extra
+    // counts the variants no combination names, in the row below the grid.
     return JSON.stringify({
-      id: componentSet.id, name: componentSet.name, variants: componentSet.children.length,
+      id: componentSet.id, name: componentSet.name, variants: kids.length,
       added: created.length, updated: names.length - created.length,
+      rows: grid.length, columns: widths.length, extra: extra.length,
     });
   `,
   description: "Create or update variants 1-25 of the Button component set on 'Forms' page, styled from measured values",
@@ -448,11 +520,11 @@ use_figma({
    - `No component set with id …` — `SET_ID` is not the id step 5 returned, or the set has since been deleted. Re-run step 5's first part, which finds the set on its page by name, and read with the id it returns.
    - `This call names N variants …` — name between 1 and `BATCH`.
    - `No snap slug recorded …` — the table gives a variant no slug; copy it from the snap output.
-   - `The set has 0 variants named …` — the build never made that variant: a part failed or was skipped. Add it to the set by id — re-run the build part that names it, which adds only the variants the set lacks — then re-run the last part, which lays the whole set out and checks it, before reading that slice again.
+   - `The set has 0 variants named …` — the build never made that variant: a part failed or was skipped. Add it to the set by id — re-run the build part that names it, which adds only the variants the set lacks and lays the whole set out again — then read that slice again.
    - `The set has 2 variants named …` — a part ran twice, in an earlier push or a retry that did not check what the set held, and made the variant twice; step 5 refuses every part that carries that name until one is gone. Report it. Remove the stale copy only after checking which one is current — `componentSet.children.filter((child) => child.name === name)` gives both, and you can read each by id and compare it with snap's values — or ask the user which to keep. If step 5 raised it, the refused part changed nothing, and the parts after it never ran: re-run that build part and every part after it, through the last part, then read the slices; if the readback raised it, read that slice again.
    - `This slice is N characters encoded …` — `BATCH` only caps how many names a call may carry, so lowering it does not shrink a call that already carries them. Split this call's names, and its two tables, across two calls, and lower `BATCH` so the slices after them are smaller too.
 
-   **Find the variants snap does not have.** When the slices add up to fewer than `total`, list the set's variant names and compare them with snap's yourself: a name snap has no variant for is one it does not measure. Listing them all in one call can pass 20kb — 256 names of about 140 characters come to some 37,000 characters encoded — so the call below lists them a slice at a time: call it with `START = 0`, then again from the `next` it returns until `next` is `null`. A name listed twice is a variant made twice, as above. Report each variant snap does not have, by name, and delete one only if the user asks.
+   **Find the variants snap does not have.** When the slices add up to fewer than `total`, or a build part returned an `extra` other than 0, list the set's variant names and compare them with snap's yourself: a name snap has no variant for is one it does not measure. Listing them all in one call can pass 20kb — 256 names of about 140 characters come to some 37,000 characters encoded — so the call below lists them a slice at a time: call it with `START = 0`, then again from the `next` it returns until `next` is `null`. A name listed twice is a variant made twice, as above. Report each variant snap does not have, by name, and delete one only if the user asks.
 
 ```js
 use_figma({
