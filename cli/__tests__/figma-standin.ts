@@ -61,8 +61,11 @@ export interface PageSpec {
 export interface CollectionSpec {
   name: string;
   modes: string[];
-  /** Each variable's value in each mode, in `modes` order. `{ alias: "Collection/name" }` refers to another variable. */
-  variables: { name: string; type: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"; values: unknown[] }[];
+  /**
+   * Each variable's value in each mode, in `modes` order. `{ alias: "Collection/name" }` refers to another variable.
+   * null is an id the collection lists that getVariableByIdAsync reads as null, as for a variable since deleted.
+   */
+  variables: ({ name: string; type: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"; values: unknown[] } | null)[];
 }
 
 export interface FileSpec {
@@ -148,9 +151,10 @@ function figmaFor(file: FileSpec, call: UseFigmaCall): unknown {
     variableIds: c.variables.map((_, vi) => `VariableID:${ci}:${vi}`),
   }));
   const variableIds = new Map<string, string>();
-  (file.collections ?? []).forEach((c, ci) => c.variables.forEach((v, vi) => variableIds.set(`${c.name}/${v.name}`, `VariableID:${ci}:${vi}`)));
+  (file.collections ?? []).forEach((c, ci) => c.variables.forEach((v, vi) => v && variableIds.set(`${c.name}/${v.name}`, `VariableID:${ci}:${vi}`)));
   const variables = new Map<string, unknown>();
   (file.collections ?? []).forEach((c, ci) => c.variables.forEach((v, vi) => {
+    if (!v) return;
     const valuesByMode = Object.fromEntries(v.values.map((value, mi) => {
       const alias = (value as { alias?: string } | null)?.alias;
       return [`${ci}:${mi}`, alias ? { type: "VARIABLE_ALIAS", id: variableIds.get(alias) } : value];

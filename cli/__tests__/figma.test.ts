@@ -9,7 +9,7 @@ import type { Server } from "node:http";
 import { FigmaClient, FigmaRateLimitError, RESPONSE_GUARD } from "../figma.js";
 import type { FigmaComponentInfo } from "../figma.js";
 import { startFigmaStandIn, useFigma, set, component, frame, divider, pageId, CODE_LIMIT, RESPONSE_LIMIT } from "./figma-standin.js";
-import type { FileSpec, RateLimit, UseFigmaCall } from "./figma-standin.js";
+import type { CollectionSpec, FileSpec, RateLimit, UseFigmaCall } from "./figma-standin.js";
 
 const servers: Server[] = [];
 
@@ -252,6 +252,26 @@ test("getVariables: --mode reads that mode, from the collections that have it", 
   assert.ok(result?.every((v) => v.mode === "Dark" && v.collection !== "Spacing"));
   assert.equal(result?.find((v) => v.name === "color/palette-0/100")?.value, "#243355");
   assert.equal(result?.find((v) => v.name === "color/overlay")?.value, "#ffffff80");
+});
+
+test("getVariables: leaves out ids that read as null, wherever the slices fall, and reads every variable once", async () => {
+  // getVariableByIdAsync returns null for an id a collection lists with no
+  // variable behind it. Nine ids in ten here are one, through several slices:
+  // each slice has to go on from the last id it looked at, not from how many
+  // variables it returned, and return none of the nulls, nor count them
+  // toward the guard, where they would come to a call's worth.
+  const listed = Array.from({ length: 4000 }, (_, i) => i % 10 ? null : { name: `color/${i}`, type: "COLOR" as const, values: [hex(i)] });
+  const file = (variables: CollectionSpec["variables"]): FileSpec => ({ pages: [{ name: "Cover", nodes: [] }], collections: [{ name: "Colors", modes: ["Light"], variables }] });
+  const { result, error, calls } = await read(file(listed), (client) => client.getVariables("file-key"));
+  assert.equal(error, null);
+  assert.equal(result?.length, 400);
+  assert.equal(new Set(result?.map((v) => v.name)).size, 400);
+  assert.ok(calls.length > 2 && calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD), calls.map((c) => c.bytes).join(", "));
+  // The nulls take no room: the same variables come back, in as many calls,
+  // as from the collection without them.
+  const without = await read(file(listed.filter((v) => v !== null)), (client) => client.getVariables("file-key"));
+  assert.deepEqual(result, without.result);
+  assert.equal(calls.length, without.calls.length);
 });
 
 // --- What use_figma hands back ---
