@@ -218,6 +218,19 @@ test("diff CLI: --components without --storybook fails under --json with an erro
   assert.match(data.error ?? "", /--components selects the components to diff, which needs --storybook/);
 });
 
+test("diff CLI: an unknown --source fails before connecting, as JSON under --json", async () => {
+  // Detected instead, `--source scss` diffed whatever the project had first.
+  // Checked before connecting, so the unreachable Figma URL is never tried.
+  const text = await run("diff", "--figma", "http://127.0.0.1:9", "--file-key", "x", "--source", "scss");
+  assert.equal(text.status, 1, text.out);
+  assert.match(text.out, /--source must be "tailwind", "css" or "theme", received "scss"/);
+  assert.doesNotMatch(text.out, /Figma MCP/);
+
+  const json = await run("diff", "--figma", "http://127.0.0.1:9", "--file-key", "x", "--source", "scss", "--json");
+  assert.equal(json.status, 1, json.out);
+  assert.match((JSON.parse(json.stdout) as { error: string }).error, /--source must be "tailwind", "css" or "theme", received "scss"/);
+});
+
 type DiffJson = { components: { name: string; status: string }[]; storybookReadFailed: boolean; figmaReadFailed: boolean };
 
 test("diff CLI: when Storybook can't be listed, --components still narrows Figma and the run is partial", async () => {

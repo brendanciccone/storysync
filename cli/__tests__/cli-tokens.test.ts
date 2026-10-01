@@ -166,3 +166,47 @@ test("tokens CLI: --check against a baseline when no tokens are found reports ev
     assert.deepEqual(data.removed.map((r) => [r.category, r.tokens.map((t) => t.name)]), [["colors", ["brand"]]]);
   });
 });
+
+const UNKNOWN_SOURCE = (source: string) => new RegExp(`--source must be "tailwind", "css" or "theme", received "${source}"`);
+
+test("tokens CLI: an unknown --source fails naming the ones there are, rather than detecting one", () => {
+  // It used to fall through to detection, so `--source scss` read the
+  // Tailwind config and exited 0, and --check compared whatever was detected.
+  withProject((dir) => {
+    for (const flags of [[], ["--strict"], ["--check"]]) {
+      const r = tokens(dir, "--source", "scss", ...flags);
+      assert.equal(r.status, 1, r.out);
+      assert.match(r.out, UNKNOWN_SOURCE("scss"));
+      assert.equal(r.stdout, "");
+      assert.doesNotMatch(r.out, /Detected|brand|No token baseline/);
+    }
+  });
+});
+
+test("tokens CLI: an unknown --source fails under --json with an error that still parses", () => {
+  withProject((dir) => {
+    // An empty value, as `--source "$UNSET"` gives, is not leaving it out.
+    for (const source of ["scss", "CSS", ""]) {
+      for (const flags of [[], ["--check"]]) {
+        const r = tokens(dir, "--source", source, "--json", ...flags);
+        assert.equal(r.status, 1, r.out);
+        const data = JSON.parse(r.stdout) as { error?: string; collections?: unknown };
+        assert.match(data.error ?? "", UNKNOWN_SOURCE(source));
+        assert.equal(data.collections, undefined);
+      }
+    }
+  });
+});
+
+test("tokens CLI: each --source there is still reads that source", () => {
+  withProject((dir) => {
+    for (const source of ["tailwind", "css", "theme"]) {
+      const r = tokens(dir, "--source", source, "--json");
+      assert.equal(r.status, 0, r.out);
+      const data = JSON.parse(r.stdout) as { source: string; summary: { totalTokens: number } };
+      assert.equal(data.source, source);
+      // Only the Tailwind config exists, so only it finds tokens.
+      assert.equal(data.summary.totalTokens, source === "tailwind" ? 1 : 0);
+    }
+  });
+});

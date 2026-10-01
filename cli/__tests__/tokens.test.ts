@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, TOKEN_SOURCES } from "../tokens.js";
 import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -20,6 +20,25 @@ function makeProject(files: Record<string, string>): string {
 function cleanup(dir: string) {
   rmSync(dir, { recursive: true, force: true });
 }
+
+// --- --source ---
+
+test("parseTokenSource: takes each source there is, and nothing for detection", () => {
+  for (const source of TOKEN_SOURCES) assert.equal(parseTokenSource(source), source);
+  assert.equal(parseTokenSource(undefined), undefined);
+});
+
+test("parseTokenSource: an unknown source throws, naming the ones there are, rather than detecting one", () => {
+  // extractTokens has no case for one and detects a source, so it passed as
+  // a run on whatever the project had first.
+  for (const source of ["scss", "CSS", "auto", ""]) {
+    assert.throws(
+      () => parseTokenSource(source),
+      { message: `--source must be "tailwind", "css" or "theme", received "${source}". Leave it out to detect the source.` },
+      source,
+    );
+  }
+});
 
 // --- CSS extraction ---
 

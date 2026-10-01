@@ -6,7 +6,7 @@ import ora from "ora";
 import { StorybookClient, selectComponents, findComponent } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
-import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand } from "./tokens.js";
+import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
@@ -16,7 +16,7 @@ import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
-import type { TokenBaseline, TokenExtractionResult } from "./tokens.js";
+import type { TokenBaseline, TokenExtractionResult, TokenSourceType } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
@@ -471,7 +471,7 @@ program
   .command("tokens")
   .description("Extract design tokens from project source and preview Figma variable collections")
   .option("--project <path>", "Project root to scan", ".")
-  .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
+  .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted); any other value is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--all", "Show all tokens instead of truncating")
   .option("--check", "Compare against baseline and detect drift; a missing baseline is an error")
@@ -480,6 +480,17 @@ program
   .action(async (opts) => {
     const json = !!opts.json;
     const projectPath = opts.project as string;
+
+    // Before anything is detected or read: an unknown --source used to fall
+    // through to detection, and the run passed having read another source.
+    let source: TokenSourceType | undefined;
+    try {
+      source = parseTokenSource(opts.source as string | undefined);
+    } catch (err) {
+      reportError(err, json);
+      process.exitCode = 1;
+      return;
+    }
 
     // --check reads its baseline whatever the extraction found. Finding no
     // tokens (a mistyped --project, say) is not a pass: a missing baseline is
@@ -501,7 +512,7 @@ program
       }
     }
 
-    const result = extractTokens(projectPath, opts.source as "tailwind" | "css" | "theme" | undefined);
+    const result = extractTokens(projectPath, source);
     const found = result.collections.length > 0;
 
     if (!found) {
@@ -516,7 +527,7 @@ program
       checkTokens(result, {
         baselinePath: opts.baseline as string,
         project: projectPath,
-        source: opts.source as string | undefined,
+        source,
         json,
         strict: !!opts.strict,
       });
@@ -599,7 +610,7 @@ program
   .requiredOption("--file-key <key>", "Figma file key")
   .option("--storybook <url>", "Storybook URL (enables component diff)")
   .option("--project <path>", "Project root to scan for tokens", ".")
-  .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted)")
+  .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
   .option("--components <names>", "Comma-separated component names or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
   .option("--json", "Output JSON instead of formatted text")
@@ -611,6 +622,17 @@ program
     // narrow, so the flag would be ignored and the run pass having diffed none.
     if (opts.components && !opts.storybook) {
       reportError(new Error("--components selects the components to diff, which needs --storybook"), json);
+      process.exitCode = 1;
+      return;
+    }
+
+    // An unknown --source fails as it does in tokens, before either server
+    // is connected to.
+    let source: TokenSourceType | undefined;
+    try {
+      source = parseTokenSource(opts.source as string | undefined);
+    } catch (err) {
+      reportError(err, json);
       process.exitCode = 1;
       return;
     }
@@ -652,7 +674,7 @@ program
         console.error(chalk.red(String(err)));
       }
 
-      const codeResult = extractTokens(opts.project as string, opts.source as "tailwind" | "css" | "theme" | undefined);
+      const codeResult = extractTokens(opts.project as string, source);
       const tokenDiffs = figmaReadFailed ? [] : diffTokens(codeResult.collections, figmaVars);
 
       // --- Component diff ---

@@ -274,7 +274,8 @@ Extract design tokens from your project and preview what Figma variable collecti
 ```text
 Options:
   --project <path>     Project root to scan (default: ".")
-  --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted)
+  --source <type>      Token source: tailwind, css, or theme (auto-detect if omitted);
+                       any other value is an error
   --json               Output JSON instead of formatted text
   --all                Show all tokens instead of truncating
   --check              Compare against baseline and detect drift; a missing baseline is an error
@@ -290,6 +291,8 @@ mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.
 ```
 
 A missing baseline is an error whatever the flags, and the message gives that command. Treated as a first run instead, a wrong `--baseline` path would pass every check, `--strict` included, having compared nothing. Under `--json` the extraction is still printed, with `"drift": "new"` and an `error`, so the output parses. Finding no tokens doesn't skip the check: the baseline is still read, so a mistyped `--project` fails on a missing baseline, or against an existing one reports every token in it as removed. A file that is not a baseline, such as a saved `--check --json`, fails with the command to recreate it.
+
+An unknown `--source` is an error, under `--json` as `{"error": ...}`, naming the sources there are, and `diff --source` is checked the same way. Falling back to detection instead, `--source scss` would read whatever the project had, a Tailwind config say, and pass.
 
 ### `storysync map`
 
@@ -420,7 +423,8 @@ Options:
   --file-key <key>       Figma file key (required)
   --storybook <url>      Storybook URL (enables component diff)
   --project <path>       Project root to scan for tokens (default: ".")
-  --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted)
+  --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted);
+                         any other value is an error
   --mode <name>          Figma variable mode to read (default: each collection's first mode)
   --components <names>   Comma-separated component names or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error

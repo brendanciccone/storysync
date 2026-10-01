@@ -3,7 +3,10 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type TokenSourceType = "tailwind" | "css" | "theme";
+/** The token sources `--source` takes. Leaving it out detects one. */
+export const TOKEN_SOURCES = ["tailwind", "css", "theme"] as const;
+
+export type TokenSourceType = (typeof TOKEN_SOURCES)[number];
 
 export type TokenCategory = "colors" | "spacing" | "typography" | "radius" | "shadows";
 
@@ -23,6 +26,27 @@ export interface TokenExtractionResult {
   sourcePath: string;
   collections: TokenCollection[];
   warnings: string[];
+}
+
+/**
+ * Reads `--source`, as tokens and diff take it: one of TOKEN_SOURCES, or
+ * undefined when it was left out, for the source to be detected. Anything
+ * else throws, naming the sources there are. extractTokens has no case for
+ * it and detects a source instead, so `--source scss` read whatever the
+ * project had first, a Tailwind config say, and exited 0 as though it had
+ * read what was asked for.
+ */
+export function parseTokenSource(value: string | undefined): TokenSourceType | undefined {
+  if (value === undefined) return undefined;
+  const source = TOKEN_SOURCES.find((s) => s === value);
+  if (!source) {
+    const names = TOKEN_SOURCES.map((s) => `"${s}"`);
+    throw new Error(
+      `--source must be ${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}, received "${value}". ` +
+      "Leave it out to detect the source.",
+    );
+  }
+  return source;
 }
 
 // --- Detection ---
