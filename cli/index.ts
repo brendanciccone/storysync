@@ -23,6 +23,16 @@ import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
 import type { ComponentEntry } from "./storybook.js";
 
 /**
+ * How long to wait for an MCP server to answer before giving up on it, as
+ * --connect-timeout's default. It is the 60 seconds the MCP SDK gives the
+ * initialize request, so a server that connected before still does. A
+ * Storybook that is still starting refuses connections until it listens,
+ * which fails at once rather than waiting, and the example's Storybook 10.6
+ * answered initialize within 25ms of its port opening.
+ */
+const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
+
+/**
  * Connects to a Storybook or Figma MCP server, or ends the run with exit code
  * 1 when it can't be reached. Under --json the reason is printed as JSON on
  * stdout, as reportError prints one, naming the server, since no spinner says
@@ -30,11 +40,23 @@ import type { ComponentEntry } from "./storybook.js";
  * to parse. It exits rather than returning, since a transport that failed to
  * connect can leave a reconnect timer running, and only after stdout has taken
  * the JSON: on a pipe the write can still be pending when the process exits.
+ *
+ * A server that takes the connection and never answers is unreachable too,
+ * once `timeoutMs` has passed. Without a limit the run waited forever: the
+ * Streamable HTTP initialize gives up after the SDK's 60 seconds, but the SSE
+ * fallback after it waits for its event stream with no limit at all.
  */
-async function connectMcp<T extends { connect(): Promise<void> }>(client: T, server: string, url: string, json: boolean): Promise<T> {
+async function connectMcp<T extends { connect(): Promise<void> }>(client: T, server: string, url: string, json: boolean, timeoutMs: number): Promise<T> {
   const spinner = json ? null : ora(`Connecting to ${server}...`).start();
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`the server didn't answer within ${timeoutMs / 1000}s; raise --connect-timeout if it needs longer`)),
+      timeoutMs,
+    );
+  });
   try {
-    await client.connect();
+    await Promise.race([client.connect(), deadline]);
     spinner?.succeed(`Connected to ${server}`);
     return client;
   } catch (err) {
@@ -46,11 +68,23 @@ async function connectMcp<T extends { connect(): Promise<void> }>(client: T, ser
       console.error(chalk.red(String(err)));
     }
     process.exit(1);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-function connectStorybook(url: string, json = false): Promise<StorybookClient> {
-  return connectMcp(new StorybookClient(url), "Storybook MCP", url, json);
+function connectStorybook(url: string, json: boolean, timeoutMs: number): Promise<StorybookClient> {
+  return connectMcp(new StorybookClient(url), "Storybook MCP", url, json, timeoutMs);
+}
+
+/** Parses --connect-timeout, exiting with a clear message on anything but a positive number of milliseconds. */
+function parseConnectTimeout(value: unknown): number {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    console.error(chalk.red(`--connect-timeout must be a positive number of milliseconds, received "${value}"`));
+    process.exit(1);
+  }
+  return ms;
 }
 
 const program = new Command();
@@ -76,6 +110,7 @@ program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
+  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
@@ -83,7 +118,7 @@ program
   .action(async (opts) => {
     const json = !!opts.json;
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
-    const storybook = await connectStorybook(opts.storybook, json);
+    const storybook = await connectStorybook(opts.storybook, json, parseConnectTimeout(opts.connectTimeout));
     try {
       const spinner = json ? null : ora("Reading components...").start();
       let entries: ComponentEntry[];
@@ -158,6 +193,7 @@ program
   .command("snap")
   .description("Measure each component variant's rendered styles from a running Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
+  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
   .option("--out <dir>", "Output directory", ".storysync/snaps")
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
@@ -182,8 +218,9 @@ program
       process.exit(1);
     }
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
+    const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
 
-    const storybook = await connectStorybook(opts.storybook, json);
+    const storybook = await connectStorybook(opts.storybook, json, connectTimeoutMs);
     try {
       const result = await runSnap(
         {
@@ -405,8 +442,9 @@ program
   .command("list")
   .description("List components in Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
+  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook);
+    const storybook = await connectStorybook(opts.storybook, false, parseConnectTimeout(opts.connectTimeout));
     try {
       const entries = await storybook.listComponents();
       console.log(`\n${entries.length} components:\n`);
@@ -593,8 +631,9 @@ program
   .description("Show how a component's props map to Figma variants")
   .requiredOption("--storybook <url>", "Storybook URL")
   .requiredOption("--component <name>", "Component name or ID; a name that matches nothing is an error")
+  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook);
+    const storybook = await connectStorybook(opts.storybook, false, parseConnectTimeout(opts.connectTimeout));
     try {
       // A name that matches nothing fails here, naming what exists, before
       // asking Storybook for the documentation of a component it never listed.
@@ -626,6 +665,7 @@ program
   .requiredOption("--figma <url>", "Figma MCP server URL")
   .requiredOption("--file-key <key>", "Figma file key")
   .option("--storybook <url>", "Storybook URL (enables component diff)")
+  .option("--connect-timeout <ms>", "How long to wait for Figma MCP, and Storybook MCP, to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
@@ -653,13 +693,14 @@ program
       process.exitCode = 1;
       return;
     }
+    const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
 
-    const figma = await connectMcp(new FigmaClient(opts.figma as string), "Figma MCP", opts.figma as string, json);
+    const figma = await connectMcp(new FigmaClient(opts.figma as string), "Figma MCP", opts.figma as string, json, connectTimeoutMs);
 
     // Optionally connect to Storybook MCP
     let storybook: StorybookClient | null = null;
     if (opts.storybook) {
-      storybook = await connectStorybook(opts.storybook as string, json);
+      storybook = await connectStorybook(opts.storybook as string, json, connectTimeoutMs);
     }
 
     let figmaReadFailed = false;

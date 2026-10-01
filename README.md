@@ -252,7 +252,7 @@ If no matching CSS variable is found (and no fallback is provided), the raw `var
 
 The CLI exists for two purposes: **setup** (the `init` and `setup` commands wire your project up for an AI client) and **preview / CI** (the `tokens`, `map`, `list`, `inspect`, and `diff` commands give you deterministic output you can inspect locally or run in GitHub Actions). Day-to-day Figma syncing happens through the AI client using the skill + slash commands above — the CLI does not write to Figma directly.
 
-A command that can't reach Storybook, or `diff` Figma, exits 1. Under `--json` it says why on stdout, as `{"error": "Failed to connect to Storybook MCP at <url>: ..."}`, so a script reading the output still gets JSON to parse.
+A command that can't reach Storybook, or `diff` Figma, exits 1, and so does one whose server takes the connection but doesn't answer within `--connect-timeout` milliseconds (default 60000). Under `--json` it says why on stdout, as `{"error": "Error: Failed to connect to Storybook MCP at <url>: ..."}`, so a script reading the output still gets JSON to parse.
 
 ### `storysync init`
 
@@ -321,6 +321,7 @@ Map all components to Figma variant definitions.
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
+  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
   --components <names>   Comma-separated component names or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
@@ -335,6 +336,7 @@ Measure what each component variant actually looks like, by rendering the story 
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
+  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
   --components <names>   Comma-separated component names or IDs (default: all);
                          a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
@@ -428,7 +430,8 @@ List all components available in Storybook.
 
 ```text
 Options:
-  --storybook <url>    URL of the running Storybook instance (required)
+  --storybook <url>      URL of the running Storybook instance (required)
+  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
 ```
 
 ### `storysync diff`
@@ -442,6 +445,8 @@ Options:
   --figma <url>          Figma MCP server URL (required)
   --file-key <key>       Figma file key (required)
   --storybook <url>      Storybook URL (enables component diff)
+  --connect-timeout <ms> How long to wait for Figma MCP, and Storybook MCP, to answer
+                         (default: 60000)
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
@@ -474,6 +479,7 @@ Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --component <name>     Component name or ID to inspect (required);
                          a name that matches nothing is an error
+  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
 ```
 
 ## Limitations

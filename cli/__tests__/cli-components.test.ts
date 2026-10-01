@@ -10,7 +10,8 @@ import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createTcpServer } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -390,4 +391,101 @@ test("list, inspect, map, snap and diff CLI: a Storybook that can't be reached f
   assert.equal(r.status, 1, r.out);
   assert.equal(r.stdout, "");
   assert.match(r.out, /Connected to Figma MCP[\s\S]*Failed to connect to Storybook MCP/);
+});
+
+// --- A Storybook or Figma that takes the connection and never answers ---
+
+/**
+ * A server that accepts connections and never says a word, as a wrong host or
+ * a hung server can. The run used to wait on it forever: the Streamable HTTP
+ * initialize gave up after a minute, and the SSE fallback then waited with no
+ * limit at all.
+ */
+async function silent(): Promise<{ url: string; close(): void }> {
+  const sockets = new Set<Socket>();
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    close: () => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
+}
+
+const NO_ANSWER = (server: string, url: string) =>
+  new RegExp(`^Error: Failed to connect to ${server} at ${escapeRegExp(url)}: the server didn't answer within 0\\.5s; raise --connect-timeout`);
+
+// A test that hangs would hold CI until the job's own limit, so each of these
+// fails after 30 seconds instead.
+test("map, snap and diff CLI: a Storybook that never answers fails after --connect-timeout, as JSON under --json", { timeout: 30_000 }, async () => {
+  const server = await silent();
+  const out = mkdtempSync(join(tmpdir(), "storysync-silent-"));
+  try {
+    for (const command of [["map"], ["snap", "--out", out]]) {
+      const r = await run(...command, "--storybook", server.url, "--connect-timeout", "500", "--json");
+      assert.equal(r.status, 1, r.out);
+      assert.match((JSON.parse(r.stdout) as { error?: string }).error ?? "", NO_ANSWER("Storybook MCP", server.url), command[0]);
+    }
+
+    // Figma answers, so Storybook is the one it names.
+    const r = await diffWith(server.url, "--connect-timeout", "500", "--json");
+    assert.equal(r.status, 1, r.out);
+    assert.match((JSON.parse(r.stdout) as { error?: string }).error ?? "", NO_ANSWER("Storybook MCP", server.url));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+    server.close();
+  }
+});
+
+test("diff CLI: a Figma that never answers fails after --connect-timeout, as JSON under --json", { timeout: 30_000 }, async () => {
+  const server = await silent();
+  try {
+    const url = `${server.url}/mcp`;
+    const r = await run("diff", "--figma", url, "--file-key", "x", "--storybook", storybook, "--connect-timeout", "500", "--json");
+    assert.equal(r.status, 1, r.out);
+    assert.match((JSON.parse(r.stdout) as { error?: string }).error ?? "", NO_ANSWER("Figma MCP", url));
+  } finally {
+    server.close();
+  }
+});
+
+test("list and inspect CLI: a Storybook that never answers fails after --connect-timeout, on stderr", { timeout: 30_000 }, async () => {
+  const server = await silent();
+  try {
+    for (const command of [["list"], ["inspect", "--component", "Button"]]) {
+      const r = await run(...command, "--storybook", server.url, "--connect-timeout", "500");
+      assert.equal(r.status, 1, r.out);
+      assert.equal(r.stdout, "", command[0]);
+      assert.match(r.out, /Failed to connect to Storybook MCP[\s\S]*the server didn't answer within 0\.5s/, command[0]);
+      assert.doesNotMatch(r.out, STACK, command[0]);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("map CLI: a server that answers isn't held to --connect-timeout once connected", { timeout: 30_000 }, async () => {
+  // The limit's timer is cleared on connecting. Left running, it would keep
+  // every run alive for the full minute after its work was done.
+  const started = Date.now();
+  const r = await run("map", "--storybook", storybook, "--json");
+  assert.equal(r.status, 0, r.out);
+  assert.ok(Date.now() - started < 20_000, `map took ${Date.now() - started}ms`);
+});
+
+test("map, snap, list, inspect and diff CLI: a --connect-timeout that isn't a positive number fails before connecting", async () => {
+  const url = await unreachable();
+  for (const value of ["0", "-1", "soon"]) {
+    for (const command of [["map"], ["snap"], ["list"], ["inspect", "--component", "Button"], ["diff", "--figma", `${url}/mcp`, "--file-key", "x"]]) {
+      const r = await run(...command, "--storybook", url, "--connect-timeout", value);
+      assert.equal(r.status, 1, r.out);
+      assert.match(r.out, new RegExp(`--connect-timeout must be a positive number of milliseconds, received "${value}"`), command[0]);
+      assert.doesNotMatch(r.out, /MCP/, command[0]);
+    }
+  }
 });
