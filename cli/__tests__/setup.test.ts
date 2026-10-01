@@ -389,7 +389,7 @@ test("every push instruction lays a set out in snap's order, not its children's"
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /`variantProperties`[^\n]*copied as they are/, `${path} never has each part carry snap's variantProperties`);
       assert.match(text, /never by the set's children/, `${path} lets the layout follow the set's child order`);
-      assert.match(text, /in the order snap records them, the order Storybook's docs declare them in, not default first/,
+      assert.match(text, /in the order snap records them, which is the order of the component's prop type as Storybook's docs list it \(a story's `argTypes` options are not read\), not default first/,
         `${path} never says the values run in Storybook's declared order`);
       assert.doesNotMatch(text, /default first, then|all-defaults variant[^\n]*top-left/, `${path} still puts each property's default first`);
       assert.match(text, /a `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`/i,
@@ -436,7 +436,7 @@ test("every push instruction refuses a set with auto layout and checks each vari
       assert.match(text, /^\d+\. Summarize[^\n]*any set skipped for its auto layout/m, `${path}'s summary step leaves out a set skipped for its auto layout`);
       assert.match(text, /every variant is where the layout put it, so a move Figma ignored fails/, `${path} never checks each variant's position`);
       assert.match(text, /the work grows with the set's variants, not with every combination/, `${path} lays a set out from every combination`);
-      assert.match(text, /the one with the lower node id stays in the grid/, `${path} never says which copy of a name stays in the grid`);
+      assert.match(text, /the one whose node id sorts first as text stays in the grid/, `${path} never says which copy of a name stays in the grid`);
       assert.match(text, /moving only (?:those|the ones) out of place|`appendChild`-ing only the rest/, `${path} moves every variant on every part`);
     }
   } finally {
