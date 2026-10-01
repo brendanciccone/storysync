@@ -4,7 +4,7 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 
 ## Requirements
 
-- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+)
+- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+; `snap` needs Node 20+)
 - Storybook MCP: `claude mcp add --transport http storybook http://localhost:6006/mcp`
 - Figma MCP: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
@@ -164,7 +164,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | `fontSize` / `fontWeight` / `fontFamily` | text style |
    | `borderUniform` on a hugging frame | `strokeAlign = 'OUTSIDE'` (see below) |
 
-   Three mappings that are wrong by default and will not show up as drift unless you get them right:
+   Five things that go wrong by default, in ways `verify` either will not catch or will not explain:
 
    - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's rendered size must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`.
    - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable.
