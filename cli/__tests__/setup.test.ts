@@ -292,9 +292,11 @@ test("every push instruction keeps each use_figma call inside Figma's limits", (
 
 test("every push instruction re-pushes in place and says what to do when a readback throws", () => {
   // A part that only added its variants doubled every one of them on a second
-  // push. The readback throws on a variant the set lacks or holds twice, and
-  // on a slice too big to return, and each needs its own remedy: lowering
-  // BATCH alone does not shrink a call that already carries its names.
+  // push, and one that looked for the set only at its page's top level built
+  // a second set beside one a designer had moved into a section. The readback
+  // throws on a variant the set lacks or holds twice, and on a slice too big
+  // to return, and each needs its own remedy: lowering BATCH alone does not
+  // shrink a call that already carries its names.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -308,14 +310,53 @@ test("every push instruction re-pushes in place and says what to do when a readb
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /anywhere on its page/, `${path} looks for the set only at its page's top level`);
       assert.match(text, /adds only the ones the set lacks/, `${path} never has a part add only the variants the set lacks`);
       assert.match(text, /never creates a second variant/, `${path} lets a part create a variant the set already has`);
       assert.doesNotMatch(text, /finds it by id and adds the next 25/, `${path} still has each part add its variants`);
-      assert.match(text, /only if the user asks/, `${path} never says to ask before deleting a variant snap no longer has`);
+      // Where step 5 leaves alone a variant no part names: the listing's own
+      // "delete one only if the user asks" further on would satisfy it too.
+      assert.match(text, /named by no part[^\n]*only if the user asks/, `${path} never says to ask before deleting a variant snap no longer has`);
+      assert.match(text, /two of a name it carries/, `${path} never says a part refuses a set holding two of a name it carries`);
+      if (path !== join(".claude", "commands", "storysync-push.md")) {
+        // The build template's applyStyles, and the rule's prose for it, run on
+        // variants an earlier push made, which already have their label.
+        assert.match(text, /variant\.findOne\(\(n\) => n\.type === 'TEXT'\)/, `${path} never says to reuse the label an earlier push made`);
+      }
       assert.match(text, /`The set has 0 variants named …`[^\n]*re-run the build part/, `${path} gives no remedy for a variant the set lacks`);
       assert.match(text, /`The set has 2 variants named …`[^\n]*(?:ask the user|which one is current)/, `${path} gives no remedy for a variant made twice`);
       assert.match(text, /split its names across two calls/, `${path} says only to lower BATCH for a slice too big to return`);
       assert.match(text, /children\.slice\(START, START \+ (?:BATCH|100)\)/, `${path} never lists the set's names a slice at a time`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction lays the set out again after re-running a part", () => {
+  // Only the build's last part lays the set out and checks it. A part re-run
+  // afterwards, to add a variant the readback found missing, appends it at
+  // 0,0 on top of another, where nothing checks for overlaps.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /any part re-run after the last part must be followed by the last part again/, `${path} lets a part re-run after the last one leave the set unlaid`);
+      assert.match(text, /`The set has 0 variants named …`[^`]*re-run the build part[^`]*then re-run the last part, which lays the whole set out and checks it, before reading that slice again/,
+        `${path} adds a missing variant without laying the set out again`);
+      // A part refused for a variant the set holds twice changed nothing, so
+      // the slice it would have built is still to build.
+      assert.match(text, /`The set has 2 variants named …`[^\n]*raised it, the refused part changed nothing, so re-run that build part, and then the last part, before reading the slice again/,
+        `${path} never re-runs a build part the doubled variant refused`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });

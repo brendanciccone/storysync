@@ -438,8 +438,11 @@ const KIDS = Symbol("children");
  * A Figma document that keeps what each use_figma call builds, for the build
  * template. `call()` gives each call its own figma, as use_figma does: it
  * starts on the first page with only that page loaded, and another page's
- * children show once the call switches to it. `nodes(type)` lists every node
- * of a type, wherever it is, for the checks to inspect.
+ * children show once the call switches to it. A container's
+ * findAllWithCriteria searches everything under it, in sections and frames
+ * too. `nodes(type)` lists every node of a type, wherever it is, for the
+ * checks to inspect, and `container(type, name, parent)` adds a section or
+ * frame for a designer's moves.
  */
 function figmaDocument() {
   let count = 0;
@@ -469,6 +472,10 @@ function figmaDocument() {
       }
       adopt(node, child);
     };
+    node.findAllWithCriteria = ({ types }) => node.children.flatMap((child) => [
+      ...(types.includes(child.type) ? [child] : []),
+      ...(child.findAllWithCriteria ? child.findAllWithCriteria({ types }) : []),
+    ]);
     return node;
   };
   const page = (name) => {
@@ -506,7 +513,12 @@ function figmaDocument() {
     return figma;
   };
   const nodes = (type) => [...byId.values()].filter((n) => n.type === type);
-  return { call, nodes };
+  const inside = (type, name, parent) => {
+    const node = container(type, name);
+    adopt(parent, node);
+    return node;
+  };
+  return { call, nodes, container: inside };
 }
 
 /**
@@ -1034,6 +1046,11 @@ async function main() {
     const stale = Object.entries(variants).filter(([, v]) => v.backgroundColor !== "#0f766e").map(([slug]) => slug);
     assert(stale.length === 0, `read back ${stale.length} variants with their old fill: ${stale.join(", ")}`);
 
+    // A designer moved the set into a section: the next push finds it there,
+    // rather than building a second set at the page's top level.
+    const section = doc.container("SECTION", "Buttons", set.parent);
+    section.appendChild(set);
+
     // snap dropped one variant and measured a new one: one part adds it, and
     // the one snap no longer has stays for step 6 to report.
     const dropped = measured[measured.length - 1].name;
@@ -1044,6 +1061,7 @@ async function main() {
     const names = theSet().children.map((c) => c.name);
     assert(names.length === 13 && names.includes(dropped) && names.includes(added.name),
       `the set holds ${names.length} variants${names.includes(dropped) ? "" : `, without ${dropped}`}`);
+    assert(theSet().id === id && theSet().parent === section, "the push moved or replaced the set in its section");
 
     // A part of more than PART variants or naming one twice, or a set an
     // older push left with a variant twice: refused before anything changes.
@@ -1071,7 +1089,25 @@ async function main() {
     theSet().appendChild(copy);
     const doubled = await refusal(() => push(purple), 1);
     assert(doubled && doubled.includes(`2 variants named "${measured[2].name}"`), `a push onto a set holding a variant twice ${doubled ? `failed with: ${doubled}` : "was built"}`);
-    return `12 added, then 12 updated and none added, then 1 added beside 1 snap dropped; a part too big, one naming a variant twice and a doubled variant refused`;
+
+    // A second Button set in a frame on the page: the first part can't tell
+    // which to update, so it refuses, naming both.
+    const frame = doc.container("FRAME", "Archive", section.parent);
+    const call = doc.call();
+    const other = call.combineAsVariants([call.createComponent()], frame);
+    other.name = "Button";
+    let ambiguous = null;
+    try {
+      await push(purple);
+    } catch (err) {
+      ambiguous = err.message;
+    }
+    const sets = doc.nodes("COMPONENT_SET");
+    const named = ambiguous?.match(/\d+:\d+/g) ?? [];
+    assert(named.includes(id) && named.includes(other.id) && sets.length === 2,
+      `a push onto a page holding two Button sets ${ambiguous ? `failed with: ${ambiguous}` : "was built"}, leaving ${sets.length} sets`);
+    return `12 added, then 12 updated and none added, then 1 added beside 1 snap dropped with the set in a section; ` +
+      `a part too big, one naming a variant twice, a doubled variant and two sets of its name refused`;
   });
 
   await check("the set's variant names are listed a slice at a time, within both limits", async () => {

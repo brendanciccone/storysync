@@ -183,13 +183,13 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
 5. Write to Figma with `use_figma`. The instruction MUST embed the measured values from step 3 — every variant needs a concrete fill, text colour, padding, radius, border, font size, and shadow. A call that only references variant names is a bug; refuse it and re-read the snap output.
 
-   **Update in place rather than duplicating.** Before creating a component set, look for one with the same name on the target page and update it if found. Running a push twice must not produce two `Button`s. The same applies to variable collections — reuse a collection of the same name instead of creating a second.
+   **Update in place rather than duplicating.** Before creating a component set, look for one with the same name anywhere on the target page, inside a section or frame a designer moved it into too, and update it if found. Running a push twice must not produce two `Button`s. The same applies to variable collections — reuse a collection of the same name instead of creating a second.
 
    **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
 
-   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set on its page by name, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and the last lays out and checks the whole set. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
+   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set by name anywhere on its page, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and the last lays out and checks the whole set. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
 
-   **A part updates the variants it names and adds only the ones the set lacks.** On a set an earlier push built, or one a failed call left half done, each part finds each of its variants among the set's children by name, restyles it if it is there and creates it if it is not. It never creates a second variant of a name the set already has: it refuses, before changing anything, a part that names a variant twice, and a set that already holds two of one name — with the error step 6's readback gives for that, and the same remedy. So a part can be retried, and a push repeated, without duplicating anything. A variant in Figma that snap no longer has — one for a value the code has since dropped — is named by no part, so the build leaves it alone: step 6 finds it, and you report it. Delete it only if the user asks; a designer may have built on it.
+   **A part updates the variants it names and adds only the ones the set lacks.** On a set an earlier push built, or one a failed call left half done, each part finds each of its variants among the set's children by name, restyles it if it is there and creates it if it is not. It never creates a second variant of a name the set already has: it refuses, before changing anything, a part that names a variant twice, and a part whose set already holds two of a name it carries — with the error step 6's readback gives for that, and the same remedy. So a part can be retried, and a push repeated, without duplicating anything; but only the last part lays the set out and checks it, so any part re-run after the last part must be followed by the last part again. A variant in Figma that snap no longer has — one for a value the code has since dropped — is named by no part, so the build leaves it alone: step 6 finds it, and you report it. Delete it only if the user asks; a designer may have built on it.
 
 ```js
 use_figma({
@@ -237,7 +237,9 @@ use_figma({
     // Style one variant from its measured values: fill, text, padding, radius,
     // border, font and shadow, as step 3's table maps them. It runs on the
     // variants this part creates and on ones an earlier push made, so set
-    // every property, not only those a new node lacks.
+    // every property, not only those a new node lacks, and reuse the children
+    // an earlier push made rather than adding another: the label is
+    // variant.findOne((n) => n.type === 'TEXT'), created only if that is null.
     const applyStyles = async (variant, styles) => {
       // ... Figma Plugin API code
     };
@@ -250,7 +252,8 @@ use_figma({
       throw new Error('This part names a variant twice: name each once');
     }
     // The set: by id after the first part; on the first, the one an earlier
-    // push left on this page, if there is one.
+    // push left anywhere on this page, if there is one, at its top level or
+    // in a section or frame a designer moved it into.
     let componentSet = null;
     if (SET_ID) {
       componentSet = await figma.getNodeByIdAsync(SET_ID);
@@ -258,9 +261,9 @@ use_figma({
         throw new Error('No component set with id ' + SET_ID);
       }
     } else {
-      const sets = page.children.filter((n) => n.type === 'COMPONENT_SET' && n.name === SET_NAME);
+      const sets = page.findAllWithCriteria({ types: ['COMPONENT_SET'] }).filter((n) => n.name === SET_NAME);
       if (sets.length > 1) {
-        throw new Error('The page has ' + sets.length + ' component sets named "' + SET_NAME + '": ask the user which to update');
+        throw new Error('The page has ' + sets.length + ' component sets named "' + SET_NAME + '" (' + sets.map((n) => n.id).join(', ') + '): ask the user which to update');
       }
       componentSet = sets[0] || null;
     }
@@ -445,8 +448,8 @@ use_figma({
    - `No component set with id …` — `SET_ID` is not the id step 5 returned, or the set has since been deleted. Re-run step 5's first part, which finds the set on its page by name, and read with the id it returns.
    - `This call names N variants …` — name between 1 and `BATCH`.
    - `No snap slug recorded …` — the table gives a variant no slug; copy it from the snap output.
-   - `The set has 0 variants named …` — the build never made that variant: a part failed or was skipped. Add it to the set by id — re-run the build part that names it, which adds only the variants the set lacks — and read that slice again.
-   - `The set has 2 variants named …` — a part ran twice, in an earlier push or a retry that did not check what the set held, and made the variant twice; step 5 refuses to build on the set until one is gone. Report it. Remove the stale copy only after checking which one is current — `componentSet.children.filter((child) => child.name === name)` gives both, and you can read each by id and compare it with snap's values — or ask the user which to keep. Then read that slice again.
+   - `The set has 0 variants named …` — the build never made that variant: a part failed or was skipped. Add it to the set by id — re-run the build part that names it, which adds only the variants the set lacks — then re-run the last part, which lays the whole set out and checks it, before reading that slice again.
+   - `The set has 2 variants named …` — a part ran twice, in an earlier push or a retry that did not check what the set held, and made the variant twice; step 5 refuses every part that carries that name until one is gone. Report it. Remove the stale copy only after checking which one is current — `componentSet.children.filter((child) => child.name === name)` gives both, and you can read each by id and compare it with snap's values — or ask the user which to keep. If step 5 raised it, the refused part changed nothing, so re-run that build part, and then the last part, before reading the slice again; if the readback raised it, read that slice again.
    - `This slice is N characters encoded …` — `BATCH` only caps how many names a call may carry, so lowering it does not shrink a call that already carries them. Split this call's names, and its two tables, across two calls, and lower `BATCH` so the slices after them are smaller too.
 
    **Find the variants snap does not have.** When the slices add up to fewer than `total`, list the set's variant names and compare them with snap's yourself: a name snap has no variant for is one it does not measure. Listing them all in one call can pass 20kb — 256 names of about 140 characters come to some 37,000 characters encoded — so the call below lists them a slice at a time: call it with `START = 0`, then again from the `next` it returns until `next` is `null`. A name listed twice is a variant made twice, as above. Report each variant snap does not have, by name, and delete one only if the user asks.
