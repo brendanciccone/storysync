@@ -144,6 +144,8 @@ and commit them. `<version>` is the storysync version that matches the ref you u
 
 Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is no baseline. `token_drift` is `none` when there is neither a token baseline nor any tokens; with a baseline, tokens that have all gone are drift. It is `skipped` when `token_baseline` is `''`. `json` and `tokens_json` carry the `map --json` and `tokens --json` output; `tokens_json` is empty when tokens are skipped.
 
+The action installs with your package manager as it finds it on `PATH`, and puts nothing in front of it. To have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain#usage-in-cicd) check that install for malware, add its CI setup as a step before this one, pinned to a release as its README shows.
+
 ## How it works
 
 ```text

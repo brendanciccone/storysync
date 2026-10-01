@@ -99,10 +99,6 @@ runs:
       with:
         package_json_file: ${{ steps.storysync.outputs.package_json }}
 
-    - name: Install Safe Chain
-      shell: bash
-      run: curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
-
     - name: Install project dependencies
       shell: bash
       working-directory: ${{ inputs.working_directory }}
@@ -203,8 +199,10 @@ runs:
               export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
               corepack=true
             fi
-            # Run it rather than look it up: Safe Chain puts a yarn shim on
-            # PATH whether or not Yarn is installed.
+            # Run it rather than look it up: a yarn on PATH may not work, as
+            # with corepack's when it can't fetch the version packageManager
+            # names, or a shim an earlier step put there, such as Safe Chain's,
+            # with no Yarn behind it.
             if ! version="$(yarn --version 2>&1)"; then
               echo "$version"
               if [ "$corepack" = true ]; then
@@ -225,7 +223,8 @@ runs:
             cmd=(npm ci)
             ;;
           bun)
-            # As for yarn, Safe Chain's shim answers to `command -v bun`.
+            # As for yarn, a shim an earlier step put on PATH answers to
+            # `command -v bun` whether or not bun is installed.
             if ! bun --version > /dev/null 2>&1; then
               echo "::error::Found ${lockfiles[*]}, but bun isn't installed. Add oven-sh/setup-bun before this action, or set install_command."
               exit 1
