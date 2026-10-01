@@ -458,8 +458,8 @@ function variablesFigma(variables) {
 /**
  * One use_figma call's figma, serving pages of component sets. As in
  * use_figma, a call starts on the first page with only it loaded, a page loads
- * when the call switches to it, and a search from figma.root sees only the
- * loaded pages. `switches` records each switch.
+ * when the call switches to it and becomes figma.currentPage, and a search
+ * from figma.root sees only the loaded pages. `switches` records each switch.
  */
 function pagesFigma(pages, switches = []) {
   const loaded = new Set([pages[0].id]);
@@ -469,7 +469,7 @@ function pagesFigma(pages, switches = []) {
     name: p.name,
     findAllWithCriteria: ({ types }) => (loaded.has(p.id) ? p.sets.filter((s) => types.includes(s.type)) : []),
   }));
-  return {
+  const figma = {
     root: {
       children: nodes,
       findAllWithCriteria: (criteria) => nodes.flatMap((n) => n.findAllWithCriteria(criteria)),
@@ -479,8 +479,10 @@ function pagesFigma(pages, switches = []) {
     setCurrentPageAsync: async (page) => {
       loaded.add(page.id);
       switches.push(page.id);
+      figma.currentPage = nodes.find((n) => n.id === page.id);
     },
   };
+  return figma;
 }
 
 /** A component set as the audit reads it: its properties and its variant count. */
@@ -763,11 +765,17 @@ async function main() {
     // A call that names nothing reads nothing: a wasted call, refused.
     assert(await failure(set.componentSet, {}, {}), "a call naming no variants was returned");
 
+    // One name more than BATCH: refused, before it can pass either limit.
+    const over = Object.keys(set.slugByName).slice(0, READ_BATCH + 1);
+    const refused = await failure(set.componentSet, pick(set.slugByName, over), pick(set.sourceBySlug, over.map((n) => set.slugByName[n])));
+    assert(refused && new RegExp(`names ${READ_BATCH + 1} variants`).test(refused),
+      `a call naming ${READ_BATCH + 1} variants at a BATCH of ${READ_BATCH} ${refused ? `failed with: ${refused}` : "was returned"}`);
+
     // A variant snap never measured is read by no slice, but counted in total.
     const extra = { ...set.componentSet, children: [...set.componentSet.children, { ...set.componentSet.children[0], name: "variant=ghost" }] };
     const { variants, total } = await readSet(readback, { ...set, componentSet: extra }, READ_BATCH);
     assert(total === Object.keys(variants).length + 1, `read ${Object.keys(variants).length} variants of a set of ${total}, which holds one more`);
-    return "missing and doubled variants named, an empty call refused, an unmeasured variant counted in total";
+    return `missing and doubled variants named, an empty call and one of ${READ_BATCH + 1} refused, an unmeasured variant counted in total`;
   });
 
   await check("a full slice of the template's BATCH fits in one use_figma response", async () => {
@@ -858,14 +866,22 @@ async function main() {
     const code = useFigmaBlock(/^Read all variable collections/);
     const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
     assert(batch > 0, "the variables read defines no BATCH");
-    const palette = Array.from({ length: 250 }, (_, i) => (i < 200
+    // Two collections, read across calls. One palette ends exactly on a
+    // slice, so a call past the last one would be one too many; the other
+    // ends part way through one, so a short last slice must still be read.
+    const palette = (length) => Array.from({ length }, (_, i) => (i < length - 50
       ? { collection: "Colors", name: `color/palette-${Math.floor(i / 10)}/${(i % 10 + 1) * 100}`, type: "COLOR", value: { r: (i % 7) / 7, g: (i % 5) / 5, b: (i % 3) / 3, a: 1 } }
-      : { collection: "Spacing", name: `space/${i - 200}`, type: "FLOAT", value: (i - 200) * 4 }));
-    const read = await readAllSlices(code, () => variablesFigma(palette));
-    const names = read.flatMap((s) => s.variables.map((v) => `${v.collection}/${v.name}`));
-    assert(new Set(names).size === palette.length && names.length === palette.length && read.every((s) => s.total === palette.length),
-      `read ${names.length} variables (${new Set(names).size} distinct) of ${palette.length}`);
-    assert(read.length === Math.ceil(palette.length / batch), `read in ${read.length} calls, with BATCH ${batch}`);
+      : { collection: "Spacing", name: `space/${i - (length - 50)}`, type: "FLOAT", value: (i - (length - 50)) * 4 }));
+    const counts = [];
+    for (const length of [2 * batch, 2 * batch + Math.ceil(batch / 2)]) {
+      const variables = palette(length);
+      const read = await readAllSlices(code, () => variablesFigma(variables));
+      const names = read.flatMap((s) => s.variables.map((v) => `${v.collection}/${v.name}`));
+      assert(new Set(names).size === length && names.length === length && read.every((s) => s.total === length),
+        `read ${names.length} variables (${new Set(names).size} distinct) of ${length}`);
+      assert(read.length === Math.ceil(length / batch), `read ${length} variables in ${read.length} calls, with BATCH ${batch}`);
+      counts.push(`${length} in ${read.length} calls`);
+    }
 
     const long = Array.from({ length: 400 }, (_, i) => ({
       collection: "Semantic colours", name: `color/semantic/interactive/surface-${i}/background-hover-pressed`, type: "COLOR", value: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
@@ -874,7 +890,7 @@ async function main() {
       const body = withConstants(guarded ? code : liftGuard(code), { START: 0, BATCH: n });
       return new AsyncFunction("figma", body)(variablesFigma(long));
     }, long.length);
-    return `${palette.length} variables in ${read.length} calls; ${refused}`;
+    return `${counts.join(", ")}; ${refused}`;
   });
 
   await check("the audit reads the component sets on every page, not only the one loaded first", async () => {
@@ -882,8 +898,12 @@ async function main() {
     // a page only when a call switches to it, so a search from figma.root
     // would see the first page's sets, and only the first page's, from every
     // call. Each page's call has to return that page's sets and no other's.
+    // Forms holds exactly two slices of sets, so a call past the last slice
+    // would be one too many.
     const code = useFigmaBlock(/^Read the component sets/);
-    const forms = Array.from({ length: 30 }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
+    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
+    assert(batch > 0, "the component read defines no BATCH");
+    const forms = Array.from({ length: 2 * batch }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
     const pages = [
       { id: "0:1", name: "Forms", sets: forms },
       { id: "0:2", name: "Navigation", sets: [auditSet("Tabs", { variant: ["line", "pill"] }), auditSet("Breadcrumb", { size: ["sm", "md"] })] },
@@ -902,6 +922,9 @@ async function main() {
         };
         return figma;
       }, { PAGE_ID: page.id });
+      const sets = pages.find((p) => p.id === page.id).sets.length;
+      const calls = Math.max(1, Math.ceil(sets / batch));
+      assert(read.length === calls, `read the ${sets} sets on ${page.name} in ${read.length} calls, not ${calls}, with BATCH ${batch}`);
       for (const slice of read) found.push(...slice.componentSets.map((s) => `${page.name}/${s.name}`));
     }
     const expected = pages.flatMap((p) => p.sets.map((s) => `${p.name}/${s.name}`));
