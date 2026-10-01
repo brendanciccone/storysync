@@ -534,6 +534,34 @@ test("every push instruction reads a translucent colour back with its alpha, and
   }
 });
 
+test("every push summary says a transparent border shows as an unfilled ring", () => {
+  // The browser draws the background under a transparent border; Figma's
+  // fill stops where the OUTSIDE stroke begins, and that stroke paints
+  // nothing, so the ring stays empty. The user can choose a tinted stroke
+  // instead, which verify then scores as a border colour the code lacks.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      const summary = /^\d+\. Summarize[^\n]*/m.exec(text);
+      assert.ok(summary, `${path} has no summary step`);
+      assert.match(summary[0], /transparent border as an unfilled ring[^\n]*background under a transparent border[^\n]*`OUTSIDE` stroke[^\n]*stroke tinted[^\n]*`verify` will then score as a border colou?r the code does not have/,
+        `${path}'s summary never says a transparent border shows as an unfilled ring, or offers a tinted stroke`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
   // diff reads every page now, so Figma can repeat a name too, an archived
   // copy or each category's Button, and reports it as ambiguous. Comparing
