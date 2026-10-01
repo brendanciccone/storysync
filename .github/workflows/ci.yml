@@ -21,6 +21,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A hung test or Storybook would otherwise hold the runner for six hours.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +61,7 @@ jobs:
   # fail_on_drift with no baseline, and port 6006 already taken.
   action-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
 

@@ -78,10 +78,17 @@ function connectStorybook(url: string, json: boolean, timeoutMs: number): Promis
 }
 
 /** Parses --connect-timeout, exiting with a clear message on anything but a positive number of milliseconds. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 function parseConnectTimeout(value: unknown): number {
   const ms = Number(value);
   if (!Number.isFinite(ms) || ms <= 0) {
     console.error(chalk.red(`--connect-timeout must be a positive number of milliseconds, received "${value}"`));
+    process.exit(1);
+  }
+  // Node fires any longer timer after 1ms, which would fail every connect.
+  if (ms > MAX_TIMER_MS) {
+    console.error(chalk.red(`--connect-timeout can be at most ${MAX_TIMER_MS} milliseconds (about 24 days), received "${value}"`));
     process.exit(1);
   }
   return ms;

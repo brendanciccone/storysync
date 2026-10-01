@@ -129,10 +129,15 @@ after(() => {
   for (const s of standIns) s.server.close();
 });
 
-/** Runs the CLI without blocking, since the stand-in Storybook shares this process. */
+/**
+ * Runs the CLI without blocking, since the stand-in Storybook shares this
+ * process. The kill is a backstop under the 30s test timeouts: a CLI that
+ * hangs (on a server that never answers, say) fails its test instead of
+ * keeping the whole run alive.
+ */
 function run(...args: string[]): Promise<{ status: number; stdout: string; out: string }> {
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { encoding: "utf8" }, (err, stdout, stderr) => {
+    execFile(process.execPath, [CLI, ...args], { encoding: "utf8", timeout: 25_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
       const status = err ? Number((err as { code?: unknown }).code ?? -1) : 0;
       resolve({ status, stdout, out: `${stdout}${stderr}`.replace(/\u001b\[[0-9;]*m/g, "") });
     });
@@ -487,5 +492,17 @@ test("map, snap, list, inspect and diff CLI: a --connect-timeout that isn't a po
       assert.match(r.out, new RegExp(`--connect-timeout must be a positive number of milliseconds, received "${value}"`), command[0]);
       assert.doesNotMatch(r.out, /MCP/, command[0]);
     }
+  }
+});
+
+test("map CLI: a --connect-timeout past Node's longest timer is refused, not fired at once", async () => {
+  // setTimeout fires after 1ms for anything above 2^31 - 1, so such a value
+  // would fail every connect while telling the user to raise it.
+  const url = await unreachable();
+  for (const value of ["2147483648", "1e10"]) {
+    const r = await run("map", "--storybook", url, "--connect-timeout", value);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /--connect-timeout can be at most 2147483647 milliseconds/);
+    assert.doesNotMatch(r.out, /MCP/);
   }
 });
