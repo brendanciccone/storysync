@@ -132,7 +132,7 @@ This way, when tokens change in code and storysync runs again, updating the vari
 
 Compare the current Figma file against code to find drift in either direction. Use this when asked to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
 
-If `use_figma` doesn't return plugin return values, fall back to the Figma MCP's read-only tools that Cursor lists for the server (such as `get_metadata` and `get_variable_defs`), or ask the user to export Figma state to JSON.
+If `use_figma` doesn't return plugin return values, fall back to the Figma MCP's read-only tools that Cursor lists for the server, knowing what each covers: `get_metadata` outlines one node's layers (with no node, it lists the pages), and `get_variable_defs` returns only the variables and styles the selected node uses (on the remote server, the node a Figma link points at), so a variable no layer uses never appears. For a complete list, ask the user to export Figma's variables and components to JSON.
 
 1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value in the collection's first mode, unless the user names a mode. Convert COLOR values to hex strings. `use_figma` returns at most 20kb per call, which a full palette passes, so read 100 variables per call and return where the next call should start, calling again until none remain.
 

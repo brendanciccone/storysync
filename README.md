@@ -76,7 +76,7 @@ In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma when promp
 - **"Push my Storybook to Figma (file key abc123)"** — code → Figma
 - **"Diff Figma against code (file key abc123)"** — audit
 
-Cursor's terminal sandbox blocks `localhost` by default, so the agent asks to run `storysync map` and `snap` outside it. Approve them: they have to reach Storybook.
+Cursor's terminal sandbox blocks `localhost` by default, so the agent asks to run `storysync map`, `inspect` and `snap` outside it. Approve them: they have to reach Storybook.
 
 ### Codex
 

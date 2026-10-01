@@ -158,8 +158,10 @@ test("setup --client cursor prints a .cursor/mcp.json entry for Storybook", () =
 test("the Cursor rule asks for every readback property the Claude template returns", () => {
   // The Claude skill's readback template is the one tested against a live
   // push. The Cursor rule describes the readback in prose instead, and verify
-  // ignores any property it doesn't know by snap's name, so a rule that names
-  // Figma's fields (fills, cornerRadius) leaves every variant unscored.
+  // ignores any property it doesn't know by snap's name. The rule used to ask
+  // for Figma's fields (fills, cornerRadius, strokeWeight) beside a few of
+  // snap's, so verify could pass at 100% while fill, text colour, radius and
+  // border were never compared.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -188,6 +190,43 @@ test("the Cursor rule asks for every readback property the Claude template retur
     const file = JSON.parse(example[1]) as { version: number; components: Record<string, { variants: object }> };
     assert.equal(file.version, 1);
     for (const entry of Object.values(file.components)) assert.equal(typeof entry.variants, "object");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("the Cursor rule says to run the commands that reach Storybook outside the sandbox", () => {
+  // Cursor's sandbox blocks loopback addresses, so map, inspect and snap fail
+  // inside it, and an agent that isn't told why reports Storybook as down.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "cursor");
+    const rule = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
+    const passage = /\n## Running storysync from Cursor\n([\s\S]*?)\n## /.exec(rule)?.[1];
+    assert.ok(passage, "Cursor rule has no section on running storysync");
+    assert.match(passage, /sandbox/);
+    assert.match(passage, /full permissions/);
+    for (const command of ["map", "inspect", "snap"]) {
+      assert.ok(passage.includes(`\`${command}\``), `the sandbox guidance never names ${command}`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("setup --client cursor says when Cursor will also load another editor's copy of the skill", () => {
+  // Cursor loads .agents/skills and .claude/skills too, so the Codex or Claude
+  // copy reaches its agent with setup lines meant for that editor.
+  const project = tempProject();
+  try {
+    const alone = setupOutput(project, false, "cursor");
+    assert.equal(/Cursor also loads/.test(alone), false);
+
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "claude");
+    const out = setupOutput(project, false, "cursor");
+    assert.match(out, /Cursor also loads \.agents\/skills\/storysync, the Codex copy of this skill/);
+    assert.match(out, /Cursor also loads \.claude\/skills\/storysync, the Claude Code copy of this skill/);
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

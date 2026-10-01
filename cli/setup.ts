@@ -130,14 +130,27 @@ function setupCursor(projectPath: string, force: boolean): SetupResult {
 
   const written: string[] = [];
   const skipped: string[] = [];
+  const extraNotes: string[] = [];
 
   if (copyIfMissing(ruleSrc, ruleDest, force) === "wrote") written.push(relative(projectPath, ruleDest));
   else skipped.push(relative(projectPath, ruleDest));
+
+  // Cursor also loads skills from .agents/skills and .claude/skills, so a copy
+  // setup wrote for Codex or Claude Code reaches Cursor's agent too, with that
+  // editor's setup instructions. Say so rather than removing it: the other
+  // editor may still use it.
+  for (const [dir, editor] of [[".agents", "Codex"], [".claude", "Claude Code"]] as const) {
+    const skill = join(projectPath, dir, "skills", "storysync");
+    if (existsSync(skill)) {
+      extraNotes.push(`Cursor also loads ${relative(projectPath, skill)}, the ${editor} copy of this skill; its setup lines are for ${editor}, not Cursor.`);
+    }
+  }
 
   return {
     written,
     skipped,
     notes: [
+      ...extraNotes,
       "Add Storybook MCP to .cursor/mcp.json:",
       "  { \"mcpServers\": { \"storybook\": { \"url\": \"http://localhost:6006/mcp\" } } }",
       "Add Figma: in Cursor's Agent chat, run /add-plugin figma and sign in when prompted",
