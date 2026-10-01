@@ -165,7 +165,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | `padding` | auto-layout padding |
    | `gap.column` | `itemSpacing` |
    | `borderRadiusUniform`, else `borderRadius` | `cornerRadius`, else per-corner |
-   | `borderUniform` | stroke weight + colour (`null` means no stroke) |
+   | `borderUniform` | stroke weight + colour (`null` means no stroke; a `color` of `null` is a transparent border, a stroke with an invisible paint: see below) |
    | `boxShadow[]` | `DROP_SHADOW` effects |
    | `display: flex` + `flexDirection` | auto-layout direction |
    | `fontSize` / `fontWeight` / `fontFamily` | text style |
@@ -173,7 +173,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    Five things that go wrong by default, in ways `verify` either will not catch or will not explain:
 
-   - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's rendered size must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`.
+   - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's outer size, its own size plus the stroke outside it, must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`. **A transparent border still takes its space.** A `borderUniform` whose `color` is `null`, such as CSS `border: 1px solid transparent`, is in snap's `width`/`height` like any other, so give it a stroke of that weight, aligned the same way, with a paint that draws nothing (`{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 0 }`), never no stroke: without one the variant is short by twice the border. Step 6 reads the size from the geometry, which counts a stroke whether its paint shows or not, and reads that stroke's colour back as `null`, as snap measured it. In the browser the background runs under a transparent border, where Figma's fill stops at the stroke, so that ring shows no fill; painting the stroke to fill it would be scored as a border colour the code does not have.
    - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable. **Order the grid by snap's `variantProperties`, never by the set's children**: their order is whatever an earlier push or a designer left, and a set laid out in it gets rows whose columns disagree. Take the properties, and each one's values, in the order snap records them, which is the order of the component's prop type as Storybook's docs list it (a story's `argTypes` options are not read), not default first; a `BOOLEAN`'s `false` comes before its `true`. Each column is then one combination of the other properties in every row, and the layers panel lists the variants in the same order. Figma makes the top-left variant the set's default variant, so that is the variant of each property's first declared value. Step 5's build template does all of this; give it the properties and leave its layout as it is.
    - **Assert the layout before returning.** After positioning, check that no two variants' bounding boxes intersect and that the set's bounds contain every child. Geometry comparison catches variants clipped by an undersized frame, but two same-sized variants stacked inside an adequately sized one measure correctly and stay invisible — so the check has to happen here, at write time.
    - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no Times. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them. If the measured `fontFamily` is not a Google font, say so and name the substitute you used rather than letting Figma pick one silently: the substitution usually cascades, since e.g. Arimo (Figma's suggestion for Arial) has no SemiBold, so a 600 weight lands as 700 and drifts twice.
@@ -474,6 +474,24 @@ use_figma({
       const stroke = child.strokes && child.strokes[0];
       const toHex = (c) => '#' + [c.r, c.g, c.b]
         .map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+      // snap records a transparent border's colour as null, so read a stroke
+      // whose paint draws nothing as null too.
+      const shows = (paint) => paint.visible !== false && paint.opacity !== 0;
+      // Size from the geometry, never absoluteRenderBounds. snap's width and
+      // height are the browser's border box: a border takes its space there
+      // even when transparent, and a box-shadow takes none. Render bounds
+      // leave out a stroke that paints nothing and take in drop shadows, so
+      // a faithful push would drift on both. So take the node's own width and
+      // height and add the stroke that lies outside them, visible or not:
+      // all of it OUTSIDE, half CENTER, none INSIDE. Only when the node has a
+      // stroke, since one without still reports a strokeWeight; and each
+      // side's weight first, since strokeWeight is mixed when they differ.
+      const outside = stroke ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;
+      const edge = (side) => {
+        if (!outside) return 0;
+        const own = child['stroke' + side + 'Weight'];
+        return outside * (typeof own === 'number' ? own : child.strokeWeight);
+      };
       const text = child.findOne(n => n.type === 'TEXT');
       // Figma names weights ("Semi Bold"), CSS numbers them (600). Mapping only
       // Bold would report every SemiBold/Medium/Light face as 400, and
@@ -500,7 +518,7 @@ use_figma({
         borderRadiusUniform: typeof child.cornerRadius === 'number' ? child.cornerRadius : null,
         padding: { top: child.paddingTop, right: child.paddingRight,
                    bottom: child.paddingBottom, left: child.paddingLeft },
-        borderUniform: stroke ? { width: child.strokeWeight, style: 'solid', color: toHex(stroke.color) } : null,
+        borderUniform: stroke ? { width: child.strokeWeight, style: 'solid', color: shows(stroke) ? toHex(stroke.color) : null } : null,
         fontSize: text ? text.fontSize : undefined,
         fontWeight: text ? weightOf(text.fontName.style) : undefined,
         // Report the family Figma actually used: the plugin context has only
@@ -514,10 +532,9 @@ use_figma({
           ? { row: child.itemSpacing, column: child.itemSpacing }
           : undefined,
         opacity: child.opacity,
-        // Render bounds, not node.width — that excludes an OUTSIDE stroke and
-        // would under-report by the border width on every outlined variant.
-        width: (child.absoluteRenderBounds || child).width,
-        height: (child.absoluteRenderBounds || child).height,
+        // The border box, from the geometry: see edge above.
+        width: child.width + edge('Left') + edge('Right'),
+        height: child.height + edge('Top') + edge('Bottom'),
       };
     }
     // total counts every variant in the set, read or not: if the slices add up

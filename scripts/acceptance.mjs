@@ -17,7 +17,7 @@
 //   KEEP_WORKDIR=1  keep the temporary directory for inspection
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -139,8 +139,56 @@ function rgb01(hex) {
   };
 }
 
-/** A Figma component node that reproduces one measured variant exactly. */
-function figmaNode(name, st) {
+/** The alpha of a `#rrggbbaa` colour, 1 for `#rrggbb`. */
+function alpha01(hex) {
+  const h = hex.replace("#", "");
+  return h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
+}
+
+/** What Figma reports as a frame's strokeWeight when its sides' weights differ. */
+const MIXED = Symbol("figma.mixed");
+const SIDES = ["Top", "Right", "Bottom", "Left"];
+/** How much of a stroke's weight lies outside the node, by strokeAlign. */
+const OUTSIDE_SHARE = { OUTSIDE: 1, CENTER: 0.5, INSIDE: 0 };
+
+/**
+ * What Figma's absoluteRenderBounds would be for a simulated node: the node,
+ * the part of its stroke outside it while one of the stroke's paints shows,
+ * and the reach of each visible drop shadow, its offset plus its spread and
+ * blur radius. A stroke whose paint draws nothing is left out, as Figma
+ * leaves it out, and an inner shadow reaches nowhere.
+ */
+function renderBounds(node) {
+  const shows = node.strokes.some((paint) => paint.visible !== false && paint.opacity !== 0);
+  const out = (side) => (shows ? OUTSIDE_SHARE[node.strokeAlign] * node[`stroke${side}Weight`] : 0);
+  let left = -out("Left");
+  let top = -out("Top");
+  let right = node.width + out("Right");
+  let bottom = node.height + out("Bottom");
+  for (const effect of node.effects) {
+    if (effect.type !== "DROP_SHADOW" || effect.visible === false) continue;
+    const reach = effect.spread + effect.radius;
+    left = Math.min(left, effect.offset.x - reach);
+    top = Math.min(top, effect.offset.y - reach);
+    right = Math.max(right, node.width + effect.offset.x + reach);
+    bottom = Math.max(bottom, node.height + effect.offset.y + reach);
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/**
+ * A Figma component node that reproduces one measured variant exactly, built
+ * the way the skill says to. A border becomes a stroke of its weight on each
+ * side it is on, OUTSIDE on the frame that hugs its content, a transparent
+ * one with a paint that draws nothing; a node without one keeps the
+ * strokeWeight of 1 Figma gives every node. A box shadow becomes an effect.
+ * As in Figma, the node's own width and height leave out the stroke outside
+ * them, so they are the measured border box less that stroke, and
+ * absoluteRenderBounds is what Figma's would be. `strokeAlign` builds the
+ * stroke another way: INSIDE, at the measured size, as the skill says to for
+ * a frame given a fixed size, or CENTER.
+ */
+function figmaNode(name, st, { strokeAlign = "OUTSIDE" } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
   const textNode = {
     type: "TEXT",
@@ -149,11 +197,25 @@ function figmaNode(name, st) {
     // What Figma actually reports: a style *name*, e.g. Inter 600 is "Semi Bold".
     fontName: { family: text.fontFamily, style: STYLE_NAME[text.fontWeight] ?? "Regular" },
   };
-  return {
+  const border = Object.fromEntries(SIDES.map((side) => [side, st.borderUniform ?? st.border?.[side.toLowerCase()] ?? null]));
+  const drawn = SIDES.map((side) => border[side]).find(Boolean) ?? null;
+  const weight = Object.fromEntries(SIDES.map((side) => [side, drawn ? border[side]?.width ?? 0 : 1]));
+  const share = drawn ? OUTSIDE_SHARE[strokeAlign] : 0;
+  const node = {
     name,
     fills: st.backgroundColor ? [{ type: "SOLID", color: rgb01(st.backgroundColor) }] : [],
-    strokes: st.borderUniform ? [{ type: "SOLID", color: rgb01(st.borderUniform.color) }] : [],
-    strokeWeight: st.borderUniform?.width ?? 0,
+    strokes: drawn ? [{ type: "SOLID", color: rgb01(drawn.color ?? "#000000"), opacity: drawn.color ? 1 : 0 }] : [],
+    strokeWeight: new Set(Object.values(weight)).size === 1 ? weight.Top : MIXED,
+    ...Object.fromEntries(SIDES.map((side) => [`stroke${side}Weight`, weight[side]])),
+    strokeAlign,
+    effects: (st.boxShadow ?? []).map((shadow) => ({
+      type: shadow.inset ? "INNER_SHADOW" : "DROP_SHADOW",
+      color: { ...rgb01(shadow.color ?? "#000000"), a: shadow.color ? alpha01(shadow.color) : 0 },
+      offset: { x: shadow.offsetX, y: shadow.offsetY },
+      radius: shadow.blur,
+      spread: shadow.spread,
+      visible: true,
+    })),
     cornerRadius: st.borderRadiusUniform ?? 0,
     paddingTop: st.padding.top,
     paddingRight: st.padding.right,
@@ -163,10 +225,13 @@ function figmaNode(name, st) {
     layoutMode: "HORIZONTAL",
     itemSpacing: st.gap?.column ?? 0,
     opacity: st.opacity,
-    // Figma rounds text to whole pixels, so render bounds land near, not on, CSS.
-    absoluteRenderBounds: { width: Math.round(st.width), height: Math.round(st.height) },
+    // Figma rounds text to whole pixels, so the border box lands near, not on, CSS.
+    width: Math.round(st.width) - share * (weight.Left + weight.Right),
+    height: Math.round(st.height) - share * (weight.Top + weight.Bottom),
     findOne: (predicate) => (predicate(textNode) ? textNode : null),
   };
+  Object.defineProperty(node, "absoluteRenderBounds", { enumerable: true, get: () => renderBounds(node) });
+  return node;
 }
 
 function expandVariants(component) {
@@ -275,9 +340,10 @@ async function assertGuardRefuses(run, max, remedy = /lower BATCH/) {
  * call's slice of them, written an entry a line as the template shows, and
  * SET_ID and BATCH with the call's own; everything else runs verbatim.
  * `batch` is the template's own BATCH, `code()` the code an agent would send,
- * and `read()` what that call returns, parsed.
+ * and `read()` what that call returns, parsed. `mutate` rewrites the shipped
+ * code, to show a check fails a template that gets something wrong.
  */
-function loadSkillReadback() {
+function loadSkillReadback(mutate = null) {
   const md = readFileSync(SKILL, "utf8");
   const at = md.indexOf("const SLUG_BY_NAME");
   if (at < 0) {
@@ -289,7 +355,9 @@ function loadSkillReadback() {
   const open = md.lastIndexOf("code: `", at);
   const close = md.indexOf("`,", at);
   assert(open >= 0 && close > 0, "the skill's readback template is not inside a use_figma code literal");
-  const block = md.slice(open + "code: `".length, close);
+  const shipped = md.slice(open + "code: `".length, close);
+  const block = mutate ? mutate(shipped) : shipped;
+  assert(!mutate || block !== shipped, "the mutation no longer matches the readback template");
   assert(!block.includes("`"), "skill template contains a backtick, which would close the use_figma code literal early");
   assert(/\breturn\b[^\n]*;\s*$/.test(block), "skill template has no readback return statement");
 
@@ -399,6 +467,98 @@ async function buildReadback(snapDir, { mutate, withholdSource, onRead } = {}) {
     components[set.component.title ?? set.component.name] = { nodeId: set.componentSet.id, variants };
   }
   return { version: 1, fileKey: "acceptance", components };
+}
+
+/**
+ * Variants whose border box Figma's render bounds get wrong, each one of the
+ * example Button's measured variants changed as snap would measure the
+ * change, with how the push builds it. A transparent 1px border is in the
+ * border box, 2px each way, though it paints nothing; a box shadow is not; a
+ * border on one side only makes Figma report strokeWeight as mixed; and the
+ * outline Button's 2px border is built INSIDE at a fixed size, and CENTER.
+ */
+function edgeVariants(snapDir) {
+  const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+  const styleOf = (slug) => expandVariants(button).find((v) => v.slug === slug).styles;
+  const plain = styleOf("variant-primary--size-sm--disabled-false");
+  const outline = styleOf("variant-outline--size-sm--disabled-false");
+  assert(!plain.borderUniform && plain.boxShadow.length === 0 && outline.borderUniform?.width === 2,
+    "the example Button's primary sm variant has a border or a shadow, or its outline sm variant no 2px border");
+  const grown = (dx, dy) => ({ width: Math.round((plain.width + dx) * 100) / 100, height: plain.height + dy });
+  const clear = { width: 1, style: "solid", color: null };
+  const under = { width: 2, style: "solid", color: "#9ca3af" };
+  return [
+    { edge: "transparent-border", styles: { ...plain, ...grown(2, 2), border: { top: clear, right: clear, bottom: clear, left: clear }, borderUniform: clear } },
+    { edge: "box-shadow", styles: { ...plain, boxShadow: [{ offsetX: 0, offsetY: 4, blur: 12, spread: 0, color: "#0000001a", inset: false }] } },
+    { edge: "bottom-border", styles: { ...plain, ...grown(0, 2), border: { top: null, right: null, bottom: under, left: null }, borderUniform: null } },
+    { edge: "inside-stroke", styles: outline, strokeAlign: "INSIDE" },
+    { edge: "center-stroke", styles: outline, strokeAlign: "CENTER" },
+  ];
+}
+
+/**
+ * Scores the edge variants through a readback template: a snap holding them
+ * as one component, a simulated set built from them, read back a slice at a
+ * time, and verify's verdict on each, keyed by edge. Each has to report a
+ * width and a height, so a template that drops them cannot pass by having
+ * nothing compared.
+ */
+async function scoreEdges(snapDir, readback) {
+  const edges = edgeVariants(snapDir);
+  const slug = (e) => `edge-${e.edge}`;
+  const dir = join(WORK, "snap-edges");
+  mkdirSync(dir, { recursive: true });
+  cpSync(join(snapDir, "meta.json"), join(dir, "meta.json"));
+  const snap = readJson(join(snapDir, "styles.json"));
+  const component = {
+    name: "Edges", title: "Forms/Edges", category: "Forms", storyId: "forms-edges--default",
+    variantProperties: [{ name: "edge", type: "VARIANT", values: edges.map((e) => e.edge), defaultValue: edges[0].edge }],
+    base: { combination: { edge: edges[0].edge }, slug: slug(edges[0]), styles: edges[0].styles },
+    variants: edges.map((e) => ({ combination: { edge: e.edge }, slug: slug(e), status: "ok", delta: e.styles })),
+    warnings: [], error: null,
+  };
+  writeJson(join(dir, "styles.json"), { ...snap, components: [component] });
+
+  const slugByName = {};
+  const sourceBySlug = {};
+  const children = edges.map((e) => {
+    const name = `edge=${e.edge}`;
+    slugByName[name] = slug(e);
+    sourceBySlug[slug(e)] = "measured";
+    return figmaNode(name, e.styles, { strokeAlign: e.strokeAlign });
+  });
+  const componentSet = { id: "set:Edges", type: "COMPONENT_SET", name: "Edges", children };
+  const { variants } = await readSet(readback, { componentSet, slugByName, sourceBySlug }, READ_BATCH);
+  for (const e of edges) {
+    const { width, height } = variants[slug(e)];
+    assert(Number.isFinite(width) && Number.isFinite(height), `${e.edge} read back a width of ${String(width)} and a height of ${String(height)}`);
+  }
+  const path = join(WORK, "readback-edges.json");
+  writeJson(path, { version: 1, fileKey: "acceptance", components: { [component.title]: { nodeId: componentSet.id, variants } } });
+  const v = verifyJson(dir, path);
+  assert(v.json?.summary, `verify did not score the edge variants\n${v.out.trim()}`);
+  return Object.fromEntries(edges.map((e) => [e.edge, v.json.variants.find((x) => x.slug === slug(e))]));
+}
+
+/**
+ * Throws unless no edge variant drifts on width or height, and every one but
+ * the one-sided border matches on everything, naming each that does not. The
+ * readback reports any stroke as a uniform border, so that one drifts on
+ * borderUniform: not on its size.
+ */
+function assertEdges(verdicts) {
+  const describe = (diffs) => diffs.map((d) => `${d.property}: measured ${JSON.stringify(d.measured)}, Figma ${JSON.stringify(d.figma)}`).join("; ");
+  const wrong = [];
+  for (const [edge, verdict] of Object.entries(verdicts)) {
+    if (!verdict || verdict.status === "unscored") {
+      wrong.push(`${edge} was ${verdict ? verdict.status : "not scored"}`);
+      continue;
+    }
+    const sized = verdict.differences.filter((d) => d.property === "width" || d.property === "height");
+    if (sized.length) wrong.push(`${edge} drifted on its size: ${describe(sized)}`);
+    else if (edge !== "bottom-border" && verdict.status !== "verified") wrong.push(`${edge} drifted: ${describe(verdict.differences)}`);
+  }
+  assert(wrong.length === 0, wrong.join("\n"));
 }
 
 /**
@@ -574,8 +734,8 @@ function figmaDocument() {
  * written an entry a line, and PAGE_NAME, SET_NAME, SET_ID and PART with the
  * call's own. applyStyles is where the agent writes the Plugin API code that
  * styles a variant; `run()` gives it the simulated node of figmaNode() for
- * those styles, sized to the measured width and height, so the readback
- * template reads back exactly what the part sent. Everything else, finding
+ * those styles, sized as Figma sizes it, so the readback template reads back
+ * exactly what the part sent. Everything else, finding
  * the set and its variants, creating what is missing, and laying the set out,
  * runs verbatim. `code(..., { styled: false })` leaves applyStyles as the
  * skill ships it, for pricing what an agent would send. `mutate` rewrites the
@@ -607,7 +767,7 @@ function loadSkillBuild(mutate = null) {
   };
   const look = (name, styles) => {
     const { name: _, ...node } = figmaNode(name, styles);
-    return { ...node, width: Math.round(styles.width), height: Math.round(styles.height) };
+    return node;
   };
   const run = async (figma, variants, constants, properties) =>
     JSON.parse(await new AsyncFunction("figma", "look", code(variants, constants, properties))(figma, look));
@@ -1226,6 +1386,69 @@ async function main() {
     assert(status === 0, `all strict flags exited ${status}`);
     const total = Object.values(calls).reduce((a, b) => a + b, 0);
     return `${summary.verified}/${summary.variants} variants, ${summary.propertiesCompared} properties, read in ${total} slices`;
+  });
+
+  await check("a transparent border and a box shadow are scored by the border box, not Figma's render bounds", async () => {
+    // A live push of a 72-variant Chip read its 24 soft variants 2px short
+    // each way: their CSS border is transparent, and Figma's render bounds
+    // leave out a stroke that paints nothing, where the browser's border box
+    // keeps the border's space. Render bounds take in drop shadows too, which
+    // the border box does not. The simulated nodes' render bounds do the
+    // same, and the template reads the size from the geometry instead: the
+    // node's own size plus the stroke outside it, by strokeAlign.
+    const edges = edgeVariants(snapDir);
+    const node = (edge, align) => {
+      const { styles, strokeAlign } = edges.find((e) => e.edge === edge);
+      return figmaNode(edge, styles, { strokeAlign: align ?? strokeAlign });
+    };
+    const beyond = (n) => `${n.absoluteRenderBounds.width - n.width},${n.absoluteRenderBounds.height - n.height}`;
+    const clear = node("transparent-border");
+    assert(clear.strokes.length === 1 && clear.strokeWeight === 1 && beyond(clear) === "0,0",
+      `a transparent 1px border's render bounds reach ${beyond(clear)} past the node, not 0,0`);
+    const shadow = node("box-shadow");
+    assert(beyond(shadow) === "24,24", `a shadow 4px down with a 12px blur reaches ${beyond(shadow)} past the node, not 24,24`);
+    const reach = ["OUTSIDE", "CENTER", "INSIDE"].map((align) => beyond(node("inside-stroke", align))).join("; ");
+    assert(reach === "4,4; 2,2; 0,0", `a visible 2px stroke reaches ${reach} past the node, OUTSIDE, CENTER and INSIDE`);
+    assertEdges(await scoreEdges(snapDir, loadSkillReadback()));
+    return `render bounds would read the transparent border 2px short and the shadow 24px over; ` +
+      `all ${edges.length}, with the one-sided border and strokes INSIDE and CENTER, scored with no size drift`;
+  });
+
+  await check("a readback that reads render bounds, or gets a stroke wrong, fails these checks", async () => {
+    // Each mutant rewrites the shipped readback template, and has to fail
+    // the check above, which the template passes.
+    const T = {
+      size: "width: child.width + edge('Left') + edge('Right'),\n        height: child.height + edge('Top') + edge('Bottom'),",
+      outside: "const outside = stroke ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;",
+      side: "return outside * (typeof own === 'number' ? own : child.strokeWeight);",
+      colour: "color: shows(stroke) ? toHex(stroke.color) : null",
+    };
+    const mutants = {
+      "reads the size from absoluteRenderBounds, as the live push did": (code) => code.replace(T.size,
+        "width: (child.absoluteRenderBounds || child).width,\n        height: (child.absoluteRenderBounds || child).height,"),
+      "reads the node's own size, leaving out the stroke outside it": (code) => code.replace(T.size,
+        "width: child.width,\n        height: child.height,"),
+      "adds the whole stroke whatever its strokeAlign": (code) => code.replace(T.outside, "const outside = stroke ? 1 : 0;"),
+      "counts the strokeWeight of a node with no stroke": (code) => code.replace(T.outside,
+        "const outside = { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0;"),
+      "counts a stroke only while its paint shows": (code) => code.replace(T.outside,
+        "const outside = stroke && shows(stroke) ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;"),
+      "reads strokeWeight, never each side's weight": (code) => code.replace(T.side, "return outside * child.strokeWeight;"),
+      "reports the colour of a stroke that paints nothing": (code) => code.replace(T.colour, "color: toHex(stroke.color)"),
+    };
+    const failed = [];
+    for (const [mutant, mutate] of Object.entries(mutants)) {
+      const readback = loadSkillReadback(mutate);
+      let failure = null;
+      try {
+        assertEdges(await scoreEdges(snapDir, readback));
+      } catch (err) {
+        failure = err.message;
+      }
+      assert(failure, `a readback that ${mutant} scored every edge variant`);
+      failed.push(mutant);
+    }
+    return `${failed.length} mutants fail`;
   });
 
   await check("a variant the agent did not mark measured is recorded as inferred", async () => {

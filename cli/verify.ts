@@ -50,7 +50,7 @@ export interface ReadbackStyles {
   gap?: { row: number; column: number } | null;
   flexDirection?: string | null;
   opacity?: number;
-  /** From the node's render bounds, so an OUTSIDE stroke is included. */
+  /** The node's own size plus the stroke outside it, painted or not: see below. */
   width?: number;
   height?: number;
 }
@@ -82,9 +82,12 @@ export const COMPARABLE_PROPERTIES = [
  * 12px font, 1.72px at 18px. A fixed floor tight enough to be useful at 12px
  * produces false drift at 18px.
  *
- * The readback must supply these from the node's render bounds, not
- * `node.width`, which excludes an OUTSIDE stroke and would under-report by the
- * border on every outlined variant.
+ * The readback must supply these as the browser's border box: the node's own
+ * size plus whatever of its stroke lies outside it, painted or not. Not
+ * `node.width` alone, which leaves out an OUTSIDE stroke, and not its render
+ * bounds, which leave out a stroke that paints nothing, where a transparent
+ * CSS border still takes its space, and take in drop shadows, where a
+ * box-shadow takes none.
  */
 const MIN_GEOMETRY_TOLERANCE_PX = 1;
 const GEOMETRY_TOLERANCE_RATIO = 0.03;

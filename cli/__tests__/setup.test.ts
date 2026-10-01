@@ -444,6 +444,36 @@ test("every push instruction refuses a set with auto layout and checks each vari
   }
 });
 
+test("every push instruction reads a variant's size from its geometry and keeps a transparent border's stroke", () => {
+  // A live push read 24 soft Chips 2px short each way. Their CSS border is
+  // transparent, and the readback took the size from Figma's render bounds,
+  // which leave out a stroke that paints nothing and take in drop shadows,
+  // where snap's border box keeps the border's space and leaves the shadow
+  // out. The build keeps a transparent border as a stroke whose paint draws
+  // nothing, and the readback adds the stroke outside the node by strokeAlign.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /\(child\.absoluteRenderBounds \|\| child\)|from `absoluteRenderBounds`(?:, not| so)/, `${path} still reads a variant's size from its render bounds`);
+      assert.match(text, /never (?:take width and height from )?`?absoluteRenderBounds/i, `${path} never says not to read the size from render bounds`);
+      assert.match(text, /own (?:`width` and `height`|width and height|size) (?:and add|plus) the stroke (?:that lies )?outside/, `${path} never adds the stroke outside the node to its size`);
+      assert.match(text, /transparent border[^\n]*a paint that draws nothing/, `${path} never keeps a transparent border as a stroke`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
   // diff reads every page now, so Figma can repeat a name too, an archived
   // copy or each category's Button, and reports it as ambiguous. Comparing
