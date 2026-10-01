@@ -283,6 +283,29 @@ test("setup --client codex prints MCP setup Codex accepts", () => {
   }
 });
 
+test("setup --client codex --force refreshes the skill with Codex's own setup", () => {
+  // An earlier install, or one edited by hand, is replaced with --force, and
+  // what replaces it tells Codex how to add the servers and use its sandbox.
+  const project = tempProject();
+  try {
+    const skill = join(project, ".agents", "skills", "storysync", "SKILL.md");
+    mkdirSync(join(project, ".agents", "skills", "storysync"), { recursive: true });
+    writeFileSync(skill, "stale");
+    setupOutput(project, true, "codex");
+    const text = readFileSync(skill, "utf8");
+    assert.notEqual(text, "stale");
+    const tokens = text.indexOf("\n## Tokens\n");
+    assert.ok(tokens > 0, "the skill has no Tokens section");
+    const head = text.slice(0, tokens);
+    assert.match(head, /codex mcp add/);
+    assert.match(head, /\n## Codex's sandbox\n/);
+    assert.equal(head.includes("[mcp."), false);
+    assert.equal(head.includes('type = "http"'), false);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("setup --client codex says to remove the copy an earlier setup wrote to AGENTS.md", () => {
   const project = tempProject();
   try {

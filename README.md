@@ -80,14 +80,16 @@ Cursor's terminal sandbox blocks `localhost` by default, so the agent asks to ru
 
 ### Codex
 
-After `storysync setup --client codex`, which writes the skill to `.agents/skills/storysync/SKILL.md`:
+After `storysync setup --client codex`, which writes the skill to `.agents/skills/storysync/SKILL.md`, start Storybook, then:
 
 ```bash
 codex mcp add storybook --url http://localhost:6006/mcp
 codex mcp add figma --url https://mcp.figma.com/mcp      # signs you in to Figma
 ```
 
-Or install Figma's plugin instead of adding its server by hand: **Plugins** in the Codex app, `/plugins` in the CLI. `codex mcp add` registers servers for every project; to keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads only once you trust the project:
+`codex mcp add` asks each server whether it needs a login. With Storybook not running it gets no answer and prints "MCP server may or may not require login"; Storybook's server needs none, so that line can be ignored.
+
+Or install Figma's plugin instead of adding its server by hand: **Plugins** in the ChatGPT desktop app (the Codex app, in Figma's setup guide), `/plugins` in the CLI. `codex mcp add` registers servers for every project; to keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads only once you trust the project:
 
 ```toml
 [mcp_servers.storybook]
@@ -96,7 +98,15 @@ url = "http://localhost:6006/mcp"
 
 Codex runs commands in a sandbox with network access off, and `map`, `inspect`, and `snap` need Storybook on `localhost` and a browser, so Codex asks to run `npx storysync` outside it. Approve it, or accept the rule Codex offers so it stops asking.
 
-Start Storybook and say (or, in the CLI, type `$storysync` to name the skill):
+Codex stops waiting for an MCP tool call after `tool_timeout_sec` seconds (OpenAI's docs give the default as 60; Codex 0.141 and later wait 300). The skill splits large writes to Figma across calls, but if one still times out, raise the limit in the `[mcp_servers.figma]` table that `codex mcp add` wrote to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+tool_timeout_sec = 600
+```
+
+With Storybook running, say (or, in the CLI, type `$storysync` to name the skill):
 
 - **"Push my Storybook to Figma (file key abc123)"** — code → Figma
 - **"Diff Figma against code (file key abc123)"** — audit

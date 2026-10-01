@@ -11,13 +11,15 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 
 - Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+; `snap` needs Node 20+)
 - Storybook MCP: `codex mcp add storybook --url http://localhost:6006/mcp`
-- Figma MCP: the Figma plugin (**Plugins** in the Codex app, `/plugins` in the CLI), or `codex mcp add figma --url https://mcp.figma.com/mcp`, which signs in to Figma as it adds the server (`codex mcp login figma` signs in again later)
+- Figma MCP: the Figma plugin (**Plugins** in the ChatGPT desktop app, which Figma's setup guide calls the Codex app, or `/plugins` in the CLI), or `codex mcp add figma --url https://mcp.figma.com/mcp`, which signs in to Figma as it adds the server (`codex mcp login figma` signs in again later)
 - Figma Full seat (Dev seats are read-only)
 - storysync 0.3.0 or later, run as `npx storysync` — 0.2.0 and earlier have no `snap` or `verify`
 
 ## Codex's sandbox
 
 Codex runs shell commands in a sandbox with network access off by default. `map`, `inspect`, and `snap` connect to Storybook on `localhost`, and `snap` also launches a browser, so inside the sandbox they fail before reading anything — as does `npx` when it has to download storysync. Ask to run them outside the sandbox and let the user approve it. A connection error from inside the sandbox says nothing about whether Storybook is running, and it is never a reason to read styles from source instead: re-run the command with approval. If approvals are turned off, stop and tell the user these commands need network access rather than working around it. `tokens` and `verify` only read files, so once storysync is installed they run inside it.
+
+Codex also stops waiting for an MCP tool after `tool_timeout_sec`. If a `use_figma` call times out in Codex rather than failing with Figma's `Script exceeded time limit`, read the canvas before retrying, since the call may have changed it, and split the work into smaller calls (Tokens step 3, Components step 5). If it still times out, tell the user they can raise `tool_timeout_sec` in the `[mcp_servers.figma]` table that `codex mcp add figma` wrote to `~/.codex/config.toml`.
 
 ## Tokens
 
