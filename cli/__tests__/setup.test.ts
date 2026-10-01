@@ -290,6 +290,22 @@ test("every push instruction keeps each use_figma call inside Figma's limits", (
   }
 });
 
+test("the Codex skill says how to raise the tool timeout however Figma was added", () => {
+  // codex mcp add writes a [mcp_servers.figma] table; Figma's plugin writes
+  // none, and its server has no timeout setting of its own.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "codex");
+    const text = readFileSync(join(project, ".agents", "skills", "storysync", "SKILL.md"), "utf8");
+    const note = text.slice(0, text.indexOf("\n## Tokens\n")).split("\n").find((line) => line.includes("tool_timeout_sec"));
+    assert.ok(note, "the Codex skill never mentions tool_timeout_sec");
+    assert.match(note, /codex mcp add figma/);
+    assert.match(note, /plugin/, "the timeout note assumes Figma was added with codex mcp add");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("setup --client codex installs a skill Codex discovers and leaves AGENTS.md alone", () => {
   const project = tempProject();
   try {

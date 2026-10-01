@@ -106,6 +106,7 @@ url = "https://mcp.figma.com/mcp"
 tool_timeout_sec = 600
 ```
 
+Figma's plugin writes no such table, and Codex's settings for a plugin's MCP server cover switching it on and approving its tools, not the timeout. A `[mcp_servers.figma]` table takes the place of the plugin's own `figma` server, though, so with the plugin installed, run `codex mcp add figma --url https://mcp.figma.com/mcp` and add the line to the table it writes.
 
 With Storybook running, say (or, in the CLI, type `$storysync` to name the skill):
 
