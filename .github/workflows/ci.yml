@@ -136,8 +136,13 @@ jobs:
           fi
 
       # With nothing to compare against, fail_on_drift has to fail: a green
-      # job would mean a misnamed baseline passes forever.
+      # job would mean a misnamed baseline passes forever. The map output
+      # proves the failure came after mapping, not from setup.
+      - name: Clear the last run's map output
+        run: rm -f examples/storybook-vite/storysync-current.json
+
       - id: missing-baseline
+        name: Run the action without a baseline (has to fail)
         uses: ./action
         continue-on-error: true
         with:
@@ -155,12 +160,18 @@ jobs:
             echo "::error::the action's outcome is '$OUTCOME', expected 'failure': fail_on_drift has to fail when there is no baseline at .storysync/missing.json"
             exit 1
           fi
+          if [ ! -f examples/storybook-vite/storysync-current.json ]; then
+            echo "::error::the action failed before mapping components, so the missing baseline wasn't what failed it"
+            exit 1
+          fi
 
       # Something else on 6006: the action has to fail at Start Storybook
-      # rather than map whatever answers there.
+      # rather than map whatever answers there. Extract tokens runs right
+      # after Start Storybook, so its output must not appear.
       - id: port-server
         name: Serve something else on port 6006
         run: |
+          rm -f examples/storybook-vite/storysync-tokens-current.json
           python3 -m http.server 6006 --bind 127.0.0.1 --directory "$RUNNER_TEMP" > /dev/null 2>&1 &
           echo "pid=$!" >> "$GITHUB_OUTPUT"
           for _ in $(seq 1 20); do
@@ -173,6 +184,7 @@ jobs:
           exit 1
 
       - id: port-taken
+        name: Run the action with port 6006 taken (has to fail)
         uses: ./action
         continue-on-error: true
         with:
@@ -187,6 +199,10 @@ jobs:
           set -euo pipefail
           if [ "$OUTCOME" != failure ]; then
             echo "::error::the action's outcome is '$OUTCOME', expected 'failure': something else was already serving port 6006"
+            exit 1
+          fi
+          if [ -f examples/storybook-vite/storysync-tokens-current.json ]; then
+            echo "::error::the action got past Start Storybook with something else on port 6006"
             exit 1
           fi
           if ! kill -0 "$SERVER_PID" 2> /dev/null; then

@@ -359,6 +359,10 @@ runs:
         const wd = path.normalize(process.env.WORKING_DIRECTORY || ".").replace(/\/+$/, "") || ".";
         const where = wd === "." ? "the repository root" : wd;
 
+        // A report left by an earlier run in this job would otherwise reach
+        // the issue as this run's.
+        fs.rmSync("storysync-token-drift.md", { force: true });
+
         const baselinePath = process.env.TOKEN_BASELINE_PATH;
         // An empty token_baseline opts out of tokens, so a project that checks
         // only components can use fail_on_drift whatever tokens it has.
@@ -526,6 +530,10 @@ runs:
         const quote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'");
         const wd = path.normalize(process.env.WORKING_DIRECTORY || ".").replace(/\/+$/, "") || ".";
         const where = wd === "." ? "the repository root" : wd;
+
+        // A report left by an earlier run in this job would otherwise reach
+        // the issue as this run's.
+        fs.rmSync("storysync-drift.md", { force: true });
 
         const baselinePath = process.env.BASELINE_PATH;
         const current = JSON.parse(fs.readFileSync("storysync-current.json", "utf8"));
