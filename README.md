@@ -80,21 +80,23 @@ Cursor's terminal sandbox blocks `localhost` by default, so the agent asks to ru
 
 ### Codex
 
-After `storysync setup --client codex`:
+After `storysync setup --client codex`, which writes the skill to `.agents/skills/storysync/SKILL.md`:
 
-Add Storybook and Figma MCP servers to `.codex/config.toml`:
-
-```toml
-[mcp.storybook]
-type = "http"
-url = "http://localhost:6006/mcp"
-
-[mcp.figma]
-type = "http"
-url = "https://mcp.figma.com/mcp"
+```bash
+codex mcp add storybook --url http://localhost:6006/mcp
+codex mcp add figma --url https://mcp.figma.com/mcp      # signs you in to Figma
 ```
 
-Start Storybook and say:
+Or install Figma's plugin instead of adding its server by hand: **Plugins** in the Codex app, `/plugins` in the CLI. `codex mcp add` registers servers for every project; to keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads only once you trust the project:
+
+```toml
+[mcp_servers.storybook]
+url = "http://localhost:6006/mcp"
+```
+
+Codex runs commands in a sandbox with network access off, and `map`, `inspect`, and `snap` need Storybook on `localhost` and a browser, so Codex asks to run `npx storysync` outside it. Approve it, or accept the rule Codex offers so it stops asking.
+
+Start Storybook and say (or, in the CLI, type `$storysync` to name the skill):
 
 - **"Push my Storybook to Figma (file key abc123)"** — code → Figma
 - **"Diff Figma against code (file key abc123)"** — audit
@@ -281,6 +283,8 @@ npx storysync setup --client claude
 # writes .claude/skills/storysync/SKILL.md and .claude/commands/storysync-{push,diff}.md
 npx storysync setup --client cursor
 # writes .cursor/rules/storysync.mdc
+npx storysync setup --client codex
+# writes .agents/skills/storysync/SKILL.md
 ```
 
 ### `storysync tokens`

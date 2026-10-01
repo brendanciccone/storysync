@@ -146,28 +146,46 @@ function setupCursor(projectPath: string, force: boolean): SetupResult {
   };
 }
 
+/** How the copy an earlier setup wrote into AGENTS.md begins. */
+const LEGACY_CODEX_HEADING = "# storysync — Storybook to Figma";
+
+/**
+ * Codex loads a skill from `.agents/skills/<name>/SKILL.md`, which carries its
+ * own frontmatter. Earlier versions wrote the procedure to AGENTS.md instead,
+ * which is the project's own instructions file: most projects that use Codex
+ * already have one, so setup skipped it and the procedure never arrived, and
+ * --force replaced the project's instructions with storysync's.
+ */
 function setupCodex(projectPath: string, force: boolean): SetupResult {
   const skillSrc = join(PACKAGE_ROOT, "skills", "codex.md");
-  const agentsDest = join(projectPath, "AGENTS.md");
+  const skillDest = join(projectPath, ".agents", "skills", "storysync", "SKILL.md");
+  const agentsPath = join(projectPath, "AGENTS.md");
 
   const written: string[] = [];
   const skipped: string[] = [];
+  const extraNotes: string[] = [];
 
-  if (existsSync(agentsDest) && !force) {
-    skipped.push(relative(projectPath, agentsDest));
-  } else {
-    copyFileSync(skillSrc, agentsDest);
-    written.push(relative(projectPath, agentsDest));
+  if (copyIfMissing(skillSrc, skillDest, force) === "wrote") written.push(relative(projectPath, skillDest));
+  else skipped.push(relative(projectPath, skillDest));
+
+  // AGENTS.md is loaded into every Codex session, so an old copy keeps
+  // competing with the skill. It may hold the project's own instructions too,
+  // so say what to remove rather than touching it.
+  if (existsSync(agentsPath) && readFileSync(agentsPath, "utf8").startsWith(LEGACY_CODEX_HEADING)) {
+    extraNotes.push(
+      `Remove the storysync instructions from ${relative(projectPath, agentsPath)} — an earlier setup wrote them there, and Codex now loads them from ${relative(projectPath, skillDest)}.`,
+    );
   }
 
   return {
     written,
     skipped,
     notes: [
-      "Add Storybook + Figma MCP servers to .codex/config.toml:",
-      "  [mcp.storybook] type = \"http\", url = \"http://localhost:6006/mcp\"",
-      "  [mcp.figma]     type = \"http\", url = \"https://mcp.figma.com/mcp\"",
-      "Then say: \"Push my Storybook to Figma (file key: <key>)\"",
+      ...extraNotes,
+      "Add Storybook MCP:  codex mcp add storybook --url http://localhost:6006/mcp",
+      "Add Figma MCP:      codex mcp add figma --url https://mcp.figma.com/mcp   (or the Figma plugin, from /plugins)",
+      "Approve npx storysync when Codex asks to run it outside the sandbox: it needs Storybook on localhost and a browser",
+      "Then say: \"Push my Storybook to Figma (file key: <key>)\" — or $storysync to name the skill",
     ],
   };
 }

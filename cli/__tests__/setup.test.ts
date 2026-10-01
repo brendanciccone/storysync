@@ -206,3 +206,76 @@ test("the Cursor rule names no step Cursor can't take", () => {
     rmSync(project, { recursive: true, force: true });
   }
 });
+
+test("setup --client codex installs a skill Codex discovers and leaves AGENTS.md alone", () => {
+  const project = tempProject();
+  try {
+    // AGENTS.md is the project's own instructions. Writing the skill there was
+    // skipped whenever one existed, and --force replaced it.
+    const own = "# Team rules\n\n- Run the tests.\n";
+    writeFileSync(join(project, "AGENTS.md"), own);
+    for (const force of [false, true]) {
+      setupOutput(project, force, "codex");
+      assert.equal(readFileSync(join(project, "AGENTS.md"), "utf8"), own);
+    }
+    // Codex scans .agents/skills/<name>/SKILL.md and needs a name and description.
+    const head = readFileSync(join(project, ".agents", "skills", "storysync", "SKILL.md"), "utf8").slice(0, 1200);
+    const frontmatter = head.match(/^---\nname: ([a-z0-9-]{1,64})\ndescription: (.+)\n---\n/);
+    assert.ok(frontmatter, "SKILL.md has no name/description frontmatter");
+    assert.equal(frontmatter[1], "storysync");
+    assert.ok(frontmatter[2].length <= 1024);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("setup --client codex prints MCP setup Codex accepts", () => {
+  const project = tempProject();
+  try {
+    const out = setupOutput(project, false, "codex");
+    // Codex reads [mcp_servers.<name>] with a url; [mcp.<name>] with a type is
+    // not its config, and the servers it described were never registered.
+    assert.match(out, /codex mcp add storybook --url http:\/\/localhost:6006\/mcp/);
+    assert.match(out, /codex mcp add figma --url https:\/\/mcp\.figma\.com\/mcp/);
+    assert.equal(/\[mcp\./.test(out), false);
+    assert.equal(/AGENTS\.md/.test(out), false);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("setup --client codex says to remove the copy an earlier setup wrote to AGENTS.md", () => {
+  const project = tempProject();
+  try {
+    const old = "# storysync — Storybook to Figma\n\nRead components from Storybook MCP.\n";
+    writeFileSync(join(project, "AGENTS.md"), old);
+    const out = setupOutput(project, false, "codex");
+    assert.match(out, /Remove the storysync instructions from AGENTS\.md/);
+    assert.equal(readFileSync(join(project, "AGENTS.md"), "utf8"), old);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("setup: the Codex skill carries the same procedure as the Claude skill", () => {
+  // The Codex copy was condensed by hand and drifted: it lost the variant
+  // naming rule, the readback's property names and its source default. Only
+  // the client setup above the procedure may differ.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    const procedure = (path: string) => {
+      const text = readFileSync(join(project, path), "utf8");
+      const start = text.indexOf("\n## Tokens\n");
+      assert.ok(start > 0, `${path} has no Tokens section`);
+      return text.slice(start);
+    };
+    assert.equal(
+      procedure(join(".agents", "skills", "storysync", "SKILL.md")),
+      procedure(join(".claude", "skills", "storysync", "SKILL.md")),
+    );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
