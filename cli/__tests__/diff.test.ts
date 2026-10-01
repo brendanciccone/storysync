@@ -13,7 +13,7 @@ import {
   hasDifferences,
 } from "../diff.js";
 import type { TokenCollection } from "../tokens.js";
-import { extractFirstBalancedArray } from "../figma.js";
+import { extractFirstBalancedObject } from "../figma.js";
 import type { FigmaVariable, FigmaComponentInfo } from "../figma.js";
 import type { FigmaComponentDefinition } from "../mapper.js";
 
@@ -297,33 +297,33 @@ test("hasDifferences: true when any mismatch", () => {
   assert.equal(hasDifferences(summary), true);
 });
 
-// --- extractFirstBalancedArray ---
+// --- extractFirstBalancedObject ---
 
-test("extractFirstBalancedArray: simple array", () => {
-  assert.equal(extractFirstBalancedArray('[1,2,3]'), '[1,2,3]');
+test("extractFirstBalancedObject: simple object", () => {
+  assert.equal(extractFirstBalancedObject('{"total":0,"next":null,"items":[]}'), '{"total":0,"next":null,"items":[]}');
 });
 
-test("extractFirstBalancedArray: nested arrays", () => {
-  const input = 'Result:\n[{"name":"Button","values":["sm","md"]}]';
-  assert.equal(extractFirstBalancedArray(input), '[{"name":"Button","values":["sm","md"]}]');
+test("extractFirstBalancedObject: nested objects, after other text", () => {
+  const input = 'Result:\n{"total":1,"next":null,"items":[{"name":"Button","values":["sm","md"]}]}\nDone';
+  assert.equal(extractFirstBalancedObject(input), '{"total":1,"next":null,"items":[{"name":"Button","values":["sm","md"]}]}');
 });
 
-test("extractFirstBalancedArray: brackets inside strings", () => {
-  const input = '[{"name":"test]value","data":"a[b"}]';
-  assert.equal(extractFirstBalancedArray(input), input);
+test("extractFirstBalancedObject: braces inside strings", () => {
+  const input = '{"name":"test}value","data":"a{b"}';
+  assert.equal(extractFirstBalancedObject(input), input);
 });
 
-test("extractFirstBalancedArray: escaped quotes in strings", () => {
-  const input = '[{"name":"say \\"hello\\""}]';
-  assert.equal(extractFirstBalancedArray(input), input);
+test("extractFirstBalancedObject: escaped quotes in strings", () => {
+  const input = '{"name":"say \\"hello}\\""}';
+  assert.equal(extractFirstBalancedObject(input), input);
 });
 
-test("extractFirstBalancedArray: no array returns null", () => {
-  assert.equal(extractFirstBalancedArray('no arrays here'), null);
+test("extractFirstBalancedObject: no object returns null", () => {
+  assert.equal(extractFirstBalancedObject('no objects here'), null);
 });
 
-test("extractFirstBalancedArray: unbalanced returns null", () => {
-  assert.equal(extractFirstBalancedArray('[1,2,3'), null);
+test("extractFirstBalancedObject: unbalanced returns null", () => {
+  assert.equal(extractFirstBalancedObject('{"items":[1,2,3]'), null);
 });
 
 test("diffComponents: two code components sharing a bare name are flagged, not silently dropped", () => {

@@ -2,7 +2,9 @@
 // Storybook that fails, end to end against stand-in MCP servers: just enough
 // JSON-RPC over HTTP for Storybook's two documentation tools and Figma's
 // use_figma, so this needs no network, no running Storybook and no Figma file.
-// The acceptance suite checks map and inspect against the real Storybook.
+// use_figma runs the plugin code diff sends against a simulated file, loading
+// pages as Figma does (see figma-standin.ts). The acceptance suite checks map
+// and inspect against the real Storybook.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -15,6 +17,8 @@ import type { AddressInfo, Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { useFigma, set, component } from "./figma-standin.js";
+import type { FileSpec, UseFigmaCall } from "./figma-standin.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
@@ -30,13 +34,15 @@ const DOCS: Record<string, string> = {
   "data-display-card": "A card with no props.",
 };
 
-// What use_figma reports for the file: Button agrees with the code, Card is
-// in code too, and Badge exists only in Figma.
-const FIGMA_COMPONENTS = [
-  { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }], variantCount: 2 },
-  { name: "Card", variantProperties: [], variantCount: 1 },
-  { name: "Badge", variantProperties: [], variantCount: 1 },
-];
+// The Figma file, a category a page as the push leaves it: Button agrees with
+// the code, Card is in code too, and Badge exists only in Figma.
+const FIGMA_FILE: FileSpec = {
+  pages: [
+    { name: "Forms", nodes: [set("Button", { size: ["sm", "lg"] })] },
+    { name: "Data display", nodes: [component("Card")] },
+    { name: "Feedback", nodes: [component("Badge")] },
+  ],
+};
 
 type Rpc = { id?: number; method: string; params?: { protocolVersion?: string; name?: string; arguments?: { id?: string; code?: string } } };
 
@@ -44,6 +50,8 @@ interface StandIn {
   url: string;
   /** Every tool called, with the component ID where there is one: `docs-show forms-button`. */
   calls: string[];
+  /** Every use_figma call, as the Figma stand-in ran it. */
+  figmaCalls: UseFigmaCall[];
   server: Server;
 }
 
@@ -51,10 +59,12 @@ interface StandIn {
  * Serves a stand-in Storybook (and Figma) MCP server. `docs` names its docs
  * tools, 0.7's or 10.6's, or null for a server without them. A tool named in
  * `failing` answers as addon-mcp does when it can't: an `isError` result
- * with the reason as text, not a protocol error.
+ * with the reason as text, not a protocol error. use_figma runs its code
+ * against `figma`.
  */
-async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = []): Promise<StandIn> {
+async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = [], figma: FileSpec = FIGMA_FILE): Promise<StandIn> {
   const calls: string[] = [];
+  const figmaCalls: UseFigmaCall[] = [];
   const tools = [...(docs ? [docs.list, docs.show] : ["preview-stories"]), "use_figma"];
 
   function call(name = "", args: { id?: string; code?: string } = {}): unknown {
@@ -63,8 +73,7 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
     if (failing.includes(name)) return { ...text(`Storybook index could not be built (${name})`), isError: true };
     if (name === docs?.list) return text(LIST);
     if (name === docs?.show) return text(DOCS[args.id ?? ""] ?? "");
-    // use_figma: the component read, or an empty variable read.
-    return text(JSON.stringify(args.code?.includes("COMPONENT_SET") ? FIGMA_COMPONENTS : []));
+    return useFigma(figma, args.code ?? "", figmaCalls);
   }
 
   function respond(message: Rpc): unknown {
@@ -89,18 +98,19 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
     }
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
-    req.on("end", () => {
+    req.on("end", async () => {
       const message = JSON.parse(body) as Rpc;
       if (message.id === undefined) {
         res.writeHead(202).end();
         return;
       }
+      const result = await respond(message);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: respond(message) }));
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, server };
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, figmaCalls, server };
 }
 
 const ADDON_MCP_0_7 = { list: "list-all-documentation", show: "get-documentation" };
@@ -277,6 +287,57 @@ test("diff CLI: a working Storybook reports storybookReadFailed false", async ()
   const r = await diff("--components", "Button", "--json");
   assert.equal(r.status, 0, r.out);
   assert.equal((JSON.parse(r.stdout) as DiffJson).storybookReadFailed, false);
+});
+
+// --- Reading Figma a page at a time ---
+
+/** Runs diff, in a project with no tokens, against a stand-in serving both Storybook and Figma. */
+async function diffAgainst(standIn: StandIn, ...args: string[]) {
+  const project = mkdtempSync(join(tmpdir(), "storysync-diff-cli-"));
+  try {
+    return await run("diff", "--figma", `${standIn.url}/mcp`, "--file-key", "x", "--storybook", standIn.url, "--project", project, ...args);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
+test("diff CLI: compares the components on every page of the Figma file, not only the first", async () => {
+  // Button, Card and Badge are each on a page of their own. Searched from
+  // figma.root, as diff did, use_figma sees only the first page, and Card was
+  // reported missing from Figma while Badge went unreported.
+  const standIn = await startStandIn(ADDON_MCP_10_6);
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn, "--json");
+  assert.equal(r.status, 0, r.out);
+  const data = JSON.parse(r.stdout) as DiffJson & { summary: { componentsMatched: number } };
+  assert.equal(data.figmaReadFailed, false);
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
+  assert.equal(data.summary.componentsMatched, 2);
+  // The variables, the page list, then each page once, switching to it once.
+  assert.deepEqual(standIn.figmaCalls.map((c) => c.switches), [[], [], ["0:1"], ["0:2"], ["0:3"]]);
+  assert.ok(standIn.figmaCalls.every((c) => !c.error));
+});
+
+test("diff CLI: a Figma component too big for one use_figma response fails the read, and --strict", async () => {
+  // A set of 1,500 icons can't come back in one 20kb response. Left out, the
+  // diff would look complete without it; cut short by the limit, the response
+  // wouldn't parse. The read fails instead, naming the component and page.
+  const icons = Array.from({ length: 1500 }, (_, i) => `icon-glyph-${i}`);
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], { pages: [...FIGMA_FILE.pages, { name: "Icons", nodes: [set("Icon", { name: icons })] }] });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn);
+  assert.match(r.out, /Failed to read Figma components/);
+  assert.match(r.out, /Failed to read page "Icons" of the Figma file: .*Component "Icon" on page "Icons" comes to \d+ bytes as use_figma returns it, more than the 17000 one call can carry under its 20kb response limit/);
+  assert.match(r.out, /Figma read failed — diff results above are partial/);
+  assert.doesNotMatch(r.out, /not in Figma|not in code|No differences found|Components in sync/);
+
+  const strict = await diffAgainst(standIn, "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  const data = JSON.parse(strict.stdout) as DiffJson;
+  assert.equal(data.figmaReadFailed, true);
+  assert.deepEqual(data.components, []);
+  // use_figma never had to refuse a response: the read stopped first.
+  assert.ok(standIn.figmaCalls.every((c) => c.bytes <= 17000 && !/exceeds/.test(c.error ?? "")));
 });
 
 // --- Errors from Storybook end list, map and inspect cleanly ---
