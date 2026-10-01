@@ -474,6 +474,31 @@ test("every push instruction reads a variant's size from its geometry and keeps 
   }
 });
 
+test("every push instruction reports a pixel of text width as a font-rendering difference", () => {
+  // The same push drifted on 8 small bold Chips that Figma set 40 wide where
+  // Chrome measured 38.59. Nothing in the node is wrong, and squeezing the
+  // text box to fit would only trade the drift for a clipped label.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /`width` a pixel or two off on a variant that hugs its text[^\n]*font-rendering difference[^\n]*clip the label/,
+        `${path} never says to report a pixel of text width as a font-rendering difference`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
   // diff reads every page now, so Figma can repeat a name too, an archived
   // copy or each category's Button, and reports it as ambiguous. Comparing
