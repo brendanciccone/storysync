@@ -1,6 +1,5 @@
 ---
-description: Generate Figma component library from Storybook using storysync
-globs:
+description: Sync Storybook components and design tokens from code to Figma with storysync, measuring each variant's rendered styles rather than inferring them. Use when pushing a component library to Figma, scoring what landed against what rendered, or auditing drift between code and a Figma file.
 alwaysApply: false
 ---
 
@@ -10,11 +9,15 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 
 ## Requirements
 
-- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+)
-- Storybook MCP connected (endpoint at `/mcp` on the dev server)
-- Figma MCP connected (`/add-plugin figma` or add `https://mcp.figma.com/mcp`)
+- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+; `snap` needs Node 20+)
+- Storybook MCP in `.cursor/mcp.json`: `{ "mcpServers": { "storybook": { "url": "http://localhost:6006/mcp" } } }`
+- Figma MCP: `/add-plugin figma` in Agent chat (or a `"figma": { "url": "https://mcp.figma.com/mcp" }` entry in `.cursor/mcp.json`), and sign in to Figma when prompted
 - Figma Full seat (Dev seats are read-only)
 - storysync 0.3.0 or later, run as `npx storysync` — 0.2.0 and earlier have no `snap` or `verify`
+
+## Running storysync from Cursor
+
+Cursor runs the agent's terminal commands in a sandbox when it can, and the sandbox blocks loopback addresses (`localhost`, `127.0.0.1`, `::1`) by default. `map`, `inspect` and `snap` all talk to Storybook on `localhost`, and `snap` also launches a browser, so request full permissions to run them outside the sandbox. If one of them fails to reach Storybook from inside the sandbox, re-run it with full permissions before telling the user Storybook is down. `tokens` and `verify` read only local files.
 
 ## Tokens
 
@@ -28,9 +31,9 @@ npx storysync tokens --json --project .
 
 This auto-detects the token source (Tailwind config, CSS custom properties, or theme files) and outputs structured JSON with collections of tokens by category (colors, spacing, typography, radius, shadows). If it returns no collections, skip to Components.
 
-2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) for a human-readable preview.
+2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) for a human-readable preview, or add `--all` to show every token.
 
-3. **Create Figma variable collections** — use the JSON output to create Figma variables via `use_figma`, one collection at a time. Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
+3. **Create Figma variable collections** — use the JSON output to create Figma variables via `use_figma` (with the file key and `skillNames: "figma-use"`), one collection at a time. Reuse a collection of the same name rather than creating a second. Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
 
 4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
 
@@ -76,8 +79,39 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
 4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page matching its category. This mirrors the Storybook sidebar so designers find things where they expect them, and keeps duplicate leaf names (e.g. two `Button`s under different categories) distinct.
 
-5. Write with `use_figma` — find or create the target page, then create the component set on it, embedding the measured values from step 3. **Update an existing set of the same name rather than creating a duplicate**; a second push must not produce two `Button`s. End the plugin code by reading the created nodes' actual properties back (fills, `cornerRadius`, padding, `strokeWeight`, `itemSpacing`, `opacity`, and the text child's `fontSize`/`fontName` — report `fontName.family` as `fontFamily`, since Figma's plugin context substitutes system fonts and that substitution should be scored) and returning them as JSON keyed by the snap variant slug — read them off the nodes, don't echo what you sent. Take each slug from the snap output (record it against the Figma variant name when you create the variant); never rebuild it from the name, because snap lowercases, collapses punctuation, and numbers collisions (`--2`), so a rebuilt slug silently fails to match and the variant goes unscored. Take width and height from `absoluteRenderBounds`, not `node.width`, which excludes an OUTSIDE stroke and under-reports by the border on every outlined variant. Map `fontName.style` to a numeric weight by name — Figma says `"Semi Bold"` where CSS says `600`, and `fontWeight` is compared exactly, so treating anything that is not `"Bold"` as `400` drifts on every non-Bold variant. Report `gap` only for nodes that actually have auto-layout (verify treats a measured `null` gap and `{row:0,column:0}` as the same rendering, so zero spacing still matches a block element). Use `skillNames: "figma-use"`.
-6. Merge those readbacks into `.storysync/figma-readback.json`, keyed by component title then snap variant slug, each carrying `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; a recorded snap failure means re-run `snap`. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
+5. Write with `use_figma` — find or create the target page, then create the component set on it. The plugin code must embed the measured values from step 3: every variant gets a concrete fill, text colour, padding, radius, border, font size and shadow. A call that only references variant names is a bug; refuse it and re-read the snap output. Name each variant from its snap combination: every key, BOOLEAN ones included, as `key=value`, joined with `, ` in the combination's key order. **Update an existing set of the same name rather than creating a duplicate**; a second push must not produce two `Button`s.
+
+   End the plugin code by reading the created nodes' actual properties back and returning them as JSON keyed by the snap variant slug — read them off the nodes, don't echo what you sent. Use snap's property names, because `verify` compares only those; a Figma name like `fills` or `cornerRadius` is ignored, and a variant with nothing comparable is `unscored`:
+
+   - `backgroundColor` — the SOLID fill as `#rrggbb`, `null` for none
+   - `color` — the text child's fill as `#rrggbb`
+   - `borderRadiusUniform` — `cornerRadius` when it is a number
+   - `padding` — `{ top, right, bottom, left }` from the padding fields
+   - `borderUniform` — `{ width: strokeWeight, style: "solid", color }`, `null` for no stroke
+   - `fontSize`, `fontWeight`, `fontFamily` — from the text child; report `fontName.family` as `fontFamily`, since Figma's plugin context substitutes system fonts and that substitution should be scored
+   - `gap` — `{ row: itemSpacing, column: itemSpacing }`, only for nodes that actually have auto-layout (verify treats a measured `null` gap and `{row:0,column:0}` as the same rendering, so zero spacing still matches a block element)
+   - `opacity`, `width`, `height`
+   - `source` — `"measured"` if the variant's snap status was `"ok"`, `"inferred"` if you fell back to source. Set it per variant from snap's output; defaulting it to `"measured"` makes a guessed variant indistinguishable from a rendered one.
+
+   Take each slug from the snap output (record it against the Figma variant name when you create the variant, and throw if a variant has none); never rebuild it from the name, because snap lowercases, collapses punctuation, and numbers collisions (`--2`), so a rebuilt slug silently fails to match and the variant goes unscored. Take width and height from `absoluteRenderBounds`, not `node.width`, which excludes an OUTSIDE stroke and under-reports by the border on every outlined variant. Map `fontName.style` to a numeric weight by name (Thin 100, Extra/Ultra Light 200, Light 300, Regular/Normal/Book 400, Medium 500, Semi/Demi Bold 600, Bold 700, Extra/Ultra Bold 800, Black/Heavy 900, ignoring spaces and a trailing Italic) — Figma says `"Semi Bold"` where CSS says `600`, and `fontWeight` is compared exactly, so treating anything that is not `"Bold"` as `400` drifts on every non-Bold variant. Pass the file key and `skillNames: "figma-use"`.
+6. Merge those readbacks into `.storysync/figma-readback.json`, keyed by component title then snap variant slug:
+
+```json
+{
+  "version": 1,
+  "fileKey": "<file-key>",
+  "components": {
+    "Forms/Button": {
+      "nodeId": "12:34",
+      "variants": {
+        "variant-primary--size-sm--disabled-false": { "source": "measured", "backgroundColor": "#2563eb", "borderRadiusUniform": 3 }
+      }
+    }
+  }
+}
+```
+
+   Every variant carries `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; a recorded snap failure means re-run `snap`. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
 7. Summarize: token collections created, components grouped by page, variant counts, the fidelity score, measured versus inferred counts, any story that didn't pass its args through, failures, caps.
 
 
@@ -90,15 +124,17 @@ When token variable collections exist, bind component properties to variables in
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
+This way, when tokens change in code and storysync runs again, updating the variables updates every component.
+
 ## Audit
 
 Compare the current Figma file against code to find drift in either direction. Use this when asked to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
 
-If `use_figma` doesn't return plugin return values, call `tools/list` on the Figma MCP first to find read-only tools, or ask the user to export Figma state to JSON.
+If `use_figma` doesn't return plugin return values, fall back to the Figma MCP's read-only tools that Cursor lists for the server (such as `get_metadata` and `get_variable_defs`), or ask the user to export Figma state to JSON.
 
-1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value. Convert COLOR values to hex strings.
+1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their values. Use `figma.variables.getLocalVariableCollectionsAsync()` and `figma.variables.getVariableByIdAsync()` to read each variable's name, resolved type, and value in the collection's first mode, unless the user names a mode. Convert COLOR values to hex strings.
 
-2. **Read Figma components** — call `use_figma` to enumerate component sets using `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })`. For each, read `componentPropertyDefinitions` to get variant properties and their options.
+2. **Read Figma components** — call `use_figma` to enumerate component sets using `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })`. For each, read `componentPropertyDefinitions`: a VARIANT property's values are its `variantOptions`, a BOOLEAN's are `true` and `false`.
 
 3. **Extract code tokens** — run storysync:
 
@@ -123,7 +159,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - In Figma but not in code/Storybook → **Figma only**
    - Both exist → compare variant properties: missing props, extra props, missing/extra values.
 
-7. **Report** — present a structured drift report grouped by category/component. Use `+` for missing from Figma, `-` for missing from code, `~` for value mismatch. End with a summary count.
+7. **Report** — present a structured drift report grouped by category/component. Use `+` for missing from Figma, `-` for missing from code, `~` for value mismatch. End with a summary count, and if everything matches, say "Figma and code are in sync."
 
 ## Visual accuracy guidelines
 

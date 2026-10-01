@@ -61,12 +61,22 @@ Or just say it in plain English: **"Push my Storybook to Figma (file key abc123)
 
 ### Cursor
 
-After `storysync setup --client cursor`:
+`storysync setup --client cursor` writes the rule to `.cursor/rules/storysync.mdc`. Add Storybook MCP to `.cursor/mcp.json`:
 
-In Cursor settings, add Storybook MCP (`http://localhost:6006/mcp`). In chat, type `/add-plugin figma`. Then say:
+```json
+{
+  "mcpServers": {
+    "storybook": { "url": "http://localhost:6006/mcp" }
+  }
+}
+```
+
+In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma when prompted. Then start Storybook and, in Agent chat, say:
 
 - **"Push my Storybook to Figma (file key abc123)"** — code → Figma
 - **"Diff Figma against code (file key abc123)"** — audit
+
+Cursor's terminal sandbox blocks `localhost` by default, so the agent asks to run `storysync map` and `snap` outside it. Approve them: they have to reach Storybook.
 
 ### Codex
 
@@ -269,6 +279,8 @@ Example:
 ```bash
 npx storysync setup --client claude
 # writes .claude/skills/storysync/SKILL.md and .claude/commands/storysync-{push,diff}.md
+npx storysync setup --client cursor
+# writes .cursor/rules/storysync.mdc
 ```
 
 ### `storysync tokens`

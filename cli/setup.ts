@@ -118,6 +118,12 @@ function setupClaude(projectPath: string, force: boolean): SetupResult {
   };
 }
 
+/**
+ * Cursor reads project rules only as `.mdc` files under `.cursor/rules`; a
+ * plain `.md` there is ignored. The rule's frontmatter has a description and
+ * `alwaysApply: false` with no globs, which makes it "Apply Intelligently":
+ * the agent pulls it in when a request matches the description.
+ */
 function setupCursor(projectPath: string, force: boolean): SetupResult {
   const ruleSrc = join(PACKAGE_ROOT, "skills", "cursor.mdc");
   const ruleDest = join(projectPath, ".cursor", "rules", "storysync.mdc");
@@ -132,9 +138,10 @@ function setupCursor(projectPath: string, force: boolean): SetupResult {
     written,
     skipped,
     notes: [
-      "In Cursor settings, add Storybook MCP: http://localhost:6006/mcp",
-      "In Cursor chat, run: /add-plugin figma",
-      "Then say: \"Push my Storybook to Figma (file key: <key>)\"",
+      "Add Storybook MCP to .cursor/mcp.json:",
+      "  { \"mcpServers\": { \"storybook\": { \"url\": \"http://localhost:6006/mcp\" } } }",
+      "Add Figma: in Cursor's Agent chat, run /add-plugin figma and sign in when prompted",
+      "Then in Agent chat say: \"Push my Storybook to Figma (file key: <key>)\"",
     ],
   };
 }

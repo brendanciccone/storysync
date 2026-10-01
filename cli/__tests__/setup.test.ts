@@ -4,18 +4,20 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
+import type { Client } from "../setup.js";
+import { COMPARABLE_PROPERTIES } from "../verify.js";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "storysync-setup-"));
 }
 
 /** Runs setup and returns what it printed, without colour codes. */
-function setupOutput(project: string, force: boolean): string {
+function setupOutput(project: string, force: boolean, client: Client = "claude"): string {
   const lines: string[] = [];
   const original = console.log;
   console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
   try {
-    runSetup("claude", project, force);
+    runSetup(client, project, force);
   } finally {
     console.log = original;
   }
@@ -96,6 +98,110 @@ test("setup --force updates commands from an earlier install", () => {
     const updated = readFileSync(join(project, ".claude", "commands", "storysync-push.md"), "utf8");
     assert.equal(updated.includes(".claude/skills/storysync.md"), false);
     assert.equal(/Re-run with --force/.test(out), false);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+/** The YAML frontmatter of a rule or skill file, as key → raw value. */
+function frontmatter(text: string): Map<string, string> {
+  const match = /^---\n([\s\S]*?)\n---\n/.exec(text);
+  assert.ok(match, "file has no frontmatter block");
+  const fields = new Map<string, string>();
+  for (const line of match[1].split("\n")) {
+    const field = /^(\w+):\s*(.*)$/.exec(line);
+    if (field) fields.set(field[1], field[2]);
+  }
+  return fields;
+}
+
+test("setup --client cursor installs a rule Cursor applies when the request matches", () => {
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "cursor");
+    // Cursor reads project rules only as .mdc under .cursor/rules; a plain .md
+    // there is ignored.
+    const rule = join(project, ".cursor", "rules", "storysync.mdc");
+    assert.ok(existsSync(rule));
+    const fields = frontmatter(readFileSync(rule, "utf8"));
+    // "Apply Intelligently": a description, alwaysApply false, and no globs.
+    // Globs would make it attach by file pattern instead, and without a
+    // description it applies only when @-mentioned.
+    assert.equal(fields.get("alwaysApply"), "false");
+    assert.equal(fields.has("globs"), false);
+    const description = fields.get("description") ?? "";
+    // Each magic phrase has to match it: push, verify, and audit.
+    for (const word of [/push/i, /scor/i, /drift|audit/i]) assert.match(description, word);
+    // A ": " inside an unquoted YAML value ends the scalar early.
+    assert.equal(description.includes(": "), false);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("setup --client cursor prints a .cursor/mcp.json entry for Storybook", () => {
+  const project = tempProject();
+  try {
+    const out = setupOutput(project, false, "cursor");
+    assert.match(out, /\.cursor\/mcp\.json/);
+    const snippet = out.split("\n").map((line) => line.trim()).find((line) => line.startsWith("{"));
+    assert.ok(snippet, "no JSON printed");
+    // Cursor's remote-server shape: mcpServers.<name>.url, no transport field.
+    const config = JSON.parse(snippet) as { mcpServers: Record<string, { url?: string }> };
+    assert.equal(config.mcpServers.storybook?.url, "http://localhost:6006/mcp");
+    assert.match(out, /\/add-plugin figma/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("the Cursor rule asks for every readback property the Claude template returns", () => {
+  // The Claude skill's readback template is the one tested against a live
+  // push. The Cursor rule describes the readback in prose instead, and verify
+  // ignores any property it doesn't know by snap's name, so a rule that names
+  // Figma's fields (fills, cornerRadius) leaves every variant unscored.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "cursor");
+    const claude = readFileSync(join(project, ".claude", "skills", "storysync", "SKILL.md"), "utf8");
+    const cursor = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
+
+    const template = /readback\[slugFor\(child\)\] = \{([\s\S]*?)\n\s*\};/.exec(claude);
+    assert.ok(template, "Claude skill has no readback template");
+    // Top-level keys only: padding's own fields sit on a deeper continuation line.
+    const indent = /^( *)source:/m.exec(template[1])?.[1] ?? "";
+    const keys = [...template[1].matchAll(new RegExp(`^${indent}(\\w+):`, "gm"))].map(([, key]) => key);
+    assert.ok(keys.length > 5);
+    // Only where the rule describes the readback: the snap-to-Figma mapping
+    // further up names these too, but as inputs.
+    const readbackStep = /properties back([\s\S]*?)figma-readback\.json/.exec(cursor);
+    assert.ok(readbackStep, "Cursor rule never describes the readback");
+    for (const key of keys) {
+      assert.ok(key === "source" || (COMPARABLE_PROPERTIES as readonly string[]).includes(key), `${key} is not compared`);
+      assert.ok(readbackStep[1].includes(`\`${key}\``), `Cursor rule's readback never asks for ${key}`);
+    }
+
+    // And it writes the file in the shape verify reads.
+    const example = /figma-readback\.json`[^\n]*\n+```json\n([\s\S]*?)\n```/.exec(cursor);
+    assert.ok(example, "Cursor rule shows no figma-readback.json");
+    const file = JSON.parse(example[1]) as { version: number; components: Record<string, { variants: object }> };
+    assert.equal(file.version, 1);
+    for (const entry of Object.values(file.components)) assert.equal(typeof entry.variants, "object");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("the Cursor rule names no step Cursor can't take", () => {
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "cursor");
+    const rule = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
+    // Claude Code commands, and an MCP protocol method no agent can call as a tool.
+    for (const step of ["claude mcp", "claude plugin", "/storysync-push", "tools/list"]) {
+      assert.equal(rule.includes(step), false, `rule mentions ${step}`);
+    }
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
