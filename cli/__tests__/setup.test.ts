@@ -363,6 +363,30 @@ test("every push instruction lays the set out again after re-running a part", ()
   }
 });
 
+test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
+  // diff reads every page now, so Figma can repeat a name too, an archived
+  // copy or each category's Button, and reports it as ambiguous. Comparing
+  // one copy and saying nothing of the other hides it.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-diff.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /two code components share a name[^\n]*or two Figma component sets do[^\n]*ambiguous/, `${path} reports only a name code repeats as ambiguous`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("the Codex skill says how to raise the tool timeout however Figma was added", () => {
   // codex mcp add writes a [mcp_servers.figma] table; Figma's plugin writes
   // none, and its server has no timeout setting of its own.
