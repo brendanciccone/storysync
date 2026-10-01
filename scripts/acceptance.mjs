@@ -26,6 +26,7 @@ const ROOT = resolve(process.env.STORYSYNC_ROOT ?? join(dirname(fileURLToPath(im
 const CLI = join(ROOT, "dist", "cli", "index.js");
 const SKILL = join(ROOT, "skills", "claude-code.md");
 const EXAMPLE_BUTTON = join(ROOT, "examples", "storybook-vite", "src", "Button.tsx");
+const EXAMPLE_STORIES = join(ROOT, "examples", "storybook-vite", "src", "Button.stories.tsx");
 const STORYBOOK = (process.env.STORYBOOK_URL ?? "http://localhost:6006").replace(/\/+$/, "");
 const WORK = mkdtempSync(join(tmpdir(), "storysync-acceptance-"));
 
@@ -446,15 +447,44 @@ const KIDS = Symbol("children");
  * frame for a designer's moves. Nodes have a position and a size, a new
  * component 100 by 100 at 0,0 as in Figma; children are kept back to front,
  * so appendChild moves a child already there to the end, the top of the
- * layers panel.
+ * layers panel. A set or frame has a layoutMode, 'NONE' as Figma makes one;
+ * set to 'HORIZONTAL' or 'VERTICAL', auto layout places its children itself,
+ * in child order from its padding, itemSpacing apart, and setting a child's
+ * x or y does nothing, as in Figma. `ignorePositions(true)` makes every x and
+ * y written from then on do nothing too, for a write Figma ignores that
+ * nothing else would catch.
  */
 function figmaDocument() {
   let count = 0;
   let loaded = new Set();
+  let ignored = false;
   const byId = new Map();
   const pages = [];
+  // Where auto layout puts a node, or null when its parent has none.
+  const flowed = (node, axis) => {
+    const parent = node.parent;
+    if (!parent || !parent.layoutMode || parent.layoutMode === "NONE") return null;
+    const along = parent.layoutMode === "HORIZONTAL" ? "x" : "y";
+    let at = parent.padding ?? 0;
+    if (axis !== along) return at;
+    for (const child of parent[KIDS]) {
+      if (child === node) break;
+      at += (along === "x" ? child.width : child.height) + (parent.itemSpacing ?? 0);
+    }
+    return at;
+  };
   const create = (type, name) => {
-    const node = { id: `${count++}:1`, type, name, parent: null, x: 0, y: 0, width: 100, height: 100 };
+    const node = { id: `${count++}:1`, type, name, parent: null, width: 100, height: 100 };
+    const at = { x: 0, y: 0 };
+    for (const axis of ["x", "y"]) {
+      Object.defineProperty(node, axis, {
+        enumerable: true,
+        get: () => flowed(node, axis) ?? at[axis],
+        set: (value) => {
+          if (!ignored && flowed(node, axis) === null) at[axis] = value;
+        },
+      });
+    }
     byId.set(node.id, node);
     return node;
   };
@@ -466,6 +496,7 @@ function figmaDocument() {
   const container = (type, name) => {
     const node = create(type, name);
     node[KIDS] = [];
+    if (type === "COMPONENT_SET" || type === "FRAME") node.layoutMode = "NONE";
     Object.defineProperty(node, "children", {
       enumerable: true,
       get: () => (type === "PAGE" && !loaded.has(node.id) ? [] : node[KIDS]),
@@ -529,7 +560,10 @@ function figmaDocument() {
     adopt(parent, node);
     return node;
   };
-  return { call, nodes, container: inside };
+  const ignorePositions = (on) => {
+    ignored = on;
+  };
+  return { call, nodes, container: inside, ignorePositions };
 }
 
 /**
@@ -584,9 +618,9 @@ function loadSkillBuild(mutate = null) {
  * Pushes one set the way the skill says to: `variants` in snap's order, in
  * parts of `part`, the first part finding the set by name and every later one
  * by the id the first returned, each carrying the component's `properties`.
- * Returns what each part returned.
+ * Returns what each part returned, calling `after` with each as it does.
  */
-async function pushSet(build, doc, { page, set, variants, part, properties }) {
+async function pushSet(build, doc, { page, set, variants, part, properties, after = null }) {
   const parts = [];
   let id = null;
   for (const named of slices(variants, part)) {
@@ -594,6 +628,7 @@ async function pushSet(build, doc, { page, set, variants, part, properties }) {
     assert(id === null || result.id === id, `a part returned the set ${result.id}, not ${id}`);
     id = result.id;
     parts.push(result);
+    if (after) after(result);
   }
   return parts;
 }
@@ -608,6 +643,294 @@ function assertLaidOut(set) {
       assert(!(a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b), `"${a.name}" and "${b.name}" overlap`);
     }
   });
+}
+
+/** A set an earlier build left on a page of its own: `variants` in that order, every one at 0,0. */
+async function leftSet(build, doc, variants, { page = "Forms", set = "Button" } = {}) {
+  const call = doc.call();
+  const onto = call.createPage();
+  onto.name = page;
+  await call.setCurrentPageAsync(onto);
+  const made = call.combineAsVariants(variants.map(({ name, styles }) => {
+    const node = call.createComponent();
+    Object.assign(node, build.look(name, styles), { name });
+    return node;
+  }), onto);
+  made.name = set;
+  return made;
+}
+
+/**
+ * Throws unless `set` is laid out as `rows`, each a list of variant names with
+ * null for a gap, and `extra` in a row of its own below: neighbouring columns
+ * and rows exactly `gap` apart, each column as wide as its widest variant and
+ * each row as tall as its tallest, the set reaching `gap` past the last of
+ * them, nothing overlapping, and the layers panel reading the same way, row by
+ * row. Returns the grid's nodes, null for a gap.
+ */
+function assertGridOf(set, rows, extra, gap) {
+  const panel = [...set.children].reverse();
+  const reading = [...rows.flat().filter(Boolean), ...extra];
+  assert(panel.map((n) => n.name).join("; ") === reading.join("; "), `the layers panel reads ${panel.map((n) => n.name).join("; ")}`);
+  let next = 0;
+  const grid = rows.map((row) => row.map((name) => (name ? panel[next++] : null)));
+  const below = panel.slice(next);
+  const xs = [];
+  const widths = [];
+  rows[0].forEach((_, c) => {
+    const column = grid.map((row) => row[c]).filter(Boolean);
+    assert(column.length && new Set(column.map((n) => n.x)).size === 1, `column ${c + 1} is at ${column.map((n) => n.x).join(", ")} across`);
+    xs.push(column[0].x);
+    widths.push(Math.max(...column.map((n) => n.width)));
+  });
+  const ys = [];
+  const heights = [];
+  grid.forEach((row, r) => {
+    const cells = row.filter(Boolean);
+    assert(cells.length && new Set(cells.map((n) => n.y)).size === 1, `row ${r + 1} is at ${cells.map((n) => n.y).join(", ")} down`);
+    ys.push(cells[0].y);
+    heights.push(Math.max(...cells.map((n) => n.height)));
+  });
+  assert(xs[0] === gap && ys[0] === gap, `the first column and row are at ${xs[0]},${ys[0]}, not ${gap},${gap}`);
+  xs.slice(1).forEach((x, c) => {
+    const space = x - (xs[c] + widths[c]);
+    assert(space === gap, `column ${c + 2} starts ${space} past column ${c + 1}'s widest variant, not ${gap}`);
+  });
+  ys.slice(1).forEach((y, r) => {
+    const space = y - (ys[r] + heights[r]);
+    assert(space === gap, `row ${r + 2} starts ${space} below row ${r + 1}'s tallest variant, not ${gap}`);
+  });
+  let right = xs[xs.length - 1] + widths[widths.length - 1];
+  let bottom = ys[ys.length - 1] + heights[heights.length - 1];
+  if (below.length) {
+    const space = below[0].y - bottom;
+    assert(space === gap && below.every((n) => n.y === below[0].y), `the extra row starts ${space} below the grid, not ${gap}`);
+    assert(below[0].x === gap, `the extra row starts at ${below[0].x} across, not ${gap}`);
+    below.slice(1).forEach((n, k) => {
+      const after = n.x - (below[k].x + below[k].width);
+      assert(after === gap, `"${n.name}" starts ${after} past "${below[k].name}", not ${gap}`);
+    });
+    right = Math.max(right, below[below.length - 1].x + below[below.length - 1].width);
+    bottom = below[0].y + Math.max(...below.map((n) => n.height));
+  }
+  assert(set.width === right + gap && set.height === bottom + gap,
+    `the set is ${set.width} by ${set.height}, not ${right + gap} by ${bottom + gap}`);
+  assertLaidOut(set);
+  return grid;
+}
+
+/**
+ * The checks on the build template's layout, each `(build) => detail`,
+ * throwing when `build` lays a set out wrong, so a mutant of the template can
+ * be run through every one. `declared()` checks snap records the example
+ * Button's values in the order its story's argTypes declare them. snap reads
+ * them from the props Storybook's docs list, the union in the component's own
+ * type, not from argTypes, which Storybook's MCP docs do not give; here the
+ * two agree.
+ */
+function layoutScenarios(snapDir) {
+  let cached = null;
+  const data = () => {
+    if (cached) return cached;
+    const md = readFileSync(SKILL, "utf8");
+    const gap = Number(/each row as tall as its tallest, (\d+) apart/.exec(md)?.[1]);
+    assert(gap > 0, "the skill gives no spacing for the layout");
+    const { component } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
+    const measured = expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
+    const frozen = simulatedSets(snapDir).find((s) => s.component.name === "Frozen").component;
+    cached = { gap, properties: component.variantProperties, measured, frozen };
+    return cached;
+  };
+  const ROWS = ["primary", "danger", "outline"];
+  const COLUMNS = ["size=sm, disabled=false", "size=sm, disabled=true", "size=lg, disabled=false", "size=lg, disabled=true"];
+  const named = (row, column) => `variant=${row}, ${column}`;
+  const GRID = ROWS.map((row) => COLUMNS.map((column) => named(row, column)));
+  const EXTRA = "variant=ghost, size=sm, disabled=false";
+  const SCRAMBLE = [9, 2, 6, 11, 0, 4, 8, 1, 10, 5, 3, 7];
+  const PART = 5;
+  const repaint = (variants) => variants.map((v) => ({ ...v, styles: { ...v.styles, backgroundColor: "#7c3aed" } }));
+  const scrambled = (measured) => {
+    assert([...SCRAMBLE].sort((a, b) => a - b).join() === measured.map((_, i) => i).join(), "SCRAMBLE is not an order of the 12 variants");
+    return SCRAMBLE.map((i) => measured[i]);
+  };
+
+  return {
+    declared() {
+      const { properties } = data();
+      const read = properties.map((p) => `${p.name}=${p.values.join("|")} (${p.defaultValue})`).join(", ");
+      assert(read === "variant=primary|danger|outline (primary), size=sm|lg (sm), disabled=true|false (false)",
+        `snap records the Button's properties as ${read}`);
+      const story = readFileSync(EXAMPLE_STORIES, "utf8");
+      for (const p of properties.filter((q) => q.type === "VARIANT")) {
+        const options = new RegExp(`\\b${p.name}:\\s*\\{[^}]*\\boptions:\\s*\\[([^\\]]*)\\]`).exec(story)?.[1];
+        assert(options, `the Button's story declares no options for ${p.name}`);
+        const values = [...options.matchAll(/["']([^"']*)["']/g)].map((m) => m[1]);
+        assert(values.join("|") === p.values.join("|"), `snap records ${p.name} as ${p.values.join(", ")}, the story declares ${values.join(", ")}`);
+      }
+      return "snap records the Button's values in the order its story's argTypes declare them";
+    },
+
+    async scrambled(build) {
+      // Variants stacked at 0,0 in a scrambled order, one snap does not have
+      // among them, pushed in parts of 5, in snap's order and in reverse.
+      const { gap, properties, measured } = data();
+      const run = async (order) => {
+        const doc = figmaDocument();
+        const earlier = scrambled(measured);
+        earlier.splice(4, 0, { name: EXTRA, styles: measured[0].styles });
+        const set = await leftSet(build, doc, earlier);
+        const parts = await pushSet(build, doc, { page: "Forms", set: "Button", variants: order, part: PART, properties });
+        const last = parts[parts.length - 1];
+        assert(last.id === set.id && last.variants === 13 && last.rows === 3 && last.columns === 4 && last.extra === 1,
+          `the last part returned ${JSON.stringify(last)}`);
+        assert(parts.every((p) => p.added === 0), "the push added a variant the set already had");
+        assertGridOf(set, GRID, [EXTRA], gap);
+        return set.children.map((n) => [n.name, n.x, n.y]);
+      };
+      const laid = await run(measured);
+      assert(JSON.stringify(await run([...measured].reverse())) === JSON.stringify(laid), "parts in another order laid the set out differently");
+      return "3 rows of 4 and the extra variant below, from a scrambled set and from parts in reverse";
+    },
+
+    async defaults(build) {
+      // A component whose defaults are not its first values: the order is
+      // declared, not default first, so the grid is the same, and Figma's
+      // default, the top-left variant, is primary, sm, not disabled.
+      const { gap, properties, measured } = data();
+      const shifted = properties.map((p) => ({ ...p, defaultValue: p.type === "BOOLEAN" ? "true" : p.values[p.values.length - 1] }));
+      const doc = figmaDocument();
+      const set = await leftSet(build, doc, scrambled(measured));
+      await pushSet(build, doc, { page: "Forms", set: "Button", variants: measured, part: PART, properties: shifted });
+      assertGridOf(set, GRID, [], gap);
+      return "the same grid with outline, lg and disabled the defaults";
+    },
+
+    async frozen(build) {
+      // With one property, each value is a row of one: Frozen's a, b and c.
+      const { gap, frozen } = data();
+      const doc = figmaDocument();
+      const variants = expandVariants(frozen).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles })).reverse();
+      const [only] = await pushSet(build, doc, { page: "Forms", set: "Frozen", part: PART, properties: frozen.variantProperties, variants });
+      assert(only.rows === 3 && only.columns === 1 && only.extra === 0, `Frozen's one property laid out as ${only.rows} rows of ${only.columns}`);
+      assertGridOf(doc.nodes("COMPONENT_SET")[0], [["variant=a"], ["variant=b"], ["variant=c"]], [], gap);
+      return "one property in a column of 3";
+    },
+
+    async gaps(build) {
+      // An earlier build left the set without the danger row or the lg
+      // disabled column, with a variant snap does not have and one no
+      // combination names, out of name order, and an outline sm variant made
+      // twice, the copy with the higher id first. Two parts that carry
+      // neither lay it out in 2 rows of 3, the extras in a row below by name,
+      // and both keep the copy with the lower id in the grid.
+      const { gap, properties, measured } = data();
+      const TWICE = named("outline", COLUMNS[0]);
+      const kept = measured.filter((v) => !v.name.startsWith("variant=danger, ") && !v.name.endsWith(COLUMNS[3]));
+      const styleOf = (name) => measured.find((v) => v.name === name).styles;
+      const doc = figmaDocument();
+      const set = await leftSet(build, doc, [
+        { name: EXTRA, styles: styleOf(GRID[0][0]) }, ...kept, { name: TWICE, styles: styleOf(TWICE) }, { name: "Size=Large", styles: styleOf(GRID[0][2]) },
+      ]);
+      const copies = set.children.filter((n) => n.name === TWICE);
+      const lower = copies[0].id < copies[1].id ? copies[0] : copies[1];
+      set.appendChild(lower);
+      assert(set.children.findIndex((n) => n.name === TWICE) !== set.children.indexOf(lower), "the copy with the lower id comes first");
+      const rows = ["primary", "outline"].map((row) => COLUMNS.slice(0, 3).map((column) => named(row, column)));
+      const extra = ["Size=Large", EXTRA, TWICE];
+      const carried = kept.filter((v) => v.name !== TWICE);
+      const parts = [];
+      await pushSet(build, doc, {
+        page: "Forms", set: "Button", variants: carried, part: 3, properties,
+        after: (result) => {
+          assert(result.variants === 9 && result.rows === 2 && result.columns === 3 && result.extra === 3,
+            `part ${parts.length + 1} returned ${JSON.stringify(result)}`);
+          const grid = assertGridOf(set, rows, extra, gap);
+          assert(grid[1][0].id === lower.id, `part ${parts.length + 1} put ${TWICE} ${grid[1][0].id} in the grid, not ${lower.id}`);
+          parts.push(result);
+        },
+      });
+      assert(parts.length === 2, `the push made ${parts.length} parts, not 2`);
+      return `2 rows of 3, ${gap} apart, and 3 extra below by name, the same copy in the grid on both parts`;
+    },
+
+    async autoLayout(build) {
+      // On a set with auto layout, x and y do nothing and the layer order
+      // flows the variants, so the part refuses it before changing anything;
+      // once the user turns auto layout off, the part lays it out.
+      const { gap, properties, measured } = data();
+      const doc = figmaDocument();
+      const set = await leftSet(build, doc, scrambled(measured));
+      Object.assign(set, { layoutMode: "HORIZONTAL", itemSpacing: 8, padding: 8 });
+      const state = () => JSON.stringify(set.children.map((n) => [n.id, n.name, n.x, n.y, n.fills]));
+      const before = state();
+      const components = doc.nodes("COMPONENT").length;
+      let refused = null;
+      try {
+        await pushSet(build, doc, { page: "Forms", set: "Button", variants: repaint(measured), part: PART, properties });
+      } catch (err) {
+        refused = err.message;
+      }
+      assert(refused && /has auto layout \(HORIZONTAL\)/.test(refused) && /ask the user/.test(refused),
+        `a part on a set with auto layout ${refused ? `failed with: ${refused}` : "was built"}`);
+      assert(state() === before && doc.nodes("COMPONENT").length === components, "the refused part changed the set");
+      set.layoutMode = "NONE";
+      await pushSet(build, doc, { page: "Forms", set: "Button", variants: repaint(measured), part: PART, properties });
+      assertGridOf(set, GRID, [], gap);
+      return "refused with the set as it was, then laid out with auto layout off";
+    },
+
+    async ignored(build) {
+      // Two variants of one size swapped, nothing overlapping and the set
+      // containing both, in a Figma that ignores their moves: only the check
+      // that every variant is where the layout put it can see it.
+      const { properties, measured } = data();
+      const reference = figmaDocument();
+      const laid = await leftSet(build, reference, measured);
+      await pushSet(build, reference, { page: "Forms", set: "Button", variants: measured, part: PART, properties });
+      const [a, b] = [GRID[0][0], GRID[0][1]].map((name) => laid.children.find((n) => n.name === name));
+      assert(a.width === b.width && a.height === b.height, `${a.name} and ${b.name} differ in size`);
+      const where = new Map(laid.children.map((n) => [n.name, [n.x, n.y]]));
+      where.set(a.name, [b.x, b.y]);
+      where.set(b.name, [a.x, a.y]);
+      const doc = figmaDocument();
+      const set = await leftSet(build, doc, measured);
+      for (const n of set.children) [n.x, n.y] = where.get(n.name);
+      Object.assign(set, { width: laid.width, height: laid.height });
+      assertLaidOut(set);
+      doc.ignorePositions(true);
+      let failure = null;
+      try {
+        await pushSet(build, doc, { page: "Forms", set: "Button", variants: measured, part: PART, properties });
+      } catch (err) {
+        failure = err.message;
+      }
+      assert(failure && failure.includes(`"${a.name}" is not where the layout put it`),
+        `a part whose moves Figma ignored ${failure ? `failed with: ${failure}` : "passed"}`);
+      return "refused, naming the first variant out of place";
+    },
+
+    async booleans(build) {
+      // One VARIANT and 20 BOOLEANs allow 3 × 2^20 combinations; six variants
+      // lay out in 2 rows of 3 from their names alone: all false, then the
+      // last flag, which varies fastest, then the first.
+      const { gap, measured } = data();
+      const flags = Array.from({ length: 20 }, (_, i) => `flag${i}`);
+      const properties = [
+        { name: "variant", type: "VARIANT", values: ["a", "b", "c"], defaultValue: "a" },
+        ...flags.map((name) => ({ name, type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" })),
+      ];
+      const name = (variant, on) => [`variant=${variant}`, ...flags.map((f) => `${f}=${f === on}`)].join(", ");
+      const variants = ["c", "a"].flatMap((v) => ["flag0", null, "flag19"].map((on) => ({ name: name(v, on), styles: measured[0].styles })));
+      const doc = figmaDocument();
+      const started = performance.now();
+      const [result] = await pushSet(build, doc, { page: "Forms", set: "Flags", variants, part: 25, properties });
+      const ms = performance.now() - started;
+      assert(result.rows === 2 && result.columns === 3 && result.extra === 0, `the part returned ${JSON.stringify(result)}`);
+      assertGridOf(doc.nodes("COMPONENT_SET")[0], ["a", "c"].map((v) => [null, "flag19", "flag0"].map((on) => name(v, on))), [], gap);
+      assert(ms < 1000, `a part of 6 variants took ${Math.round(ms)} ms`);
+      return `2 rows of 3 in ${Math.round(ms)} ms`;
+    },
+  };
 }
 
 // --- Simulated Figma for the audit -------------------------------------------
@@ -1164,119 +1487,91 @@ async function main() {
       `a part too big, one naming a variant twice, a doubled variant and two sets of its name refused`;
   });
 
+  // The layout's checks, each run on the shipped build template and then on
+  // every mutant of it below, each of which has to fail at least one.
+  const layout = layoutScenarios(snapDir);
+
   await check("every part lays the set out in snap's order, whatever order its variants are in", async () => {
     // A re-push into a set an earlier build had left in another order laid it
     // out in that order: the primary row read sm, lg, sm disabled, lg disabled
     // and the others sm, sm disabled, lg disabled, lg. The layout orders the
-    // set by the variantProperties snap records instead, each property's
-    // default first: rows primary, danger and outline, columns sm, sm
-    // disabled, lg, lg disabled, the layers panel reading the same way, and a
-    // variant snap does not have in a row of its own below. Here the set
-    // starts with its variants stacked at 0,0 in a scrambled order, the extra
-    // one among them, and is pushed in parts of 5.
-    const { component } = simulatedSets(snapDir).find((s) => s.component.name === "Button");
-    const properties = component.variantProperties;
-    const declared = properties.map((p) => `${p.name}=${p.values.join("|")} (${p.defaultValue})`).join(", ");
-    assert(declared === "variant=primary|danger|outline (primary), size=sm|lg (sm), disabled=true|false (false)",
-      `snap records the Button's properties as ${declared}`);
-    const ROWS = ["primary", "danger", "outline"];
-    const COLUMNS = ["size=sm, disabled=false", "size=sm, disabled=true", "size=lg, disabled=false", "size=lg, disabled=true"];
-    const reading = ROWS.flatMap((row) => COLUMNS.map((col) => `variant=${row}, ${col}`));
-    const measured = expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
-    const EXTRA = "variant=ghost, size=sm, disabled=false";
-    const SCRAMBLE = [9, 2, 6, 11, 0, 4, 8, 1, 10, 5, 3, 7];
-    assert([...SCRAMBLE].sort((a, b) => a - b).join() === measured.map((_, i) => i).join(), "SCRAMBLE is not an order of the 12 variants");
-    const PART = 5;
-
-    const pushInto = async (build, order) => {
-      // The set an earlier build left on its page.
-      const doc = figmaDocument();
-      const call = doc.call();
-      const page = call.createPage();
-      page.name = "Forms";
-      await call.setCurrentPageAsync(page);
-      const earlier = SCRAMBLE.map((i) => measured[i]);
-      earlier.splice(4, 0, { name: EXTRA, styles: measured[0].styles });
-      const set = call.combineAsVariants(earlier.map(({ name, styles }) => {
-        const node = call.createComponent();
-        Object.assign(node, build.look(name, styles), { name });
-        return node;
-      }), page);
-      set.name = "Button";
-      const parts = await pushSet(build, doc, { page: "Forms", set: "Button", variants: order, part: PART, properties });
-      return { set, parts };
-    };
-    const assertGrid = ({ set, parts }) => {
-      const last = parts[parts.length - 1];
-      assert(last.id === set.id && last.variants === 13 && last.rows === 3 && last.columns === 4 && last.extra === 1,
-        `the last part returned ${JSON.stringify(last)}`);
-      const at = new Map(set.children.map((n) => [n.name, n]));
-      for (const row of ROWS) {
-        const read = set.children.filter((n) => n.name.startsWith(`variant=${row}, `)).sort((a, b) => a.x - b.x);
-        const columns = read.map((n) => n.name.slice(`variant=${row}, `.length));
-        assert(columns.join("; ") === COLUMNS.join("; "), `the ${row} row reads ${columns.join("; ")}`);
-        assert(new Set(read.map((n) => n.y)).size === 1, `the ${row} row's variants are at ${read.map((n) => n.y).join(", ")} down`);
-      }
-      const rowY = ROWS.map((row) => at.get(`variant=${row}, ${COLUMNS[0]}`).y);
-      assert(rowY.every((y, r) => r === 0 || y > rowY[r - 1]), `the rows run ${ROWS.join(", ")} at ${rowY.join(", ")} down`);
-      for (const col of COLUMNS) {
-        const xs = ROWS.map((row) => at.get(`variant=${row}, ${col}`).x);
-        assert(new Set(xs).size === 1, `the ${col} column is at ${xs.join(", ")} across`);
-      }
-      assertLaidOut(set);
-      const extra = at.get(EXTRA);
-      const bottom = Math.max(...reading.map((name) => at.get(name).y + at.get(name).height));
-      assert(extra.y >= bottom, `${EXTRA} is at ${extra.y} down, inside the grid, which ends at ${bottom}`);
-      const panel = [...set.children].reverse().map((n) => n.name);
-      assert(panel.join("; ") === [...reading, EXTRA].join("; "), `the layers panel reads ${panel.join("; ")}`);
-      return set.children.map((n) => [n.name, n.x, n.y]);
-    };
-
+    // set by the variantProperties snap records, in Storybook's declared
+    // order, a BOOLEAN false then true: rows primary, danger and outline,
+    // columns sm, sm disabled, lg, lg disabled, the layers panel reading the
+    // same way, and a variant snap does not have in a row of its own below.
+    // The same set laid out by properties whose defaults are not their first
+    // values comes out the same, since the order is declared, not default
+    // first; and Frozen's one property is a column of 3.
+    const declared = layout.declared();
     const build = loadSkillBuild();
-    const first = await pushInto(build, measured);
-    const laid = assertGrid(first);
-    assert(first.parts.every((p) => p.added === 0), "the push added a variant the set already had");
-    // Parts carrying the variants in another order lay the set out the same.
-    const reversed = await pushInto(build, [...measured].reverse());
-    assert(JSON.stringify(assertGrid(reversed)) === JSON.stringify(laid), "parts in another order laid the set out differently");
+    return `${declared}; ${await layout.scrambled(build)}; ${await layout.defaults(build)}; ${await layout.frozen(build)}`;
+  });
 
-    // With one property, each value is a row of one: Frozen's a, b and c.
-    const frozen = simulatedSets(snapDir).find((s) => s.component.name === "Frozen").component;
-    const single = figmaDocument();
-    const [only] = await pushSet(build, single, {
-      page: "Forms", set: "Frozen", part: PART, properties: frozen.variantProperties,
-      variants: expandVariants(frozen).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles })).reverse(),
-    });
-    const [column] = single.nodes("COMPONENT_SET");
-    const down = [...column.children].sort((a, b) => a.y - b.y);
-    assert(only.rows === 3 && only.columns === 1 && new Set(down.map((n) => n.x)).size === 1 &&
-      down.map((n) => n.name).join("; ") === "variant=a; variant=b; variant=c",
-      `Frozen's one property laid out as ${only.rows} rows of ${only.columns}: ${down.map((n) => `${n.name} at ${n.x},${n.y}`).join("; ")}`);
-    assertLaidOut(column);
+  await check("a set missing a row and a column, with extra variants and a variant twice, lays out the same on every part", async () =>
+    layout.gaps(loadSkillBuild()));
 
-    // The check fails a layout that gets the order wrong. Each mutant rewrites
-    // the shipped template, and has to fail where the template passes.
-    const mutants = {
-      "lays the variants out in the set's child order, as the live push did": (code) => code.replace(
-        "const take = (name) => (free.get(name) || []).shift() || null;",
-        "const take = () => { for (const list of free.values()) if (list.length) return list.shift(); return null; };"),
-      "takes each property's values in the order snap lists them, not default first": (code) => code.replace(
-        "[p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]", "p.values"),
-      "appends the variants first to last, so the layers panel reads bottom-up": (code) => code
-        .replace("[...order].reverse()", "order")
-        .replace("order[order.length - 1 - i]", "order[i]"),
+  await check("a set with auto layout is refused before the part changes anything", async () =>
+    layout.autoLayout(loadSkillBuild()));
+
+  await check("a variant Figma leaves where it was fails the part", async () =>
+    layout.ignored(loadSkillBuild()));
+
+  await check("a set of 20 BOOLEAN properties lays out from its variants, not every combination", async () =>
+    layout.booleans(loadSkillBuild()));
+
+  await check("a layout that gets the order, the spacing or a check wrong fails these checks", async () => {
+    // Each mutant rewrites the shipped template, and has to fail a layout
+    // check the template passes.
+    const T = {
+      sort: "cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));",
+      columns: "const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((at) => at.slice(1).join());",
+      rows: "const rows = [...new Set(grid.map((c) => c.at[0]))];",
+      values: "p.type === 'BOOLEAN' ? ['false', 'true'] : p.values",
+      extras: "extra.sort((a, b) => (a.node.name > b.node.name) - (a.node.name < b.node.name) || byId(a, b));",
+      target: "const target = order.map((c) => c.node).reverse();",
     };
+    const between = (code, start, end) => {
+      const from = code.indexOf(start);
+      const to = code.indexOf(end, from);
+      assert(from >= 0 && to > from, `the build template has no ${JSON.stringify(start)} … ${JSON.stringify(end)}`);
+      return code.slice(0, from) + code.slice(to + end.length);
+    };
+    const mutants = {
+      "lays the columns out in the set's child order, as the live push did": (code) => code
+        .replace(T.sort, "cells.sort((a, b) => a.at[0] - b.at[0]);")
+        .replace(T.columns, T.columns.replace(".sort(byColumn)", "")),
+      "appends the variants first to last, so the layers panel reads bottom-up": (code) => code
+        .replace(T.target, T.target.replace(".reverse()", "")),
+      "spaces the variants 0 apart": (code) => code.replace("const GAP = 20;", "const GAP = 0;"),
+      "keeps a row no variant fills": (code) => code.replace(T.rows, "const rows = axes[0][1].map((_, i) => i);"),
+      "keeps a column no variant fills": (code) => code.replace(T.columns,
+        "const columns = axes.slice(1).reduce((cols, [, values]) => cols.flatMap((col) => values.map((_, v) => [...col, v])), [[]]).map((at) => at.join());"),
+      "leaves the extra row in the set's child order": (code) => code.replace(T.extras, ""),
+      "takes each property's values default first": (code) => code.replace(T.values,
+        "[p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]"),
+      "puts a BOOLEAN's true before its false": (code) => code.replace("['false', 'true']", "['true', 'false']"),
+      "keeps whichever copy of a name comes first among the children in the grid": (code) => code
+        .replace(T.sort, T.sort.replace(" || byId(a, b)", "")),
+      "lays out a set with auto layout": (code) => between(code, "if (componentSet && componentSet.layoutMode !== 'NONE') {", "\n    }\n"),
+      "never checks each variant is where the layout put it": (code) => between(code, "for (const c of order) {\n      if (Math.abs(", "\n    }\n"),
+    };
+    const failed = [];
     for (const [mutant, mutate] of Object.entries(mutants)) {
+      const build = loadSkillBuild(mutate);
       let failure = null;
-      try {
-        assertGrid(await pushInto(loadSkillBuild(mutate), measured));
-      } catch (err) {
-        failure = err.message;
+      for (const scenario of Object.values(layout)) {
+        if (scenario === layout.declared) continue;
+        try {
+          await scenario(build);
+        } catch (err) {
+          failure = err.message;
+          break;
+        }
       }
-      assert(failure, `a template that ${mutant} passed`);
+      assert(failure, `a template that ${mutant} passed every layout check`);
+      failed.push(mutant);
     }
-    return `3 rows of 4 in snap's order and the extra variant below, from a scrambled set and from parts in reverse; ` +
-      `one property in a column of 3; ${Object.keys(mutants).length} mutants fail`;
+    return `${failed.length} mutants fail`;
   });
 
   await check("the set's variant names are listed a slice at a time, within both limits", async () => {

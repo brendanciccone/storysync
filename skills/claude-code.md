@@ -174,7 +174,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    Five things that go wrong by default, in ways `verify` either will not catch or will not explain:
 
    - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's rendered size must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`.
-   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable. **Order the grid by snap's `variantProperties`, never by the set's children**: their order is whatever an earlier push or a designer left, and a set laid out in it gets rows whose columns disagree. Take the properties in snap's order and each one's values default first, then the rest in snap's order, so the all-defaults variant sits top-left, where Figma takes a set's default variant from. Each column is then one combination of the other properties in every row, and the layers panel lists the variants in the same order. Step 5's build template does all of this; give it the properties and leave its layout as it is.
+   - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable. **Order the grid by snap's `variantProperties`, never by the set's children**: their order is whatever an earlier push or a designer left, and a set laid out in it gets rows whose columns disagree. Take the properties, and each one's values, in the order snap records them, the order Storybook's docs declare them in, not default first; a `BOOLEAN`'s `false` comes before its `true`. Each column is then one combination of the other properties in every row, and the layers panel lists the variants in the same order. Figma makes the top-left variant the set's default variant, so that is the variant of each property's first declared value. Step 5's build template does all of this; give it the properties and leave its layout as it is.
    - **Assert the layout before returning.** After positioning, check that no two variants' bounding boxes intersect and that the set's bounds contain every child. Geometry comparison catches variants clipped by an undersized frame, but two same-sized variants stacked inside an adequately sized one measure correctly and stay invisible — so the check has to happen here, at write time.
    - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no Times. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them. If the measured `fontFamily` is not a Google font, say so and name the substitute you used rather than letting Figma pick one silently: the substitution usually cascades, since e.g. Arimo (Figma's suggestion for Arial) has no SemiBold, so a 600 weight lands as 700 and drifts twice.
    - **`fontAvailable: false` means the measurement describes a substituted typeface.** `fontFamily` is the family the code *asked for*; if the browser could not load it, the geometry and text you measured are not the intended font's. Say so in the summary. If Figma also lacks the font, name it explicitly — "Figma has no *Inter*; install it or map it" — rather than letting it surface as unexplained text drift. storysync cannot install fonts into Figma; that is a manual step in the desktop app.
@@ -198,11 +198,13 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Every part lays the whole set out in snap's order, and checks it.** Give each part the component's `variantProperties` from snap's output as `PROPERTIES`, copied as they are: the same table on every part, a few hundred characters even for 256 variants. Leave the template's layout as it is. It orders the set by `PROPERTIES`, never by the set's children, whose order is whatever an earlier push or a designer left:
 
-   - Each property's values run default first, then the rest in snap's order, so the all-defaults variant, snap's base, sits top-left, where Figma takes a set's default variant from. A `BOOLEAN` property is ordered the same way: snap lists its values `true, false`, so with a `false` default it reads `false, true`.
-   - The first property's values are the rows, top to bottom; the combinations of the other properties, in their order with the last varying fastest, are the columns, left to right. With one property, each value is a row of one. A combination the set lacks leaves a gap, so the columns still line up, and a row or column no variant fills at all is left out. Each column is as wide as its widest variant and each row as tall as its tallest, 20 apart. The Button in step 3's snap output — `variant` primary, danger, outline; `size` sm, lg; `disabled` — is three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled.
-   - A variant whose name no combination gives, one snap does not have, goes in a row of its own below the others, in name order, and is counted in the `extra` the part returns; so does a second variant of a name.
-   - Figma's layers panel shows a set's last child at the top, so the layout appends the variants last to first: the panel then reads top-down in the grid's order, row by row, with that extra row last.
-   - It grows the set to fit, then checks that the layers are in that order, that no two variants' boxes intersect, and that the set contains every one, and throws if not. It returns counts, not names: the set's `rows`, `columns` and `extra`.
+   - Each property's values run in the order snap records them, the order Storybook's docs declare them in, not default first. A `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`.
+   - **Figma makes the top-left variant the set's default variant**, so the default is the variant of each property's first declared value, `false` for a `BOOLEAN`: `size=sm` even if the component defaults to `md`. When that differs from the component's defaults, snap's `defaultValue`s, say in the summary which variant Figma will treat as the default.
+   - The first property's values are the rows, top to bottom; the combinations of the other properties, in their order with the last varying fastest, are the columns, left to right. With one property, each value is a row of one. Each variant's cell comes from its own name, so a combination the set lacks leaves a gap and the columns still line up, a row or column no variant fills at all is left out, and the work grows with the set's variants, not with every combination `PROPERTIES` allows. Each column is as wide as its widest variant and each row as tall as its tallest, 20 apart. The Button in step 3's snap output — `variant` primary, danger, outline; `size` sm, lg; `disabled` — is three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled.
+   - A variant whose name is no combination of `PROPERTIES`, one snap does not have, goes in a row of its own below the others, in name order, and is counted in the `extra` the part returns; so does a second variant of a name. Of two variants of a name, the one with the lower node id stays in the grid, so every part keeps the same one there.
+   - **It refuses a set with auto layout.** On a set whose `layoutMode` is not `'NONE'`, auto layout positions the variants itself: setting their x and y does nothing, and the layout's layer order would flow the last variant into the top-left, Figma's default. So the part throws `The set "…" has auto layout …` before changing anything. Ask the user whether to turn auto layout off on the set (`componentSet.layoutMode = 'NONE'`, in a call of its own) and re-run the part, or to leave its layout alone and skip the set, saying in the summary that it was not pushed. Do neither on your own.
+   - Figma's layers panel shows a set's last child at the top, so the layout puts the variants last to first, moving only the ones out of place: the panel then reads top-down in the grid's order, row by row, with that extra row last.
+   - It grows the set to fit, then checks that the layers are in that order, that every variant is where the layout put it, so a move Figma ignored fails, that no two variants' boxes intersect, and that the set contains every one, and throws if not. It returns counts, not names: the set's `rows`, `columns` and `extra`.
 
 ```js
 use_figma({
@@ -284,6 +286,10 @@ use_figma({
       }
       componentSet = sets[0] || null;
     }
+    // Auto layout would place the variants itself: refuse it, changing nothing.
+    if (componentSet && componentSet.layoutMode !== 'NONE') {
+      throw new Error('The set "' + SET_NAME + '" has auto layout (' + componentSet.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set');
+    }
     // Each named variant the set already has, found by name. Check them all
     // before changing anything: a part that fails here leaves the set as it was.
     const existing = new Map();
@@ -313,49 +319,67 @@ use_figma({
       for (const variant of created) componentSet.appendChild(variant);
     }
 
-    // Lay the whole set out, on every part, by PROPERTIES and never by the
-    // set's child order, which an earlier push or a designer may have left
-    // in any order. Leave this as it is. Each property's values run default
-    // first, then the rest in snap's order, so the all-defaults variant sits
-    // top-left, where Figma takes the set's default variant from. Rows are
-    // the first property's values; columns are the combinations of the rest,
-    // the last varying fastest. A row or column no variant fills is left out.
-    // A variant no combination names, or a second of a name, goes in a row of
-    // its own below, by name.
+    // Lay the whole set out by PROPERTIES on every part, as described above,
+    // never by child order: leave this as it is. Cells come from names, so the
+    // work grows with the set, not with every combination PROPERTIES allows.
     const GAP = 20;
-    const axes = PROPERTIES.map((p) => [p.name, [p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]]);
-    const rowNames = axes.length ? axes[0][1].map((v) => axes[0][0] + '=' + v) : [''];
-    const colNames = axes.slice(1).reduce((cols, [key, values]) =>
-      cols.flatMap((col) => values.map((v) => (col ? col + ', ' : '') + key + '=' + v)), ['']);
-    const free = new Map();
-    for (const child of componentSet.children) free.set(child.name, [...(free.get(child.name) || []), child]);
-    const take = (name) => (free.get(name) || []).shift() || null;
-    let grid = rowNames.map((row) => colNames.map((col) => take([row, col].filter(Boolean).join(', '))));
-    grid = grid.filter((row) => row.some(Boolean));
-    const filled = colNames.map((_, c) => grid.some((row) => row[c]));
-    grid = grid.map((row) => row.filter((_, c) => filled[c]));
-    const extra = [...free.values()].flat().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const widths = (grid[0] || []).map((_, c) => Math.max(...grid.map((row) => (row[c] ? row[c].width : 0))));
-    let y = GAP;
-    for (const row of [...grid, extra].filter((r) => r.length)) {
-      let x = GAP;
-      row.forEach((node, c) => {
-        if (node) { node.x = x; node.y = y; }
-        x += (row === extra ? node.width : widths[c]) + GAP;
-      });
-      y += Math.max(...row.map((node) => (node ? node.height : 0))) + GAP;
+    const axes = PROPERTIES.map((p) => [p.name + '=', p.type === 'BOOLEAN' ? ['false', 'true'] : p.values]);
+    const byId = (a, b) => (a.node.id > b.node.id) - (a.node.id < b.node.id);
+    const byColumn = (a, b) => { for (let i = 1; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+    const cells = [], extra = [];
+    for (const node of componentSet.children) {
+      const pairs = node.name.split(', ');
+      const at = pairs.length === axes.length ? pairs.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
+      (at.includes(-1) ? extra : cells).push({ node, at, key: at.slice(1).join() });
     }
-    const order = [...grid.flat().filter(Boolean), ...extra];
-    componentSet.resizeWithoutConstraints(Math.max(...order.map((n) => n.x + n.width)) + GAP, y);
-    // The layers panel shows the last child at the top: append last to first,
-    // so the panel reads top-down in the grid's order, the extra row last.
-    for (const node of [...order].reverse()) componentSet.appendChild(node);
+    cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));
+    const grid = [];
+    for (const c of cells) {
+      const last = grid[grid.length - 1];
+      (last && last.at[0] === c.at[0] && last.key === c.key ? extra : grid).push(c);
+    }
+    extra.sort((a, b) => (a.node.name > b.node.name) - (a.node.name < b.node.name) || byId(a, b));
+    const rows = [...new Set(grid.map((c) => c.at[0]))];
+    const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((at) => at.slice(1).join());
+    const rowOf = new Map(rows.map((r, i) => [r, i]));
+    const columnOf = new Map(columns.map((key, i) => [key, i]));
+    const widths = columns.map(() => 0);
+    const heights = rows.map(() => 0);
+    for (const c of grid) {
+      c.row = rowOf.get(c.at[0]);
+      c.column = columnOf.get(c.key);
+      widths[c.column] = Math.max(widths[c.column], c.node.width);
+      heights[c.row] = Math.max(heights[c.row], c.node.height);
+    }
+    const xs = [GAP], ys = [GAP];
+    widths.forEach((w, i) => xs.push(xs[i] + w + GAP));
+    heights.forEach((h, i) => ys.push(ys[i] + h + GAP));
+    for (const c of grid) { c.x = xs[c.column]; c.y = ys[c.row]; }
+    let across = GAP;
+    let bottom = ys[rows.length];
+    for (const c of extra) { c.x = across; c.y = bottom; across += c.node.width + GAP; }
+    if (extra.length) bottom += Math.max(...extra.map((c) => c.node.height)) + GAP;
+    const order = [...grid, ...extra];
+    for (const c of order) { c.node.x = c.x; c.node.y = c.y; }
+    componentSet.resizeWithoutConstraints(Math.max(xs[columns.length], across), bottom);
+    // The layers panel shows the last child on top: order the children last
+    // to first, moving only those out of place.
+    const target = order.map((c) => c.node).reverse();
+    const before = componentSet.children;
+    let kept = 0;
+    while (kept < before.length && before[kept].id === target[kept].id) kept++;
+    for (const node of target.slice(kept)) componentSet.appendChild(node);
 
-    // Check the layout before returning: the layers in that order, no two
-    // variants' boxes intersecting, and the set containing every one.
+    // Check the layer order, that each variant is where it was put (a move
+    // Figma ignored fails), that none overlap, and that the set holds them all.
     const kids = componentSet.children;
-    if (kids.length !== order.length || kids.some((n, i) => n.id !== order[order.length - 1 - i].id)) {
+    if (kids.length !== order.length || kids.some((n, i) => n.id !== target[i].id)) {
       throw new Error("The set's layers are not in the order it was laid out in");
+    }
+    for (const c of order) {
+      if (Math.abs(c.node.x - c.x) > 0.5 || Math.abs(c.node.y - c.y) > 0.5) {
+        throw new Error('Variant "' + c.node.name + '" is not where the layout put it');
+      }
     }
     const boxes = kids.map((n) => ({ name: n.name, x: n.x, y: n.y, r: n.x + n.width, b: n.y + n.height }));
     boxes.forEach((a, i) => {
@@ -376,7 +400,7 @@ use_figma({
     return JSON.stringify({
       id: componentSet.id, name: componentSet.name, variants: kids.length,
       added: created.length, updated: names.length - created.length,
-      rows: grid.length, columns: widths.length, extra: extra.length,
+      rows: rows.length, columns: columns.length, extra: extra.length,
     });
   `,
   description: "Create or update variants 1-25 of the Button component set on 'Forms' page, styled from measured values",
@@ -591,7 +615,7 @@ npx storysync verify --strict-age
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Two things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node — and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, and any failures or caps.
+7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, and any failures or caps.
 
 ## Variable binding
 

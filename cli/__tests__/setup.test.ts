@@ -369,8 +369,11 @@ test("every push instruction lays a set out in snap's order, not its children's"
   // A re-push laid a set out in the order an earlier build had left its
   // children in, so the primary row's columns read sm, lg, sm disabled, lg
   // disabled and the others' sm, sm disabled, lg disabled, lg. The layout
-  // follows snap's variantProperties, each property's default first, and the
-  // layers panel, which shows the last child at the top, reads the same way.
+  // follows snap's variantProperties in the order Storybook declares them, a
+  // BOOLEAN false then true, and the layers panel, which shows the last child
+  // at the top, reads the same way. Figma takes the set's default variant
+  // from the top-left, so the agent says which that is when it is not the
+  // component's own default.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -386,14 +389,55 @@ test("every push instruction lays a set out in snap's order, not its children's"
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /`variantProperties`[^\n]*copied as they are/, `${path} never has each part carry snap's variantProperties`);
       assert.match(text, /never by the set's children/, `${path} lets the layout follow the set's child order`);
-      assert.match(text, /default first[^\n]*top-left, where Figma takes a set's default variant from/, `${path} never puts the default variant top-left`);
-      assert.match(text, /snap's `true, false` with a `false` default reads `false, true`|snap lists its values `true, false`, so with a `false` default it reads `false, true`/,
+      assert.match(text, /in the order snap records them, the order Storybook's docs declare them in, not default first/,
+        `${path} never says the values run in Storybook's declared order`);
+      assert.doesNotMatch(text, /default first, then|all-defaults variant[^\n]*top-left/, `${path} still puts each property's default first`);
+      assert.match(text, /a `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`/i,
         `${path} never says how a BOOLEAN property is ordered`);
+      assert.match(text, /Figma makes the top-left variant the set's default variant/, `${path} never says where Figma takes the default variant from`);
+      assert.match(text, /`size=sm` even if the component defaults to `md`/, `${path} gives no example of a default that is not the component's`);
+      assert.match(text, /say in the summary which variant Figma will treat as the default/, `${path} never has the agent report Figma's default`);
+      assert.match(text, /^\d+\. Summarize[^\n]*which variant Figma will treat as a set's default where that is not the component's default/m,
+        `${path}'s summary step leaves out Figma's default variant`);
       assert.match(text, /With one property, each value is a row of one/i, `${path} never says how one property is laid out`);
       assert.match(text, /three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled/, `${path} gives no example of the grid`);
       assert.match(text, /a row of its own below the others/, `${path} never says where a variant snap does not have goes`);
       assert.match(text, /last child at the top/, `${path} never says the layers panel shows the last child at the top`);
       assert.match(text, /`extra`/, `${path} never has the build count the variants snap does not have`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction refuses a set with auto layout and checks each variant's place", () => {
+  // On a set with auto layout, x and y do nothing and the layer order flows
+  // the variants, the last one into the top-left, while every other check
+  // passes. The build refuses such a set before changing anything and asks
+  // the user, and checks each variant is where the layout put it. Cells come
+  // from the set's own variants, not every combination, which 20 BOOLEANs
+  // take past a million, and a name's lower-id copy stays in the grid.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /`layoutMode` is not `'NONE'`[^\n]*before changing anything/, `${path} never refuses a set with auto layout`);
+      assert.match(text, /ask the user whether to turn auto layout off on the set[^\n]*or to leave its layout alone and skip the set/i,
+        `${path} never says what to ask the user about a set with auto layout`);
+      assert.match(text, /^\d+\. Summarize[^\n]*any set skipped for its auto layout/m, `${path}'s summary step leaves out a set skipped for its auto layout`);
+      assert.match(text, /every variant is where the layout put it, so a move Figma ignored fails/, `${path} never checks each variant's position`);
+      assert.match(text, /the work grows with the set's variants, not with every combination/, `${path} lays a set out from every combination`);
+      assert.match(text, /the one with the lower node id stays in the grid/, `${path} never says which copy of a name stays in the grid`);
+      assert.match(text, /moving only (?:those|the ones) out of place|`appendChild`-ing only the rest/, `${path} moves every variant on every part`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
