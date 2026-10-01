@@ -246,6 +246,21 @@ test("the Cursor rule names no step Cursor can't take", () => {
   }
 });
 
+test("the Claude and Codex skills call no MCP protocol method as a tool", () => {
+  // tools/list is how a client asks a server for its tools; an agent has no
+  // tool by that name, so a step that says to call it can't be followed.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    for (const path of [join(".claude", "skills", "storysync", "SKILL.md"), join(".agents", "skills", "storysync", "SKILL.md")]) {
+      assert.equal(readFileSync(join(project, path), "utf8").includes("tools/list"), false, `${path} mentions tools/list`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push instruction keeps each use_figma call inside Figma's limits", () => {
   // use_figma takes at most 50,000 characters of code and returns at most
   // 20kb per call. A build that returned its own readback, or one call that

@@ -11,8 +11,8 @@ If the user did not provide a file key (or `$ARGUMENTS` is empty), ask for it. T
 
 Workflow:
 
-1. Read Figma variables — call `use_figma` to enumerate every variable collection and its resolved values (use `figma.variables.getLocalVariableCollectionsAsync()` and convert COLOR values to hex).
-2. Read Figma components — call `use_figma` to enumerate every component set and its variant properties (use `figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] })` and read `componentPropertyDefinitions`).
+1. Read Figma variables — call `use_figma` to enumerate every variable collection and its resolved values (use `figma.variables.getLocalVariableCollectionsAsync()` and convert COLOR values to hex). `use_figma` returns at most 20kb per call, which a full palette passes, so read them a slice per call with the skill's template, from the `next` each call returns until it is `null`.
+2. Read Figma components — call `use_figma` to enumerate every component set and its variant properties, a page at a time: `use_figma` loads pages as it switches to them and does not support `figma.loadAllPagesAsync()`, so a search from `figma.root` sees only the pages already loaded and misses the sets on the rest. List the pages (`figma.root.children`), then make one call per page that switches to it with `figma.setCurrentPageAsync`, uses `page.findAllWithCriteria({ types: ['COMPONENT_SET'] })` and reads `componentPropertyDefinitions`, a slice per call as in step 1.
 3. Run `npx storysync tokens --json --project .` for code-side tokens.
 4. Run `npx storysync map --storybook http://localhost:6006 --json` for code-side components.
 5. Compare tokens by name within each category. Normalize before comparing: lowercase hex, convert rem→px, strip units. Match Figma collection names to code categories (Colors→colors, Border Radius→radius, etc.).

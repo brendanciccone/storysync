@@ -414,9 +414,9 @@ This ensures that when tokens change in code and storysync runs again, updating 
 
 Compare the current Figma file against code to find drift in either direction. Use this when someone asks to "check if Figma is in sync", "audit the design system", or "diff Figma vs code".
 
-If the `use_figma` tool doesn't return the plugin code's return value in a usable form, fall back to reading Figma state via any available `get-*` / `list-*` tools on the Figma MCP server (call `tools/list` first to see what's available), or ask the user to export Figma variables/components to JSON and diff against that.
+If the `use_figma` tool doesn't return the plugin code's return value in a usable form, fall back to the read-only tools the Figma MCP server gives you, knowing what each covers: `get_metadata` outlines one node's layers (with no node, it lists the pages), and `get_variable_defs` returns only the variables and styles the selected node uses (on the remote server, the node a Figma link points at), so a variable no layer uses never appears. For a complete list, ask the user to export Figma's variables and components to JSON and diff against that.
 
-Both reads below return a slice per call, because `use_figma` returns at most 20kb per call and a full palette or library passes that. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices.
+`use_figma` takes at most 50,000 characters of code and returns at most 20kb per call. The code below is small, but a full palette or library passes 20kb on the way back, so both reads return a slice per call. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices. Each throws if a slice comes too close to 20kb; lower `BATCH` and read that slice again.
 
 1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
 
@@ -445,7 +445,13 @@ use_figma({
       results.push({ name: v.name, type: v.resolvedType, value, collection: coll.name });
     }
     const next = START + BATCH < all.length ? START + BATCH : null;
-    return JSON.stringify({ total: all.length, next, variables: results });
+    const result = JSON.stringify({ total: all.length, next, variables: results });
+    // use_figma JSON-encodes what this returns: measure the encoded string.
+    const size = JSON.stringify(result).length;
+    if (size > 17000) {
+      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: lower BATCH and read it again');
+    }
+    return result;
   `,
   description: "Read all variable collections and values from Figma file",
   fileKey: "<file-key>",
@@ -453,14 +459,20 @@ use_figma({
 })
 ```
 
-2. **Read Figma components** — call `use_figma` to enumerate all component sets and their variant properties:
+2. **Read Figma components** — read the component sets and their variant properties a page at a time. `use_figma` loads pages as it switches to them, starting each call on the first, and does not support `figma.loadAllPagesAsync()`, so a search from `figma.root` sees only the pages already loaded and misses the sets on every other — and the push puts each category on its own page. List the pages with a call that returns `JSON.stringify(figma.root.children.map(p => ({ id: p.id, name: p.name })))`, then make the call below once per page, as separate calls issued together, each switching to its page once:
 
 ```js
 use_figma({
   code: `
+    const PAGE_ID = '0:1'; // one of the pages the first call listed
     const START = 0;
     const BATCH = 25;
-    const componentSets = figma.root.findAllWithCriteria({ types: ['COMPONENT_SET'] });
+    const page = await figma.getNodeByIdAsync(PAGE_ID);
+    if (!page || page.type !== 'PAGE') {
+      throw new Error('No page with id ' + PAGE_ID);
+    }
+    await figma.setCurrentPageAsync(page);
+    const componentSets = page.findAllWithCriteria({ types: ['COMPONENT_SET'] });
     const results = [];
     for (const cs of componentSets.slice(START, START + BATCH)) {
       const defs = cs.componentPropertyDefinitions;
@@ -475,9 +487,15 @@ use_figma({
       results.push({ name: cs.name, variantProperties: props, variantCount: cs.children.length });
     }
     const next = START + BATCH < componentSets.length ? START + BATCH : null;
-    return JSON.stringify({ total: componentSets.length, next, componentSets: results });
+    const result = JSON.stringify({ page: page.name, total: componentSets.length, next, componentSets: results });
+    // use_figma JSON-encodes what this returns: measure the encoded string.
+    const size = JSON.stringify(result).length;
+    if (size > 17000) {
+      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: lower BATCH and read it again');
+    }
+    return result;
   `,
-  description: "Read all component sets and variant properties from Figma file",
+  description: "Read the component sets and variant properties on one page of the Figma file",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })

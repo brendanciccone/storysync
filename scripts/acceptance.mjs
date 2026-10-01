@@ -3,9 +3,9 @@
 //
 // Unit tests prove the pieces; this proves the pipeline. It drives the built
 // CLI against a live Storybook serving examples/storybook-vite, and it runs the
-// readback code block from the shipped Claude skill against simulated Figma
-// nodes — so a regression in the skill's template fails here, not in someone's
-// Figma file.
+// readback and audit code blocks from the shipped Claude skill against
+// simulated Figma nodes — so a regression in the skill's templates fails here,
+// not in someone's Figma file.
 //
 //   cd examples/storybook-vite && pnpm storybook     # leave running
 //   pnpm build && pnpm acceptance
@@ -431,6 +431,82 @@ async function realisticSet(snapDir) {
   return { componentSet, slugByName, sourceBySlug, styles };
 }
 
+// --- Simulated Figma for the audit -------------------------------------------
+
+/** One use_figma call's figma, serving local variables. */
+function variablesFigma(variables) {
+  const collections = [];
+  const byId = new Map();
+  variables.forEach((v, i) => {
+    let coll = collections.find((c) => c.name === v.collection);
+    if (!coll) {
+      coll = { name: v.collection, modes: [{ modeId: `${v.collection}:default`, name: "Default" }], variableIds: [] };
+      collections.push(coll);
+    }
+    const id = `VariableID:${i}`;
+    coll.variableIds.push(id);
+    byId.set(id, { name: v.name, resolvedType: v.type, valuesByMode: { [coll.modes[0].modeId]: v.value } });
+  });
+  return {
+    variables: {
+      getLocalVariableCollectionsAsync: async () => collections,
+      getVariableByIdAsync: async (id) => byId.get(id) ?? null,
+    },
+  };
+}
+
+/**
+ * One use_figma call's figma, serving pages of component sets. As in
+ * use_figma, a call starts on the first page with only it loaded, a page loads
+ * when the call switches to it, and a search from figma.root sees only the
+ * loaded pages. `switches` records each switch.
+ */
+function pagesFigma(pages, switches = []) {
+  const loaded = new Set([pages[0].id]);
+  const nodes = pages.map((p) => ({
+    id: p.id,
+    type: "PAGE",
+    name: p.name,
+    findAllWithCriteria: ({ types }) => (loaded.has(p.id) ? p.sets.filter((s) => types.includes(s.type)) : []),
+  }));
+  return {
+    root: {
+      children: nodes,
+      findAllWithCriteria: (criteria) => nodes.flatMap((n) => n.findAllWithCriteria(criteria)),
+    },
+    currentPage: nodes[0],
+    getNodeByIdAsync: async (id) => nodes.find((n) => n.id === id) ?? null,
+    setCurrentPageAsync: async (page) => {
+      loaded.add(page.id);
+      switches.push(page.id);
+    },
+  };
+}
+
+/** A component set as the audit reads it: its properties and its variant count. */
+function auditSet(name, options) {
+  const defs = Object.fromEntries(Object.entries(options).map(([prop, values]) =>
+    [prop, values === "BOOLEAN" ? { type: "BOOLEAN", defaultValue: false } : { type: "VARIANT", variantOptions: values }]));
+  const count = Object.values(options).reduce((n, values) => n * (values === "BOOLEAN" ? 2 : values.length), 1);
+  return { type: "COMPONENT_SET", name, componentPropertyDefinitions: defs, children: Array.from({ length: count }, () => ({})) };
+}
+
+/**
+ * Runs an audit template the way the skill says to: START 0, then again from
+ * each `next` until it is null. `figmaFor()` gives each call a fresh figma, as
+ * use_figma does. Returns every slice.
+ */
+async function readAllSlices(code, figmaFor, values = {}) {
+  const out = [];
+  for (let start = 0; start !== null;) {
+    const slice = JSON.parse(await new AsyncFunction("figma", withConstants(code, { ...values, START: start }))(figmaFor()));
+    assert(slice.next === null || slice.next > start, `the slice from ${start} says to read next from ${slice.next}`);
+    out.push(slice);
+    start = slice.next;
+  }
+  return out;
+}
+
 // --- Checks --------------------------------------------------------------------
 
 async function main() {
@@ -774,6 +850,71 @@ async function main() {
     assert(code.length <= CODE_LIMIT * 0.6, `${part} variants come to ${code.length} characters before the agent's own code, too close to ${CODE_LIMIT}`);
     const whole = (build + table(names)).length;
     return `${part} variants a call: ${code.length} characters before the agent's own code; all 256 would be ${whole}`;
+  });
+
+  heading("Audit through the shipped skill template");
+
+  await check("the audit reads every variable a slice at a time, and refuses a slice too big to return", async () => {
+    const code = useFigmaBlock(/^Read all variable collections/);
+    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
+    assert(batch > 0, "the variables read defines no BATCH");
+    const palette = Array.from({ length: 250 }, (_, i) => (i < 200
+      ? { collection: "Colors", name: `color/palette-${Math.floor(i / 10)}/${(i % 10 + 1) * 100}`, type: "COLOR", value: { r: (i % 7) / 7, g: (i % 5) / 5, b: (i % 3) / 3, a: 1 } }
+      : { collection: "Spacing", name: `space/${i - 200}`, type: "FLOAT", value: (i - 200) * 4 }));
+    const read = await readAllSlices(code, () => variablesFigma(palette));
+    const names = read.flatMap((s) => s.variables.map((v) => `${v.collection}/${v.name}`));
+    assert(new Set(names).size === palette.length && names.length === palette.length && read.every((s) => s.total === palette.length),
+      `read ${names.length} variables (${new Set(names).size} distinct) of ${palette.length}`);
+    assert(read.length === Math.ceil(palette.length / batch), `read in ${read.length} calls, with BATCH ${batch}`);
+
+    const long = Array.from({ length: 400 }, (_, i) => ({
+      collection: "Semantic colours", name: `color/semantic/interactive/surface-${i}/background-hover-pressed`, type: "COLOR", value: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
+    }));
+    const refused = await assertGuardRefuses((n, guarded) => {
+      const body = withConstants(guarded ? code : liftGuard(code), { START: 0, BATCH: n });
+      return new AsyncFunction("figma", body)(variablesFigma(long));
+    }, long.length);
+    return `${palette.length} variables in ${read.length} calls; ${refused}`;
+  });
+
+  await check("the audit reads the component sets on every page, not only the one loaded first", async () => {
+    // The push puts each Storybook category on its own page. use_figma loads
+    // a page only when a call switches to it, so a search from figma.root
+    // would see the first page's sets, and only the first page's, from every
+    // call. Each page's call has to return that page's sets and no other's.
+    const code = useFigmaBlock(/^Read the component sets/);
+    const forms = Array.from({ length: 30 }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
+    const pages = [
+      { id: "0:1", name: "Forms", sets: forms },
+      { id: "0:2", name: "Navigation", sets: [auditSet("Tabs", { variant: ["line", "pill"] }), auditSet("Breadcrumb", { size: ["sm", "md"] })] },
+      { id: "0:3", name: "Archive", sets: [] },
+    ];
+    const found = [];
+    for (const page of pagesFigma(pages).root.children) {
+      const read = await readAllSlices(code, () => {
+        const switches = [];
+        const figma = pagesFigma(pages, switches);
+        // Figma's own guidance: switch page at most once per call.
+        const original = figma.setCurrentPageAsync;
+        figma.setCurrentPageAsync = async (p) => {
+          assert(switches.length === 0, `a call switched pages ${switches.length + 1} times`);
+          return original(p);
+        };
+        return figma;
+      }, { PAGE_ID: page.id });
+      for (const slice of read) found.push(...slice.componentSets.map((s) => `${page.name}/${s.name}`));
+    }
+    const expected = pages.flatMap((p) => p.sets.map((s) => `${p.name}/${s.name}`));
+    assert(found.join() === expected.join(), `read ${found.length} sets (${found.slice(0, 3).join(", ")}...), expected ${expected.length} across ${pages.length} pages`);
+
+    const options = Array.from({ length: 12 }, (_, i) => `option-with-a-long-descriptive-name-${i}`);
+    const wide = Array.from({ length: 120 }, (_, i) => auditSet(`Wide${i}`, { appearance: options, emphasis: options.slice(0, 6), disabled: "BOOLEAN" }));
+    const widePages = [{ id: "1:1", name: "Wide", sets: wide }];
+    const refused = await assertGuardRefuses((n, guarded) => {
+      const body = withConstants(guarded ? code : liftGuard(code), { PAGE_ID: "1:1", START: 0, BATCH: n });
+      return new AsyncFunction("figma", body)(pagesFigma(widePages));
+    }, wide.length);
+    return `${found.length} sets across ${pages.length} pages; ${refused}`;
   });
 
   heading("Scoring contract");
