@@ -10,6 +10,9 @@
 //   a second switch fails the call here, so no test can pass by looping pages.
 // - figma.loadAllPagesAsync() is not implemented, and figma.currentPage can't
 //   be set, as in use_figma.
+// - A page divider is a page, with isPageDivider true and nothing on it, as
+//   Figma's plugin API types it. Switching to one fails the call here, so a
+//   read that switches to every page in the list fails on a file with one.
 // - The code is at most 50,000 characters, use_figma's input schema's limit.
 // - The return value is serialized as JSON, and a response over 20kb, counted
 //   as 20,000 bytes of that JSON, fails the call.
@@ -49,6 +52,8 @@ export type NodeSpec = SetSpec | ComponentSpec | FrameSpec;
 export interface PageSpec {
   name: string;
   nodes: NodeSpec[];
+  /** A page divider: a line in the page list, holding nothing. */
+  divider?: boolean;
 }
 
 export interface CollectionSpec {
@@ -76,6 +81,8 @@ export interface UseFigmaCall {
 export const set = (name: string, options: SetSpec["options"]): SetSpec => ({ type: "COMPONENT_SET", name, options });
 export const component = (name: string): ComponentSpec => ({ type: "COMPONENT", name });
 export const frame = (name: string, children: NodeSpec[]): FrameSpec => ({ type: "FRAME", name, children });
+/** A page divider, named as Figma names one it creates. */
+export const divider = (name = "---"): PageSpec => ({ name, nodes: [], divider: true });
 
 /** Page ids as Figma gives them: 0:1, 0:2, ... */
 export const pageId = (index: number) => `0:${index + 1}`;
@@ -121,7 +128,7 @@ function figmaFor(file: FileSpec, call: UseFigmaCall): unknown {
   }
 
   const pages = file.pages.map((spec, index) => {
-    const page: Node = { id: pageId(index), type: "PAGE", name: spec.name, parent: null, children: [] };
+    const page: Node = { id: pageId(index), type: "PAGE", name: spec.name, parent: null, children: [], isPageDivider: Boolean(spec.divider) };
     page.children = spec.nodes.map((n) => build(n, page));
     page.findAllWithCriteria = ({ types }: { types: string[] }) => {
       const reason = file.failingPages?.[spec.name];
@@ -166,6 +173,7 @@ function figmaFor(file: FileSpec, call: UseFigmaCall): unknown {
     setCurrentPageAsync: async (page: Node) => {
       call.switches.push(page.id);
       if (call.switches.length > 1) throw new Error(`switched page ${call.switches.length} times in one call; Figma's guidance is once`);
+      if (page.isPageDivider) throw new Error(`Page ${page.id} is a page divider, which can't be the current page`);
       loaded.add(page.id);
       currentPage = page;
     },

@@ -13,8 +13,8 @@
 //   pages, so it misses every component off the first page, and the push puts
 //   each Storybook category on a page of its own. figma.loadAllPagesAsync() is
 //   not implemented there. So components are read a page at a time: one call
-//   lists the pages, then each call switches to one page, once, as Figma's
-//   guidance says, and searches only that page.
+//   lists the pages, leaving out dividers, then each call switches to one
+//   page, once, as Figma's guidance says, and searches only that page.
 //
 // Figma's guidance has an agent issue the per-page calls together. The CLI
 // makes them one after another instead: Figma's MCP server rate-limits tool
@@ -107,8 +107,11 @@ async function slice(items, describe, wrap, label) {
 `.trim();
 
 const LIST_PAGES_PLUGIN_CODE = `
+// A page divider is a page with nothing on it, only a line in the page list
+// (PageNode.isPageDivider): there is nothing to read, and no call to spend on
+// switching to it. Left out here, so every slice is cut from the same list.
 return await slice(
-  figma.root.children,
+  figma.root.children.filter(p => !p.isPageDivider),
   p => ({ id: p.id, name: p.name }),
   (items, next, total) => ({ total, next, items }),
   p => 'Page "' + p.name + '"'
@@ -253,7 +256,7 @@ export class FigmaClient {
       (start) => pluginCode({ MODE_NAME: mode ?? null, START: start }, READ_VARIABLES_PLUGIN_CODE));
   }
 
-  /** Lists the file's pages, in order. Reading them loads none. */
+  /** Lists the file's pages, in order, leaving out page dividers. Reading them loads none. */
   async getPages(fileKey: string): Promise<FigmaPage[]> {
     return this.readAll<FigmaPage>(fileKey, "pages", "List the pages of the file",
       (start) => pluginCode({ START: start }, LIST_PAGES_PLUGIN_CODE));

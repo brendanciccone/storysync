@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import type { Server } from "node:http";
 import { FigmaClient, RESPONSE_GUARD } from "../figma.js";
 import type { FigmaComponentInfo } from "../figma.js";
-import { startFigmaStandIn, useFigma, set, component, frame, pageId, CODE_LIMIT, RESPONSE_LIMIT } from "./figma-standin.js";
+import { startFigmaStandIn, useFigma, set, component, frame, divider, pageId, CODE_LIMIT, RESPONSE_LIMIT } from "./figma-standin.js";
 import type { FileSpec, UseFigmaCall } from "./figma-standin.js";
 
 const servers: Server[] = [];
@@ -149,6 +149,21 @@ test("getComponents: a page that can't be read fails the read, naming the page",
   const { result, error } = await read(file, components);
   assert.equal(result, null);
   assert.equal(error?.message, 'Failed to read page "Navigation" of the Figma file: Figma MCP tool "use_figma" failed: Error: Page could not be loaded');
+});
+
+test("getComponents: skips page dividers, which hold nothing and can't be switched to", async () => {
+  // Dividers between a file's sections are pages to the plugin API, flagged
+  // isPageDivider. Switching to one fails in the stand-in, so a read that
+  // switched to every page would fail here, or spend a call on nothing.
+  const file: FileSpec = { pages: [LIBRARY.pages[0], divider(), LIBRARY.pages[1], LIBRARY.pages[2], divider("———"), LIBRARY.pages[3]] };
+  const dividers = [pageId(1), pageId(4)];
+  const { result, error, calls } = await read(file, components);
+  assert.equal(error, null);
+  assert.deepEqual(result, LIBRARY_COMPONENTS);
+  assert.equal(calls.length, 1 + LIBRARY.pages.length);
+  assert.ok(calls.every((c) => !c.error && !c.switches.some((id) => dividers.includes(id))), calls.map((c) => c.error).join(", "));
+  const listed = await read(file, (client) => client.getPages("file-key"));
+  assert.deepEqual(listed.result?.map((p) => p.id), [0, 2, 3, 5].map(pageId));
 });
 
 test("getPages: lists a file of more pages than one response holds, in slices", async () => {
