@@ -101,7 +101,10 @@ async function slice(items, describe, wrap, label) {
     const end = START + cut;
     const result = wrap(entries, end < items.length ? end : null, items.length);
     const bytes = encodedBytes(result);
-    if (bytes <= GUARD) return result;
+    // A slice that reads nothing while items remain doesn't move on: refused,
+    // like one too big, so the page list's call leaves the first page to a
+    // call of its own.
+    if (bytes <= GUARD && (cut > 0 || end >= items.length)) return result;
     if (entries.length <= 1) {
       throw new Error((entries.length ? label(entries[0]) : 'A slice') + ' comes to ' + bytes
         + ' bytes as use_figma returns it, more than the ' + GUARD + ' one call can carry under its 20kb response limit');
@@ -278,8 +281,15 @@ export class FigmaRateLimitError extends Error {
  * Figma's MCP server has been reported to say a seat reached its "tool call
  * limit", or that a rate limit was hit. The SSE transport words an HTTP 429
  * as "HTTP 429"; the Streamable HTTP one gives the status as the error's code.
+ * Kept to the server's wording, since a plugin error can carry the names of
+ * the user's components and pages.
  */
-const RATE_LIMITED = /tool call limit|rate.?limit|too many requests|\bHTTP 429\b/i;
+const RATE_LIMITED = /tool call limit|\brate limit(ed)?\b|too many requests|\bHTTP 429\b/i;
+
+/** The size guard's own refusal, which names a component or page and is never a rate limit. */
+const GUARD_REFUSAL = "bytes as use_figma returns it, more than the";
+
+const isRateLimit = (reason: string) => !reason.includes(GUARD_REFUSAL) && RATE_LIMITED.test(reason);
 
 export class FigmaClient {
   private client: Client | null = null;
@@ -390,7 +400,7 @@ export class FigmaClient {
       // 429, which the transport's error carries as its code.
       const reason = err instanceof Error ? err.message : String(err);
       if ((err as { code?: unknown } | null)?.code === 429) throw new FigmaRateLimitError(`HTTP 429, ${reason.trim()}`);
-      if (RATE_LIMITED.test(reason)) throw new FigmaRateLimitError(reason);
+      if (isRateLimit(reason)) throw new FigmaRateLimitError(reason);
       throw err;
     }
     const r = result as { isError?: boolean; content?: { type: string; text?: string }[] };
@@ -402,7 +412,7 @@ export class FigmaClient {
     // back the same way.
     if (r.isError) {
       const reason = texts.join("\n") || "no reason given";
-      if (RATE_LIMITED.test(reason)) throw new FigmaRateLimitError(reason);
+      if (isRateLimit(reason)) throw new FigmaRateLimitError(reason);
       throw new Error(`Figma MCP tool "use_figma" failed: ${reason}`);
     }
     if (!texts.length) {

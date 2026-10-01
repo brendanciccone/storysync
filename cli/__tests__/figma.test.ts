@@ -9,7 +9,7 @@ import type { Server } from "node:http";
 import { FigmaClient, FigmaRateLimitError, RESPONSE_GUARD } from "../figma.js";
 import type { FigmaComponentInfo } from "../figma.js";
 import { startFigmaStandIn, useFigma, set, component, frame, divider, pageId, CODE_LIMIT, RESPONSE_LIMIT } from "./figma-standin.js";
-import type { CollectionSpec, FileSpec, RateLimit, UseFigmaCall } from "./figma-standin.js";
+import type { CollectionSpec, FileSpec, PageSpec, RateLimit, UseFigmaCall } from "./figma-standin.js";
 
 const servers: Server[] = [];
 
@@ -154,6 +154,30 @@ test("getComponents: a first page with no room beside the page list is read in a
   assert.ok(calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD), calls.map((c) => c.bytes).join(", "));
 });
 
+test("getComponents: a page list that leaves the first page no room still moves on to it", async () => {
+  // The list's call measures the first page's slice with \`next\` at the
+  // page's length. Where that comes just over the guard and \`next: 0\` just
+  // under, an empty slice pointing back at 0 came back, read as a slice that
+  // doesn't move on, and failed the whole read. The window is a byte or two
+  // wide, so sweep one page name across it.
+  const nodes = Array.from({ length: 120 }, (_, i) => component(`Component ${i}`));
+  const filler = Array.from({ length: 29 }, (_, i) => ({ name: `${"A page with a long name ".repeat(23)}${i}`, nodes: [] }));
+  const fileFor = (first: PageSpec["nodes"], pad: number): FileSpec => ({
+    pages: [{ name: "Library", nodes: first }, ...filler, { name: "x".repeat(pad), nodes: [] }],
+  });
+  // With nothing on the first page, the list's call is the list alone.
+  const base = await read(fileFor([], 0), components);
+  assert.equal(base.error, null);
+  const room = RESPONSE_GUARD - base.calls[0].bytes;
+  assert.ok(room > 40, String(room));
+  for (let pad = room - 40; pad <= room + 10; pad++) {
+    const { result, error, calls } = await read(fileFor(nodes, pad), components);
+    assert.equal(error, null, `pad ${pad}: ${error?.message}`);
+    assert.equal(result?.length, nodes.length, `pad ${pad}`);
+    assert.ok(calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD), `pad ${pad}: ${calls.map((c) => c.bytes).join(", ")}`);
+  }
+});
+
 test("getComponents: measures a slice in bytes, so names in other scripts still fit under 20kb", async () => {
   // A CJK character is one character of JSON and three bytes of it. Counted
   // in characters, a slice of these would come to about twice 20kb.
@@ -177,6 +201,16 @@ test("getComponents: a component too big for any response fails the read, naming
   assert.ok(calls.every((c) => c.bytes <= RESPONSE_GUARD && !/exceeds/.test(c.error ?? "")));
   // Logo, before it, came back in the slice before.
   assert.equal(pageCalls(calls, pageId(1)).length, 2);
+});
+
+test("getComponents: a too-big component named like a rate-limit notice is still reported as too big", async () => {
+  // The guard's refusal names the component and its page, which are the
+  // user's words; they mustn't turn it into a rate limit.
+  const icons = Array.from({ length: 1500 }, (_, i) => `icon-glyph-${i}`);
+  const file: FileSpec = { pages: [{ name: "Too many requests", nodes: [set("Rate limit reached", { name: icons })] }] };
+  const { error } = await read(file, components);
+  assert.ok(error && !(error instanceof FigmaRateLimitError), error?.message);
+  assert.match(error.message, /Component "Rate limit reached" on page "Too many requests" comes to \d+ bytes/);
 });
 
 test("getComponents: a page that can't be read fails the read, naming the page", async () => {
