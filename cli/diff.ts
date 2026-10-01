@@ -341,15 +341,40 @@ export function diffComponents(
     }
     codeMap.set(key, component);
   }
-  for (const [, names] of ambiguous) {
+  // Figma can repeat a name too, now that every page is read: an archive page
+  // keeping an old Button, or Forms/Button and Nav/Button pushed to their
+  // categories' pages. Keyed on the name alone, the last page read would
+  // silently be the one compared. The first page's is compared instead, and
+  // the name is reported as ambiguous.
+  const figmaMap = new Map<string, FigmaComponentInfo>();
+  const figmaRepeats = new Map<string, number>();
+  for (const component of figmaComponents) {
+    const key = component.name.toLowerCase();
+    if (figmaMap.has(key)) {
+      figmaRepeats.set(key, (figmaRepeats.get(key) ?? 1) + 1);
+      continue;
+    }
+    figmaMap.set(key, component);
+  }
+
+  for (const [key, names] of ambiguous) {
+    const repeats = figmaRepeats.get(key);
     entries.push({
       name: names[0],
       status: "ambiguous",
-      details: [`${names.length} components share this name; only one can be compared against Figma's single match`],
+      details: [repeats
+        ? `${names.length} components share this name in code, and ${repeats} in Figma; only the first of each was compared`
+        : `${names.length} components share this name; only one can be compared against Figma's single match`],
     });
   }
-
-  const figmaMap = new Map(figmaComponents.map((c) => [c.name.toLowerCase(), c]));
+  for (const [key, repeats] of figmaRepeats) {
+    if (ambiguous.has(key)) continue;
+    entries.push({
+      name: figmaMap.get(key)!.name,
+      status: "ambiguous",
+      details: [`${repeats} Figma components share this name; only the first, in page order, was compared`],
+    });
+  }
 
   for (const [key, code] of codeMap) {
     const figma = figmaMap.get(key);

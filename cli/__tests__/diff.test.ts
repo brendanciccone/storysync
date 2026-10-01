@@ -345,6 +345,33 @@ test("diffComponents: two code components sharing a bare name are flagged, not s
   assert.equal(hasDifferences(computeDiffSummary([], entries)), true);
 });
 
+test("diffComponents: a name on two Figma pages is flagged, and the first page's compared, not the last's", () => {
+  // diff reads every page, in order, and an archive page after the library
+  // can keep an old Button. Keyed on the name alone, the archived copy would
+  // be the one compared, and with no word that another existed.
+  const code = [
+    { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }] },
+  ] as never[];
+  const figma = [
+    { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }], variantCount: 2 },
+    { name: "Badge", variantProperties: [], variantCount: 1 },
+    { name: "button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm"] }], variantCount: 1 },
+  ];
+
+  const entries = diffComponents(code, figma);
+  assert.deepEqual(entries.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["Button", "match"], ["Badge", "figma_only"]]);
+  assert.deepEqual(entries[0].details, ["2 Figma components share this name; only the first, in page order, was compared"]);
+  assert.equal(computeDiffSummary([], entries).componentsAmbiguous, 1);
+  assert.equal(hasDifferences(computeDiffSummary([], entries)), true);
+});
+
+test("diffComponents: a name repeated in code and in Figma is one ambiguous entry that says both", () => {
+  const button = { name: "Button", variantProperties: [], variantCount: 1 };
+  const entries = diffComponents([button, button, button] as never[], [button, button]);
+  const ambiguous = entries.filter((e) => e.status === "ambiguous");
+  assert.deepEqual(ambiguous.map((e) => e.details), [["3 components share this name in code, and 2 in Figma; only the first of each was compared"]]);
+});
+
 // --- selectDiffComponents ---
 
 const STORYBOOK = [
