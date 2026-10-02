@@ -95,6 +95,22 @@ test("tokens CLI: --check --strict passes an unchanged config with a commented-o
   });
 });
 
+test("tokens CLI: --json gives each colour's hex, and a baseline from before it still checks clean", () => {
+  withProject((dir) => {
+    writeFileSync(join(dir, "tailwind.config.ts"), tailwind("oklch(63.7% 0.237 25.331)"));
+    const created = spawnSync(process.execPath, [CLI, "tokens", "--json"], { cwd: dir, encoding: "utf8" });
+    const data = JSON.parse(created.stdout) as { collections: { tokens: { name: string; value: string; hex?: string }[] }[] };
+    assert.deepEqual(data.collections[0].tokens, [{ name: "brand", value: "oklch(63.7% 0.237 25.331)", hex: "#fb2c36" }]);
+
+    // The baseline as an earlier storysync wrote it, without hex.
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), created.stdout.replace(/,"hex":"#[0-9a-f]+"/g, ""));
+    const r = tokens(dir, "--check", "--strict");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /No token drift detected/);
+  });
+});
+
 test("tokens CLI: the suggested command makes a baseline directory whose name starts with a dash", () => {
   // Without `--`, mkdir read "-baselines" as its options and failed, so the
   // command the message gives never wrote the baseline.

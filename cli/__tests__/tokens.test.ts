@@ -500,6 +500,64 @@ test("detectTokenSource: returns null when nothing found", () => {
   } finally { cleanup(dir); }
 });
 
+// --- Colour hex ---
+
+test("hex: each colour token carries its sRGB hex next to the value as written", () => {
+  // figma.util.rgb() takes only hex, rgb(), hsl() and lab(), so the push
+  // threw on an oklch() token or bare HSL channels; it sets colours from hex.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --brand: oklch(63.7% 0.237 25.331);
+      --background: 0 0% 100%;
+      --ring: oklch(63.7% 0.237 25.331 / 50%);
+      --color-text: currentColor;
+      --color-link: var(--nowhere);
+      --spacing-4: 1rem;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens]), [
+      ["colors", [
+        { name: "brand", value: "oklch(63.7% 0.237 25.331)", hex: "#fb2c36" },
+        { name: "background", value: "0 0% 100%", hex: "#ffffff" },
+        { name: "ring", value: "oklch(63.7% 0.237 25.331 / 50%)", hex: "#fb2c3680" },
+        // Nothing to convert: no hex, rather than a guess.
+        { name: "color/text", value: "currentColor" },
+        { name: "color/link", value: "var(--nowhere)" },
+      ]],
+      ["spacing", [{ name: "spacing/4", value: "1rem" }]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("hex: a Tailwind colour resolved from :root carries the hex of what it resolved to", () => {
+  const dir = makeProject({
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { background: "hsl(var(--background))", brand: { 500: "#3B82F6" } } } } }`,
+    "app/globals.css": `:root { --background: 222.2 84% 4.9%; }`,
+  });
+  try {
+    const colors = extractTokens(dir).collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => [t.name, t.value, t.hex]), [
+      ["background", "hsl(222.2 84% 4.9%)", "#020817"],
+      ["brand/500", "#3B82F6", "#3b82f6"],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("hex: --check compares the value, so a baseline written before hex checks clean", () => {
+  const dir = makeProject({ "styles.css": `:root { --brand: oklch(63.7% 0.237 25.331); }` });
+  try {
+    const current = extractTokens(dir);
+    assert.equal(current.collections[0].tokens[0].hex, "#fb2c36");
+    const old = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map(({ name, value }) => ({ name, value })) })) });
+    assert.equal(hasDrift(compareTokens(old, current)), false);
+    // And a hex that differs, as a later colour conversion fix might make it, is not drift.
+    const shifted = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map((t) => ({ ...t, hex: "#fb2c37" })) })) });
+    assert.equal(hasDrift(compareTokens(shifted, current)), false);
+  } finally { cleanup(dir); }
+});
+
 // --- Drift detection ---
 
 const FIXED_TIMESTAMP = "2026-01-01T00:00:00.000Z";

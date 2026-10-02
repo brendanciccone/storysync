@@ -13,7 +13,15 @@ export type TokenCategory = "colors" | "spacing" | "typography" | "radius" | "sh
 
 export interface TokenValue {
   name: string;
+  /** As the source writes it. `tokens --check` compares this. */
   value: string;
+  /**
+   * A colour token's value as sRGB hex, `#rrggbb` or `#rrggbbaa`, for the
+   * push: figma.util.rgb() and rgba() take only hex, rgb(), hsl() and lab(),
+   * so a token in oklch() or bare HSL channels threw. Absent when the value
+   * is no colour storysync can convert, and on every other category.
+   */
+  hex?: string;
   group?: string;
 }
 
@@ -172,6 +180,18 @@ function readCss(file: string): string {
 // --- Main extraction ---
 
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
+  const result = extractFromSource(projectPath, sourceType);
+  for (const collection of result.collections) {
+    if (collection.category !== "colors") continue;
+    collection.tokens = collection.tokens.map((token) => {
+      const hex = tokenColorToHex(token.value);
+      return hex ? { ...token, hex } : token;
+    });
+  }
+  return result;
+}
+
+function extractFromSource(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
   if (sourceType) {
     switch (sourceType) {
       case "tailwind": {

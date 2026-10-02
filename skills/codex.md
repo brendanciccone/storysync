@@ -40,7 +40,7 @@ This auto-detects the token source (Tailwind config, CSS custom properties, or t
   "collections": [
     {
       "category": "colors",
-      "tokens": [{ "name": "primary/500", "value": "#3B82F6" }, ...]
+      "tokens": [{ "name": "primary/500", "value": "oklch(62.3% 0.214 259.815)", "hex": "#2b7fff" }, ...]
     },
     {
       "category": "spacing",
@@ -64,9 +64,9 @@ use_figma({
     const colors = figma.variables.createVariableCollection('Colors');
     const mode = colors.modes[0];
 
-    // Add variables
+    // Add variables, each colour from its token's hex
     const primary500 = figma.variables.createVariable('primary/500', colors, 'COLOR');
-    primary500.setValueForMode(mode.modeId, figma.util.rgb('#3B82F6'));
+    primary500.setValueForMode(mode.modeId, figma.util.rgba('#2b7fff'));
 
     // ... repeat for each color token from the storysync output
 
@@ -85,6 +85,8 @@ use_figma({
 ```
 
    Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
+
+   Set each colour from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `value` is the colour as the source writes it, and `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a value in `oklch()`, `oklab()`, `lch()`, `hwb()` or `color()`, or bare HSL channels such as `0 0% 100%`, throws. `hex` is sRGB, `#rrggbbaa` when the colour is translucent, which `rgba` keeps. A colour token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
 
    A `use_figma` call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow. Split a large collection — a full colour palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created rather than creating another.
 

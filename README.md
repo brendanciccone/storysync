@@ -229,6 +229,8 @@ Comments are skipped, so a commented-out key or custom property, such as an old 
 
 Colour tokens are kept as written, in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()` or `color()` in any of its spaces. A custom property whose name doesn't say it's a colour is still read as one when its value is in one of those functions, or is bare HSL channels as shadcn/ui's `:root` writes them, such as `240 5.9% 10%`, which are read as the `hsl()` they're written for. `diff` converts both sides to sRGB hex before comparing, so a `:root` token such as `--brand: oklch(63.7% 0.237 25.331)` matches a Figma variable of `#fb2c36`.
 
+`tokens --json` gives each colour token that same sRGB hex as `hex`, next to its `value`: `{ "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }`, `#rrggbbaa` when the colour is translucent. The push sets Figma's variables from `hex`, since `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()` and throw on the rest. A value storysync can't convert, such as `currentColor` or an unresolved `var()`, has no `hex`. `tokens --check` compares `value` alone, so a baseline written without `hex` still checks clean.
+
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
 Many Tailwind configs (notably shadcn/ui templates) define colors as `hsl(var(--background))` and put the actual values in `globals.css` under `:root`. storysync detects this pattern and automatically resolves the references:
