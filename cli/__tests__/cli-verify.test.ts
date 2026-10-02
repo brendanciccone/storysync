@@ -13,7 +13,12 @@ import { readbackChecksum } from "../verify.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
-const STYLES = { display: "inline-flex", backgroundColor: "#2563eb", fontSize: 12, text: null };
+/** What snap measured: an inline-flex element, so its size is compared too. */
+const STYLES = {
+  display: "inline-flex", backgroundColor: "#2563eb", color: "#ffffff", borderRadiusUniform: 3,
+  padding: { top: 4, right: 8, bottom: 4, left: 8 }, borderUniform: null, fontSize: 12, fontWeight: 600,
+  fontFamily: "Inter", gap: { row: 6, column: 6 }, opacity: 1, width: 61.5, height: 24, text: null,
+};
 
 function snap(overrides: Record<string, unknown> = {}, component: Record<string, unknown> = {}) {
   return {
@@ -37,18 +42,45 @@ function snap(overrides: Record<string, unknown> = {}, component: Record<string,
   };
 }
 
-/** A readback of one variant, sealed with the checksum the template gives it unless `seal` is false. */
-function readback(variant: Record<string, unknown>, { seal = true } = {}) {
-  const entry = seal ? { ...variant, checksum: readbackChecksum("a", variant) } : variant;
-  return { version: 1, components: { "Forms/Button": { nodeId: "1:2", variants: { a: entry } } } };
+/** When the readbacks here were read, unless a test says otherwise. */
+const READ_AT = "2026-10-01T12:00:00.000Z";
+
+/**
+ * A readback of these variants, each read at `readAt`, or with none if it is
+ * null, and sealed with the checksum the template gives it under the set's
+ * id, unless `seal` is false.
+ */
+function readbackOf(variants: Record<string, Record<string, unknown>>, { seal = true, readAt = READ_AT as string | null } = {}) {
+  const entries: Record<string, Record<string, unknown>> = {};
+  for (const [slug, variant] of Object.entries(variants)) {
+    const read = readAt == null ? { ...variant } : { ...variant, readAt };
+    entries[slug] = seal ? { ...read, checksum: readbackChecksum("1:2", slug, read) } : read;
+  }
+  return { version: 1, components: { "Forms/Button": { nodeId: "1:2" as string | undefined, variants: entries } } };
 }
 
-const MATCHING = { source: "measured", backgroundColor: "#2563eb", fontSize: 12 };
+/** A readback of the one variant `a`. */
+function readback(variant: Record<string, unknown>, options: { seal?: boolean; readAt?: string | null } = {}) {
+  return readbackOf({ a: variant }, options);
+}
 
+/** Every field the readback template returns, as it would for a faithful copy of STYLES. */
+const MATCHING = {
+  source: "measured", backgroundColor: "#2563eb", color: "#ffffff", borderRadiusUniform: 3,
+  padding: { top: 4, right: 8, bottom: 4, left: 8 }, borderUniform: null, fontSize: 12, fontWeight: 600,
+  fontFamily: "Inter", gap: { row: 6, column: 6 }, opacity: 1, width: 61.5, height: 24,
+};
+
+/** Runs verify on these files; with `measuredAt`, beside a meta.json saying the snap was taken then. */
 function verify(snapFile: unknown, readbackFile: unknown, ...flags: string[]) {
+  return verifyMeasuredAt(null, snapFile, readbackFile, ...flags);
+}
+
+function verifyMeasuredAt(measuredAt: string | null, snapFile: unknown, readbackFile: unknown, ...flags: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
   try {
     writeFileSync(join(dir, "styles.json"), JSON.stringify(snapFile));
+    if (measuredAt) writeFileSync(join(dir, "meta.json"), JSON.stringify({ measuredAt, storybookUrl: "http://localhost:6006" }));
     // A string is written as it is, to test how a file is laid out.
     writeFileSync(join(dir, "readback.json"), typeof readbackFile === "string" ? readbackFile : JSON.stringify(readbackFile));
     const r = spawnSync(process.execPath, [
@@ -66,11 +98,21 @@ test("verify CLI: a matching readback passes --strict and says what it matched",
   assert.match(r.out, /Figma matches the measured styles for Forms\/Button/);
 });
 
-test("verify CLI: a readback with nothing comparable fails --strict and claims no match", () => {
+test("verify CLI: a readback with nothing comparable fails --strict as incomplete and claims no match", () => {
   const r = verify(snap(), readback({ source: "measured" }), "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /1 unscored/);
-  assert.match(r.out, /reported no comparable properties/);
+  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, opacity, width, height, which the readback template always returns, so the template was cut down — nothing in it was scored/);
+  assert.match(r.out, /1 with an unverified readback/);
+  assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: a readback cut down to source, width and height, still sealed, fails --strict and claims no match", () => {
+  // Every flag passed on it, at 100%, before verify required the template's
+  // fields: width and height match, and nothing else was compared.
+  const r = verify(snap(), readback({ source: "measured", width: 61.5, height: 24 }), "--strict-measured");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, opacity, which/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
 
@@ -120,11 +162,12 @@ test("verify CLI: a readback entry edited after Figma returned it fails --strict
   const r = verify(snap(), file, "--strict");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /1 with an unverified readback/);
-  assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited or composed after Figma returned it — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it — nothing in it was scored/);
   assert.match(r.out, /Read these variants back again[^\n]*exactly as returned/);
   assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
   assert.doesNotMatch(r.out, /Figma matches/);
-  assert.doesNotMatch(r.out, new RegExp(readbackChecksum("a", MATCHING).slice("fnv1a:".length)), "printed the checksum that would pass");
+  const { checksum: _checksum, ...edited } = file.components["Forms/Button"].variants.a;
+  assert.doesNotMatch(r.out, new RegExp(readbackChecksum("1:2", "a", edited).slice("fnv1a:".length)), "printed the checksum that would pass");
   // Reported without --strict, as drift is, but not failed.
   assert.equal(verify(snap(), file).status, 0);
 });
@@ -137,12 +180,66 @@ test("verify CLI: a readback entry with no checksum fails --strict and claims no
 });
 
 test("verify CLI: a readback indented with tabs and its keys in another order still passes --strict", () => {
-  const entry = readback({ source: "measured", backgroundColor: "#2563eb", fontSize: 12, gap: { row: 0, column: 0 } })
-    .components["Forms/Button"].variants.a as Record<string, unknown>;
+  const entry = readback(MATCHING).components["Forms/Button"].variants.a as Record<string, unknown>;
   const reordered = Object.fromEntries(Object.entries(entry).reverse());
-  reordered.gap = { column: 0, row: 0 };
+  reordered.gap = { column: 6, row: 6 };
   const text = JSON.stringify({ components: { "Forms/Button": { variants: { a: reordered }, nodeId: "1:2" } }, version: 1 }, null, "\t");
   const r = verify(snap(), text, "--strict");
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /Figma matches the measured styles for Forms\/Button/);
+});
+
+/** The snap of two variants, `a` and `b`, measured alike. */
+function snapOfTwo() {
+  return snap({ summary: { components: 1, variants: 2, rendered: 2, failed: 0, componentsFailed: 0, componentsWithWarnings: 0 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "ok", error: null, delta: {} },
+    ],
+  });
+}
+
+test("verify CLI: one variant sealed and matching beside one edited fails --strict on the edited one alone", () => {
+  // The matching variant still scores, so the run compared something and
+  // nothing drifted: the readback issue is the only thing left to fail it.
+  const file = readbackOf({ a: MATCHING, b: { ...MATCHING, backgroundColor: "#ff00ff" } });
+  file.components["Forms/Button"].variants.b.backgroundColor = "#2563eb";
+  const r = verify(snapOfTwo(), file, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Fidelity: 100\.0% \(12\/12 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /1 verified, 0 drifted, 0 missing from Figma, 1 with an unverified readback, across 2 variants/);
+  assert.match(r.out, /Forms\/Button b readback entry does not match its checksum/);
+  assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: a component with no nodeId, or another set's, fails --strict", () => {
+  const file = readbackOf({ a: MATCHING });
+  delete file.components["Forms/Button"].nodeId;
+  const r = verify(snap(), file, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /readback entry has no nodeId on its component, the set's id its checksum is sealed under, so its checksum cannot be checked/);
+  assert.doesNotMatch(r.out, /Figma matches/);
+  file.components["Forms/Button"].nodeId = "9:9";
+  assert.match(verify(snap(), file, "--strict").out, /readback entry does not match its checksum/);
+});
+
+test("verify CLI: a readback read before the snap fails --strict as stale, and one a few minutes before it passes", () => {
+  // readAt is Figma's clock and measuredAt this machine's: a couple of
+  // minutes either way is the clocks, an hour is an earlier run.
+  const measured = Date.now() - 3_600_000;
+  const measuredAt = new Date(measured).toISOString();
+  const earlier = new Date(measured - 3_600_000).toISOString();
+  const stale = verifyMeasuredAt(measuredAt, snap(), readback(MATCHING, { readAt: earlier }), "--strict");
+  assert.equal(stale.status, 1, stale.out);
+  assert.match(stale.out, new RegExp(`readback entry is stale: Figma read it at ${earlier}, before the snap was measured at ${measuredAt}, so it is from an earlier run — nothing in it was scored`));
+  assert.match(stale.out, /Read these variants back again, after the snap,/);
+  assert.doesNotMatch(stale.out, /Figma matches/);
+
+  const skewed = verifyMeasuredAt(measuredAt, snap(), readback(MATCHING, { readAt: new Date(measured - 120_000).toISOString() }), "--strict");
+  assert.equal(skewed.status, 0, skewed.out);
+  assert.match(skewed.out, /Figma matches the measured styles for Forms\/Button/);
+
+  const none = verify(snap(), readback(MATCHING, { readAt: null }), "--strict");
+  assert.equal(none.status, 1, none.out);
+  assert.match(none.out, /readback entry is stale: it has no readAt, so when Figma read it is unknown/);
 });

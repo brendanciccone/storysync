@@ -58,6 +58,12 @@ export interface ReadbackStyles {
   width?: number;
   height?: number;
   /**
+   * When the readback template read this entry, as an ISO 8601 time from
+   * Figma's clock, sealed under the checksum: see READ_AT_SKEW_MS. Not a
+   * style property.
+   */
+  readAt?: string;
+  /**
    * The checksum the readback template computed in Figma over this entry, as
    * `fnv1a:` and 8 hex digits: see readbackChecksum. Not a style property.
    */
@@ -68,6 +74,7 @@ export interface ReadbackFile {
   version: number;
   fileKey?: string;
   components: Record<string, {
+    /** The component set's id, which every entry's checksum is sealed under. */
     nodeId?: string;
     /** Keyed by the variant slug `snap` emitted. */
     variants: Record<string, ReadbackStyles>;
@@ -158,9 +165,11 @@ export interface VariantVerdict {
    * plugin read that came back empty still yields `{ source: "measured" }`.
    * An absent measurement must not read as a passing one.
    *
-   * `unverified_readback` is the variant whose readback entry is not what
-   * Figma returned: its checksum is missing or does not match. Nothing in it
-   * is scored, matched or mismatched, since none of it can be trusted.
+   * `unverified_readback` is the variant whose readback entry is not one
+   * verify can score as what Figma returned: its checksum is missing or does
+   * not match, it lacks a field the readback template always returns, or it
+   * was read before the snap. Nothing in it is scored, matched or mismatched,
+   * since none of it can be trusted as a reading of Figma now.
    */
   status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback";
   /** `unrecorded` when the writer did not say — not the same as measured. */
@@ -221,7 +230,7 @@ export interface VerifyResult {
     unmeasured: number;
     /** Variants Figma reported with no comparable property, so nothing was scored. */
     unscored: number;
-    /** Measured variants whose readback entry is not what Figma returned, so nothing was scored. */
+    /** Measured variants with a readback issue, so nothing in them was scored. */
     unverifiedReadback: number;
   };
   /**
@@ -244,7 +253,8 @@ export interface VerifyResult {
    */
   unmeasuredInFigma: { component: string; slug: string }[];
   /**
-   * Readback entries that are not what Figma returned, measured or not.
+   * Readback entries verify cannot score as what Figma returned, measured or
+   * not: see ReadbackIssue.
    *
    * Never says what the checksum should have been: that would turn the check
    * into a value to copy in.
@@ -258,10 +268,23 @@ export interface ReadbackIssue {
   slug: string;
   /**
    * `no_checksum`: the entry carries none, so it was not written as the
-   * readback template returned it. `checksum_mismatch`: it carries one its
-   * contents do not produce, so it was edited, or composed, afterwards.
+   * readback template returned it. `no_node_id`: its component has no
+   * `nodeId`, the set's id the checksum is sealed under, so the checksum
+   * cannot be checked. `checksum_mismatch`: it carries one its contents, set
+   * and slug do not produce, so it was edited, composed, or copied from
+   * another variant or component, afterwards.
+   *
+   * The rest are entries whose checksum matches. `incomplete`: it lacks a
+   * field the readback template always returns, listed in `missing`, so the
+   * template was cut down. `stale`: its `readAt` is missing, is not a time,
+   * or falls before the snap it is scored against by more than
+   * READ_AT_SKEW_MS, so it was read in an earlier run. An entry can be both.
    */
-  problem: "no_checksum" | "checksum_mismatch";
+  problem: "no_checksum" | "no_node_id" | "checksum_mismatch" | "incomplete" | "stale";
+  /** For `incomplete`: the fields the entry lacks. */
+  missing?: string[];
+  /** For `stale`: the entry's `readAt`, or null when it has none, or one that is not a string. */
+  readAt?: string | null;
 }
 
 // --- Comparison --------------------------------------------------------------
@@ -452,6 +475,14 @@ export function expandSnap(snap: SnapResult): Map<string, Map<string, Normalized
 // matches. It is not a signature: the code is in the skill, so an agent that
 // deliberately computes it over values it made up will pass. It catches the
 // shortcut, not a forgery.
+//
+// Sealed with it are the set's id and the slug, so an entry copied onto
+// another variant, or onto the same slug in another component (every
+// component without variant props has the slug `default`), matches neither;
+// and readAt, the time Figma read the entry, so one read back in an earlier
+// run, before the snap it is scored against, can be told from one read now.
+// And a template cut down to fewer fields still seals what it returns, so
+// verify also requires every field the shipped template always returns.
 
 /** Names the algorithm, so a later change of it reads as one rather than as an edit. */
 export const CHECKSUM_PREFIX = "fnv1a:";
@@ -494,38 +525,121 @@ export function fnv1a32(text: string): string {
 
 /**
  * The checksum the readback template gives an entry: FNV-1a over the
- * canonical JSON of `{ [slug]: entry }`, without its `checksum` field.
+ * canonical JSON of `{ [setId]: { [slug]: entry } }`, without its `checksum`
+ * field, where `setId` is the component set's id, the readback's `nodeId`.
  *
- * The slug is part of it so that an entry copied onto another variant, one
- * read back standing in for one that was not, matches neither. The entry
- * goes through JSON first, as the template's does and as it reached the file,
- * so a field that is undefined is absent on both sides.
+ * The set's id and the slug are part of it so that an entry copied onto
+ * another variant, or onto the same slug in another component, one read back
+ * standing in for one that was not, matches neither. The entry goes through
+ * JSON first, as the template's does and as it reached the file, so a field
+ * that is undefined is absent on both sides.
  */
-export function readbackChecksum(slug: string, entry: object): string {
+export function readbackChecksum(setId: string, slug: string, entry: object): string {
   const { checksum: _checksum, ...rest } = entry as Record<string, unknown>;
-  return CHECKSUM_PREFIX + fnv1a32(canonicalJson({ [slug]: JSON.parse(JSON.stringify(rest)) }));
+  return CHECKSUM_PREFIX + fnv1a32(canonicalJson({ [setId]: { [slug]: JSON.parse(JSON.stringify(rest)) } }));
 }
 
-/** Every readback entry, measured or not, whose checksum is missing or does not match. */
-export function checkReadback(readback: ReadbackFile): ReadbackIssue[] {
+/**
+ * The fields the readback template returns on every entry, `null` where
+ * there is nothing to report: `source` and the comparable properties it
+ * always reads.
+ *
+ * A template cut down to fewer fields still seals what it returns, so its
+ * checksums match, and verify scores only the properties an entry reports:
+ * cut down to `{ source, width, height }`, it would score 100% on every
+ * strict flag without comparing colour, padding, type or radius. So an entry
+ * that lacks any of these is incomplete, and none of it is scored. Not
+ * `boxShadow` or `flexDirection`, which the template does not read. The rest
+ * it leaves out where Figma has nothing to report, and only there: `gap` on a
+ * frame without auto layout, and the text child's `fontSize`, `fontWeight`
+ * and `fontFamily` on a variant with none, `fontSize` and `fontFamily` also
+ * where Figma reports them as mixed.
+ */
+export const READBACK_FIELDS = [
+  "source", "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform", "opacity", "width", "height",
+] as const;
+
+/**
+ * The fields an entry lacks that the readback template would have returned:
+ * any of READBACK_FIELDS, and `fontWeight` where it reports `fontSize` or
+ * `fontFamily` without it, since the template reads all three off one text
+ * child and `fontWeight` whenever there is one (a mixed font reads as 400).
+ * Present as `null` is present; absent, or undefined as JSON leaves it, is not.
+ */
+export function missingReadbackFields(entry: object): string[] {
+  const record = entry as Record<string, unknown>;
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(record, key) && record[key] !== undefined;
+  const missing: string[] = READBACK_FIELDS.filter((key) => !has(key));
+  if ((has("fontSize") || has("fontFamily")) && !has("fontWeight")) missing.push("fontWeight");
+  return missing;
+}
+
+/**
+ * How far before the snap's `measuredAt` an entry's `readAt` may fall and
+ * still count as read after it.
+ *
+ * `use_figma` runs the plugin code in Figma's environment, not on the machine
+ * that ran snap (its fonts are Google's, not the machine's), so `readAt` is
+ * Figma's clock and `measuredAt` the machine's. Network time keeps both well
+ * within a second as a rule, but a machine whose time sync is off can drift
+ * by minutes, and an honest readback follows the snap only by the build calls
+ * between them, a minute or two. Five minutes lets the machine's clock run
+ * that far ahead of Figma's, and the build's length further, before an honest
+ * run fails, while a readback reused from a run more than five minutes before
+ * the snap is still caught.
+ */
+export const READ_AT_SKEW_MS = 5 * 60_000;
+
+export interface ReadbackCheckOptions {
+  /**
+   * The snap's `measuredAt`, from its meta.json. An entry read before it is
+   * stale; without it, only that each entry has a `readAt` is checked.
+   */
+  measuredAt?: string;
+}
+
+/**
+ * Every readback entry, measured or not, that verify cannot score as what
+ * Figma returned: see ReadbackIssue. A checksum that is missing or does not
+ * match means nothing in the entry can be trusted, its fields and `readAt`
+ * included, so that is the one issue reported for it.
+ */
+export function checkReadback(readback: ReadbackFile, { measuredAt }: ReadbackCheckOptions = {}): ReadbackIssue[] {
   const issues: ReadbackIssue[] = [];
+  const measured = measuredAt == null ? NaN : Date.parse(measuredAt);
   for (const [component, entry] of Object.entries(readback.components ?? {})) {
+    const setId = entry?.nodeId;
     for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
       // An entry that is null is a variant Figma never reported, which the
       // scoring reports as missing; there is nothing to check.
       if (variant == null) continue;
-      const found = typeof variant === "object" ? (variant as ReadbackStyles).checksum : undefined;
-      if (found == null) {
+      const fields = typeof variant === "object" ? (variant as ReadbackStyles) : null;
+      if (fields?.checksum == null) {
         issues.push({ component, slug, problem: "no_checksum" });
-      } else if (found !== readbackChecksum(slug, variant)) {
+        continue;
+      }
+      if (typeof setId !== "string" || setId === "") {
+        issues.push({ component, slug, problem: "no_node_id" });
+        continue;
+      }
+      if (fields.checksum !== readbackChecksum(setId, slug, fields)) {
         issues.push({ component, slug, problem: "checksum_mismatch" });
+        continue;
+      }
+      const missing = missingReadbackFields(fields);
+      if (missing.length > 0) issues.push({ component, slug, problem: "incomplete", missing });
+      // A readAt that is not a time is no more a reading time than none.
+      const readAt = typeof fields.readAt === "string" ? fields.readAt : null;
+      const read = readAt == null ? NaN : Date.parse(readAt);
+      if (!Number.isFinite(read) || read < measured - READ_AT_SKEW_MS) {
+        issues.push({ component, slug, problem: "stale", readAt });
       }
     }
   }
   return issues;
 }
 
-/** A variant whose readback entry is not what Figma returned: reported, not scored. */
+/** A variant whose readback entry has an issue: reported, not scored. */
 function unverifiedVerdict(component: string, slug: string, figma: unknown): VariantVerdict {
   const declared = typeof figma === "object" ? (figma as ReadbackStyles).source : undefined;
   return {
@@ -535,11 +649,16 @@ function unverifiedVerdict(component: string, slug: string, figma: unknown): Var
   };
 }
 
-export function verify(snap: SnapResult, readback: ReadbackFile, tolerance: number): VerifyResult {
+export function verify(
+  snap: SnapResult,
+  readback: ReadbackFile,
+  tolerance: number,
+  options: ReadbackCheckOptions = {},
+): VerifyResult {
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
 
-  const readbackIssues = checkReadback(readback);
+  const readbackIssues = checkReadback(readback, options);
   const unverified = new Set(readbackIssues.map((issue) => JSON.stringify([issue.component, issue.slug])));
 
   for (const [component, measuredVariants] of measuredByComponent) {

@@ -421,7 +421,7 @@ use_figma({
 })
 ```
 
-6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call: a set's readback passes 20kb at a few dozen variants, and the table of its names and slugs can pass 50,000 characters at under two hundred. So the template below reads a set a slice at a time, and each call names the variants it reads — at most `BATCH`, 25, in snap's variant order: the first 25, then the next 25, until you have read every variant snap measured. It reads exactly the variants you name, finding each by name, and throws if the set has no variant of a name you gave, or two. It also throws if a slice comes too close to 20kb. A call that throws returns nothing; below the template is what to do about each error. Each entry it returns carries a `checksum` it computed in Figma over that entry, so write the entries into the readback file exactly as returned: see below the templates.
+6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call: a set's readback passes 20kb at a few dozen variants, and the table of its names and slugs can pass 50,000 characters at under two hundred. So the template below reads a set a slice at a time, and each call names the variants it reads — at most `BATCH`, 20, in snap's variant order: the first 20, then the next 20, until you have read every variant snap measured. It reads exactly the variants you name, finding each by name, and throws if the set has no variant of a name you gave, or two. It also throws if a slice comes too close to 20kb. A call that throws returns nothing; below the template is what to do about each error. Each entry it returns carries `readAt`, the time Figma read it, and a `checksum` it computed in Figma over that entry, the set's id and the slug, so write the entries into the readback file exactly as returned: see below the templates.
 
    Each call returns `total`, the number of variants in the set. If the slices add up to fewer, the set holds variants snap never measured — one an earlier push built for a value the code has since dropped, say. `verify` cannot see those, so list the set's names as the second template below does, find them, and report them.
 
@@ -433,7 +433,7 @@ use_figma({
     // each call names the variants it reads: at most BATCH, in snap's variant
     // order — the first BATCH, then the next, until every variant is read.
     const SET_ID = '12:34'; // the id step 5 returned
-    const BATCH = 25;
+    const BATCH = 20;
 
     // The snap slug for each Figma variant this call reads, keyed by the name
     // step 5 gave it: this slice's variants only, not the whole set's.
@@ -461,22 +461,24 @@ use_figma({
       // ... one entry per variant in this slice
     };
 
-    // Each entry is returned with a checksum computed here, in Figma, over
-    // exactly what this call returns, slug included. verify recomputes it and
-    // reports any entry edited, or composed from snap's values, after this
-    // call returned it, so write the entries into the readback file exactly
-    // as returned. canon is JSON with every object's keys sorted; the
-    // checksum is 32-bit FNV-1a over its char codes. Leave both as they are:
-    // verify computes the same, character for character.
+    // Each entry is returned with readAt, the time Figma read it, and a
+    // checksum computed here, in Figma, over exactly what this call returns,
+    // under the set's id and the slug. verify recomputes it and reports any
+    // entry edited, composed from snap's values, or copied onto another
+    // variant or component after this call returned it, and any read before
+    // the snap, so write the entries into the readback file exactly as
+    // returned. canon is JSON with every object's keys sorted; the checksum
+    // is 32-bit FNV-1a over its char codes. Leave both as they are: verify
+    // computes the same, character for character.
     const canon = (v) => (Array.isArray(v) ? '[' + v.map(canon).join(',') + ']'
       : v !== null && typeof v === 'object'
         ? '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}'
         : JSON.stringify(v));
-    const seal = (slug, fields) => {
+    const seal = (setId, slug, fields) => {
       // Through JSON first, as use_figma returns it: a field that is
       // undefined, or figma.mixed, drops out here as it does there.
-      const entry = JSON.parse(JSON.stringify(fields));
-      const text = canon({ [slug]: entry });
+      const entry = JSON.parse(JSON.stringify(Object.assign({}, fields, { readAt: new Date().toISOString() })));
+      const text = canon({ [setId]: { [slug]: entry } });
       let hash = 0x811c9dc5;
       for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
       entry.checksum = 'fnv1a:' + hash.toString(16).padStart(8, '0');
@@ -556,7 +558,10 @@ use_figma({
         return WEIGHTS[key] != null ? WEIGHTS[key] : 400;
       };
       const slug = slugFor(child);
-      readback[slug] = seal(slug, {
+      // Every field but gap and the text child's three comes back on every
+      // variant, null where Figma has nothing to report: verify reports an
+      // entry without one as incomplete and scores none of it. Leave them all.
+      readback[slug] = seal(componentSet.id, slug, {
         // Set from how THIS variant's values were obtained — do not leave the
         // passing value in place. 'measured' only if it came from step 3's snap
         // output; 'inferred' if you fell back to reading source. Declare
@@ -602,7 +607,7 @@ use_figma({
     }
     return result;
   `,
-  description: "Read back variants 1-25 of the Button component set",
+  description: "Read back variants 1-20 of the Button component set",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
@@ -650,7 +655,7 @@ use_figma({
 })
 ```
 
-   Write every slice's `readback` entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by the component title and the snap variant slug, with the set's id as `nodeId`. Copy each entry whole, its `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null`, and no field added that the entry lacks. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. The file's layout is yours, since indentation and key order do not change a checksum, but its values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match as an unverified readback, scores nothing in it, and fails `--strict`.
+   Write every slice's `readback` entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by the component title and the snap variant slug, with the set's id, the `id` the calls returned, as `nodeId`, since each entry's checksum is sealed under it. Copy each entry whole, its `readAt` and `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null`, and no field added that the entry lacks or dropped that it has. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned, nor one from an earlier run. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. The file's layout is yours, since indentation and key order do not change a checksum, but its values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match, that lacks a field the template always returns, or whose `readAt` is before the snap, as an unverified readback, scores nothing in it, and fails `--strict`.
 
 ```json
 {
@@ -662,10 +667,12 @@ use_figma({
       "variants": {
         "variant-primary--size-sm--disabled-false": {
           "source": "measured",
-          "backgroundColor": "#2563eb",
+          "backgroundColor": "#2563eb", "color": "#ffffff", "borderRadiusUniform": 3,
           "padding": { "top": 4, "right": 8, "bottom": 4, "left": 8 },
-          "borderRadiusUniform": 3, "fontSize": 12,
-          "checksum": "fnv1a:2c51581d"
+          "borderUniform": null, "fontSize": 12, "fontWeight": 600, "fontFamily": "Inter",
+          "gap": { "row": 6, "column": 6 }, "opacity": 1, "width": 64, "height": 24,
+          "readAt": "2026-10-01T22:19:04.123Z",
+          "checksum": "fnv1a:e14125de"
         }
       }
     }
@@ -673,7 +680,7 @@ use_figma({
 }
 ```
 
-   **`source` is required on every variant**, and the template sets it from `SOURCE_BY_SLUG`: `"measured"` when the values came from `snap`, `"inferred"` when you fell back to reading source in step 3. Omitting it is not neutral: `verify` reports it as `unrecorded` and `--strict-measured` fails on it, because a run that cannot distinguish measured from guessed is decorative. To correct one, correct the table and read the slice again: the checksum covers `source` too, so an entry whose `source` was changed in the file is an unverified readback.
+   **`source` is required on every variant**, and the template sets it from `SOURCE_BY_SLUG`: `"measured"` when the values came from `snap`, `"inferred"` when you fell back to reading source in step 3. Omitting it is not neutral: `verify` reports the entry as incomplete, since the template always returns it, and its provenance as `unrecorded`, and `--strict` and `--strict-measured` both fail on it, because a run that cannot distinguish measured from guessed is decorative. To correct one, correct the table and read the slice again: the checksum covers `source` too, so an entry whose `source` was changed in the file is an unverified readback.
 
    Then:
 
@@ -683,7 +690,7 @@ npx storysync verify --strict-age
 
    This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement.
 
-   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Three things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match is not what the readback returned — read that slice again and write its entries exactly as returned, never editing the file to make it pass; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
+   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match is not what the readback returned — read that slice again and write its entries exactly as returned, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
 7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, the variants with a transparent border, and any failures or caps. For each variant whose transparent border was built as an `OUTSIDE` stroke (a `CENTER` one leaves half the ring unfilled, an `INSIDE` one on a fixed-size frame none), say that Figma shows that transparent border as an unfilled ring: the browser draws the background under a transparent border, but Figma's fill stops where the `OUTSIDE` stroke begins, and that stroke's paint draws nothing. If the user would rather it look filled, they can choose a stroke tinted the background's colour instead, which `verify` will then score as a border colour the code does not have.
 

@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
 import type { Client } from "../setup.js";
-import { COMPARABLE_PROPERTIES, readbackChecksum } from "../verify.js";
+import { COMPARABLE_PROPERTIES, READBACK_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
+import type { ReadbackFile } from "../verify.js";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "storysync-setup-"));
@@ -169,7 +170,7 @@ test("the Cursor rule asks for every readback property the Claude template retur
     const claude = readFileSync(join(project, ".claude", "skills", "storysync", "SKILL.md"), "utf8");
     const cursor = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
 
-    const template = /readback\[slug\] = seal\(slug, \{([\s\S]*?)\n\s*\}\);/.exec(claude);
+    const template = /readback\[slug\] = seal\(componentSet\.id, slug, \{([\s\S]*?)\n\s*\}\);/.exec(claude);
     assert.ok(template, "Claude skill has no readback template");
     // Top-level keys only: padding's own fields sit on a deeper continuation line.
     const indent = /^( *)source:/m.exec(template[1])?.[1] ?? "";
@@ -184,8 +185,9 @@ test("the Cursor rule asks for every readback property the Claude template retur
       assert.ok(readbackStep[1].includes(`\`${key}\``), `Cursor rule's readback never asks for ${key}`);
     }
     // And the checksum the template seals each entry with.
-    assert.ok(readbackStep[1].includes("`checksum`") && readbackStep[1].includes("seal(slug, fields)"),
-      "Cursor rule's readback never seals an entry with its checksum");
+    assert.ok(readbackStep[1].includes("`checksum`") && readbackStep[1].includes("`readAt`")
+      && readbackStep[1].includes("seal(componentSet.id, slug, fields)"),
+      "Cursor rule's readback never seals an entry, under its set's id, with its readAt and checksum");
 
     // And it writes the file in the shape verify reads.
     const example = /figma-readback\.json`[^\n]*\n+```json\n([\s\S]*?)\n```/.exec(cursor);
@@ -701,11 +703,13 @@ test("setup: the Codex skill carries the same procedure as the Claude skill", ()
   }
 });
 
+type Seal = (setId: string, slug: string, fields: object) => Record<string, unknown>;
+
 /** The canon and seal functions an instruction file gives the agent, run as written. */
-function sealFrom(text: string, path: string): (slug: string, fields: object) => Record<string, unknown> {
-  const code = /const canon = [\s\S]*?const seal = \(slug, fields\) => \{[\s\S]*?\n\s*return entry;\n\s*\};/.exec(text);
+function sealFrom(text: string, path: string): Seal {
+  const code = /const canon = [\s\S]*?const seal = \(setId, slug, fields\) => \{[\s\S]*?\n\s*return entry;\n\s*\};/.exec(text);
   assert.ok(code, `${path} gives no canon and seal to checksum a readback entry with`);
-  return new Function(`${code[0]}\nreturn seal;`)() as (slug: string, fields: object) => Record<string, unknown>;
+  return new Function(`${code[0]}\nreturn seal;`)() as Seal;
 }
 
 test("every readback's checksum code computes what verify recomputes", () => {
@@ -738,10 +742,17 @@ test("every readback's checksum code computes what verify recomputes", () => {
     for (const path of files) {
       const seal = sealFrom(readFileSync(join(project, path), "utf8"), path);
       for (const [slug, fields] of entries) {
-        const entry = seal(slug, fields);
+        const before = Date.now();
+        const entry = seal("12:34", slug, fields);
         // What reaches the file is the call's JSON, read back.
         const written = JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
-        assert.equal(written.checksum, readbackChecksum(slug, written), `${path}: ${slug}`);
+        assert.equal(written.checksum, readbackChecksum("12:34", slug, written), `${path}: ${slug}`);
+        // Sealed with the time it was read, as an ISO 8601 time from the clock it ran on.
+        const readAt = Date.parse(String(written.readAt));
+        assert.ok(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(String(written.readAt)) && readAt >= before && readAt <= Date.now(),
+          `${path}: ${slug} was read at ${String(written.readAt)}`);
+        // And under the set's id: the same entry under another set's is another checksum.
+        assert.notEqual(written.checksum, readbackChecksum("56:78", slug, written), `${path}: ${slug} is not sealed under its set's id`);
       }
     }
   } finally {
@@ -749,7 +760,7 @@ test("every readback's checksum code computes what verify recomputes", () => {
   }
 });
 
-test("every readback example's checksum is the one verify recomputes", () => {
+test("every readback example is one verify accepts: sealed under its set's id, complete and with a readAt", () => {
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -764,10 +775,12 @@ test("every readback example's checksum is the one verify recomputes", () => {
       const text = readFileSync(join(project, path), "utf8");
       const example = /figma-readback\.json`[^\n]*\n+```json\n([\s\S]*?)\n```/.exec(text);
       assert.ok(example, `${path} shows no figma-readback.json`);
-      const file = JSON.parse(example[1]) as { components: Record<string, { variants: Record<string, Record<string, unknown>> }> };
-      for (const { variants } of Object.values(file.components)) {
+      const file = JSON.parse(example[1]) as ReadbackFile;
+      assert.deepEqual(checkReadback(file), [], `${path}'s example is not one verify would accept`);
+      for (const { nodeId, variants } of Object.values(file.components)) {
         for (const [slug, entry] of Object.entries(variants)) {
-          assert.equal(entry.checksum, readbackChecksum(slug, entry), `${path}'s example ${slug} carries a checksum verify would not accept`);
+          assert.equal(entry.checksum, readbackChecksum(String(nodeId), slug, entry), `${path}'s example ${slug} carries a checksum verify would not accept`);
+          assert.ok(typeof entry.readAt === "string", `${path}'s example ${slug} has no readAt`);
         }
       }
     }
@@ -801,6 +814,41 @@ test("every push instruction writes the readback exactly as returned, and says v
       assert.match(line, /[Nn]ever fill in or recompute a value, from snap/, `${path} never forbids filling a value in from snap`);
       assert.match(line, /read fewer variants per call[^\n]*rather than summarising/, `${path} lets a long response be summarised`);
       assert.match(line, /`verify`[^\n]*checksum is missing or (?:does not|doesn't) match[^\n]*`--strict`/, `${path} never says verify flags a checksum that doesn't match`);
+      assert.match(line, /`readAt` and `checksum` included/, `${path} never says to copy each entry's readAt`);
+      assert.match(line, /`verify`[^\n]*lacks a field[^\n]*before the snap[^\n]*`--strict`/, `${path} never says verify flags an entry cut down or read before the snap`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("verify requires exactly the fields the Claude template returns on every variant", () => {
+  // A template cut down to { source, width, height } still sealed what it
+  // returned, and scored 100% on every strict flag. verify now requires what
+  // the template always returns, so the two lists have to agree: a field the
+  // template always returns but verify does not require could be cut, and one
+  // verify requires that the template leaves out would fail every honest run.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    const claude = readFileSync(join(project, ".claude", "skills", "storysync", "SKILL.md"), "utf8");
+    const template = /readback\[slug\] = seal\(componentSet\.id, slug, \{([\s\S]*?)\n\s*\}\);/.exec(claude);
+    assert.ok(template, "Claude skill has no readback template");
+    const body = template[1].replace(/\/\/[^\n]*/g, "");
+    const indent = /^( *)source:/m.exec(body)?.[1] ?? "";
+    // Each top-level field with its value, up to the next one.
+    const fields = [...body.matchAll(new RegExp(`^${indent}(\\w+):([\\s\\S]*?)(?=^${indent}\\w+:|$(?![\\s\\S]))`, "gm"))]
+      .map(([, key, value]) => ({ key, conditional: /\bundefined\b/.test(value) }));
+    assert.ok(fields.length > 10, `read ${fields.length} fields from the template`);
+    const always = fields.filter((f) => !f.conditional).map((f) => f.key);
+    const sometimes = fields.filter((f) => f.conditional).map((f) => f.key);
+    assert.deepEqual([...always].sort(), [...READBACK_FIELDS].sort(), "verify's required fields are not the ones the template always returns");
+    // The ones it may leave out are those verify lets an entry leave out:
+    // the text child's three and gap, and no other.
+    assert.deepEqual([...sometimes].sort(), ["fontFamily", "fontSize", "fontWeight", "gap"]);
+    // The three text fields share one condition, so fontWeight comes with either other.
+    for (const key of ["fontSize", "fontWeight", "fontFamily"]) {
+      assert.match(template[1], new RegExp(`\\n\\s*${key}: text \\? [^\\n]* : undefined,`), `${key} is not read off the text child alone`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });

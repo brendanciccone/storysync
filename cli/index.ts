@@ -11,7 +11,7 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
-import type { ReadbackFile } from "./verify.js";
+import type { ReadbackFile, ReadbackIssue, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -101,6 +101,27 @@ program.name("storysync").description("Sync design tokens and Storybook componen
 function reportError(err: unknown, json: boolean): void {
   if (json) console.log(JSON.stringify({ error: String(err) }));
   else console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+}
+
+/**
+ * Why verify left a readback entry unscored, as the rest of a line naming it.
+ * Says what is wrong and how it came about, never what would have passed.
+ */
+function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string {
+  switch (issue.problem) {
+    case "no_checksum":
+      return "has no checksum, so it is not as the readback template returned it";
+    case "no_node_id":
+      return "has no nodeId on its component, the set's id its checksum is sealed under, so its checksum cannot be checked";
+    case "checksum_mismatch":
+      return "does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it";
+    case "incomplete":
+      return `is incomplete: it lacks ${(issue.missing ?? []).join(", ")}, which the readback template always returns, so the template was cut down`;
+    case "stale":
+      if (issue.readAt == null) return "is stale: it has no readAt, so when Figma read it is unknown";
+      if (!Number.isFinite(Date.parse(issue.readAt))) return `is stale: its readAt (${issue.readAt}) is not a time, so when Figma read it is unknown`;
+      return `is stale: Figma read it at ${issue.readAt}, before the snap was measured${snapAge.known ? ` at ${snapAge.measuredAt}` : ""}, so it is from an earlier run`;
+  }
 }
 
 /** Parses --max-combinations, exiting with a clear message on anything but a positive integer. */
@@ -307,7 +328,7 @@ program
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, or if the snap recorded a component failure")
+  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or if the snap recorded a component failure")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
   .action(async (opts) => {
@@ -328,8 +349,10 @@ program
       const snapPath = opts.snap as string;
       const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
       const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
-      const result = verify(snap, readback, tolerance);
-      result.snapAge = readSnapAge(snapPath, maxAgeMs);
+      // The snap's time first: an entry Figma read before it is stale.
+      const snapAge = readSnapAge(snapPath, maxAgeMs);
+      const result = verify(snap, readback, tolerance, { measuredAt: snapAge.known ? snapAge.measuredAt : undefined });
+      result.snapAge = snapAge;
 
       if (json) {
         console.log(JSON.stringify(result));
@@ -353,18 +376,16 @@ program
           console.log(`  ${chalk.yellow("!")} ${warning}`);
         }
 
-        // Before the drift: an entry that is not what Figma returned says
-        // nothing about Figma, so none of it was scored, and the fix is to read
-        // it again rather than to change anything in Figma.
+        // Before the drift: an entry that is not what Figma returned, or not
+        // all of it, or not now, says nothing about Figma as it is, so none of
+        // it was scored, and the fix is to read it again rather than to change
+        // anything in Figma.
         const readbackIssues = result.readbackIssues ?? [];
         for (const issue of readbackIssues) {
-          const why = issue.problem === "no_checksum"
-            ? "has no checksum, so it is not as the readback template returned it"
-            : "does not match its checksum, so it was edited or composed after Figma returned it";
-          console.log(`  ${chalk.red("!")} ${issue.component} ${chalk.dim(issue.slug)} readback entry ${why} — nothing in it was scored`);
+          console.log(`  ${chalk.red("!")} ${issue.component} ${chalk.dim(issue.slug)} readback entry ${readbackIssueReason(issue, snapAge)} — nothing in it was scored`);
         }
         if (readbackIssues.length > 0) {
-          console.log(chalk.dim("      Read these variants back again with the skill's readback template, and write each entry into the readback exactly as returned. Never fill one in from snap."));
+          console.log(chalk.dim("      Read these variants back again, after the snap, with the skill's readback template as it is, and write each entry into the readback exactly as returned. Never fill one in from snap."));
         }
 
         for (const variant of result.variants) {
@@ -445,7 +466,9 @@ program
       const scoredNothing = result.summary.unscored > 0 || result.summary.propertiesCompared === 0;
       // A readback entry that is not what Figma returned is not a measurement
       // of Figma at all, whether it is missing its checksum or carries one
-      // that does not match: absent is not a pass, as everywhere above.
+      // that does not match; nor is one cut down, or read before the snap, a
+      // measurement of all of it now: absent is not a pass, as everywhere
+      // above. Its own term, since the variants left can still have scored.
       const hasDrift = result.summary.drifted > 0
         || result.summary.missingFromFigma > 0
         || scoredNothing

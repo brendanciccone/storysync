@@ -130,16 +130,19 @@ function referenceReadback(snapDir) {
 let readbackChecksum = null;
 
 /**
- * `file` with every entry given the checksum verify expects, as a deliberate
- * forger could, since the code is in the skill. The scoring checks perturb a
- * readback built without the template, and have to reach the scoring to test
- * it; the checksum checks test the checksum on its own.
+ * `file` with every entry given a readAt of now, unless it has one, and the
+ * checksum verify expects under its component's nodeId, as a deliberate forger
+ * could, since the code is in the skill. The scoring checks perturb a readback
+ * built without the template, and have to reach the scoring to test it; the
+ * checksum checks test the checksum on its own.
  */
 function sealed(file) {
+  const readAt = new Date().toISOString();
   for (const component of Object.values(file.components)) {
     for (const [slug, entry] of Object.entries(component.variants)) {
       const { checksum: _, ...rest } = entry;
-      component.variants[slug] = { ...rest, checksum: readbackChecksum(slug, rest) };
+      const read = { readAt, ...rest };
+      component.variants[slug] = { ...read, checksum: readbackChecksum(component.nodeId, slug, read) };
     }
   }
   return file;
@@ -418,12 +421,33 @@ function loadSkillReadback(mutate = null) {
       .replace(table("SOURCE_BY_SLUG"), () => `const SOURCE_BY_SLUG = ${jsTable(sourceBySlug)};`);
     return guarded ? body : liftGuard(body);
   };
+  // `clock`, the time in ms Figma's Date gives the call, for a readback read
+  // at another time: the template's own Date is shadowed with one fixed there.
   const run = async (componentSet, slugByName, sourceBySlug, opts) => {
     const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
-    return new AsyncFunction("figma", code(componentSet.id, slugByName, sourceBySlug, opts))(figma);
+    return new AsyncFunction("figma", "Date", code(componentSet.id, slugByName, sourceBySlug, opts))(figma, clockAt(opts?.clock));
   };
   const read = async (...args) => JSON.parse(await run(...args));
   return { batch, code, run, read };
+}
+
+/** Date, or with `ms` given, a Date whose current time is fixed at `ms`. */
+function clockAt(ms) {
+  if (ms == null) return Date;
+  return class extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [ms]));
+    }
+
+    static now() {
+      return ms;
+    }
+  };
+}
+
+/** `readback`, a template from loadSkillReadback, with every call it makes reading at `ms`. */
+function readingAt(readback, ms) {
+  return { ...readback, read: (set, slugs, sources, opts) => readback.read(set, slugs, sources, { ...opts, clock: ms }) };
 }
 
 /**
@@ -1258,18 +1282,45 @@ function relaid(value, indent = "") {
 
 /** What verify flagged, for a message. */
 function describeIssues(issues) {
-  return issues.length ? issues.slice(0, 3).map((i) => `${i.slug} (${i.problem})`).join(", ") + (issues.length > 3 ? ", …" : "") : "nothing";
+  return issues.length ? issues.slice(0, 3).map((i) => `${i.component} ${i.slug} (${i.problem})`).join(", ") + (issues.length > 3 ? ", …" : "") : "nothing";
+}
+
+/**
+ * Throws unless verify flagged every entry of `file` with `problem` and
+ * nothing else, scored none of it, failed --strict, and never printed "Figma
+ * matches", on the readback written to `name`. Returns how many entries.
+ */
+function assertAllFlagged(snapDir, file, name, problem, label, { bin } = {}) {
+  const path = join(WORK, name);
+  writeJson(path, file);
+  const v = verifyJson(snapDir, path, [], { bin });
+  assert(v.json?.summary, `verify did not score ${label}\n${v.out.trim()}`);
+  const entries = Object.values(file.components).reduce((n, c) => n + Object.keys(c.variants).length, 0);
+  const issues = v.json.readbackIssues ?? [];
+  const flagged = issues.filter((i) => i.problem === problem);
+  const { summary } = v.json;
+  assert(flagged.length === entries && issues.length === entries && summary.unverifiedReadback === summary.variants,
+    `${label}: ${flagged.length} of ${entries} entries flagged ${problem}, ${issues.length} issues in all (${describeIssues(issues)}), ` +
+    `${summary.unverifiedReadback} of ${summary.variants} variants unverified`);
+  assert(summary.propertiesCompared === 0 && v.json.fidelity === null,
+    `${label}: ${summary.propertiesMatched} of ${summary.propertiesCompared} properties scored as matching, fidelity ${v.json.fidelity}`);
+  assert(exitOf(snapDir, path, ["--strict"], { bin }) === 1, `${label}: --strict passed`);
+  const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path], { bin }).out;
+  assert(!/Figma matches/.test(text), `${label}: verify said "Figma matches"`);
+  return entries;
 }
 
 /**
  * Throws unless the readback the template returns, written into the file as
- * the skill says, verifies with no readback issue: every entry carrying a
- * checksum the template computed, and every variant scoring 100%, written as
- * returned or laid out another way. And a variant with no text child, or one
- * Figma reports a mixed stroke weight for, has fields that drop out of what
- * the call returns: their checksums have to cover what it returns. `template`
- * and `bin` are the readback template and the CLI, the shipped ones unless
- * mutants are given.
+ * the skill says, verifies with no readback issue: every entry carrying the
+ * time Figma read it and a checksum the template computed, complete and read
+ * after the snap, and every variant scoring 100%, written as returned or laid
+ * out another way. And a variant with no text child, one Figma reports a
+ * mixed stroke weight for, and one whose text mixes fonts and sizes, have
+ * fields that drop out of what the call returns: their checksums have to
+ * cover what it returns, and verify has to accept them as complete.
+ * `template` and `bin` are the readback template and the CLI, the shipped
+ * ones unless mutants are given.
  */
 async function assertSealed(snapDir, { template = loadSkillReadback(), bin } = {}) {
   const file = await buildReadback(snapDir, { readback: template });
@@ -1277,6 +1328,7 @@ async function assertSealed(snapDir, { template = loadSkillReadback(), bin } = {
   for (const component of Object.values(file.components)) {
     for (const [slug, entry] of Object.entries(component.variants)) {
       assert(/^fnv1a:[0-9a-f]{8}$/.test(entry.checksum ?? ""), `${slug} came back with a checksum of ${JSON.stringify(entry.checksum)}`);
+      assert(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(entry.readAt ?? ""), `${slug} came back with a readAt of ${JSON.stringify(entry.readAt)}`);
       entries++;
     }
   }
@@ -1298,20 +1350,25 @@ async function assertSealed(snapDir, { template = loadSkillReadback(), bin } = {
   textless.findOne = () => null;
   const mixed = figmaNode("odd=mixed", edges["bottom-border"].styles);
   assert(mixed.strokeWeight === MIXED, "the one-sided border's strokeWeight is not figma.mixed");
+  const font = figmaNode("odd=font", edges["box-shadow"].styles);
+  Object.assign(font.findOne(() => true), { fontSize: MIXED, fontName: MIXED });
   const { readback: odd } = await template.read(
-    { id: "set:Odd", type: "COMPONENT_SET", name: "Odd", children: [textless, mixed] },
-    { "odd=textless": "odd-textless", "odd=mixed": "odd-mixed" },
-    { "odd-textless": "measured", "odd-mixed": "measured" },
+    { id: "set:Odd", type: "COMPONENT_SET", name: "Odd", children: [textless, mixed, font] },
+    { "odd=textless": "odd-textless", "odd=mixed": "odd-mixed", "odd=font": "odd-font" },
+    { "odd-textless": "measured", "odd-mixed": "measured", "odd-font": "measured" },
   );
-  assert(!("fontSize" in odd["odd-textless"]) && !("width" in (odd["odd-mixed"].borderUniform ?? {})),
-    `a variant with no text read back ${JSON.stringify(odd["odd-textless"])}, one with a mixed stroke weight ${JSON.stringify(odd["odd-mixed"])}`);
+  assert(!("fontSize" in odd["odd-textless"]) && !("width" in (odd["odd-mixed"].borderUniform ?? {}))
+    && !("fontSize" in odd["odd-font"]) && !("fontFamily" in odd["odd-font"]),
+    `a variant with no text read back ${JSON.stringify(odd["odd-textless"])}, one with a mixed stroke weight ` +
+    `${JSON.stringify(odd["odd-mixed"])}, one with mixed fonts ${JSON.stringify(odd["odd-font"])}`);
   const oddPath = join(WORK, "readback-odd.json");
   writeJson(oddPath, { version: 1, fileKey: "acceptance", components: { "Forms/Odd": { nodeId: "set:Odd", variants: odd } } });
   const v = verifyJson(snapDir, oddPath, [], { bin });
   assert(v.json?.summary, `verify did not score the odd variants\n${v.out.trim()}`);
-  assert((v.json.readbackIssues ?? []).length === 0, `a variant with no text, or a mixed stroke weight, was flagged: ${describeIssues(v.json.readbackIssues)}`);
-  return `${entries} entries, each with the template's checksum, 100% as returned and laid out with tabs, keys reversed and numbers ` +
-    `like ${(38.59).toExponential()}; a variant with no text and one with a mixed stroke weight unflagged`;
+  assert((v.json.readbackIssues ?? []).length === 0,
+    `a variant with no text, a mixed stroke weight or mixed fonts was flagged: ${describeIssues(v.json.readbackIssues)}`);
+  return `${entries} entries, each with the template's readAt and checksum, 100% as returned and laid out with tabs, keys reversed and numbers ` +
+    `like ${(38.59).toExponential()}; a variant with no text, one with a mixed stroke weight and one with mixed fonts unflagged`;
 }
 
 /**
@@ -1396,6 +1453,114 @@ async function assertEditFlagged(snapDir, { bin } = {}) {
   assert(wrong.length === 0 && v.json.fidelity === 1, `the other variants: ${wrong.map((x) => `${x.slug} ${x.status}`).join(", ") || "verified"}, fidelity ${v.json.fidelity}`);
   assert(exitOf(snapDir, path, ["--strict"], { bin }) === 1, "--strict passed");
   return `the recoloured ${slug} flagged and unscored, the other ${others.length} verified, --strict failed`;
+}
+
+/**
+ * Throws unless an entry copied onto the same slug in another component is
+ * flagged on exactly that one. Every component without variant props has the
+ * slug `default`, so two of them, Badge and Tag, measured alike, are read back
+ * from two sets: Tag's fill is magenta in Figma, so read faithfully it drifts.
+ * Its entry is then replaced with Badge's, which matches the snap: sealed
+ * under the slug alone, it would score 100%.
+ */
+async function assertCopyFlagged(snapDir, { bin } = {}) {
+  const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+  const styles = expandVariants(button)[0].styles;
+  const propless = (name) => ({
+    name, title: `Data/${name}`, category: "Data", storyId: `data-${name.toLowerCase()}--default`, variantProperties: [],
+    base: { combination: {}, slug: "default", styles },
+    variants: [{ combination: {}, slug: "default", status: "ok", delta: {} }], warnings: [], error: null,
+  });
+  const dir = join(WORK, "snap-propless");
+  mkdirSync(dir, { recursive: true });
+  cpSync(join(snapDir, "meta.json"), join(dir, "meta.json"));
+  writeJson(join(dir, "styles.json"), { ...readJson(join(snapDir, "styles.json")), components: [propless("Badge"), propless("Tag")] });
+
+  const template = loadSkillReadback();
+  const components = {};
+  for (const name of ["Badge", "Tag"]) {
+    const node = figmaNode(figmaVariantName({}), styles);
+    if (name === "Tag") node.fills = [solidPaint("#ff00ff")];
+    const componentSet = { id: `set:${name}`, type: "COMPONENT_SET", name, children: [node] };
+    const { variants } = await readSet(template, { componentSet, slugByName: { default: "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH);
+    components[`Data/${name}`] = { nodeId: componentSet.id, variants };
+  }
+  const file = { version: 1, fileKey: "acceptance", components };
+  const faithful = join(WORK, "readback-propless.json");
+  writeJson(faithful, file);
+  const before = verifyJson(dir, faithful, [], { bin }).json;
+  assert(before?.summary && (before.readbackIssues ?? []).length === 0
+    && before.variants.map((x) => `${x.component} ${x.status}`).join() === "Data/Badge verified,Data/Tag drifted",
+    `read faithfully: ${before?.variants?.map((x) => `${x.component} ${x.status}`).join(", ")}, ${describeIssues(before?.readbackIssues ?? [])} flagged`);
+
+  file.components["Data/Tag"].variants.default = { ...file.components["Data/Badge"].variants.default };
+  const path = join(WORK, "readback-propless-copied.json");
+  writeJson(path, file);
+  const v = verifyJson(dir, path, [], { bin });
+  assert(v.json?.summary, `verify did not score the copied readback\n${v.out.trim()}`);
+  const issues = v.json.readbackIssues ?? [];
+  assert(issues.length === 1 && issues[0].component === "Data/Tag" && issues[0].problem === "checksum_mismatch", `flagged ${describeIssues(issues)}`);
+  const statuses = v.json.variants.map((x) => `${x.component} ${x.status}`).join();
+  assert(statuses === "Data/Badge verified,Data/Tag unverified_readback", `after the copy: ${statuses}`);
+  assert(exitOf(dir, path, ["--strict"], { bin }) === 1, "--strict passed");
+  return "Badge's default entry copied onto Tag's flagged on Tag alone, which drifted when read faithfully; --strict failed";
+}
+
+/**
+ * The readback template's code cut down to return `{ source, width, height }`,
+ * every other field gone: still sealed, so each checksum matches what it
+ * returns.
+ */
+function cutDown(code) {
+  return code.replace(/(readback\[slug\] = seal\(componentSet\.id, slug, )\{[\s\S]*?\n\s*\}\);/,
+    (_, call) => `${call}{ source: SOURCE_BY_SLUG[slug] || 'inferred', width: child.width + edge('Left') + edge('Right'), ` +
+      "height: child.height + edge('Top') + edge('Bottom') });");
+}
+
+/** The readback template, cut down. */
+function trimmedTemplate() {
+  return loadSkillReadback(cutDown);
+}
+
+/**
+ * Throws unless a readback read with the template cut down to `{ source,
+ * width, height }` is flagged incomplete on every variant, scores nothing and
+ * fails --strict. Its checksums all match: before verify required the
+ * template's fields, it scored 100% on width and height alone, under every
+ * strict flag.
+ */
+async function assertTrimmedFlagged(snapDir, { bin } = {}) {
+  const file = await buildReadback(snapDir, { readback: trimmedTemplate() });
+  for (const component of Object.values(file.components)) {
+    for (const [slug, entry] of Object.entries(component.variants)) {
+      const keys = Object.keys(entry).sort().join();
+      assert(keys === "checksum,height,readAt,source,width", `the cut-down template returned ${keys} for ${slug}`);
+    }
+  }
+  const entries = assertAllFlagged(snapDir, file, "readback-trimmed.json", "incomplete", "the cut-down readback", { bin });
+  return `all ${entries} entries flagged incomplete with their checksums matching; nothing scored, --strict failed, no "Figma matches"`;
+}
+
+/**
+ * Throws unless a readback read an hour before the snap, one reused from an
+ * earlier run, is flagged stale on every variant, scores nothing and fails
+ * --strict; while one read two minutes before it, the clocks of Figma and
+ * this machine disagreeing by that much, verifies at 100% under --strict.
+ */
+async function assertStaleFlagged(snapDir, { bin } = {}) {
+  const measured = Date.parse(readJson(join(snapDir, "meta.json")).measuredAt);
+  const template = loadSkillReadback();
+  const old = await buildReadback(snapDir, { readback: readingAt(template, measured - 3_600_000) });
+  const entries = assertAllFlagged(snapDir, old, "readback-earlier.json", "stale", "the readback from an hour before the snap", { bin });
+
+  const skewed = await buildReadback(snapDir, { readback: readingAt(template, measured - 120_000) });
+  const path = join(WORK, "readback-skewed.json");
+  writeJson(path, skewed);
+  const v = verifyJson(snapDir, path, [], { bin });
+  assert(v.json?.summary && (v.json.readbackIssues ?? []).length === 0 && v.json.fidelity === 1,
+    `read two minutes before the snap: ${describeIssues(v.json?.readbackIssues ?? [])} flagged, fidelity ${v.json?.fidelity}`);
+  assert(exitOf(snapDir, path, ["--strict"], { bin }) === 0, "--strict failed on a readback two minutes before the snap");
+  return `all ${entries} entries read an hour before the snap flagged stale, nothing scored, --strict failed; read two minutes before it, 100%`;
 }
 
 let mutantBuilds = 0;
@@ -2184,27 +2349,49 @@ async function main() {
 
   await check("a colour edited in the readback after Figma returned it is flagged on exactly that variant", () => assertEditFlagged(snapDir));
 
-  await check("a readback checksummed another way, or a verify that skips the checksum, fails these checks", async () => {
+  await check("an entry copied onto the same slug in another component is flagged on exactly that one", () => assertCopyFlagged(snapDir));
+
+  await check("a readback read with the template cut down to source, width and height is flagged incomplete and fails --strict", () =>
+    assertTrimmedFlagged(snapDir));
+
+  await check("a readback read before the snap is flagged stale and fails --strict, allowing a couple of minutes for the clocks", () =>
+    assertStaleFlagged(snapDir));
+
+  await check("a readback sealed another way, or a verify that skips a readback check, fails these checks", async () => {
     // Each template mutant rewrites the shipped readback template, and each
     // verify mutant a copy of the built verify.js; every one has to fail the
     // checks above, which the shipped pair passes.
+    const SEALED = "const text = canon({ [setId]: { [slug]: entry } });";
+    const READ = "const entry = JSON.parse(JSON.stringify(Object.assign({}, fields, { readAt: new Date().toISOString() })));";
     const templateMutants = {
-      "leaves a field out of the checksum": (code) => code.replace("const text = canon({ [slug]: entry });",
-        "const { width: _, ...rest } = entry;\n      const text = canon({ [slug]: rest });"),
-      "checksums the entry without its slug": (code) => code.replace("canon({ [slug]: entry })", "canon(entry)"),
+      "leaves a field out of the checksum": (code) => code.replace(SEALED,
+        "const { width: _, ...rest } = entry;\n      const text = canon({ [setId]: { [slug]: rest } });"),
+      "checksums the entry without its slug": (code) => code.replace(SEALED, "const text = canon({ [setId]: entry });"),
+      "checksums the entry without its set's id": (code) => code.replace(SEALED, "const text = canon({ [slug]: entry });"),
       "keeps each object's keys in the order they were written": (code) => code.replace("Object.keys(v).sort()", "Object.keys(v)"),
-      "checksums the fields before they pass through JSON": (code) => code.replace(
-        "const entry = JSON.parse(JSON.stringify(fields));", "const entry = Object.assign({}, fields);"),
+      "checksums the fields before they pass through JSON": (code) => code.replace(READ,
+        "const entry = Object.assign({}, fields, { readAt: new Date().toISOString() });"),
+      "seals no readAt into the entry": (code) => code.replace(READ, "const entry = JSON.parse(JSON.stringify(fields));"),
+      "leaves readAt out of the checksum": (code) => code.replace(SEALED,
+        "const { readAt: _, ...rest } = entry;\n      const text = canon({ [setId]: { [slug]: rest } });"),
+      "is cut down to source, width and height": cutDown,
     };
     const verifyMutants = {
-      "ignores the checksum": (src) => src.replace("const readbackIssues = checkReadback(readback);", "const readbackIssues = [];"),
+      "ignores the checksum": (src) => src.replace("const readbackIssues = checkReadback(readback, options);", "const readbackIssues = [];"),
       "passes an entry with no checksum": (src) => src.replace('issues.push({ component, slug, problem: "no_checksum" });', ";"),
       "flags an entry but scores it anyway": (src) => src.replace("? unverifiedVerdict(component, slug, figma)",
         '? { ...verifyVariant(component, slug, measured, figma, tolerance), status: "unverified_readback" }'),
       "keeps each object's keys in the order the file wrote them": (src) => src.replace("Object.keys(record).sort()", "Object.keys(record)"),
+      "checks a checksum under the slug alone, not the set's id": (src) => src.replace(
+        "canonicalJson({ [setId]: { [slug]: JSON.parse(JSON.stringify(rest)) } })", "canonicalJson({ [slug]: JSON.parse(JSON.stringify(rest)) })"),
+      "does not require the fields the template always returns": (src) => src.replace(
+        "const missing = missingReadbackFields(fields);", "const missing = [];"),
+      "never compares readAt with the snap's time": (src) => src.replace("read < measured - READ_AT_SKEW_MS", "false"),
+      "allows no difference between the two clocks": (src) => src.replace("read < measured - READ_AT_SKEW_MS", "read < measured"),
     };
     const every = (opts) => [
       () => assertSealed(snapDir, opts), () => assertComposedFlagged(snapDir, opts), () => assertEditFlagged(snapDir, opts),
+      () => assertCopyFlagged(snapDir, opts), () => assertTrimmedFlagged(snapDir, opts), () => assertStaleFlagged(snapDir, opts),
     ];
     for (const run of every({ bin: mutantCli(null) })) await run();
     const survived = [];
@@ -2361,10 +2548,13 @@ async function main() {
     writeJson(path, sealed(hollow));
     const v = verifyJson(snapDir, path);
     assert(v.json.summary.verified === 0, `${v.json.summary.verified} variants reported verified with nothing compared`);
+    // Sealed, but lacking every field the template always returns but source.
+    const incomplete = (v.json.readbackIssues ?? []).filter((i) => i.problem === "incomplete");
+    assert(incomplete.length === v.json.summary.variants, `${incomplete.length} of ${v.json.summary.variants} variants reported incomplete`);
     for (const flag of ["--strict", "--strict-age", "--strict-measured"]) {
       assert(exitOf(snapDir, path, [flag]) === 1, `${flag} passed`);
     }
-    return `${v.json.summary.unscored ?? "?"} unscored, all strict flags fail`;
+    return `${incomplete.length} incomplete, all strict flags fail`;
   });
 
   await check("a variant missing from Figma fails --strict", () => {
@@ -2380,7 +2570,8 @@ async function main() {
 
   await check("a component in Figma that snap never measured fails --strict-measured", () => {
     const ghost = readJson(reference);
-    ghost.components["Forms/Phantom"] = { nodeId: "9:9", variants: { default: { source: "measured", fontSize: 12 } } };
+    const [entry] = Object.values(Object.values(ghost.components)[0].variants);
+    ghost.components["Forms/Phantom"] = { nodeId: "9:9", variants: { default: { ...entry } } };
     const path = join(WORK, "readback-ghost.json");
     writeJson(path, sealed(ghost));
     assert(exitOf(snapDir, path, ["--strict-measured"]) === 1, "--strict-measured passed");
