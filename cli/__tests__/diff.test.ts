@@ -158,6 +158,31 @@ test("diffTokens: a Tailwind v4 oklch token matches Figma's hex variable for it"
   for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
 });
 
+test("diffTokens: bare HSL channels, as shadcn/ui's :root writes them, match Figma's hex", () => {
+  // colorToHex can't read `0 0% 100%`, so these were compared as strings
+  // with Figma's hex, a mismatch every time.
+  const code: TokenCollection[] = [
+    {
+      category: "colors",
+      tokens: [
+        { name: "background", value: "0 0% 100%" },
+        { name: "sidebar/primary", value: "240 5.9% 10%" },
+        { name: "foreground", value: "222.2 84% 4.9%" },
+        { name: "overlay", value: "240 5.9% 10% / 0.5" },
+      ],
+    },
+  ];
+  const figma: FigmaVariable[] = [
+    { name: "background", value: "#ffffff", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "sidebar/primary", value: "#18181b", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "foreground", value: "#020817", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "overlay", value: "#18181b80", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
+  const off = [{ ...figma[0], value: "#fefefe" }];
+  assert.equal(diffTokens([{ category: "colors", tokens: [code[0].tokens[0]] }], off)[0].status, "value_mismatch");
+});
+
 test("diffTokens: an oklch token still mismatches a Figma colour one step off", () => {
   const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "red/500", value: "oklch(63.7% 0.237 25.331)" }] }];
   const figma: FigmaVariable[] = [

@@ -227,7 +227,7 @@ Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows
 
 Comments are skipped, so a commented-out key or custom property, such as an old value kept above the new one, is not a token.
 
-Colour tokens are kept as written, in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()` or `color()` in any of its spaces. A custom property whose name doesn't say it's a colour is still read as one when its value is in one of those functions. `diff` converts both sides to sRGB hex before comparing, so a `:root` token such as `--brand: oklch(63.7% 0.237 25.331)` matches a Figma variable of `#fb2c36`.
+Colour tokens are kept as written, in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()` or `color()` in any of its spaces. A custom property whose name doesn't say it's a colour is still read as one when its value is in one of those functions, or is bare HSL channels as shadcn/ui's `:root` writes them, such as `240 5.9% 10%`, which are read as the `hsl()` they're written for. `diff` converts both sides to sRGB hex before comparing, so a `:root` token such as `--brand: oklch(63.7% 0.237 25.331)` matches a Figma variable of `#fb2c36`.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 

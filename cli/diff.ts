@@ -1,6 +1,7 @@
 // Diff engine — compares code-extracted tokens and component mappings against Figma state.
 
 import type { TokenCollection, TokenCategory } from "./tokens.js";
+import { tokenColorToHex } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents } from "./storybook.js";
@@ -114,7 +115,8 @@ export function canonicalizeCompound(input: string): string {
 
 function normalizeForCompare(category: string, value: string): string {
   if (category === "colors") {
-    return colorToHex(value) ?? value.trim().toLowerCase();
+    // tokenColorToHex also reads bare HSL channels, `0 0% 100%`, as hsl().
+    return tokenColorToHex(value) ?? value.trim().toLowerCase();
   }
   if (category === "spacing" || category === "radius" || category === "typography") {
     return numericToPx(value);

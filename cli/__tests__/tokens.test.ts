@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, TOKEN_SOURCES } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, TOKEN_SOURCES } from "../tokens.js";
 import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -152,6 +152,39 @@ test("CSS: values in any CSS colour function are colours, not uncategorized", ()
     assert.equal(colors?.tokens.find((t) => t.name === "brand/p3")?.value, "color(display-p3 1 0 0)");
     assert.equal(result.warnings.filter((w) => w.startsWith("Uncategorized")).length, 0, result.warnings.join("\n"));
   } finally { cleanup(dir); }
+});
+
+test("CSS: bare HSL channels with decimals are colours, as shadcn/ui writes them", () => {
+  // Whole numbers only were read, so shadcn's sidebar colours were dropped
+  // as uncategorized.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --sidebar-background: 0 0% 98%;
+      --sidebar-primary: 240 5.9% 10%;
+      --sidebar-ring: 217.2 91.2% 59.8% / 0.5;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    const colors = result.collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => [t.name, t.value]), [
+      ["sidebar/background", "0 0% 98%"],
+      ["sidebar/primary", "240 5.9% 10%"],
+      ["sidebar/ring", "217.2 91.2% 59.8% / 0.5"],
+    ]);
+    assert.deepEqual(result.warnings, []);
+  } finally { cleanup(dir); }
+});
+
+test("tokenColorToHex: reads bare HSL channels as hsl(), and anything colorToHex reads", () => {
+  assert.equal(tokenColorToHex("0 0% 100%"), "#ffffff");
+  assert.equal(tokenColorToHex(" 240 5.9% 10% "), "#18181b");
+  assert.equal(tokenColorToHex("240 5.9% 10% / 50%"), "#18181b80");
+  assert.equal(tokenColorToHex("oklch(63.7% 0.237 25.331)"), "#fb2c36");
+  assert.equal(tokenColorToHex("#ABC"), "#aabbcc");
+  for (const value of ["var(--background)", "currentColor", "0 0 100%", "1rem", ""]) {
+    assert.equal(tokenColorToHex(value), null, value);
+  }
 });
 
 test("CSS: cycle in var() references doesn't loop forever", () => {

@@ -2,6 +2,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { colorToHex } from "./color.js";
 
 /** The token sources `--source` takes. Leaving it out, or `auto`, detects one. */
 export const TOKEN_SOURCES = ["tailwind", "css", "theme"] as const;
@@ -601,8 +602,27 @@ function isColorValue(value: string): boolean {
   const v = value.trim();
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ||
     /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v) ||
-    // Bare HSL channels: "240 5% 98%" or "0 0% 100%"
-    /^\d{1,3}\s+\d{1,3}%\s+\d{1,3}%$/.test(v);
+    BARE_HSL.test(v);
+}
+
+/**
+ * Bare HSL channels, as shadcn/ui's `:root` holds its colours for a Tailwind
+ * config's `hsl(var(--background))`: `0 0% 100%`, `240 5.9% 10%`, with an
+ * optional `/ alpha`. Whole numbers only used to be read, so shadcn's
+ * `--sidebar-primary: 240 5.9% 10%` was dropped as uncategorized.
+ */
+const BARE_HSL = /^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%(?:\s*\/\s*(?:\d+(?:\.\d+)?|\.\d+)%?)?$/;
+
+/**
+ * A colour token's value as sRGB hex, or null when it is no colour colorToHex
+ * reads: an unresolved `var()`, `currentColor` or `color-mix()`. Bare HSL
+ * channels are read as the hsl() they are written for; colorToHex alone
+ * returned null for them, so diff compared `0 0% 100%` with Figma's `#ffffff`
+ * as strings, a mismatch every time.
+ */
+export function tokenColorToHex(value: string): string | null {
+  const v = value.trim();
+  return colorToHex(BARE_HSL.test(v) ? `hsl(${v})` : v);
 }
 
 // --- Theme file extraction ---
