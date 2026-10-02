@@ -108,6 +108,13 @@ export const CAPTURED_PROPERTIES: readonly string[] = [
 
 export const TEXT_PROPERTIES: readonly string[] = ["color", "font-family", "font-size", "font-weight"];
 
+/** What snap-browser reads off a Storybook wrapper to decide whether to look past it. */
+export const WRAPPER_PROPERTIES: readonly string[] = [
+  "display", "background-color", "background-image", "box-shadow",
+  "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+  "padding-top", "padding-right", "padding-bottom", "padding-left",
+];
+
 // --- Scalar helpers ---------------------------------------------------------
 
 /**
@@ -361,6 +368,30 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
     layers.push({ offsetX, offsetY, blur, spread, color, inset });
   }
   return layers;
+}
+
+// --- Wrappers ---------------------------------------------------------------
+
+/**
+ * Whether a single-child element draws nothing of its own, so snap measures
+ * its child instead: Storybook decorators commonly wrap a story in padding-
+ * and background-free containers, and measuring one would describe the
+ * wrapper, not the component.
+ *
+ * Its background is transparent by its colour's alpha, in whatever space
+ * Chromium writes it: Tailwind v4's `bg-black/0` computes to
+ * `oklab(0 0 0 / 0)`, not `rgba(0, 0, 0, 0)`. A colour that can't be read is
+ * not taken for transparent, and nor is a background image, which is drawn
+ * whatever the colour beneath it.
+ */
+export function isPassThroughWrapper(raw: RawComputedStyles): boolean {
+  const display = (raw["display"] ?? "").trim();
+  const zero = (property: string) => parseFloat(raw[property] ?? "") === 0;
+  return (display === "block" || display === "contents") &&
+    isFullyTransparent(raw["background-color"]) &&
+    normalizeBackgroundImage(raw["background-image"]) == null &&
+    parseBoxShadow(raw["box-shadow"]).length === 0 &&
+    ["top", "right", "bottom", "left"].every((side) => zero(`border-${side}-width`) && zero(`padding-${side}`));
 }
 
 // --- normalizeStyles --------------------------------------------------------

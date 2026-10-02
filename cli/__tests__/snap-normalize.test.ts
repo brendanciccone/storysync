@@ -8,6 +8,7 @@ import {
   parseBorderSide,
   parseBoxShadow,
   isFullyTransparent,
+  isPassThroughWrapper,
   splitTopLevel,
   encodeStoryArgs,
   buildStoryUrl,
@@ -419,6 +420,48 @@ test("normalizeStyles: a Tailwind v4 component's colours, as Chromium computes t
   assert.deepEqual(styles.borderUniform, { width: 1, style: "solid", color: "#846549" });
   assert.equal(styles.boxShadow[0].color, "#0000001a");
   assert.equal(styles.text?.color, "#bf5700");
+});
+
+// --- Wrappers ---------------------------------------------------------------
+
+/** A block wrapper that draws nothing, as Chromium computes one. */
+const WRAPPER: RawComputedStyles = {
+  display: "block",
+  "background-color": "rgba(0, 0, 0, 0)",
+  "background-image": "none",
+  "box-shadow": "none",
+  ...Object.fromEntries(["top", "right", "bottom", "left"].flatMap((s) => [[`border-${s}-width`, "0px"], [`padding-${s}`, "0px"]])),
+};
+
+test("isPassThroughWrapper: a block or contents wrapper that draws nothing is looked past", () => {
+  assert.equal(isPassThroughWrapper(WRAPPER), true);
+  assert.equal(isPassThroughWrapper({ ...WRAPPER, display: "contents" }), true);
+  assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "transparent" }), true);
+});
+
+test("isPassThroughWrapper: a transparent background in any colour space is transparent", () => {
+  // Tailwind v4's bg-black/0, a color-mix in oklab, computes to this. Read as
+  // a fill, it stopped the descent and snap measured the full-width wrapper.
+  assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "oklab(0 0 0 / 0)" }), true);
+  assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "color(srgb 1 0 0 / 0)" }), true);
+  // Tailwind's empty shadow slots draw nothing either.
+  assert.equal(isPassThroughWrapper({ ...WRAPPER, "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px" }), true);
+});
+
+test("isPassThroughWrapper: a wrapper that draws anything is the component", () => {
+  for (const [property, value] of [
+    ["background-color", "oklch(0.637 0.237 25.331)"],
+    ["background-color", "oklab(0 0 0 / 0.05)"],
+    // A colour it can't read is not taken for transparent.
+    ["background-color", "device-cmyk(0 0 0 1)"],
+    ["background-image", "linear-gradient(90deg, rgb(37, 99, 235), rgb(124, 58, 237))"],
+    ["box-shadow", "rgba(0, 0, 0, 0.1) 0px 1px 2px 0px"],
+    ["border-top-width", "1px"],
+    ["padding-left", "8px"],
+    ["display", "flex"],
+  ]) {
+    assert.equal(isPassThroughWrapper({ ...WRAPPER, [property]: value }), false, `${property}: ${value}`);
+  }
 });
 
 // --- Storybook args encoding ------------------------------------------------

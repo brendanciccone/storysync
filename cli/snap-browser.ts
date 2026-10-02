@@ -6,7 +6,7 @@
 
 import { existsSync } from "node:fs";
 import type { Browser, BrowserContext, Page, ElementHandle } from "playwright-core";
-import { CAPTURED_PROPERTIES, TEXT_PROPERTIES } from "./snap-normalize.js";
+import { CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, isPassThroughWrapper } from "./snap-normalize.js";
 import type { RawComputedStyles } from "./snap-normalize.js";
 
 // --- Browser resolution -----------------------------------------------------
@@ -196,7 +196,7 @@ export async function captureStory(
     if (!handle) return { status: "element_not_found", error: `element vanished after load: ${rootSelector}`, ...empty };
 
     // Descend past layout-only wrappers so measurements describe the component.
-    const target = opts.selector ? handle : await descendToComponent(page, handle);
+    const target = opts.selector ? handle : await descendToComponent(handle);
 
     const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
     const textRaw = await readTextStyles(page, target, TEXT_PROPERTIES);
@@ -257,37 +257,27 @@ async function settle(page: Page): Promise<void> {
 /**
  * Storybook decorators commonly wrap a story in padding-free, background-free
  * containers. Measuring those would describe the wrapper, not the component, so
- * descend while the current node is a single-child pass-through element.
+ * descend while the current node is a single-child pass-through element. The
+ * decision is isPassThroughWrapper's, made here rather than in the page so it
+ * reads a background colour with the same converter as every other colour.
  */
-async function descendToComponent(
-  page: Page,
-  handle: ElementHandle<Element>,
-): Promise<ElementHandle<Element>> {
+async function descendToComponent(handle: ElementHandle<Element>): Promise<ElementHandle<Element>> {
   const MAX_DEPTH = 4;
-  const result = await page.evaluateHandle(
-    ([start, maxDepth]) => {
-      let node = start as Element;
-      for (let depth = 0; depth < (maxDepth as number); depth++) {
-        const children = Array.from(node.children);
-        if (children.length !== 1) break;
-        const cs = getComputedStyle(node);
-        // A gradient or image is drawn whatever the colour beneath it.
-        const transparent = (cs.backgroundColor === "rgba(0, 0, 0, 0)" || cs.backgroundColor === "transparent") &&
-          cs.backgroundImage === "none";
-        const noBorder = ["Top", "Right", "Bottom", "Left"]
-          .every((s) => parseFloat(cs.getPropertyValue(`border-${s.toLowerCase()}-width`)) === 0);
-        const noPadding = ["top", "right", "bottom", "left"]
-          .every((s) => parseFloat(cs.getPropertyValue(`padding-${s}`)) === 0);
-        const passThrough = cs.display === "block" || cs.display === "contents";
-        const noShadow = cs.boxShadow === "none";
-        if (!(transparent && noBorder && noPadding && passThrough && noShadow)) break;
-        node = children[0];
-      }
-      return node;
-    },
-    [handle, MAX_DEPTH] as const,
-  );
-  return (result.asElement() as ElementHandle<Element>) ?? handle;
+  let node = handle;
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    const raw = await node.evaluate((el, props) => {
+      if (el.children.length !== 1) return null;
+      const cs = getComputedStyle(el);
+      const out: Record<string, string> = {};
+      for (const p of props) out[p] = cs.getPropertyValue(p);
+      return out;
+    }, WRAPPER_PROPERTIES);
+    if (!raw || !isPassThroughWrapper(raw)) break;
+    const child = (await node.evaluateHandle((el) => el.children[0])).asElement();
+    if (!child) break;
+    node = child;
+  }
+  return node;
 }
 
 /**
