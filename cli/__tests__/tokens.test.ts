@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, TOKEN_SOURCES } from "../tokens.js";
+import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-test-"));
@@ -19,6 +20,32 @@ function makeProject(files: Record<string, string>): string {
 function cleanup(dir: string) {
   rmSync(dir, { recursive: true, force: true });
 }
+
+// --- --source ---
+
+test("parseTokenSource: takes each source there is, and nothing for detection", () => {
+  for (const source of TOKEN_SOURCES) assert.equal(parseTokenSource(source), source);
+  assert.equal(parseTokenSource(undefined), undefined);
+});
+
+test("parseTokenSource: auto detects, as leaving it out does", () => {
+  // auto is the drift-check action's token_source default, and its users
+  // are told to pass token_source on to --source for their baseline.
+  assert.equal(parseTokenSource("auto"), undefined);
+});
+
+test("parseTokenSource: an unknown source throws, naming the ones there are, rather than detecting one", () => {
+  // extractTokens has no case for one and detects a source, so it passed as
+  // a run on whatever the project had first. Matched as written, as the
+  // sources are, so AUTO is not auto.
+  for (const source of ["scss", "CSS", "AUTO", ""]) {
+    assert.throws(
+      () => parseTokenSource(source),
+      { message: `--source must be "tailwind", "css" or "theme", received "${source}". Leave it out, or pass "auto", to detect the source.` },
+      source,
+    );
+  }
+});
 
 // --- CSS extraction ---
 
@@ -99,6 +126,65 @@ test("CSS: --text-* with hex value categorized as colors", () => {
     const names = colors!.tokens.map((t) => t.name);
     assert.ok(names.includes("text/primary"), "--text-primary should be color");
   } finally { cleanup(dir); }
+});
+
+test("CSS: values in any CSS colour function are colours, not uncategorized", () => {
+  // Names that say nothing, so only the value can: oklch() always counted,
+  // and lab(), lch(), oklab(), color() and hwb() were dropped with a warning,
+  // out of reach of diff and tokens --check.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --brand: oklch(63.7% 0.237 25.331);
+      --brand-lab: lab(50 40 59.5);
+      --brand-lch: lch(50% 72 56);
+      --brand-oklab: oklab(0.6 0.1 -0.1);
+      --brand-p3: color(display-p3 1 0 0);
+      --brand-hwb: hwb(120 20% 30%);
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    const colors = result.collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => t.name).sort(), [
+      "brand", "brand/hwb", "brand/lab", "brand/lch", "brand/oklab", "brand/p3",
+    ]);
+    // Kept as written: --check compares against the source, diff converts.
+    assert.equal(colors?.tokens.find((t) => t.name === "brand/p3")?.value, "color(display-p3 1 0 0)");
+    assert.equal(result.warnings.filter((w) => w.startsWith("Uncategorized")).length, 0, result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+});
+
+test("CSS: bare HSL channels with decimals are colours, as shadcn/ui writes them", () => {
+  // Whole numbers only were read, so shadcn's sidebar colours were dropped
+  // as uncategorized.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --sidebar-background: 0 0% 98%;
+      --sidebar-primary: 240 5.9% 10%;
+      --sidebar-ring: 217.2 91.2% 59.8% / 0.5;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    const colors = result.collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => [t.name, t.value]), [
+      ["sidebar/background", "0 0% 98%"],
+      ["sidebar/primary", "240 5.9% 10%"],
+      ["sidebar/ring", "217.2 91.2% 59.8% / 0.5"],
+    ]);
+    assert.deepEqual(result.warnings, []);
+  } finally { cleanup(dir); }
+});
+
+test("tokenColorToHex: reads bare HSL channels as hsl(), and anything colorToHex reads", () => {
+  assert.equal(tokenColorToHex("0 0% 100%"), "#ffffff");
+  assert.equal(tokenColorToHex(" 240 5.9% 10% "), "#18181b");
+  assert.equal(tokenColorToHex("240 5.9% 10% / 50%"), "#18181b80");
+  assert.equal(tokenColorToHex("oklch(63.7% 0.237 25.331)"), "#fb2c36");
+  assert.equal(tokenColorToHex("#ABC"), "#aabbcc");
+  for (const value of ["var(--background)", "currentColor", "0 0 100%", "1rem", ""]) {
+    assert.equal(tokenColorToHex(value), null, value);
+  }
 });
 
 test("CSS: cycle in var() references doesn't loop forever", () => {
@@ -205,6 +291,81 @@ test("Tailwind: skips theme() and require() dynamic calls but emits warning", ()
   } finally { cleanup(dir); }
 });
 
+test("Tailwind: a commented-out key is not a token, so a baseline of the config checks clean", () => {
+  // `// primary` matched as a key: two primaries, and --check compared the
+  // first with the baseline's last, drifting on an unchanged project.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+      theme: {
+        extend: {
+          colors: {
+            // primary: "#ff0000",
+            primary: "#0000ff",
+            secondary: "#00ff00",
+          },
+        },
+      },
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "tailwind");
+    assert.deepEqual(result.collections.map((c) => c.tokens.map((t) => [t.name, t.value])), [[["primary", "#0000ff"], ["secondary", "#00ff00"]]]);
+    assert.equal(hasDrift(compareTokens(baselineOf(result), extractTokens(dir, "tailwind"))), false);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind: a commented-out block is not read in place of the real one, and strings keep their slashes", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+      content: ["./src/**/*.{js,ts}"],
+      theme: {
+        /* colors: { primary: "#111111" }, */
+        extend: {
+          colors: {
+            /* brand: "#999999", */
+            primary: "#0000ff", // the brand blue
+            secondary: "#00ff00",
+          },
+          boxShadow: { glow: "0 0 4px url('https://x.test/a')" },
+        },
+      },
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "tailwind");
+    const tokens = (category: string) => result.collections.find((c) => c.category === category)?.tokens.map((t) => [t.name, t.value]);
+    assert.deepEqual(tokens("colors"), [["primary", "#0000ff"], ["secondary", "#00ff00"]]);
+    assert.deepEqual(tokens("shadows"), [["glow", "0 0 4px url('https://x.test/a')"]]);
+  } finally { cleanup(dir); }
+});
+
+test("Theme file: a commented-out key is not a token", () => {
+  const dir = makeProject({
+    "src/theme.ts": `export const colors = {\n  // primary: "#ff0000",\n  primary: "#0000ff", /* accent: "#00ff00", */\n};\n`,
+  });
+  try {
+    const result = extractTokens(dir, "theme");
+    assert.deepEqual(result.collections.map((c) => c.tokens.map((t) => [t.name, t.value])), [[["primary", "#0000ff"]]]);
+  } finally { cleanup(dir); }
+});
+
+test("CSS: a commented-out custom property is not a token, and doesn't override the real one", () => {
+  const dir = makeProject({
+    "styles.css": `:root {
+      /* --color-old: #ff0000; */
+      --color-primary: #0000ff; /* was --color-primary: #ff0000; */
+      --font-body: "Inter /* not a comment */", sans-serif;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.value])]), [
+      ["colors", [["color/primary", "#0000ff"]]],
+      ["typography", [["font/body", `"Inter /* not a comment */", sans-serif`]]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
 // --- Tailwind + CSS var resolution (shadcn/ui pattern) ---
 
 test("Tailwind: resolves hsl(var(--name)) refs against :root in globals.css", () => {
@@ -308,4 +469,440 @@ test("Tailwind: var() with no match and no fallback stays as raw var()", () => {
     const colors = result.collections.find((c) => c.category === "colors");
     assert.equal(colors!.tokens[0].value, "hsl(var(--missing))");
   } finally { cleanup(dir); }
+});
+
+// --- Source detection ---
+
+test("detectTokenSource: finds tailwind config", () => {
+  const dir = makeProject({
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+  });
+  try {
+    const source = detectTokenSource(dir);
+    assert.equal(source?.type, "tailwind");
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: finds CSS custom properties", () => {
+  const dir = makeProject({
+    "src/styles.css": `:root { --color-primary: #3b82f6; }`,
+  });
+  try {
+    const source = detectTokenSource(dir);
+    assert.equal(source?.type, "css");
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: returns null when nothing found", () => {
+  const dir = makeProject({ "README.md": "# nothing here" });
+  try {
+    assert.equal(detectTokenSource(dir), null);
+  } finally { cleanup(dir); }
+});
+
+// --- Tailwind v4 @theme ---
+
+/** Every collection as [category, [[name, value], ...]], for one deepEqual. */
+function tokenTable(result: ReturnType<typeof extractTokens>) {
+  return result.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.value])]);
+}
+
+test("Tailwind v4: a CSS-first project's @theme is its token source, read by namespace", () => {
+  // Nothing but @theme: no config, no :root, so no token source was found.
+  const dir = makeProject({
+    "src/app.css": `@import "tailwindcss";
+
+@theme {
+  --color-brand-500: oklch(62.3% 0.214 259.815);
+  --color-card-foreground: #0a0a0a;
+  --spacing: 0.25rem;
+  --spacing-18: 4.5rem;
+  --radius-card: 0.75rem;
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 0.1);
+  --text-hero: 3.5rem;
+  --text-hero--line-height: 1.1;
+  --font-display: "Satoshi", sans-serif;
+  --font-weight-heavy: 850;
+  --leading-snug: 1.375;
+  --tracking-tightest: -0.075em;
+}`,
+  });
+  try {
+    const detected = detectTokenSource(dir);
+    assert.equal(detected?.type, "tailwind");
+    assert.equal(detected?.path, join(dir, "src/app.css"));
+    for (const result of [extractTokens(dir), extractTokens(dir, "tailwind")]) {
+      assert.equal(result.source, "tailwind");
+      assert.equal(result.sourcePath, join(dir, "src/app.css"));
+      assert.deepEqual(tokenTable(result), [
+        ["colors", [["brand/500", "oklch(62.3% 0.214 259.815)"], ["card/foreground", "#0a0a0a"]]],
+        ["spacing", [["DEFAULT", "0.25rem"], ["18", "4.5rem"]]],
+        ["typography", [
+          ["text/hero", "3.5rem"],
+          ["font/display", `"Satoshi", sans-serif`],
+          ["font/weight/heavy", "850"],
+          ["leading/snug", "1.375"],
+          ["tracking/tightest", "-0.075em"],
+        ]],
+        ["radius", [["card", "0.75rem"]]],
+        ["shadows", [["soft", "0 2px 8px rgb(0 0 0 / 0.1)"]]],
+      ]);
+      assert.equal(result.collections[0].tokens[0].hex, "#2b7fff");
+      assert.deepEqual(result.warnings, []);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind v4: var() resolves against the theme, :root and Tailwind's own theme", () => {
+  // shadcn/ui's v4 globals.css: @theme inline points at :root, and a
+  // project's theme can name Tailwind's default palette.
+  const dir = makeProject({
+    "app/globals.css": `@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --color-background: var(--background);
+  --color-primary: var(--color-blue-500);
+  --color-accent: var(--color-brand);
+  --color-brand: #3b82f6;
+  --color-link: var(--nowhere);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+}`,
+    "node_modules/tailwindcss/theme.css": `@theme default {
+  --color-blue-500: oklch(62.3% 0.214 259.815);
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+}`,
+  });
+  try {
+    // :root stays the detected source, so a project like this keeps the
+    // tokens it had; --source tailwind reads its @theme.
+    assert.equal(detectTokenSource(dir)?.type, "css");
+    const result = extractTokens(dir, "tailwind");
+    assert.deepEqual(tokenTable(result), [
+      ["colors", [
+        ["background", "oklch(1 0 0)"],
+        ["primary", "oklch(62.3% 0.214 259.815)"],
+        ["accent", "#3b82f6"],
+        ["brand", "#3b82f6"],
+        // Kept as written, as a Tailwind config's unresolved var() is.
+        ["link", "var(--nowhere)"],
+      ]],
+      ["radius", [["sm", "calc(0.625rem - 4px)"], ["lg", "0.625rem"]]],
+    ]);
+    // Tailwind's defaults resolve references but aren't the project's tokens.
+    assert.equal(result.collections.flatMap((c) => c.tokens).some((t) => t.name.includes("blue") || t.name.includes("sans")), false);
+    // --source css still reads :root alone.
+    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [["colors", [["background", "oklch(1 0 0)"]]]]);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind v4: initial removes a variable or a namespace, and nested rules and other namespaces aren't tokens", () => {
+  const dir = makeProject({
+    "src/theme.css": `@theme {
+  --color-red-500: #ef4444;
+  --color-old: #ff0000;
+  --color-old: initial;
+  --spacing-*: initial;
+  --spacing-4: 1rem;
+  --breakpoint-3xl: 120rem;
+  --text-shadow-glow: 0 0 4px #ff0000;
+  --animate-wiggle: wiggle 1s ease-in-out infinite;
+  @keyframes wiggle {
+    0%, 100% { transform: rotate(-3deg); }
+    50% { --color-not-a-token: #000; }
+  }
+}
+/* @theme { --color-commented: #123456; } */
+@theme {
+  --color-*: initial;
+  --color-brand: #3b82f6;
+}`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [
+      ["colors", [["brand", "#3b82f6"]]],
+      ["spacing", [["4", "1rem"]]],
+    ]);
+    assert.deepEqual(result.warnings, [
+      "Uncategorized: --breakpoint-3xl: 120rem",
+      "Uncategorized: --text-shadow-glow: 0 0 4px #ff0000",
+      "Uncategorized: --animate-wiggle: wiggle 1s ease-in-out infinite",
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind v4: a tailwind.config still comes first, and an @theme only in a comment isn't one", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+    "src/app.css": `@theme { --color-brand: #0000ff; }`,
+  });
+  try {
+    assert.equal(detectTokenSource(dir)?.path, join(dir, "tailwind.config.js"));
+    assert.deepEqual(tokenTable(extractTokens(dir)), [["colors", [["brand", "#ff0000"]]]]);
+  } finally { cleanup(dir); }
+
+  const commented = makeProject({ "src/app.css": `@import "tailwindcss";\n/* @theme { --color-brand: #0000ff; } */\n` });
+  try {
+    assert.equal(detectTokenSource(commented), null);
+    assert.deepEqual(extractTokens(commented, "tailwind").warnings, ["No tailwind.config or CSS @theme block found"]);
+  } finally { cleanup(commented); }
+});
+
+// --- Colour hex ---
+
+test("hex: each colour token carries its sRGB hex next to the value as written", () => {
+  // figma.util.rgb() takes only hex, rgb(), hsl() and lab(), so the push
+  // threw on an oklch() token or bare HSL channels; it sets colours from hex.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --brand: oklch(63.7% 0.237 25.331);
+      --background: 0 0% 100%;
+      --ring: oklch(63.7% 0.237 25.331 / 50%);
+      --color-text: currentColor;
+      --color-link: var(--nowhere);
+      --spacing-4: 1rem;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens]), [
+      ["colors", [
+        { name: "brand", value: "oklch(63.7% 0.237 25.331)", hex: "#fb2c36" },
+        { name: "background", value: "0 0% 100%", hex: "#ffffff" },
+        { name: "ring", value: "oklch(63.7% 0.237 25.331 / 50%)", hex: "#fb2c3680" },
+        // Nothing to convert: no hex, rather than a guess.
+        { name: "color/text", value: "currentColor" },
+        { name: "color/link", value: "var(--nowhere)" },
+      ]],
+      ["spacing", [{ name: "spacing/4", value: "1rem" }]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("hex: a Tailwind colour resolved from :root carries the hex of what it resolved to", () => {
+  const dir = makeProject({
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { background: "hsl(var(--background))", brand: { 500: "#3B82F6" } } } } }`,
+    "app/globals.css": `:root { --background: 222.2 84% 4.9%; }`,
+  });
+  try {
+    const colors = extractTokens(dir).collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => [t.name, t.value, t.hex]), [
+      ["background", "hsl(222.2 84% 4.9%)", "#020817"],
+      ["brand/500", "#3B82F6", "#3b82f6"],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("hex: --check compares the value, so a baseline written before hex checks clean", () => {
+  const dir = makeProject({ "styles.css": `:root { --brand: oklch(63.7% 0.237 25.331); }` });
+  try {
+    const current = extractTokens(dir);
+    assert.equal(current.collections[0].tokens[0].hex, "#fb2c36");
+    const old = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map(({ name, value }) => ({ name, value })) })) });
+    assert.equal(hasDrift(compareTokens(old, current)), false);
+    // And a hex that differs, as a later colour conversion fix might make it, is not drift.
+    const shifted = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map((t) => ({ ...t, hex: "#fb2c37" })) })) });
+    assert.equal(hasDrift(compareTokens(shifted, current)), false);
+  } finally { cleanup(dir); }
+});
+
+// --- Drift detection ---
+
+const FIXED_TIMESTAMP = "2026-01-01T00:00:00.000Z";
+
+test("drift: detects added and removed tokens", () => {
+  const baseline: TokenBaseline = {
+    version: 1,
+    source: "tailwind",
+    sourcePath: "/fake",
+    collections: [{ category: "colors", tokens: [{ name: "old", value: "#000" }] }],
+    generatedAt: FIXED_TIMESTAMP,
+  };
+  const current = {
+    source: "tailwind" as const,
+    sourcePath: "/fake",
+    collections: [{ category: "colors" as const, tokens: [{ name: "new", value: "#fff" }] }],
+    warnings: [],
+  };
+  const drift = compareTokens(baseline, current);
+  assert.ok(hasDrift(drift));
+  assert.ok(drift.added.some((a) => a.tokens.some((t) => t.name === "new")));
+  assert.ok(drift.removed.some((r) => r.tokens.some((t) => t.name === "old")));
+});
+
+test("drift: detects changed values", () => {
+  const baseline: TokenBaseline = {
+    version: 1,
+    source: "css",
+    sourcePath: "/fake",
+    collections: [{ category: "colors", tokens: [{ name: "primary", value: "#000" }] }],
+    generatedAt: FIXED_TIMESTAMP,
+  };
+  const current = {
+    source: "css" as const,
+    sourcePath: "/fake",
+    collections: [{ category: "colors" as const, tokens: [{ name: "primary", value: "#fff" }] }],
+    warnings: [],
+  };
+  const drift = compareTokens(baseline, current);
+  assert.ok(hasDrift(drift));
+  assert.equal(drift.changed.length, 1);
+  assert.equal(drift.changed[0].from, "#000");
+  assert.equal(drift.changed[0].to, "#fff");
+});
+
+test("drift: identical tokens report no drift", () => {
+  const collections = [{ category: "colors" as const, tokens: [{ name: "primary", value: "#000" }] }];
+  const baseline: TokenBaseline = {
+    version: 1,
+    source: "css",
+    sourcePath: "/fake",
+    collections,
+    generatedAt: FIXED_TIMESTAMP,
+  };
+  const drift = compareTokens(baseline, {
+    source: "css" as const, sourcePath: "/fake", collections, warnings: [],
+  });
+  assert.equal(hasDrift(drift), false);
+});
+
+/** A baseline as `tokens --json` would write it for this extraction. */
+function baselineOf(result: ReturnType<typeof extractTokens>): TokenBaseline {
+  return { version: 1, source: result.source, sourcePath: result.sourcePath, collections: result.collections, generatedAt: FIXED_TIMESTAMP };
+}
+
+test("drift: a category a theme file splits across exports is compared whole", () => {
+  // fontSizes and fontWeights are both typography collections. Keyed by
+  // category, only the last was compared: a changed font size passed, and
+  // dropping fontWeights reported the unchanged sizes as added.
+  const theme = (sm: string, weights: boolean) =>
+    `export const colors = { primary: "#0000ff" };\n` +
+    `export const fontSizes = { sm: "${sm}", md: "16px" };\n` +
+    (weights ? `export const fontWeights = { regular: "400", bold: "700" };\n` : "");
+  const dir = makeProject({ "src/theme.ts": theme("14px", true) });
+  try {
+    const baseline = baselineOf(extractTokens(dir));
+    assert.equal(baseline.collections.filter((c) => c.category === "typography").length, 2);
+
+    writeFileSync(join(dir, "src/theme.ts"), theme("99px", true));
+    assert.deepEqual(compareTokens(baseline, extractTokens(dir)), {
+      added: [],
+      removed: [],
+      changed: [{ category: "typography", token: "sm", from: "14px", to: "99px" }],
+    });
+
+    writeFileSync(join(dir, "src/theme.ts"), theme("14px", false));
+    const drift = compareTokens(baseline, extractTokens(dir));
+    assert.deepEqual(drift.added, []);
+    assert.deepEqual(drift.changed, []);
+    assert.deepEqual(drift.removed.map((r) => r.tokens.map((t) => t.name)), [["regular", "bold"]]);
+  } finally { cleanup(dir); }
+});
+
+test("drift: a name listed twice compares once, the last of it winning on both sides", () => {
+  // Every current entry was compared with the baseline's last, so a baseline
+  // taken from the same extraction reported drift, and no new one could fix it.
+  const collections = [{ category: "colors" as const, tokens: [{ name: "primary", value: "#ff0000" }, { name: "primary", value: "#0000ff" }] }];
+  const current = { source: "tailwind" as const, sourcePath: "/fake", collections, warnings: [] };
+  assert.equal(hasDrift(compareTokens(baselineOf(current), current)), false);
+  const once = { ...current, collections: [{ category: "colors" as const, tokens: [{ name: "primary", value: "#0000ff" }] }] };
+  assert.equal(hasDrift(compareTokens(baselineOf(current), once)), false);
+});
+
+// --- Baseline files ---
+
+test("readTokenBaseline: returns null for a missing file, for the caller to report", () => {
+  const dir = makeProject({});
+  try {
+    assert.equal(readTokenBaseline(join(dir, "nope.json")), null);
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: reads the output of tokens --json", () => {
+  const dir = makeProject({
+    "baseline.json": JSON.stringify({ source: "css", sourcePath: "tokens.css", collections: [{ category: "colors", tokens: [] }], warnings: [], summary: {} }),
+  });
+  try {
+    assert.equal(readTokenBaseline(join(dir, "baseline.json"))?.collections[0].category, "colors");
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: rejects JSON that is not a baseline, such as a saved passing --check", () => {
+  const dir = makeProject({ "check.json": `{"drift":false}`, "broken.json": "{" });
+  try {
+    assert.throws(() => readTokenBaseline(join(dir, "check.json")), /has no "collections", so it is not a baseline/);
+    assert.throws(() => readTokenBaseline(join(dir, "broken.json")), /is not valid JSON/);
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: rejects collections and tokens that are not what tokens --json writes", () => {
+  const dir = makeProject({
+    "empty-collection.json": `{"collections":[{}]}`,
+    "no-tokens.json": `{"collections":[{"category":"colors"}]}`,
+    "no-category.json": `{"collections":[{"tokens":[]}]}`,
+    "null-collection.json": `{"collections":[null]}`,
+    "unnamed-token.json": `{"collections":[{"category":"colors","tokens":[{"value":"#fff"}]}]}`,
+    "numeric-value.json": `{"collections":[{"category":"spacing","tokens":[{"name":"4","value":4}]}]}`,
+    "null-token.json": `{"collections":[{"category":"colors","tokens":[null]}]}`,
+  });
+  try {
+    for (const name of ["empty-collection", "no-tokens", "no-category", "null-collection"]) {
+      assert.throws(() => readTokenBaseline(join(dir, `${name}.json`)), /has a collection without a "category" and a "tokens" list, so it is not a baseline$/, name);
+    }
+    assert.throws(() => readTokenBaseline(join(dir, "unnamed-token.json")), /has a colors token without a "name" and a "value", so it is not a baseline$/);
+    assert.throws(() => readTokenBaseline(join(dir, "numeric-value.json")), /has a spacing token without a "name" and a "value"/);
+    assert.throws(() => readTokenBaseline(join(dir, "null-token.json")), /has a colors token without/);
+  } finally { cleanup(dir); }
+});
+
+test("readTokenBaseline: an empty collections list is a baseline", () => {
+  const dir = makeProject({ "empty.json": `{"collections":[]}` });
+  try {
+    assert.deepEqual(readTokenBaseline(join(dir, "empty.json"))?.collections, []);
+  } finally { cleanup(dir); }
+});
+
+test("baselineCommand: creates the directory the redirect writes into", () => {
+  assert.equal(
+    baselineCommand(".storysync/tokens-baseline.json"),
+    "mkdir -p -- .storysync && storysync tokens --json > .storysync/tokens-baseline.json",
+  );
+  assert.equal(baselineCommand("baseline.json"), "storysync tokens --json > baseline.json");
+});
+
+test("baselineCommand: repeats --project and --source so the baseline matches what --check extracts", () => {
+  assert.equal(
+    baselineCommand("b.json", { project: "packages/ui", source: "css" }),
+    "storysync tokens --project packages/ui --source css --json > b.json",
+  );
+  assert.equal(baselineCommand("b.json", { project: "." }), "storysync tokens --json > b.json");
+});
+
+test("baselineCommand: ends mkdir's options, so a directory starting with a dash is made, not read as one", () => {
+  assert.equal(
+    baselineCommand("-p/tokens.json"),
+    "mkdir -p -- -p && storysync tokens --json > -p/tokens.json",
+  );
+  assert.equal(
+    baselineCommand("--help me/tokens.json"),
+    "mkdir -p -- '--help me' && storysync tokens --json > '--help me/tokens.json'",
+  );
+});
+
+test("baselineCommand: quotes paths the shell would split", () => {
+  assert.equal(
+    baselineCommand("my tokens/base's.json"),
+    `mkdir -p -- 'my tokens' && storysync tokens --json > 'my tokens/base'\\''s.json'`,
+  );
 });

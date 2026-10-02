@@ -1,0 +1,232 @@
+name: Release
+
+# Pushing a version tag stages that version on npm and creates its GitHub
+# Release. Tag a commit on main whose package.json already carries the version:
+#
+#   git tag v0.3.0 && git push origin v0.3.0
+#
+# The version goes live on npm only when a maintainer approves it with 2FA
+# (npmjs.com, account menu, Staged Packages). So a leaked GitHub credential can
+# at most stage a version, never ship one.
+#
+# npm authenticates this workflow through trusted publishing (OIDC), so there
+# is no npm token secret. The trusted publisher on npmjs.com must name this
+# file, `release.yml`, exactly. See CONTRIBUTING.md, "Releasing".
+#
+# Running it by hand (Actions → Release → Run workflow) is a dry run: CI, the
+# build and the tests run, and npm exchanges the OIDC token, but nothing is
+# uploaded and no release is created.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+permissions: {}
+
+# One release at a time. Later tags, dry runs and re-runs wait in order instead
+# of racing it. queue: max keeps every waiting run; the default keeps only one
+# and cancels it when a third arrives.
+concurrency:
+  group: release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the on-main check needs origin/main's history
+          persist-credentials: false
+
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version package.json)"
+          # Before the dry-run exit, so a dry run of a prerelease also gets
+          # --tag next; npm refuses a prerelease without it.
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$EVENT" != push ]]; then
+            echo "Dry run of $version from $REF_NAME. Nothing will be published."
+            exit 0
+          fi
+          if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$REF_NAME is not a vMAJOR.MINOR.PATCH tag"
+            exit 1
+          fi
+          if [[ "${REF_NAME#v}" != "$version" ]]; then
+            echo "::error::Tag $REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+          # The full ref name, so a tag called origin/main can't stand in for it.
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::$REF_NAME points at a commit that is not on main"
+            exit 1
+          fi
+
+  publish:
+    needs: [ci, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Version comes from package.json's `packageManager` field.
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # `npm stage` needs npm 11.15.0 or later. No Node 22 release bundles
+          # it; Node 24 does.
+          node-version: '24'
+          # Never restore a cache in a job that can publish.
+          package-manager-cache: false
+          # No registry-url on purpose: without the token placeholder it
+          # writes, a failed OIDC exchange reports ENEEDAUTH instead of a
+          # misleading 404.
+
+      # An older npm has no `npm stage`, or skips OIDC silently and fails later
+      # with an unrelated-looking auth error. Fail here with the real reason.
+      - name: Check npm supports staged publishing
+        run: |
+          v="$(npm --version)"
+          echo "node $(node --version), npm $v"
+          node -e '
+            const [a, b] = process.argv[1].split(".").map(Number);
+            process.exit(a > 11 || (a === 11 && b >= 15) ? 0 : 1);
+          ' "$v" || { echo "::error::npm $v is older than 11.15.0, which npm stage needs"; exit 1; }
+
+      - run: pnpm install --frozen-lockfile
+
+      # `npm stage publish` runs prepublishOnly (clean, tsc, the unit tests),
+      # exchanges the OIDC token, then uploads the version to npm's staging
+      # area, where it waits for approval.
+      - name: Stage on npm
+        env:
+          EVENT: ${{ github.event_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          name="$(jq -r .name package.json)"
+          version="$(jq -r .version package.json)"
+          # Only approved versions show here. A missing one is an E404, hence `|| true`.
+          if [[ "$(npm view "$name@$version" version 2>/dev/null || true)" == "$version" ]]; then
+            if [[ "$EVENT" == push ]]; then
+              echo "$name@$version is already on npm, so this re-run stages nothing."
+            else
+              echo "::warning::$name@$version is already on npm. Bump the version on main to dry-run the next release."
+            fi
+            exit 0
+          fi
+          # --provenance: npm would add it anyway, but silently drops it if a lookup
+          #   fails. Asking for it makes a signing failure fail the step.
+          # --access public: skips another lookup. storysync is unscoped, so it is public.
+          # --color=false: the checks below grep the log.
+          args=(stage publish --provenance --access public --loglevel verbose --color=false)
+          if [[ "$PRERELEASE" == true ]]; then
+            args+=(--tag next)
+          fi
+          if [[ "$EVENT" != push ]]; then
+            args+=(--dry-run)
+          fi
+          log="$RUNNER_TEMP/npm-stage.log"
+          set +e
+          npm "${args[@]}" 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          sha="$(grep -oE 'npm notice shasum: +[0-9a-f]{40}' "$log" | awk '{print $NF}' | head -n1 || true)"
+          # npm hides OIDC failures: the reason is only in the `npm verbose oidc`
+          # lines, a real run ends in ENEEDAUTH, and a dry run just warns and passes.
+          if grep -qF 'This command requires you to be logged in' "$log"; then
+            echo "::error::npm did not accept this workflow. The trusted publisher on npmjs.com must name brendanciccone, storysync and release.yml; the 'npm verbose oidc' lines above say why."
+            exit 1
+          fi
+          if [[ "$EVENT" != push ]]; then
+            if (( status == 0 )); then
+              echo "::notice::Dry run only: npm accepted this workflow and nothing was staged, whatever npm's 'staged' lines above say."
+            fi
+            exit "$status"
+          fi
+          # The registry allows one stage per version and answers 409 to a second.
+          # Match the route, not the wording, which npm has called misleading.
+          if (( status != 0 )) && grep -qE "409 Conflict - POST [^ ]*/-/stage/package/$name( |$)" "$log"; then
+            # On a first attempt the version was staged by something other than
+            # this run, so its tarball may not be this commit's build.
+            if (( ${GITHUB_RUN_ATTEMPT:-1} == 1 )); then
+              echo "::error::$name@$version is already staged, and not by this run. On npmjs.com, under Staged Packages, reject it unless its shasum is ${sha:-(not printed; see the log)}, then re-run this job."
+              echo "$name@$version was already staged by something other than this run. Approve it only if the card's shasum is \`${sha:-(not printed; see the log)}\`; otherwise reject it." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            # A re-run: an earlier attempt staged it. npm pack is reproducible, so
+            # this attempt's shasum is the one that was uploaded.
+            echo "::warning::$name@$version was staged by an earlier attempt of this run, so nothing new was uploaded."
+            status=0
+          fi
+          if (( status == 0 )); then
+            {
+              echo "### $name@$version is staged"
+              echo "It goes live when you approve it with 2FA: npmjs.com, account menu, **Staged Packages**, **Approve**. The button stays disabled until npm's malware scan finishes."
+              echo "Approve only if the card's shasum is \`${sha:-(not printed; see the log)}\`. If it differs, the staged version wasn't built from this commit: reject it."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::$name@$version is staged. Approve it on npmjs.com under Staged Packages."
+          fi
+          exit "$status"
+
+  # Created as soon as the version is staged, so it appears before npm serves
+  # the version: npm serves it only once a maintainer approves it, and never if
+  # it is rejected.
+  release:
+    needs: [verify, publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists, so it is left as is."
+            exit 0
+          fi
+          args=(--verify-tag --generate-notes --title "$TAG")
+          # Start the notes at the last final release. Left to itself, GitHub
+          # starts at the previous tag only if it is an ancestor of this one,
+          # and otherwise lists the whole history.
+          prev="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          if [[ -n "$prev" ]]; then
+            args+=(--notes-start-tag "$prev")
+          fi
+          if [[ "$PRERELEASE" == true ]]; then
+            args+=(--prerelease --latest=false)
+          fi
+          gh release create "$TAG" "${args[@]}"

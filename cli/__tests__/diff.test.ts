@@ -7,11 +7,13 @@ import {
   figmaCollectionToCategory,
   diffTokens,
   diffComponents,
+  selectDiffComponents,
+  narrowFigmaComponents,
   computeDiffSummary,
   hasDifferences,
 } from "../diff.js";
 import type { TokenCollection } from "../tokens.js";
-import { extractFirstBalancedArray } from "../figma.js";
+import { extractFirstBalancedObject } from "../figma.js";
 import type { FigmaVariable, FigmaComponentInfo } from "../figma.js";
 import type { FigmaComponentDefinition } from "../mapper.js";
 
@@ -129,6 +131,64 @@ test("diffTokens: matching color in different formats", () => {
   const diffs = diffTokens(code, figma);
   assert.equal(diffs.length, 1);
   assert.equal(diffs[0].status, "match");
+});
+
+test("diffTokens: a Tailwind v4 oklch token matches Figma's hex variable for it", () => {
+  // Tailwind v4 and shadcn/ui write colours in oklch, and Figma reads its
+  // variables back as sRGB hex. Compared as written, every one was a mismatch.
+  const code: TokenCollection[] = [
+    {
+      category: "colors",
+      tokens: [
+        { name: "red/500", value: "oklch(63.7% 0.237 25.331)" },
+        { name: "red/600", value: "oklch(57.7% 0.245 27.325)" },
+        { name: "primary", value: "oklch(0.205 0 0)" },
+        { name: "brand", value: "color(display-p3 1 0 0)" },
+        { name: "ring", value: "oklch(63.7% 0.237 25.331 / 50%)" },
+      ],
+    },
+  ];
+  const figma: FigmaVariable[] = [
+    { name: "red/500", value: "#fb2c36", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "red/600", value: "#e7000b", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "primary", value: "#171717", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "brand", value: "#ff0000", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "ring", value: "#fb2c3680", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
+});
+
+test("diffTokens: bare HSL channels, as shadcn/ui's :root writes them, match Figma's hex", () => {
+  // colorToHex can't read `0 0% 100%`, so these were compared as strings
+  // with Figma's hex, a mismatch every time.
+  const code: TokenCollection[] = [
+    {
+      category: "colors",
+      tokens: [
+        { name: "background", value: "0 0% 100%" },
+        { name: "sidebar/primary", value: "240 5.9% 10%" },
+        { name: "foreground", value: "222.2 84% 4.9%" },
+        { name: "overlay", value: "240 5.9% 10% / 0.5" },
+      ],
+    },
+  ];
+  const figma: FigmaVariable[] = [
+    { name: "background", value: "#ffffff", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "sidebar/primary", value: "#18181b", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "foreground", value: "#020817", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "overlay", value: "#18181b80", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
+  const off = [{ ...figma[0], value: "#fefefe" }];
+  assert.equal(diffTokens([{ category: "colors", tokens: [code[0].tokens[0]] }], off)[0].status, "value_mismatch");
+});
+
+test("diffTokens: an oklch token still mismatches a Figma colour one step off", () => {
+  const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "red/500", value: "oklch(63.7% 0.237 25.331)" }] }];
+  const figma: FigmaVariable[] = [
+    { name: "red/500", value: "#fb2c37", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  assert.equal(diffTokens(code, figma)[0].status, "value_mismatch");
 });
 
 test("diffTokens: rem vs px equivalence", () => {
@@ -295,31 +355,171 @@ test("hasDifferences: true when any mismatch", () => {
   assert.equal(hasDifferences(summary), true);
 });
 
-// --- extractFirstBalancedArray ---
+// --- extractFirstBalancedObject ---
 
-test("extractFirstBalancedArray: simple array", () => {
-  assert.equal(extractFirstBalancedArray('[1,2,3]'), '[1,2,3]');
+test("extractFirstBalancedObject: simple object", () => {
+  assert.equal(extractFirstBalancedObject('{"total":0,"next":null,"items":[]}'), '{"total":0,"next":null,"items":[]}');
 });
 
-test("extractFirstBalancedArray: nested arrays", () => {
-  const input = 'Result:\n[{"name":"Button","values":["sm","md"]}]';
-  assert.equal(extractFirstBalancedArray(input), '[{"name":"Button","values":["sm","md"]}]');
+test("extractFirstBalancedObject: nested objects, after other text", () => {
+  const input = 'Result:\n{"total":1,"next":null,"items":[{"name":"Button","values":["sm","md"]}]}\nDone';
+  assert.equal(extractFirstBalancedObject(input), '{"total":1,"next":null,"items":[{"name":"Button","values":["sm","md"]}]}');
 });
 
-test("extractFirstBalancedArray: brackets inside strings", () => {
-  const input = '[{"name":"test]value","data":"a[b"}]';
-  assert.equal(extractFirstBalancedArray(input), input);
+test("extractFirstBalancedObject: braces inside strings", () => {
+  const input = '{"name":"test}value","data":"a{b"}';
+  assert.equal(extractFirstBalancedObject(input), input);
 });
 
-test("extractFirstBalancedArray: escaped quotes in strings", () => {
-  const input = '[{"name":"say \\"hello\\""}]';
-  assert.equal(extractFirstBalancedArray(input), input);
+test("extractFirstBalancedObject: escaped quotes in strings", () => {
+  const input = '{"name":"say \\"hello}\\""}';
+  assert.equal(extractFirstBalancedObject(input), input);
 });
 
-test("extractFirstBalancedArray: no array returns null", () => {
-  assert.equal(extractFirstBalancedArray('no arrays here'), null);
+test("extractFirstBalancedObject: no object returns null", () => {
+  assert.equal(extractFirstBalancedObject('no objects here'), null);
 });
 
-test("extractFirstBalancedArray: unbalanced returns null", () => {
-  assert.equal(extractFirstBalancedArray('[1,2,3'), null);
+test("extractFirstBalancedObject: unbalanced returns null", () => {
+  assert.equal(extractFirstBalancedObject('{"items":[1,2,3]'), null);
+});
+
+test("diffComponents: two code components sharing a bare name are flagged, not silently dropped", () => {
+  // Forms/Button and Nav/Button are ordinary in a real design system. Keyed on
+  // the bare name, one would overwrite the other and `diff --strict` would
+  // report "no differences" for a library it never fully read.
+  const code = [
+    { name: "Button", variantProperties: [{ name: "variant", type: "VARIANT", values: ["a"] }] },
+    { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm"] }] },
+  ] as never[];
+  const figma = [
+    { name: "Button", variantProperties: [{ name: "variant", type: "VARIANT", values: ["a"] }] },
+  ] as never[];
+
+  const entries = diffComponents(code, figma);
+  // The first code Button matches Figma's, but which of the two Figma's is
+  // was never chosen: a match beside the ambiguous entry would count the one
+  // name twice, and vouch for a pairing nothing made.
+  assert.deepEqual(entries.map((e) => [e.name, e.status]), [["Button", "ambiguous"]]);
+  assert.deepEqual(entries[0].details, ["2 components share this name in code, and Figma has one; none was compared"]);
+  const summary = computeDiffSummary([], entries);
+  assert.equal(summary.componentsAmbiguous, 1);
+  assert.equal(summary.componentsMatched, 0);
+  assert.equal(hasDifferences(summary), true);
+});
+
+test("diffComponents: a name on two Figma pages is flagged, and neither page's compared", () => {
+  // diff reads every page, in order, and an archive page after the library
+  // can keep an old Button. Keyed on the name alone, the archived copy would
+  // be the one compared, and with no word that another existed. Comparing the
+  // first page's instead would still pick one, and count Button twice: as
+  // ambiguous and as matched.
+  const code = [
+    { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }] },
+  ] as never[];
+  const figma = [
+    { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }], variantCount: 2 },
+    { name: "Badge", variantProperties: [], variantCount: 1 },
+    { name: "button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm"] }], variantCount: 1 },
+  ];
+
+  const entries = diffComponents(code, figma);
+  assert.deepEqual(entries.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["Badge", "figma_only"]]);
+  assert.deepEqual(entries[0].details, ["2 Figma components share this name, and code has one; none was compared"]);
+  const summary = computeDiffSummary([], entries);
+  assert.equal(summary.componentsAmbiguous, 1);
+  assert.equal(summary.componentsMatched, 0);
+  assert.equal(summary.componentsMismatched, 0);
+  assert.equal(hasDifferences(summary), true);
+});
+
+test("diffComponents: a name repeated in code and in Figma is one ambiguous entry that says both", () => {
+  const button = { name: "Button", variantProperties: [], variantCount: 1 };
+  const entries = diffComponents([button, button, button] as never[], [button, button]);
+  assert.deepEqual(entries.map((e) => [e.status, e.details]), [["ambiguous", ["3 components share this name in code, and 2 in Figma; none was compared"]]]);
+});
+
+test("diffComponents: a repeated name one side lacks is ambiguous only, not also missing from the other", () => {
+  // Each name is one entry, so the summary's counts add up to the names read.
+  const button = { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm"] }], variantCount: 1 };
+  const card = { name: "Card", variantProperties: [], variantCount: 1 };
+  const entries = diffComponents([button, button, card] as never[], [card, card]);
+  assert.deepEqual(entries.map((e) => [e.name, e.status, e.details]), [
+    ["Button", "ambiguous", ["2 components share this name in code, and Figma has none; none was compared"]],
+    ["Card", "ambiguous", ["2 Figma components share this name, and code has one; none was compared"]],
+  ]);
+  const summary = computeDiffSummary([], entries);
+  assert.deepEqual(
+    [summary.componentsAmbiguous, summary.componentsCodeOnly, summary.componentsFigmaOnly, summary.componentsMatched],
+    [2, 0, 0, 0],
+  );
+
+  const figmaOnly = diffComponents([], [button, button]);
+  assert.deepEqual(figmaOnly.map((e) => [e.status, e.details]), [["ambiguous", ["2 Figma components share this name, and code has none; none was compared"]]]);
+});
+
+// --- selectDiffComponents ---
+
+const STORYBOOK = [
+  { id: "forms-button", name: "Button" },
+  { id: "data-display-card", name: "Card" },
+];
+
+function figmaComponent(name: string): FigmaComponentInfo {
+  return { name, variantProperties: [], variantCount: 1 };
+}
+
+const FIGMA = [figmaComponent("Button"), figmaComponent("Card"), figmaComponent("Badge")];
+
+/** Diffs the selection the way the diff command does, with no variant props on either side. */
+function diffSelection(names: string[]) {
+  const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, names);
+  const code = entries.map((e) => ({ name: e.name, variantProperties: [], variantCombinations: [], wasCapped: false }));
+  return diffComponents(code, figmaComponents);
+}
+
+test("selectDiffComponents: narrows Figma too, so unselected components are not reported missing from code", () => {
+  // Card is in code; it was only left out of the diff. Reporting it (and Badge)
+  // as figma_only made `diff --components Button --strict` fail on any file
+  // holding more than Button.
+  const diffs = diffSelection(["Button"]);
+  assert.deepEqual(diffs.map((d) => [d.name, d.status]), [["Button", "match"]]);
+});
+
+test("selectDiffComponents: a name picked by Storybook ID carries over to Figma by name", () => {
+  const diffs = diffSelection(["data-display-card"]);
+  assert.deepEqual(diffs.map((d) => [d.name, d.status]), [["Card", "match"]]);
+});
+
+test("selectDiffComponents: a name only Figma has is reported as not in code, not rejected as a typo", () => {
+  const diffs = diffSelection(["Button", "badge"]);
+  assert.deepEqual(diffs.map((d) => [d.name, d.status]), [["Button", "match"], ["Badge", "figma_only"]]);
+  assert.equal(hasDifferences(computeDiffSummary([], diffs)), true);
+});
+
+test("selectDiffComponents: a name neither side has is an error listing both sides", () => {
+  assert.throws(
+    () => selectDiffComponents(STORYBOOK, FIGMA, ["Button", "Buton"]),
+    { message: '--components matched no component named "Buton". Available: Badge, Button, Card' },
+  );
+});
+
+test("selectDiffComponents: no names leaves both sides whole", () => {
+  const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, [" "]);
+  assert.equal(entries, STORYBOOK);
+  assert.equal(figmaComponents, FIGMA);
+});
+
+// --- narrowFigmaComponents ---
+
+test("narrowFigmaComponents: keeps the named Figma components, by name, without rejecting any name", () => {
+  // For a diff whose Storybook listing failed: an ID, or a name Figma lacks,
+  // can't be told from a typo, so it narrows to nothing rather than throwing.
+  const kept = narrowFigmaComponents(FIGMA, [" button", "forms-card", "Nope"]);
+  assert.deepEqual(kept.map((c) => c.name), ["Button"]);
+});
+
+test("narrowFigmaComponents: no names leaves Figma whole", () => {
+  assert.equal(narrowFigmaComponents(FIGMA, ["", " "]), FIGMA);
+  assert.equal(narrowFigmaComponents(FIGMA, undefined), FIGMA);
 });

@@ -1,8 +1,12 @@
 // Diff engine — compares code-extracted tokens and component mappings against Figma state.
 
 import type { TokenCollection, TokenCategory } from "./tokens.js";
+import { tokenColorToHex } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
+import { componentNames, selectComponents } from "./storybook.js";
+import type { ComponentEntry } from "./storybook.js";
+import { colorToHex } from "./color.js";
 
 // --- Token diff ---
 
@@ -18,7 +22,7 @@ export interface TokenDiffEntry {
 
 export interface ComponentDiffEntry {
   name: string;
-  status: "match" | "variant_mismatch" | "code_only" | "figma_only";
+  status: "match" | "variant_mismatch" | "code_only" | "figma_only" | "ambiguous";
   details: string[];
 }
 
@@ -39,6 +43,8 @@ export interface DiffSummary {
   componentsMismatched: number;
   componentsCodeOnly: number;
   componentsFigmaOnly: number;
+  /** Code components sharing a bare name, so only one could be compared. */
+  componentsAmbiguous: number;
 }
 
 // --- Collection name → token category mapping ---
@@ -67,109 +73,11 @@ export function figmaCollectionToCategory(collectionName: string): string {
 
 // --- Value normalization ---
 
-// Convert any supported color expression to lowercase 6- or 8-char hex (#rrggbb / #rrggbbaa).
-// Returns null if the value isn't recognizable as a color.
-export function colorToHex(input: string): string | null {
-  let s = input.trim().toLowerCase();
-  s = s.replace(/;$/, "").replace(/^['"]|['"]$/g, "");
-
-  // 8-digit hex (#rrggbbaa)
-  const hex8 = s.match(/^#([0-9a-f]{8})$/);
-  if (hex8) return `#${hex8[1]}`;
-
-  // 6-digit hex
-  const hex6 = s.match(/^#([0-9a-f]{6})$/);
-  if (hex6) return `#${hex6[1]}`;
-
-  // 3-digit hex
-  const hex3 = s.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/);
-  if (hex3) return `#${hex3[1]}${hex3[1]}${hex3[2]}${hex3[2]}${hex3[3]}${hex3[3]}`;
-
-  // 4-digit hex (rgba shorthand)
-  const hex4 = s.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])$/);
-  if (hex4) {
-    const [, r, g, b, a] = hex4;
-    return `#${r}${r}${g}${g}${b}${b}${a}${a}`;
-  }
-
-  // rgb()/rgba() — accepts integers 0-255 or percentages
-  const rgb = s.match(/^rgba?\s*\(\s*([\d.]+%?)\s*[, ]\s*([\d.]+%?)\s*[, ]\s*([\d.]+%?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/);
-  if (rgb) {
-    const [, r, g, b, a] = rgb;
-    const rh = channelToHex(r);
-    const gh = channelToHex(g);
-    const bh = channelToHex(b);
-    if (rh == null || gh == null || bh == null) return null;
-    if (a != null) {
-      const ah = alphaToHex(a);
-      if (ah == null) return null;
-      return ah === "ff" ? `#${rh}${gh}${bh}` : `#${rh}${gh}${bh}${ah}`;
-    }
-    return `#${rh}${gh}${bh}`;
-  }
-
-  // hsl()/hsla() — convert via standard formula
-  const hsl = s.match(/^hsla?\s*\(\s*([\d.]+)(?:deg)?\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/);
-  if (hsl) {
-    const [, h, sPct, l, a] = hsl;
-    const [r, g, b] = hslToRgb(parseFloat(h), parseFloat(sPct) / 100, parseFloat(l) / 100);
-    const rh = r.toString(16).padStart(2, "0");
-    const gh = g.toString(16).padStart(2, "0");
-    const bh = b.toString(16).padStart(2, "0");
-    if (a != null) {
-      const ah = alphaToHex(a);
-      if (ah == null) return null;
-      return ah === "ff" ? `#${rh}${gh}${bh}` : `#${rh}${gh}${bh}${ah}`;
-    }
-    return `#${rh}${gh}${bh}`;
-  }
-
-  // Named CSS colors — small subset that designers commonly use
-  const named: Record<string, string> = {
-    white: "#ffffff",
-    black: "#000000",
-    transparent: "#00000000",
-    red: "#ff0000",
-    green: "#008000",
-    blue: "#0000ff",
-  };
-  if (s in named) return named[s];
-
-  return null;
-}
-
-function channelToHex(s: string): string | null {
-  const isPercent = s.endsWith("%");
-  const n = parseFloat(s);
-  if (Number.isNaN(n)) return null;
-  const v = isPercent ? Math.round((n / 100) * 255) : Math.round(n);
-  if (v < 0 || v > 255) return null;
-  return v.toString(16).padStart(2, "0");
-}
-
-function alphaToHex(s: string): string | null {
-  const isPercent = s.endsWith("%");
-  const n = parseFloat(s);
-  if (Number.isNaN(n)) return null;
-  const v = isPercent ? Math.round((n / 100) * 255) : Math.round(n * 255);
-  if (v < 0 || v > 255) return null;
-  return v.toString(16).padStart(2, "0");
-}
-
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  h = ((h % 360) + 360) % 360;
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = l - c / 2;
-  let r = 0, g = 0, b = 0;
-  if (h < 60) [r, g, b] = [c, x, 0];
-  else if (h < 120) [r, g, b] = [x, c, 0];
-  else if (h < 180) [r, g, b] = [0, c, x];
-  else if (h < 240) [r, g, b] = [0, x, c];
-  else if (h < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
-}
+// Colours are compared as sRGB hex, converted from any form a browser or a
+// token source writes, oklch() and the rest of CSS Color 4 included. The
+// converter lives in color.ts, shared with snap; it is re-exported here, where
+// it has always been imported from.
+export { colorToHex };
 
 // Convert numeric values (rem/px/unitless) to a comparable canonical form.
 // Returns the value as a string of pixels (e.g. "16") for numeric values, or the original normalized string otherwise.
@@ -207,7 +115,8 @@ export function canonicalizeCompound(input: string): string {
 
 function normalizeForCompare(category: string, value: string): string {
   if (category === "colors") {
-    return colorToHex(value) ?? value.trim().toLowerCase();
+    // tokenColorToHex also reads bare HSL channels, `0 0% 100%`, as hsl().
+    return tokenColorToHex(value) ?? value.trim().toLowerCase();
   }
   if (category === "spacing" || category === "radius" || category === "typography") {
     return numericToPx(value);
@@ -273,16 +182,110 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
 
 // --- Component diffing ---
 
+/**
+ * Narrows both sides of a component diff to the names given with `--components`.
+ *
+ * Storybook components are selected exactly as snap and map select them. A
+ * name found only in Figma is not a typo, though: it asks whether that
+ * component exists in code yet, and the answer is a `figma_only` entry, which
+ * fails `--strict`. So only a name neither side has is an error.
+ *
+ * Figma is narrowed to the same components, by name — including those picked
+ * by Storybook ID. Left whole, every Figma component outside the selection
+ * would be reported as missing from code when it was only left out of the diff.
+ */
+export function selectDiffComponents(
+  entries: ComponentEntry[],
+  figmaComponents: FigmaComponentInfo[],
+  names: readonly string[] | undefined,
+): { entries: ComponentEntry[]; figmaComponents: FigmaComponentInfo[] } {
+  const selected = selectComponents(entries, names, figmaComponents.map((c) => c.name));
+  const wanted = componentNames(names);
+  if (!wanted.length) return { entries, figmaComponents };
+  return { entries: selected, figmaComponents: narrowFigmaComponents(figmaComponents, [...wanted, ...selected.map((e) => e.name)]) };
+}
+
+/**
+ * Narrows Figma's components to the names given with `--components`, by name,
+ * ignoring case, and without checking any name for a typo. On its own, it is
+ * for a diff whose Storybook listing failed: with the code side unknown, a
+ * name can't be told from a typo, but the components left out must still not
+ * all be reported as missing from code.
+ */
+export function narrowFigmaComponents(
+  figmaComponents: FigmaComponentInfo[],
+  names: readonly string[] | undefined,
+): FigmaComponentInfo[] {
+  const wanted = componentNames(names);
+  if (!wanted.length) return figmaComponents;
+  const keep = new Set(wanted.map((n) => n.toLowerCase()));
+  return figmaComponents.filter((c) => keep.has(c.name.toLowerCase()));
+}
+
 export function diffComponents(
   codeComponents: FigmaComponentDefinition[],
   figmaComponents: FigmaComponentInfo[],
 ): ComponentDiffEntry[] {
   const entries: ComponentDiffEntry[] = [];
 
-  const codeMap = new Map(codeComponents.map((c) => [c.name.toLowerCase(), c]));
-  const figmaMap = new Map(figmaComponents.map((c) => [c.name.toLowerCase(), c]));
+  // Components are paired on their bare name, which two distinct components can
+  // share — `Forms/Button` and `Nav/Button` are ordinary in a real design
+  // system. Building the map alone would let the second silently overwrite the
+  // first, so one component would be dropped before any comparison and `diff
+  // --strict` would report "no differences" for a library it never fully read.
+  const codeMap = new Map<string, FigmaComponentDefinition>();
+  const ambiguous = new Map<string, string[]>();
+  for (const component of codeComponents) {
+    const key = component.name.toLowerCase();
+    const existing = codeMap.get(key);
+    if (existing) {
+      const seen = ambiguous.get(key) ?? [existing.name];
+      seen.push(component.name);
+      ambiguous.set(key, seen);
+      continue;
+    }
+    codeMap.set(key, component);
+  }
+  // Figma can repeat a name too, now that every page is read: an archive page
+  // keeping an old Button, or Forms/Button and Nav/Button pushed to their
+  // categories' pages. Keyed on the name alone, the last page read would
+  // silently be the one compared.
+  const figmaMap = new Map<string, FigmaComponentInfo>();
+  const figmaRepeats = new Map<string, number>();
+  for (const component of figmaComponents) {
+    const key = component.name.toLowerCase();
+    if (figmaMap.has(key)) {
+      figmaRepeats.set(key, (figmaRepeats.get(key) ?? 1) + 1);
+      continue;
+    }
+    figmaMap.set(key, component);
+  }
+
+  // A repeated name is reported as ambiguous and nothing else. Comparing its
+  // first copies too would count the one name twice, as ambiguous and as
+  // matched, say, and the match would vouch for a pairing nothing chose.
+  for (const [key, names] of ambiguous) {
+    const repeats = figmaRepeats.get(key);
+    entries.push({
+      name: names[0],
+      status: "ambiguous",
+      details: [repeats
+        ? `${names.length} components share this name in code, and ${repeats} in Figma; none was compared`
+        : `${names.length} components share this name in code, and Figma has ${figmaMap.has(key) ? "one" : "none"}; none was compared`],
+    });
+  }
+  for (const [key, repeats] of figmaRepeats) {
+    if (ambiguous.has(key)) continue;
+    entries.push({
+      name: figmaMap.get(key)!.name,
+      status: "ambiguous",
+      details: [`${repeats} Figma components share this name, and code has ${codeMap.has(key) ? "one" : "none"}; none was compared`],
+    });
+  }
+  const isAmbiguous = (key: string) => ambiguous.has(key) || figmaRepeats.has(key);
 
   for (const [key, code] of codeMap) {
+    if (isAmbiguous(key)) continue;
     const figma = figmaMap.get(key);
     if (!figma) {
       const propCount = code.variantProperties.length;
@@ -335,7 +338,7 @@ export function diffComponents(
 
   // Figma components not in code
   for (const [key, figma] of figmaMap) {
-    if (!codeMap.has(key)) {
+    if (!codeMap.has(key) && !isAmbiguous(key)) {
       const propCount = figma.variantProperties.length;
       const detail = propCount === 0
         ? "no variants in Figma"
@@ -359,6 +362,7 @@ export function computeDiffSummary(tokens: TokenDiffEntry[], components: Compone
     componentsMismatched: components.filter((c) => c.status === "variant_mismatch").length,
     componentsCodeOnly: components.filter((c) => c.status === "code_only").length,
     componentsFigmaOnly: components.filter((c) => c.status === "figma_only").length,
+    componentsAmbiguous: components.filter((c) => c.status === "ambiguous").length,
   };
 }
 
@@ -369,6 +373,8 @@ export function hasDifferences(summary: DiffSummary): boolean {
     summary.tokensMissingFromCode > 0 ||
     summary.componentsMismatched > 0 ||
     summary.componentsCodeOnly > 0 ||
-    summary.componentsFigmaOnly > 0
+    summary.componentsFigmaOnly > 0 ||
+    // A component that could not be compared is not a component that matched.
+    summary.componentsAmbiguous > 0
   );
 }

@@ -8,22 +8,34 @@ branding:
 
 inputs:
   storybook_url:
-    description: "URL of the running Storybook dev server"
+    description: "URL of the running Storybook dev server. With the default, the action starts Storybook itself on port 6006, failing if something already serves there, and stops it once components are mapped"
     required: false
     default: "http://localhost:6006"
   components:
-    description: "Comma-separated list of component names to validate (default: all)"
+    description: "Comma-separated list of component names or IDs to validate (default: all). A name that matches no component fails the Map components step, which lists the names available"
     required: false
   node_version:
     description: "Node.js version to use"
     required: false
     default: "22"
+  working_directory:
+    description: "Directory of the project to check, relative to the repository root. Dependencies are installed, Storybook is started and tokens are read there, and the baseline paths and the files the action writes are relative to it"
+    required: false
+    default: "."
+  install_command:
+    description: "Command that installs the project's dependencies, run in working_directory (default: chosen by package.json's packageManager field, or else by the lockfile)"
+    required: false
+    default: ""
   baseline:
-    description: "Path to baseline mapping JSON for drift detection"
+    description: "Path to baseline mapping JSON for drift detection, as written by storysync map --json"
     required: false
     default: ".storysync/baseline.json"
   create_issue:
     description: "Create or update a GitHub issue when drift is detected"
+    required: false
+    default: "false"
+  fail_on_drift:
+    description: "Fail the job when component or token drift is detected, or when a baseline is missing, since then nothing was compared. Any issue is filed first. To check only components, set token_baseline to ''"
     required: false
     default: "false"
   token_source:
@@ -31,71 +43,294 @@ inputs:
     required: false
     default: "auto"
   token_baseline:
-    description: "Path to token baseline JSON for drift detection"
+    description: "Path to token baseline JSON for drift detection, as written by storysync tokens --json. Empty leaves tokens out, for a project that checks only components: they aren't extracted, token_drift is skipped, and fail_on_drift doesn't fail on them"
     required: false
     default: ".storysync/tokens-baseline.json"
 
 outputs:
   drift:
-    description: "Whether component drift was detected (true/false/new)"
+    description: "Whether component drift was detected (true/false, or new when there is no baseline)"
     value: ${{ steps.drift.outputs.result }}
   token_drift:
-    description: "Whether token drift was detected (true/false/new)"
+    description: "Whether token drift was detected (true/false, new when there is no baseline, none when there is neither a baseline nor any tokens, or skipped when token_baseline is empty)"
     value: ${{ steps.token-drift.outputs.result }}
   json:
     description: "JSON mapping output"
     value: ${{ steps.map.outputs.json }}
   tokens_json:
-    description: "JSON token extraction output"
+    description: "JSON token extraction output (empty when token_baseline is empty)"
     value: ${{ steps.tokens.outputs.json }}
 
 runs:
   using: "composite"
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ inputs.node_version }}
+        # setup-node caches on its own when the workspace's package.json names
+        # npm, keyed on a lockfile it expects at the root. That is the
+        # consumer's repository, which this action shouldn't cache behind
+        # its back, and whose lockfile may be in a subdirectory.
+        package-manager-cache: false
+
+    # pnpm/action-setup reads the version from a package.json's packageManager
+    # field. Pointed at storysync's own, it installs the pnpm storysync builds
+    # with. Given a `version` instead, it would compare that with the
+    # consumer's packageManager and fail on any difference, even a +sha512
+    # suffix. The path has to be relative to the workspace.
+    #
+    # The version is the storysync this action builds, for the baseline
+    # commands it prints. Plain `npx storysync` runs whatever npm has, which
+    # can map differently: 0.2.0 finds no components with addon-mcp 10.6.
+    - name: Locate storysync
+      id: storysync
+      shell: bash
+      run: |
+        node -e '
+          const path = require("path");
+          const pkg = path.resolve(process.env.GITHUB_ACTION_PATH, "..", "package.json");
+          console.log("package_json=" + path.relative(process.env.GITHUB_WORKSPACE, pkg));
+          console.log("version=" + require(pkg).version);
+        ' >> "$GITHUB_OUTPUT"
 
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
       with:
-        version: 10.33.0
-
-    - name: Install Safe Chain
-      shell: bash
-      run: curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
+        package_json_file: ${{ steps.storysync.outputs.package_json }}
 
     - name: Install project dependencies
       shell: bash
-      run: npm ci
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install_command }}
+      run: |
+        if [ -n "$INSTALL_COMMAND" ]; then
+          echo "$INSTALL_COMMAND"
+          eval "$INSTALL_COMMAND"
+          exit 0
+        fi
+
+        # The lockfile says which package manager the project uses. In a
+        # workspace it sits at the root rather than beside the package, so
+        # look upward from working_directory as far as the repository root.
+        start="$(pwd -P)"
+        root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        dir="$start"
+        lockfiles=()
+        while :; do
+          for name in pnpm-lock.yaml yarn.lock package-lock.json npm-shrinkwrap.json bun.lock bun.lockb; do
+            if [ -f "$dir/$name" ]; then
+              lockfiles+=("$name")
+            fi
+          done
+          if [ "${#lockfiles[@]}" -gt 0 ] || [ "$dir" = "$root" ] || [ "$dir" = / ]; then
+            break
+          fi
+          dir="$(dirname "$dir")"
+        done
+
+        if [ "${#lockfiles[@]}" -eq 0 ]; then
+          echo "::error::No lockfile in $start or any directory above it up to the repository root. Commit pnpm-lock.yaml, yarn.lock, package-lock.json or bun.lock, or set install_command."
+          exit 1
+        fi
+
+        cd "$dir"
+        echo "Found ${lockfiles[*]} in $dir"
+        managers=" "
+        for name in "${lockfiles[@]}"; do
+          case "$name" in
+            pnpm-lock.yaml) pm=pnpm ;;
+            yarn.lock) pm=yarn ;;
+            package-lock.json | npm-shrinkwrap.json) pm=npm ;;
+            bun.lock | bun.lockb) pm=bun ;;
+          esac
+          case "$managers" in
+            *" $pm "*) ;;
+            *) managers="$managers$pm " ;;
+          esac
+        done
+
+        # packageManager names the one to use, as it does for corepack. A
+        # stale lockfile from another package manager left beside the real
+        # one is common, and no order of preference is right for everyone.
+        declared="$(node -e '
+          try {
+            const pm = JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager;
+            if (typeof pm === "string") console.log(pm.split("@")[0]);
+          } catch {}
+        ')"
+        if [ -n "$declared" ]; then
+          case "$declared" in
+            pnpm | yarn | npm | bun) ;;
+            *)
+              echo "::error::package.json in $dir names $declared as its packageManager, which this action can't install with. Set install_command."
+              exit 1
+              ;;
+          esac
+          case "$managers" in
+            *" $declared "*) pm="$declared" ;;
+            *)
+              echo "::error::package.json in $dir names $declared as its packageManager, but there's no $declared lockfile there, only ${lockfiles[*]}. Commit $declared's lockfile, correct packageManager, or set install_command."
+              exit 1
+              ;;
+          esac
+          echo "package.json's packageManager names $declared"
+        else
+          set -- $managers
+          if [ "$#" -ne 1 ]; then
+            echo "::error::Found ${lockfiles[*]} in $dir, from different package managers, and package.json has no packageManager field to choose between them. Delete the stale lockfile, set packageManager, or set install_command."
+            exit 1
+          fi
+          pm="$1"
+        fi
+
+        case "$pm" in
+          pnpm)
+            cmd=(pnpm install --frozen-lockfile)
+            ;;
+          yarn)
+            # corepack runs the Yarn version package.json's packageManager
+            # names. Node 25 stopped bundling it; without it, whatever yarn is
+            # on PATH has to do.
+            corepack=false
+            if command -v corepack > /dev/null; then
+              corepack enable yarn
+              export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+              corepack=true
+            fi
+            # Run it rather than look it up: a yarn on PATH may not work, as
+            # with corepack's when it can't fetch the version packageManager
+            # names, or a shim an earlier step put there, such as Safe Chain's,
+            # with no Yarn behind it.
+            if ! version="$(yarn --version 2>&1)"; then
+              echo "$version"
+              if [ "$corepack" = true ]; then
+                echo "::error::Found yarn.lock, but yarn --version failed even through corepack. Its output is above. Install Yarn before this action, or set install_command."
+              else
+                echo "::error::Found yarn.lock, but yarn isn't installed and this Node has no corepack to provide it. Install Yarn before this action, or set install_command."
+              fi
+              exit 1
+            fi
+            # Yarn 1 writes a v1 lockfile and spells the flag differently.
+            if grep -q '^# yarn lockfile v1' yarn.lock; then
+              cmd=(yarn install --frozen-lockfile)
+            else
+              cmd=(yarn install --immutable)
+            fi
+            ;;
+          npm)
+            cmd=(npm ci)
+            ;;
+          bun)
+            # As for yarn, a shim an earlier step put on PATH answers to
+            # `command -v bun` whether or not bun is installed.
+            if ! bun --version > /dev/null 2>&1; then
+              echo "::error::Found ${lockfiles[*]}, but bun isn't installed. Add oven-sh/setup-bun before this action, or set install_command."
+              exit 1
+            fi
+            cmd=(bun install --frozen-lockfile)
+            ;;
+        esac
+        echo "${cmd[*]}"
+        "${cmd[@]}"
 
     - name: Build storysync
       shell: bash
       run: |
-        cd "${{ github.action_path }}/.."
+        cd "$GITHUB_ACTION_PATH/.."
         pnpm install --frozen-lockfile --ignore-scripts
         pnpm run build
 
     - name: Start Storybook
+      id: storybook
       if: inputs.storybook_url == 'http://localhost:6006'
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        STORYBOOK_URL: ${{ inputs.storybook_url }}
       run: |
-        npx storybook dev --port 6006 --ci &
-        npx wait-on http://localhost:6006 --timeout 120000
+        # The binary the install linked, here or in a parent: npm and Yarn
+        # workspaces hoist it to the root. Running it directly rather than
+        # through npx means a missing Storybook is an error, not a download.
+        root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+        dir="$(pwd -P)"
+        storybook=""
+        while :; do
+          if [ -x "$dir/node_modules/.bin/storybook" ]; then
+            storybook="$dir/node_modules/.bin/storybook"
+            break
+          fi
+          if [ "$dir" = "$root" ] || [ "$dir" = / ]; then
+            break
+          fi
+          dir="$(dirname "$dir")"
+        done
+        if [ -z "$storybook" ]; then
+          echo "::error::Storybook isn't installed: there is no node_modules/.bin/storybook in $(pwd -P) or above it. Add storybook to the project's devDependencies, or start Storybook yourself and set storybook_url. Yarn Plug'n'Play projects need nodeLinker: node-modules."
+          exit 1
+        fi
+
+        # With 6006 taken, Storybook in --ci mode moves to the next free port
+        # without a word, and map would read whatever holds 6006. So refuse a
+        # URL that already answers, and pass --exact-port so a port taken
+        # some other way makes Storybook exit, which the loop below reports.
+        if curl -s -o /dev/null --max-time 5 "$STORYBOOK_URL"; then
+          echo "::error::Something is already serving $STORYBOOK_URL, so the action can't start Storybook there. Stop it before this action. If it's the Storybook to check, set storybook_url to another address for it, such as http://127.0.0.1:6006, and the action will use it as is."
+          exit 1
+        fi
+
+        log="$RUNNER_TEMP/storysync-storybook.log"
+        "$storybook" dev --port 6006 --exact-port --ci > "$log" 2>&1 &
+        pid=$!
+        # For Stop Storybook, which runs however this step ends.
+        echo "pid=$pid" >> "$GITHUB_OUTPUT"
+
+        # Polled with curl because `npx wait-on` fetches an unpinned package
+        # on every run.
+        deadline=$((SECONDS + 120))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          if curl -fs -o /dev/null --max-time 5 "$STORYBOOK_URL"; then
+            cat "$log"
+            echo "Storybook is serving $STORYBOOK_URL"
+            exit 0
+          fi
+          if ! kill -0 "$pid" 2> /dev/null; then
+            cat "$log"
+            echo "::error::Storybook exited before it started serving. Its output is above."
+            exit 1
+          fi
+          sleep 1
+        done
+        kill "$pid" 2> /dev/null || true
+        cat "$log"
+        echo "::error::Storybook didn't answer at $STORYBOOK_URL within 120 seconds. Its output is above."
+        exit 1
 
     - name: Extract tokens
       id: tokens
+      if: inputs.token_baseline != ''
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         TOKEN_SOURCE: ${{ inputs.token_source }}
-        STORYSYNC_CLI: ${{ github.action_path }}/../dist/cli/index.js
       run: |
+        STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--project . --json)
         if [ "$TOKEN_SOURCE" != "auto" ]; then
           ARGS+=(--source "$TOKEN_SOURCE")
         fi
-        node "$STORYSYNC_CLI" tokens "${ARGS[@]}" > storysync-tokens-current.json
+        if ! node "$STORYSYNC_CLI" tokens "${ARGS[@]}" > storysync-tokens-current.json; then
+          # Under --json the CLI reports an error on stdout, which went to the file.
+          node -e '
+            const text = require("fs").readFileSync("storysync-tokens-current.json", "utf8").trim();
+            let message = text;
+            try { message = JSON.parse(text).error || text; } catch {}
+            message = String(message).replace(/^Error: /, "").replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+            console.log("::error::storysync tokens failed" + (message ? ": " + message : ". Its output is above."));
+          '
+          exit 1
+        fi
         {
           echo "json<<STORYSYNC_TOKENS_EOF"
           cat storysync-tokens-current.json
@@ -105,66 +340,130 @@ runs:
     - name: Detect token drift
       id: token-drift
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         TOKEN_BASELINE_PATH: ${{ inputs.token_baseline }}
+        TOKEN_SOURCE: ${{ inputs.token_source }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
         node << 'SCRIPT'
         const fs = require("fs");
+        const path = require("path");
+
+        const output = (name, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, name + "<<STORYSYNC_EOF\n" + value + "\nSTORYSYNC_EOF\n");
+        // Workflow commands end at a newline and read % as an escape.
+        const escape = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+        const quote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'");
+        const wd = path.normalize(process.env.WORKING_DIRECTORY || ".").replace(/\/+$/, "") || ".";
+        const where = wd === "." ? "the repository root" : wd;
+
+        // A report left by an earlier run in this job would otherwise reach
+        // the issue as this run's.
+        fs.rmSync("storysync-token-drift.md", { force: true });
 
         const baselinePath = process.env.TOKEN_BASELINE_PATH;
+        // An empty token_baseline opts out of tokens, so a project that checks
+        // only components can use fail_on_drift whatever tokens it has.
+        if (!baselinePath) {
+          console.log("token_baseline is empty, so tokens aren't extracted or checked");
+          output("result", "skipped");
+          process.exit(0);
+        }
+
         const current = JSON.parse(fs.readFileSync("storysync-tokens-current.json", "utf8"));
+        const collections = current.collections || [];
 
-        if (!current.collections || !current.collections.length) {
-          console.log("No tokens found in project");
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=none\n");
-          process.exit(0);
-        }
+        // The command that writes the baseline, as the action extracts tokens,
+        // with the storysync it runs.
+        let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " tokens";
+        if (process.env.TOKEN_SOURCE !== "auto") command += " --source " + quote(process.env.TOKEN_SOURCE);
+        command += " --json > " + quote(baselinePath);
+        if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
+        const create = "running this in " + where + ", then commit it: " + command + " (the action's tokens_json output holds the same JSON)";
 
+        // The baseline comes first: a project whose tokens have all gone still
+        // has one to report them against, and that is drift, not "none".
         if (!fs.existsSync(baselinePath)) {
-          console.log("No token baseline found at " + baselinePath + " — first run");
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=new\n");
+          if (!collections.length) {
+            console.log("No tokens found in project, and no token baseline at " + baselinePath);
+            output("result", "none");
+            process.exit(0);
+          }
+          console.log(escape("::warning::No baseline at " + baselinePath + " (relative to " + where + "); token drift isn't being checked. Create it by " + create));
+          output("result", "new");
+          output("error", escape("No baseline at " + baselinePath + " (relative to " + where + "), so token drift wasn't checked. Create it by " + create));
           process.exit(0);
         }
 
-        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
-        const baseMap = Object.fromEntries((baseline.collections || []).map(c => [c.category, c]));
-        const currMap = Object.fromEntries(current.collections.map(c => [c.category, c]));
+        // Read as tokens --check reads it. A file that isn't a baseline, such
+        // as the {"error": ...} the command above writes when tokens fails,
+        // would otherwise be compared as one with no tokens, or crash.
+        let baseline = null;
+        try { baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")); } catch {}
+        const isRecord = (v) => typeof v === "object" && v !== null;
+        const isCollection = (c) => isRecord(c) && typeof c.category === "string" && Array.isArray(c.tokens)
+          && c.tokens.every(t => isRecord(t) && typeof t.name === "string" && typeof t.value === "string");
+        if (!isRecord(baseline) || !Array.isArray(baseline.collections) || !baseline.collections.every(isCollection)) {
+          const held = isRecord(baseline) && typeof baseline.error === "string" ? " (it holds an error: " + baseline.error.replace(/^Error: /, "") + ")" : "";
+          console.log(escape("::error::The token baseline at " + baselinePath + " (relative to " + where + ") is not tokens --json output" + held + ". Recreate it by " + create));
+          process.exit(1);
+        }
+
+        // A category can have several collections: a theme file's fontSizes
+        // and fontWeights are both typography. Keyed on the category alone,
+        // only the last of them was compared, so each side's are merged into
+        // one map of token name to value, as tokens --check does.
+        const byCategory = (cols) => {
+          const map = new Map();
+          for (const c of cols) {
+            if (!map.has(c.category)) map.set(c.category, new Map());
+            for (const t of c.tokens) map.get(c.category).set(t.name, t.value);
+          }
+          return map;
+        };
+        const baseMap = byCategory(baseline.collections);
+        const currMap = byCategory(collections);
 
         const added = [];
         const removed = [];
         const changed = [];
 
-        for (const [cat, coll] of Object.entries(currMap)) {
-          const base = baseMap[cat];
-          if (!base) { added.push({ category: cat, count: coll.tokens.length }); continue; }
-          const baseTokens = Object.fromEntries(base.tokens.map(t => [t.name, t.value]));
+        for (const [cat, tokens] of currMap) {
+          const base = baseMap.get(cat);
+          if (!base) { added.push({ category: cat, count: tokens.size }); continue; }
           let newCount = 0, changedCount = 0;
-          for (const t of coll.tokens) {
-            if (!(t.name in baseTokens)) newCount++;
-            else if (baseTokens[t.name] !== t.value) changedCount++;
+          for (const [name, value] of tokens) {
+            if (!base.has(name)) newCount++;
+            else if (base.get(name) !== value) changedCount++;
           }
           if (newCount || changedCount) changed.push({ category: cat, added: newCount, changed: changedCount });
         }
-        for (const [cat, coll] of Object.entries(baseMap)) {
-          const curr = currMap[cat];
+        for (const [cat, tokens] of baseMap) {
+          const curr = currMap.get(cat);
           if (!curr) {
-            removed.push({ category: cat, count: coll.tokens.length });
+            removed.push({ category: cat, count: tokens.size });
             continue;
           }
-          const currTokens = new Set(curr.tokens.map(t => t.name));
-          const removedCount = coll.tokens.filter(t => !currTokens.has(t.name)).length;
+          const removedCount = [...tokens.keys()].filter(name => !curr.has(name)).length;
           if (removedCount) removed.push({ category: cat, count: removedCount });
         }
 
         if (!added.length && !removed.length && !changed.length) {
           console.log("No token drift detected");
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=false\n");
+          output("result", "false");
           process.exit(0);
         }
 
-        fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=true\n");
+        output("result", "true");
+        output("error", escape("Design tokens differ from " + baselinePath + " (relative to " + where + "). Detect token drift lists the changes. If they're intended, update the baseline by " + create));
 
         let body = "## Token drift\n\n";
+        if (!collections.length) {
+          body += "No tokens were found this run";
+          if (current.warnings && current.warnings.length) body += " (" + current.warnings.join("; ") + ")";
+          body += ".\n\n";
+        }
         if (added.length) {
           body += "### New collections\n";
           for (const a of added) body += "- **" + a.category + "** (" + a.count + " tokens)\n";
@@ -188,77 +487,163 @@ runs:
     - name: Map components
       id: map
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
-        STORYSYNC_CLI: ${{ github.action_path }}/../dist/cli/index.js
       run: |
+        STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--storybook "$STORYBOOK_URL" --json)
         if [ -n "$COMPONENTS" ]; then
           ARGS+=(--components "$COMPONENTS")
         fi
-        node "$STORYSYNC_CLI" map "${ARGS[@]}" > storysync-current.json
+        # Fails on a components name that matches nothing, listing the names
+        # there are, rather than mapping fewer components than asked for.
+        if ! node "$STORYSYNC_CLI" map "${ARGS[@]}" > storysync-current.json; then
+          # Under --json the CLI reports an error on stdout, which went to the file.
+          node -e '
+            const text = require("fs").readFileSync("storysync-current.json", "utf8").trim();
+            let message = text;
+            try { message = JSON.parse(text).error || text; } catch {}
+            message = String(message).replace(/^Error: /, "").replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+            console.log("::error::storysync map failed" + (message ? ": " + message : ". Its output is above."));
+          '
+          exit 1
+        fi
         {
           echo "json<<STORYSYNC_EOF"
           cat storysync-current.json
           echo "STORYSYNC_EOF"
         } >> "$GITHUB_OUTPUT"
 
+    # Left running, it would hold port 6006 until the job ends, and a second
+    # run of this action in the same job couldn't start its own.
+    - name: Stop Storybook
+      if: always() && steps.storybook.outputs.pid != ''
+      shell: bash
+      env:
+        STORYBOOK_PID: ${{ steps.storybook.outputs.pid }}
+      run: |
+        kill "$STORYBOOK_PID" 2> /dev/null || exit 0
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          kill -0 "$STORYBOOK_PID" 2> /dev/null || exit 0
+          sleep 1
+        done
+        kill -KILL "$STORYBOOK_PID" 2> /dev/null || true
+
     - name: Detect drift
       id: drift
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         BASELINE_PATH: ${{ inputs.baseline }}
+        STORYBOOK_URL: ${{ inputs.storybook_url }}
+        COMPONENTS: ${{ inputs.components }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
         node << 'SCRIPT'
         const fs = require("fs");
+        const path = require("path");
+
+        const output = (name, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, name + "<<STORYSYNC_EOF\n" + value + "\nSTORYSYNC_EOF\n");
+        // Workflow commands end at a newline and read % as an escape.
+        const escape = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+        const quote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'");
+        const wd = path.normalize(process.env.WORKING_DIRECTORY || ".").replace(/\/+$/, "") || ".";
+        const where = wd === "." ? "the repository root" : wd;
+
+        // A report left by an earlier run in this job would otherwise reach
+        // the issue as this run's.
+        fs.rmSync("storysync-drift.md", { force: true });
 
         const baselinePath = process.env.BASELINE_PATH;
         const current = JSON.parse(fs.readFileSync("storysync-current.json", "utf8"));
 
+        // The command that writes the baseline, as the action maps components,
+        // with the storysync it runs.
+        let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " map --storybook " + quote(process.env.STORYBOOK_URL);
+        if (process.env.COMPONENTS) command += " --components " + quote(process.env.COMPONENTS);
+        command += " --json > " + quote(baselinePath);
+        if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
+        const create = "running this in " + where + " with Storybook running, then commit it: " + command + " (the action's json output holds the same JSON)";
+
         if (!fs.existsSync(baselinePath)) {
-          console.log("No baseline found at " + baselinePath + " — first run");
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=new\n");
+          console.log(escape("::warning::No baseline at " + baselinePath + " (relative to " + where + "); component drift isn't being checked. Create it by " + create));
+          output("result", "new");
+          output("error", escape("No baseline at " + baselinePath + " (relative to " + where + "), so component drift wasn't checked. Create it by " + create));
           process.exit(0);
         }
 
-        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
-        const baseMap = Object.fromEntries(baseline.components.map(c => [c.name, c]));
-        const currMap = Object.fromEntries(current.components.map(c => [c.name, c]));
+        // map --json always writes components and a summary. A file without
+        // them isn't a baseline, such as the {"error": ...} the command above
+        // writes when Storybook isn't running, and would crash the step on a
+        // TypeError with nothing to say what was wrong.
+        let baseline = null;
+        try { baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")); } catch {}
+        const isRecord = (v) => typeof v === "object" && v !== null;
+        const isComponent = (c) => isRecord(c) && typeof c.name === "string" && Array.isArray(c.variantProperties);
+        if (!isRecord(baseline) || !Array.isArray(baseline.components) || !baseline.components.every(isComponent) || !isRecord(baseline.summary)) {
+          const held = isRecord(baseline) && typeof baseline.error === "string" ? " (it holds an error: " + baseline.error.replace(/^Error: /, "") + ")" : "";
+          console.log(escape("::error::The baseline at " + baselinePath + " (relative to " + where + ") is not map --json output" + held + ". Recreate it by " + create));
+          process.exit(1);
+        }
 
-        const added = current.components.filter(c => !baseMap[c.name]);
-        const removed = baseline.components.filter(c => !currMap[c.name]);
+        // Components are told apart by their Storybook title, which is unique
+        // where the name needn't be: Forms/Button and Nav/Button are both
+        // Button, and keyed on the name the last of them stood for both.
+        const key = (c) => c.title ?? c.name;
+        // A key on two components, as in a baseline written before map --json
+        // gave titles, or two untitled components of one name, would let one
+        // replace the other in the maps below and hide its drift.
+        const repeated = (list) => [...new Set(list.map(key).filter((k, i, all) => all.indexOf(k) !== i))];
+        const baseRepeats = repeated(baseline.components);
+        if (baseRepeats.length) {
+          console.log(escape("::error::The baseline at " + baselinePath + " (relative to " + where + ") has more than one component keyed " + baseRepeats.map(k => JSON.stringify(k)).join(", ") + ", so they can't be told apart. Recreate it by " + create));
+          process.exit(1);
+        }
+        const currRepeats = repeated(current.components);
+        if (currRepeats.length) {
+          console.log(escape("::error::storysync map returned more than one component keyed " + currRepeats.map(k => JSON.stringify(k)).join(", ") + " with no Storybook title to tell them apart, so their drift can't be checked."));
+          process.exit(1);
+        }
+        const baseMap = Object.fromEntries(baseline.components.map(c => [key(c), c]));
+        const currMap = Object.fromEntries(current.components.map(c => [key(c), c]));
+
+        const added = current.components.filter(c => !baseMap[key(c)]);
+        const removed = baseline.components.filter(c => !currMap[key(c)]);
         const changed = current.components.filter(c => {
-          const b = baseMap[c.name];
+          const b = baseMap[key(c)];
           return b && JSON.stringify(b) !== JSON.stringify(c);
         });
 
         if (!added.length && !removed.length && !changed.length) {
           console.log("No drift detected");
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=false\n");
+          output("result", "false");
           process.exit(0);
         }
 
-        fs.appendFileSync(process.env.GITHUB_OUTPUT, "result=true\n");
+        output("result", "true");
+        output("error", escape("Component variants differ from " + baselinePath + " (relative to " + where + "). Detect drift lists the changes. If they're intended, update the baseline by " + create));
 
         let body = "## Storybook to Figma drift detected\n\n";
         body += "The variant mappings have changed since the last baseline.\n\n";
 
         if (added.length) {
           body += "### Added\n";
-          for (const c of added) body += "- **" + c.name + "** (" + c.combinations + " combinations)\n";
+          for (const c of added) body += "- **" + key(c) + "** (" + c.combinations + " combinations)\n";
           body += "\n";
         }
         if (removed.length) {
           body += "### Removed\n";
-          for (const c of removed) body += "- **" + c.name + "**\n";
+          for (const c of removed) body += "- **" + key(c) + "**\n";
           body += "\n";
         }
         if (changed.length) {
           body += "### Changed\n";
           for (const c of changed) {
-            const b = baseMap[c.name];
-            body += "- **" + c.name + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
+            const b = baseMap[key(c)];
+            body += "- **" + key(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
             body += b.combinations + " → " + c.combinations + " combinations\n";
           }
           body += "\n";
@@ -277,6 +662,7 @@ runs:
     - name: Create or update issue
       if: inputs.create_issue == 'true' && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
       shell: bash
+      working-directory: ${{ inputs.working_directory }}
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
@@ -302,3 +688,22 @@ runs:
             --body-file storysync-combined-drift.md \
             --label storysync-drift
         fi
+
+    # Last, so a drift issue is still filed before the job fails. A missing
+    # baseline fails too: nothing was compared, so a green job would mean
+    # nothing, and a misnamed baseline path would pass forever.
+    - name: Fail on drift
+      if: inputs.fail_on_drift == 'true'
+      shell: bash
+      env:
+        DRIFT_ERROR: ${{ steps.drift.outputs.error }}
+        TOKEN_DRIFT_ERROR: ${{ steps.token-drift.outputs.error }}
+      run: |
+        status=0
+        for message in "$DRIFT_ERROR" "$TOKEN_DRIFT_ERROR"; do
+          if [ -n "$message" ]; then
+            echo "::error::$message"
+            status=1
+          fi
+        done
+        exit "$status"

@@ -1,15 +1,27 @@
 // Design token extraction from project source files.
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { colorToHex } from "./color.js";
 
-export type TokenSourceType = "tailwind" | "css" | "theme";
+/** The token sources `--source` takes. Leaving it out, or `auto`, detects one. */
+export const TOKEN_SOURCES = ["tailwind", "css", "theme"] as const;
+
+export type TokenSourceType = (typeof TOKEN_SOURCES)[number];
 
 export type TokenCategory = "colors" | "spacing" | "typography" | "radius" | "shadows";
 
 export interface TokenValue {
   name: string;
+  /** As the source writes it. `tokens --check` compares this. */
   value: string;
+  /**
+   * A colour token's value as sRGB hex, `#rrggbb` or `#rrggbbaa`, for the
+   * push: figma.util.rgb() and rgba() take only hex, rgb(), hsl() and lab(),
+   * so a token in oklch() or bare HSL channels threw. Absent when the value
+   * is no colour storysync can convert, and on every other category.
+   */
+  hex?: string;
   group?: string;
 }
 
@@ -25,6 +37,29 @@ export interface TokenExtractionResult {
   warnings: string[];
 }
 
+/**
+ * Reads `--source`, as tokens and diff take it: one of TOKEN_SOURCES, or
+ * undefined when it was left out or is `auto`, for the source to be
+ * detected. `auto` is the drift-check action's token_source default, which
+ * the README has action users pass on to `tokens --source` for their
+ * baseline. Anything else throws, naming the sources there are.
+ * extractTokens has no case for it and detects a source instead, so
+ * `--source scss` read whatever the project had first, a Tailwind config
+ * say, and exited 0 as though it had read what was asked for.
+ */
+export function parseTokenSource(value: string | undefined): TokenSourceType | undefined {
+  if (value === undefined || value === "auto") return undefined;
+  const source = TOKEN_SOURCES.find((s) => s === value);
+  if (!source) {
+    const names = TOKEN_SOURCES.map((s) => `"${s}"`);
+    throw new Error(
+      `--source must be ${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}, received "${value}". ` +
+      "Leave it out, or pass \"auto\", to detect the source.",
+    );
+  }
+  return source;
+}
+
 // --- Detection ---
 
 interface DetectedSource {
@@ -32,14 +67,32 @@ interface DetectedSource {
   path: string;
 }
 
-export function detectTokenSource(projectPath: string): DetectedSource | null {
-  for (const name of ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"]) {
+const TAILWIND_CONFIGS = ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"];
+
+function findTailwindConfig(projectPath: string): string | null {
+  for (const name of TAILWIND_CONFIGS) {
     const p = join(projectPath, name);
-    if (existsSync(p)) return { type: "tailwind", path: p };
+    if (existsSync(p)) return p;
   }
+  return null;
+}
+
+/**
+ * A Tailwind config comes first, then `:root` custom properties, then a
+ * Tailwind v4 `@theme` block. `:root` stays ahead of `@theme` so a v4 project
+ * that has both, as shadcn/ui's v4 globals.css does, keeps the tokens, names
+ * and baselines it had before `@theme` was read; `@theme` is for a CSS-first
+ * project that declares its palette nowhere else.
+ */
+export function detectTokenSource(projectPath: string): DetectedSource | null {
+  const config = findTailwindConfig(projectPath);
+  if (config) return { type: "tailwind", path: config };
 
   const cssFiles = findCSSWithCustomProperties(projectPath);
   if (cssFiles.length) return { type: "css", path: cssFiles[0] };
+
+  const themeCss = findTailwindThemeCSS(projectPath);
+  if (themeCss.length) return { type: "tailwind", path: themeCss[0] };
 
   const themeFile = findThemeFile(projectPath);
   if (themeFile) return { type: "theme", path: themeFile };
@@ -48,6 +101,16 @@ export function detectTokenSource(projectPath: string): DetectedSource | null {
 }
 
 function findCSSWithCustomProperties(projectPath: string): string[] {
+  return findCSS(projectPath, (css) => /:root\s*\{/.test(css) && /--[\w-]+\s*:/.test(css));
+}
+
+/** Stylesheets with a Tailwind v4 `@theme` block that declares a variable. */
+function findTailwindThemeCSS(projectPath: string): string[] {
+  return findCSS(projectPath, (css) => readThemeBlocks(css).some((block) => readDeclarations(block).length > 0));
+}
+
+/** The project's stylesheets, CSS modules aside, whose text without comments passes `test`. */
+function findCSS(projectPath: string, test: (css: string) => boolean): string[] {
   const results: string[] = [];
   const srcDir = join(projectPath, "src");
   const appDir = join(projectPath, "app");
@@ -55,12 +118,12 @@ function findCSSWithCustomProperties(projectPath: string): string[] {
 
   for (const dir of [srcDir, appDir, stylesDir, projectPath]) {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
-    walkCSS(dir, results, projectPath, 0);
+    walkCSS(dir, results, test, 0);
   }
   return results;
 }
 
-function walkCSS(dir: string, results: string[], root: string, depth: number): void {
+function walkCSS(dir: string, results: string[], test: (css: string) => boolean, depth: number): void {
   if (depth > 5) return;
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
@@ -71,13 +134,10 @@ function walkCSS(dir: string, results: string[], root: string, depth: number): v
     let stat;
     try { stat = statSync(full); } catch { continue; }
     if (stat.isDirectory()) {
-      walkCSS(full, results, root, depth + 1);
+      walkCSS(full, results, test, depth + 1);
     } else if (entry.endsWith(".css") && !entry.endsWith(".module.css")) {
       try {
-        const content = readFileSync(full, "utf8");
-        if (/:root\s*\{/.test(content) && /--[\w-]+\s*:/.test(content)) {
-          results.push(full);
-        }
+        if (test(readCss(full))) results.push(full);
       } catch { /* skip unreadable */ }
     }
   }
@@ -100,17 +160,71 @@ function findThemeFile(projectPath: string): string | null {
   return null;
 }
 
+/**
+ * Source with its comments taken out, so a commented-out key or custom
+ * property isn't read as a token: `// primary: "#ff0000"` above the real
+ * `primary` became a second primary, which made `tokens --check` drift
+ * against a baseline taken from the same config, and a commented-out block
+ * of colours was read in place of the real ones.
+ *
+ * Quotes are tracked, so the `/*` in a content glob or the `//` in a URL
+ * survives when it is in a string. `lineComments` is false for CSS, which
+ * has only block comments: there `//` can start an unquoted `url(//cdn...)`.
+ */
+function stripComments(src: string, lineComments = true): string {
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      out += ch;
+      if (ch === "\\") out += src[++i] ?? "";
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      out += ch;
+    } else if (ch === "/" && src[i + 1] === "/" && lineComments) {
+      // The newline stays: it ends a value as a comma does.
+      while (i + 1 < src.length && src[i + 1] !== "\n") i++;
+    } else if (ch === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end === -1 ? src.length : end + 1;
+      out += " ";
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/** A stylesheet's text without its comments. */
+function readCss(file: string): string {
+  return stripComments(readFileSync(file, "utf8"), false);
+}
+
 // --- Main extraction ---
 
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
+  const result = extractFromSource(projectPath, sourceType);
+  for (const collection of result.collections) {
+    if (collection.category !== "colors") continue;
+    collection.tokens = collection.tokens.map((token) => {
+      const hex = tokenColorToHex(token.value);
+      return hex ? { ...token, hex } : token;
+    });
+  }
+  return result;
+}
+
+function extractFromSource(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
   if (sourceType) {
     switch (sourceType) {
       case "tailwind": {
-        for (const name of ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"]) {
-          const p = join(projectPath, name);
-          if (existsSync(p)) return extractFromTailwind(p, projectPath);
-        }
-        return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config found"] };
+        const config = findTailwindConfig(projectPath);
+        if (config) return extractFromTailwind(config, projectPath);
+        const themeCss = findTailwindThemeCSS(projectPath);
+        if (themeCss.length) return extractFromTailwindTheme(themeCss, projectPath);
+        return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config or CSS @theme block found"] };
       }
       case "css": {
         const files = findCSSWithCustomProperties(projectPath);
@@ -131,7 +245,10 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
   }
 
   switch (detected.type) {
-    case "tailwind": return extractFromTailwind(detected.path, projectPath);
+    case "tailwind":
+      return detected.path.endsWith(".css")
+        ? extractFromTailwindTheme(findTailwindThemeCSS(projectPath), projectPath)
+        : extractFromTailwind(detected.path, projectPath);
     case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath));
     case "theme": return extractFromTheme(detected.path);
   }
@@ -140,7 +257,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
 // --- Tailwind extraction ---
 
 function extractFromTailwind(configPath: string, projectRoot?: string): TokenExtractionResult {
-  const content = readFileSync(configPath, "utf8");
+  const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
 
@@ -203,7 +320,7 @@ function readCssVars(files: string[]): Map<string, string> {
   const allVars = new Map<string, string>();
   for (const file of files) {
     try {
-      const content = readFileSync(file, "utf8");
+      const content = readCss(file);
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
       for (const block of rootBlocks) {
         const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
@@ -419,6 +536,148 @@ function extractKeyValuePairs(block: string): [string, string][] {
   return pairs;
 }
 
+// --- Tailwind v4 @theme extraction ---
+
+/**
+ * The Tailwind v4 theme variable namespaces read as tokens, and their
+ * categories. Colours, spacing, radii and shadows are named without the
+ * namespace, as a Tailwind config's keys are: `--color-brand-500` is colors
+ * `brand/500`, and the bare `--spacing` is spacing `DEFAULT`. Typography
+ * holds several namespaces, so its names keep theirs: `--text-sm` is
+ * `text/sm`, `--font-sans` `font/sans`, `--font-weight-bold`
+ * `font/weight/bold`, `--leading-tight` `leading/tight`.
+ */
+const THEME_NAMESPACES: { namespace: string; category: TokenCategory; keepNamespace?: true }[] = [
+  { namespace: "color", category: "colors" },
+  { namespace: "spacing", category: "spacing" },
+  { namespace: "radius", category: "radius" },
+  { namespace: "shadow", category: "shadows" },
+  { namespace: "text", category: "typography", keepNamespace: true },
+  { namespace: "font", category: "typography", keepNamespace: true },
+  { namespace: "leading", category: "typography", keepNamespace: true },
+  { namespace: "tracking", category: "typography", keepNamespace: true },
+];
+
+/** A theme variable's category and token name, or null outside THEME_NAMESPACES. */
+function themeToken(varName: string): { category: TokenCategory; name: string } | null {
+  const bare = varName.slice(2);
+  // --text-shadow-* is text shadows, not font sizes.
+  if (bare.startsWith("text-shadow-")) return null;
+  for (const { namespace, category, keepNamespace } of THEME_NAMESPACES) {
+    if (bare !== namespace && !bare.startsWith(`${namespace}-`)) continue;
+    if (keepNamespace) return { category, name: bare.replace(/-/g, "/") };
+    const key = bare.slice(namespace.length + 1);
+    return { category, name: key ? key.replace(/-/g, "/") : "DEFAULT" };
+  }
+  return null;
+}
+
+/** The bodies of a stylesheet's `@theme` blocks, `@theme inline` and the like included. */
+function readThemeBlocks(css: string): string[] {
+  const blocks: string[] = [];
+  const start = /@theme\b[^{;]*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = start.exec(css)) !== null) {
+    let depth = 1;
+    let i = start.lastIndex;
+    while (i < css.length && depth > 0) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") depth--;
+      i++;
+    }
+    blocks.push(css.slice(start.lastIndex, i - 1));
+    start.lastIndex = i;
+  }
+  return blocks;
+}
+
+/**
+ * A block's own custom property declarations, in order, leaving out nested
+ * rules such as the `@keyframes` a theme may hold. A name can end in `*`, as
+ * in `--color-*: initial`, which clears a namespace.
+ */
+function readDeclarations(block: string): [string, string][] {
+  let flat = "";
+  let depth = 0;
+  for (const ch of block) {
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; flat += ";"; }
+    else if (depth === 0) flat += ch;
+  }
+  return [...flat.matchAll(/(?:^|[;\s])(--[\w-]*\*?)\s*:\s*([^;]+)/g)].map((d) => [d[1], d[2].trim()]);
+}
+
+/** Tailwind v4's own theme.css, whose variables a project's theme can refer to. */
+function findTailwindDefaultTheme(projectPath: string): string | null {
+  let dir = resolve(projectPath);
+  for (;;) {
+    const p = join(dir, "node_modules", "tailwindcss", "theme.css");
+    if (existsSync(p)) return p;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Tokens from Tailwind v4's CSS-first theme: `@theme { --color-brand-500:
+ * oklch(...); }`. Later declarations win, as they do in Tailwind, and
+ * `initial` removes one, or with `*` a namespace. A `var()` resolves against
+ * the theme itself, the project's `:root` (shadcn/ui's v4 `@theme inline`
+ * points at it) and Tailwind's default theme when it is installed; the
+ * defaults are not tokens themselves, as a Tailwind config's aren't. A
+ * modifier such as `--text-sm--line-height` belongs to its token and is
+ * skipped, and a namespace that is no token category is reported as
+ * uncategorized.
+ */
+function extractFromTailwindTheme(files: string[], projectPath: string): TokenExtractionResult {
+  const warnings: string[] = [];
+  const declared = new Map<string, string>();
+  for (const file of files) {
+    let css: string;
+    try { css = readCss(file); } catch { warnings.push(`Could not read ${file}`); continue; }
+    for (const block of readThemeBlocks(css)) {
+      for (const [name, value] of readDeclarations(block)) {
+        if (value !== "initial") declared.set(name, value);
+        else if (name.endsWith("*")) {
+          for (const key of declared.keys()) if (key.startsWith(name.slice(0, -1))) declared.delete(key);
+        } else declared.delete(name);
+      }
+    }
+  }
+
+  const vars = new Map<string, string>();
+  const defaults = findTailwindDefaultTheme(projectPath);
+  if (defaults) {
+    try {
+      for (const block of readThemeBlocks(readCss(defaults))) {
+        for (const [name, value] of readDeclarations(block)) vars.set(name, value);
+      }
+    } catch { /* resolve without them */ }
+  }
+  for (const [name, value] of readCssVars(findCSSWithCustomProperties(projectPath))) vars.set(name, value);
+  for (const [name, value] of declared) vars.set(name, value);
+
+  const categorized: Record<TokenCategory, TokenValue[]> = {
+    colors: [], spacing: [], typography: [], radius: [], shadows: [],
+  };
+  for (const [varName, value] of declared) {
+    if (varName.endsWith("*") || varName.slice(2).includes("--")) continue;
+    const token = themeToken(varName);
+    if (!token) {
+      warnings.push(`Uncategorized: ${varName}: ${value}`);
+      continue;
+    }
+    categorized[token.category].push({ name: token.name, value: resolveTailwindCssRefs(value, vars) });
+  }
+
+  const collections: TokenCollection[] = [];
+  for (const [category, tokens] of Object.entries(categorized) as [TokenCategory, TokenValue[]][]) {
+    if (tokens.length) collections.push({ category, tokens });
+  }
+  return { source: "tailwind", sourcePath: files[0], collections, warnings };
+}
+
 // --- CSS custom properties extraction ---
 
 function extractFromCSS(files: string[]): TokenExtractionResult {
@@ -427,7 +686,7 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
 
   for (const file of files) {
     try {
-      const content = readFileSync(file, "utf8");
+      const content = readCss(file);
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
 
       for (const block of rootBlocks) {
@@ -522,20 +781,44 @@ function resolveCssVar(value: string, allVars: Map<string, string>, depth: numbe
   return value;
 }
 
+/**
+ * Whether a custom property's value is a colour, for one whose name doesn't
+ * say. Every colour function diff converts counts, so a token written in
+ * lab(), lch(), oklab(), color(display-p3 ...) or hwb() is a colour, as an
+ * oklch() one always was, rather than being dropped as uncategorized, where
+ * neither diff nor `tokens --check` would ever see it.
+ */
 function isColorValue(value: string): boolean {
   const v = value.trim();
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ||
-    /^rgba?\(/.test(v) ||
-    /^hsla?\(/.test(v) ||
-    /^oklch\(/.test(v) ||
-    // Bare HSL channels: "240 5% 98%" or "0 0% 100%"
-    /^\d{1,3}\s+\d{1,3}%\s+\d{1,3}%$/.test(v);
+    /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v) ||
+    BARE_HSL.test(v);
+}
+
+/**
+ * Bare HSL channels, as shadcn/ui's `:root` holds its colours for a Tailwind
+ * config's `hsl(var(--background))`: `0 0% 100%`, `240 5.9% 10%`, with an
+ * optional `/ alpha`. Whole numbers only used to be read, so shadcn's
+ * `--sidebar-primary: 240 5.9% 10%` was dropped as uncategorized.
+ */
+const BARE_HSL = /^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%(?:\s*\/\s*(?:\d+(?:\.\d+)?|\.\d+)%?)?$/;
+
+/**
+ * A colour token's value as sRGB hex, or null when it is no colour colorToHex
+ * reads: an unresolved `var()`, `currentColor` or `color-mix()`. Bare HSL
+ * channels are read as the hsl() they are written for; colorToHex alone
+ * returned null for them, so diff compared `0 0% 100%` with Figma's `#ffffff`
+ * as strings, a mismatch every time.
+ */
+export function tokenColorToHex(value: string): string | null {
+  const v = value.trim();
+  return colorToHex(BARE_HSL.test(v) ? `hsl(${v})` : v);
 }
 
 // --- Theme file extraction ---
 
 function extractFromTheme(filePath: string): TokenExtractionResult {
-  const content = readFileSync(filePath, "utf8");
+  const content = stripComments(readFileSync(filePath, "utf8"));
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
 
@@ -612,48 +895,120 @@ export interface TokenBaseline {
   generatedAt: string;
 }
 
+/**
+ * Reads a baseline for `tokens --check`. `tokens --json` writes one: only its
+ * `collections` are compared. Null when the file does not exist, which the
+ * caller reports; throws when it exists but is not a baseline — for instance
+ * the saved output of a passing `--check --json`, which is only `{"drift":false}`.
+ *
+ * Every collection needs a `category` and a `tokens` list, and every token a
+ * `name` and a `value`, all as `tokens --json` writes them. `{"collections":[{}]}`
+ * used to crash the text report and pass under --json, listing a removed
+ * collection with no name.
+ */
+export function readTokenBaseline(path: string): TokenBaseline | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`Could not read the token baseline at ${path}: ${String(err)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`The token baseline at ${path} is not valid JSON: ${String(err)}`);
+  }
+  const collections = (parsed as Partial<TokenBaseline> | null)?.collections;
+  if (!Array.isArray(collections)) {
+    throw new Error(`The token baseline at ${path} has no "collections", so it is not a baseline`);
+  }
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+  for (const collection of collections as unknown[]) {
+    if (!isRecord(collection) || typeof collection.category !== "string" || !Array.isArray(collection.tokens)) {
+      throw new Error(`The token baseline at ${path} has a collection without a "category" and a "tokens" list, so it is not a baseline`);
+    }
+    if (!collection.tokens.every((t: unknown) => isRecord(t) && typeof t.name === "string" && typeof t.value === "string")) {
+      throw new Error(`The token baseline at ${path} has a ${collection.category} token without a "name" and a "value", so it is not a baseline`);
+    }
+  }
+  return parsed as TokenBaseline;
+}
+
+/**
+ * The shell command that writes a baseline `--check` can read, for the same
+ * project and source. The directory is created first because the default,
+ * `.storysync/`, need not exist yet, and a redirect into it would fail.
+ */
+export function baselineCommand(path: string, opts: { project?: string; source?: string } = {}): string {
+  const quote = (s: string) => (/^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+  const args = ["storysync", "tokens"];
+  if (opts.project && opts.project !== ".") args.push("--project", quote(opts.project));
+  if (opts.source) args.push("--source", quote(opts.source));
+  args.push("--json", ">", quote(path));
+  const dir = dirname(path);
+  return `${dir === "." ? "" : `mkdir -p -- ${quote(dir)} && `}${args.join(" ")}`;
+}
+
 export interface TokenDrift {
   added: { category: TokenCategory; tokens: TokenValue[] }[];
   removed: { category: TokenCategory; tokens: TokenValue[] }[];
   changed: { category: TokenCategory; token: string; from: string; to: string }[];
 }
 
+/**
+ * Every token of each category, one per name, the last of a name winning, as
+ * diff pairs them. A theme file's `fontSizes` and `fontWeights` are two
+ * typography collections; keyed by category alone, only the last was compared,
+ * so a changed font size passed --check, and dropping `fontWeights` reported
+ * the sizes as added. A name listed twice compares once, so a baseline that
+ * holds a duplicate checks clean against the same extraction.
+ */
+function tokensByCategory(collections: TokenCollection[]): Map<TokenCategory, Map<string, TokenValue>> {
+  const byCategory = new Map<TokenCategory, Map<string, TokenValue>>();
+  for (const collection of collections) {
+    const tokens = byCategory.get(collection.category) ?? new Map<string, TokenValue>();
+    for (const token of collection.tokens) tokens.set(token.name, token);
+    byCategory.set(collection.category, tokens);
+  }
+  return byCategory;
+}
+
 export function compareTokens(baseline: TokenBaseline, current: TokenExtractionResult): TokenDrift {
   const drift: TokenDrift = { added: [], removed: [], changed: [] };
 
-  const baseMap = new Map(baseline.collections.map((c) => [c.category, c]));
-  const currMap = new Map(current.collections.map((c) => [c.category, c]));
+  const baseMap = tokensByCategory(baseline.collections);
+  const currMap = tokensByCategory(current.collections);
 
   // Find added and changed
-  for (const [category, currColl] of currMap) {
-    const baseColl = baseMap.get(category);
-    if (!baseColl) {
-      drift.added.push({ category, tokens: currColl.tokens });
+  for (const [category, currTokens] of currMap) {
+    const baseTokens = baseMap.get(category);
+    if (!baseTokens) {
+      drift.added.push({ category, tokens: [...currTokens.values()] });
       continue;
     }
-    const baseTokenMap = new Map(baseColl.tokens.map((t) => [t.name, t.value]));
     const newTokens: TokenValue[] = [];
 
-    for (const token of currColl.tokens) {
-      const baseValue = baseTokenMap.get(token.name);
-      if (baseValue == null) {
+    for (const token of currTokens.values()) {
+      const base = baseTokens.get(token.name);
+      if (!base) {
         newTokens.push(token);
-      } else if (baseValue !== token.value) {
-        drift.changed.push({ category, token: token.name, from: baseValue, to: token.value });
+      } else if (base.value !== token.value) {
+        drift.changed.push({ category, token: token.name, from: base.value, to: token.value });
       }
     }
     if (newTokens.length) drift.added.push({ category, tokens: newTokens });
   }
 
   // Find removed
-  for (const [category, baseColl] of baseMap) {
-    const currColl = currMap.get(category);
-    if (!currColl) {
-      drift.removed.push({ category, tokens: baseColl.tokens });
+  for (const [category, baseTokens] of baseMap) {
+    const currTokens = currMap.get(category);
+    if (!currTokens) {
+      drift.removed.push({ category, tokens: [...baseTokens.values()] });
       continue;
     }
-    const currTokenNames = new Set(currColl.tokens.map((t) => t.name));
-    const removedTokens = baseColl.tokens.filter((t) => !currTokenNames.has(t.name));
+    const removedTokens = [...baseTokens.values()].filter((t) => !currTokens.has(t.name));
     if (removedTokens.length) drift.removed.push({ category, tokens: removedTokens });
   }
 
