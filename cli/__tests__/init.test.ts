@@ -174,6 +174,45 @@ test("hasAddonMcpInConfig: false when absent", () => {
   assert.equal(hasAddonMcpInConfig(config), false);
 });
 
+test("hasAddonMcpInConfig: an entry inside a comment is not registered", () => {
+  assert.equal(hasAddonMcpInConfig(`addons: [\n  "@storybook/addon-docs",\n  // "@storybook/addon-mcp", // off until the upgrade\n]`), false);
+  assert.equal(hasAddonMcpInConfig(`addons: [\n  "@storybook/addon-docs",\n  /* { name: "@storybook/addon-mcp" }, */\n]`), false);
+  assert.equal(hasAddonMcpInConfig(`/*\n addons: ["@storybook/addon-mcp"],\n*/\naddons: []`), false);
+});
+
+test("hasAddonMcpInConfig: a string's // or slash-star doesn't hide the entry after it", () => {
+  assert.equal(hasAddonMcpInConfig(`refs: { a: { url: "https://x.dev" } }, addons: ["@storybook/addon-mcp"]`), true);
+  assert.equal(hasAddonMcpInConfig(`stories: ["../src/**/*.stories.tsx"], addons: ["@storybook/addon-mcp"]`), true);
+  assert.equal(hasAddonMcpInConfig(`stories: ['../docs/**'], addons: ["@storybook/addon-mcp"] // the MCP server`), true);
+  assert.equal(hasAddonMcpInConfig(`test: /https?:\\/\\//, addons: ["@storybook/addon-mcp"]`), true);
+});
+
+test("addAddonToConfig: inserts into the addons array that isn't commented out", () => {
+  const line = `const config = {\n  // addons: ["@storybook/addon-essentials"],\n  addons: ["@storybook/addon-docs"],\n};`;
+  const block = `const config = {\n  /* addons: [\n    "@storybook/addon-essentials",\n  ], */\n  addons: ["@storybook/addon-docs"],\n};`;
+  for (const input of [line, block]) {
+    const result = addAddonToConfig(input);
+    assert.equal(result.ok, true);
+    const entry = `\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
+    const live = input.lastIndexOf(`addons: [`) + `addons: [`.length;
+    assert.equal(result.content, input.slice(0, live) + entry + input.slice(live));
+    assert.equal(hasAddonMcpInConfig(result.content), true);
+  }
+});
+
+test("addAddonToConfig: ok=false when the only addons array is commented out", () => {
+  const input = `const config = {\n  // addons: ["@storybook/addon-essentials"],\n  framework: "@storybook/react-vite",\n};`;
+  assert.deepEqual(addAddonToConfig(input), { content: input, ok: false });
+});
+
+test("addAddonToConfig: a glob or URL before the addons array doesn't throw the match off", () => {
+  const input = `const config = {\n  stories: ["../src/**/*.stories.tsx"],\n  refs: { a: { url: "https://x.dev//a" } },\n  addons: [],\n};`;
+  const result = addAddonToConfig(input);
+  assert.equal(result.ok, true);
+  assert.match(result.content, /\n  addons: \[\n    \{ name: "@storybook\/addon-mcp"/);
+  assert.match(result.content, /stories: \["\.\.\/src\/\*\*\/\*\.stories\.tsx"\],\n  refs: \{ a: \{ url: "https:\/\/x\.dev\/\/a" \} \},\n/);
+});
+
 test("addAddonToConfig: inserts entry with toolsets.docs", () => {
   const input = `const config = {\n  addons: [\n    '@storybook/addon-a11y',\n  ],\n};`;
   const result = addAddonToConfig(input);

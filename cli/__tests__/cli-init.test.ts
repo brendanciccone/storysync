@@ -140,6 +140,32 @@ test("init CLI: accepting installs the matching addon-mcp, and the quoted spec r
   });
 });
 
+test("init CLI: addon-mcp commented out of the config isn't registered, and is added to the live addons array", () => {
+  withProject({ storybook: "10.6.0", addon: "10.6.0" }, (dir) => {
+    const main = join(dir, ".storybook", "main.ts");
+    writeFileSync(main, [
+      "export default {",
+      "  framework: \"@storybook/react-vite\",",
+      "  // addons: [\"@storybook/addon-essentials\"],",
+      "  addons: [",
+      "    \"@storybook/addon-docs\",",
+      "    // \"@storybook/addon-mcp\", // off until the upgrade",
+      "  ],",
+      "};",
+      "",
+    ].join("\n"));
+    const r = init(dir, "y\n");
+    assert.equal(r.status, 0, r.out);
+    assert.doesNotMatch(r.out, /Everything looks good/);
+    assert.match(r.out, /✖ addon-mcp registered in addons array/);
+    assert.match(r.out, /Updated \.storybook\/main\.ts/);
+    const written = readFileSync(main, "utf8").split("\n");
+    assert.equal(written[2], "  // addons: [\"@storybook/addon-essentials\"],");
+    assert.equal(written[3], "  addons: [");
+    assert.equal(written[4], "    { name: \"@storybook/addon-mcp\", options: { toolsets: { docs: true } } },");
+  });
+});
+
 test("init CLI: an addon-mcp release that matches Storybook, or 0.7 on any Storybook 10, looks good", () => {
   for (const fixture of [{ storybook: "10.6.0", addon: "10.6.0" }, { storybook: "10.6.2", addon: "10.6.0" }, { storybook: "10.5.5", addon: "0.7.0" }]) {
     withProject(fixture, (dir) => {

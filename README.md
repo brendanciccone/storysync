@@ -304,7 +304,7 @@ A command that can't reach Storybook, or `diff` Figma, exits 1, and so does one 
 
 ### `storysync init`
 
-Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version (10.1+ required for component sync), whether `@storybook/addon-mcp` is installed, and whether it's registered in `addons` — then prompts before applying each fix to your `.storybook/main.ts`.
+Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version (10.1+ required for component sync), whether `@storybook/addon-mcp` is installed, and whether it's registered in `addons` — then prompts before applying each fix to your `.storybook/main.ts`. An entry inside a comment doesn't count as registered, and the addon is added to the `addons` array that isn't commented out.
 
 ```text
 Options:

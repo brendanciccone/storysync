@@ -174,12 +174,54 @@ export function hasAddonMcpInPackageJson(projectPath: string): boolean {
   return Boolean(pkg.devDependencies?.["@storybook/addon-mcp"] || pkg.dependencies?.["@storybook/addon-mcp"]);
 }
 
-export function hasAddonMcpInConfig(content: string): boolean {
-  return /["']@storybook\/addon-mcp["']/.test(content);
+/**
+ * `content` with each comment blanked out, newlines kept, so an offset in it
+ * is an offset in `content`. Strings are copied as they are: a stories glob
+ * holds a slash-star and a URL holds `//`. A backslash outside a string, as
+ * in a regex like `/https?:\/\//`, escapes the character after it.
+ */
+function maskComments(content: string): string {
+  let out = "";
+  let i = 0;
+  while (i < content.length) {
+    const c = content[i];
+    let end = i + 1;
+    if (c === "/" && (content[i + 1] === "/" || content[i + 1] === "*")) {
+      const line = content[i + 1] === "/";
+      const close = line ? content.indexOf("\n", i) : content.indexOf("*/", i + 2);
+      end = close < 0 ? content.length : line ? close : close + 2;
+      out += content.slice(i, end).replace(/[^\n]/g, " ");
+      i = end;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      // Up to the closing quote. A '' or "" string can't span lines, so one
+      // left open ends at the line's end.
+      while (end < content.length && content[end] !== c && (c === "`" || content[end] !== "\n")) {
+        end += content[end] === "\\" ? 2 : 1;
+      }
+      end++;
+    } else if (c === "\\") {
+      end++;
+    }
+    out += content.slice(i, end);
+    i = end;
+  }
+  return out;
 }
 
+/** Whether addon-mcp is in the config, outside a comment. */
+export function hasAddonMcpInConfig(content: string): boolean {
+  return /["']@storybook\/addon-mcp["']/.test(maskComments(content));
+}
+
+/**
+ * Adds addon-mcp at the start of the `addons` array. One commented out, often
+ * left beside the real one, is passed over: written into, it uncomments the
+ * line it lands on and breaks the file, or never loads.
+ */
 export function addAddonToConfig(content: string): { content: string; ok: boolean } {
-  const m = content.match(/(addons\s*:\s*\[)/);
+  const m = maskComments(content).match(/(addons\s*:\s*\[)/);
   if (!m) return { content, ok: false };
   const insertAt = (m.index ?? 0) + m[0].length;
   const entry = `\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
