@@ -1484,7 +1484,18 @@ async function main() {
     assert(JSON.stringify(got) === JSON.stringify(want), `read back ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
     const hidden = slice.readback["edge-hidden-stroke"].borderUniform;
     assert(hidden?.width === 1 && hidden.color === null, `a stroke hidden with visible: false read back as ${JSON.stringify(hidden)}`);
-    return `fill ${got.backgroundColor}, stroke ${got.border}, text ${got.color}; a hidden 1px stroke null; ` +
+    // An agent may set a paint's opacity to the decimal it recognises, 0.7 for
+    // snap's b3 (rgba(0,0,0,0.7) rounds to 179). Figma keeps it as a 32-bit
+    // float, 0.69999…, which has to read back b3, not b2.
+    const decimal = figmaNode("decimal", { ...styles, backgroundColor: "#000000b3" });
+    decimal.fills = [{ ...decimal.fills[0], opacity: Math.fround(0.7) }];
+    const decimalRead = (await readback.read(
+      { id: "set:Two", type: "COMPONENT_SET", name: "Two", children: [decimal] },
+      { decimal: "edge-decimal" },
+      { "edge-decimal": "measured" },
+    )).readback["edge-decimal"].backgroundColor;
+    assert(decimalRead === "#000000b3", `a fill whose opacity was set to 0.7 read back as ${decimalRead}, not #000000b3`);
+    return `fill ${got.backgroundColor}, stroke ${got.border}, text ${got.color}; opacity 0.7 as b3; a hidden 1px stroke null; ` +
       `${verdicts.translucent.status} and ${verdicts["hidden-stroke"].status}`;
   });
 
@@ -1498,7 +1509,7 @@ async function main() {
       colour: "color: hexOf(stroke) }",
       hidden: "if (paint.visible === false) return null;",
       alpha: "+ (alpha < 255 ? byte(alpha) : '');",
-      opacity: "* (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255);",
+      opacity: "* (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255 + 1e-4);",
     };
     const mutants = {
       "reads the size from absoluteRenderBounds, as the live push did": (code) => code.replace(T.size,
@@ -1515,7 +1526,7 @@ async function main() {
         "color: hexOf({ ...stroke, visible: true, opacity: 1 }) }"),
       "reports the colour of a stroke hidden with visible: false": (code) => code.replace(T.hidden, ""),
       "drops a translucent colour's alpha, as toHex(paint.color) did": (code) => code.replace(T.alpha, ";"),
-      "reads a paint's colour without its opacity": (code) => code.replace(T.opacity, "* 255);"),
+      "reads a paint's colour without its opacity": (code) => code.replace(T.opacity, "* 255 + 1e-4);"),
     };
     const failed = [];
     for (const [mutant, mutate] of Object.entries(mutants)) {

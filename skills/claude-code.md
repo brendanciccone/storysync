@@ -485,8 +485,10 @@ use_figma({
       const hexOf = (paint) => {
         if (paint.visible === false) return null;
         const c = paint.color;
+        // + 1e-4: Figma keeps opacity as a 32-bit float, so an opacity set as
+        // 0.7 reads 0.69999… and would round to b2 where snap wrote b3.
         const alpha = Math.round((typeof c.a === 'number' ? c.a : 1)
-          * (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255);
+          * (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255 + 1e-4);
         if (alpha === 0) return null;
         return '#' + [c.r, c.g, c.b].map((x) => byte(Math.round(x * 255))).join('')
           + (alpha < 255 ? byte(alpha) : '');
@@ -648,7 +650,7 @@ npx storysync verify --strict-age
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Two things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node — and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, the variants with a transparent border, and any failures or caps. Say that Figma shows a transparent border as an unfilled ring: the browser draws the background under a transparent border, but Figma's fill stops where the `OUTSIDE` stroke begins, and that stroke's paint draws nothing. If the user would rather it look filled, they can choose a stroke tinted the background's colour instead, which `verify` will then score as a border colour the code does not have.
+7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, the variants with a transparent border, and any failures or caps. For each variant whose transparent border was built as an `OUTSIDE` stroke (a `CENTER` one leaves half the ring unfilled, an `INSIDE` one on a fixed-size frame none), say that Figma shows that transparent border as an unfilled ring: the browser draws the background under a transparent border, but Figma's fill stops where the `OUTSIDE` stroke begins, and that stroke's paint draws nothing. If the user would rather it look filled, they can choose a stroke tinted the background's colour instead, which `verify` will then score as a border colour the code does not have.
 
 ## Variable binding
 

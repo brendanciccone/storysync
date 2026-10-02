@@ -554,7 +554,7 @@ test("every push summary says a transparent border shows as an unfilled ring", (
       const text = readFileSync(join(project, path), "utf8");
       const summary = /^\d+\. Summarize[^\n]*/m.exec(text);
       assert.ok(summary, `${path} has no summary step`);
-      assert.match(summary[0], /transparent border as an unfilled ring[^\n]*background under a transparent border[^\n]*`OUTSIDE` stroke[^\n]*stroke tinted[^\n]*`verify` will then score as a border colou?r the code does not have/,
+      assert.match(summary[0], /transparent border was built as an `OUTSIDE` stroke[^\n]*`INSIDE` one on a fixed-size frame none[^\n]*transparent border as an unfilled ring[^\n]*background under a transparent border[^\n]*`OUTSIDE` stroke[^\n]*stroke tinted[^\n]*`verify` will then score as a border colou?r the code does not have/,
         `${path}'s summary never says a transparent border shows as an unfilled ring, or offers a tinted stroke`);
     }
   } finally {
