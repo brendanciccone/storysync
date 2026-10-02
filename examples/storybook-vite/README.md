@@ -48,6 +48,8 @@ Two more properties worth a look:
 
 Run it twice and diff `styles.json`: byte-identical. The timestamp lives in `meta.json` beside it, so the measurements stay diffable in review.
 
+That checks snap's half. The readback's half, that Figma's values were read off the nodes and reached `.storysync/figma-readback.json` as Figma returned them, is checked at the end of [Pushing to Figma](#pushing-to-figma).
+
 ## Pushing to Figma
 
 Needs a Figma Full seat and an MCP client that can complete Figma's OAuth (Claude Code, Cursor, Codex, and others).
@@ -72,6 +74,8 @@ npx storysync verify --strict-measured --strict-age
 ```
 
 To prove the score is real, change a corner radius in Figma by hand, then have the agent **re-read** the nodes into `.storysync/figma-readback.json` and run `verify` again. It should report exactly that property as drifted. Re-running `verify` alone is not enough: it compares two local files and never contacts Figma, so it will report 100% whatever you changed. If the re-read still says 100%, the readback echoed the values it sent rather than reading them off the nodes, and the score means nothing.
+
+`verify` also checks that the file holds what Figma returned. The readback computes a checksum of each entry inside Figma, and `verify` recomputes it, so an entry the agent edited, or wrote from snap's values instead of from the response, is reported as an unverified readback, scores nothing, and fails `--strict`. To see it fire, change one colour in `.storysync/figma-readback.json` by hand and run `verify` again: that variant, and only that one, is flagged. The two tests catch different things, so run both. The checksum proves the file is what the readback returned, not that the readback read the nodes: a readback that echoed what it sent would checksum the echo. The corner radius proves the readback read the nodes.
 
 ## Requirements
 

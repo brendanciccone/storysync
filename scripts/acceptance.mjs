@@ -17,7 +17,7 @@
 //   KEEP_WORKDIR=1  keep the temporary directory for inspection
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -53,8 +53,9 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/** Runs the built CLI, or with `bin` another build of it: a mutant, for one. */
 function cli(args, opts = {}) {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", cwd: opts.cwd ?? WORK });
+  const r = spawnSync(process.execPath, [opts.bin ?? CLI, ...args], { encoding: "utf8", cwd: opts.cwd ?? WORK });
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
@@ -66,8 +67,8 @@ function writeJson(path, value) {
   writeFileSync(path, JSON.stringify(value, null, 2));
 }
 
-function verifyJson(snapDir, readbackPath, extra = []) {
-  const r = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", readbackPath, "--json", ...extra]);
+function verifyJson(snapDir, readbackPath, extra = [], { bin } = {}) {
+  const r = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", readbackPath, "--json", ...extra], { bin });
   let json = null;
   try {
     json = JSON.parse(r.out.trim().split("\n").pop());
@@ -84,12 +85,12 @@ function verifyJson(snapDir, readbackPath, extra = []) {
  * expects 1 would pass without testing anything. Every exit-code check goes
  * through this so a failure to run is reported as one.
  */
-function exitOf(snapDir, readbackPath, flags) {
-  const probe = verifyJson(snapDir, readbackPath);
+function exitOf(snapDir, readbackPath, flags, { bin } = {}) {
+  const probe = verifyJson(snapDir, readbackPath, [], { bin });
   if (!probe.json || probe.json.error || !probe.json.summary) {
     throw new Error(`verify did not score this input:\n${probe.out.trim()}`);
   }
-  return cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", readbackPath, ...flags]).status;
+  return cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", readbackPath, ...flags], { bin }).status;
 }
 
 const COMPARED = [
@@ -102,7 +103,9 @@ const TEXT_SIDE = new Set(["color", "fontSize", "fontWeight", "fontFamily"]);
  * A readback that reports exactly what snap measured, built without the skill
  * template. The scoring checks use this so they test verify's contract on its
  * own: a broken template must not make them fail — or, worse, pass — for a
- * reason that has nothing to do with scoring.
+ * reason that has nothing to do with scoring. It is also exactly what the live
+ * push wrote in place of the readback, snap's values, so it carries no
+ * checksums: the scoring checks seal it, and the checksum checks do not.
  */
 function referenceReadback(snapDir) {
   const snap = readJson(join(snapDir, "styles.json"));
@@ -121,6 +124,25 @@ function referenceReadback(snapDir) {
     components[component.title ?? component.name] = { nodeId: `set:${component.name}`, variants };
   }
   return { version: 1, fileKey: "acceptance", components };
+}
+
+/** verify's own readbackChecksum, from the build under test: set in main. */
+let readbackChecksum = null;
+
+/**
+ * `file` with every entry given the checksum verify expects, as a deliberate
+ * forger could, since the code is in the skill. The scoring checks perturb a
+ * readback built without the template, and have to reach the scoring to test
+ * it; the checksum checks test the checksum on its own.
+ */
+function sealed(file) {
+  for (const component of Object.values(file.components)) {
+    for (const [slug, entry] of Object.entries(component.variants)) {
+      const { checksum: _, ...rest } = entry;
+      component.variants[slug] = { ...rest, checksum: readbackChecksum(slug, rest) };
+    }
+  }
+  return file;
 }
 
 // --- Simulated Figma -----------------------------------------------------------
@@ -475,10 +497,10 @@ async function readSet(readback, { componentSet, slugByName, sourceBySlug }, bat
  * template, the slices merged under the component's title.
  * `mutate(node, variant, component)` edits a node after creation, the way a
  * designer might edit Figma by hand; `onRead(component, calls)` sees how many
- * calls each set took.
+ * calls each set took. `readback` is the template to read with, the shipped
+ * one unless a mutant is given.
  */
-async function buildReadback(snapDir, { mutate, withholdSource, onRead } = {}) {
-  const readback = loadSkillReadback();
+async function buildReadback(snapDir, { mutate, withholdSource, onRead, readback = loadSkillReadback() } = {}) {
   const components = {};
   for (const set of simulatedSets(snapDir, { mutate, withholdSource })) {
     const { variants, calls, total } = await readSet(readback, set, READ_BATCH);
@@ -580,13 +602,15 @@ async function scoreEdges(snapDir, readback) {
  * Throws unless no edge variant drifts on width or height, and every one but
  * the one-sided border matches on everything, naming each that does not. The
  * readback reports any stroke as a uniform border, so that one drifts on
- * borderUniform: not on its size.
+ * borderUniform: not on its size. Every one has to carry the checksum the
+ * template gave it, the one-sided border too, whose mixed strokeWeight drops
+ * out of what the call returns.
  */
 function assertEdges(verdicts) {
   const describe = (diffs) => diffs.map((d) => `${d.property}: measured ${JSON.stringify(d.measured)}, Figma ${JSON.stringify(d.figma)}`).join("; ");
   const wrong = [];
   for (const [edge, verdict] of Object.entries(verdicts)) {
-    if (!verdict || verdict.status === "unscored") {
+    if (!verdict || verdict.status === "unscored" || verdict.status === "unverified_readback") {
       wrong.push(`${edge} was ${verdict ? verdict.status : "not scored"}`);
       continue;
     }
@@ -1207,6 +1231,208 @@ async function readAllSlices(code, figmaFor, values = {}) {
   return out;
 }
 
+// --- Readback checksums ---------------------------------------------------------
+//
+// On a live push the agent wrote figma-readback.json from snap's values plus
+// the sizes that came off the Figma nodes, rather than from what the readback
+// calls returned, and verify compared snap with snap for every property but
+// size. The template now checksums each entry in Figma, over exactly what the
+// call returns, and verify recomputes it.
+
+/**
+ * `value` as JSON laid out as no template writes it: tab-indented, every
+ * object's keys in reverse, and every number in exponential notation, 38.59
+ * as 3.859e+1. The same values, so the same checksums.
+ */
+function relaid(value, indent = "") {
+  const inner = `${indent}\t`;
+  if (Array.isArray(value)) {
+    return value.length ? `[\n${value.map((v) => inner + relaid(v, inner)).join(",\n")}\n${indent}]` : "[]";
+  }
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).reverse();
+    return keys.length ? `{\n${keys.map((k) => `${inner}${JSON.stringify(k)}: ${relaid(value[k], inner)}`).join(",\n")}\n${indent}}` : "{}";
+  }
+  return typeof value === "number" ? value.toExponential() : JSON.stringify(value);
+}
+
+/** What verify flagged, for a message. */
+function describeIssues(issues) {
+  return issues.length ? issues.slice(0, 3).map((i) => `${i.slug} (${i.problem})`).join(", ") + (issues.length > 3 ? ", …" : "") : "nothing";
+}
+
+/**
+ * Throws unless the readback the template returns, written into the file as
+ * the skill says, verifies with no readback issue: every entry carrying a
+ * checksum the template computed, and every variant scoring 100%, written as
+ * returned or laid out another way. And a variant with no text child, or one
+ * Figma reports a mixed stroke weight for, has fields that drop out of what
+ * the call returns: their checksums have to cover what it returns. `template`
+ * and `bin` are the readback template and the CLI, the shipped ones unless
+ * mutants are given.
+ */
+async function assertSealed(snapDir, { template = loadSkillReadback(), bin } = {}) {
+  const file = await buildReadback(snapDir, { readback: template });
+  let entries = 0;
+  for (const component of Object.values(file.components)) {
+    for (const [slug, entry] of Object.entries(component.variants)) {
+      assert(/^fnv1a:[0-9a-f]{8}$/.test(entry.checksum ?? ""), `${slug} came back with a checksum of ${JSON.stringify(entry.checksum)}`);
+      entries++;
+    }
+  }
+  const asReturned = join(WORK, "readback-sealed.json");
+  writeJson(asReturned, file);
+  const laidOut = join(WORK, "readback-relaid.json");
+  writeFileSync(laidOut, relaid(file));
+  for (const [path, label] of [[asReturned, "the readback as returned"], [laidOut, "the readback laid out another way"]]) {
+    const v = verifyJson(snapDir, path, [], { bin });
+    assert(v.json?.summary, `verify did not score ${label}\n${v.out.trim()}`);
+    const issues = v.json.readbackIssues ?? [];
+    assert(issues.length === 0 && v.json.summary.unverifiedReadback === 0, `${label}: ${issues.length} entries flagged, ${describeIssues(issues)}`);
+    assert(v.json.fidelity === 1 && v.json.summary.verified === v.json.summary.variants,
+      `${label} scored ${v.json.fidelity}, ${v.json.summary.verified} of ${v.json.summary.variants} variants verified`);
+  }
+
+  const edges = Object.fromEntries(edgeVariants(snapDir).map((e) => [e.edge, e]));
+  const textless = figmaNode("odd=textless", edges["transparent-border"].styles);
+  textless.findOne = () => null;
+  const mixed = figmaNode("odd=mixed", edges["bottom-border"].styles);
+  assert(mixed.strokeWeight === MIXED, "the one-sided border's strokeWeight is not figma.mixed");
+  const { readback: odd } = await template.read(
+    { id: "set:Odd", type: "COMPONENT_SET", name: "Odd", children: [textless, mixed] },
+    { "odd=textless": "odd-textless", "odd=mixed": "odd-mixed" },
+    { "odd-textless": "measured", "odd-mixed": "measured" },
+  );
+  assert(!("fontSize" in odd["odd-textless"]) && !("width" in (odd["odd-mixed"].borderUniform ?? {})),
+    `a variant with no text read back ${JSON.stringify(odd["odd-textless"])}, one with a mixed stroke weight ${JSON.stringify(odd["odd-mixed"])}`);
+  const oddPath = join(WORK, "readback-odd.json");
+  writeJson(oddPath, { version: 1, fileKey: "acceptance", components: { "Forms/Odd": { nodeId: "set:Odd", variants: odd } } });
+  const v = verifyJson(snapDir, oddPath, [], { bin });
+  assert(v.json?.summary, `verify did not score the odd variants\n${v.out.trim()}`);
+  assert((v.json.readbackIssues ?? []).length === 0, `a variant with no text, or a mixed stroke weight, was flagged: ${describeIssues(v.json.readbackIssues)}`);
+  return `${entries} entries, each with the template's checksum, 100% as returned and laid out with tabs, keys reversed and numbers ` +
+    `like ${(38.59).toExponential()}; a variant with no text and one with a mixed stroke weight unflagged`;
+}
+
+/**
+ * Throws unless a readback composed from snap's values, the live push's
+ * shortcut, is flagged on every variant, scores nothing and fails --strict:
+ * snap's values plus the sizes the template read off the Figma nodes, written
+ * with no checksums, and again with the checksum Figma returned for each
+ * variant carried over onto them. Without the checksum it would be snap
+ * compared with snap, and score 100%.
+ */
+async function assertComposedFlagged(snapDir, { bin } = {}) {
+  const faithful = await buildReadback(snapDir);
+  const composed = referenceReadback(snapDir);
+  const carried = referenceReadback(snapDir);
+  let variants = 0;
+  for (const [title, component] of Object.entries(composed.components)) {
+    for (const [slug, entry] of Object.entries(component.variants)) {
+      const figma = faithful.components[title]?.variants?.[slug];
+      assert(figma, `the template read back no ${title} ${slug}`);
+      Object.assign(entry, { width: figma.width, height: figma.height });
+      Object.assign(carried.components[title].variants[slug], { width: figma.width, height: figma.height, checksum: figma.checksum });
+      variants++;
+    }
+  }
+  for (const [file, problem, label] of [
+    [composed, "no_checksum", "with no checksums"],
+    [carried, "checksum_mismatch", "with Figma's checksums carried over"],
+  ]) {
+    const path = join(WORK, `readback-composed-${problem}.json`);
+    writeJson(path, file);
+    const v = verifyJson(snapDir, path, [], { bin });
+    assert(v.json?.summary, `verify did not score the readback composed ${label}\n${v.out.trim()}`);
+    const { summary } = v.json;
+    const flagged = (v.json.readbackIssues ?? []).filter((i) => i.problem === problem);
+    assert(flagged.length === variants && summary.unverifiedReadback === summary.variants,
+      `composed ${label}: ${flagged.length} of ${variants} entries flagged ${problem}, ${summary.unverifiedReadback} of ${summary.variants} variants unverified`);
+    assert(summary.propertiesCompared === 0 && v.json.fidelity === null,
+      `composed ${label}: ${summary.propertiesMatched} of ${summary.propertiesCompared} properties scored as matching, fidelity ${v.json.fidelity}`);
+    assert(exitOf(snapDir, path, ["--strict"], { bin }) === 1, `composed ${label}: --strict passed`);
+  }
+  return `all ${variants} variants flagged, with no checksums and with Figma's carried over; nothing scored, --strict failed`;
+}
+
+/**
+ * Throws unless one colour edited in a readback the template returned is
+ * flagged on exactly that variant, with nothing in it scored, every other
+ * variant still verified, and --strict failed. The edit is the one that hides
+ * drift: the variant's fill is magenta in Figma, read back as such, and the
+ * file is then changed to the colour snap measured.
+ */
+async function assertEditFlagged(snapDir, { bin } = {}) {
+  const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+  const title = button.title ?? button.name;
+  const slug = "variant-danger--size-sm--disabled-false";
+  const measured = expandVariants(button).find((v) => v.slug === slug)?.styles.backgroundColor;
+  assert(measured === "#dc2626", `the danger variant measured a fill of ${JSON.stringify(measured)}`);
+  const file = await buildReadback(snapDir, {
+    mutate(node, v, component) {
+      if (component.name === "Button" && v.slug === slug) node.fills = [solidPaint("#ff00ff")];
+    },
+  });
+  const entry = file.components[title].variants[slug];
+  const before = join(WORK, "readback-magenta.json");
+  writeJson(before, file);
+  const drifted = verifyJson(snapDir, before, [], { bin }).json?.variants.find((x) => x.component === title && x.slug === slug);
+  assert(drifted?.status === "drifted" && drifted.differences.map((d) => d.property).join() === "backgroundColor",
+    `read back as Figma has it, the magenta variant was ${drifted?.status}`);
+
+  entry.backgroundColor = measured;
+  const path = join(WORK, "readback-recoloured.json");
+  writeJson(path, file);
+  const v = verifyJson(snapDir, path, [], { bin });
+  assert(v.json?.summary, `verify did not score the edited readback\n${v.out.trim()}`);
+  const issues = v.json.readbackIssues ?? [];
+  assert(issues.length === 1 && issues[0].component === title && issues[0].slug === slug && issues[0].problem === "checksum_mismatch",
+    `flagged ${describeIssues(issues)}`);
+  const verdict = v.json.variants.find((x) => x.component === title && x.slug === slug);
+  assert(verdict?.status === "unverified_readback" && verdict.matched + verdict.mismatched === 0,
+    `the edited variant was ${verdict?.status}, with ${verdict?.matched} properties matched and ${verdict?.mismatched} mismatched`);
+  const others = v.json.variants.filter((x) => x !== verdict);
+  const wrong = others.filter((x) => x.status !== "verified");
+  assert(wrong.length === 0 && v.json.fidelity === 1, `the other variants: ${wrong.map((x) => `${x.slug} ${x.status}`).join(", ") || "verified"}, fidelity ${v.json.fidelity}`);
+  assert(exitOf(snapDir, path, ["--strict"], { bin }) === 1, "--strict passed");
+  return `the recoloured ${slug} flagged and unscored, the other ${others.length} verified, --strict failed`;
+}
+
+let mutantBuilds = 0;
+
+/**
+ * A copy of the built CLI with `mutate` applied to its verify.js, beside a
+ * link to this checkout's node_modules so it runs as the original does. With
+ * no `mutate`, an unchanged copy: the control for the mutants, since a copy
+ * that cannot run would make every one of them look caught.
+ */
+function mutantCli(mutate) {
+  const dir = join(WORK, `build-${++mutantBuilds}`);
+  cpSync(join(ROOT, "dist", "cli"), join(dir, "dist", "cli"), { recursive: true, filter: (src) => !src.includes("__tests__") });
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
+  if (mutate) {
+    const file = join(dir, "dist", "cli", "verify.js");
+    const shipped = readFileSync(file, "utf8");
+    const mutated = mutate(shipped);
+    assert(mutated !== shipped, "the mutation no longer matches verify");
+    writeFileSync(file, mutated);
+  }
+  return join(dir, "dist", "cli", "index.js");
+}
+
+/** True when at least one of `runs` throws. */
+async function fails(runs) {
+  for (const run of runs) {
+    try {
+      await run();
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 // --- Checks --------------------------------------------------------------------
 
 async function main() {
@@ -1227,6 +1453,7 @@ async function main() {
 
   const pkg = readJson(join(ROOT, "package.json"));
   const snapDir = join(WORK, "snap");
+  ({ readbackChecksum } = await import(pathToFileURL(join(ROOT, "dist", "cli", "verify.js")).href));
 
   heading("Build");
 
@@ -1418,10 +1645,18 @@ async function main() {
       v.json.variants.filter((x) => x.status !== "verified")
         .map((x) => `${x.slug} [${x.status}] ${x.differences.map((d) => `${d.property}: ${JSON.stringify(d.measured)} vs ${JSON.stringify(d.figma)}`).join("; ")}`)
         .join("\n"));
+    // Each entry carries the checksum the template computed, and verify
+    // recomputes every one from the file.
+    const entries = Object.values(readJson(perfect).components).flatMap((c) => Object.entries(c.variants));
+    const unsealed = entries.filter(([, entry]) => !/^fnv1a:[0-9a-f]{8}$/.test(entry.checksum ?? ""));
+    assert(unsealed.length === 0, `${unsealed.length} entries came back without a checksum: ${unsealed.slice(0, 3).map(([slug]) => slug).join(", ")}`);
+    assert((v.json.readbackIssues ?? []).length === 0 && summary.unverifiedReadback === 0,
+      `${summary.unverifiedReadback} variants unverified: ${describeIssues(v.json.readbackIssues ?? [])}`);
     const status = exitOf(snapDir, perfect, ["--strict", "--strict-age", "--strict-measured"]);
     assert(status === 0, `all strict flags exited ${status}`);
     const total = Object.values(calls).reduce((a, b) => a + b, 0);
-    return `${summary.verified}/${summary.variants} variants, ${summary.propertiesCompared} properties, read in ${total} slices`;
+    return `${summary.verified}/${summary.variants} variants, ${summary.propertiesCompared} properties, read in ${total} slices, ` +
+      `${entries.length} checksums verified`;
   });
 
   await check("a transparent border and a box shadow are scored by the border box, not Figma's render bounds", async () => {
@@ -1940,6 +2175,49 @@ async function main() {
       `all ${all} in one would be ${JSON.stringify(one).length}; ${refused}`;
   });
 
+  heading("Readback checksums");
+
+  await check("the template's checksums survive any layout of the file, and cover what each call returns", () => assertSealed(snapDir));
+
+  await check("a readback rebuilt from snap's values, as the live push wrote it, is flagged on every variant and fails --strict", () =>
+    assertComposedFlagged(snapDir));
+
+  await check("a colour edited in the readback after Figma returned it is flagged on exactly that variant", () => assertEditFlagged(snapDir));
+
+  await check("a readback checksummed another way, or a verify that skips the checksum, fails these checks", async () => {
+    // Each template mutant rewrites the shipped readback template, and each
+    // verify mutant a copy of the built verify.js; every one has to fail the
+    // checks above, which the shipped pair passes.
+    const templateMutants = {
+      "leaves a field out of the checksum": (code) => code.replace("const text = canon({ [slug]: entry });",
+        "const { width: _, ...rest } = entry;\n      const text = canon({ [slug]: rest });"),
+      "checksums the entry without its slug": (code) => code.replace("canon({ [slug]: entry })", "canon(entry)"),
+      "keeps each object's keys in the order they were written": (code) => code.replace("Object.keys(v).sort()", "Object.keys(v)"),
+      "checksums the fields before they pass through JSON": (code) => code.replace(
+        "const entry = JSON.parse(JSON.stringify(fields));", "const entry = Object.assign({}, fields);"),
+    };
+    const verifyMutants = {
+      "ignores the checksum": (src) => src.replace("const readbackIssues = checkReadback(readback);", "const readbackIssues = [];"),
+      "passes an entry with no checksum": (src) => src.replace('issues.push({ component, slug, problem: "no_checksum" });', ";"),
+      "flags an entry but scores it anyway": (src) => src.replace("? unverifiedVerdict(component, slug, figma)",
+        '? { ...verifyVariant(component, slug, measured, figma, tolerance), status: "unverified_readback" }'),
+      "keeps each object's keys in the order the file wrote them": (src) => src.replace("Object.keys(record).sort()", "Object.keys(record)"),
+    };
+    const every = (opts) => [
+      () => assertSealed(snapDir, opts), () => assertComposedFlagged(snapDir, opts), () => assertEditFlagged(snapDir, opts),
+    ];
+    for (const run of every({ bin: mutantCli(null) })) await run();
+    const survived = [];
+    for (const [name, mutate] of Object.entries(templateMutants)) {
+      if (!(await fails([() => assertSealed(snapDir, { template: loadSkillReadback(mutate) })]))) survived.push(`a template that ${name}`);
+    }
+    for (const [name, mutate] of Object.entries(verifyMutants)) {
+      if (!(await fails(every({ bin: mutantCli(mutate) })))) survived.push(`a verify that ${name}`);
+    }
+    assert(survived.length === 0, `these pass every checksum check:\n${survived.join("\n")}`);
+    return `${Object.keys(templateMutants).length} template and ${Object.keys(verifyMutants).length} verify mutants fail; an unchanged copy of the build passes`;
+  });
+
   heading("Audit through the shipped skill template");
 
   await check("the audit reads every variable a slice at a time, and refuses a slice too big to return", async () => {
@@ -2027,7 +2305,7 @@ async function main() {
   await check("verify scores an exact reference readback at 100%", () => {
     // The baseline the other scoring checks perturb, built without the skill
     // template, so each of them isolates one behaviour of verify.
-    writeJson(reference, referenceReadback(snapDir));
+    writeJson(reference, sealed(referenceReadback(snapDir)));
     const v = verifyJson(snapDir, reference);
     assert(v.json?.fidelity === 1, `fidelity ${v.json?.fidelity}\n${v.out.trim()}`);
     assert(exitOf(snapDir, reference, ["--strict", "--strict-age", "--strict-measured"]) === 0, "strict flags failed on an exact readback");
@@ -2080,7 +2358,7 @@ async function main() {
       for (const slug of Object.keys(component.variants)) component.variants[slug] = { source: "measured" };
     }
     const path = join(WORK, "readback-hollow.json");
-    writeJson(path, hollow);
+    writeJson(path, sealed(hollow));
     const v = verifyJson(snapDir, path);
     assert(v.json.summary.verified === 0, `${v.json.summary.verified} variants reported verified with nothing compared`);
     for (const flag of ["--strict", "--strict-age", "--strict-measured"]) {
@@ -2104,8 +2382,10 @@ async function main() {
     const ghost = readJson(reference);
     ghost.components["Forms/Phantom"] = { nodeId: "9:9", variants: { default: { source: "measured", fontSize: 12 } } };
     const path = join(WORK, "readback-ghost.json");
-    writeJson(path, ghost);
+    writeJson(path, sealed(ghost));
     assert(exitOf(snapDir, path, ["--strict-measured"]) === 1, "--strict-measured passed");
+    // On provenance alone: its entry carries the checksum verify expects.
+    assert(exitOf(snapDir, path, ["--strict"]) === 0, "--strict failed on a sealed entry snap never measured");
   });
 
   await check("opacity is not compared with the pixel tolerance", () => {
@@ -2116,7 +2396,7 @@ async function main() {
       }
     }
     const path = join(WORK, "readback-opacity.json");
-    writeJson(path, loose);
+    writeJson(path, sealed(loose));
     const v = verifyJson(snapDir, path, ["--tolerance", "5"]);
     const flagged = v.json.variants.some((x) => x.differences.some((d) => d.property === "opacity"));
     assert(flagged, "opacity 0.4 vs 0.8 passed under --tolerance 5");

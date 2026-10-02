@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
 import type { Client } from "../setup.js";
-import { COMPARABLE_PROPERTIES } from "../verify.js";
+import { COMPARABLE_PROPERTIES, readbackChecksum } from "../verify.js";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "storysync-setup-"));
@@ -169,7 +169,7 @@ test("the Cursor rule asks for every readback property the Claude template retur
     const claude = readFileSync(join(project, ".claude", "skills", "storysync", "SKILL.md"), "utf8");
     const cursor = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
 
-    const template = /readback\[slugFor\(child\)\] = \{([\s\S]*?)\n\s*\};/.exec(claude);
+    const template = /readback\[slug\] = seal\(slug, \{([\s\S]*?)\n\s*\}\);/.exec(claude);
     assert.ok(template, "Claude skill has no readback template");
     // Top-level keys only: padding's own fields sit on a deeper continuation line.
     const indent = /^( *)source:/m.exec(template[1])?.[1] ?? "";
@@ -183,6 +183,9 @@ test("the Cursor rule asks for every readback property the Claude template retur
       assert.ok(key === "source" || (COMPARABLE_PROPERTIES as readonly string[]).includes(key), `${key} is not compared`);
       assert.ok(readbackStep[1].includes(`\`${key}\``), `Cursor rule's readback never asks for ${key}`);
     }
+    // And the checksum the template seals each entry with.
+    assert.ok(readbackStep[1].includes("`checksum`") && readbackStep[1].includes("seal(slug, fields)"),
+      "Cursor rule's readback never seals an entry with its checksum");
 
     // And it writes the file in the shape verify reads.
     const example = /figma-readback\.json`[^\n]*\n+```json\n([\s\S]*?)\n```/.exec(cursor);
@@ -693,6 +696,112 @@ test("setup: the Codex skill carries the same procedure as the Claude skill", ()
       procedure(join(".agents", "skills", "storysync", "SKILL.md")),
       procedure(join(".claude", "skills", "storysync", "SKILL.md")),
     );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+/** The canon and seal functions an instruction file gives the agent, run as written. */
+function sealFrom(text: string, path: string): (slug: string, fields: object) => Record<string, unknown> {
+  const code = /const canon = [\s\S]*?const seal = \(slug, fields\) => \{[\s\S]*?\n\s*return entry;\n\s*\};/.exec(text);
+  assert.ok(code, `${path} gives no canon and seal to checksum a readback entry with`);
+  return new Function(`${code[0]}\nreturn seal;`)() as (slug: string, fields: object) => Record<string, unknown>;
+}
+
+test("every readback's checksum code computes what verify recomputes", () => {
+  // The Claude template is run against simulated nodes in acceptance, which CI
+  // does not run; the Cursor rule gives the agent the same code in prose. Run
+  // both here, on entries with the values that are easy to get wrong.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const mixed = Symbol("figma.mixed");
+    const entries: [string, Record<string, unknown>][] = [
+      ["variant-primary--size-sm--disabled-false", {
+        source: "measured", backgroundColor: "#4b556322", color: null,
+        padding: { top: 4, right: 8, bottom: 4, left: 8 }, borderUniform: { width: 1, style: "solid", color: null },
+        fontSize: 11, fontWeight: 700, fontFamily: "Inter", gap: { row: 6, column: 6 },
+        opacity: Math.fround(0.4), width: 38.59, height: 1e-7 + 24,
+      }],
+      // A variant with no text child, and one whose stroke weights differ, so
+      // Figma reports figma.mixed: both leave fields out of what is returned.
+      ["no-text", { source: "inferred", backgroundColor: null, fontSize: undefined, fontFamily: undefined, width: 0, height: -0 }],
+      ["mixed-stroke", { source: "measured", borderUniform: { width: mixed, style: "solid", color: "#9ca3af" }, tiny: 1e-7, label: "Bouton étiqueté" }],
+    ];
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+    ];
+    for (const path of files) {
+      const seal = sealFrom(readFileSync(join(project, path), "utf8"), path);
+      for (const [slug, fields] of entries) {
+        const entry = seal(slug, fields);
+        // What reaches the file is the call's JSON, read back.
+        const written = JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
+        assert.equal(written.checksum, readbackChecksum(slug, written), `${path}: ${slug}`);
+      }
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every readback example's checksum is the one verify recomputes", () => {
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      const example = /figma-readback\.json`[^\n]*\n+```json\n([\s\S]*?)\n```/.exec(text);
+      assert.ok(example, `${path} shows no figma-readback.json`);
+      const file = JSON.parse(example[1]) as { components: Record<string, { variants: Record<string, Record<string, unknown>> }> };
+      for (const { variants } of Object.values(file.components)) {
+        for (const [slug, entry] of Object.entries(variants)) {
+          assert.equal(entry.checksum, readbackChecksum(slug, entry), `${path}'s example ${slug} carries a checksum verify would not accept`);
+        }
+      }
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction writes the readback exactly as returned, and says verify flags a checksum that doesn't match", () => {
+  // On a live push the agent wrote figma-readback.json from snap's values plus
+  // the sizes off the Figma nodes, rather than from the readback responses,
+  // so verify compared snap with snap for every property but size.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      const merge = /^[^\n]*figma-readback\.json`[^\n]*$/m.exec(text.slice(text.search(/[Ww]rite (?:every slice's|the entries each call)/)));
+      assert.ok(merge, `${path} never says how to write the readback file`);
+      const line = merge[0];
+      assert.match(line, /exactly as (?:the calls )?returned/, `${path} never says to write the entries exactly as returned`);
+      assert.match(line, /merging the slices/, `${path} never says to merge the slices`);
+      assert.match(line, /[Nn]ever fill in or recompute a value, from snap/, `${path} never forbids filling a value in from snap`);
+      assert.match(line, /read fewer variants per call[^\n]*rather than summarising/, `${path} lets a long response be summarised`);
+      assert.match(line, /`verify`[^\n]*checksum is missing or (?:does not|doesn't) match[^\n]*`--strict`/, `${path} never says verify flags a checksum that doesn't match`);
+    }
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

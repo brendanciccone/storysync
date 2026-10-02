@@ -98,6 +98,25 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    - `opacity`
    - `width`, `height` — the node's own `width` and `height` plus the stroke that lies outside them, by `strokeAlign`: all of it `OUTSIDE`, half `CENTER`, none `INSIDE`, from `strokeTopWeight`, `strokeRightWeight`, `strokeBottomWeight` and `strokeLeftWeight` (`strokeWeight` is mixed when the sides differ), and only when the node has a stroke, since one without still reports a `strokeWeight`
    - `source` — `"measured"` if the variant's snap status was `"ok"`, `"inferred"` if you fell back to source. Set it per variant from snap's output; defaulting it to `"measured"` makes a guessed variant indistinguishable from a rendered one.
+   - `checksum` — computed last, in the same call, over exactly what the call returns, slug included, with the code below, so `verify` can tell an entry written as returned from one edited, or composed from snap's values, afterwards. Build each variant's entry from the fields above and return `seal(slug, fields)` in its place; use the code as it is, since `verify` computes the same, character for character:
+
+```js
+// canon is JSON with every object's keys sorted; the checksum is 32-bit
+// FNV-1a over its char codes. Through JSON first, as use_figma returns it: a
+// field that is undefined, or figma.mixed, drops out here as it does there.
+const canon = (v) => (Array.isArray(v) ? '[' + v.map(canon).join(',') + ']'
+  : v !== null && typeof v === 'object'
+    ? '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}'
+    : JSON.stringify(v));
+const seal = (slug, fields) => {
+  const entry = JSON.parse(JSON.stringify(fields));
+  const text = canon({ [slug]: entry });
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  entry.checksum = 'fnv1a:' + hash.toString(16).padStart(8, '0');
+  return entry;
+};
+```
 
    Write each colour as snap does, since `verify` compares colours as written: `#rrggbb` from the paint's `color`, then its alpha as two more lowercase hex digits, `Math.round(alpha * 255)`, when they come to less than `ff`, and `null` when they come to `00` or the paint has `visible: false` (hidden with the eye icon, it draws nothing at any opacity). The alpha is the paint's `opacity` times its colour's `a` where it has one, as an effect colour does. A soft Chip's background, `#4b5563` at an opacity of 34 / 255, reads back as `#4b556322`; read without its alpha it reads `#4b5563`, and every translucent fill, stroke and text colour drifts.
 
@@ -105,7 +124,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    A readback call that throws has returned nothing; deal with what it names, then make the call again. `The set has 0 variants named …`: the build never made that variant — add it to the set by id (re-run the build part that names it, which adds only what the set lacks and lays the whole set out again), then read that slice again. `The set has 2 variants named …`: a part ran twice, in an earlier push or a retry that did not check what the set held, and made the variant twice — report it, and remove the stale copy only after checking which one is current (read each copy by id and compare it with snap's values), or ask the user which to keep. If step 5 raised it, the refused part changed nothing, and the parts after it never ran: re-run that build part and every part after it, through the last part, then read the slices. `This slice is N characters encoded …`: the batch size only caps how many names a call may carry, so split its names across two calls, and lower the batch for the slices after them. `No component set with id …`: re-run the build's first part, which finds the set by name, and read with the id it returns.
 
-   Merge every slice into `.storysync/figma-readback.json`, keyed by component title then snap variant slug, with the set's id as `nodeId`:
+   Write every slice's entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by component title then snap variant slug, with the set's id as `nodeId`. Copy each entry whole, its `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null`, and no field added that the entry lacks. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. Indentation and key order are yours, since they do not change a checksum, but the values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match as an unverified readback, scores nothing in it, and fails `--strict`.
 
 ```json
 {
@@ -115,14 +134,14 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
     "Forms/Button": {
       "nodeId": "12:34",
       "variants": {
-        "variant-primary--size-sm--disabled-false": { "source": "measured", "backgroundColor": "#2563eb", "borderRadiusUniform": 3 }
+        "variant-primary--size-sm--disabled-false": { "source": "measured", "backgroundColor": "#2563eb", "borderRadiusUniform": 3, "checksum": "fnv1a:01db056e" }
       }
     }
   }
 }
 ```
 
-   Every variant carries `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, read the set back again, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; a recorded snap failure means re-run `snap`. A `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting, is usually Figma laying the text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma): report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
+   Every variant carries `"source": "measured"` or `"inferred"`. Omitting `source` is not neutral — `verify` reports it as `unrecorded` and `--strict-measured` fails on it. The checksum covers `source` too, so correct a wrong one in the call's table and read the slice again, never in the file. Then run `npx storysync verify --strict-age`, fix what it flags by node ID, read the set back again, and re-run. An `unscored` variant means the readback returned nothing comparable — re-read it; an entry whose checksum is missing or does not match is not what the readback returned — read that slice again and write its entries exactly as returned, never editing the file to make it pass; a recorded snap failure means re-run `snap`. A `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting, is usually Figma laying the text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma): report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score; `use_figma` calls are rate-limited and becoming paid.
 7. Summarize: token collections created, components grouped by page, variant counts, the fidelity score, measured versus inferred counts, any story that didn't pass its args through, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, the variants with a transparent border, failures, caps. For each variant whose transparent border was built as an `OUTSIDE` stroke (a `CENTER` one leaves half the ring unfilled, an `INSIDE` one on a fixed-size frame none), say that Figma shows that transparent border as an unfilled ring: the browser draws the background under a transparent border, but Figma's fill stops where the `OUTSIDE` stroke begins, and that stroke's paint draws nothing. If the user would rather it look filled, they can choose a stroke tinted the background's colour instead, which `verify` will then score as a border colour the code does not have.
 
 

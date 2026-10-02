@@ -307,7 +307,7 @@ program
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, or if the snap recorded a component failure")
+  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, or if the snap recorded a component failure")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
   .action(async (opts) => {
@@ -335,9 +335,16 @@ program
         console.log(JSON.stringify(result));
       } else {
         const { summary } = result;
-        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}`);
+        // Said on the score's own line: a score over the entries that were
+        // left must not be read as a score over all of them.
+        const excluded = summary.unverifiedReadback;
+        const excludedNote = excluded > 0
+          ? chalk.red(` — ${excluded} unverified readback ${excluded === 1 ? "entry" : "entries"} excluded`)
+          : "";
+        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
-        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}, across ${summary.variants} variants\n`);
+        const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}, across ${summary.variants} variants\n`);
 
         for (const issue of result.snapIssues ?? []) {
           console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
@@ -346,8 +353,22 @@ program
           console.log(`  ${chalk.yellow("!")} ${warning}`);
         }
 
+        // Before the drift: an entry that is not what Figma returned says
+        // nothing about Figma, so none of it was scored, and the fix is to read
+        // it again rather than to change anything in Figma.
+        const readbackIssues = result.readbackIssues ?? [];
+        for (const issue of readbackIssues) {
+          const why = issue.problem === "no_checksum"
+            ? "has no checksum, so it is not as the readback template returned it"
+            : "does not match its checksum, so it was edited or composed after Figma returned it";
+          console.log(`  ${chalk.red("!")} ${issue.component} ${chalk.dim(issue.slug)} readback entry ${why} — nothing in it was scored`);
+        }
+        if (readbackIssues.length > 0) {
+          console.log(chalk.dim("      Read these variants back again with the skill's readback template, and write each entry into the readback exactly as returned. Never fill one in from snap."));
+        }
+
         for (const variant of result.variants) {
-          if (variant.status === "verified") continue;
+          if (variant.status === "verified" || variant.status === "unverified_readback") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
             continue;
@@ -366,6 +387,7 @@ program
         // a run that compared nothing must not end on a green "matches".
         const cleanRun = !result.variants.some((v) => v.status !== "verified")
           && (result.snapIssues?.length ?? 0) === 0
+          && readbackIssues.length === 0
           && result.summary.propertiesCompared > 0;
         if (cleanRun) {
           // Name what was checked. On a clean run this is otherwise the only
@@ -421,10 +443,14 @@ program
       // that compared nothing at all, are both absent measurements rather than
       // passing ones — the same reasoning as an unknown snap age.
       const scoredNothing = result.summary.unscored > 0 || result.summary.propertiesCompared === 0;
+      // A readback entry that is not what Figma returned is not a measurement
+      // of Figma at all, whether it is missing its checksum or carries one
+      // that does not match: absent is not a pass, as everywhere above.
       const hasDrift = result.summary.drifted > 0
         || result.summary.missingFromFigma > 0
         || scoredNothing
-        || (result.snapIssues?.length ?? 0) > 0;
+        || (result.snapIssues?.length ?? 0) > 0
+        || (result.readbackIssues?.length ?? 0) > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one.
       const notMeasured = result.summary.inferred > 0

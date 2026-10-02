@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize } from "../verify.js";
+import {
+  verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize,
+  canonicalJson, fnv1a32, readbackChecksum, checkReadback,
+} from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
@@ -61,8 +64,14 @@ function snapWith(variants: { slug: string; delta?: Record<string, unknown>; sta
   } as unknown as SnapResult;
 }
 
-function readbackWith(variants: Record<string, Record<string, unknown>>): ReadbackFile {
-  return { version: 1, components: { "Forms/Button": { nodeId: "1:2", variants: variants as never } } };
+/** Each entry with the checksum the readback template gives it, as if Figma had returned it. */
+function sealed(variants: Record<string, Record<string, unknown>>): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(Object.entries(variants).map(([slug, entry]) => [slug, { ...entry, checksum: readbackChecksum(slug, entry) }]));
+}
+
+/** A readback of one component, each entry sealed unless `seal` is false. */
+function readbackWith(variants: Record<string, Record<string, unknown>>, { seal = true } = {}): ReadbackFile {
+  return { version: 1, components: { "Forms/Button": { nodeId: "1:2", variants: (seal ? sealed(variants) : variants) as never } } };
 }
 
 // --- propertyMatches ---
@@ -613,4 +622,181 @@ test("propertyMatches: a zero gap and no gap are the same rendering", () => {
   // A real gap against none is still a mismatch.
   assert.equal(propertyMatches("gap", null, { row: 6, column: 6 }, 0.5), false);
   assert.equal(propertyMatches("gap", { row: 6, column: 6 }, { row: 6, column: 6 }, 0.5), true);
+});
+
+// --- readback checksums ---
+
+// On a live push the agent wrote figma-readback.json from snap's values plus
+// the sizes Figma reported, rather than from what the readback calls returned,
+// and verify compared snap with snap. The template now checksums each entry in
+// Figma, over exactly what it returns, and verify recomputes it.
+
+test("fnv1a32: matches FNV-1a's published 32-bit test vectors", () => {
+  assert.equal(fnv1a32(""), "811c9dc5");
+  assert.equal(fnv1a32("a"), "e40c292c");
+  assert.equal(fnv1a32("foobar"), "bf9cf968");
+});
+
+test("canonicalJson: sorts every object's keys, keeps array order, and adds no whitespace", () => {
+  assert.equal(
+    canonicalJson({ b: 1, a: { d: [3, { z: null, y: "#FFF" }], c: true } }),
+    '{"a":{"c":true,"d":[3,{"y":"#FFF","z":null}]},"b":1}',
+  );
+  assert.equal(canonicalJson([2, 1]), "[2,1]");
+});
+
+const ENTRY = {
+  source: "measured",
+  backgroundColor: "#2563eb",
+  color: null,
+  padding: { top: 4, right: 8, bottom: 4, left: 8 },
+  borderUniform: { width: 1, style: "solid", color: "#9ca3af" },
+  gap: { row: 6, column: 6 },
+  opacity: 0.4000000059604645,
+  width: 38.59,
+  height: 24,
+};
+
+test("readbackChecksum: is fnv1a: and 8 hex digits, and leaves out its own checksum field", () => {
+  const checksum = readbackChecksum("a", ENTRY);
+  assert.match(checksum, /^fnv1a:[0-9a-f]{8}$/);
+  assert.equal(readbackChecksum("a", { ...ENTRY, checksum }), checksum);
+  assert.equal(readbackChecksum("a", { ...ENTRY, checksum: "fnv1a:00000000" }), checksum);
+});
+
+test("readbackChecksum: a pretty-printed file, or one with its keys in another order, still matches", () => {
+  const checksum = readbackChecksum("a", ENTRY);
+  const reversed = (value: unknown): unknown => (Array.isArray(value) ? value.map(reversed)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).reverse().map(([k, v]) => [k, reversed(v)]))
+      : value);
+  for (const text of [
+    JSON.stringify(ENTRY),
+    JSON.stringify(ENTRY, null, 2),
+    JSON.stringify(ENTRY, null, "\t").replace(/\n/g, "\r\n"),
+    JSON.stringify(reversed(ENTRY), null, 4),
+  ]) {
+    assert.equal(readbackChecksum("a", JSON.parse(text)), checksum, text);
+  }
+});
+
+test("readbackChecksum: numbers are compared as values, whatever notation the file writes them in", () => {
+  const entry = { width: 38.59, opacity: 0.4, tiny: 1e-7 };
+  const checksum = readbackChecksum("a", entry);
+  const same = ['{"width":38.590,"opacity":0.40,"tiny":1E-7}', '{"width":3.859e1,"opacity":4e-1,"tiny":0.0000001}'];
+  for (const text of same) assert.equal(readbackChecksum("a", JSON.parse(text)), checksum, text);
+  // But a value is a value: rounding one, even to what it was meant to be, is a change.
+  const changed = [
+    '{"width":38.6,"opacity":0.4,"tiny":1e-7}',
+    '{"width":38.59,"opacity":0.4000000059604645,"tiny":1e-7}',
+    '{"width":38.59,"opacity":0.4,"tiny":1e-6}',
+    '{"width":38.59,"opacity":0.4,"tiny":0}',
+  ];
+  for (const text of changed) assert.notEqual(readbackChecksum("a", JSON.parse(text)), checksum, text);
+  // And Figma's float32 value has to round-trip exactly through the file.
+  const float = { opacity: Math.fround(0.4) };
+  assert.equal(readbackChecksum("a", JSON.parse(JSON.stringify(float))), readbackChecksum("a", float));
+});
+
+test("readbackChecksum: a colour is its string, null is not absent, and the entry is bound to its slug", () => {
+  const checksum = readbackChecksum("a", ENTRY);
+  assert.notEqual(readbackChecksum("a", { ...ENTRY, backgroundColor: "#2563EB" }), checksum, "a colour's case is a change");
+  const { color: _color, ...absent } = ENTRY;
+  assert.notEqual(readbackChecksum("a", absent), checksum, "a null removed is a change");
+  assert.notEqual(readbackChecksum("a", { ...ENTRY, fontSize: null }), checksum, "a null added is a change");
+  // An undefined field is absent, as JSON.stringify leaves it out of the file.
+  assert.equal(readbackChecksum("a", { ...ENTRY, fontSize: undefined }), checksum);
+  assert.notEqual(readbackChecksum("b", ENTRY), checksum, "an entry copied onto another variant is a change");
+  assert.notEqual(readbackChecksum("a", { ...ENTRY, source: "inferred" }), checksum, "source is covered too");
+});
+
+test("verify: an entry whose checksum matches is scored, with no readback issues", () => {
+  const result = verify(snapWith([{ slug: "a" }]), readbackWith({ a: { source: "measured", backgroundColor: "#2563eb", fontSize: 12 } }), 0.5);
+  assert.deepEqual(result.readbackIssues, []);
+  assert.equal(result.variants[0].status, "verified");
+  assert.equal(result.summary.unverifiedReadback, 0);
+  assert.equal(result.fidelity, 1);
+});
+
+test("verify: an entry changed after Figma returned it is flagged on that variant and not scored", () => {
+  // Figma drifted on b; the entry was then edited to snap's value, which
+  // without the checksum would read as a match.
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]);
+  const file = readbackWith({
+    a: { source: "measured", backgroundColor: "#2563eb", fontSize: 12 },
+    b: { source: "measured", backgroundColor: "#ff00ff", fontSize: 12 },
+  });
+  (file.components["Forms/Button"].variants.b as Record<string, unknown>).backgroundColor = "#dc2626";
+  const result = verify(snap, file, 0.5);
+  assert.deepEqual(result.readbackIssues, [{ component: "Forms/Button", slug: "b", problem: "checksum_mismatch" }]);
+  const b = result.variants.find((v) => v.slug === "b")!;
+  assert.equal(b.status, "unverified_readback");
+  assert.equal(b.matched + b.mismatched, 0, "an unverified entry's properties were scored");
+  assert.deepEqual(b.differences, []);
+  assert.equal(result.variants.find((v) => v.slug === "a")!.status, "verified");
+  assert.equal(result.summary.unverifiedReadback, 1);
+  assert.equal(result.summary.verified, 1);
+  assert.equal(result.summary.drifted, 0);
+  assert.equal(result.summary.propertiesCompared, 2, "only a's two properties are scored");
+});
+
+test("verify: an entry with no checksum is unverified, so neither its matches nor its drift are scored", () => {
+  const result = verify(
+    snapWith([{ slug: "a" }, { slug: "b" }]),
+    {
+      version: 1,
+      components: {
+        "Forms/Button": {
+          variants: {
+            ...sealed({ a: { source: "measured", fontSize: 12 } }),
+            b: { source: "measured", backgroundColor: "#ff00ff", fontSize: 12 },
+          } as never,
+        },
+      },
+    },
+    0.5,
+  );
+  assert.deepEqual(result.readbackIssues, [{ component: "Forms/Button", slug: "b", problem: "no_checksum" }]);
+  assert.equal(result.variants.find((v) => v.slug === "b")!.status, "unverified_readback");
+  assert.equal(result.summary.drifted, 0);
+  assert.equal(result.fidelity, 1, "the score is over a alone");
+});
+
+test("verify: a readback rebuilt from snap's values is unverified on every variant and scores nothing", () => {
+  // The live failure: every entry composed from what snap measured. It matches
+  // snap exactly, which is why it proves nothing.
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]);
+  const rebuilt: Record<string, Record<string, unknown>> = {};
+  for (const [slug, styles] of expandSnap(snap).get("Forms/Button")!) {
+    rebuilt[slug] = { source: "measured", backgroundColor: styles.backgroundColor, padding: styles.padding, fontSize: styles.fontSize };
+  }
+  const result = verify(snap, readbackWith(rebuilt, { seal: false }), 0.5);
+  assert.equal(result.summary.unverifiedReadback, 2);
+  assert.equal(result.summary.verified, 0);
+  assert.equal(result.summary.propertiesCompared, 0);
+  assert.equal(result.fidelity, null);
+  assert.deepEqual(result.readbackIssues.map((i) => i.problem), ["no_checksum", "no_checksum"]);
+});
+
+test("verify: entries snap never measured are checked too, and one that is not an object is unverified, not a crash", () => {
+  const file = readbackWith({ a: { source: "measured", fontSize: 12 }, extra: { source: "measured", fontSize: 13 } });
+  (file.components["Forms/Button"].variants.extra as Record<string, unknown>).fontSize = 12;
+  (file.components["Forms/Button"].variants as Record<string, unknown>).b = "copied from snap";
+  const result = verify(snapWith([{ slug: "a" }, { slug: "b" }]), file, 0.5);
+  assert.deepEqual(result.readbackIssues, [
+    { component: "Forms/Button", slug: "extra", problem: "checksum_mismatch" },
+    { component: "Forms/Button", slug: "b", problem: "no_checksum" },
+  ]);
+  assert.equal(result.variants.find((v) => v.slug === "b")!.status, "unverified_readback");
+  assert.deepEqual(checkReadback(readbackWith({ a: { fontSize: 12 } })), []);
+});
+
+test("verify: never says what a checksum should have been", () => {
+  // Printing the expected value would make the fix to copy it in.
+  const entry = { source: "measured", backgroundColor: "#2563eb" };
+  const file = readbackWith({ a: { ...entry, backgroundColor: "#ffffff" } });
+  (file.components["Forms/Button"].variants.a as Record<string, unknown>).backgroundColor = "#2563eb";
+  const result = verify(snapWith([{ slug: "a" }]), file, 0.5);
+  assert.equal(result.readbackIssues.length, 1);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(readbackChecksum("a", entry).slice("fnv1a:".length)));
 });

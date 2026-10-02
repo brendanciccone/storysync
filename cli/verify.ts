@@ -57,6 +57,11 @@ export interface ReadbackStyles {
   /** The node's own size plus the stroke outside it, painted or not: see below. */
   width?: number;
   height?: number;
+  /**
+   * The checksum the readback template computed in Figma over this entry, as
+   * `fnv1a:` and 8 hex digits: see readbackChecksum. Not a style property.
+   */
+  checksum?: string;
 }
 
 export interface ReadbackFile {
@@ -152,8 +157,12 @@ export interface VariantVerdict {
    * perfect nothing. That is not an attack but the default failure mode: a
    * plugin read that came back empty still yields `{ source: "measured" }`.
    * An absent measurement must not read as a passing one.
+   *
+   * `unverified_readback` is the variant whose readback entry is not what
+   * Figma returned: its checksum is missing or does not match. Nothing in it
+   * is scored, matched or mismatched, since none of it can be trusted.
    */
-  status: "verified" | "drifted" | "missing_from_figma" | "unscored";
+  status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback";
   /** `unrecorded` when the writer did not say — not the same as measured. */
   source: StyleSource | "unrecorded";
   matched: number;
@@ -212,6 +221,8 @@ export interface VerifyResult {
     unmeasured: number;
     /** Variants Figma reported with no comparable property, so nothing was scored. */
     unscored: number;
+    /** Measured variants whose readback entry is not what Figma returned, so nothing was scored. */
+    unverifiedReadback: number;
   };
   /**
    * Failures the snap file recorded about itself.
@@ -232,7 +243,25 @@ export interface VerifyResult {
    * back to inferring it wholesale.
    */
   unmeasuredInFigma: { component: string; slug: string }[];
+  /**
+   * Readback entries that are not what Figma returned, measured or not.
+   *
+   * Never says what the checksum should have been: that would turn the check
+   * into a value to copy in.
+   */
+  readbackIssues: ReadbackIssue[];
   variants: VariantVerdict[];
+}
+
+export interface ReadbackIssue {
+  component: string;
+  slug: string;
+  /**
+   * `no_checksum`: the entry carries none, so it was not written as the
+   * readback template returned it. `checksum_mismatch`: it carries one its
+   * contents do not produce, so it was edited, or composed, afterwards.
+   */
+  problem: "no_checksum" | "checksum_mismatch";
 }
 
 // --- Comparison --------------------------------------------------------------
@@ -408,14 +437,118 @@ export function expandSnap(snap: SnapResult): Map<string, Map<string, Normalized
   return byComponent;
 }
 
+// --- Readback checksums ------------------------------------------------------
+//
+// verify compares two local files and cannot contact Figma, so on its own it
+// scores whatever the readback file says. On a live push the agent wrote that
+// file from snap's values plus the sizes that came off the Figma nodes, rather
+// than from what the readback calls returned, and verify then compared snap
+// with snap for every property but size: the score said nothing about colour,
+// padding, type or radius.
+//
+// So the skill's readback template computes a checksum of each entry inside
+// Figma, over exactly what the call returns, and verify recomputes it. An entry
+// edited, or composed from anything else, after Figma returned it no longer
+// matches. It is not a signature: the code is in the skill, so an agent that
+// deliberately computes it over values it made up will pass. It catches the
+// shortcut, not a forgery.
+
+/** Names the algorithm, so a later change of it reads as one rather than as an edit. */
+export const CHECKSUM_PREFIX = "fnv1a:";
+
+/**
+ * JSON with every object's keys sorted and no whitespace.
+ *
+ * Indentation and key order are how a file happens to be written, not what it
+ * says, so they must not change the checksum; any change of value must.
+ * Numbers are written as JavaScript writes them, the shortest form that reads
+ * back as the same double, so 0.0000001, 1E-7 and 1e-7 are one number, while
+ * 0.4 and the 0.4000000059604645 Figma reports for it are two. Strings are
+ * compared exactly, so a colour's case counts, and null is a value where an
+ * absent key is not. Mirrors `canon` in the skill's readback template: the
+ * two must agree character for character.
+ */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const members = Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    return `{${members.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * 32-bit FNV-1a over a string's UTF-16 code units, as 8 lowercase hex digits.
+ *
+ * Over the code units rather than UTF-8 bytes because the plugin context has
+ * no TextEncoder; for the ASCII a readback is made of, they are the same.
+ * Small enough to paste into every readback call, and a checksum, not a
+ * cryptographic hash: nothing here could stop a deliberate forger anyway.
+ */
+export function fnv1a32(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * The checksum the readback template gives an entry: FNV-1a over the
+ * canonical JSON of `{ [slug]: entry }`, without its `checksum` field.
+ *
+ * The slug is part of it so that an entry copied onto another variant, one
+ * read back standing in for one that was not, matches neither. The entry
+ * goes through JSON first, as the template's does and as it reached the file,
+ * so a field that is undefined is absent on both sides.
+ */
+export function readbackChecksum(slug: string, entry: object): string {
+  const { checksum: _checksum, ...rest } = entry as Record<string, unknown>;
+  return CHECKSUM_PREFIX + fnv1a32(canonicalJson({ [slug]: JSON.parse(JSON.stringify(rest)) }));
+}
+
+/** Every readback entry, measured or not, whose checksum is missing or does not match. */
+export function checkReadback(readback: ReadbackFile): ReadbackIssue[] {
+  const issues: ReadbackIssue[] = [];
+  for (const [component, entry] of Object.entries(readback.components ?? {})) {
+    for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
+      // An entry that is null is a variant Figma never reported, which the
+      // scoring reports as missing; there is nothing to check.
+      if (variant == null) continue;
+      const found = typeof variant === "object" ? (variant as ReadbackStyles).checksum : undefined;
+      if (found == null) {
+        issues.push({ component, slug, problem: "no_checksum" });
+      } else if (found !== readbackChecksum(slug, variant)) {
+        issues.push({ component, slug, problem: "checksum_mismatch" });
+      }
+    }
+  }
+  return issues;
+}
+
+/** A variant whose readback entry is not what Figma returned: reported, not scored. */
+function unverifiedVerdict(component: string, slug: string, figma: unknown): VariantVerdict {
+  const declared = typeof figma === "object" ? (figma as ReadbackStyles).source : undefined;
+  return {
+    component, slug, status: "unverified_readback",
+    source: declared === "measured" || declared === "inferred" ? declared : "unrecorded",
+    matched: 0, mismatched: 0, differences: [],
+  };
+}
+
 export function verify(snap: SnapResult, readback: ReadbackFile, tolerance: number): VerifyResult {
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
 
+  const readbackIssues = checkReadback(readback);
+  const unverified = new Set(readbackIssues.map((issue) => JSON.stringify([issue.component, issue.slug])));
+
   for (const [component, measuredVariants] of measuredByComponent) {
     const figmaComponent = readback.components[component];
     for (const [slug, measured] of measuredVariants) {
-      verdicts.push(verifyVariant(component, slug, measured, figmaComponent?.variants?.[slug], tolerance));
+      const figma = figmaComponent?.variants?.[slug];
+      verdicts.push(figma != null && unverified.has(JSON.stringify([component, slug]))
+        ? unverifiedVerdict(component, slug, figma)
+        : verifyVariant(component, slug, measured, figma, tolerance));
     }
   }
 
@@ -476,10 +609,12 @@ export function verify(snap: SnapResult, readback: ReadbackFile, tolerance: numb
       unrecorded: verdicts.filter((v) => v.source === "unrecorded" && v.status !== "missing_from_figma").length,
       unmeasured: unmeasuredInFigma.length,
       unscored: verdicts.filter((v) => v.status === "unscored").length,
+      unverifiedReadback: verdicts.filter((v) => v.status === "unverified_readback").length,
     },
     snapIssues,
     snapWarnings,
     unmeasuredInFigma,
+    readbackIssues,
     variants: verdicts,
   };
 }
