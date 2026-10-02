@@ -5,6 +5,7 @@
 // styles out of the page.
 
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import type { Browser, BrowserContext, Page, ElementHandle } from "playwright-core";
 import { CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, isPassThroughWrapper } from "./snap-normalize.js";
 import type { RawComputedStyles } from "./snap-normalize.js";
@@ -59,6 +60,28 @@ async function loadChromium(): Promise<typeof import("playwright-core")["chromiu
   }
   const { chromium } = await import("playwright-core");
   return chromium;
+}
+
+/**
+ * The command that downloads a browser this copy of playwright-core can
+ * launch.
+ *
+ * Each playwright release launches only the browser build it shipped with,
+ * so `npx playwright@latest install chromium` installs one that an older
+ * playwright-core, from a lockfile or a global install, then can't find.
+ * `playwright@<version>` depends on exactly that playwright-core, so it
+ * installs the build this one looks for. Reading the version loads no
+ * playwright code, so it holds on Node 18 too.
+ */
+export function browserInstallCommand(): string {
+  let version = "latest";
+  try {
+    const manifest = createRequire(import.meta.url)("playwright-core/package.json") as { version?: unknown };
+    if (typeof manifest.version === "string") version = manifest.version;
+  } catch {
+    // Not resolvable from here: latest is the best guess left.
+  }
+  return `npx playwright@${version} install chromium`;
 }
 
 /**
@@ -118,7 +141,7 @@ export async function resolveAndLaunch(opts: { headless?: boolean } = {}): Promi
       (attempts.length ? attempts.join("\n") : "  (no candidates found)") +
       "\n\nFix this by any one of:\n" +
       "  - install Google Chrome or Microsoft Edge\n" +
-      "  - download a browser: npx playwright@latest install chromium\n" +
+      `  - download a browser: ${browserInstallCommand()}\n` +
       "  - point storysync at an existing binary: STORYSYNC_BROWSER_PATH=/path/to/chrome\n" +
       "\nNote: use the full `playwright` package to download browsers — storysync\n" +
       "depends on playwright-core, which cannot download them itself.",

@@ -3,8 +3,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import type { Page } from "playwright-core";
-import { captureStory } from "../snap-browser.js";
+import { captureStory, browserInstallCommand } from "../snap-browser.js";
 
 /** A page whose navigation fails with `err`. */
 function failingPage(err: unknown): Page {
@@ -45,4 +47,13 @@ test("captureStory: a thrown non-Error is a render error", async () => {
   const result = await captureStory(failingPage("timed out"), "http://localhost:6006/iframe.html?id=x", OPTS);
   assert.equal(result.status, "render_error");
   assert.equal(result.error, "timed out");
+});
+
+test("browserInstallCommand: names the playwright release matching the installed playwright-core", () => {
+  // playwright@latest installs the browser build the newest release launches,
+  // which an older playwright-core can't find.
+  const require = createRequire(import.meta.url);
+  const { version } = JSON.parse(readFileSync(require.resolve("playwright-core/package.json"), "utf8")) as { version: string };
+  assert.match(version, /^\d+\.\d+\.\d+/);
+  assert.equal(browserInstallCommand(), `npx playwright@${version} install chromium`);
 });

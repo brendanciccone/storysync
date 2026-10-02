@@ -412,11 +412,13 @@ Writes `<out>/styles.json` containing, per component, full styles for a base var
 
 **Requires Node 20+**, because Playwright does. Every other storysync command still runs on Node 18 — Playwright is loaded only when `snap` runs, so nothing else is affected.
 
-**Browser.** storysync depends on `playwright-core`, which downloads no browsers, so one is located at runtime: `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then an installed Chrome, then Edge, then a Playwright-managed download, then common system paths. If none is found the error lists every attempt. To install one:
+**Browser.** storysync depends on `playwright-core`, which downloads no browsers, so one is located at runtime: `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then an installed Chrome, then Edge, then a Playwright-managed download, then common system paths. If none is found the error lists every attempt, and the command to install one:
 
 ```bash
-npx playwright@latest install chromium     # note: the full `playwright` package
+npx playwright@<version> install chromium     # note: the full `playwright` package
 ```
+
+Use the `playwright` release that matches the `playwright-core` storysync has installed, which is the version the error prints. Each release launches only the browser build it shipped with, so `playwright@latest` installs one that an older `playwright-core` can't find, and the launch still fails.
 
 **Colours are recorded as sRGB hex.** Chromium reports a computed colour in the space it was written in: Tailwind v4's palette as `oklch(0.637 0.237 25.331)`, its opacity modifiers, which are a `color-mix()` in OKLab, as `oklab(0.637 0.214213 0.1014 / 0.5)`, and `lab()`, `lch()` and every `color()` space as themselves. snap converts each to `#rrggbb`, or `#rrggbbaa` when translucent, with CSS Color 4's conversions, so a fill, text colour, border or shadow in any of them reaches Figma and `verify` as the colour it is rather than as nothing drawn. A colour outside sRGB is clipped (see [Limitations](#limitations)).
 
