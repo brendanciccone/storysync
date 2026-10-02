@@ -584,8 +584,10 @@ test("Tailwind v4: var() resolves against the theme, :root and Tailwind's own th
 }`,
   });
   try {
-    assert.equal(detectTokenSource(dir)?.type, "tailwind");
-    const result = extractTokens(dir);
+    // :root stays the detected source, so a project like this keeps the
+    // tokens it had; --source tailwind reads its @theme.
+    assert.equal(detectTokenSource(dir)?.type, "css");
+    const result = extractTokens(dir, "tailwind");
     assert.deepEqual(tokenTable(result), [
       ["colors", [
         ["background", "oklch(1 0 0)"],

@@ -78,20 +78,21 @@ function findTailwindConfig(projectPath: string): string | null {
 }
 
 /**
- * A Tailwind config comes first, then a Tailwind v4 `@theme` block, then
- * `:root` custom properties. A v4 project's tokens are its `@theme`, so one
- * that also has `:root`, as shadcn/ui's v4 globals.css does, is read through
- * `@theme`, which resolves its references to `:root`.
+ * A Tailwind config comes first, then `:root` custom properties, then a
+ * Tailwind v4 `@theme` block. `:root` stays ahead of `@theme` so a v4 project
+ * that has both, as shadcn/ui's v4 globals.css does, keeps the tokens, names
+ * and baselines it had before `@theme` was read; `@theme` is for a CSS-first
+ * project that declares its palette nowhere else.
  */
 export function detectTokenSource(projectPath: string): DetectedSource | null {
   const config = findTailwindConfig(projectPath);
   if (config) return { type: "tailwind", path: config };
 
-  const themeCss = findTailwindThemeCSS(projectPath);
-  if (themeCss.length) return { type: "tailwind", path: themeCss[0] };
-
   const cssFiles = findCSSWithCustomProperties(projectPath);
   if (cssFiles.length) return { type: "css", path: cssFiles[0] };
+
+  const themeCss = findTailwindThemeCSS(projectPath);
+  if (themeCss.length) return { type: "tailwind", path: themeCss[0] };
 
   const themeFile = findThemeFile(projectPath);
   if (themeFile) return { type: "theme", path: themeFile };

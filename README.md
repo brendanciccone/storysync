@@ -270,7 +270,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks rather th
 }
 ```
 
-With no `tailwind.config`, a `.css` file with an `@theme` block (`@theme inline` and the like included) is the Tailwind source, detected ahead of `:root` custom properties: a v4 project's tokens are its theme. Variables are read by Tailwind's namespaces:
+With no `tailwind.config`, a `.css` file with an `@theme` block (`@theme inline` and the like included) is the Tailwind source when the project has no `:root` custom properties. One that has both, as shadcn/ui's v4 `globals.css` does, keeps reading `:root`, so its tokens and baselines don't change; pass `--source tailwind` to read its `@theme` instead. Variables are read by Tailwind's namespaces:
 
 | Namespace | Category | Token name |
 |---|---|---|
