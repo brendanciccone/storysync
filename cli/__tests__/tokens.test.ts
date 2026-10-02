@@ -258,6 +258,81 @@ test("Tailwind: skips theme() and require() dynamic calls but emits warning", ()
   } finally { cleanup(dir); }
 });
 
+test("Tailwind: a commented-out key is not a token, so a baseline of the config checks clean", () => {
+  // `// primary` matched as a key: two primaries, and --check compared the
+  // first with the baseline's last, drifting on an unchanged project.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+      theme: {
+        extend: {
+          colors: {
+            // primary: "#ff0000",
+            primary: "#0000ff",
+            secondary: "#00ff00",
+          },
+        },
+      },
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "tailwind");
+    assert.deepEqual(result.collections.map((c) => c.tokens.map((t) => [t.name, t.value])), [[["primary", "#0000ff"], ["secondary", "#00ff00"]]]);
+    assert.equal(hasDrift(compareTokens(baselineOf(result), extractTokens(dir, "tailwind"))), false);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind: a commented-out block is not read in place of the real one, and strings keep their slashes", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+      content: ["./src/**/*.{js,ts}"],
+      theme: {
+        /* colors: { primary: "#111111" }, */
+        extend: {
+          colors: {
+            /* brand: "#999999", */
+            primary: "#0000ff", // the brand blue
+            secondary: "#00ff00",
+          },
+          boxShadow: { glow: "0 0 4px url('https://x.test/a')" },
+        },
+      },
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "tailwind");
+    const tokens = (category: string) => result.collections.find((c) => c.category === category)?.tokens.map((t) => [t.name, t.value]);
+    assert.deepEqual(tokens("colors"), [["primary", "#0000ff"], ["secondary", "#00ff00"]]);
+    assert.deepEqual(tokens("shadows"), [["glow", "0 0 4px url('https://x.test/a')"]]);
+  } finally { cleanup(dir); }
+});
+
+test("Theme file: a commented-out key is not a token", () => {
+  const dir = makeProject({
+    "src/theme.ts": `export const colors = {\n  // primary: "#ff0000",\n  primary: "#0000ff", /* accent: "#00ff00", */\n};\n`,
+  });
+  try {
+    const result = extractTokens(dir, "theme");
+    assert.deepEqual(result.collections.map((c) => c.tokens.map((t) => [t.name, t.value])), [[["primary", "#0000ff"]]]);
+  } finally { cleanup(dir); }
+});
+
+test("CSS: a commented-out custom property is not a token, and doesn't override the real one", () => {
+  const dir = makeProject({
+    "styles.css": `:root {
+      /* --color-old: #ff0000; */
+      --color-primary: #0000ff; /* was --color-primary: #ff0000; */
+      --font-body: "Inter /* not a comment */", sans-serif;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.value])]), [
+      ["colors", [["color/primary", "#0000ff"]]],
+      ["typography", [["font/body", `"Inter /* not a comment */", sans-serif`]]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
 // --- Tailwind + CSS var resolution (shadcn/ui pattern) ---
 
 test("Tailwind: resolves hsl(var(--name)) refs against :root in globals.css", () => {

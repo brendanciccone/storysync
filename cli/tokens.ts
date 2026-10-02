@@ -100,7 +100,7 @@ function walkCSS(dir: string, results: string[], root: string, depth: number): v
       walkCSS(full, results, root, depth + 1);
     } else if (entry.endsWith(".css") && !entry.endsWith(".module.css")) {
       try {
-        const content = readFileSync(full, "utf8");
+        const content = readCss(full);
         if (/:root\s*\{/.test(content) && /--[\w-]+\s*:/.test(content)) {
           results.push(full);
         }
@@ -124,6 +124,48 @@ function findThemeFile(projectPath: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Source with its comments taken out, so a commented-out key or custom
+ * property isn't read as a token: `// primary: "#ff0000"` above the real
+ * `primary` became a second primary, which made `tokens --check` drift
+ * against a baseline taken from the same config, and a commented-out block
+ * of colours was read in place of the real ones.
+ *
+ * Quotes are tracked, so the `/*` in a content glob or the `//` in a URL
+ * survives when it is in a string. `lineComments` is false for CSS, which
+ * has only block comments: there `//` can start an unquoted `url(//cdn...)`.
+ */
+function stripComments(src: string, lineComments = true): string {
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      out += ch;
+      if (ch === "\\") out += src[++i] ?? "";
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      out += ch;
+    } else if (ch === "/" && src[i + 1] === "/" && lineComments) {
+      // The newline stays: it ends a value as a comma does.
+      while (i + 1 < src.length && src[i + 1] !== "\n") i++;
+    } else if (ch === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end === -1 ? src.length : end + 1;
+      out += " ";
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/** A stylesheet's text without its comments. */
+function readCss(file: string): string {
+  return stripComments(readFileSync(file, "utf8"), false);
 }
 
 // --- Main extraction ---
@@ -166,7 +208,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
 // --- Tailwind extraction ---
 
 function extractFromTailwind(configPath: string, projectRoot?: string): TokenExtractionResult {
-  const content = readFileSync(configPath, "utf8");
+  const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
 
@@ -229,7 +271,7 @@ function readCssVars(files: string[]): Map<string, string> {
   const allVars = new Map<string, string>();
   for (const file of files) {
     try {
-      const content = readFileSync(file, "utf8");
+      const content = readCss(file);
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
       for (const block of rootBlocks) {
         const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
@@ -453,7 +495,7 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
 
   for (const file of files) {
     try {
-      const content = readFileSync(file, "utf8");
+      const content = readCss(file);
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
 
       for (const block of rootBlocks) {
@@ -566,7 +608,7 @@ function isColorValue(value: string): boolean {
 // --- Theme file extraction ---
 
 function extractFromTheme(filePath: string): TokenExtractionResult {
-  const content = readFileSync(filePath, "utf8");
+  const content = stripComments(readFileSync(filePath, "utf8"));
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
 

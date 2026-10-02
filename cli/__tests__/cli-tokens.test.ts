@@ -79,6 +79,22 @@ test("tokens CLI: the suggested command writes a baseline --check accepts, and c
   });
 });
 
+test("tokens CLI: --check --strict passes an unchanged config with a commented-out key", () => {
+  // The comment was a second token of the same name, and the check failed
+  // on every run, a fresh baseline included.
+  withProject((dir) => {
+    writeFileSync(join(dir, "tailwind.config.ts"), `export default { theme: { extend: { colors: {\n  // brand: "#ff0000",\n  brand: "#abcdef",\n} } } }`);
+    const created = spawnSync(process.execPath, [CLI, "tokens", "--json"], { cwd: dir, encoding: "utf8" });
+    assert.equal((JSON.parse(created.stdout) as { summary: { totalTokens: number } }).summary.totalTokens, 1);
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), created.stdout);
+
+    const r = tokens(dir, "--check", "--strict");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /No token drift detected/);
+  });
+});
+
 test("tokens CLI: the suggested command makes a baseline directory whose name starts with a dash", () => {
   // Without `--`, mkdir read "-baselines" as its options and failed, so the
   // command the message gives never wrote the baseline.
