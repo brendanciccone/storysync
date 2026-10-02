@@ -80,6 +80,29 @@ test("colorToHex: every color() space matches the pixel Chromium paints", () => 
   }
 });
 
+test("colorToHex: display-p3-linear is read as linear light, not gamma-encoded like display-p3", () => {
+  // Chromium serialises color(from <this> srgb r g b) as color(srgb 0.778111 0.47012 0.932468).
+  assert.equal(colorToHex("color(display-p3-linear 0.5 0.2 0.8)"), "#c678ee");
+});
+
+test("colorToHex: a very dark lab() takes CIE Lab's linear segment", () => {
+  // L under 8 is below the cube's knee. Chromium: color(srgb 0.145944 0.00976897 0.121996).
+  assert.equal(colorToHex("lab(5 20 -10)"), "#25021f");
+  // With a and b small too, all three axes are linear; red and blue fall outside sRGB.
+  assert.equal(colorToHex("lab(5 -20 10)"), "#001a00");
+});
+
+test("colorToHex: lightness past its range and negative chroma are clamped, as Chromium clamps them when parsing", () => {
+  // Chromium computes each of the first to the second.
+  const same = (a: string, b: string, hex: string) => {
+    assert.equal(colorToHex(a), hex, a);
+    assert.equal(colorToHex(b), hex, b);
+  };
+  same("lab(110 20 30)", "lab(100 20 30)", "#fff0c5");
+  same("oklch(1.2 0.1 30)", "oklch(1 0.1 30)", "#ffe6d7");
+  same("lch(50 -10 30)", "lch(50 0 30)", "#777777");
+});
+
 test("colorToHex: alpha as a number, a percentage or none, rounded as rgba() always was", () => {
   assert.equal(colorToHex("oklch(0.637 0.237 25.331 / 0.5)"), "#fb2c3680");
   assert.equal(colorToHex("oklch(63.7% 0.237 25.331 / 50%)"), "#fb2c3680");
