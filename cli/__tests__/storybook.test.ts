@@ -222,6 +222,14 @@ test("StorybookClient: a server without the docs tools fails listComponents with
   const client = await connectToFakeAddon(null);
   try {
     await assert.rejects(client.listComponents(), /missing the docs tools[\s\S]*storysync init/);
+    // An upgrade command that runs whatever the project's package manager:
+    // npx ships with Node, and Storybook's upgrade finds the package manager
+    // itself. `pnpm dlx` is "command not found" on a machine without pnpm.
+    await assert.rejects(client.listComponents(), (err: Error) => {
+      assert.match(err.message, /upgrade with: npx storybook@latest upgrade$/);
+      assert.doesNotMatch(err.message, /pnpm/);
+      return true;
+    });
   } finally {
     await client.disconnect();
   }
