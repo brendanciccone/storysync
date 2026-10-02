@@ -6,8 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, readdirSync, renameSync, realpathSync } from "node:fs";
+import { join, dirname, basename, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -49,8 +49,9 @@ function withProject(fixture: Fixture, fn: (dir: string) => void): void {
   }
 }
 
-function init(dir: string, answers: string, env: NodeJS.ProcessEnv = process.env) {
-  const r = spawnSync(process.execPath, [CLI, "init", "--project", dir], { input: answers, encoding: "utf8", env });
+/** Runs init on `project`, from `cwd`: by default the project itself. */
+function init(project: string, answers: string, env: NodeJS.ProcessEnv = process.env, cwd = project) {
+  const r = spawnSync(process.execPath, [CLI, "init", "--project", project], { input: answers, encoding: "utf8", env, cwd });
   return { status: r.status, out: `${r.stdout}${r.stderr}`.replace(/\u001b\[[0-9;]*m/g, "") };
 }
 
@@ -138,6 +139,46 @@ test("init CLI: accepting installs the matching addon-mcp, and the quoted spec r
     assert.equal(readFileSync(log, "utf8"), "add\n-D\n@storybook/addon-mcp@^0.7.0\n");
     assert.match(r.out, /Restart Storybook to apply changes/);
   });
+});
+
+test("init CLI: run from another directory, the commands it prints change into the project first", () => {
+  // Pasted where init was run, `pnpm add` would add to that directory's
+  // package.json, not the project's.
+  withProject({ storybook: "9.1.20" }, (root) => {
+    // The project is "my app" inside root, and init is run from root.
+    const app = join(root, "my app");
+    mkdirSync(app);
+    for (const name of readdirSync(root)) if (name !== "my app") renameSync(join(root, name), join(app, name));
+    const from = realpathSync(root);
+
+    const r = init("my app", "n\nn\n", process.env, from);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /Upgrade: cd "my app" && pnpm dlx storybook@latest upgrade$/m);
+    assert.match(r.out, /Skipped\. Run manually: cd "my app" && pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"$/m);
+
+    // From inside the project, there is nowhere to change to.
+    const inside = init(".", "n\nn\n", process.env, join(from, "my app"));
+    assert.match(inside.out, /Skipped\. Run manually: pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"$/m);
+    // From below it, up.
+    const below = init("..", "n\nn\n", process.env, join(from, "my app", ".storybook"));
+    assert.match(below.out, /Skipped\. Run manually: cd \.\. && pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"$/m);
+  });
+  withProject({ storybook: "10.5.5", addon: "10.6.0" }, (dir) => {
+    const r = init(dir, "n\n", process.env, dirname(realpathSync(dir)));
+    assert.match(r.out, new RegExp(`Or upgrade Storybook: cd ${basename(dir)} && pnpm dlx storybook@latest upgrade$`, "m"));
+  });
+});
+
+test("init CLI: with no Storybook config, the hint to set one up changes into the project", () => {
+  const root = mkdtempSync(join(tmpdir(), "storysync-init-cli-"));
+  try {
+    mkdirSync(join(root, "app"));
+    const r = init("app", "", process.env, realpathSync(root));
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /Initialize Storybook first: cd app && npx storybook init$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("init CLI: a package in a pnpm workspace is offered pnpm, the workspace's package manager", () => {

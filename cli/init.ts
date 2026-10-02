@@ -1,6 +1,6 @@
 // `storysync init` — detect Storybook MCP setup gaps and offer to fix them.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -282,11 +282,34 @@ export function installCommand(pm: PackageManager, spec: string): string {
   return `npm install -D ${arg}`;
 }
 
+/**
+ * `command` as typed where init was run. From another directory it first
+ * changes into the project, since the package manager and Storybook act on
+ * the directory they run in: pasted as it was, `pnpm add` added to the
+ * package.json there.
+ */
+function inProject(command: string, projectPath: string): string {
+  // Real paths on both sides: the working directory is one (/private/var on
+  // macOS), and a project named through a symlink would read as elsewhere.
+  const real = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  let dir = relative(real(process.cwd()), real(projectPath));
+  if (!dir) return command;
+  if (dir.startsWith("-")) dir = `./${dir}`;
+  // Quoted as installCommand quotes a spec, for cmd.exe as well as sh.
+  return `cd ${/^[\w@/.:+\\-]+$/.test(dir) ? dir : `"${dir}"`} && ${command}`;
+}
+
 /** Asks before installing `spec`. A failed install ends init with exit code 1. */
 async function offerInstall(pm: PackageManager, spec: string, projectPath: string): Promise<"installed" | "skipped" | "failed"> {
   const command = installCommand(pm, spec);
   if (!(await confirm(`Install ${spec} via ${pm}?`))) {
-    console.log(chalk.dim(`  Skipped. Run manually: ${command}`));
+    console.log(chalk.dim(`  Skipped. Run manually: ${inProject(command, projectPath)}`));
     return "skipped";
   }
   try {
@@ -322,7 +345,7 @@ async function checkAndFix(projectInput: string): Promise<void> {
   const config = findStorybookConfig(projectPath);
   if (!config) {
     console.log(chalk.red("✖ No Storybook config found at .storybook/main.ts"));
-    console.log(chalk.dim("  Initialize Storybook first: npx storybook init"));
+    console.log(chalk.dim(`  Initialize Storybook first: ${inProject("npx storybook init", projectPath)}`));
     process.exitCode = 1;
     return;
   }
@@ -354,7 +377,7 @@ async function checkAndFix(projectInput: string): Promise<void> {
   if (!sbOk) {
     console.log(chalk.red(`storysync requires Storybook 10.1+ for component sync (list, map, inspect, diff).`));
     console.log(chalk.red(`Token extraction (storysync tokens) works with any version.`));
-    console.log(chalk.dim(`\n  Upgrade: ${upgradeCommand(pm)}\n`));
+    console.log(chalk.dim(`\n  Upgrade: ${inProject(upgradeCommand(pm), projectPath)}\n`));
     process.exitCode = 1;
   }
 
@@ -375,7 +398,7 @@ async function checkAndFix(projectInput: string): Promise<void> {
     installed = outcome === "installed";
     if (addonTooNew && !installed) {
       // Declined: the addon is left as it is, and it still doesn't load.
-      console.log(chalk.dim(`  Or upgrade Storybook: ${upgradeCommand(pm)}`));
+      console.log(chalk.dim(`  Or upgrade Storybook: ${inProject(upgradeCommand(pm), projectPath)}`));
       process.exitCode = 1;
     }
   }
