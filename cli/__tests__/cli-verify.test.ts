@@ -136,6 +136,18 @@ test("verify CLI: a snap with no components fails --strict and claims no match",
   assert.doesNotMatch(r.out, /Figma matches/);
 });
 
+test("verify CLI: a readback with no components reports the variant missing from Figma and fails --strict", () => {
+  // It threw a TypeError reading {"version":1}'s components, a crash where an
+  // empty readback says what Figma lacks.
+  for (const file of [{ version: 1 }, { version: 1, components: {} }]) {
+    const r = verify(snap(), file, "--strict");
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /\? Forms\/Button a not found in Figma/);
+    assert.match(r.out, /0 verified, 0 drifted, 1 missing from Figma, across 1 variants/);
+    assert.doesNotMatch(r.out, /TypeError|Cannot read|Figma matches/);
+  }
+});
+
 test("verify CLI: a single unmeasurable variant is reported but does not fail --strict alone", () => {
   // args_unsupported is expected for values Storybook cannot pass in a URL; the
   // skill builds those from source and labels them inferred, which

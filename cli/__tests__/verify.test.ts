@@ -452,6 +452,21 @@ test("verify: a variant missing from Figma is not also counted as unrecorded", (
   assert.equal(result.summary.unrecorded, 0);
 });
 
+test("verify: a readback with no components reports every variant missing from Figma, as an empty one does", () => {
+  // {"version":1} threw reading its components, where an empty map reports
+  // what it lacks.
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]);
+  const empty = verify(snap, { version: 1, components: {} }, 0.5);
+  for (const readback of [{ version: 1 }, { version: 1, components: null }]) {
+    const result = verify(snap, readback as never, 0.5);
+    assert.deepEqual(result.variants.map((v) => [v.slug, v.status]), [["a", "missing_from_figma"], ["b", "missing_from_figma"]]);
+    assert.equal(result.summary.missingFromFigma, 2);
+    assert.deepEqual(result.readbackIssues, []);
+    assert.deepEqual(result.unmeasuredInFigma, []);
+    assert.deepEqual(result, empty);
+  }
+});
+
 // --- geometry ---
 
 // Auto-layout derives size from font metrics and padding, and Figma rounds text

@@ -700,9 +700,12 @@ export function verify(
 
   const readbackIssues = checkReadback(readback, options);
   const unverified = new Set(readbackIssues.map((issue) => JSON.stringify([issue.component, issue.slug])));
+  // A readback with no components, {"version":1} say, has read nothing back
+  // from Figma: every variant is missing from it, as from an empty map.
+  const readbackComponents = readback.components ?? {};
 
   for (const [component, measuredVariants] of measuredByComponent) {
-    const figmaComponent = readback.components[component];
+    const figmaComponent = readbackComponents[component];
     for (const [slug, measured] of measuredVariants) {
       const figma = figmaComponent?.variants?.[slug];
       verdicts.push(figma != null && unverified.has(JSON.stringify([component, slug]))
@@ -714,7 +717,7 @@ export function verify(
   // The mirror of missing_from_figma: something Figma has that we never
   // measured, and therefore never scored.
   const unmeasuredInFigma: { component: string; slug: string }[] = [];
-  for (const [component, entry] of Object.entries(readback.components ?? {})) {
+  for (const [component, entry] of Object.entries(readbackComponents)) {
     const measured = measuredByComponent.get(component);
     for (const slug of Object.keys(entry?.variants ?? {})) {
       if (!measured?.has(slug)) unmeasuredInFigma.push({ component, slug });
