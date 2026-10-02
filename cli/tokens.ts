@@ -705,42 +705,58 @@ export interface TokenDrift {
   changed: { category: TokenCategory; token: string; from: string; to: string }[];
 }
 
+/**
+ * Every token of each category, one per name, the last of a name winning, as
+ * diff pairs them. A theme file's `fontSizes` and `fontWeights` are two
+ * typography collections; keyed by category alone, only the last was compared,
+ * so a changed font size passed --check, and dropping `fontWeights` reported
+ * the sizes as added. A name listed twice compares once, so a baseline that
+ * holds a duplicate checks clean against the same extraction.
+ */
+function tokensByCategory(collections: TokenCollection[]): Map<TokenCategory, Map<string, TokenValue>> {
+  const byCategory = new Map<TokenCategory, Map<string, TokenValue>>();
+  for (const collection of collections) {
+    const tokens = byCategory.get(collection.category) ?? new Map<string, TokenValue>();
+    for (const token of collection.tokens) tokens.set(token.name, token);
+    byCategory.set(collection.category, tokens);
+  }
+  return byCategory;
+}
+
 export function compareTokens(baseline: TokenBaseline, current: TokenExtractionResult): TokenDrift {
   const drift: TokenDrift = { added: [], removed: [], changed: [] };
 
-  const baseMap = new Map(baseline.collections.map((c) => [c.category, c]));
-  const currMap = new Map(current.collections.map((c) => [c.category, c]));
+  const baseMap = tokensByCategory(baseline.collections);
+  const currMap = tokensByCategory(current.collections);
 
   // Find added and changed
-  for (const [category, currColl] of currMap) {
-    const baseColl = baseMap.get(category);
-    if (!baseColl) {
-      drift.added.push({ category, tokens: currColl.tokens });
+  for (const [category, currTokens] of currMap) {
+    const baseTokens = baseMap.get(category);
+    if (!baseTokens) {
+      drift.added.push({ category, tokens: [...currTokens.values()] });
       continue;
     }
-    const baseTokenMap = new Map(baseColl.tokens.map((t) => [t.name, t.value]));
     const newTokens: TokenValue[] = [];
 
-    for (const token of currColl.tokens) {
-      const baseValue = baseTokenMap.get(token.name);
-      if (baseValue == null) {
+    for (const token of currTokens.values()) {
+      const base = baseTokens.get(token.name);
+      if (!base) {
         newTokens.push(token);
-      } else if (baseValue !== token.value) {
-        drift.changed.push({ category, token: token.name, from: baseValue, to: token.value });
+      } else if (base.value !== token.value) {
+        drift.changed.push({ category, token: token.name, from: base.value, to: token.value });
       }
     }
     if (newTokens.length) drift.added.push({ category, tokens: newTokens });
   }
 
   // Find removed
-  for (const [category, baseColl] of baseMap) {
-    const currColl = currMap.get(category);
-    if (!currColl) {
-      drift.removed.push({ category, tokens: baseColl.tokens });
+  for (const [category, baseTokens] of baseMap) {
+    const currTokens = currMap.get(category);
+    if (!currTokens) {
+      drift.removed.push({ category, tokens: [...baseTokens.values()] });
       continue;
     }
-    const currTokenNames = new Set(currColl.tokens.map((t) => t.name));
-    const removedTokens = baseColl.tokens.filter((t) => !currTokenNames.has(t.name));
+    const removedTokens = [...baseTokens.values()].filter((t) => !currTokens.has(t.name));
     if (removedTokens.length) drift.removed.push({ category, tokens: removedTokens });
   }
 

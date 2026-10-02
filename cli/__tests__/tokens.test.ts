@@ -452,6 +452,49 @@ test("drift: identical tokens report no drift", () => {
   assert.equal(hasDrift(drift), false);
 });
 
+/** A baseline as `tokens --json` would write it for this extraction. */
+function baselineOf(result: ReturnType<typeof extractTokens>): TokenBaseline {
+  return { version: 1, source: result.source, sourcePath: result.sourcePath, collections: result.collections, generatedAt: FIXED_TIMESTAMP };
+}
+
+test("drift: a category a theme file splits across exports is compared whole", () => {
+  // fontSizes and fontWeights are both typography collections. Keyed by
+  // category, only the last was compared: a changed font size passed, and
+  // dropping fontWeights reported the unchanged sizes as added.
+  const theme = (sm: string, weights: boolean) =>
+    `export const colors = { primary: "#0000ff" };\n` +
+    `export const fontSizes = { sm: "${sm}", md: "16px" };\n` +
+    (weights ? `export const fontWeights = { regular: "400", bold: "700" };\n` : "");
+  const dir = makeProject({ "src/theme.ts": theme("14px", true) });
+  try {
+    const baseline = baselineOf(extractTokens(dir));
+    assert.equal(baseline.collections.filter((c) => c.category === "typography").length, 2);
+
+    writeFileSync(join(dir, "src/theme.ts"), theme("99px", true));
+    assert.deepEqual(compareTokens(baseline, extractTokens(dir)), {
+      added: [],
+      removed: [],
+      changed: [{ category: "typography", token: "sm", from: "14px", to: "99px" }],
+    });
+
+    writeFileSync(join(dir, "src/theme.ts"), theme("14px", false));
+    const drift = compareTokens(baseline, extractTokens(dir));
+    assert.deepEqual(drift.added, []);
+    assert.deepEqual(drift.changed, []);
+    assert.deepEqual(drift.removed.map((r) => r.tokens.map((t) => t.name)), [["regular", "bold"]]);
+  } finally { cleanup(dir); }
+});
+
+test("drift: a name listed twice compares once, the last of it winning on both sides", () => {
+  // Every current entry was compared with the baseline's last, so a baseline
+  // taken from the same extraction reported drift, and no new one could fix it.
+  const collections = [{ category: "colors" as const, tokens: [{ name: "primary", value: "#ff0000" }, { name: "primary", value: "#0000ff" }] }];
+  const current = { source: "tailwind" as const, sourcePath: "/fake", collections, warnings: [] };
+  assert.equal(hasDrift(compareTokens(baselineOf(current), current)), false);
+  const once = { ...current, collections: [{ category: "colors" as const, tokens: [{ name: "primary", value: "#0000ff" }] }] };
+  assert.equal(hasDrift(compareTokens(baselineOf(current), once)), false);
+});
+
 // --- Baseline files ---
 
 test("readTokenBaseline: returns null for a missing file, for the caller to report", () => {

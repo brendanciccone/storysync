@@ -320,7 +320,7 @@ Options:
   --strict             Exit with code 1 if no tokens found or drift detected
 ```
 
-`--check` compares the current tokens against a committed baseline and lists what was added, removed or changed; `--strict` makes drift fail. The baseline is the `--json` output, taken with the same `--project` and `--source` as the check:
+`--check` compares the current tokens against a committed baseline and lists what was added, removed or changed; `--strict` makes drift fail. Tokens are paired by category and name, as `diff` pairs them, so a category a theme file splits across exports, such as `fontSizes` and `fontWeights` in typography, is compared whole. The baseline is the `--json` output, taken with the same `--project` and `--source` as the check:
 
 ```bash
 mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.json
