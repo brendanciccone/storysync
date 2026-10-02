@@ -38,15 +38,16 @@ export interface TextStyles {
   fontSize: number;
   fontWeight: number;
   /**
-   * The computed `text-transform`: `none`, `uppercase`, `lowercase`,
-   * `capitalize`. A story's args hold the label as written, `Beta`, while the
-   * browser draws, and measures the width of, `BETA`.
+   * The computed `text-transform`, `uppercase`, `lowercase` or `capitalize`,
+   * absent for `none`. A story's args hold the label as written, `Beta`,
+   * while the browser draws, and measures the width of, `BETA`.
    *
-   * normalizeStyles always sets this and letterSpacing; they are optional
-   * only so a styles.json written before they were measured still reads.
+   * This and letterSpacing are written only when the text has them, so a
+   * styles.json from before they were measured, or from a component without
+   * either, reads and diffs as it did.
    */
   textTransform?: string;
-  /** In px, a percentage resolved against the text's own font size. */
+  /** In px, a percentage resolved against the text's own font size; absent for none. */
   letterSpacing?: number;
 }
 
@@ -61,12 +62,13 @@ export interface NormalizedStyles {
   /** The layer under `backgroundImage`, when there is one: seen only where the image is transparent. */
   backgroundColor: string | null;
   /**
-   * The computed `background-image`, its colours as hex, or null for none: a
-   * gradient or image painted over `backgroundColor`. A gradient button has a
-   * `backgroundColor` of null and is still filled.
+   * The computed `background-image`, its colours as hex: a gradient or image
+   * painted over `backgroundColor`. A gradient button has a `backgroundColor`
+   * of null and is still filled.
    *
-   * normalizeStyles always sets it; it is optional only so a styles.json
-   * written before it was measured still reads.
+   * Written only when there is one, so a styles.json from before it was
+   * measured, or from components without one, reads and diffs as it did. A
+   * variant whose base has one and it doesn't records null in its delta.
    */
   backgroundImage?: string | null;
   color: string | null;
@@ -469,6 +471,7 @@ export function normalizeStyles(
   const isFlex = (raw["display"] ?? "").includes("flex") || (raw["display"] ?? "").includes("grid");
 
   const opacity = Number(raw["opacity"]);
+  const backgroundImage = normalizeBackgroundImage(raw["background-image"]);
 
   return {
     display: (raw["display"] ?? "").trim(),
@@ -479,7 +482,7 @@ export function normalizeStyles(
     width: round2(box.width),
     height: round2(box.height),
     backgroundColor: normalizeColor(raw["background-color"]),
-    backgroundImage: normalizeBackgroundImage(raw["background-image"]),
+    ...(backgroundImage != null ? { backgroundImage } : {}),
     color: normalizeColor(raw["color"]),
     border: anyBorder ? border : null,
     borderUniform: anyBorder && allSame ? border.top : null,
@@ -500,16 +503,20 @@ export function normalizeStyles(
     opacity: Number.isFinite(opacity) ? round2(opacity) : 1,
     boxSizing: (raw["box-sizing"] ?? "content-box").trim(),
     fontAvailable,
-    text: textRaw
-      ? {
-          color: withOpacity(normalizeColor(textRaw["color"]), Number(textRaw["opacity"] ?? 1)),
-          fontFamily: firstFontFamily(textRaw["font-family"]),
-          fontSize: pxOrZero(textRaw["font-size"]),
-          fontWeight: normalizeFontWeight(textRaw["font-weight"]),
-          textTransform: (textRaw["text-transform"] ?? "").trim() || "none",
-          letterSpacing: normalizeLetterSpacing(textRaw["letter-spacing"], pxOrZero(textRaw["font-size"])),
-        }
-      : null,
+    text: textRaw ? normalizeText(textRaw) : null,
+  };
+}
+
+function normalizeText(textRaw: RawComputedStyles): TextStyles {
+  const textTransform = (textRaw["text-transform"] ?? "").trim() || "none";
+  const letterSpacing = normalizeLetterSpacing(textRaw["letter-spacing"], pxOrZero(textRaw["font-size"]));
+  return {
+    color: withOpacity(normalizeColor(textRaw["color"]), Number(textRaw["opacity"] ?? 1)),
+    fontFamily: firstFontFamily(textRaw["font-family"]),
+    fontSize: pxOrZero(textRaw["font-size"]),
+    fontWeight: normalizeFontWeight(textRaw["font-weight"]),
+    ...(textTransform !== "none" ? { textTransform } : {}),
+    ...(letterSpacing !== 0 ? { letterSpacing } : {}),
   };
 }
 
@@ -693,7 +700,9 @@ function sameValue(a: unknown, b: unknown): boolean {
 export function diffFromBase(base: NormalizedStyles, variant: NormalizedStyles): StyleDelta {
   const delta: Record<string, unknown> = {};
   for (const key of STYLE_KEYS) {
-    if (!sameValue(base[key], variant[key])) delta[key] = variant[key];
+    // A field written only when present, such as backgroundImage, is null
+    // here when the variant lacks it, or JSON would drop the change.
+    if (!sameValue(base[key], variant[key])) delta[key] = variant[key] ?? null;
   }
   return delta as StyleDelta;
 }

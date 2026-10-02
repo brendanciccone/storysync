@@ -260,9 +260,8 @@ test("normalizeStyles: captures text-descendant styles when provided", () => {
     color: "rgb(17, 24, 39)", "font-family": "Inter, sans-serif",
     "font-size": "18px", "font-weight": "500",
   });
-  assert.deepEqual(s.text, {
-    color: "#111827", fontFamily: "Inter", fontSize: 18, fontWeight: 500, textTransform: "none", letterSpacing: 0,
-  });
+  // No transform or tracking: those are written only when the text has them.
+  assert.deepEqual(s.text, { color: "#111827", fontFamily: "Inter", fontSize: 18, fontWeight: 500 });
   assert.equal(normalizeStyles(PRIMARY_SM, BOX).text, null);
 });
 
@@ -275,7 +274,8 @@ test("normalizeStyles: records the text's transform, which the label's width dep
   // An uppercase badge draws BETA from args of Beta, about 6px wider at 12px.
   const s = normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, "text-transform": "uppercase" });
   assert.equal(s.text?.textTransform, "uppercase");
-  assert.equal(normalizeStyles(PRIMARY_SM, BOX, LABEL).text?.textTransform, "none");
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, "text-transform": "capitalize" }).text?.textTransform, "capitalize");
+  assert.equal("textTransform" in normalizeStyles(PRIMARY_SM, BOX, LABEL).text!, false);
 });
 
 test("normalizeStyles: records the text holder's own letter-spacing, not only the root's", () => {
@@ -283,6 +283,7 @@ test("normalizeStyles: records the text holder's own letter-spacing, not only th
   const s = normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, "font-size": "13.3333px", "letter-spacing": "0.666667px" });
   assert.equal(s.letterSpacing, 0);
   assert.equal(s.text?.letterSpacing, 0.67);
+  assert.equal("letterSpacing" in normalizeStyles(PRIMARY_SM, BOX, LABEL).text!, false);
 });
 
 test("normalizeStyles: a percentage letter-spacing is a share of the font size", () => {
@@ -341,9 +342,9 @@ test("normalizeStyles: an image layered over a fill keeps both, and a url() as w
   assert.equal(s.backgroundImage, 'url("http://localhost:6006/rgb(1).png"), linear-gradient(#00000000, #000000)');
 });
 
-test("normalizeStyles: no background image is null", () => {
-  assert.equal(normalizeStyles(withOverrides({ "background-image": "none" }), BOX).backgroundImage, null);
-  assert.equal(normalizeStyles(PRIMARY_SM, BOX).backgroundImage, null);
+test("normalizeStyles: no background image writes no field, so styles.json reads as it did", () => {
+  assert.equal("backgroundImage" in normalizeStyles(withOverrides({ "background-image": "none" }), BOX), false);
+  assert.equal("backgroundImage" in normalizeStyles(PRIMARY_SM, BOX), false);
 });
 
 test("diffFromBase: a gradient variant of a solid button differs from it", () => {
@@ -354,6 +355,16 @@ test("diffFromBase: a gradient variant of a solid button differs from it", () =>
     "background-image": "linear-gradient(90deg, rgb(249, 115, 22), rgb(219, 39, 119))",
   }), BOX);
   assert.deepEqual(diffFromBase(base, layered), { backgroundImage: "linear-gradient(90deg, #f97316, #db2777)" });
+});
+
+test("diffFromBase: a variant without the gradient its base has records null, which survives JSON", () => {
+  const base = normalizeStyles(withOverrides({
+    "background-image": "linear-gradient(90deg, rgb(249, 115, 22), rgb(219, 39, 119))",
+  }), BOX);
+  const plain = normalizeStyles(PRIMARY_SM, BOX);
+  const delta = JSON.parse(JSON.stringify(diffFromBase(base, plain)));
+  assert.deepEqual(delta, { backgroundImage: null });
+  assert.equal(applyDelta(base, delta).backgroundImage, null);
 });
 
 // --- Box shadow -------------------------------------------------------------
