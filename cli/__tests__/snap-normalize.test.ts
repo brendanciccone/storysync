@@ -65,6 +65,14 @@ test("pxToNumber: parses lengths and rejects non-lengths", () => {
   assert.equal(pxToNumber(undefined), null);
 });
 
+test("pxToNumber: reads the exponent form Chromium writes a huge length in", () => {
+  // Tailwind v4's rounded-full, calc(infinity * 1px), computes to this.
+  assert.equal(pxToNumber("3.35544e+07px"), 33554400);
+  assert.equal(pxToNumber("1E2px"), 100);
+  assert.equal(pxToNumber(".5px"), 0.5);
+  assert.equal(pxToNumber("1e2"), null);
+});
+
 test("normalizeColor: converts computed rgb() to hex", () => {
   assert.equal(normalizeColor("rgb(37, 99, 235)"), "#2563eb");
   assert.equal(normalizeColor("rgb(220, 38, 38)"), "#dc2626");
@@ -163,6 +171,53 @@ test("normalizeStyles: mixed corners keep per-corner values", () => {
   assert.equal(s.borderRadiusUniform, null);
   assert.equal(s.borderRadius.topLeft, 9);
   assert.equal(s.borderRadius.topRight, 3);
+});
+
+/** Every corner set to one computed radius. */
+function radii(value: string): RawComputedStyles {
+  return withOverrides(Object.fromEntries(
+    ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => [`border-${c}-radius`, value]),
+  ));
+}
+
+test("normalizeStyles: a radius too big for the box is recorded as the one the browser draws", () => {
+  // Tailwind v4's rounded-full, as Chromium computes it, on a 32px-tall pill
+  // and an 8px dot. Read as no radius, it scored a square Figma frame a match.
+  assert.equal(normalizeStyles(radii("3.35544e+07px"), { width: 55.92, height: 32 }).borderRadiusUniform, 16);
+  assert.equal(normalizeStyles(radii("3.35544e+07px"), { width: 8, height: 8 }).borderRadiusUniform, 4);
+  // Tailwind v3's rounded-full draws the same pill.
+  assert.equal(normalizeStyles(radii("9999px"), { width: 42.67, height: 32 }).borderRadiusUniform, 16);
+});
+
+test("normalizeStyles: overlapping corners all scale by one factor, as CSS scales them", () => {
+  const s = normalizeStyles(withOverrides({
+    "border-top-left-radius": "30px", "border-top-right-radius": "10px",
+    "border-bottom-right-radius": "0px", "border-bottom-left-radius": "4px",
+  }), { width: 20, height: 100 });
+  // The top side needs 40px of its 20, so every corner is halved.
+  assert.deepEqual(s.borderRadius, { topLeft: 15, topRight: 5, bottomRight: 0, bottomLeft: 2 });
+});
+
+test("normalizeStyles: a percentage radius resolves against the border box", () => {
+  // Chromium keeps percentages as written.
+  assert.equal(normalizeStyles(radii("50%"), { width: 8, height: 8 }).borderRadiusUniform, 4);
+  assert.equal(normalizeStyles(radii("100%"), { width: 32, height: 32 }).borderRadiusUniform, 16);
+  // Horizontal of the width, vertical of the height: 10px by 5px, kept as 5.
+  assert.equal(normalizeStyles(radii("25%"), { width: 40, height: 20 }).borderRadiusUniform, 5);
+});
+
+test("normalizeStyles: an elliptical corner keeps its smaller radius, since Figma has none", () => {
+  // border-radius: 10px / 20px computes to two values per corner.
+  assert.equal(normalizeStyles(radii("10px 20px"), { width: 64, height: 48 }).borderRadiusUniform, 10);
+  // 50% of a box that isn't square is an ellipse; the nearest Figma corner is a pill.
+  assert.equal(normalizeStyles(radii("50%"), { width: 60, height: 32 }).borderRadiusUniform, 16);
+});
+
+test("normalizeStyles: a calc() radius reads as the browser side resolved it", () => {
+  // snap-browser sizes calc(50% - 2px) on a 32px box to this.
+  assert.equal(normalizeStyles(radii("14px 14px"), { width: 32, height: 32 }).borderRadiusUniform, 14);
+  // Unresolved, it can't be read without layout, and reads as square.
+  assert.equal(normalizeStyles(radii("calc(50% - 2px)"), { width: 32, height: 32 }).borderRadiusUniform, 0);
 });
 
 test("normalizeStyles: reads padding, size, and layout", () => {

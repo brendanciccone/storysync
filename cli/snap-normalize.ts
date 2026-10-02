@@ -47,6 +47,10 @@ export interface NormalizedStyles {
   border: { top: BorderSide | null; right: BorderSide | null; bottom: BorderSide | null; left: BorderSide | null } | null;
   /** Set when all four sides are identical — the common case for Figma strokes. */
   borderUniform: BorderSide | null;
+  /**
+   * The radii the browser draws, in px: percentages resolved against the
+   * border box, and corners too big for it scaled down as CSS scales them.
+   */
   borderRadius: { topLeft: number; topRight: number; bottomRight: number; bottomLeft: number };
   /** Set when all four corners are equal — maps to Figma `cornerRadius`. */
   borderRadiusUniform: number | null;
@@ -96,10 +100,13 @@ export const TEXT_PROPERTIES: readonly string[] = ["color", "font-family", "font
 
 // --- Scalar helpers ---------------------------------------------------------
 
-/** `"14px"` -> `14`. Returns null when the value isn't a length. */
+/**
+ * `"14px"` -> `14`, and `"3.35544e+07px"`, the exponent form Chromium writes a
+ * huge length in, to its number. Returns null when the value isn't a length.
+ */
 export function pxToNumber(value: string | undefined): number | null {
   if (!value) return null;
-  const m = value.trim().match(/^(-?[\d.]+)px$/);
+  const m = value.trim().match(/^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)px$/i);
   if (!m) return null;
   const n = Number(m[1]);
   if (!Number.isFinite(n)) return null;
@@ -183,6 +190,59 @@ export function parseBorderSide(
 function sameBorderSide(a: BorderSide | null, b: BorderSide | null): boolean {
   if (a == null || b == null) return a === b;
   return a.width === b.width && a.style === b.style && a.color === b.color;
+}
+
+// --- Border radius ----------------------------------------------------------
+
+const RADIUS_LENGTH = /^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%)$/i;
+
+/**
+ * One corner's computed radius as its horizontal and vertical radii, in px.
+ *
+ * Chromium keeps a percentage as written, the horizontal radius a share of
+ * the border box's width and the vertical of its height, and writes an
+ * elliptical corner as two values. A calc() or min() holding a percentage is
+ * resolved to px on the browser side, since only layout can; one that
+ * arrives unresolved reads as square.
+ */
+function cornerRadii(value: string | undefined, box: { width: number; height: number }): [number, number] {
+  const parts = splitTopLevel((value ?? "").trim(), " ");
+  const toPx = (token: string | undefined, basis: number): number => {
+    const m = token?.match(RADIUS_LENGTH);
+    if (!m) return 0;
+    const n = Number(m[1]);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, m[2] === "%" ? (n / 100) * basis : n);
+  };
+  return [toPx(parts[0], box.width), toPx(parts[1] ?? parts[0], box.height)];
+}
+
+/**
+ * The corner radii the browser draws, as Figma can hold them.
+ *
+ * Radii that together run longer than a side are all scaled down by one
+ * factor, as CSS does with overlapping curves: Tailwind v4's `rounded-full`
+ * is `calc(infinity * 1px)`, which Chromium computes to `3.35544e+07px`, and
+ * on a 32px-tall pill it draws 16. Recording the computed value instead would
+ * give a Figma radius of 33 million, and v3's `9999px` one of 9999, neither
+ * of which the browser drew. Figma has no elliptical corner, so one whose two
+ * radii differ, `10px / 20px` or `50%` of a box that isn't square, keeps the
+ * smaller.
+ */
+function resolveRadii(
+  raw: RawComputedStyles,
+  box: { width: number; height: number },
+): NormalizedStyles["borderRadius"] {
+  const [tl, tr, br, bl] = ["top-left", "top-right", "bottom-right", "bottom-left"]
+    .map((corner) => cornerRadii(raw[`border-${corner}-radius`], box));
+  const fits = (side: number, sum: number) => (sum > 0 ? side / sum : Infinity);
+  const scale = Math.max(0, Math.min(
+    1,
+    fits(box.width, tl[0] + tr[0]), fits(box.width, bl[0] + br[0]),
+    fits(box.height, tl[1] + bl[1]), fits(box.height, tr[1] + br[1]),
+  ));
+  const corner = ([h, v]: [number, number]) => round2(Math.min(h, v) * scale);
+  return { topLeft: corner(tl), topRight: corner(tr), bottomRight: corner(br), bottomLeft: corner(bl) };
 }
 
 // --- Box shadow -------------------------------------------------------------
@@ -281,12 +341,7 @@ export function normalizeStyles(
     sameBorderSide(border.top, border.bottom) &&
     sameBorderSide(border.top, border.left);
 
-  const radius = {
-    topLeft: pxOrZero(raw["border-top-left-radius"]),
-    topRight: pxOrZero(raw["border-top-right-radius"]),
-    bottomRight: pxOrZero(raw["border-bottom-right-radius"]),
-    bottomLeft: pxOrZero(raw["border-bottom-left-radius"]),
-  };
+  const radius = resolveRadii(raw, box);
   const radiusUniform =
     radius.topLeft === radius.topRight &&
     radius.topLeft === radius.bottomRight &&

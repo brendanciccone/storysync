@@ -288,6 +288,17 @@ async function descendToComponent(
   return (result.asElement() as ElementHandle<Element>) ?? handle;
 }
 
+/**
+ * Reads the computed styles, with any corner radius that only layout can
+ * resolve resolved to px.
+ *
+ * Chromium computes `border-radius: calc(50% - 2px)` or `min(8px, 10%)` to
+ * itself, since the percentage depends on the box. Plain px and plain
+ * percentages are left for snap-normalize to read; anything else is sized
+ * here on a hidden probe whose containing block is the element's border box,
+ * so its percentages resolve as the radius's do, and comes back as
+ * `"<h>px <v>px"`.
+ */
 async function readComputedStyles(
   page: Page,
   handle: ElementHandle<Element>,
@@ -298,6 +309,47 @@ async function readComputedStyles(
       const cs = getComputedStyle(node as Element);
       const out: Record<string, string> = {};
       for (const p of props as string[]) out[p] = cs.getPropertyValue(p);
+
+      const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
+      for (const p of Object.keys(out).filter((key) => key.endsWith("-radius"))) {
+        // Split on top-level spaces: an elliptical corner is two values.
+        const parts: string[] = [];
+        let depth = 0;
+        let current = "";
+        for (const ch of out[p].trim()) {
+          if (ch === "(") depth++;
+          else if (ch === ")") depth--;
+          if (/\s/.test(ch) && depth === 0) {
+            if (current) parts.push(current);
+            current = "";
+          } else {
+            current += ch;
+          }
+        }
+        if (current) parts.push(current);
+        if (!parts.length || parts.every((t) => plain.test(t))) continue;
+
+        const rect = (node as Element).getBoundingClientRect();
+        const host = document.createElement("div");
+        const probe = document.createElement("div");
+        const pin = (el: HTMLElement, styles: Record<string, string>) => {
+          for (const [name, value] of Object.entries(styles)) el.style.setProperty(name, value, "important");
+        };
+        const bare = {
+          position: "absolute", left: "0", top: "0", margin: "0", padding: "0", border: "0",
+          "box-sizing": "content-box", "min-width": "0", "min-height": "0",
+          "max-width": "none", "max-height": "none", visibility: "hidden",
+        };
+        pin(host, { ...bare, width: `${rect.width}px`, height: `${rect.height}px` });
+        pin(probe, { ...bare, width: parts[0], height: parts[1] ?? parts[0] });
+        // A value width or height won't take leaves the radius as it was.
+        if (!probe.style.getPropertyValue("width") || !probe.style.getPropertyValue("height")) continue;
+        host.appendChild(probe);
+        document.body.appendChild(host);
+        const size = probe.getBoundingClientRect();
+        host.remove();
+        out[p] = `${size.width}px ${size.height}px`;
+      }
       return out;
     },
     [handle, properties] as const,
