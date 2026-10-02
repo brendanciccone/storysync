@@ -368,8 +368,20 @@ export class StorybookClient {
     if (!body) return [];
 
     const props: StorybookProp[] = [];
+    // addon-mcp prints a prop's description between `/**` and `*/` as written,
+    // without a leading `*`, so a line of it can look like a prop:
+    // `Accepts: "a" | "b"` was read as a variant property named Accepts.
+    let inComment = false;
     for (const line of body[1].split("\n")) {
       const t = line.trim();
+      if (inComment) {
+        inComment = !t.endsWith("*/");
+        continue;
+      }
+      if (t.startsWith("/*")) {
+        inComment = !t.slice(2).endsWith("*/");
+        continue;
+      }
       if (!t || t.startsWith("/") || t.startsWith("*") || t === "}") continue;
 
       const m = t.match(/^(\w+)(\?)?:\s*(.+);?\s*$/);

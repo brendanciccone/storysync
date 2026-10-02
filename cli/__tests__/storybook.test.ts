@@ -408,6 +408,21 @@ test("StorybookClient: without a Props section, props are still read, but not a 
   ].join("\n")), []);
 });
 
+test("StorybookClient: a line of a prop's description is not a prop", async () => {
+  // addon-mcp 10.6 for `/** Visual tone of the badge.\n * Accepts: "neutral" | "success" | "danger" */`.
+  const props = await propsOf([
+    "# Badge", "", "ID: display-badge", "",
+    "## Props", "",
+    "```", "export type Props = {",
+    "  /**", "    Visual tone of the badge.", 'Accepts: "neutral" | "success" | "danger"', "  */",
+    '  tone?: "neutral" | "success" | "danger" = "neutral";',
+    "  /** Shown when: true */", "  dot?: boolean = false;",
+    "  /*", "label: string", "  */", "  label: string;",
+    "}", "```",
+  ].join("\n"));
+  assert.deepEqual(props, [["tone", '"neutral" | "success" | "danger"'], ["dot", "boolean"], ["label", "string"]]);
+});
+
 // --- selectComponents ---
 // Shared by snap, map and diff, so a --components list means the same thing
 // to each of them.
