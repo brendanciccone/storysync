@@ -482,7 +482,7 @@ test("readTokenBaseline: an empty collections list is a baseline", () => {
 test("baselineCommand: creates the directory the redirect writes into", () => {
   assert.equal(
     baselineCommand(".storysync/tokens-baseline.json"),
-    "mkdir -p .storysync && storysync tokens --json > .storysync/tokens-baseline.json",
+    "mkdir -p -- .storysync && storysync tokens --json > .storysync/tokens-baseline.json",
   );
   assert.equal(baselineCommand("baseline.json"), "storysync tokens --json > baseline.json");
 });
@@ -495,9 +495,20 @@ test("baselineCommand: repeats --project and --source so the baseline matches wh
   assert.equal(baselineCommand("b.json", { project: "." }), "storysync tokens --json > b.json");
 });
 
+test("baselineCommand: ends mkdir's options, so a directory starting with a dash is made, not read as one", () => {
+  assert.equal(
+    baselineCommand("-p/tokens.json"),
+    "mkdir -p -- -p && storysync tokens --json > -p/tokens.json",
+  );
+  assert.equal(
+    baselineCommand("--help me/tokens.json"),
+    "mkdir -p -- '--help me' && storysync tokens --json > '--help me/tokens.json'",
+  );
+});
+
 test("baselineCommand: quotes paths the shell would split", () => {
   assert.equal(
     baselineCommand("my tokens/base's.json"),
-    `mkdir -p 'my tokens' && storysync tokens --json > 'my tokens/base'\\''s.json'`,
+    `mkdir -p -- 'my tokens' && storysync tokens --json > 'my tokens/base'\\''s.json'`,
   );
 });

@@ -379,7 +379,7 @@ runs:
         let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " tokens";
         if (process.env.TOKEN_SOURCE !== "auto") command += " --source " + quote(process.env.TOKEN_SOURCE);
         command += " --json > " + quote(baselinePath);
-        if (path.dirname(baselinePath) !== ".") command = "mkdir -p " + quote(path.dirname(baselinePath)) + " && " + command;
+        if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
         const create = "running this in " + where + ", then commit it: " + command + " (the action's tokens_json output holds the same JSON)";
 
         // The baseline comes first: a project whose tokens have all gone still
@@ -542,7 +542,7 @@ runs:
         let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " map --storybook " + quote(process.env.STORYBOOK_URL);
         if (process.env.COMPONENTS) command += " --components " + quote(process.env.COMPONENTS);
         command += " --json > " + quote(baselinePath);
-        if (path.dirname(baselinePath) !== ".") command = "mkdir -p " + quote(path.dirname(baselinePath)) + " && " + command;
+        if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
         const create = "running this in " + where + " with Storybook running, then commit it: " + command + " (the action's json output holds the same JSON)";
 
         if (!fs.existsSync(baselinePath)) {

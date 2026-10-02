@@ -691,7 +691,7 @@ export function baselineCommand(path: string, opts: { project?: string; source?:
   if (opts.source) args.push("--source", quote(opts.source));
   args.push("--json", ">", quote(path));
   const dir = dirname(path);
-  return `${dir === "." ? "" : `mkdir -p ${quote(dir)} && `}${args.join(" ")}`;
+  return `${dir === "." ? "" : `mkdir -p -- ${quote(dir)} && `}${args.join(" ")}`;
 }
 
 export interface TokenDrift {

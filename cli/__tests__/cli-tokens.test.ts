@@ -39,7 +39,7 @@ test("tokens CLI: --check with no baseline fails whatever the flags, and says ho
       const r = tokens(dir, "--check", ...flags);
       assert.equal(r.status, 1, r.out);
       assert.match(r.out, /No token baseline at \.storysync\/tokens-baseline\.json, so there is nothing to check against/);
-      assert.match(r.out, /`mkdir -p \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`/);
+      assert.match(r.out, /`mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`/);
       assert.doesNotMatch(r.out, /first run/);
     }
   });
@@ -79,6 +79,25 @@ test("tokens CLI: the suggested command writes a baseline --check accepts, and c
   });
 });
 
+test("tokens CLI: the suggested command makes a baseline directory whose name starts with a dash", () => {
+  // Without `--`, mkdir read "-baselines" as its options and failed, so the
+  // command the message gives never wrote the baseline.
+  withProject((dir) => {
+    const missing = tokens(dir, "--check", "--baseline=-baselines/tokens.json");
+    assert.equal(missing.status, 1, missing.out);
+    const command = missing.out.match(/Create one with `([^`]+)`/)?.[1];
+    assert.equal(command, "mkdir -p -- -baselines && storysync tokens --json > -baselines/tokens.json");
+
+    const shim = `storysync() { ${shellQuote(process.execPath)} ${shellQuote(CLI)} "$@"; }; ${command}`;
+    const created = spawnSync("sh", ["-c", shim], { cwd: dir, encoding: "utf8" });
+    assert.equal(created.status, 0, created.stderr);
+
+    const clean = tokens(dir, "--check", "--strict", "--baseline=-baselines/tokens.json");
+    assert.equal(clean.status, 0, clean.out);
+    assert.match(clean.out, /No token drift detected/);
+  });
+});
+
 test("tokens CLI: a baseline that is not one fails with the command to recreate it", () => {
   withProject((dir) => {
     // A saved passing `--check --json` is the realistic mistake: it is only
@@ -87,7 +106,7 @@ test("tokens CLI: a baseline that is not one fails with the command to recreate 
     writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), `{"drift":false}`);
     const r = tokens(dir, "--check");
     assert.equal(r.status, 1, r.out);
-    assert.match(r.out, /has no "collections", so it is not a baseline\. Recreate it with `mkdir -p \.storysync && storysync tokens --json/);
+    assert.match(r.out, /has no "collections", so it is not a baseline\. Recreate it with `mkdir -p -- \.storysync && storysync tokens --json/);
   });
 });
 
@@ -101,7 +120,7 @@ test("tokens CLI: --check with malformed collections in the baseline fails with 
       writeFileSync(baseline, bad);
       const text = tokens(dir, "--check");
       assert.equal(text.status, 1, text.out);
-      assert.match(text.out, /so it is not a baseline\. Recreate it with `mkdir -p \.storysync && storysync tokens --json/);
+      assert.match(text.out, /so it is not a baseline\. Recreate it with `mkdir -p -- \.storysync && storysync tokens --json/);
       assert.doesNotMatch(text.out, /TypeError/);
 
       const json = tokens(dir, "--check", "--json");
@@ -222,7 +241,7 @@ test("tokens CLI: --source auto detects the source, as leaving it out does", () 
     // The command it gives for a missing baseline detects too, without --source.
     const missing = tokens(dir, "--source", "auto", "--check");
     assert.equal(missing.status, 1, missing.out);
-    assert.match(missing.out, /`mkdir -p \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`/);
+    assert.match(missing.out, /`mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`/);
 
     // And a baseline written without --source checks clean against it.
     mkdirSync(join(dir, ".storysync"));
