@@ -139,3 +139,50 @@ test("action Detect drift: a changed component is reported under its title, and 
   assert.match(r.report ?? "", /### Changed\n- \*\*Button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
   assert.doesNotMatch(r.report ?? "", /### Added|### Removed/);
 });
+
+// --- Detect token drift ---
+
+interface Collection {
+  category: string;
+  tokens: { name: string; value: string }[];
+}
+
+function tokensJson(collections: Collection[]): string {
+  return JSON.stringify({ version: 1, source: "theme", sourcePath: "src/theme.ts", collections, warnings: [] });
+}
+
+function detectTokenDrift(baseline: string, current: Collection[]): Run {
+  return run("Detect token drift", "storysync-token-drift.md", { ".storysync/tokens-baseline.json": baseline, "storysync-tokens-current.json": tokensJson(current) }, {
+    TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json",
+    TOKEN_SOURCE: "auto",
+  });
+}
+
+// A theme file's fontSizes and fontWeights are both typography.
+const colors = { category: "colors", tokens: [{ name: "primary", value: "#0000ff" }] };
+const fontSizes = { category: "typography", tokens: [{ name: "sm", value: "14px" }, { name: "md", value: "16px" }] };
+const fontWeights = { category: "typography", tokens: [{ name: "regular", value: "400" }, { name: "bold", value: "700" }] };
+
+test("action Detect token drift: every collection of a category is compared, not only the last", () => {
+  const baseline = tokensJson([colors, fontSizes, fontWeights]);
+  const unchanged = detectTokenDrift(baseline, [colors, fontSizes, fontWeights]);
+  assert.equal(unchanged.status, 0, unchanged.stderr);
+  assert.equal(unchanged.outputs.result, "false", unchanged.stdout);
+
+  // fontSizes was hidden behind fontWeights on both sides.
+  const resized = { category: "typography", tokens: [{ name: "sm", value: "99px" }, { name: "md", value: "16px" }] };
+  const changed = detectTokenDrift(baseline, [colors, resized, fontWeights]);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed collections\n- \*\*typography\*\*: 0 added, 1 changed\n/);
+  assert.doesNotMatch(changed.report ?? "", /### Removed tokens|### New collections/);
+
+  // With fontWeights gone, sm and md were reported as added.
+  const dropped = detectTokenDrift(baseline, [colors, fontSizes]);
+  assert.equal(dropped.outputs.result, "true", dropped.stdout);
+  assert.match(dropped.report ?? "", /### Removed tokens\n- \*\*typography\*\*: 2 token\(s\) removed\n/);
+  assert.doesNotMatch(dropped.report ?? "", /### Changed collections|### New collections/);
+
+  // Moved from one collection of the category to another is no change.
+  const merged = detectTokenDrift(baseline, [colors, { category: "typography", tokens: [...fontSizes.tokens, ...fontWeights.tokens] }]);
+  assert.equal(merged.outputs.result, "false", merged.stdout);
+});

@@ -161,7 +161,7 @@ and commit them. `<version>` is the storysync version that matches the ref you u
 | `components` | all | Comma-separated component names or IDs to map. A name that matches no component fails the job, and the error lists the names there are. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
 | `baseline` | `.storysync/baseline.json` | Component baseline, as `map --json` writes it. Components are matched by their Storybook title, and the drift report names them by it, so two named Button, `Forms/Button` and `Nav/Button`, are each compared with their own baseline. |
-| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline, as `tokens --json` writes it. Set it to `''` to check components only: tokens aren't extracted, `token_drift` is `skipped`, and `fail_on_drift` doesn't fail on them. |
+| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline, as `tokens --json` writes it. A category's collections are compared as one, so a theme file's `fontSizes` and `fontWeights`, both typography, are both checked. Set it to `''` to check components only: tokens aren't extracted, `token_drift` is `skipped`, and `fail_on_drift` doesn't fail on them. |
 | `fail_on_drift` | `false` | Fail the job when components or tokens differ from their baseline, or when a baseline is missing, since then nothing was compared. A `token_drift` of `none` or `skipped` doesn't fail. |
 | `create_issue` | `false` | Open or update an issue labelled `storysync-drift` when drift is found. Needs `issues: write`. Filed before `fail_on_drift` fails the job. |
 | `node_version` | `22` | Node.js version to run on. |

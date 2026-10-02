@@ -397,32 +397,43 @@ runs:
         }
 
         const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
-        const baseMap = Object.fromEntries((baseline.collections || []).map(c => [c.category, c]));
-        const currMap = Object.fromEntries(collections.map(c => [c.category, c]));
+
+        // A category can have several collections: a theme file's fontSizes
+        // and fontWeights are both typography. Keyed on the category alone,
+        // only the last of them was compared, so each side's are merged into
+        // one map of token name to value, as tokens --check does.
+        const byCategory = (cols) => {
+          const map = new Map();
+          for (const c of cols) {
+            if (!map.has(c.category)) map.set(c.category, new Map());
+            for (const t of c.tokens) map.get(c.category).set(t.name, t.value);
+          }
+          return map;
+        };
+        const baseMap = byCategory(baseline.collections || []);
+        const currMap = byCategory(collections);
 
         const added = [];
         const removed = [];
         const changed = [];
 
-        for (const [cat, coll] of Object.entries(currMap)) {
-          const base = baseMap[cat];
-          if (!base) { added.push({ category: cat, count: coll.tokens.length }); continue; }
-          const baseTokens = Object.fromEntries(base.tokens.map(t => [t.name, t.value]));
+        for (const [cat, tokens] of currMap) {
+          const base = baseMap.get(cat);
+          if (!base) { added.push({ category: cat, count: tokens.size }); continue; }
           let newCount = 0, changedCount = 0;
-          for (const t of coll.tokens) {
-            if (!(t.name in baseTokens)) newCount++;
-            else if (baseTokens[t.name] !== t.value) changedCount++;
+          for (const [name, value] of tokens) {
+            if (!base.has(name)) newCount++;
+            else if (base.get(name) !== value) changedCount++;
           }
           if (newCount || changedCount) changed.push({ category: cat, added: newCount, changed: changedCount });
         }
-        for (const [cat, coll] of Object.entries(baseMap)) {
-          const curr = currMap[cat];
+        for (const [cat, tokens] of baseMap) {
+          const curr = currMap.get(cat);
           if (!curr) {
-            removed.push({ category: cat, count: coll.tokens.length });
+            removed.push({ category: cat, count: tokens.size });
             continue;
           }
-          const currTokens = new Set(curr.tokens.map(t => t.name));
-          const removedCount = coll.tokens.filter(t => !currTokens.has(t.name)).length;
+          const removedCount = [...tokens.keys()].filter(name => !curr.has(name)).length;
           if (removedCount) removed.push({ category: cat, count: removedCount });
         }
 
