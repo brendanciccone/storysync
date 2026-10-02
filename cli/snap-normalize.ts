@@ -249,8 +249,9 @@ const COLOR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]
 /**
  * A computed `background-image`, or null for none, with each colour in its
  * gradients written as hex like every other colour snap records: Tailwind
- * v4's `bg-linear-to-r` computes to `linear-gradient(to right in oklab,
- * oklch(...) 0%, oklch(...) 100%)`. A `url()` layer is kept as written.
+ * v4's `bg-linear-to-r` computes to `linear-gradient(to right, oklch(...) 0%,
+ * oklch(...) 100%)`, Chromium dropping its default `in oklab`. A `url()`
+ * layer is kept as written.
  */
 function normalizeBackgroundImage(value: string | undefined): string | null {
   const raw = (value ?? "").trim();
