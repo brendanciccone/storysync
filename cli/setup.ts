@@ -86,10 +86,17 @@ function setupClaude(projectPath: string, force: boolean): SetupResult {
   // Commands kept from an earlier setup still send the agent to the old flat
   // skill path. Without --force they are skipped, so say so — otherwise the
   // skill is updated but the command that points at it is not.
+  // Only a file can be one: a storysync/ folder is a namespace of the
+  // project's own commands, and a link may lead nowhere.
   const staleCommands = existsSync(commandsDestDir)
-    ? readdirSync(commandsDestDir).filter((file) =>
-        file.startsWith("storysync") &&
-        readFileSync(join(commandsDestDir, file), "utf8").includes(".claude/skills/storysync.md"))
+    ? readdirSync(commandsDestDir).filter((file) => {
+        if (!file.startsWith("storysync") || !file.endsWith(".md")) return false;
+        try {
+          return readFileSync(join(commandsDestDir, file), "utf8").includes(".claude/skills/storysync.md");
+        } catch {
+          return false;
+        }
+      })
     : [];
   if (staleCommands.length) {
     extraNotes.push(

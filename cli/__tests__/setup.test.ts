@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
@@ -99,6 +99,29 @@ test("setup --force updates commands from an earlier install", () => {
     const updated = readFileSync(join(project, ".claude", "commands", "storysync-push.md"), "utf8");
     assert.equal(updated.includes(".claude/skills/storysync.md"), false);
     assert.equal(/Re-run with --force/.test(out), false);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("setup: a storysync folder or a dangling link among the commands is not taken for a stale command", () => {
+  const project = tempProject();
+  try {
+    const commands = join(project, ".claude", "commands");
+    // Claude Code reads a folder of commands as a namespace: /storysync:release.
+    mkdirSync(join(commands, "storysync"), { recursive: true });
+    writeFileSync(join(commands, "storysync", "release.md"), "# release\n");
+    mkdirSync(join(commands, "storysync-archive.md"));
+    if (process.platform !== "win32") symlinkSync(join(project, "nowhere.md"), join(commands, "storysync-old.md"));
+    // A real stale command beside them is still reported.
+    writeFileSync(join(commands, "storysync-push.md"), "at `.claude/skills/storysync.md`\n");
+
+    const out = setupOutput(project, false);
+
+    assert.match(out, /wrote \.claude\/skills\/storysync\/SKILL\.md/);
+    assert.match(out, /^\s+storysync-push\.md still point at \.claude\/skills\/storysync\.md\. Re-run with --force/m);
+    assert.match(out, /Next steps:/);
+    assert.equal(readFileSync(join(commands, "storysync", "release.md"), "utf8"), "# release\n");
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
