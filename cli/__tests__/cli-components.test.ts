@@ -59,8 +59,9 @@ interface StandIn {
  * Serves a stand-in Storybook (and Figma) MCP server. `docs` names its docs
  * tools, 0.7's or 10.6's, or null for a server without them. A tool named in
  * `failing` answers as addon-mcp does when it can't: an `isError` result
- * with the reason as text, not a protocol error. use_figma runs its code
- * against `figma`.
+ * with the reason as text, not a protocol error; named with a component ID,
+ * `docs-show forms-button`, it fails for that component alone. use_figma
+ * runs its code against `figma`.
  */
 async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = [], figma: FileSpec = FIGMA_FILE): Promise<StandIn> {
   const calls: string[] = [];
@@ -70,7 +71,7 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
   function call(name = "", args: { id?: string; code?: string } = {}): unknown {
     calls.push(args.id ? `${name} ${args.id}` : name);
     const text = (t: string) => ({ content: [{ type: "text", text: t }] });
-    if (failing.includes(name)) return { ...text(`Storybook index could not be built (${name})`), isError: true };
+    if (failing.includes(name) || failing.includes(`${name} ${args.id}`)) return { ...text(`Storybook index could not be built (${name})`), isError: true };
     if (name === docs?.list) return text(LIST);
     if (name === docs?.show) return text(DOCS[args.id ?? ""] ?? "");
     return useFigma(figma, args.code ?? "", figmaCalls);
@@ -359,6 +360,44 @@ test("diff CLI: a Figma component too big for one use_figma response fails the r
   assert.deepEqual(data.components, []);
   // use_figma never had to refuse a response: the read stopped first.
   assert.ok(standIn.figmaCalls.every((c) => c.bytes <= 17000 && !/exceeds/.test(c.error ?? "")));
+});
+
+test("diff CLI: a component code has but couldn't map is reported, never as not in code, and the run never reads as clean", async () => {
+  // Button's docs-show fails. It was counted only for --strict's exit code:
+  // Figma's Button was reported not in code, and where Figma had no Button,
+  // the run said "Components in sync." and "No differences found.", and
+  // --json said nothing of it at all.
+  const withButton = await startStandIn(ADDON_MCP_10_6, ["docs-show forms-button"]);
+  const withoutButton = await startStandIn(ADDON_MCP_10_6, ["docs-show forms-button"], {
+    pages: [{ name: "Data display", nodes: [component("Card")] }],
+  });
+  standIns.push(withButton, withoutButton);
+  type Failures = DiffJson & { hasDifferences: boolean; mappingFailures: { name: string; error: string }[] };
+  const unmapped = /^Error: Storybook MCP tool "docs-show" failed: Storybook index could not be built \(docs-show\)$/;
+
+  const text = await diffAgainst(withButton);
+  assert.equal(text.status, 0, text.out);
+  assert.match(text.out, /Skipped 1 component\(s\) due to mapping errors:\n {2}Button: Error: Storybook MCP tool "docs-show" failed/);
+  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\) — component results are partial: Button was not compared/);
+  assert.doesNotMatch(text.out, /Button not in code|No differences found/);
+  assert.match(text.out, /- Badge not in code/);
+  const json = await diffAgainst(withButton, "--json");
+  const data = JSON.parse(json.stdout) as Failures;
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
+  assert.deepEqual(data.mappingFailures.map((f) => f.name), ["Button"]);
+  assert.match(data.mappingFailures[0].error, unmapped);
+
+  const clean = await diffAgainst(withoutButton);
+  assert.equal(clean.status, 0, clean.out);
+  assert.match(clean.out, /component results are partial: Button was not compared/);
+  assert.doesNotMatch(clean.out, /Components in sync|No differences found/);
+  const strict = await diffAgainst(withoutButton, "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  const partial = JSON.parse(strict.stdout) as Failures;
+  assert.equal(partial.hasDifferences, false);
+  assert.deepEqual(partial.components, []);
+  assert.deepEqual(partial.mappingFailures.map((f) => f.name), ["Button"]);
+  assert.match(partial.mappingFailures[0].error, unmapped);
 });
 
 // --- Errors from Storybook end list, map and inspect cleanly ---

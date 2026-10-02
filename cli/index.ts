@@ -850,10 +850,15 @@ program
           }
           if (!storybookReadFailed) mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
           if (!json && mappingFailures.length) {
-            console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors.`));
+            console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors:`));
+            for (const failure of mappingFailures) console.log(chalk.yellow(`  ${failure.name}: ${failure.error}`));
           }
 
-          componentDiffs = diffComponents(codeComponents, figmaComponents);
+          // A component code has but could not map was never compared, so
+          // Figma's copy of it is not "not in code".
+          const unmapped = new Set(mappingFailures.map((failure) => failure.name.toLowerCase()));
+          componentDiffs = diffComponents(codeComponents, figmaComponents)
+            .filter((c) => !(c.status === "figma_only" && unmapped.has(c.name.toLowerCase())));
         }
       }
 
@@ -868,6 +873,8 @@ program
           hasDifferences: hasDifferences(summary),
           figmaReadFailed,
           storybookReadFailed,
+          // The components code has that were never compared.
+          mappingFailures,
         }));
       } else {
         if (figmaReadFailed) {
@@ -875,6 +882,9 @@ program
         }
         if (storybookReadFailed) {
           console.log(chalk.yellow("\nStorybook listing failed — component results are partial: nothing in code was read to match Figma against. See errors for details."));
+        }
+        if (mappingFailures.length) {
+          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
         }
 
         const mismatched = tokenDiffs.filter((t) => t.status !== "match");
@@ -908,7 +918,7 @@ program
               console.log(`  ${chalk.red("?")} ${chalk.bold(c.name)} ${chalk.red("ambiguous")} ${chalk.dim(c.details.join(", "))}`);
             }
           }
-        } else if (storybook && !figmaReadFailed && !storybookReadFailed) {
+        } else if (storybook && !figmaReadFailed && !storybookReadFailed && !mappingFailures.length) {
           console.log(chalk.green(componentDiffs.length ? "\nComponents in sync." : "\nNo components to diff."));
         }
 
@@ -931,7 +941,7 @@ program
           if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
         }
 
-        if (!figmaReadFailed && !storybookReadFailed && !hasDifferences(summary)) {
+        if (!figmaReadFailed && !storybookReadFailed && !mappingFailures.length && !hasDifferences(summary)) {
           console.log(chalk.green("\nNo differences found."));
         }
       }
