@@ -570,7 +570,8 @@ test("every push summary says a transparent border shows as an unfilled ring", (
 test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
   // diff reads every page now, so Figma can repeat a name too, an archived
   // copy or each category's Button, and reports it as ambiguous. Comparing
-  // one copy and saying nothing of the other hides it.
+  // one copy and saying nothing of the other hides it; comparing the first
+  // copies as well counts the name twice, as ambiguous and as matched.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -585,6 +586,7 @@ test("every audit instruction reports a name repeated in code or in Figma as amb
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /two code components share a name[^\n]*or two Figma component sets do[^\n]*ambiguous/, `${path} reports only a name code repeats as ambiguous`);
+      assert.match(text, /share a name[^\n]*report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing/, `${path} has a repeated name compared as well as reported ambiguous`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });

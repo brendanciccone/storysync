@@ -319,6 +319,26 @@ test("diff CLI: compares the components on every page of the Figma file, not onl
   assert.ok(standIn.figmaCalls.every((c) => !c.error));
 });
 
+test("diff CLI: a name on two Figma pages is counted once, as ambiguous, not also as matched", async () => {
+  // An archive page keeps an old Button. The first page's Button agrees with
+  // the code, but comparing it as well counted Button twice in the summary,
+  // "2 matched" beside "1 ambiguous" for the two components code has.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [...FIGMA_FILE.pages, { name: "Archive", nodes: [set("Button", { size: ["sm"] })] }],
+  });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn);
+  assert.match(r.out, /\? Button ambiguous 2 Figma components share this name, and code has one; none was compared/);
+  assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 ambiguous$/m);
+
+  const strict = await diffAgainst(standIn, "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  const data = JSON.parse(strict.stdout) as DiffJson & { summary: { componentsMatched: number; componentsAmbiguous: number } };
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Button", "ambiguous"], ["Badge", "figma_only"]]);
+  assert.equal(data.summary.componentsMatched, 1);
+  assert.equal(data.summary.componentsAmbiguous, 1);
+});
+
 test("diff CLI: a Figma component too big for one use_figma response fails the read, and --strict", async () => {
   // A set of 1,500 icons can't come back in one 20kb response. Left out, the
   // diff would look complete without it; cut short by the limit, the response

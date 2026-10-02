@@ -835,7 +835,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
    - Normalize before comparing: lowercase hex colors, convert rem→px (1rem=16px), strip units for numeric comparison.
 
-6. **Compare components** — match by name (case-insensitive). If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), report the name as ambiguous rather than comparing only one. For each component:
+6. **Compare components** — match by name (case-insensitive). If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing. For each component:
    - In code/Storybook but not in Figma → **code only** (not yet synced)
    - In Figma but not in code/Storybook → **Figma only** (orphaned or renamed)
    - Both exist → compare variant properties: missing props, extra props, missing/extra values per prop.

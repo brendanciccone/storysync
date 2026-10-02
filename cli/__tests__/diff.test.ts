@@ -339,16 +339,23 @@ test("diffComponents: two code components sharing a bare name are flagged, not s
   ] as never[];
 
   const entries = diffComponents(code, figma);
-  const ambiguous = entries.filter((e) => e.status === "ambiguous");
-  assert.equal(ambiguous.length, 1);
-  assert.match(ambiguous[0].details.join(" "), /share this name/);
-  assert.equal(hasDifferences(computeDiffSummary([], entries)), true);
+  // The first code Button matches Figma's, but which of the two Figma's is
+  // was never chosen: a match beside the ambiguous entry would count the one
+  // name twice, and vouch for a pairing nothing made.
+  assert.deepEqual(entries.map((e) => [e.name, e.status]), [["Button", "ambiguous"]]);
+  assert.deepEqual(entries[0].details, ["2 components share this name in code, and Figma has one; none was compared"]);
+  const summary = computeDiffSummary([], entries);
+  assert.equal(summary.componentsAmbiguous, 1);
+  assert.equal(summary.componentsMatched, 0);
+  assert.equal(hasDifferences(summary), true);
 });
 
-test("diffComponents: a name on two Figma pages is flagged, and the first page's compared, not the last's", () => {
+test("diffComponents: a name on two Figma pages is flagged, and neither page's compared", () => {
   // diff reads every page, in order, and an archive page after the library
   // can keep an old Button. Keyed on the name alone, the archived copy would
-  // be the one compared, and with no word that another existed.
+  // be the one compared, and with no word that another existed. Comparing the
+  // first page's instead would still pick one, and count Button twice: as
+  // ambiguous and as matched.
   const code = [
     { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }] },
   ] as never[];
@@ -359,17 +366,38 @@ test("diffComponents: a name on two Figma pages is flagged, and the first page's
   ];
 
   const entries = diffComponents(code, figma);
-  assert.deepEqual(entries.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["Button", "match"], ["Badge", "figma_only"]]);
-  assert.deepEqual(entries[0].details, ["2 Figma components share this name; only the first, in page order, was compared"]);
-  assert.equal(computeDiffSummary([], entries).componentsAmbiguous, 1);
-  assert.equal(hasDifferences(computeDiffSummary([], entries)), true);
+  assert.deepEqual(entries.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["Badge", "figma_only"]]);
+  assert.deepEqual(entries[0].details, ["2 Figma components share this name, and code has one; none was compared"]);
+  const summary = computeDiffSummary([], entries);
+  assert.equal(summary.componentsAmbiguous, 1);
+  assert.equal(summary.componentsMatched, 0);
+  assert.equal(summary.componentsMismatched, 0);
+  assert.equal(hasDifferences(summary), true);
 });
 
 test("diffComponents: a name repeated in code and in Figma is one ambiguous entry that says both", () => {
   const button = { name: "Button", variantProperties: [], variantCount: 1 };
   const entries = diffComponents([button, button, button] as never[], [button, button]);
-  const ambiguous = entries.filter((e) => e.status === "ambiguous");
-  assert.deepEqual(ambiguous.map((e) => e.details), [["3 components share this name in code, and 2 in Figma; only the first of each was compared"]]);
+  assert.deepEqual(entries.map((e) => [e.status, e.details]), [["ambiguous", ["3 components share this name in code, and 2 in Figma; none was compared"]]]);
+});
+
+test("diffComponents: a repeated name one side lacks is ambiguous only, not also missing from the other", () => {
+  // Each name is one entry, so the summary's counts add up to the names read.
+  const button = { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm"] }], variantCount: 1 };
+  const card = { name: "Card", variantProperties: [], variantCount: 1 };
+  const entries = diffComponents([button, button, card] as never[], [card, card]);
+  assert.deepEqual(entries.map((e) => [e.name, e.status, e.details]), [
+    ["Button", "ambiguous", ["2 components share this name in code, and Figma has none; none was compared"]],
+    ["Card", "ambiguous", ["2 Figma components share this name, and code has one; none was compared"]],
+  ]);
+  const summary = computeDiffSummary([], entries);
+  assert.deepEqual(
+    [summary.componentsAmbiguous, summary.componentsCodeOnly, summary.componentsFigmaOnly, summary.componentsMatched],
+    [2, 0, 0, 0],
+  );
+
+  const figmaOnly = diffComponents([], [button, button]);
+  assert.deepEqual(figmaOnly.map((e) => [e.status, e.details]), [["ambiguous", ["2 Figma components share this name, and code has none; none was compared"]]]);
 });
 
 // --- selectDiffComponents ---

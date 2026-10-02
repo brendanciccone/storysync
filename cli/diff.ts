@@ -344,8 +344,7 @@ export function diffComponents(
   // Figma can repeat a name too, now that every page is read: an archive page
   // keeping an old Button, or Forms/Button and Nav/Button pushed to their
   // categories' pages. Keyed on the name alone, the last page read would
-  // silently be the one compared. The first page's is compared instead, and
-  // the name is reported as ambiguous.
+  // silently be the one compared.
   const figmaMap = new Map<string, FigmaComponentInfo>();
   const figmaRepeats = new Map<string, number>();
   for (const component of figmaComponents) {
@@ -357,14 +356,17 @@ export function diffComponents(
     figmaMap.set(key, component);
   }
 
+  // A repeated name is reported as ambiguous and nothing else. Comparing its
+  // first copies too would count the one name twice, as ambiguous and as
+  // matched, say, and the match would vouch for a pairing nothing chose.
   for (const [key, names] of ambiguous) {
     const repeats = figmaRepeats.get(key);
     entries.push({
       name: names[0],
       status: "ambiguous",
       details: [repeats
-        ? `${names.length} components share this name in code, and ${repeats} in Figma; only the first of each was compared`
-        : `${names.length} components share this name; only one can be compared against Figma's single match`],
+        ? `${names.length} components share this name in code, and ${repeats} in Figma; none was compared`
+        : `${names.length} components share this name in code, and Figma has ${figmaMap.has(key) ? "one" : "none"}; none was compared`],
     });
   }
   for (const [key, repeats] of figmaRepeats) {
@@ -372,11 +374,13 @@ export function diffComponents(
     entries.push({
       name: figmaMap.get(key)!.name,
       status: "ambiguous",
-      details: [`${repeats} Figma components share this name; only the first, in page order, was compared`],
+      details: [`${repeats} Figma components share this name, and code has ${codeMap.has(key) ? "one" : "none"}; none was compared`],
     });
   }
+  const isAmbiguous = (key: string) => ambiguous.has(key) || figmaRepeats.has(key);
 
   for (const [key, code] of codeMap) {
+    if (isAmbiguous(key)) continue;
     const figma = figmaMap.get(key);
     if (!figma) {
       const propCount = code.variantProperties.length;
@@ -429,7 +433,7 @@ export function diffComponents(
 
   // Figma components not in code
   for (const [key, figma] of figmaMap) {
-    if (!codeMap.has(key)) {
+    if (!codeMap.has(key) && !isAmbiguous(key)) {
       const propCount = figma.variantProperties.length;
       const detail = propCount === 0
         ? "no variants in Figma"

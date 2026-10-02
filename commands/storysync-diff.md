@@ -16,7 +16,7 @@ Workflow:
 3. Run `npx storysync tokens --json --project .` for code-side tokens.
 4. Run `npx storysync map --storybook http://localhost:6006 --json` for code-side components.
 5. Compare tokens by name within each category. Normalize before comparing: lowercase hex, convert rem→px, strip units. Match Figma collection names to code categories (Colors→colors, Border Radius→radius, etc.).
-6. Compare components by name (case-insensitive). If two code components share a name, or two Figma component sets do (on different pages: an archived copy, say), report the name as ambiguous rather than comparing only one. For each: missing props, extra props, missing/extra values per prop.
+6. Compare components by name (case-insensitive). If two code components share a name, or two Figma component sets do (on different pages: an archived copy, say), report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing. For each: missing props, extra props, missing/extra values per prop.
 7. Report drift grouped by category/component:
    - `+` missing from Figma (in code, not in Figma)
    - `-` missing from code (in Figma, not in code)
