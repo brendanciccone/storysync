@@ -350,6 +350,14 @@ program
     try {
       const snapPath = opts.snap as string;
       const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
+      // A readback or meta.json passed as --snap, or a failed `snap --json`
+      // captured as one, has no components list, and scoring it ended on a
+      // bare TypeError. Say what the file is not, and what it holds instead.
+      if (!Array.isArray(snap?.components)) {
+        const error = (snap as { error?: unknown } | null)?.error;
+        const held = typeof error === "string" ? ` It holds an error instead: ${error}` : "";
+        throw new Error(`snap output at ${snapPath} has no "components" list, so it is not a styles.json written by \`storysync snap\`: pass that as --snap, and the Figma readback as --readback.${held}`);
+      }
       const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
       // The snap's time first: an entry Figma read before it is stale.
       const snapAge = readSnapAge(snapPath, maxAgeMs);

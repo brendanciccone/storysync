@@ -148,6 +148,25 @@ test("verify CLI: a readback with no components reports the variant missing from
   }
 });
 
+test("verify CLI: a --snap that is not a snap fails saying so, not with a TypeError, as JSON under --json", () => {
+  // The readback and snap swapped, snap's meta.json, a failed `snap --json`
+  // captured as styles.json, or no components at all: each ended on
+  // "snap.components is not iterable".
+  const failed = { error: "Error: Failed to connect to Storybook MCP at http://localhost:6006/mcp: fetch failed" };
+  for (const file of [{ version: 1, components: {} }, { measuredAt: READ_AT, components: 1 }, failed, { version: 1 }, null]) {
+    const r = verify(file, readback(MATCHING), "--strict");
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /snap output at \S+styles\.json has no "components" list, so it is not a styles\.json written by `storysync snap`: pass that as --snap, and the Figma readback as --readback\./);
+    assert.doesNotMatch(r.out, /TypeError|not iterable|Figma matches/);
+  }
+  const r = verify(failed, readback(MATCHING), "--json");
+  assert.equal(r.status, 1, r.out);
+  const { error } = JSON.parse(r.out) as { error: string };
+  assert.match(error, /has no "components" list[^]*It holds an error instead: Error: Failed to connect to Storybook MCP at http:\/\/localhost:6006\/mcp: fetch failed$/);
+  // A snap with an empty list is a snap, which recorded no components.
+  assert.match(verify(snap({ components: [] }), readback(MATCHING), "--strict").out, /snap recorded a failure: the snap recorded no components at all/);
+});
+
 test("verify CLI: a single unmeasurable variant is reported but does not fail --strict alone", () => {
   // args_unsupported is expected for values Storybook cannot pass in a URL; the
   // skill builds those from source and labels them inferred, which
