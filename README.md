@@ -225,7 +225,7 @@ storysync reads design tokens from your codebase and previews the Figma variable
 
 Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows**
 
-Colour tokens are kept as written, in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()` or `color()` in any of its spaces. A custom property whose name doesn't say it's a colour is still read as one when its value is in one of those functions. `diff` converts both sides to sRGB hex before comparing, so Tailwind v4's `oklch(63.7% 0.237 25.331)` matches a Figma variable of `#fb2c36`.
+Colour tokens are kept as written, in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()` or `color()` in any of its spaces. A custom property whose name doesn't say it's a colour is still read as one when its value is in one of those functions. `diff` converts both sides to sRGB hex before comparing, so a `:root` token such as `--brand: oklch(63.7% 0.237 25.331)` matches a Figma variable of `#fb2c36`.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
@@ -523,6 +523,7 @@ Both directions have known constraints worth knowing before you rely on their ou
 - **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
 - **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`). Two code components sharing a name (e.g. `Forms/Button` and `Nav/Button`) can't both be paired with Figma's single `Button`; `diff` reports the name as `ambiguous` and fails `--strict` rather than silently comparing one. The same goes for a name repeated across Figma pages, such as an archived copy of `Button` or one pushed to two categories' pages. Either way, `diff` compares none of the copies, so the name is reported only as `ambiguous`, never also as matched or missing.
 - **Colour tokens outside sRGB compare as their clipped hex**: `diff` converts a token's colour to sRGB hex, clipping one outside sRGB as `snap` does (see the next section), so `color(display-p3 1 0 0)` matches a Figma variable of `#ff0000`, as does any other colour that clips to it.
+- **Tailwind v4 `@theme` blocks aren't read yet**: tokens come from a Tailwind config, a theme file, or CSS custom properties in `:root`. A CSS-first Tailwind v4 project that declares its palette only in `@theme { ... }` gets no tokens until that block is supported.
 - **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used, for the variables a push creates as well as for `diff`.
 
 ### Code → Figma: `snap`, the push and `verify`
