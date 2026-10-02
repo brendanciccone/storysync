@@ -396,7 +396,19 @@ runs:
           process.exit(0);
         }
 
-        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+        // Read as tokens --check reads it. A file that isn't a baseline, such
+        // as the {"error": ...} the command above writes when tokens fails,
+        // would otherwise be compared as one with no tokens, or crash.
+        let baseline = null;
+        try { baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")); } catch {}
+        const isRecord = (v) => typeof v === "object" && v !== null;
+        const isCollection = (c) => isRecord(c) && typeof c.category === "string" && Array.isArray(c.tokens)
+          && c.tokens.every(t => isRecord(t) && typeof t.name === "string" && typeof t.value === "string");
+        if (!isRecord(baseline) || !Array.isArray(baseline.collections) || !baseline.collections.every(isCollection)) {
+          const held = isRecord(baseline) && typeof baseline.error === "string" ? " (it holds an error: " + baseline.error.replace(/^Error: /, "") + ")" : "";
+          console.log(escape("::error::The token baseline at " + baselinePath + " (relative to " + where + ") is not tokens --json output" + held + ". Recreate it by " + create));
+          process.exit(1);
+        }
 
         // A category can have several collections: a theme file's fontSizes
         // and fontWeights are both typography. Keyed on the category alone,
@@ -410,7 +422,7 @@ runs:
           }
           return map;
         };
-        const baseMap = byCategory(baseline.collections || []);
+        const baseMap = byCategory(baseline.collections);
         const currMap = byCategory(collections);
 
         const added = [];

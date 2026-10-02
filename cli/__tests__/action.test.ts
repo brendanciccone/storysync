@@ -218,3 +218,31 @@ test("action Detect token drift: every collection of a category is compared, not
   const merged = detectTokenDrift(baseline, [colors, { category: "typography", tokens: [...fontSizes.tokens, ...fontWeights.tokens] }]);
   assert.equal(merged.outputs.result, "false", merged.stdout);
 });
+
+test("action Detect token drift: a token baseline that is not tokens --json output fails with the command to recreate it", () => {
+  const notBaselines = [
+    JSON.stringify({ error: "Error: Could not read src/theme.ts" }),
+    JSON.stringify({ drift: false }),
+    JSON.stringify({ collections: [{ category: "colors" }] }),
+    JSON.stringify({ collections: [{ category: "colors", tokens: [{ name: "primary" }] }] }),
+    "null",
+    "",
+  ];
+  for (const baseline of notBaselines) {
+    const r = detectTokenDrift(baseline, [colors]);
+    assert.equal(r.status, 1, `${baseline}: ${r.stdout}${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /TypeError|SyntaxError/, baseline);
+    const errors = r.stdout.split("\n").filter((line) => line.startsWith("::error::"));
+    assert.equal(errors.length, 1, `${baseline}: ${r.stdout}`);
+    assert.match(errors[0], /^::error::The token baseline at \.storysync\/tokens-baseline\.json \(relative to the repository root\) is not tokens --json output/);
+    assert.ok(
+      errors[0].includes("Recreate it by running this in the repository root, then commit it: mkdir -p -- .storysync && npx storysync@0.3.0 tokens --json > .storysync/tokens-baseline.json"),
+      errors[0],
+    );
+    assert.equal(r.outputs.result, undefined, baseline);
+    assert.equal(r.report, null, baseline);
+  }
+
+  const r = detectTokenDrift(notBaselines[0], [colors]);
+  assert.match(r.stdout, /is not tokens --json output \(it holds an error: Could not read src\/theme\.ts\)\. Recreate/);
+});
