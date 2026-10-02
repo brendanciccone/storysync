@@ -128,6 +128,32 @@ test("CSS: --text-* with hex value categorized as colors", () => {
   } finally { cleanup(dir); }
 });
 
+test("CSS: values in any CSS colour function are colours, not uncategorized", () => {
+  // Names that say nothing, so only the value can: oklch() always counted,
+  // and lab(), lch(), oklab(), color() and hwb() were dropped with a warning,
+  // out of reach of diff and tokens --check.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --brand: oklch(63.7% 0.237 25.331);
+      --brand-lab: lab(50 40 59.5);
+      --brand-lch: lch(50% 72 56);
+      --brand-oklab: oklab(0.6 0.1 -0.1);
+      --brand-p3: color(display-p3 1 0 0);
+      --brand-hwb: hwb(120 20% 30%);
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    const colors = result.collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => t.name).sort(), [
+      "brand", "brand/hwb", "brand/lab", "brand/lch", "brand/oklab", "brand/p3",
+    ]);
+    // Kept as written: --check compares against the source, diff converts.
+    assert.equal(colors?.tokens.find((t) => t.name === "brand/p3")?.value, "color(display-p3 1 0 0)");
+    assert.equal(result.warnings.filter((w) => w.startsWith("Uncategorized")).length, 0, result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+});
+
 test("CSS: cycle in var() references doesn't loop forever", () => {
   const dir = makeProject({
     "styles.css": `:root {

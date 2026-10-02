@@ -1825,6 +1825,78 @@ async function main() {
     return "fill, border, type, radius and opacity all exact";
   });
 
+  await check("colours written in oklch, oklab, lab, lch, color() and hwb measure to the sRGB hex Chromium paints", async () => {
+    // Chromium reports a computed colour in the space it was written in, and
+    // Tailwind v4 writes its palette in oklch, so a converter that only read
+    // rgb() measured every such fill, text, border and shadow as nothing at
+    // all. The example's Button is written in hex, so this renders its own
+    // page through snap's capture and normalisation, in the browser snap
+    // launches. Each colour is set on fill, text, all four borders and a
+    // shadow, and each must come back as the hex given: CSS Color 4's
+    // conversion, clipped to sRGB, which is also the pixel Chromium paints
+    // for it on an sRGB canvas, checked here too.
+    const { resolveAndLaunch, createContext, captureStory } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-browser.js")).href);
+    const { normalizeStyles } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-normalize.js")).href);
+    const swatches = [
+      // Tailwind v4 red-500 and red-600, the second outside sRGB.
+      { css: "oklch(63.7% 0.237 25.331)", hex: "#fb2c36", computed: /^oklch\(/ },
+      { css: "oklch(57.7% 0.245 27.325)", hex: "#e7000b", computed: /^oklch\(/ },
+      // bg-red-500/50 as Tailwind v4 writes it.
+      { css: "color-mix(in oklab, oklch(63.7% 0.237 25.331) 50%, transparent)", hex: "#fb2c3680", computed: /^oklab\(/ },
+      { css: "color-mix(in srgb, red 50%, transparent)", hex: "#ff000080", computed: /^color\(srgb / },
+      { css: "lab(50% 40 59.5)", hex: "#bf5700", computed: /^lab\(/ },
+      { css: "lch(50% 72 56)", hex: "#bf5700", computed: /^lch\(/ },
+      { css: "oklab(0.6 0.1 -0.1)", hex: "#9f63ba", computed: /^oklab\(/ },
+      { css: "color(display-p3 0.5 0.4 0.3)", hex: "#846549", computed: /^color\(display-p3 / },
+      // Outside sRGB, so clipped.
+      { css: "color(display-p3 1 0 0)", hex: "#ff0000", computed: /^color\(display-p3 / },
+      { css: "color(rec2020 0.5 0.2 0.8)", hex: "#a02cdb", computed: /^color\(rec2020 / },
+      { css: "hwb(120 20% 30%)", hex: "#33b333", computed: /^rgb\(/ },
+    ];
+    const page = join(WORK, "colours.html");
+    writeFileSync(page, `<!doctype html><html><body><div id="root">${swatches.map((s, i) =>
+      `<div id="swatch-${i}" style="display: inline-block; padding: 4px; background-color: ${s.css}; color: ${s.css}; ` +
+      `border: 2px solid ${s.css}; box-shadow: 0 1px 2px ${s.css};">Aa</div>`).join("")}</div>` +
+      `<canvas id="paint" width="1" height="1"></canvas></body></html>`);
+
+    const { browser } = await resolveAndLaunch();
+    try {
+      const tab = await (await createContext(browser)).newPage();
+      for (const [i, swatch] of swatches.entries()) {
+        const capture = await captureStory(tab, pathToFileURL(page).href, { timeoutMs: 10000, selector: `#swatch-${i}`, screenshot: false });
+        assert(capture.status === "ok", `${swatch.css}: capture ${capture.status} ${capture.error ?? ""}`);
+        const computed = capture.raw["background-color"];
+        assert(swatch.computed.test(computed),
+          `${swatch.css}: Chromium computed ${computed}, not the form this check is for; the browser changed, so update it`);
+        const styles = normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable);
+        const measured = {
+          backgroundColor: styles.backgroundColor,
+          color: styles.text?.color,
+          border: styles.borderUniform?.color,
+          shadow: styles.boxShadow[0]?.color,
+        };
+        for (const [key, value] of Object.entries(measured)) {
+          assert(value === swatch.hex, `${swatch.css} (computed ${computed}): ${key} measured ${JSON.stringify(value)}, expected ${swatch.hex}`);
+        }
+        // What Chromium paints, within one step for its own float rounding.
+        if (swatch.hex.length === 7) {
+          const painted = await tab.evaluate((css) => {
+            const ctx = document.getElementById("paint").getContext("2d", { colorSpace: "srgb" });
+            ctx.fillStyle = css;
+            ctx.fillRect(0, 0, 1, 1);
+            return Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+          }, swatch.css);
+          const want = [1, 3, 5].map((at) => parseInt(swatch.hex.slice(at, at + 2), 16));
+          assert(painted.every((v, c) => Math.abs(v - want[c]) <= 1),
+            `${swatch.css}: Chromium paints rgb(${painted.join(", ")}), snap measured ${swatch.hex}`);
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+    return `${swatches.length} colours, fill, text, border and shadow each`;
+  });
+
   await check("two snaps of the same code are byte-identical, wherever they are written", () => {
     // Same flags as the first run, into a different directory. styles.json is
     // meant to be committed and diffed, so neither a rerun nor a different

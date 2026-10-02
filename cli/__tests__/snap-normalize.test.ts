@@ -84,6 +84,26 @@ test("normalizeColor: partial alpha is preserved", () => {
   assert.equal(normalizeColor("rgba(0, 0, 0, 0.5)"), "#00000080");
 });
 
+test("normalizeColor: reads Chromium's CSS Color 4 serialisations rather than recording no fill", () => {
+  // Chromium reports a computed colour in its authored space. Each of these
+  // used to come back null, which snap records as nothing drawn: Tailwind v4's
+  // red-500 button measured as unfilled.
+  assert.equal(normalizeColor("oklch(0.637 0.237 25.331)"), "#fb2c36");
+  // bg-red-500/50, a color-mix in oklab.
+  assert.equal(normalizeColor("oklab(0.637 0.214213 0.1014 / 0.5)"), "#fb2c3680");
+  // A color-mix in sRGB.
+  assert.equal(normalizeColor("color(srgb 1 0 0 / 0.5)"), "#ff000080");
+  assert.equal(normalizeColor("lab(50 40 59.5)"), "#bf5700");
+  assert.equal(normalizeColor("lch(50 72 56)"), "#bf5700");
+  assert.equal(normalizeColor("color(display-p3 1 0 0)"), "#ff0000");
+});
+
+test("normalizeColor: a CSS Color 4 colour with zero alpha is still absent", () => {
+  // color-mix(in oklab, red 0%, transparent) computes to this.
+  assert.equal(normalizeColor("oklab(0 0 0 / 0)"), null);
+  assert.equal(normalizeColor("oklch(0.5 0.1 30 / none)"), null);
+});
+
 test("firstFontFamily: takes the first family and strips quotes", () => {
   assert.equal(firstFontFamily("Helvetica, Arial, sans-serif"), "Helvetica");
   assert.equal(firstFontFamily('"Inter var", sans-serif'), "Inter var");
@@ -224,6 +244,38 @@ test("parseBoxShadow: detects inset", () => {
 test("parseBoxShadow: handles negative offsets and hex colors", () => {
   const [layer] = parseBoxShadow("#ff0000 -2px -4px 6px 1px");
   assert.deepEqual(layer, { offsetX: -2, offsetY: -4, blur: 6, spread: 1, color: "#ff0000", inset: false });
+});
+
+test("parseBoxShadow: reads a colour Chromium writes in oklch, oklab or color()", () => {
+  // Chromium's computed box-shadow for a ring and an inset layer in Tailwind v4's red-500.
+  assert.deepEqual(
+    parseBoxShadow("oklch(0.637 0.237 25.331) 0px 1px 2px 3px, oklch(0.637 0.237 25.331 / 0.5) 1px 1px 0px 0px inset"),
+    [
+      { offsetX: 0, offsetY: 1, blur: 2, spread: 3, color: "#fb2c36", inset: false },
+      { offsetX: 1, offsetY: 1, blur: 0, spread: 0, color: "#fb2c3680", inset: true },
+    ],
+  );
+  const [mixed, srgb] = parseBoxShadow("oklab(0.637 0.214213 0.1014 / 0.5) 0px 4px 6px -1px, color(srgb 0 0 0 / 0.1) 0px 2px 4px -2px");
+  assert.deepEqual(mixed, { offsetX: 0, offsetY: 4, blur: 6, spread: -1, color: "#fb2c3680", inset: false });
+  assert.deepEqual(srgb, { offsetX: 0, offsetY: 2, blur: 4, spread: -2, color: "#0000001a", inset: false });
+});
+
+test("normalizeStyles: a Tailwind v4 component's colours, as Chromium computes them, all reach hex", () => {
+  const sides = ["top", "right", "bottom", "left"];
+  const raw = withOverrides({
+    "background-color": "oklch(0.637 0.237 25.331)",
+    color: "oklch(0.985 0 0)",
+    ...Object.fromEntries(sides.flatMap((s) => [
+      [`border-${s}-width`, "1px"], [`border-${s}-style`, "solid"], [`border-${s}-color`, "color(display-p3 0.5 0.4 0.3)"],
+    ])),
+    "box-shadow": "oklab(0 0 0 / 0.1) 0px 1px 3px 0px",
+  });
+  const styles = normalizeStyles(raw, BOX, { ...raw, color: "lab(50 40 59.5)" });
+  assert.equal(styles.backgroundColor, "#fb2c36");
+  assert.equal(styles.color, "#fafafa");
+  assert.deepEqual(styles.borderUniform, { width: 1, style: "solid", color: "#846549" });
+  assert.equal(styles.boxShadow[0].color, "#0000001a");
+  assert.equal(styles.text?.color, "#bf5700");
 });
 
 // --- Storybook args encoding ------------------------------------------------

@@ -4,7 +4,7 @@
 // Chromium: the browser hands back raw `getComputedStyle` strings, and this
 // module turns them into the normalized shape the Figma writer consumes.
 
-import { colorToHex } from "./diff.js";
+import { colorToHex } from "./color.js";
 import type { FigmaVariantProperty } from "./mapper.js";
 
 // --- Shapes -----------------------------------------------------------------
@@ -118,6 +118,12 @@ function pxOrZero(value: string | undefined): number {
  * Normalizes a computed color to hex, collapsing fully transparent values to
  * null. `getComputedStyle` reports an absent background as `rgba(0, 0, 0, 0)`,
  * which is meaningfully "no fill" rather than "transparent black".
+ *
+ * Chromium reports a colour in the space it was written in, so Tailwind v4's
+ * `oklch(...)` palette, its `oklab(... / 0.5)` opacity modifiers and every
+ * `color(...)` space all come through here; colorToHex converts each to sRGB.
+ * One it couldn't read would come back null, and null is "no fill": a red
+ * button recorded as unfilled, which Figma would then be built to match.
  */
 export function normalizeColor(value: string | undefined): string | null {
   if (!value) return null;
@@ -222,8 +228,9 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
     }
 
     // Pull the color out first — it's the only token that can contain spaces.
+    // Chromium writes it in its authored space: oklch(), oklab(), color() too.
     let color: string | null = null;
-    const fnColor = rest.match(/(rgba?|hsla?)\s*\([^)]*\)/i);
+    const fnColor = rest.match(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i);
     if (fnColor) {
       color = normalizeColor(fnColor[0]);
       rest = rest.replace(fnColor[0], " ");

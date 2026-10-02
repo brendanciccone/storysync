@@ -548,12 +548,17 @@ function resolveCssVar(value: string, allVars: Map<string, string>, depth: numbe
   return value;
 }
 
+/**
+ * Whether a custom property's value is a colour, for one whose name doesn't
+ * say. Every colour function diff converts counts, so a token written in
+ * lab(), lch(), oklab(), color(display-p3 ...) or hwb() is a colour, as an
+ * oklch() one always was, rather than being dropped as uncategorized, where
+ * neither diff nor `tokens --check` would ever see it.
+ */
 function isColorValue(value: string): boolean {
   const v = value.trim();
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ||
-    /^rgba?\(/.test(v) ||
-    /^hsla?\(/.test(v) ||
-    /^oklch\(/.test(v) ||
+    /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v) ||
     // Bare HSL channels: "240 5% 98%" or "0 0% 100%"
     /^\d{1,3}\s+\d{1,3}%\s+\d{1,3}%$/.test(v);
 }

@@ -133,6 +133,39 @@ test("diffTokens: matching color in different formats", () => {
   assert.equal(diffs[0].status, "match");
 });
 
+test("diffTokens: a Tailwind v4 oklch token matches Figma's hex variable for it", () => {
+  // Tailwind v4 and shadcn/ui write colours in oklch, and Figma reads its
+  // variables back as sRGB hex. Compared as written, every one was a mismatch.
+  const code: TokenCollection[] = [
+    {
+      category: "colors",
+      tokens: [
+        { name: "red/500", value: "oklch(63.7% 0.237 25.331)" },
+        { name: "red/600", value: "oklch(57.7% 0.245 27.325)" },
+        { name: "primary", value: "oklch(0.205 0 0)" },
+        { name: "brand", value: "color(display-p3 1 0 0)" },
+        { name: "ring", value: "oklch(63.7% 0.237 25.331 / 50%)" },
+      ],
+    },
+  ];
+  const figma: FigmaVariable[] = [
+    { name: "red/500", value: "#fb2c36", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "red/600", value: "#e7000b", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "primary", value: "#171717", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "brand", value: "#ff0000", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+    { name: "ring", value: "#fb2c3680", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
+});
+
+test("diffTokens: an oklch token still mismatches a Figma colour one step off", () => {
+  const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "red/500", value: "oklch(63.7% 0.237 25.331)" }] }];
+  const figma: FigmaVariable[] = [
+    { name: "red/500", value: "#fb2c37", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  assert.equal(diffTokens(code, figma)[0].status, "value_mismatch");
+});
+
 test("diffTokens: rem vs px equivalence", () => {
   const code: TokenCollection[] = [
     { category: "spacing", tokens: [{ name: "4", value: "1rem" }] },
