@@ -210,9 +210,12 @@ export async function captureStory(
 
     return { status: "ok", error: null, raw, textRaw, boundingBox, screenshot, matchedSelector: rootSelector, fontAvailable };
   } catch (err) {
-    const message = firstLine(err);
-    const isTimeout = /timeout|timed out/i.test(message);
-    return { status: isTimeout ? "timeout" : "render_error", error: message, ...empty };
+    // By the error's class, not its text: Playwright puts the story URL in
+    // the message, so a story id or arg value containing "timeout" would turn
+    // a refused connection into a timeout. Its TimeoutError names itself, and
+    // this file imports only playwright's types, so the class isn't to hand.
+    const isTimeout = err instanceof Error && err.name === "TimeoutError";
+    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty };
   }
 }
 
