@@ -101,7 +101,7 @@ test("verify CLI: a matching readback passes --strict and says what it matched",
 test("verify CLI: a readback with nothing comparable fails --strict as incomplete and claims no match", () => {
   const r = verify(snap(), readback({ source: "measured" }), "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, opacity, width, height, which the readback template always returns, so the template was cut down — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, width, height, which the readback template always returns, so the template was cut down — nothing in it was scored/);
   assert.match(r.out, /1 with an unverified readback/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
@@ -111,7 +111,7 @@ test("verify CLI: a readback cut down to source, width and height, still sealed,
   // fields: width and height match, and nothing else was compared.
   const r = verify(snap(), readback({ source: "measured", width: 61.5, height: 24 }), "--strict-measured");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, opacity, which/);
+  assert.match(r.out, /readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, which/);
   assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
@@ -221,6 +221,32 @@ test("verify CLI: a component with no nodeId, or another set's, fails --strict",
   assert.doesNotMatch(r.out, /Figma matches/);
   file.components["Forms/Button"].nodeId = "9:9";
   assert.match(verify(snap(), file, "--strict").out, /readback entry does not match its checksum/);
+});
+
+test("verify CLI: a readback that leaves out the text fields and gap fails --strict as incomplete", () => {
+  // The template returns them as null where Figma has nothing to report, so
+  // one that leaves them out was cut down: it scored 100% before.
+  const { fontSize: _size, fontWeight: _weight, fontFamily: _family, gap: _gap, ...rest } = MATCHING;
+  const r = verify(snap(), readback(rest), "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /readback entry is incomplete: it lacks fontSize, fontWeight, fontFamily, gap, which the readback template always returns/);
+  assert.doesNotMatch(r.out, /Figma matches/);
+  // As null, on a variant snap measured no text on, and no gap, it passes.
+  const bare = verify(snap({}, { base: { combination: {}, slug: "a", styles: { ...STYLES, gap: null } } }),
+    readback({ ...MATCHING, color: null, fontSize: null, fontWeight: null, fontFamily: null, gap: null }), "--strict");
+  assert.equal(bare.status, 0, bare.out);
+  assert.match(bare.out, /Figma matches the measured styles for Forms\/Button/);
+});
+
+test("verify CLI: a component's entries copied onto another, nodeId and all, fail --strict on both", () => {
+  const file = readbackOf({ a: MATCHING });
+  const components = file.components as Record<string, { nodeId?: string; variants: Record<string, Record<string, unknown>> }>;
+  components["Forms/Link"] = JSON.parse(JSON.stringify(components["Forms/Button"]));
+  const r = verify(snap(), file, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Forms\/Button a readback entry has a nodeId its component shares with Forms\/Link, though every component is read back from a set of its own, so one component's entries were copied onto another — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Link a readback entry has a nodeId its component shares with Forms\/Button/);
+  assert.doesNotMatch(r.out, /Figma matches/);
 });
 
 test("verify CLI: a readback read before the snap fails --strict as stale, and one a few minutes before it passes", () => {

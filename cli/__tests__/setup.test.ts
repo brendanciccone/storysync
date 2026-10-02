@@ -729,9 +729,10 @@ test("every readback's checksum code computes what verify recomputes", () => {
         fontSize: 11, fontWeight: 700, fontFamily: "Inter", gap: { row: 6, column: 6 },
         opacity: Math.fround(0.4), width: 38.59, height: 1e-7 + 24,
       }],
-      // A variant with no text child, and one whose stroke weights differ, so
-      // Figma reports figma.mixed: both leave fields out of what is returned.
-      ["no-text", { source: "inferred", backgroundColor: null, fontSize: undefined, fontFamily: undefined, width: 0, height: -0 }],
+      // A variant with no text child or auto layout, whose fields are null,
+      // and one whose stroke weights differ, so Figma reports figma.mixed,
+      // which drops out of what is returned, as an undefined field does.
+      ["no-text", { source: "inferred", backgroundColor: null, fontSize: null, fontFamily: null, gap: null, color: undefined, width: 0, height: -0 }],
       ["mixed-stroke", { source: "measured", borderUniform: { width: mixed, style: "solid", color: "#9ca3af" }, tiny: 1e-7, label: "Bouton étiqueté" }],
     ];
     const files = [
@@ -824,10 +825,13 @@ test("every push instruction writes the readback exactly as returned, and says v
 
 test("verify requires exactly the fields the Claude template returns on every variant", () => {
   // A template cut down to { source, width, height } still sealed what it
-  // returned, and scored 100% on every strict flag. verify now requires what
-  // the template always returns, so the two lists have to agree: a field the
-  // template always returns but verify does not require could be cut, and one
-  // verify requires that the template leaves out would fail every honest run.
+  // returned, and scored 100% on every strict flag; so did one cut down to
+  // leave out the text fields and gap, which the template used to leave out
+  // where Figma had none and verify let any entry leave out. The template
+  // now returns every field, null where Figma has nothing to report, and
+  // verify requires them all, so the two lists have to agree: a field the
+  // template returns but verify does not require could be cut, and one verify
+  // requires that the template leaves out would fail every honest run.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -838,18 +842,21 @@ test("verify requires exactly the fields the Claude template returns on every va
     const indent = /^( *)source:/m.exec(body)?.[1] ?? "";
     // Each top-level field with its value, up to the next one.
     const fields = [...body.matchAll(new RegExp(`^${indent}(\\w+):([\\s\\S]*?)(?=^${indent}\\w+:|$(?![\\s\\S]))`, "gm"))]
-      .map(([, key, value]) => ({ key, conditional: /\bundefined\b/.test(value) }));
+      .map(([, key, value]) => ({ key, value }));
     assert.ok(fields.length > 10, `read ${fields.length} fields from the template`);
-    const always = fields.filter((f) => !f.conditional).map((f) => f.key);
-    const sometimes = fields.filter((f) => f.conditional).map((f) => f.key);
-    assert.deepEqual([...always].sort(), [...READBACK_FIELDS].sort(), "verify's required fields are not the ones the template always returns");
-    // The ones it may leave out are those verify lets an entry leave out:
-    // the text child's three and gap, and no other.
-    assert.deepEqual([...sometimes].sort(), ["fontFamily", "fontSize", "fontWeight", "gap"]);
-    // The three text fields share one condition, so fontWeight comes with either other.
-    for (const key of ["fontSize", "fontWeight", "fontFamily"]) {
-      assert.match(template[1], new RegExp(`\\n\\s*${key}: text \\? [^\\n]* : undefined,`), `${key} is not read off the text child alone`);
+    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS].sort(), "verify's required fields are not the ones the template returns");
+    // None of them is left out where Figma has nothing to report: a field
+    // that can be undefined drops out of what the call returns.
+    for (const { key, value } of fields) {
+      assert.doesNotMatch(value, /\bundefined\b/, `${key} can be left out of what the template returns`);
     }
+    // The text child's three, and gap, are null where there is nothing to read.
+    for (const key of ["fontSize", "fontWeight", "fontFamily", "gap"]) {
+      assert.match(fields.find((f) => f.key === key)?.value ?? "", /:\s*null,\s*$/, `${key} is not null where Figma has nothing to report`);
+    }
+    // And the font's two from a fontName that is not figma.mixed, off the text child.
+    assert.match(claude, /const font = text && typeof text\.fontName === 'object' \? text\.fontName : null;/, "the template does not read the font off the text child, null when mixed");
+    assert.match(fields.find((f) => f.key === "fontSize")?.value ?? "", /text && typeof text\.fontSize === 'number'/, "fontSize is not null when mixed");
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

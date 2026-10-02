@@ -113,6 +113,8 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
       return "has no checksum, so it is not as the readback template returned it";
     case "no_node_id":
       return "has no nodeId on its component, the set's id its checksum is sealed under, so its checksum cannot be checked";
+    case "duplicate_node_id":
+      return `has a nodeId its component shares with ${(issue.sharedWith ?? []).join(", ")}, though every component is read back from a set of its own, so one component's entries were copied onto another`;
     case "checksum_mismatch":
       return "does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it";
     case "incomplete":

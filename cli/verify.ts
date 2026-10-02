@@ -48,9 +48,14 @@ export interface ReadbackStyles {
   padding?: { top: number; right: number; bottom: number; left: number };
   borderUniform?: BorderSide | null;
   boxShadow?: BoxShadowLayer[];
-  fontSize?: number;
-  fontWeight?: number;
-  fontFamily?: string;
+  /**
+   * The text child's, null when the variant has none, or when Figma reports
+   * the value as mixed; `fontWeight` and `fontFamily` both when the font is.
+   */
+  fontSize?: number | null;
+  fontWeight?: number | null;
+  fontFamily?: string | null;
+  /** The auto layout's spacing on both axes, null when the frame has no auto layout. */
   gap?: { row: number; column: number } | null;
   flexDirection?: string | null;
   opacity?: number;
@@ -167,9 +172,10 @@ export interface VariantVerdict {
    *
    * `unverified_readback` is the variant whose readback entry is not one
    * verify can score as what Figma returned: its checksum is missing or does
-   * not match, it lacks a field the readback template always returns, or it
-   * was read before the snap. Nothing in it is scored, matched or mismatched,
-   * since none of it can be trusted as a reading of Figma now.
+   * not match, its component's nodeId is missing or another component's too,
+   * it lacks a field the readback template always returns, or it was read
+   * before the snap. Nothing in it is scored, matched or mismatched, since
+   * none of it can be trusted as a reading of Figma now.
    */
   status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback";
   /** `unrecorded` when the writer did not say — not the same as measured. */
@@ -270,9 +276,14 @@ export interface ReadbackIssue {
    * `no_checksum`: the entry carries none, so it was not written as the
    * readback template returned it. `no_node_id`: its component has no
    * `nodeId`, the set's id the checksum is sealed under, so the checksum
-   * cannot be checked. `checksum_mismatch`: it carries one its contents, set
-   * and slug do not produce, so it was edited, composed, or copied from
-   * another variant or component, afterwards.
+   * cannot be checked. `duplicate_node_id`: another component has the same
+   * `nodeId`, listed in `sharedWith`. An honest readback reads each component
+   * from a set of its own, so one component's entries were copied onto
+   * another, `nodeId` and all, where their checksums match as they did; which
+   * of the two Figma returned cannot be told, so every entry of both is
+   * reported. `checksum_mismatch`: it carries one its contents, set and slug
+   * do not produce, so it was edited, composed, or copied from another
+   * variant or component, afterwards.
    *
    * The rest are entries whose checksum matches. `incomplete`: it lacks a
    * field the readback template always returns, listed in `missing`, so the
@@ -280,7 +291,9 @@ export interface ReadbackIssue {
    * or falls before the snap it is scored against by more than
    * READ_AT_SKEW_MS, so it was read in an earlier run. An entry can be both.
    */
-  problem: "no_checksum" | "no_node_id" | "checksum_mismatch" | "incomplete" | "stale";
+  problem: "no_checksum" | "no_node_id" | "duplicate_node_id" | "checksum_mismatch" | "incomplete" | "stale";
+  /** For `duplicate_node_id`: the other components with the same `nodeId`. */
+  sharedWith?: string[];
   /** For `incomplete`: the fields the entry lacks. */
   missing?: string[];
   /** For `stale`: the entry's `readAt`, or null when it has none, or one that is not a string. */
@@ -393,7 +406,16 @@ export function propertyMatches(
 /**
  * Compares one variant. Only properties the readback actually reports are
  * considered — an absent property means Figma could not express it, which is
- * not the same as a mismatch and must not count against the score.
+ * not the same as a mismatch and must not count against the score. (verify
+ * itself scores only complete entries, which report every one the template
+ * reads: see READBACK_FIELDS.)
+ *
+ * A text field reported as null, as the readback template reports the text
+ * child's on a variant with none, and its size and font where they are
+ * mixed, matches only where snap found no text on the variant either: where
+ * it found some, Figma lacks the text or sets it in more than one style,
+ * which is drift. A null gap, from a frame without auto layout, is compared
+ * as any gap is: it matches a measured gap of null or zero, and no other.
  */
 export function verifyVariant(
   component: string,
@@ -416,6 +438,9 @@ export function verifyVariant(
   let mismatched = 0;
 
   const geometryMeaningful = hasIntrinsicSize(measured.display);
+  // The text snap measured on the element that owns it, or null where the
+  // variant has none.
+  const measuredText = measured.text as Record<string, unknown> | null | undefined;
 
   for (const property of COMPARABLE_PROPERTIES) {
     if (!(property in figma)) continue;
@@ -425,12 +450,14 @@ export function verifyVariant(
     // Compare like with like: the readback reads these off Figma's text child,
     // so score them against the text styles snap measured on the corresponding
     // descendant. Falls back to the root when the element owns no text.
-    const measuredText = measured.text as Record<string, unknown> | null | undefined;
     const measuredValue = TEXT_PROPERTIES.has(property) && measuredText?.[property] != null
       ? measuredText[property]
       : (measured as unknown as Record<string, unknown>)[property];
+    // No text in Figma and none measured: the root's colour and font, which
+    // every element has, style no text there to compare them with.
+    const noTextEitherSide = TEXT_PROPERTIES.has(property) && figmaValue == null && measuredText == null;
 
-    if (propertyMatches(property, measuredValue, figmaValue, tolerance)) {
+    if (noTextEitherSide || propertyMatches(property, measuredValue, figmaValue, tolerance)) {
       matched++;
     } else {
       mismatched++;
@@ -482,7 +509,9 @@ export function expandSnap(snap: SnapResult): Map<string, Map<string, Normalized
 // and readAt, the time Figma read the entry, so one read back in an earlier
 // run, before the snap it is scored against, can be told from one read now.
 // And a template cut down to fewer fields still seals what it returns, so
-// verify also requires every field the shipped template always returns.
+// verify also requires every field the shipped template returns; and a whole
+// component's entries copied onto another, its nodeId with them, still match
+// under that id, so verify also refuses two components with one nodeId.
 
 /** Names the algorithm, so a later change of it reads as one rather than as an edit. */
 export const CHECKSUM_PREFIX = "fnv1a:";
@@ -541,37 +570,34 @@ export function readbackChecksum(setId: string, slug: string, entry: object): st
 
 /**
  * The fields the readback template returns on every entry, `null` where
- * there is nothing to report: `source` and the comparable properties it
- * always reads.
+ * there is nothing to report: `source` and every comparable property it
+ * reads, which is all of them but `boxShadow` and `flexDirection`.
  *
  * A template cut down to fewer fields still seals what it returns, so its
  * checksums match, and verify scores only the properties an entry reports:
  * cut down to `{ source, width, height }`, it would score 100% on every
- * strict flag without comparing colour, padding, type or radius. So an entry
- * that lacks any of these is incomplete, and none of it is scored. Not
- * `boxShadow` or `flexDirection`, which the template does not read. The rest
- * it leaves out where Figma has nothing to report, and only there: `gap` on a
- * frame without auto layout, and the text child's `fontSize`, `fontWeight`
- * and `fontFamily` on a variant with none, `fontSize` and `fontFamily` also
- * where Figma reports them as mixed.
+ * strict flag without comparing colour, padding, type or radius, and cut
+ * down to leave out the text child's three fields and `gap`, without
+ * comparing type or spacing. So an entry that lacks any of these is
+ * incomplete, and none of it is scored. Where Figma has nothing to report
+ * the template returns `null`, never leaves the field out: the text child's
+ * fields on a variant with none, `fontSize`, `fontWeight` and `fontFamily`
+ * where Figma reports them as mixed, and `gap` on a frame without auto
+ * layout. verifyVariant scores those nulls against what snap measured.
  */
 export const READBACK_FIELDS = [
-  "source", "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform", "opacity", "width", "height",
+  "source", "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
+  "fontSize", "fontWeight", "fontFamily", "gap", "opacity", "width", "height",
 ] as const;
 
 /**
- * The fields an entry lacks that the readback template would have returned:
- * any of READBACK_FIELDS, and `fontWeight` where it reports `fontSize` or
- * `fontFamily` without it, since the template reads all three off one text
- * child and `fontWeight` whenever there is one (a mixed font reads as 400).
- * Present as `null` is present; absent, or undefined as JSON leaves it, is not.
+ * The fields of READBACK_FIELDS an entry lacks. Present as `null` is
+ * present; absent, or undefined as JSON leaves it, is not.
  */
 export function missingReadbackFields(entry: object): string[] {
   const record = entry as Record<string, unknown>;
   const has = (key: string) => Object.prototype.hasOwnProperty.call(record, key) && record[key] !== undefined;
-  const missing: string[] = READBACK_FIELDS.filter((key) => !has(key));
-  if ((has("fontSize") || has("fontFamily")) && !has("fontWeight")) missing.push("fontWeight");
-  return missing;
+  return READBACK_FIELDS.filter((key) => !has(key));
 }
 
 /**
@@ -600,13 +626,22 @@ export interface ReadbackCheckOptions {
 
 /**
  * Every readback entry, measured or not, that verify cannot score as what
- * Figma returned: see ReadbackIssue. A checksum that is missing or does not
- * match means nothing in the entry can be trusted, its fields and `readAt`
- * included, so that is the one issue reported for it.
+ * Figma returned: see ReadbackIssue. A checksum that is missing, a nodeId
+ * that is missing or another component's too, or a checksum that does not
+ * match, means nothing in the entry can be trusted, its fields and `readAt`
+ * included, so that is the one issue reported for it, in that order.
  */
 export function checkReadback(readback: ReadbackFile, { measuredAt }: ReadbackCheckOptions = {}): ReadbackIssue[] {
   const issues: ReadbackIssue[] = [];
   const measured = measuredAt == null ? NaN : Date.parse(measuredAt);
+  // The components under each nodeId. An honest readback reads each one from
+  // a set of its own, so an id under two means one component's entries were
+  // copied onto another, nodeId and all.
+  const byNodeId = new Map<string, string[]>();
+  for (const [component, entry] of Object.entries(readback.components ?? {})) {
+    const setId = entry?.nodeId;
+    if (typeof setId === "string" && setId !== "") byNodeId.set(setId, [...(byNodeId.get(setId) ?? []), component]);
+  }
   for (const [component, entry] of Object.entries(readback.components ?? {})) {
     const setId = entry?.nodeId;
     for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
@@ -620,6 +655,11 @@ export function checkReadback(readback: ReadbackFile, { measuredAt }: ReadbackCh
       }
       if (typeof setId !== "string" || setId === "") {
         issues.push({ component, slug, problem: "no_node_id" });
+        continue;
+      }
+      const sharedWith = (byNodeId.get(setId) ?? []).filter((other) => other !== component);
+      if (sharedWith.length > 0) {
+        issues.push({ component, slug, problem: "duplicate_node_id", sharedWith });
         continue;
       }
       if (fields.checksum !== readbackChecksum(setId, slug, fields)) {

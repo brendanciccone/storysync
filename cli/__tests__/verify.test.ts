@@ -590,7 +590,10 @@ test("verify: a sealed entry with no comparable property is incomplete, so nothi
   const result = verify(snapWith([{ slug: "a" }]), readbackWith({ a: { source: "measured", readAt: READ_AT } }, { whole: false }), 0.5);
   assert.deepEqual(result.readbackIssues, [{
     component: "Forms/Button", slug: "a", problem: "incomplete",
-    missing: ["backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform", "opacity", "width", "height"],
+    missing: [
+      "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
+      "fontSize", "fontWeight", "fontFamily", "gap", "opacity", "width", "height",
+    ],
   }]);
   assert.equal(result.variants[0].status, "unverified_readback");
   assert.equal(result.summary.verified, 0);
@@ -878,6 +881,49 @@ test("verify: a component with no nodeId has every entry unverified, since its c
   assert.equal(checkReadback(file).length, 2);
 });
 
+test("verify: a whole component copied onto another, nodeId and all, has every entry of both flagged", () => {
+  // Sealed under the set's id, Badge's block copied onto Tag's with its
+  // nodeId matches there as it did under Badge, so the checksum alone passes
+  // it. An honest readback reads each component from a set of its own.
+  const file: ReadbackFile = {
+    version: 1,
+    components: {
+      "Data/Badge": { nodeId: "10:1", variants: sealed({ default: complete({}) }, "10:1") as never },
+      "Data/Tag": { nodeId: "20:1", variants: sealed({ default: complete({ backgroundColor: "#ff00ff" }) }, "20:1") as never },
+    },
+  };
+  assert.deepEqual(verify(twoPropless(), file, 0.5).variants.map((v) => `${v.component} ${v.status}`), ["Data/Badge verified", "Data/Tag drifted"]);
+
+  file.components["Data/Tag"] = JSON.parse(JSON.stringify(file.components["Data/Badge"]));
+  const copied = verify(twoPropless(), file, 0.5);
+  assert.deepEqual(copied.readbackIssues, [
+    { component: "Data/Badge", slug: "default", problem: "duplicate_node_id", sharedWith: ["Data/Tag"] },
+    { component: "Data/Tag", slug: "default", problem: "duplicate_node_id", sharedWith: ["Data/Badge"] },
+  ]);
+  assert.deepEqual(copied.variants.map((v) => `${v.component} ${v.status}`), ["Data/Badge unverified_readback", "Data/Tag unverified_readback"]);
+  assert.equal(copied.summary.unverifiedReadback, 2);
+  assert.equal(copied.summary.propertiesCompared, 0);
+  assert.equal(copied.fidelity, null);
+});
+
+test("verify: a shared nodeId flags every entry of every component that has it, and none of another", () => {
+  const block = (setId: string, slugs: string[]) => ({ nodeId: setId, variants: sealed(Object.fromEntries(slugs.map((slug) => [slug, complete({})])), setId) as never });
+  const file: ReadbackFile = {
+    version: 1,
+    components: { "Forms/A": block("1:2", ["x", "y"]), "Forms/B": block("1:2", ["x"]), "Forms/C": block("1:2", ["z"]), "Forms/D": block("3:4", ["x"]) },
+  };
+  const issues = checkReadback(file);
+  assert.deepEqual(issues.map((i) => `${i.component} ${i.slug} ${i.problem} ${(i.sharedWith ?? []).join("+")}`), [
+    "Forms/A x duplicate_node_id Forms/B+Forms/C",
+    "Forms/A y duplicate_node_id Forms/B+Forms/C",
+    "Forms/B x duplicate_node_id Forms/A+Forms/C",
+    "Forms/C z duplicate_node_id Forms/A+Forms/B",
+  ]);
+  // An entry with no checksum is still reported as that, first, as under no nodeId.
+  (file.components["Forms/B"].variants.x as Record<string, unknown>).checksum = undefined;
+  assert.equal(checkReadback(file).find((i) => i.component === "Forms/B")?.problem, "no_checksum");
+});
+
 // --- complete entries ---
 
 // A template cut down to fewer fields still seals what it returns, and verify
@@ -890,34 +936,81 @@ test("verify: a sealed entry cut down to source, width and height is incomplete,
   const result = verify(snapWith([{ slug: "a" }]), readbackWith({ a: trimmed }, { whole: false }), 0.5);
   assert.deepEqual(result.readbackIssues, [{
     component: "Forms/Button", slug: "a", problem: "incomplete",
-    missing: ["backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform", "opacity"],
+    missing: ["backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform", "fontSize", "fontWeight", "fontFamily", "gap", "opacity"],
   }]);
   assert.equal(result.variants[0].status, "unverified_readback");
   assert.equal(result.summary.propertiesCompared, 0);
   assert.equal(result.fidelity, null);
 });
 
-test("missingReadbackFields: null is present, absent is not, and gap and the text fields may be left out as the template leaves them", () => {
+test("missingReadbackFields: null is present, absent is not, and every field the template reads is required", () => {
   assert.deepEqual(READBACK_FIELDS, [
-    "source", "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform", "opacity", "width", "height",
+    "source", "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
+    "fontSize", "fontWeight", "fontFamily", "gap", "opacity", "width", "height",
   ]);
   assert.deepEqual(missingReadbackFields(complete({})), []);
-  // A variant with no text child and no auto layout: every text field and gap out.
-  const bare = complete({ fontSize: undefined, fontWeight: undefined, fontFamily: undefined, gap: undefined, color: null });
-  assert.deepEqual(missingReadbackFields(bare), []);
-  // A mixed font: fontSize and fontFamily out, fontWeight still 400.
-  assert.deepEqual(missingReadbackFields(complete({ fontSize: undefined, fontFamily: undefined, fontWeight: 400 })), []);
-  // Every always-returned field may be null, but not absent.
+  // Every field may be null, as the template returns the text child's on a
+  // variant with none and gap on a frame without auto layout, but not absent.
   const nulls = Object.fromEntries(READBACK_FIELDS.map((key) => [key, null]));
   assert.deepEqual(missingReadbackFields(nulls), []);
   for (const key of READBACK_FIELDS) {
     assert.deepEqual(missingReadbackFields(complete({ [key]: undefined })), [key], key);
   }
-  // The template reads the three text fields off one child, and fontWeight
-  // whenever there is one, so either of the others without it was cut out.
-  assert.deepEqual(missingReadbackFields(complete({ fontWeight: undefined })), ["fontWeight"]);
-  assert.deepEqual(missingReadbackFields(complete({ fontWeight: undefined, fontSize: undefined })), ["fontWeight"]);
-  assert.deepEqual(missingReadbackFields(complete({ fontWeight: undefined, fontFamily: undefined })), ["fontWeight"]);
+  // Not boxShadow or flexDirection, which the template does not read.
+  assert.deepEqual(missingReadbackFields(complete({ boxShadow: undefined, flexDirection: undefined })), []);
+});
+
+test("verify: an entry that leaves out the text child's fields and gap is incomplete, and nothing in it is scored", () => {
+  // The template used to leave these four out on a variant with no text
+  // child or auto layout, and verify let any entry leave them out, so a
+  // template cut down to drop them scored 100% without comparing type or
+  // spacing. It now returns them as null, and verify requires them.
+  const result = verify(snapWith([{ slug: "a" }]), readbackWith({ a: { fontSize: undefined, fontWeight: undefined, fontFamily: undefined, gap: undefined } }), 0.5);
+  assert.deepEqual(result.readbackIssues, [{
+    component: "Forms/Button", slug: "a", problem: "incomplete", missing: ["fontSize", "fontWeight", "fontFamily", "gap"],
+  }]);
+  assert.equal(result.variants[0].status, "unverified_readback");
+  assert.equal(result.summary.propertiesCompared, 0);
+  assert.equal(result.fidelity, null);
+});
+
+/** A snap of one variant `a` of BASE, with `text` as snap measured it. */
+function snapWithText(text: NormalizedStyles["text"], styles: Partial<NormalizedStyles> = {}): SnapResult {
+  const snap = snapWith([{ slug: "a" }]);
+  (snap.components[0].base as { styles: NormalizedStyles }).styles = { ...BASE, ...styles, text };
+  return snap;
+}
+
+test("verify: a null text field matches only where snap measured no text on the variant", () => {
+  // The template reports the text child's fields as null on a variant with
+  // none, and the size and font where Figma reports them as mixed.
+  const noText = { color: null, fontSize: null, fontWeight: null, fontFamily: null };
+  const without = verify(snapWithText(null), readbackWith({ a: noText }), 0.5);
+  assert.deepEqual(without.readbackIssues, []);
+  assert.equal(without.variants[0].status, "verified");
+  // Scored as matches, not skipped: an icon-only variant still compares all twelve.
+  assert.equal(without.summary.propertiesCompared, 12);
+  assert.equal(without.fidelity, 1);
+
+  // Where snap measured text, Figma lacks it: every null text field drifts.
+  const text = { color: "#ffffff", fontFamily: "Helvetica", fontSize: 12, fontWeight: 600 };
+  const lacking = verify(snapWithText(text), readbackWith({ a: noText }), 0.5);
+  assert.equal(lacking.variants[0].status, "drifted");
+  assert.deepEqual(lacking.variants[0].differences.map((d) => d.property), ["color", "fontSize", "fontWeight", "fontFamily"]);
+  // And a mixed size or font against one measured style drifts the same way.
+  const mixed = verify(snapWithText(text), readbackWith({ a: { fontSize: null, fontWeight: null, fontFamily: null } }), 0.5);
+  assert.deepEqual(mixed.variants[0].differences.map((d) => d.property), ["fontSize", "fontWeight", "fontFamily"]);
+  // A text child Figma has against no text measured is still compared with the root's styles.
+  assert.equal(verify(snapWithText(null), readbackWith({ a: { fontSize: 18 } }), 0.5).variants[0].differences[0]?.property, "fontSize");
+});
+
+test("verify: a null gap, from a frame without auto layout, matches a measured null or zero gap and drifts from any other", () => {
+  const nullGap = readbackWith({ a: { gap: null } });
+  assert.equal(verify(snapWithText(null, { gap: null }), nullGap, 0.5).variants[0].status, "verified");
+  assert.equal(verify(snapWithText(null, { gap: { row: 0, column: 0 } }), nullGap, 0.5).variants[0].status, "verified");
+  const drifted = verify(snapWithText(null, { gap: { row: 6, column: 6 } }), nullGap, 0.5);
+  assert.equal(drifted.variants[0].status, "drifted");
+  assert.deepEqual(drifted.variants[0].differences, [{ property: "gap", status: "mismatch", measured: { row: 6, column: 6 }, figma: null }]);
 });
 
 test("verify: a checksum that does not match is the one issue reported for an entry, however incomplete or old", () => {

@@ -1315,12 +1315,14 @@ function assertAllFlagged(snapDir, file, name, problem, label, { bin } = {}) {
  * the skill says, verifies with no readback issue: every entry carrying the
  * time Figma read it and a checksum the template computed, complete and read
  * after the snap, and every variant scoring 100%, written as returned or laid
- * out another way. And a variant with no text child, one Figma reports a
- * mixed stroke weight for, and one whose text mixes fonts and sizes, have
- * fields that drop out of what the call returns: their checksums have to
- * cover what it returns, and verify has to accept them as complete.
- * `template` and `bin` are the readback template and the CLI, the shipped
- * ones unless mutants are given.
+ * out another way. And the variants with nothing to report for a field: one
+ * with no text child, whose text's four fields read null; one whose text
+ * mixes fonts and sizes, whose size and font read null; one without auto
+ * layout, whose gap reads null; and one Figma reports a mixed stroke weight
+ * for, whose border's width drops out of what the call returns. Their
+ * checksums have to cover what it returns, and verify has to accept them as
+ * complete. `template` and `bin` are the readback template and the CLI, the
+ * shipped ones unless mutants are given.
  */
 async function assertSealed(snapDir, { template = loadSkillReadback(), bin } = {}) {
   const file = await buildReadback(snapDir, { readback: template });
@@ -1352,23 +1354,85 @@ async function assertSealed(snapDir, { template = loadSkillReadback(), bin } = {
   assert(mixed.strokeWeight === MIXED, "the one-sided border's strokeWeight is not figma.mixed");
   const font = figmaNode("odd=font", edges["box-shadow"].styles);
   Object.assign(font.findOne(() => true), { fontSize: MIXED, fontName: MIXED });
+  const flat = Object.assign(figmaNode("odd=flat", edges["box-shadow"].styles), { layoutMode: "NONE" });
   const { readback: odd } = await template.read(
-    { id: "set:Odd", type: "COMPONENT_SET", name: "Odd", children: [textless, mixed, font] },
-    { "odd=textless": "odd-textless", "odd=mixed": "odd-mixed", "odd=font": "odd-font" },
-    { "odd-textless": "measured", "odd-mixed": "measured", "odd-font": "measured" },
+    { id: "set:Odd", type: "COMPONENT_SET", name: "Odd", children: [textless, mixed, font, flat] },
+    { "odd=textless": "odd-textless", "odd=mixed": "odd-mixed", "odd=font": "odd-font", "odd=flat": "odd-flat" },
+    { "odd-textless": "measured", "odd-mixed": "measured", "odd-font": "measured", "odd-flat": "measured" },
   );
-  assert(!("fontSize" in odd["odd-textless"]) && !("width" in (odd["odd-mixed"].borderUniform ?? {}))
-    && !("fontSize" in odd["odd-font"]) && !("fontFamily" in odd["odd-font"]),
+  const nulls = (entry, keys) => keys.every((key) => key in entry && entry[key] === null);
+  assert(nulls(odd["odd-textless"], ["color", "fontSize", "fontWeight", "fontFamily"]) && !("width" in (odd["odd-mixed"].borderUniform ?? {}))
+    && nulls(odd["odd-font"], ["fontSize", "fontWeight", "fontFamily"]) && nulls(odd["odd-flat"], ["gap"]),
     `a variant with no text read back ${JSON.stringify(odd["odd-textless"])}, one with a mixed stroke weight ` +
-    `${JSON.stringify(odd["odd-mixed"])}, one with mixed fonts ${JSON.stringify(odd["odd-font"])}`);
+    `${JSON.stringify(odd["odd-mixed"])}, one with mixed fonts ${JSON.stringify(odd["odd-font"])}, one without auto layout ${JSON.stringify(odd["odd-flat"])}`);
   const oddPath = join(WORK, "readback-odd.json");
   writeJson(oddPath, { version: 1, fileKey: "acceptance", components: { "Forms/Odd": { nodeId: "set:Odd", variants: odd } } });
   const v = verifyJson(snapDir, oddPath, [], { bin });
   assert(v.json?.summary, `verify did not score the odd variants\n${v.out.trim()}`);
   assert((v.json.readbackIssues ?? []).length === 0,
-    `a variant with no text, a mixed stroke weight or mixed fonts was flagged: ${describeIssues(v.json.readbackIssues)}`);
+    `a variant with no text, a mixed stroke weight, mixed fonts or no auto layout was flagged: ${describeIssues(v.json.readbackIssues)}`);
   return `${entries} entries, each with the template's readAt and checksum, 100% as returned and laid out with tabs, keys reversed and numbers ` +
-    `like ${(38.59).toExponential()}; a variant with no text, one with a mixed stroke weight and one with mixed fonts unflagged`;
+    `like ${(38.59).toExponential()}; a variant with no text, one with a mixed stroke weight, one with mixed fonts and one without auto layout unflagged`;
+}
+
+/**
+ * Throws unless a variant with no text child, whose text's four fields read
+ * null, and a frame without auto layout, whose gap reads null, verify against
+ * a snap that measured no text on the first and no gap on the second, a
+ * block element like Frozen; while variants built the same way drift on
+ * exactly those fields against a snap that measured text, or a gap, on them:
+ * a label or an auto layout lost in Figma. `template` and `bin` are the
+ * readback template and the CLI, the shipped ones unless mutants are given.
+ */
+async function assertNullsScored(snapDir, { template = loadSkillReadback(), bin } = {}) {
+  const snap = readJson(join(snapDir, "styles.json"));
+  const plain = expandVariants(snap.components.find((c) => c.name === "Button"))[0].styles;
+  const block = expandVariants(snap.components.find((c) => c.name === "Frozen"))[0].styles;
+  assert(plain.text && plain.gap?.column === 6 && block.gap === null && block.display === "block",
+    `the Button measured text ${JSON.stringify(plain.text)} and a gap of ${JSON.stringify(plain.gap)}, Frozen a gap of ${JSON.stringify(block.gap)} on a ${block.display} element`);
+  // Each variant as snap measured it, and as Figma has it.
+  const cases = [
+    { slug: "textless", styles: { ...plain, text: null }, figma: { text: false } },
+    { slug: "flat", styles: block, figma: { layoutMode: "NONE" } },
+    { slug: "unlabelled", styles: plain, figma: { text: false } },
+    { slug: "ungapped", styles: plain, figma: { layoutMode: "NONE" } },
+  ];
+  const children = cases.map(({ slug, styles, figma }) => {
+    const node = figmaNode(`nulls=${slug}`, styles);
+    if (figma.text === false) node.findOne = () => null;
+    if (figma.layoutMode) node.layoutMode = figma.layoutMode;
+    return node;
+  });
+  const { readback: variants } = await template.read(
+    { id: "set:Nulls", type: "COMPONENT_SET", name: "Nulls", children },
+    Object.fromEntries(cases.map(({ slug }) => [`nulls=${slug}`, slug])),
+    Object.fromEntries(cases.map(({ slug }) => [slug, "measured"])),
+  );
+  const dir = join(WORK, "snap-nulls");
+  mkdirSync(dir, { recursive: true });
+  cpSync(join(snapDir, "meta.json"), join(dir, "meta.json"));
+  writeJson(join(dir, "styles.json"), {
+    ...snap,
+    components: [{
+      name: "Nulls", title: "Forms/Nulls", category: "Forms", storyId: "forms-nulls--default",
+      variantProperties: [{ name: "nulls", type: "VARIANT", values: cases.map((c) => c.slug), defaultValue: cases[0].slug }],
+      base: { combination: { nulls: cases[0].slug }, slug: cases[0].slug, styles: cases[0].styles },
+      variants: cases.map(({ slug, styles }) => ({ combination: { nulls: slug }, slug, status: "ok", delta: styles })),
+      warnings: [], error: null,
+    }],
+  });
+  const path = join(WORK, "readback-nulls.json");
+  writeJson(path, { version: 1, fileKey: "acceptance", components: { "Forms/Nulls": { nodeId: "set:Nulls", variants } } });
+  const v = verifyJson(dir, path, [], { bin });
+  assert(v.json?.summary, `verify did not score the variants with null fields\n${v.out.trim()}`);
+  assert((v.json.readbackIssues ?? []).length === 0, `a variant with null fields was flagged: ${describeIssues(v.json.readbackIssues)}`);
+  const scored = v.json.variants.map((x) => `${x.slug} ${x.status} ${x.matched}/${x.matched + x.mismatched}` +
+    (x.differences.length ? ` ${x.differences.map((d) => d.property).join("+")}` : "")).join(", ");
+  const want = "textless verified 12/12, flat verified 10/10, " +
+    "unlabelled drifted 8/12 color+fontSize+fontWeight+fontFamily, ungapped drifted 11/12 gap";
+  assert(scored === want, `scored ${scored}, not ${want}`);
+  return `no text and no text measured 12/12, no auto layout on a block element 10/10; ` +
+    `a label lost in Figma drifts on its four text fields, an auto layout lost on its gap`;
 }
 
 /**
@@ -1456,14 +1520,12 @@ async function assertEditFlagged(snapDir, { bin } = {}) {
 }
 
 /**
- * Throws unless an entry copied onto the same slug in another component is
- * flagged on exactly that one. Every component without variant props has the
- * slug `default`, so two of them, Badge and Tag, measured alike, are read back
- * from two sets: Tag's fill is magenta in Figma, so read faithfully it drifts.
- * Its entry is then replaced with Badge's, which matches the snap: sealed
- * under the slug alone, it would score 100%.
+ * Two components with no variant props, Badge and Tag, measured alike, each
+ * with the one slug snap gives them, `default`, read back from two sets by
+ * the shipped template: Tag's fill is magenta in Figma, so read faithfully it
+ * drifts, which this checks. Returns the snap's directory and the readback.
  */
-async function assertCopyFlagged(snapDir, { bin } = {}) {
+async function proplessReadback(snapDir, { bin } = {}) {
   const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
   const styles = expandVariants(button)[0].styles;
   const propless = (name) => ({
@@ -1492,7 +1554,17 @@ async function assertCopyFlagged(snapDir, { bin } = {}) {
   assert(before?.summary && (before.readbackIssues ?? []).length === 0
     && before.variants.map((x) => `${x.component} ${x.status}`).join() === "Data/Badge verified,Data/Tag drifted",
     `read faithfully: ${before?.variants?.map((x) => `${x.component} ${x.status}`).join(", ")}, ${describeIssues(before?.readbackIssues ?? [])} flagged`);
+  return { dir, file };
+}
 
+/**
+ * Throws unless an entry copied onto the same slug in another component is
+ * flagged on exactly that one. Every component without variant props has the
+ * slug `default`, so Tag's entry is replaced with Badge's, which matches the
+ * snap: sealed under the slug alone, it would score 100%.
+ */
+async function assertCopyFlagged(snapDir, { bin } = {}) {
+  const { dir, file } = await proplessReadback(snapDir, { bin });
   file.components["Data/Tag"].variants.default = { ...file.components["Data/Badge"].variants.default };
   const path = join(WORK, "readback-propless-copied.json");
   writeJson(path, file);
@@ -1504,6 +1576,23 @@ async function assertCopyFlagged(snapDir, { bin } = {}) {
   assert(statuses === "Data/Badge verified,Data/Tag unverified_readback", `after the copy: ${statuses}`);
   assert(exitOf(dir, path, ["--strict"], { bin }) === 1, "--strict passed");
   return "Badge's default entry copied onto Tag's flagged on Tag alone, which drifted when read faithfully; --strict failed";
+}
+
+/**
+ * Throws unless a whole component's block copied onto another, its nodeId
+ * with it, is flagged on every entry of both, scores nothing, fails --strict
+ * and never prints "Figma matches". Tag's block is replaced with Badge's,
+ * nodeId and all: every checksum in it matches under Badge's set's id, so the
+ * checksum alone would score Tag 100%, though it drifted when read faithfully.
+ */
+async function assertBlockCopyFlagged(snapDir, { bin } = {}) {
+  const { dir, file } = await proplessReadback(snapDir, { bin });
+  file.components["Data/Tag"] = JSON.parse(JSON.stringify(file.components["Data/Badge"]));
+  const entries = assertAllFlagged(dir, file, "readback-propless-block.json", "duplicate_node_id", "Badge's block copied onto Tag", { bin });
+  const shared = verifyJson(dir, join(WORK, "readback-propless-block.json"), [], { bin }).json.readbackIssues
+    .map((i) => `${i.component}: ${(i.sharedWith ?? []).join()}`).join("; ");
+  assert(shared === "Data/Badge: Data/Tag; Data/Tag: Data/Badge", `the issues name the components sharing the nodeId as ${shared}`);
+  return `Badge's whole block copied onto Tag's, nodeId and all: all ${entries} entries of both flagged, nothing scored, --strict failed, no "Figma matches"`;
 }
 
 /**
@@ -1539,6 +1628,35 @@ async function assertTrimmedFlagged(snapDir, { bin } = {}) {
   }
   const entries = assertAllFlagged(snapDir, file, "readback-trimmed.json", "incomplete", "the cut-down readback", { bin });
   return `all ${entries} entries flagged incomplete with their checksums matching; nothing scored, --strict failed, no "Figma matches"`;
+}
+
+/**
+ * The readback template's code with the text child's three fields and gap
+ * removed from what it returns: still sealed, so each checksum matches. The
+ * template used to leave these four out where Figma had none to report, and
+ * verify let any entry leave them out, so this scored 100%.
+ */
+function withoutTypeOrGap(code) {
+  let out = code;
+  for (const field of [/\n *fontSize: [^\n]*/, /\n *fontWeight: [^\n]*/, /\n *fontFamily: [^\n]*/, /\n *gap: [^\n]*\n[^\n]*\n *: null,/]) {
+    assert(field.test(out), `the readback template has no field matching ${field}`);
+    out = out.replace(field, "");
+  }
+  return out;
+}
+
+/**
+ * Throws unless a readback read with the template's text fields and gap
+ * removed is flagged incomplete on every variant, lacking those four, scores
+ * nothing and fails --strict.
+ */
+async function assertTypelessFlagged(snapDir, { bin } = {}) {
+  const file = await buildReadback(snapDir, { readback: loadSkillReadback(withoutTypeOrGap) });
+  const entries = assertAllFlagged(snapDir, file, "readback-typeless.json", "incomplete", "the readback without type or gap", { bin });
+  const missing = new Set(verifyJson(snapDir, join(WORK, "readback-typeless.json"), [], { bin }).json.readbackIssues.map((i) => (i.missing ?? []).join()));
+  assert(missing.size === 1 && missing.has("fontSize,fontWeight,fontFamily,gap"), `the entries lack ${[...missing].join(" or ")}`);
+  return `all ${entries} entries flagged incomplete, lacking fontSize, fontWeight, fontFamily and gap, with their checksums matching; ` +
+    `nothing scored, --strict failed, no "Figma matches"`;
 }
 
 /**
@@ -2344,6 +2462,9 @@ async function main() {
 
   await check("the template's checksums survive any layout of the file, and cover what each call returns", () => assertSealed(snapDir));
 
+  await check("a variant with no text child or no auto layout reads null there: a match where snap measured none, drift where it measured some", () =>
+    assertNullsScored(snapDir));
+
   await check("a readback rebuilt from snap's values, as the live push wrote it, is flagged on every variant and fails --strict", () =>
     assertComposedFlagged(snapDir));
 
@@ -2351,8 +2472,14 @@ async function main() {
 
   await check("an entry copied onto the same slug in another component is flagged on exactly that one", () => assertCopyFlagged(snapDir));
 
+  await check("a whole component copied onto another, nodeId and all, is flagged on every entry of both and fails --strict", () =>
+    assertBlockCopyFlagged(snapDir));
+
   await check("a readback read with the template cut down to source, width and height is flagged incomplete and fails --strict", () =>
     assertTrimmedFlagged(snapDir));
+
+  await check("a readback read with the template's text fields and gap removed is flagged incomplete and fails --strict", () =>
+    assertTypelessFlagged(snapDir));
 
   await check("a readback read before the snap is flagged stale and fails --strict, allowing a couple of minutes for the clocks", () =>
     assertStaleFlagged(snapDir));
@@ -2375,6 +2502,15 @@ async function main() {
       "leaves readAt out of the checksum": (code) => code.replace(SEALED,
         "const { readAt: _, ...rest } = entry;\n      const text = canon({ [setId]: { [slug]: rest } });"),
       "is cut down to source, width and height": cutDown,
+      "leaves out the text child's fields and gap": withoutTypeOrGap,
+      "leaves the text fields out where there is no text child, as it used to": (code) => code
+        .replace("fontSize: text && typeof text.fontSize === 'number' ? text.fontSize : null,", "fontSize: text ? text.fontSize : undefined,")
+        .replace("fontWeight: font ? weightOf(font.style) : null,", "fontWeight: text ? weightOf(text.fontName.style) : undefined,")
+        .replace("fontFamily: font ? font.family : null,", "fontFamily: text ? text.fontName.family : undefined,"),
+      "leaves gap out on a frame without auto layout, as it used to": (code) => code.replace(
+        "? { row: child.itemSpacing, column: child.itemSpacing }\n          : null,", "? { row: child.itemSpacing, column: child.itemSpacing }\n          : undefined,"),
+      "reads a mixed font's weight as 400": (code) => code.replace("fontWeight: font ? weightOf(font.style) : null,",
+        "fontWeight: text ? weightOf(font && font.style) : null,"),
     };
     const verifyMutants = {
       "ignores the checksum": (src) => src.replace("const readbackIssues = checkReadback(readback, options);", "const readbackIssues = [];"),
@@ -2386,17 +2522,26 @@ async function main() {
         "canonicalJson({ [setId]: { [slug]: JSON.parse(JSON.stringify(rest)) } })", "canonicalJson({ [slug]: JSON.parse(JSON.stringify(rest)) })"),
       "does not require the fields the template always returns": (src) => src.replace(
         "const missing = missingReadbackFields(fields);", "const missing = [];"),
+      "lets an entry leave out the text fields and gap, as before": (src) => src.replace(
+        '"fontSize", "fontWeight", "fontFamily", "gap", "opacity"', '"opacity"'),
+      "never compares one component's nodeId with another's": (src) => src.replace("if (sharedWith.length > 0) {", "if (false) {"),
+      "scores a null text field as a match whether or not snap measured text": (src) => src.replace(
+        "figmaValue == null && measuredText == null", "figmaValue == null"),
+      "scores a null gap as a match against any measured gap": (src) => src.replace(
+        "if (isAbsentOrZeroRecord(measured) && isAbsentOrZeroRecord(figma))", "if (figma == null || (isAbsentOrZeroRecord(measured) && isAbsentOrZeroRecord(figma)))"),
       "never compares readAt with the snap's time": (src) => src.replace("read < measured - READ_AT_SKEW_MS", "false"),
       "allows no difference between the two clocks": (src) => src.replace("read < measured - READ_AT_SKEW_MS", "read < measured"),
     };
     const every = (opts) => [
-      () => assertSealed(snapDir, opts), () => assertComposedFlagged(snapDir, opts), () => assertEditFlagged(snapDir, opts),
-      () => assertCopyFlagged(snapDir, opts), () => assertTrimmedFlagged(snapDir, opts), () => assertStaleFlagged(snapDir, opts),
+      () => assertSealed(snapDir, opts), () => assertNullsScored(snapDir, opts), () => assertComposedFlagged(snapDir, opts), () => assertEditFlagged(snapDir, opts),
+      () => assertCopyFlagged(snapDir, opts), () => assertBlockCopyFlagged(snapDir, opts), () => assertTrimmedFlagged(snapDir, opts),
+      () => assertTypelessFlagged(snapDir, opts), () => assertStaleFlagged(snapDir, opts),
     ];
     for (const run of every({ bin: mutantCli(null) })) await run();
     const survived = [];
     for (const [name, mutate] of Object.entries(templateMutants)) {
-      if (!(await fails([() => assertSealed(snapDir, { template: loadSkillReadback(mutate) })]))) survived.push(`a template that ${name}`);
+      const template = loadSkillReadback(mutate);
+      if (!(await fails([() => assertSealed(snapDir, { template }), () => assertNullsScored(snapDir, { template })]))) survived.push(`a template that ${name}`);
     }
     for (const [name, mutate] of Object.entries(verifyMutants)) {
       if (!(await fails(every({ bin: mutantCli(mutate) })))) survived.push(`a verify that ${name}`);

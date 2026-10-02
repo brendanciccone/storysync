@@ -544,6 +544,10 @@ use_figma({
         return outside * (typeof own === 'number' ? own : child.strokeWeight);
       };
       const text = child.findOne(n => n.type === 'TEXT');
+      // A text node's fontSize is figma.mixed when its text mixes sizes, and
+      // its fontName when it mixes fonts: those read as null, as they do
+      // with no text child.
+      const font = text && typeof text.fontName === 'object' ? text.fontName : null;
       // Figma names weights ("Semi Bold"), CSS numbers them (600). Mapping only
       // Bold would report every SemiBold/Medium/Light face as 400, and
       // fontWeight is compared exactly — so a correct push would drift on every
@@ -558,9 +562,9 @@ use_figma({
         return WEIGHTS[key] != null ? WEIGHTS[key] : 400;
       };
       const slug = slugFor(child);
-      // Every field but gap and the text child's three comes back on every
-      // variant, null where Figma has nothing to report: verify reports an
-      // entry without one as incomplete and scores none of it. Leave them all.
+      // Every field comes back on every variant, null where Figma has nothing
+      // to report, never left out: verify reports an entry without one as
+      // incomplete and scores none of it. Leave them all.
       readback[slug] = seal(componentSet.id, slug, {
         // Set from how THIS variant's values were obtained — do not leave the
         // passing value in place. 'measured' only if it came from step 3's snap
@@ -576,18 +580,21 @@ use_figma({
         // A stroke whose paint draws nothing is a transparent border: its
         // colour reads as null, and its weight still counts, as above.
         borderUniform: stroke ? { width: child.strokeWeight, style: 'solid', color: hexOf(stroke) } : null,
-        fontSize: text ? text.fontSize : undefined,
-        fontWeight: text ? weightOf(text.fontName.style) : undefined,
+        // null with no text child: verify accepts that only where snap measured
+        // no text on the variant either.
+        fontSize: text && typeof text.fontSize === 'number' ? text.fontSize : null,
+        fontWeight: font ? weightOf(font.style) : null,
         // Report the family Figma actually used: the plugin context has only
         // Google Fonts, so a system font the code asks for gets substituted, and
         // without this line the substitution would never be scored.
-        fontFamily: text ? text.fontName.family : undefined,
-        // Only report gap where the layout actually has one. (verify treats a
-        // measured null gap and {0,0} as the same rendering, so an auto-layout
-        // frame with zero spacing still matches a block-level element.)
+        fontFamily: font ? font.family : null,
+        // null without auto layout, where there is no gap. verify treats a
+        // measured null gap and {0,0} as the same rendering, so this, or an
+        // auto-layout frame with zero spacing, matches a block-level element,
+        // and null against a measured gap is drift.
         gap: child.layoutMode && child.layoutMode !== 'NONE'
           ? { row: child.itemSpacing, column: child.itemSpacing }
-          : undefined,
+          : null,
         opacity: child.opacity,
         // The border box, from the geometry: see edge above.
         width: child.width + edge('Left') + edge('Right'),
@@ -655,7 +662,7 @@ use_figma({
 })
 ```
 
-   Write every slice's `readback` entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by the component title and the snap variant slug, with the set's id, the `id` the calls returned, as `nodeId`, since each entry's checksum is sealed under it. Copy each entry whole, its `readAt` and `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null`, and no field added that the entry lacks or dropped that it has. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned, nor one from an earlier run. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. The file's layout is yours, since indentation and key order do not change a checksum, but its values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match, that lacks a field the template always returns, or whose `readAt` is before the snap, as an unverified readback, scores nothing in it, and fails `--strict`.
+   Write every slice's `readback` entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by the component title and the snap variant slug, with the set's id, the `id` the calls returned, as `nodeId`, since each entry's checksum is sealed under it, so each component has the id of its own set. Copy each entry whole, its `readAt` and `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null` (a variant with no text child, like the status dot below, returns `null` for the text's four fields, and one without auto layout for `gap`), and no field added that the entry lacks or dropped that it has. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned, nor one from an earlier run. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. The file's layout is yours, since indentation and key order do not change a checksum, but its values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match, whose component has the `nodeId` of another, that lacks a field the template always returns, or whose `readAt` is before the snap, as an unverified readback, scores nothing in it, and fails `--strict`.
 
 ```json
 {
@@ -675,6 +682,20 @@ use_figma({
           "checksum": "fnv1a:e14125de"
         }
       }
+    },
+    "Data/StatusDot": {
+      "nodeId": "12:56",
+      "variants": {
+        "status-online": {
+          "source": "measured",
+          "backgroundColor": "#16a34a", "color": null, "borderRadiusUniform": 4,
+          "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+          "borderUniform": null, "fontSize": null, "fontWeight": null, "fontFamily": null,
+          "gap": null, "opacity": 1, "width": 8, "height": 8,
+          "readAt": "2026-10-01T22:19:04.391Z",
+          "checksum": "fnv1a:3d72d28a"
+        }
+      }
     }
   }
 }
@@ -690,7 +711,7 @@ npx storysync verify --strict-age
 
    This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement.
 
-   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match is not what the readback returned — read that slice again and write its entries exactly as returned, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
+   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labelled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
 7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, the variants with a transparent border, and any failures or caps. For each variant whose transparent border was built as an `OUTSIDE` stroke (a `CENTER` one leaves half the ring unfilled, an `INSIDE` one on a fixed-size frame none), say that Figma shows that transparent border as an unfilled ring: the browser draws the background under a transparent border, but Figma's fill stops where the `OUTSIDE` stroke begins, and that stroke's paint draws nothing. If the user would rather it look filled, they can choose a stroke tinted the background's colour instead, which `verify` will then score as a border colour the code does not have.
 
