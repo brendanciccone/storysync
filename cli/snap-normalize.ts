@@ -28,10 +28,26 @@ export interface BoxShadowLayer {
 }
 
 export interface TextStyles {
+  /**
+   * The text's colour as drawn: an `opacity` on the element holding the text,
+   * or on one between it and the measured root, is folded into its alpha. The
+   * root's own opacity is the frame's `opacity`, not part of this.
+   */
   color: string | null;
   fontFamily: string;
   fontSize: number;
   fontWeight: number;
+  /**
+   * The computed `text-transform`: `none`, `uppercase`, `lowercase`,
+   * `capitalize`. A story's args hold the label as written, `Beta`, while the
+   * browser draws, and measures the width of, `BETA`.
+   *
+   * normalizeStyles always sets this and letterSpacing; they are optional
+   * only so a styles.json written before they were measured still reads.
+   */
+  textTransform?: string;
+  /** In px, a percentage resolved against the text's own font size. */
+  letterSpacing?: number;
 }
 
 export interface NormalizedStyles {
@@ -106,7 +122,14 @@ export const CAPTURED_PROPERTIES: readonly string[] = [
   "box-shadow", "box-sizing",
 ];
 
-export const TEXT_PROPERTIES: readonly string[] = ["color", "font-family", "font-size", "font-weight"];
+/**
+ * Read off the element holding the text. snap-browser adds `opacity`: not the
+ * holder's own, but the product of every opacity from it up to the measured
+ * root, the root's excluded.
+ */
+export const TEXT_PROPERTIES: readonly string[] = [
+  "color", "font-family", "font-size", "font-weight", "text-transform", "letter-spacing",
+];
 
 /** What snap-browser reads off a Storybook wrapper to decide whether to look past it. */
 export const WRAPPER_PROPERTIES: readonly string[] = [
@@ -193,10 +216,29 @@ function normalizeLineHeight(value: string | undefined): number | "normal" {
   return Number.isFinite(n) ? round2(n) : "normal";
 }
 
-function normalizeLetterSpacing(value: string | undefined): number {
+/** Chromium keeps a percentage letter-spacing as written; it is a share of the font size. */
+function normalizeLetterSpacing(value: string | undefined, fontSize: number): number {
   const raw = (value ?? "").trim();
   if (!raw || raw === "normal") return 0;
+  const percent = raw.match(/^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i);
+  if (percent) {
+    const n = (Number(percent[1]) / 100) * fontSize;
+    return Number.isFinite(n) ? round2(n) : 0;
+  }
   return pxToNumber(raw) ?? 0;
+}
+
+/**
+ * A hex colour drawn at an opacity: its alpha multiplied by it, rounded as
+ * formatHex rounds alpha, the byte dropped when opaque and the colour null,
+ * no fill, when nothing is left.
+ */
+function withOpacity(hex: string | null, opacity: number): string | null {
+  if (hex == null || !Number.isFinite(opacity) || opacity >= 1) return hex;
+  const alpha = hex.length === 9 ? parseInt(hex.slice(7, 9), 16) : 255;
+  const scaled = Math.round(alpha * Math.max(0, opacity));
+  if (scaled === 0) return null;
+  return scaled >= 255 ? hex.slice(0, 7) : `${hex.slice(0, 7)}${scaled.toString(16).padStart(2, "0")}`;
 }
 
 /** A colour function as Chromium serialises one, in any space. */
@@ -453,17 +495,19 @@ export function normalizeStyles(
     fontSize: pxOrZero(raw["font-size"]),
     fontWeight: normalizeFontWeight(raw["font-weight"]),
     lineHeight: normalizeLineHeight(raw["line-height"]),
-    letterSpacing: normalizeLetterSpacing(raw["letter-spacing"]),
+    letterSpacing: normalizeLetterSpacing(raw["letter-spacing"], pxOrZero(raw["font-size"])),
     boxShadow: parseBoxShadow(raw["box-shadow"]),
     opacity: Number.isFinite(opacity) ? round2(opacity) : 1,
     boxSizing: (raw["box-sizing"] ?? "content-box").trim(),
     fontAvailable,
     text: textRaw
       ? {
-          color: normalizeColor(textRaw["color"]),
+          color: withOpacity(normalizeColor(textRaw["color"]), Number(textRaw["opacity"] ?? 1)),
           fontFamily: firstFontFamily(textRaw["font-family"]),
           fontSize: pxOrZero(textRaw["font-size"]),
           fontWeight: normalizeFontWeight(textRaw["font-weight"]),
+          textTransform: (textRaw["text-transform"] ?? "").trim() || "none",
+          letterSpacing: normalizeLetterSpacing(textRaw["letter-spacing"], pxOrZero(textRaw["font-size"])),
         }
       : null,
   };

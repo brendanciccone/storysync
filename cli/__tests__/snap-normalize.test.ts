@@ -260,8 +260,52 @@ test("normalizeStyles: captures text-descendant styles when provided", () => {
     color: "rgb(17, 24, 39)", "font-family": "Inter, sans-serif",
     "font-size": "18px", "font-weight": "500",
   });
-  assert.deepEqual(s.text, { color: "#111827", fontFamily: "Inter", fontSize: 18, fontWeight: 500 });
+  assert.deepEqual(s.text, {
+    color: "#111827", fontFamily: "Inter", fontSize: 18, fontWeight: 500, textTransform: "none", letterSpacing: 0,
+  });
   assert.equal(normalizeStyles(PRIMARY_SM, BOX).text, null);
+});
+
+const LABEL: RawComputedStyles = {
+  color: "rgb(255, 255, 255)", "font-family": "Inter, sans-serif", "font-size": "12px", "font-weight": "600",
+  "text-transform": "none", "letter-spacing": "normal", opacity: "1",
+};
+
+test("normalizeStyles: records the text's transform, which the label's width depends on", () => {
+  // An uppercase badge draws BETA from args of Beta, about 6px wider at 12px.
+  const s = normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, "text-transform": "uppercase" });
+  assert.equal(s.text?.textTransform, "uppercase");
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, LABEL).text?.textTransform, "none");
+});
+
+test("normalizeStyles: records the text holder's own letter-spacing, not only the root's", () => {
+  // <button><span style="letter-spacing: 0.05em">, at 13.33px.
+  const s = normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, "font-size": "13.3333px", "letter-spacing": "0.666667px" });
+  assert.equal(s.letterSpacing, 0);
+  assert.equal(s.text?.letterSpacing, 0.67);
+});
+
+test("normalizeStyles: a percentage letter-spacing is a share of the font size", () => {
+  // Chromium keeps letter-spacing: 10% as written; on a 20px font it draws 2px.
+  const root = normalizeStyles(withOverrides({ "font-size": "20px", "letter-spacing": "10%" }), BOX);
+  assert.equal(root.letterSpacing, 2);
+  const text = normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, "font-size": "20px", "letter-spacing": "-5%" });
+  assert.equal(text.text?.letterSpacing, -1);
+});
+
+test("normalizeStyles: an opacity between the root and its text is folded into the text colour", () => {
+  // <button style="color: #fff"><span style="opacity: 0.6">Draft</span></button>:
+  // drawn at 60%, so verify can tell it from an opaque white label.
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, opacity: "0.6" }).text?.color, "#ffffff99");
+  // A translucent colour's alpha is multiplied, not replaced.
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, color: "rgba(255, 255, 255, 0.5)", opacity: "0.5" }).text?.color, "#ffffff40");
+  // Opaque stays #rrggbb, and nothing left is no colour at all.
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, LABEL).text?.color, "#ffffff");
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, opacity: "0" }).text?.color, null);
+  // The root's own opacity stays the frame's, out of the text colour.
+  const faded = normalizeStyles(withOverrides({ opacity: "0.4" }), BOX, LABEL);
+  assert.equal(faded.opacity, 0.4);
+  assert.equal(faded.text?.color, "#ffffff");
 });
 
 // --- Background image -------------------------------------------------------

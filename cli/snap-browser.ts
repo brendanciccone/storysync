@@ -348,7 +348,11 @@ async function readComputedStyles(
   );
 }
 
-/** Styles of the nearest descendant that actually owns text. */
+/**
+ * Styles of the nearest descendant that actually owns text, with `opacity`
+ * the product of every opacity from it up to the measured root, the root's
+ * excluded: `<button><span style="opacity: 0.6">` draws its label at 60%.
+ */
 async function readTextStyles(
   page: Page,
   handle: ElementHandle<Element>,
@@ -371,6 +375,12 @@ async function readTextStyles(
       const cs = getComputedStyle(holder);
       const out: Record<string, string> = {};
       for (const p of props as string[]) out[p] = cs.getPropertyValue(p);
+      let opacity = 1;
+      for (let el: Element | null = holder; el && el !== node; el = el.parentElement) {
+        const own = parseFloat(getComputedStyle(el).opacity);
+        if (Number.isFinite(own)) opacity *= own;
+      }
+      out["opacity"] = String(opacity);
       return out;
     },
     [handle, properties] as const,
