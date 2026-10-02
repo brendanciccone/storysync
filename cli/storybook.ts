@@ -186,15 +186,24 @@ const STORY_LINE = /^\s+[-*]\s+.*\((?:id:\s*)?[`"']?([^\s()`"']+--[^\s()`"']+)[`
  * and the subcomponents' props.
  */
 function ownPropsText(doc: string): string {
-  // The MDX keeps its own headings, so the Docs section runs to the end.
-  const docs = /^## Docs[ \t]*\r?$/m.exec(doc);
+  // Anchored on the block addon-mcp generates, not the first "## Props": the
+  // component's own description, printed above it, may hold a "## Props" or
+  // "## Docs" heading of its own.
+  const generated = GENERATED_PROPS.exec(doc);
+  if (generated) {
+    const body = doc.slice(generated.index + "## Props".length);
+    const next = body.search(/^## /m);
+    return next === -1 ? body : body.slice(0, next);
+  }
+  // With no generated block, read the rest, but not a subcomponent's props or
+  // an attached MDX page, whose "## Docs" heading is followed by its own "### ".
+  const docs = /^## Docs[ \t]*\r?\n\s*^### /m.exec(doc);
   const text = docs ? doc.slice(0, docs.index) : doc;
-  const own = /^## Props[ \t]*\r?$/m.exec(text);
-  if (!own) return text.replace(SUBCOMPONENT_PROPS, "");
-  const body = text.slice(own.index + own[0].length);
-  const next = body.search(/^## /m);
-  return next === -1 ? body : body.slice(0, next);
+  return text.replace(SUBCOMPONENT_PROPS, "");
 }
+
+// The component's own Props block, as addon-mcp generates it.
+const GENERATED_PROPS = /^## Props[ \t]*\r?\n\s*```[^\n]*\n[ \t]*export type Props = \{/m;
 
 // A subcomponent's props: the "#### Props" heading and the code block after it.
 const SUBCOMPONENT_PROPS = /^#### Props[ \t]*\r?\n\s*```[\s\S]*?```/gm;

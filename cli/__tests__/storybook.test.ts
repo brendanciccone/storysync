@@ -379,6 +379,19 @@ test("StorybookClient: a subcomponent's props are not the component's", async ()
   assert.deepEqual(props, [["elevation", '"flat" | "raised"']]);
 });
 
+test("StorybookClient: a component description with its own Props or Docs heading keeps the component's props", async () => {
+  // A JSDoc description is printed above the stories and may hold markdown
+  // headings of its own; only addon-mcp's generated Props block counts.
+  const props = await propsOf([
+    "# Notice", "", "ID: x-card", "",
+    "Shows a message.", "", "## Docs", "", "See the guidelines page.", "", "## Props", "", "Pass `level` to set the colour.", "",
+    "## Stories", "", "### Default", "", "Story ID: x-card--default", "",
+    "## Props", "",
+    "```", "export type Props = {", "  /**", "    ", "  */", '  level?: "info" | "warn" = "info";', "}", "```",
+  ].join("\n"));
+  assert.deepEqual(props, [["level", '"info" | "warn"']]);
+});
+
 test("StorybookClient: a type in an attached MDX page's code is not a prop", async () => {
   // addon-mcp 10.6 for a component with `<Meta of={FrozenStories} />` in an MDX page.
   const props = await propsOf([
