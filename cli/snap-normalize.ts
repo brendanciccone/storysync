@@ -143,6 +143,15 @@ export function normalizeColor(value: string | undefined): string | null {
   return hex;
 }
 
+/**
+ * Whether a colour has zero alpha. Read off the hex, since normalizeColor's
+ * null can't tell a transparent colour from one it couldn't read.
+ */
+export function isFullyTransparent(value: string | undefined): boolean {
+  const hex = colorToHex(value ?? "");
+  return hex != null && hex.length === 9 && hex.endsWith("00");
+}
+
 /** First family in a font stack, with quotes stripped. */
 export function firstFontFamily(value: string | undefined): string {
   if (!value) return "";
@@ -273,6 +282,14 @@ export function splitTopLevel(value: string, separator = ","): string[] {
  * Parses a computed `box-shadow`. Chromium normalizes to
  * `rgba(0, 0, 0, 0.1) 0px 1px 2px 0px` (color first, `inset` suffixed), but
  * authored order varies, so colors and lengths are collected positionally.
+ *
+ * A layer that draws nothing is left out: one fully transparent, or one with
+ * no offset, blur or spread, inset or not, which sits exactly under the
+ * element or exactly outside its padding box. Tailwind fills every shadow and
+ * ring slot a class doesn't use with `0 0 #0000`, so `shadow-sm` computes to
+ * four of those before its two real layers, and v3's `ring-1` to a white
+ * ring-offset layer of zero size. Each would otherwise reach Figma as a
+ * `DROP_SHADOW`.
  */
 export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
   const raw = (value ?? "").trim();
@@ -290,9 +307,11 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
     // Pull the color out first — it's the only token that can contain spaces.
     // Chromium writes it in its authored space: oklch(), oklab(), color() too.
     let color: string | null = null;
+    let transparent = false;
     const fnColor = rest.match(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i);
     if (fnColor) {
       color = normalizeColor(fnColor[0]);
+      transparent = isFullyTransparent(fnColor[0]);
       rest = rest.replace(fnColor[0], " ");
     } else {
       const hexOrName = rest.match(/(^|\s)(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)(\s|$)/);
@@ -303,20 +322,15 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
           color = asColor;
           rest = rest.replace(candidate, " ");
         }
+        transparent = isFullyTransparent(candidate);
       }
     }
 
     const lengths = rest.trim().split(/\s+/).map((t) => pxToNumber(t)).filter((n): n is number => n != null);
-    if (!lengths.length && color == null) continue;
+    const [offsetX = 0, offsetY = 0, blur = 0, spread = 0] = lengths;
+    if (transparent || (offsetX === 0 && offsetY === 0 && blur === 0 && spread === 0)) continue;
 
-    layers.push({
-      offsetX: lengths[0] ?? 0,
-      offsetY: lengths[1] ?? 0,
-      blur: lengths[2] ?? 0,
-      spread: lengths[3] ?? 0,
-      color,
-      inset,
-    });
+    layers.push({ offsetX, offsetY, blur, spread, color, inset });
   }
   return layers;
 }

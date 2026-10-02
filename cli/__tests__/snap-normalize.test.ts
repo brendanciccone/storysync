@@ -7,6 +7,7 @@ import {
   firstFontFamily,
   parseBorderSide,
   parseBoxShadow,
+  isFullyTransparent,
   splitTopLevel,
   encodeStoryArgs,
   buildStoryUrl,
@@ -313,6 +314,45 @@ test("parseBoxShadow: reads a colour Chromium writes in oklch, oklab or color()"
   const [mixed, srgb] = parseBoxShadow("oklab(0.637 0.214213 0.1014 / 0.5) 0px 4px 6px -1px, color(srgb 0 0 0 / 0.1) 0px 2px 4px -2px");
   assert.deepEqual(mixed, { offsetX: 0, offsetY: 4, blur: 6, spread: -1, color: "#fb2c3680", inset: false });
   assert.deepEqual(srgb, { offsetX: 0, offsetY: 2, blur: 4, spread: -2, color: "#0000001a", inset: false });
+});
+
+test("parseBoxShadow: drops the 0 0 #0000 layers Tailwind fills its unused slots with", () => {
+  // Chromium's computed box-shadow for Tailwind v4's shadow-sm: four empty
+  // slots (ring, inset ring, ring offset, inset shadow), then its two layers.
+  const empty = "rgba(0, 0, 0, 0) 0px 0px 0px 0px";
+  assert.deepEqual(
+    parseBoxShadow(`${empty}, ${empty}, ${empty}, ${empty}, rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.1) 0px 1px 2px -1px`),
+    [
+      { offsetX: 0, offsetY: 1, blur: 3, spread: 0, color: "#0000001a", inset: false },
+      { offsetX: 0, offsetY: 1, blur: 2, spread: -1, color: "#0000001a", inset: false },
+    ],
+  );
+  // v4's ring-1 ring-inset keeps only the ring.
+  assert.deepEqual(
+    parseBoxShadow(`oklch(0.872 0.01 258.338) 0px 0px 0px 1px inset, ${empty}, ${empty}, ${empty}, ${empty}`),
+    [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5dc", inset: true }],
+  );
+});
+
+test("parseBoxShadow: a layer with no offset, blur or spread draws nothing, whatever its colour", () => {
+  // v3's ring-1: a white ring-offset layer of zero size, the ring, an empty slot.
+  assert.deepEqual(
+    parseBoxShadow("rgb(255, 255, 255) 0px 0px 0px 0px, rgb(59, 130, 246) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"),
+    [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#3b82f6", inset: false }],
+  );
+  assert.deepEqual(parseBoxShadow("rgb(255, 255, 255) 0px 0px 0px 0px inset"), []);
+  // A fully transparent layer draws nothing however big, in any colour space.
+  assert.deepEqual(parseBoxShadow("oklab(0 0 0 / 0) 0px 4px 6px -1px"), []);
+  assert.deepEqual(parseBoxShadow("transparent 0px 4px 6px 0px"), []);
+});
+
+test("isFullyTransparent: zero alpha in any form, and nothing it can't read", () => {
+  for (const c of ["rgba(0, 0, 0, 0)", "transparent", "oklab(0 0 0 / 0)", "color(srgb 1 0 0 / 0)", "#0000"]) {
+    assert.equal(isFullyTransparent(c), true, c);
+  }
+  for (const c of ["rgb(0, 0, 0)", "rgba(0, 0, 0, 0.1)", "oklch(0.5 0.1 30)", "", undefined, "var(--x)"]) {
+    assert.equal(isFullyTransparent(c), false, String(c));
+  }
 });
 
 test("normalizeStyles: a Tailwind v4 component's colours, as Chromium computes them, all reach hex", () => {
