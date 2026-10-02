@@ -46,6 +46,7 @@ export interface ReadbackStyles {
   borderRadiusUniform?: number | null;
   borderRadius?: { topLeft: number; topRight: number; bottomRight: number; bottomLeft: number };
   padding?: { top: number; right: number; bottom: number; left: number };
+  /** The stroke, its `style` read from its dash pattern: solid, dashed or dotted. */
   borderUniform?: BorderSide | null;
   boxShadow?: BoxShadowLayer[];
   /**
@@ -340,7 +341,10 @@ function sameBorder(a: unknown, b: unknown, tolerance: number): boolean {
   if (a == null || b == null) return (a ?? null) === (b ?? null);
   const x = a as BorderSide;
   const y = b as BorderSide;
-  return closeEnough(x.width, y.width, tolerance) && sameColor(x.color, y.color);
+  // A dashed or dotted border built as a solid stroke is drift, as is one
+  // whose style Figma's strokes cannot draw: a double border built solid.
+  const style = (side: BorderSide) => String(side.style ?? "solid").toLowerCase();
+  return closeEnough(x.width, y.width, tolerance) && sameColor(x.color, y.color) && style(x) === style(y);
 }
 
 function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {

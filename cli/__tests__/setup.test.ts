@@ -612,6 +612,69 @@ test("every push instruction builds an inset shadow as an inner shadow, and says
   }
 });
 
+/**
+ * The readback template an instruction file gives the agent, run as written
+ * on these variants of one set: its two tables are filled in for them, and
+ * `figma` serves the set by its id. Returns what the call returns, parsed.
+ */
+async function runReadback(text: string, path: string, children: Record<string, unknown>[]): Promise<{ readback: Record<string, Record<string, unknown>> }> {
+  const at = text.indexOf("const SLUG_BY_NAME");
+  assert.ok(at > 0, `${path} has no readback template`);
+  const code = text.slice(text.lastIndexOf("code: `", at) + "code: `".length, text.indexOf("`,", at));
+  const table = (name: string, entries: Record<string, string>) => (src: string) =>
+    src.replace(new RegExp(`const ${name} = \\{[\\s\\S]*?\\n\\s*\\};`), () => `const ${name} = ${JSON.stringify(entries)};`);
+  const names = children.map((child) => String(child.name));
+  const body = [
+    table("SLUG_BY_NAME", Object.fromEntries(names.map((name) => [name, name]))),
+    table("SOURCE_BY_SLUG", Object.fromEntries(names.map((name) => [name, "measured"]))),
+  ].reduce((src, fill) => fill(src), code);
+  const set = { id: "12:34", type: "COMPONENT_SET", name: "Dropzone", children };
+  const figma = { getNodeByIdAsync: async () => set };
+  const run = new Function("figma", `return (async () => {${body}})();`) as (f: unknown) => Promise<string>;
+  return JSON.parse(await run(figma));
+}
+
+test("every push instruction builds a border's style as a dash pattern and reads it back from one", async () => {
+  // snap measures a dashed border as dashed, but the table built every
+  // border as a plain stroke, and the readback wrote style 'solid' whatever
+  // the stroke, so a dashed dropzone pushed solid verified clean.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    // A frame with a stroke of width w, dashed as the table says.
+    const node = (name: string, w: number, dashPattern: number[]) => ({
+      name, fills: [], strokes: [{ type: "SOLID", color: { r: 0.6, g: 0.6, b: 0.6 }, opacity: 1 }], dashPattern,
+      strokeWeight: w, strokeTopWeight: w, strokeRightWeight: w, strokeBottomWeight: w, strokeLeftWeight: w, strokeAlign: "OUTSIDE",
+      cornerRadius: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0, layoutMode: "NONE", itemSpacing: 0,
+      opacity: 1, width: 100, height: 40, findOne: () => null,
+    });
+    for (const path of [join(".claude", "skills", "storysync", "SKILL.md"), join(".agents", "skills", "storysync", "SKILL.md")]) {
+      const text = readFileSync(join(project, path), "utf8");
+      const row = /^ *\| `borderUniform` \|[^\n]*/m.exec(text)?.[0] ?? "";
+      assert.match(row, /`style` as the stroke's `dashPattern`, for a width `w`: none for `solid`, `\[3w, 3w\]` for `dashed`, `\[w, w\]` for `dotted`/, `${path} builds every border as a solid stroke`);
+      assert.match(row, /`double`, `groove`, `ridge`, `inset` or `outset`: build those solid, and name them in the summary/, `${path} never says what to do with a style Figma's strokes lack`);
+      const { readback } = await runReadback(text, path, [
+        node("solid", 2, []), node("dashed", 2, [6, 6]), node("dotted", 2, [2, 2]),
+        node("thin-dashed", 1, [3, 3]), node("thick-dotted", 4, [4, 4]),
+      ]);
+      const styles = Object.fromEntries(Object.entries(readback).map(([slug, entry]) => [slug, (entry.borderUniform as { style: string }).style]));
+      assert.deepEqual(styles, { solid: "solid", dashed: "dashed", dotted: "dotted", "thin-dashed": "dashed", "thick-dotted": "dotted" }, `${path} reads back a border's style`);
+      // One whose sides' weights differ, so strokeWeight is figma.mixed, is read against its top's.
+      const mixed = { ...node("mixed", 2, [6, 6]), strokeWeight: Symbol("figma.mixed"), strokeBottomWeight: 4 };
+      const { readback: odd } = await runReadback(text, path, [mixed]);
+      assert.equal((odd.mixed.borderUniform as { style: string }).style, "dashed", `${path} reads a dashed stroke of mixed weight`);
+    }
+    const cursor = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
+    assert.match(cursor, /`borderUniform` → stroke[^\n]*`style` as the stroke's `dashPattern`, for a width `w`: none for `solid`, `\[3w, 3w\]` for `dashed`, `\[w, w\]` for `dotted`/, "the Cursor rule builds every border as a solid stroke");
+    assert.match(cursor, /^ *- `borderUniform` — [^\n]*`style` is the border style the stroke's `dashPattern` was built from/m, "the Cursor rule's readback writes every border's style as solid");
+    assert.doesNotMatch(cursor, /style: "solid"/, "the Cursor rule's readback writes every border's style as solid");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push summary says a transparent border shows as an unfilled ring", () => {
   // The browser draws the background under a transparent border; Figma's
   // fill stops where the OUTSIDE stroke begins, and that stroke paints

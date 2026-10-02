@@ -140,11 +140,17 @@ test("propertyMatches: shadows compare layer by layer", () => {
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, inset: false }], 0.5), false);
 });
 
-test("propertyMatches: borders compare width and colour", () => {
+test("propertyMatches: borders compare width, colour and style", () => {
   const b = { width: 2, style: "solid", color: "#9ca3af" };
   assert.equal(propertyMatches("borderUniform", b, { ...b }, 0.5), true);
   assert.equal(propertyMatches("borderUniform", b, { ...b, width: 4 }, 0.5), false);
   assert.equal(propertyMatches("borderUniform", null, null, 0.5), true);
+  // A dashed dropzone pushed as a solid stroke, and a double border built solid, drift.
+  const dashed = { ...b, style: "dashed" };
+  assert.equal(propertyMatches("borderUniform", dashed, { ...dashed }, 0.5), true);
+  assert.equal(propertyMatches("borderUniform", dashed, b, 0.5), false);
+  assert.equal(propertyMatches("borderUniform", { ...b, style: "dotted" }, dashed, 0.5), false);
+  assert.equal(propertyMatches("borderUniform", { ...b, style: "double" }, b, 0.5), false);
 });
 
 // --- verifyVariant ---
