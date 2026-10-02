@@ -172,6 +172,26 @@ test("action Detect drift: a baseline that is not map --json output fails with t
   assert.match(r.stdout, /is not map --json output \(it holds an error: Failed to connect to Storybook MCP at http:\/\/localhost:6006: fetch failed\)\. Recreate/);
 });
 
+test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
+  const { title: _t1, category: _c1, ...button } = component("Button", 1);
+  const { title: _t2, category: _c2, ...otherButton } = component("Button", 2);
+
+  // A baseline written without titles, holding two Buttons.
+  const old = detectDrift(mapJson([button, otherButton]), [formsButton, navButton]);
+  assert.equal(old.status, 1, old.stdout + old.stderr);
+  const oldErrors = old.stdout.split("\n").filter((line) => line.startsWith("::error::"));
+  assert.equal(oldErrors.length, 1, old.stdout);
+  assert.match(oldErrors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) has more than one component keyed "Button", so they can't be told apart\. Recreate it by /);
+  assert.equal(old.outputs.result, undefined);
+
+  // Current map output with two untitled Buttons.
+  const cur = detectDrift(mapJson([button]), [button, otherButton]);
+  assert.equal(cur.status, 1, cur.stdout + cur.stderr);
+  assert.match(cur.stdout, /::error::storysync map returned more than one component keyed "Button" with no Storybook title to tell them apart/);
+  assert.equal(cur.outputs.result, undefined);
+  assert.equal(cur.report, null);
+});
+
 // --- Detect token drift ---
 
 interface Collection {

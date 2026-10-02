@@ -593,6 +593,20 @@ runs:
         // where the name needn't be: Forms/Button and Nav/Button are both
         // Button, and keyed on the name the last of them stood for both.
         const key = (c) => c.title ?? c.name;
+        // A key on two components, as in a baseline written before map --json
+        // gave titles, or two untitled components of one name, would let one
+        // replace the other in the maps below and hide its drift.
+        const repeated = (list) => [...new Set(list.map(key).filter((k, i, all) => all.indexOf(k) !== i))];
+        const baseRepeats = repeated(baseline.components);
+        if (baseRepeats.length) {
+          console.log(escape("::error::The baseline at " + baselinePath + " (relative to " + where + ") has more than one component keyed " + baseRepeats.map(k => JSON.stringify(k)).join(", ") + ", so they can't be told apart. Recreate it by " + create));
+          process.exit(1);
+        }
+        const currRepeats = repeated(current.components);
+        if (currRepeats.length) {
+          console.log(escape("::error::storysync map returned more than one component keyed " + currRepeats.map(k => JSON.stringify(k)).join(", ") + " with no Storybook title to tell them apart, so their drift can't be checked."));
+          process.exit(1);
+        }
         const baseMap = Object.fromEntries(baseline.components.map(c => [key(c), c]));
         const currMap = Object.fromEntries(current.components.map(c => [key(c), c]));
 
