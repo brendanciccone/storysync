@@ -315,7 +315,7 @@ async function descendToComponent(handle: ElementHandle<Element>): Promise<Eleme
  * percentages are left for snap-normalize to read; anything else is sized
  * here on a hidden probe whose containing block is the element's border box,
  * so its percentages resolve as the radius's do, and comes back as
- * `"<h>px <v>px"`.
+ * `"<h>px <v>px"`, to layout's precision of 1/64px.
  */
 async function readComputedStyles(
   page: Page,

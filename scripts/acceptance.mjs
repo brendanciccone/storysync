@@ -1897,6 +1897,149 @@ async function main() {
     return `${swatches.length} colours, fill, text, border and shadow each`;
   });
 
+  /**
+   * Renders each case on a page of its own through snap's capture and
+   * normalisation, in the browser snap launches, and hands back the styles.
+   * A case with an id is measured by selector; one without is measured as a
+   * story is, from #storybook-root down past any wrappers.
+   */
+  async function measureCases(name, cases) {
+    const { resolveAndLaunch, createContext, captureStory } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-browser.js")).href);
+    const { normalizeStyles } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-normalize.js")).href);
+    const { browser } = await resolveAndLaunch();
+    try {
+      const tab = await (await createContext(browser)).newPage();
+      const measured = [];
+      for (const [i, { html, selector }] of cases.entries()) {
+        const page = join(WORK, `${name}-${i}.html`);
+        writeFileSync(page, `<!doctype html><html><body><div id="storybook-root">${html}</div></body></html>`);
+        const capture = await captureStory(tab, pathToFileURL(page).href, { timeoutMs: 10000, selector, screenshot: false });
+        assert(capture.status === "ok", `${html}: capture ${capture.status} ${capture.error ?? ""}`);
+        measured.push({ raw: capture.raw, styles: normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable) });
+      }
+      return measured;
+    } finally {
+      await browser.close();
+    }
+  }
+
+  await check("corner radii measure as the browser draws them: rounded-full, percentages, calc() and elliptical corners", async () => {
+    // Chromium computes a radius rather than drawing it: Tailwind v4's
+    // rounded-full as 3.35544e+07px, a percentage as written, calc() and min()
+    // as themselves, an elliptical corner as two values. Each of these used to
+    // measure 0, a square that verify then scored a match.
+    const cases = [
+      { css: "display: inline-flex; padding: 6px 12px; font: 14px/20px Arial; border-radius: calc(infinity * 1px)", text: "Save", radius: 16, computed: /e\+0?7px$/ },
+      { css: "display: block; width: 8px; height: 8px; border-radius: calc(infinity * 1px)", radius: 4, computed: /e\+0?7px$/ },
+      { css: "display: block; width: 8px; height: 8px; border-radius: 50%", radius: 4, computed: /^50%$/ },
+      { css: "display: block; width: 32px; height: 32px; border-radius: 100%", radius: 16, computed: /^100%$/ },
+      { css: "display: block; width: 32px; height: 32px; border-radius: calc(50% - 2px)", radius: 14 },
+      // Resolved in the page, to layout's 1/64px: a size that lands on one.
+      { css: "display: block; width: 40px; height: 30px; border-radius: min(8px, 10%)", radius: 3 },
+      { css: "display: block; width: 64px; height: 48px; border-radius: 10px / 20px", radius: 10, computed: /^10px 20px$/ },
+      { css: "display: inline-block; padding: 6px 12px; font: 14px/20px Arial; border-radius: 9999px", text: "Pill", radius: 16, computed: /^9999px$/ },
+      { css: "display: block; width: 32px; height: 32px; border-radius: 3px", radius: 3, computed: /^3px$/ },
+    ];
+    const measured = await measureCases("radii", cases.map((c, i) =>
+      ({ html: `<div id="r${i}" style="background: #2563eb; ${c.css}">${c.text ?? ""}</div>`, selector: `#r${i}` })));
+    for (const [i, c] of cases.entries()) {
+      const { raw, styles } = measured[i];
+      const computed = raw["border-top-left-radius"];
+      if (c.computed) {
+        assert(c.computed.test(computed), `${c.css}: Chromium computed ${computed}, not the form this check is for; the browser changed, so update it`);
+      }
+      assert(styles.borderRadiusUniform === c.radius,
+        `${c.css} (computed ${computed}, box ${styles.width}x${styles.height}): measured ${JSON.stringify(styles.borderRadiusUniform)}, expected ${c.radius}`);
+    }
+    return `${cases.length} radii`;
+  });
+
+  await check("a gradient fill, a label's transform, opacity and tracking, and Tailwind's empty shadow slots measure as drawn", async () => {
+    const empty = "0 0 #0000";
+    const cases = [
+      // A gradient has no background-color: recorded as no fill, it was built unfilled.
+      { html: `<button id="c0" style="display: inline-flex; border: 0; color: #fff; background: linear-gradient(90deg, #2563eb, #7c3aed)">Go</button>`,
+        want: (s) => s.backgroundColor === null && s.backgroundImage === "linear-gradient(90deg, #2563eb, #7c3aed)" },
+      // Tailwind v4's gradient stops are oklch, written as hex like every colour.
+      { html: `<button id="c1" style="display: inline-flex; border: 0; background-image: linear-gradient(to right in oklab, oklch(54.6% 0.245 262.881) 0%, oklch(54.1% 0.281 293.009) 100%)">Go</button>`,
+        want: (s) => s.backgroundImage === "linear-gradient(to right, #155dfc 0%, #7f22fe 100%)" },
+      // A fill under a gradient is kept, as the layer beneath.
+      { html: `<button id="c2" style="display: inline-flex; border: 0; background-color: #2563eb; background-image: linear-gradient(90deg, #f97316, #db2777)">Go</button>`,
+        want: (s) => s.backgroundColor === "#2563eb" && s.backgroundImage === "linear-gradient(90deg, #f97316, #db2777)" },
+      { html: `<span id="c3" style="display: inline-flex; padding: 2px 8px; font: 600 12px Arial; text-transform: uppercase">Beta</span>`,
+        want: (s) => s.text?.textTransform === "uppercase" },
+      { html: `<button id="c4" style="border: 0; background: #111827; color: #fff"><span style="opacity: 0.6">Draft</span></button>`,
+        want: (s) => s.text?.color === "#ffffff99" && s.opacity === 1 },
+      { html: `<button id="c5" style="border: 0; font-size: 20px"><span style="letter-spacing: 0.05em">Draft</span></button>`,
+        want: (s) => s.text?.letterSpacing === 1 && s.letterSpacing === 0 },
+      { html: `<span id="c6" style="display: inline-block; font: 20px Arial; letter-spacing: 10%">Draft</span>`,
+        want: (s) => s.letterSpacing === 2 && s.text?.letterSpacing === 2 },
+      // Tailwind v4's shadow-sm: four empty slots, then its two layers.
+      { html: `<div id="c7" style="width: 20px; height: 20px; box-shadow: ${empty}, ${empty}, ${empty}, ${empty}, 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)"></div>`,
+        want: (s) => JSON.stringify(s.boxShadow) === JSON.stringify([
+          { offsetX: 0, offsetY: 1, blur: 3, spread: 0, color: "#0000001a", inset: false },
+          { offsetX: 0, offsetY: 1, blur: 2, spread: -1, color: "#0000001a", inset: false },
+        ]) },
+    ];
+    const measured = await measureCases("drawn", cases.map((c, i) => ({ html: c.html, selector: `#c${i}` })));
+    for (const [i, c] of cases.entries()) {
+      const { styles } = measured[i];
+      const shown = { backgroundColor: styles.backgroundColor, backgroundImage: styles.backgroundImage, opacity: styles.opacity,
+        letterSpacing: styles.letterSpacing, text: styles.text, boxShadow: styles.boxShadow };
+      assert(c.want(styles), `${c.html}\n  measured ${JSON.stringify(shown)}`);
+    }
+    return `${cases.length} cases`;
+  });
+
+  await check("a wrapper whose background is transparent in oklab is looked past, and one drawing a gradient is not", async () => {
+    const button = `<button style="display: inline-flex; border: 0; padding: 4px 8px; background: #2563eb; color: #fff">In</button>`;
+    // Tailwind v4's bg-black/0, a color-mix in oklab.
+    const clear = `<div id="clear" style="display: block; background-color: color-mix(in oklab, black 0%, transparent)">${button}</div>`;
+    const [oklab, rgba, gradient, wrapper] = await measureCases("wrappers", [
+      { html: clear },
+      { html: `<div style="display: block">${button}</div>` },
+      { html: `<div style="display: block; border-radius: 8px; background-image: linear-gradient(90deg, #2563eb, #7c3aed)"><div style="padding: 8px">Banner</div></div>` },
+      { html: clear, selector: "#clear" },
+    ]);
+    assert(/^oklab\(.*\/ 0\)$/.test(wrapper.raw["background-color"]),
+      `the wrapper's background computed to ${wrapper.raw["background-color"]}, not the oklab form this check is for; the browser changed, so update it`);
+    for (const [label, { styles }] of [["oklab", oklab], ["rgba", rgba]]) {
+      assert(styles.backgroundColor === "#2563eb" && styles.display === "inline-flex",
+        `${label} wrapper: measured ${styles.display} with fill ${styles.backgroundColor}, not the button inside it`);
+    }
+    assert(gradient.styles.backgroundImage === "linear-gradient(90deg, #2563eb, #7c3aed)" && gradient.styles.borderRadiusUniform === 8,
+      `gradient wrapper: measured ${JSON.stringify({ backgroundImage: gradient.styles.backgroundImage, radius: gradient.styles.borderRadiusUniform })}, not the banner`);
+    return "the button inside both transparent wrappers, the gradient banner itself";
+  });
+
+  await check("a refused connection is a render error even when the story's URL says timeout; a server that never answers is a timeout", async () => {
+    const { createServer } = await import("node:http");
+    const { resolveAndLaunch, createContext, captureStory } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-browser.js")).href);
+    const { buildStoryUrl } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-normalize.js")).href);
+    const listen = (server) => new Promise((done) => server.listen(0, "127.0.0.1", () => done(server.address().port)));
+    // A port that was free a moment ago, as when Storybook dies mid-run.
+    const closed = createServer();
+    const refused = await listen(closed);
+    await new Promise((done) => closed.close(done));
+    const hanging = createServer(() => { /* never answers */ });
+    const silent = await listen(hanging);
+    const { browser } = await resolveAndLaunch();
+    try {
+      const tab = await (await createContext(browser)).newPage();
+      for (const [id, args] of [["forms-button--default", "status:idle"], ["forms-button--default", "status:timeout"], ["feedback-session-timeout--default", null]]) {
+        const capture = await captureStory(tab, buildStoryUrl(`http://127.0.0.1:${refused}`, id, args), { timeoutMs: 5000, screenshot: false });
+        assert(capture.status === "render_error", `${id} ${args ?? ""}: ${capture.status} (${capture.error})`);
+      }
+      const capture = await captureStory(tab, buildStoryUrl(`http://127.0.0.1:${silent}`, "forms-button--default", null), { timeoutMs: 1500, screenshot: false });
+      assert(capture.status === "timeout", `a server that never answers: ${capture.status} (${capture.error})`);
+    } finally {
+      await browser.close();
+      hanging.closeAllConnections();
+      hanging.close();
+    }
+    return "3 refused connections, 1 timeout";
+  });
+
   await check("two snaps of the same code are byte-identical, wherever they are written", () => {
     // Same flags as the first run, into a different directory. styles.json is
     // meant to be committed and diffed, so neither a rerun nor a different
