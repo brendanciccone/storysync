@@ -173,6 +173,32 @@ const COMPONENT_LINE = /^[-*]\s+(?:\*\*)?(.+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^
 // every variant snap rendered from it failed.
 const STORY_LINE = /^\s+[-*]\s+.*\((?:id:\s*)?[`"']?([^\s()`"']+--[^\s()`"']+)[`"']?\)\s*$/;
 
+/**
+ * The part of a docs-show response about the component's own props.
+ *
+ * addon-mcp prints them under "## Props". The same response prints each
+ * subcomponent's props too, under "#### Props" in "## Subcomponents", and,
+ * last, the source of any MDX docs page attached to the component, under
+ * "## Docs". Read as the component's, a subcomponent's prop, or a type in an
+ * MDX code sample, became a Figma variant property the component doesn't
+ * have, and multiplied the variants snap measures. So this is the "## Props"
+ * section when there is one, and otherwise everything but the Docs section
+ * and the subcomponents' props.
+ */
+function ownPropsText(doc: string): string {
+  // The MDX keeps its own headings, so the Docs section runs to the end.
+  const docs = /^## Docs[ \t]*\r?$/m.exec(doc);
+  const text = docs ? doc.slice(0, docs.index) : doc;
+  const own = /^## Props[ \t]*\r?$/m.exec(text);
+  if (!own) return text.replace(SUBCOMPONENT_PROPS, "");
+  const body = text.slice(own.index + own[0].length);
+  const next = body.search(/^## /m);
+  return next === -1 ? body : body.slice(0, next);
+}
+
+// A subcomponent's props: the "#### Props" heading and the code block after it.
+const SUBCOMPONENT_PROPS = /^#### Props[ \t]*\r?\n\s*```[\s\S]*?```/gm;
+
 export class StorybookClient {
   private client: Client | null = null;
   private docsTools: DocsTools | null = null;
@@ -312,8 +338,10 @@ export class StorybookClient {
   }
 
   // Extracts props from TypeScript type definitions in the documentation.
-  // Looks for `export type Props = { ... }` blocks in code fences.
-  private parseProps(text: string): StorybookProp[] {
+  // Looks for `export type Props = { ... }` blocks in code fences, in the part
+  // of the documentation that is about the component's own props.
+  private parseProps(doc: string): StorybookProp[] {
+    const text = ownPropsText(doc);
     const props: StorybookProp[] = [];
     const codeBlocks = /```(?:typescript|ts|tsx)?\s*\n([\s\S]*?)```/g;
     let m: RegExpExecArray | null;

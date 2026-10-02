@@ -344,6 +344,70 @@ test("StorybookClient: still reads bold, labelled and quoted IDs, non-ASCII IDs 
   ]);
 });
 
+/** The props StorybookClient reads from a docs-show response of `doc`. */
+async function propsOf(doc: string) {
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, EXAMPLE_LIST, { "x-card": doc });
+  try {
+    return (await client.getComponent("x-card")).props.map((p) => [p.name, p.type.raw ?? p.type.name]);
+  } finally {
+    await client.disconnect();
+  }
+}
+
+test("StorybookClient: a subcomponent's props are not the component's", async () => {
+  // addon-mcp 10.6 for a meta with `subcomponents: { CardHeader }`.
+  const props = await propsOf([
+    "# Card", "", "ID: display-card", "",
+    "## Subcomponents", "", "### CardHeader", "",
+    "```", "import { CardHeader } from 'storysync-example';", "```", "",
+    "#### Props", "",
+    "```", "export type CardHeaderProps = {", "  /**", "    ", "  */",
+    '  align?: "start" | "center" = "start";', "  /**", "    ", "  */", "  children?: ReactNode;", "}", "```", "",
+    "## Stories", "", "### Default", "", "Story ID: display-card--default", "",
+    "```", "import { Card, CardHeader } from 'storysync-example';", "", 'const Default = () => <Card elevation="flat" />;', "```", "",
+    "## Props", "",
+    "```", "export type Props = {", "  /**", "    ", "  */", '  elevation?: "flat" | "raised" = "flat";', "}", "```",
+  ].join("\n"));
+  assert.deepEqual(props, [["elevation", '"flat" | "raised"']]);
+});
+
+test("StorybookClient: a type in an attached MDX page's code is not a prop", async () => {
+  // addon-mcp 10.6 for a component with `<Meta of={FrozenStories} />` in an MDX page.
+  const props = await propsOf([
+    "# Frozen", "", "ID: forms-frozen", "",
+    "## Props", "",
+    "```", "export type Props = {", "  /**", "    ", "  */", '  variant?: "a" | "b" | "c" = "a";', "}", "```", "",
+    "## Docs", "", "### Docs", "",
+    'import { Meta } from "@storybook/addon-docs/blocks";', "", "<Meta of={FrozenStories} />", "", "# Frozen", "",
+    "```ts", "interface FrozenTheme {", '  surface: "light" | "dark";', "}", "```",
+  ].join("\n"));
+  assert.deepEqual(props, [["variant", '"a" | "b" | "c"']]);
+});
+
+test("StorybookClient: without a Props section, props are still read, but not a subcomponent's or an MDX page's", async () => {
+  // A component that documents its API in prose (addon-mcp's apiDescription,
+  // printed after the subcomponents, in place of the Props section).
+  const props = await propsOf([
+    "# Card", "", "ID: x-card", "",
+    "## Subcomponents", "", "### CardHeader", "", "#### Props", "",
+    "```", "export type CardHeaderProps = {", '  align?: "start" | "center";', "}", "```", "",
+    "Card's API:", "",
+    "```ts", "export type Props = {", '  elevation?: "flat" | "raised";', "}", "```", "",
+    "## Stories", "", "### Default", "", "Story ID: x-card--default", "",
+    "## Docs", "", "### Docs", "", "## Props", "",
+    "```ts", "interface CardTheme {", '  surface: "light" | "dark";', "}", "```",
+  ].join("\n"));
+  assert.deepEqual(props, [["elevation", '"flat" | "raised"']]);
+
+  // With no props of its own, a component has none.
+  assert.deepEqual(await propsOf([
+    "# Card", "", "ID: x-card", "",
+    "## Subcomponents", "", "### CardHeader", "", "#### Props", "",
+    "```", "export type CardHeaderProps = {", '  align?: "start" | "center";', "}", "```", "",
+    "## Stories", "", "### Default", "", "Story ID: x-card--default",
+  ].join("\n")), []);
+});
+
 // --- selectComponents ---
 // Shared by snap, map and diff, so a --components list means the same thing
 // to each of them.

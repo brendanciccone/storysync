@@ -262,6 +262,8 @@ If no matching CSS variable is found (and no fallback is provided), the raw `var
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
 
+A component's props are the ones in the Props section of its Storybook documentation. The same documentation lists the props of each of its `subcomponents`, and the source of any MDX page attached to it; neither becomes a variant property of the component.
+
 ## CLI reference
 
 The CLI exists for two purposes: **setup** (the `init` and `setup` commands wire your project up for an AI client) and **preview / CI** (the `tokens`, `map`, `list`, `inspect`, and `diff` commands give you deterministic output you can inspect locally or run in GitHub Actions). Day-to-day Figma syncing happens through the AI client using the skill + slash commands above — the CLI does not write to Figma directly.
