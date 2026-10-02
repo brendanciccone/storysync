@@ -61,6 +61,59 @@ test("detectPackageManager: no lockfile -> npm fallback", () => {
   }
 });
 
+test("detectPackageManager: bun.lock or bun.lockb -> bun", () => {
+  for (const lockfile of ["bun.lock", "bun.lockb"]) {
+    const dir = makeProject({ [lockfile]: "" });
+    try {
+      assert.equal(detectPackageManager(dir), "bun", lockfile);
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
+test("detectPackageManager: a workspace package uses the lockfile at the workspace root", () => {
+  for (const [lockfile, pm] of [["pnpm-lock.yaml", "pnpm"], ["yarn.lock", "yarn"], ["bun.lock", "bun"]] as const) {
+    const dir = makeProject({
+      [lockfile]: "",
+      "packages/ui/package.json": JSON.stringify({ dependencies: { "@acme/tokens": "workspace:*" } }),
+    });
+    try {
+      assert.equal(detectPackageManager(join(dir, "packages", "ui")), pm, lockfile);
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
+test("detectPackageManager: the nearest lockfile wins", () => {
+  const dir = makeProject({
+    "pnpm-lock.yaml": "",
+    "app/package.json": "{}",
+    "app/package-lock.json": "{}",
+  });
+  try {
+    assert.equal(detectPackageManager(join(dir, "app")), "npm");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectPackageManager: stops at the repository root", () => {
+  // A stray lockfile above the repository, such as one in the home
+  // directory, is not the project's.
+  const dir = makeProject({
+    "pnpm-lock.yaml": "",
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/packages/ui/package.json": "{}",
+  });
+  try {
+    assert.equal(detectPackageManager(join(dir, "repo", "packages", "ui")), "npm");
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("findStorybookConfig: prefers main.ts over main.js", () => {
   const dir = makeProject({
     ".storybook/main.ts": "export default {}",
@@ -308,6 +361,7 @@ test("installCommand: passes the spec to each package manager, quoting a range",
   assert.equal(installCommand("pnpm", "@storybook/addon-mcp@^0.7.0"), `pnpm add -D "@storybook/addon-mcp@^0.7.0"`);
   assert.equal(installCommand("yarn", "@storybook/addon-mcp@^0.7.0"), `yarn add -D "@storybook/addon-mcp@^0.7.0"`);
   assert.equal(installCommand("npm", "@storybook/addon-mcp@^0.7.0"), `npm install -D "@storybook/addon-mcp@^0.7.0"`);
+  assert.equal(installCommand("bun", "@storybook/addon-mcp@^0.7.0"), `bun add -d "@storybook/addon-mcp@^0.7.0"`);
 });
 
 const hasZsh = spawnSync("zsh", ["-c", "true"]).status === 0;

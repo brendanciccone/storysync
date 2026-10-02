@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import type { Interface } from "node:readline";
 import chalk from "chalk";
 
-export type PackageManager = "pnpm" | "yarn" | "npm";
+export type PackageManager = "pnpm" | "yarn" | "bun" | "npm";
 
 export interface StorybookConfigFile {
   path: string;
@@ -29,10 +29,22 @@ const MIN_STORYBOOK_MAJOR = 10;
 const ADDON_MCP_FIRST_LOCKSTEP = "10.6.0-alpha.4";
 const ADDON_MCP_PRE_LOCKSTEP_RANGE = "^0.7.0";
 
+/**
+ * The package manager whose lockfile is nearest the project. Looks upward, as
+ * the action does, since a package in a workspace has none of its own: npm
+ * run there can't install a `workspace:` dependency, and otherwise writes a
+ * second lockfile and node_modules beside the workspace's. Stops at the
+ * repository root, so a stray lockfile above it is not taken for the
+ * project's. npm when there is none.
+ */
 export function detectPackageManager(projectPath: string): PackageManager {
-  if (existsSync(join(projectPath, "pnpm-lock.yaml"))) return "pnpm";
-  if (existsSync(join(projectPath, "yarn.lock"))) return "yarn";
-  return "npm";
+  for (let dir = resolve(projectPath); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
+    if (existsSync(join(dir, "yarn.lock"))) return "yarn";
+    if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb"))) return "bun";
+    if (existsSync(join(dir, "package-lock.json")) || existsSync(join(dir, "npm-shrinkwrap.json"))) return "npm";
+    if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return "npm";
+  }
 }
 
 export function findStorybookConfig(projectPath: string): StorybookConfigFile | null {
@@ -266,6 +278,7 @@ export function installCommand(pm: PackageManager, spec: string): string {
   const arg = /^[\w@/.:+-]+$/.test(spec) ? spec : `"${spec}"`;
   if (pm === "pnpm") return `pnpm add -D ${arg}`;
   if (pm === "yarn") return `yarn add -D ${arg}`;
+  if (pm === "bun") return `bun add -d ${arg}`;
   return `npm install -D ${arg}`;
 }
 
@@ -289,6 +302,7 @@ async function offerInstall(pm: PackageManager, spec: string, projectPath: strin
 function upgradeCommand(pm: PackageManager): string {
   if (pm === "pnpm") return "pnpm dlx storybook@latest upgrade";
   if (pm === "yarn") return "npx storybook@latest upgrade";
+  if (pm === "bun") return "bunx storybook@latest upgrade";
   return "npx storybook@latest upgrade";
 }
 

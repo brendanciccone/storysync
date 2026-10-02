@@ -140,6 +140,26 @@ test("init CLI: accepting installs the matching addon-mcp, and the quoted spec r
   });
 });
 
+test("init CLI: a package in a pnpm workspace is offered pnpm, the workspace's package manager", () => {
+  // npm can't install into a package with workspace: dependencies, and in
+  // one without, it writes a second lockfile and node_modules beside pnpm's.
+  withProject({ storybook: "10.5.5" }, (root) => {
+    const ui = join(root, "packages", "ui");
+    rmSync(join(root, ".storybook"), { recursive: true });
+    writeFileSync(join(root, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ private: true }));
+    mkdirSync(join(ui, ".storybook"), { recursive: true });
+    writeFileSync(join(ui, ".storybook", "main.ts"), MAIN_WITHOUT_ADDON);
+    writeFileSync(join(ui, "package.json"), JSON.stringify({
+      dependencies: { "@acme/tokens": "workspace:*" },
+      devDependencies: { storybook: "^10.5.0" },
+    }));
+    const r = init(ui, "n\nn\n");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /Install @storybook\/addon-mcp@\^0\.7\.0 via pnpm\?/);
+  });
+});
+
 test("init CLI: addon-mcp commented out of the config isn't registered, and is added to the live addons array", () => {
   withProject({ storybook: "10.6.0", addon: "10.6.0" }, (dir) => {
     const main = join(dir, ".storybook", "main.ts");
