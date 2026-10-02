@@ -246,3 +246,30 @@ test("action Detect token drift: a token baseline that is not tokens --json outp
   const r = detectTokenDrift(notBaselines[0], [colors]);
   assert.match(r.stdout, /is not tokens --json output \(it holds an error: Could not read src\/theme\.ts\)\. Recreate/);
 });
+
+// --- Both ---
+
+test("action: the command a missing baseline prints makes a directory whose name starts with a dash", () => {
+  // Without `--`, mkdir read "-x" as its options and failed, so the command
+  // never wrote the baseline.
+  const steps: { step: string; report: string; path: string; files: Record<string, string>; env: Record<string, string> }[] = [
+    { step: "Detect drift", report: "storysync-drift.md", path: "-x/baseline.json", files: { "storysync-current.json": mapJson([formsButton]) }, env: { BASELINE_PATH: "-x/baseline.json", STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "" } },
+    { step: "Detect token drift", report: "storysync-token-drift.md", path: "-x/tokens.json", files: { "storysync-tokens-current.json": tokensJson([colors]) }, env: { TOKEN_BASELINE_PATH: "-x/tokens.json", TOKEN_SOURCE: "auto" } },
+  ];
+  for (const { step, report, path, files, env } of steps) {
+    const r = run(step, report, files, env);
+    assert.equal(r.outputs.result, "new", r.stdout);
+    const command = r.stdout.match(/then commit it: (.+?) \(the action's/)?.[1];
+    assert.match(command ?? "", /^mkdir -p -- -x && npx storysync@0\.3\.0 /, r.stdout);
+
+    // Run as printed, with an npx that echoes what it was asked to run.
+    const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+    try {
+      const created = spawnSync("sh", ["-c", `npx() { echo "$*"; }; ${command}`], { cwd: dir, encoding: "utf8" });
+      assert.equal(created.status, 0, created.stderr);
+      assert.match(readFileSync(join(dir, path), "utf8"), /^storysync@0\.3\.0 (map|tokens) .*--json\n$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
