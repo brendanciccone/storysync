@@ -21,6 +21,7 @@ Workflow:
    - `+` missing from Figma (in code, not in Figma)
    - `-` missing from code (in Figma, not in code)
    - `~` value mismatch (both exist, values differ)
-8. End with a summary: N tokens matched / mismatched / missing. N components matched / mismatched. If everything matches, confirm "Figma and code are in sync."
+   - `?` ambiguous (a name two code components or two Figma component sets share, none of its copies compared)
+8. End with a summary: N tokens matched / mismatched / missing. N components matched / mismatched / code-only / Figma-only / ambiguous. Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous. An ambiguous name was compared on none of its copies, so it can hide drift: while any is, name the ambiguous names instead, and never say the two are in sync.
 
 Refer to `.claude/skills/storysync/SKILL.md` Audit section for the full procedure and edge cases.

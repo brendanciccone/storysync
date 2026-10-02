@@ -207,7 +207,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - In Figma but not in code/Storybook → **Figma only**
    - Both exist → compare variant properties: missing props, extra props, missing/extra values.
 
-7. **Report** — present a structured drift report grouped by category/component. Use `+` for missing from Figma, `-` for missing from code, `~` for value mismatch. End with a summary count, and if everything matches, say "Figma and code are in sync."
+7. **Report** — present a structured drift report grouped by category/component. Use `+` for missing from Figma, `-` for missing from code, `~` for value mismatch, `?` for ambiguous. End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous. Say "Figma and code are in sync." only if everything matches and no name is ambiguous. An ambiguous name was compared on none of its copies, so it can hide drift: while any is, name the ambiguous names instead, and never say the two are in sync.
 
 ## Visual accuracy guidelines
 

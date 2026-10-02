@@ -729,6 +729,35 @@ test("every audit instruction reports a name repeated in code or in Figma as amb
   }
 });
 
+test("every audit summary counts code-only, Figma-only and ambiguous components, and isn't in sync while a name is ambiguous", () => {
+  // The summary counted only matched and mismatched components, so a report
+  // whose every compared name matched read "Figma and code are in sync."
+  // beside a component Figma lacked, or a name compared on neither copy.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-diff.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      const audit = text.slice(text.search(/^(?:## Audit|Workflow:)$/m));
+      assert.match(audit, /N components matched,? \/? ?(?:N )?mismatched,? \/? ?(?:N )?code-only,? \/? ?(?:N )?Figma-only,? \/? ?(?:N )?ambiguous\./, `${path}'s summary leaves out code-only, Figma-only or ambiguous components`);
+      assert.match(audit, /`\?` (?:for )?ambiguous/, `${path} gives an ambiguous name no label`);
+      assert.match(audit, /"Figma and code are in sync\." only if everything matches and no name is ambiguous\. An ambiguous name was compared on none of its copies, so it can hide drift: while any is, name the ambiguous names instead, and never say the two are in sync\./,
+        `${path} lets a report with an ambiguous name say Figma and code are in sync`);
+      assert.doesNotMatch(audit, /If everything matches, (?:confirm|say) "Figma and code are in sync/, `${path} still says in sync whenever everything compared matches`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("the Codex skill says how to raise the tool timeout however Figma was added", () => {
   // codex mcp add writes a [mcp_servers.figma] table; Figma's plugin writes
   // none, and its server has no timeout setting of its own.

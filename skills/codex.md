@@ -852,9 +852,9 @@ npx storysync map --storybook http://localhost:6006 --json
 
 7. **Report** — present a structured drift report:
    - Group by category (tokens) or component name
-   - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch
-   - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched.
-   - If everything matches, confirm "Figma and code are in sync."
+   - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch, `?` ambiguous
+   - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous.
+   - Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous. An ambiguous name was compared on none of its copies, so it can hide drift: while any is, name the ambiguous names instead, and never say the two are in sync.
 
 ## Visual accuracy guidelines
 
