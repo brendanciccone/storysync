@@ -553,13 +553,18 @@ runs:
         }
 
         const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
-        const baseMap = Object.fromEntries(baseline.components.map(c => [c.name, c]));
-        const currMap = Object.fromEntries(current.components.map(c => [c.name, c]));
 
-        const added = current.components.filter(c => !baseMap[c.name]);
-        const removed = baseline.components.filter(c => !currMap[c.name]);
+        // Components are told apart by their Storybook title, which is unique
+        // where the name needn't be: Forms/Button and Nav/Button are both
+        // Button, and keyed on the name the last of them stood for both.
+        const key = (c) => c.title ?? c.name;
+        const baseMap = Object.fromEntries(baseline.components.map(c => [key(c), c]));
+        const currMap = Object.fromEntries(current.components.map(c => [key(c), c]));
+
+        const added = current.components.filter(c => !baseMap[key(c)]);
+        const removed = baseline.components.filter(c => !currMap[key(c)]);
         const changed = current.components.filter(c => {
-          const b = baseMap[c.name];
+          const b = baseMap[key(c)];
           return b && JSON.stringify(b) !== JSON.stringify(c);
         });
 
@@ -577,19 +582,19 @@ runs:
 
         if (added.length) {
           body += "### Added\n";
-          for (const c of added) body += "- **" + c.name + "** (" + c.combinations + " combinations)\n";
+          for (const c of added) body += "- **" + key(c) + "** (" + c.combinations + " combinations)\n";
           body += "\n";
         }
         if (removed.length) {
           body += "### Removed\n";
-          for (const c of removed) body += "- **" + c.name + "**\n";
+          for (const c of removed) body += "- **" + key(c) + "**\n";
           body += "\n";
         }
         if (changed.length) {
           body += "### Changed\n";
           for (const c of changed) {
-            const b = baseMap[c.name];
-            body += "- **" + c.name + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
+            const b = baseMap[key(c)];
+            body += "- **" + key(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
             body += b.combinations + " → " + c.combinations + " combinations\n";
           }
           body += "\n";
