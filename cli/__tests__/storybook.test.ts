@@ -297,6 +297,53 @@ test("StorybookClient: a docs page is told from a component by its ID, whatever 
   ]);
 });
 
+test("StorybookClient: a story name with parentheses doesn't take the place of its ID", async () => {
+  // A story named "Playground (all tones)", as addon-mcp 10.6 lists it.
+  const entries = await listed([
+    "# Components", "",
+    "- Badge (display-badge): A small status label.",
+    "  - Playground (all tones) (display-badge--playground)",
+    "  - Light (inactive) (display-badge--light)",
+  ].join("\n"));
+  assert.deepEqual(entries.map((e) => [e.id, e.storyIds]), [
+    ["display-badge", ["display-badge--playground", "display-badge--light"]],
+  ]);
+});
+
+test("StorybookClient: a line of a component's description is not a component", async () => {
+  // addon-mcp prints the description as written, so the second line of
+  // `Labels an item.\n- Use (sparingly) next to titles` is a line of its own.
+  const entries = await listed([
+    "# Components", "",
+    "- Tag (display-tag): Labels an item.",
+    "- Use (sparingly) next to titles",
+    "  - Basic (display-tag--basic)",
+    "- Button (forms-button)", "  - Default (forms-button--default)",
+  ].join("\n"));
+  assert.deepEqual(entries.map((e) => [e.id, e.name, e.storyIds]), [
+    ["display-tag", "Tag", ["display-tag--basic"]],
+    ["forms-button", "Button", ["forms-button--default"]],
+  ]);
+});
+
+test("StorybookClient: a story line without an ID adds no story", async () => {
+  const entries = await listed(["- Button (forms-button)", "  - Primary (large)", "  - Default (forms-button--default)"].join("\n"));
+  assert.deepEqual(entries[0].storyIds, ["forms-button--default"]);
+});
+
+test("StorybookClient: still reads bold, labelled and quoted IDs, non-ASCII IDs and CRLF line ends", async () => {
+  const entries = await listed([
+    "- **Button** (id: `forms-button`)", "  - **Primary** (id: `forms-button--primary`)",
+    "- Schaltfläche (formulare-schaltfläche): Ein Knopf (rund).", "  - Standard (formulare-schaltfläche--standard)",
+    "- Forms/Card (\"forms-card\")", "  - Default ('forms-card--default')",
+  ].join("\r\n"));
+  assert.deepEqual(entries.map((e) => [e.id, e.name, e.title, e.storyIds]), [
+    ["forms-button", "Button", "Forms/Button", ["forms-button--primary"]],
+    ["formulare-schaltfläche", "Schaltfläche", "Formulare/Schaltfläche", ["formulare-schaltfläche--standard"]],
+    ["forms-card", "Card", "Forms/Card", ["forms-card--default"]],
+  ]);
+});
+
 // --- selectComponents ---
 // Shared by snap, map and diff, so a --components list means the same thing
 // to each of them.

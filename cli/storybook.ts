@@ -158,6 +158,21 @@ export function toolResultText(tool: string, result: unknown): string {
   return texts.join("\n");
 }
 
+// A component's line in the docs list: `- Name (id)`, or `- Name (id): summary`.
+// The ID is one token, followed by the summary or the end of the line, and
+// the name before it may hold parentheses of its own. That is also what keeps
+// a line of a summary that runs onto several lines from being read as a
+// component: addon-mcp prints a component's description as written, so a
+// JSDoc line `- Use (sparingly) next to titles` arrives as a line of its own.
+const COMPONENT_LINE = /^[-*]\s+(?:\*\*)?(.+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^\s()`"']+)[`"']?\)(?::.*)?\s*$/;
+
+// A story's line, indented under its component: `  - Name (id)`. A story's
+// name may hold parentheses of its own (`Playground (all tones)`), so the ID
+// is the parenthesized token that ends the line, and it holds the `--` every
+// story ID has. Reading the first one took "all tones" as the story ID, and
+// every variant snap rendered from it failed.
+const STORY_LINE = /^\s+[-*]\s+.*\((?:id:\s*)?[`"']?([^\s()`"']+--[^\s()`"']+)[`"']?\)\s*$/;
+
 export class StorybookClient {
   private client: Client | null = null;
   private docsTools: DocsTools | null = null;
@@ -253,7 +268,7 @@ export class StorybookClient {
       }
       if (inDocs) continue;
 
-      const m = line.match(/^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
+      const m = line.match(COMPONENT_LINE);
       if (m && !/^\s{2,}/.test(line)) {
         const rawName = m[1].trim();
         const id = m[2].trim();
@@ -289,7 +304,7 @@ export class StorybookClient {
         current = { id, name, title, category, storyIds: [] };
         entries.push(current);
       } else if (current && /^\s{2,}/.test(line)) {
-        const s = line.match(/[\-\*]\s+(?:\*\*)?[^*(\n]+?(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
+        const s = line.match(STORY_LINE);
         if (s) current.storyIds?.push(s[1].trim());
       }
     }
