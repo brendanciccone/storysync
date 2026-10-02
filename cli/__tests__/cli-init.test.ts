@@ -181,6 +181,22 @@ test("init CLI: with no Storybook config, the hint to set one up changes into th
   }
 });
 
+test("init CLI: an invalid package.json is reported by name, without a stack trace", () => {
+  for (const installed of [false, true]) {
+    // Installed, init reads the version from node_modules and only reads
+    // package.json for addon-mcp.
+    withProject({ storybook: "10.6.0" }, (dir) => {
+      if (!installed) rmSync(join(dir, "node_modules"), { recursive: true });
+      writeFileSync(join(dir, "package.json"), `{"name":"app","devDependencies":{"storybook":"^10.6.0",}}`);
+      const r = init(dir, "");
+      assert.equal(r.status, 1, r.out);
+      assert.match(r.out, /package\.json is not valid JSON: /);
+      assert.doesNotMatch(r.out, /^\s+at /m);
+      assert.doesNotMatch(r.out, /SyntaxError/);
+    });
+  }
+});
+
 test("init CLI: a package in a pnpm workspace is offered pnpm, the workspace's package manager", () => {
   // npm can't install into a package with workspace: dependencies, and in
   // one without, it writes a second lockfile and node_modules beside pnpm's.

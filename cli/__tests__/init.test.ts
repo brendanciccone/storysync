@@ -157,6 +157,35 @@ test("getStorybookVersion: null when not installed", () => {
   }
 });
 
+test("getStorybookVersion and hasAddonMcpInPackageJson: read a package.json that starts with a BOM", () => {
+  // npm and pnpm read it; JSON.parse doesn't.
+  const dir = makeProject({
+    "package.json": "﻿" + JSON.stringify({ devDependencies: { storybook: "^10.6.0", "@storybook/addon-mcp": "10.6.0" } }),
+  });
+  try {
+    assert.equal(getStorybookVersion(dir), "^10.6.0");
+    assert.equal(hasAddonMcpInPackageJson(dir), true);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("getStorybookVersion and hasAddonMcpInPackageJson: an invalid package.json is an error that names it", () => {
+  for (const [content, problem] of [
+    [`{"name":"app","devDependencies":{"storybook":"^10.6.0",}}`, /package\.json is not valid JSON: /],
+    [`[]`, /package\.json is not a JSON object/],
+    [`null`, /package\.json is not a JSON object/],
+  ] as const) {
+    const dir = makeProject({ "package.json": content });
+    try {
+      assert.throws(() => getStorybookVersion(dir), (err: Error) => problem.test(err.message) && err.message.includes(join(dir, "package.json")), content);
+      assert.throws(() => hasAddonMcpInPackageJson(dir), problem, content);
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
 test("isStorybookVersionOk: 10.3.6 passes", () => {
   assert.equal(isStorybookVersionOk("10.3.6"), true);
 });

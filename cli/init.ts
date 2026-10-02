@@ -55,13 +55,32 @@ export function findStorybookConfig(projectPath: string): StorybookConfigFile | 
   return null;
 }
 
-export function getStorybookVersion(projectPath: string): string | null {
+interface ProjectPackageJson {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+/**
+ * The project's package.json, or null when it has none. One that doesn't
+ * parse is an error naming the file, which init reports and exits 1 on.
+ * A leading BOM is dropped, as npm and pnpm drop it.
+ */
+function readProjectPackageJson(projectPath: string): ProjectPackageJson | null {
   const pkgPath = join(projectPath, "package.json");
   if (!existsSync(pkgPath)) return null;
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-  };
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf8").replace(/^\uFEFF/, ""));
+  } catch (err) {
+    throw new Error(`${pkgPath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) throw new Error(`${pkgPath} is not a JSON object`);
+  return pkg as ProjectPackageJson;
+}
+
+export function getStorybookVersion(projectPath: string): string | null {
+  const pkg = readProjectPackageJson(projectPath);
+  if (!pkg) return null;
   const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
   if (deps["storybook"]) return deps["storybook"];
   const framework = Object.entries(deps).find(([name]) => name.startsWith("@storybook/"));
@@ -177,12 +196,8 @@ export function addonMcpNeedsNewerStorybook(addonVersion: string | null, storybo
 }
 
 export function hasAddonMcpInPackageJson(projectPath: string): boolean {
-  const pkgPath = join(projectPath, "package.json");
-  if (!existsSync(pkgPath)) return false;
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-  };
+  const pkg = readProjectPackageJson(projectPath);
+  if (!pkg) return false;
   return Boolean(pkg.devDependencies?.["@storybook/addon-mcp"] || pkg.dependencies?.["@storybook/addon-mcp"]);
 }
 
@@ -332,6 +347,10 @@ function upgradeCommand(pm: PackageManager): string {
 export async function runInit(projectInput: string): Promise<void> {
   try {
     await checkAndFix(projectInput);
+  } catch (err) {
+    // Said as the other commands say an error that ends them, not as a stack.
+    console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}`));
+    process.exitCode = 1;
   } finally {
     closeAnswers();
   }
