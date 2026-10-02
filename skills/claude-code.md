@@ -169,7 +169,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | `borderRadiusUniform`, else `borderRadius` | `cornerRadius`, else per-corner |
    | `borderUniform` | stroke weight + colour (`null` means no stroke; a `color` of `null` is a transparent border, a stroke with an invisible paint: see below) |
    | a colour written `#rrggbbaa` | a translucent colour: `#rrggbb` with the paint's `opacity` at `aa` / 255, so `#4b556322` is `#4b5563` at an opacity of 34 / 255, about 0.133; for a shadow, the effect colour's `a` |
-   | `boxShadow[]` | `DROP_SHADOW` effects |
+   | `boxShadow[]` | one effect per layer: `INNER_SHADOW` where `inset` is true, a ring like `ring-inset` included, else `DROP_SHADOW`, with `offset` from `offsetX`/`offsetY`, `radius` from `blur`, and `spread` (`verify` does not read effects back, so it will not flag a shadow built wrong) |
    | `display: flex` + `flexDirection` | auto-layout direction |
    | `fontSize` / `fontWeight` / `fontFamily` | text style |
    | `borderUniform` on a hugging frame | `strokeAlign = 'OUTSIDE'` (see below) |

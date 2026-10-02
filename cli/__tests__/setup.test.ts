@@ -586,6 +586,32 @@ test("every push instruction sets itemSpacing from the gap along the layout's di
   }
 });
 
+test("every push instruction builds an inset shadow as an inner shadow, and says verify doesn't read shadows back", () => {
+  // snap records inset, but the table built every layer as a DROP_SHADOW, so
+  // an input's ring-1 ring-inset border, and shadow-inner, landed outside the
+  // element, and nothing scored it.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      const row = /`boxShadow\[\]` (?:\||→)([^|\n]*)/.exec(text)?.[1] ?? "";
+      assert.match(row, /`INNER_SHADOW` where `inset` is true[^\n]*else `DROP_SHADOW`/, `${path} builds every shadow layer as a drop shadow`);
+      assert.match(row, /`offset` from `offsetX`\/`offsetY`, `radius` from `blur`, and `spread`/, `${path} never says how a layer's lengths map`);
+      assert.match(row, /`verify` (?:does not|doesn't) read effects back/, `${path} lets a shadow pass for scored`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push summary says a transparent border shows as an unfilled ring", () => {
   // The browser draws the background under a transparent border; Figma's
   // fill stops where the OUTSIDE stroke begins, and that stroke paints

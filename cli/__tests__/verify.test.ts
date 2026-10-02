@@ -134,6 +134,10 @@ test("propertyMatches: shadows compare layer by layer", () => {
   assert.equal(propertyMatches("boxShadow", [layer], [], 0.5), false);
   assert.equal(propertyMatches("boxShadow", [], [], 0.5), true);
   assert.equal(propertyMatches("boxShadow", [layer], [{ ...layer, blur: 9 }], 0.5), false);
+  // ring-1 ring-inset is drawn inside the element: built as a drop shadow, outside it.
+  const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring }], 0.5), true);
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, inset: false }], 0.5), false);
 });
 
 test("propertyMatches: borders compare width and colour", () => {

@@ -353,7 +353,9 @@ function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {
       && closeEnough(x.offsetY, y.offsetY, tolerance)
       && closeEnough(x.blur, y.blur, tolerance)
       && closeEnough(x.spread, y.spread, tolerance)
-      && sameColor(x.color, y.color);
+      && sameColor(x.color, y.color)
+      // An inset ring built as a drop shadow draws outside the element.
+      && Boolean(x.inset) === Boolean(y.inset);
   });
 }
 
