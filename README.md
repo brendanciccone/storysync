@@ -5,13 +5,15 @@
 [![CI](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml/badge.svg)](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/storysync)](https://www.npmjs.com/package/storysync)
 
-Sync your design system from code to Figma — and diff Figma back against code — using Storybook MCP and Figma MCP.
+Sync your design system from code to Figma, and diff Figma back against code, using Storybook MCP and Figma MCP.
+
+![Claude Code running /storysync-push and reporting 100% fidelity (174 of 174 properties), beside the pushed Button component set in Figma and the Button story in Storybook](assets/screenshot.webp)
 
 ## What it does
 
-Reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview), then creates Figma variable collections and component sets via [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/).
+storysync reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview). Your AI client then uses [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create matching Figma variables and component sets.
 
-Component styling is **measured, not guessed**: `storysync snap` renders each variant in a headless browser and reads the computed styles, so the fills, spacing, radii, and type that land in Figma come from the real render rather than from an AI's reading of your source.
+Component styling is **measured, not guessed**. `storysync snap` renders each variant in a headless browser and reads its computed styles, so the fills, spacing, radii, and type in Figma come from the real render, not from an AI reading your source. After a push, `storysync verify` scores what landed in Figma against those measurements.
 
 | Method | What it does |
 |---|---|
@@ -21,13 +23,11 @@ Component styling is **measured, not guessed**: `storysync snap` renders each va
 | **CLI** | Extract tokens, map components, measure rendered styles, score a push, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
-> **Why skill files?** Writing to Figma requires the `use_figma` tool, which only works through [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) (Claude Code, Cursor, VS Code, Codex, Copilot, Augment, Warp, and others) that can complete Figma's OAuth flow. The skill files instruct these clients to run storysync CLI commands (`tokens --json`, `map --json`, `snap --json`) to get deterministic, measured data from your codebase, then use that data to create Figma variables and components via `use_figma`. This means storysync handles the extraction logic and the AI client handles the Figma writes — each doing what it's best at.
+> **Why skill files?** Writing to Figma needs Figma's `use_figma` tool, which only works inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor, and Codex. So storysync does the extracting and measuring with deterministic CLI commands, and the skill file tells your AI client how to turn that output into Figma variables and components.
 
 ## Quick start
 
-storysync ships three workflows: **push** (code → Figma), **verify** (score what landed against what rendered), and **diff** (audit drift in either direction). It is deliberately one-way: nothing writes code. See [Non-goals](#non-goals).
-
-Install storysync once, then drop the right config into your project for the AI client you use:
+storysync has three workflows: **push** (code → Figma), **verify** (score what landed against what rendered), and **diff** (find drift in either direction). It never writes code. See [Non-goals](#non-goals).
 
 ```bash
 npm install -g storysync                # or: pnpm add -g storysync
@@ -37,27 +37,23 @@ npx storysync init                      # set up @storybook/addon-mcp if needed
 npx storysync setup --client claude     # or: --client cursor   --client codex
 ```
 
-`setup` writes the skill file (and slash commands, for Claude) into the right place and prints the MCP setup commands you still need to run.
+`setup` writes the skill file (plus slash commands for Claude Code) and prints the MCP setup commands you still need to run.
 
-### Try it without a project of your own
-
-[`examples/storybook-vite`](examples/storybook-vite) is a runnable Storybook you can point storysync at in two commands. It includes one component that measures cleanly and one whose story is broken on purpose, so you can see the warning fire rather than read about it.
+To try it without a project of your own, use [`examples/storybook-vite`](examples/storybook-vite). It's a small Storybook with one component that measures cleanly and one whose story is broken on purpose, so you can see the warning.
 
 ### Claude Code
-
-After `storysync setup --client claude`:
 
 ```bash
 claude mcp add --transport http storybook http://localhost:6006/mcp
 claude plugin install figma@claude-plugins-official
 ```
 
-Then start Storybook and open Claude Code. Two slash commands are now available:
+Start Storybook, open Claude Code, and run:
 
-- `/storysync-push <figma-file-key>` — sync Storybook + tokens into Figma
-- `/storysync-diff <figma-file-key>` — audit Figma against code
+- `/storysync-push <figma-file-key>` to push Storybook and tokens into Figma
+- `/storysync-diff <figma-file-key>` to audit Figma against code
 
-Or just say it in plain English: **"Push my Storybook to Figma (file key abc123)"** / **"Diff Figma against code"**.
+You can also just ask in plain English (see [What to say](#what-to-say)).
 
 ### Cursor
 
@@ -71,49 +67,46 @@ Or just say it in plain English: **"Push my Storybook to Figma (file key abc123)
 }
 ```
 
-In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma when prompted. Then start Storybook and, in Agent chat, say:
+In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma. Then start Storybook and ask the agent to push or diff.
 
-- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
-- **"Diff Figma against code (file key abc123)"** — audit
-
-Cursor's terminal sandbox blocks `localhost` by default, so the agent asks to run `storysync map`, `inspect` and `snap` outside it. Approve them: they have to reach Storybook.
+Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync map`, `inspect`, and `snap` outside it. Approve them, since they need to reach Storybook.
 
 ### Codex
 
-After `storysync setup --client codex`, which writes the skill to `.agents/skills/storysync/SKILL.md`, start Storybook, then:
+`storysync setup --client codex` writes the skill to `.agents/skills/storysync/SKILL.md`. Then add the MCP servers:
 
 ```bash
 codex mcp add storybook --url http://localhost:6006/mcp
 codex mcp add figma --url https://mcp.figma.com/mcp      # signs you in to Figma
 ```
 
-`codex mcp add` asks each server whether it needs a login. With Storybook not running it gets no answer and prints "MCP server may or may not require login"; Storybook's server needs none, so that line can be ignored.
+With Storybook running, ask Codex to push or diff. In the CLI, you can type `$storysync` to name the skill.
 
-Or install Figma's plugin instead of adding its server by hand: **Plugins** in the ChatGPT desktop app (the Codex app, in Figma's setup guide), `/plugins` in the CLI. `codex mcp add` registers servers for every project; to keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads only once you trust the project:
+A few Codex details:
 
-```toml
-[mcp_servers.storybook]
-url = "http://localhost:6006/mcp"
-```
+- If Storybook isn't running, `codex mcp add` prints "MCP server may or may not require login". You can ignore it. Storybook's server needs no login.
+- You can install Figma's plugin instead of adding its server by hand: **Plugins** in the desktop app, or `/plugins` in the CLI.
+- `codex mcp add` registers a server for every project. To keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads once you trust the project:
 
-Codex runs commands in a sandbox with network access off, and `map`, `inspect`, and `snap` need Storybook on `localhost` and a browser, so Codex asks to run `npx storysync` outside it. Approve it, or accept the rule Codex offers so it stops asking.
+  ```toml
+  [mcp_servers.storybook]
+  url = "http://localhost:6006/mcp"
+  ```
 
-Codex stops waiting for an MCP tool call after `tool_timeout_sec` seconds (OpenAI's docs give the default as 60; Codex 0.141 and later wait 300). The skill splits large writes to Figma across calls, but if one still times out, raise the limit in the `[mcp_servers.figma]` table that `codex mcp add` wrote to `~/.codex/config.toml`:
+- Codex's sandbox has network access off, so it asks to run `npx storysync` outside it. Approve it, or accept the rule Codex offers so it stops asking.
+- Codex gives each MCP call `tool_timeout_sec` seconds (60 or 300 by default, depending on the version). The skill splits large Figma writes across calls, but if one still times out, raise the limit in the table `codex mcp add` wrote to `~/.codex/config.toml`:
 
-```toml
-[mcp_servers.figma]
-url = "https://mcp.figma.com/mcp"
-tool_timeout_sec = 600
-```
+  ```toml
+  [mcp_servers.figma]
+  url = "https://mcp.figma.com/mcp"
+  tool_timeout_sec = 600
+  ```
 
-Figma's plugin writes no such table, and Codex's settings for a plugin's MCP server cover switching it on and approving its tools, not the timeout. A `[mcp_servers.figma]` table takes the place of the plugin's own `figma` server, though, so with the plugin installed, run `codex mcp add figma --url https://mcp.figma.com/mcp` and add the line to the table it writes.
+  Figma's plugin has no timeout setting, and a `[mcp_servers.figma]` table replaces the plugin's server. So with the plugin installed, run the `codex mcp add figma` command above and add the line to the table it writes.
 
-With Storybook running, say (or, in the CLI, type `$storysync` to name the skill):
+### What to say
 
-- **"Push my Storybook to Figma (file key abc123)"** — code → Figma
-- **"Diff Figma against code (file key abc123)"** — audit
-
-### Magic phrases (all clients)
+These work in every client:
 
 | Goal | Say |
 |---|---|
@@ -121,7 +114,9 @@ With Storybook running, say (or, in the CLI, type `$storysync` to name the skill
 | Audit drift | "Diff Figma against code (file key `<key>`)" or "Check if Figma is in sync" |
 | Score the last push | "Verify the Figma file against the measured styles" |
 
-### GitHub Action (validate in CI)
+## GitHub Action
+
+The action checks for token and component drift on every push.
 
 ```yaml
 name: Validate storysync mappings
@@ -143,7 +138,9 @@ jobs:
           fail_on_drift: true
 ```
 
-The action installs your project's dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to the repo. Write the baselines before the first run: in the project's directory (`working_directory`), with Storybook running,
+It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
+
+**Create the baselines first.** With Storybook running, in the project's directory:
 
 ```bash
 mkdir -p .storysync
@@ -151,24 +148,29 @@ npx storysync@<version> map --storybook http://localhost:6006 --json > .storysyn
 npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 ```
 
-and commit them. `<version>` is the storysync version that matches the ref you use the action at: the `version` in this repository's [`package.json`](package.json) at that ref. The action builds storysync from its ref, and a baseline written by another version can differ from what it maps. Plain `npx storysync` runs whatever npm has: 0.2.0 finds no components with addon-mcp 10.6, so its baseline is empty and never matches. The action's warnings and errors give these commands with the version filled in. Or skip npx and save the action's `json` and `tokens_json` outputs, which hold the JSON it compared. If you set `components` or `token_source`, pass the same to `map --components` and `tokens --source`. A project with no tokens can leave out the token baseline, and one that checks only components can set `token_baseline: ''` to leave tokens out. Without a baseline, drift is `new` and a warning says it isn't being checked; with `fail_on_drift` the job fails, and the error gives the command that writes the missing baseline. A component baseline that isn't `map --json` output, or a token baseline that isn't `tokens --json` output, fails the job whatever `fail_on_drift` says, and the error gives the command that recreates it. That includes the `{"error": ...}` the command writes when it fails, as `map` does with Storybook not running: under `--json` the error goes to the file, not the terminal. Once it works for you, pin `@main` to a commit SHA.
+Commit both files. Use the storysync version the action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the action maps. The action's warnings and errors print these commands with the version filled in. You can also save the action's `json` and `tokens_json` outputs as your baselines.
+
+- If you set `components` or `token_source`, pass the same values to `map --components` and `tokens --source`.
+- A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
+- With no baseline, drift is `new` and the action warns that nothing was checked. With `fail_on_drift`, the job fails and prints the command that writes it.
+- A baseline that isn't `map --json` or `tokens --json` output always fails the job. That includes the `{"error": ...}` that `map --json` writes when Storybook isn't running.
 
 | Input | Default | |
 |---|---|---|
-| `working_directory` | `.` | The project to check, relative to the repository root. Dependencies are installed, Storybook is started and tokens are read there, and the baseline paths and the files the action writes are relative to it. |
-| `install_command` | from `packageManager` or the lockfile | By default the install is chosen in the first directory with a lockfile, looking upward from `working_directory` to the repository root: the package manager its package.json's `packageManager` field names, or else the one the lockfile belongs to. Lockfiles from different package managers with no `packageManager` to choose between them are an error. The install is `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` for Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Set it to `true` to skip the install when an earlier step already did it. |
-| `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook itself on port 6006 and stops it once components are mapped, so the action can run again in the same job. If something is already serving on 6006, it fails rather than map the wrong Storybook. Anything else is used as is, so start that Storybook in an earlier step. |
-| `components` | all | Comma-separated component names or IDs to map. A name that matches no component fails the job, and the error lists the names there are. |
+| `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens, and baseline paths all use it. |
+| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
+| `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
+| `components` | all | Comma-separated component names or IDs. A name that matches nothing fails the job. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
-| `baseline` | `.storysync/baseline.json` | Component baseline, as `map --json` writes it. Components are matched by their Storybook title, and the drift report names them by it, so two named Button, `Forms/Button` and `Nav/Button`, are each compared with their own baseline. |
-| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline, as `tokens --json` writes it. A category's collections are compared as one, so a theme file's `fontSizes` and `fontWeights`, both typography, are both checked. Set it to `''` to check components only: tokens aren't extracted, `token_drift` is `skipped`, and `fail_on_drift` doesn't fail on them. |
-| `fail_on_drift` | `false` | Fail the job when components or tokens differ from their baseline, or when a baseline is missing, since then nothing was compared. A `token_drift` of `none` or `skipped` doesn't fail. |
-| `create_issue` | `false` | Open or update an issue labelled `storysync-drift` when drift is found. Needs `issues: write`. Filed before `fail_on_drift` fails the job. |
-| `node_version` | `22` | Node.js version to run on. |
+| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by Storybook title, so `Forms/Button` and `Nav/Button` are compared separately. |
+| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
+| `fail_on_drift` | `false` | Fail the job on drift, or when a baseline is missing. |
+| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found. Needs `issues: write`. |
+| `node_version` | `22` | Node.js version. |
 
-Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is no baseline. `token_drift` is `none` when there is neither a token baseline nor any tokens; with a baseline, tokens that have all gone are drift. It is `skipped` when `token_baseline` is `''`. `json` and `tokens_json` carry the `map --json` and `tokens --json` output; `tokens_json` is empty when tokens are skipped.
+**Outputs:** `drift` and `token_drift` are `true`, `false`, or `new` (no baseline). `token_drift` can also be `none` (no baseline and no tokens) or `skipped` (`token_baseline: ''`). `json` and `tokens_json` hold the `map --json` and `tokens --json` output the action compared.
 
-[Aikido Safe Chain](https://github.com/AikidoSec/safe-chain#usage-in-cicd) set up in an earlier step doesn't check the action's installs. The action sets up Node and pnpm itself, and each setup puts its directory on `PATH` ahead of Safe Chain's shims, so the action's `npm ci`, `pnpm install` or `yarn install` runs the package manager directly, and so does its install of storysync's own dependencies. To have Safe Chain check your dependencies for malware, install them in your own steps the way its [GitHub Actions example](https://github.com/AikidoSec/safe-chain#github-actions-example) does: set up Node, at the version `node_version` names, and your package manager, then Safe Chain's CI setup, pinned to a release, then your install. Then set `install_command: 'true'`, so the action uses that install rather than running its own. Install before the action rather than after it: its Node and pnpm stay ahead of Safe Chain's shims for the rest of the job.
+**Aikido Safe Chain:** the action sets up its own Node and pnpm, which come before Safe Chain's shims on `PATH`, so Safe Chain doesn't check the action's installs. To have it check your dependencies, install them in your own steps before the action, following Safe Chain's [GitHub Actions example](https://github.com/AikidoSec/safe-chain#github-actions-example) with the Node version `node_version` names, and set `install_command: 'true'`.
 
 ## How it works
 
@@ -186,7 +188,7 @@ Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is n
          ↓                  creates Figma variables            ↓
   preview with CLI          via use_figma           renders each variant in a
   (storysync tokens)              ↓                 browser, records computed
-                            components bind to      styles — measured, not read
+                            components bind to      styles (measured, not read)
                             variables                          ↓
                                                      creates styled component
                                                      sets via use_figma
@@ -215,25 +217,27 @@ Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is n
 
 ## Token extraction
 
-storysync reads design tokens from your codebase and previews the Figma variable collections that the skill files will create. Supported sources (auto-detected):
+storysync reads design tokens from your codebase and previews the Figma variable collections the skill will create. Sources are detected automatically:
 
 | Source | What it reads |
 |---|---|
-| **Tailwind** | `tailwind.config.ts/js` — `theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`; or, with no config, Tailwind v4's `@theme { ... }` blocks in `.css` files (see below) |
+| **Tailwind** | `tailwind.config.ts/js` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
 | **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files |
-| **Theme files** | `tokens.ts`, `theme.ts`, etc. — exported objects with `colors`, `spacing`, and similar keys |
+| **Theme files** | `tokens.ts`, `theme.ts`, and similar: exported objects with `colors`, `spacing`, and so on |
 
-Token categories: **colors**, **spacing**, **typography**, **radius**, **shadows**
+Token categories are **colors**, **spacing**, **typography**, **radius**, and **shadows**. Commented-out tokens are skipped.
 
-Comments are skipped, so a commented-out key or custom property, such as an old value kept above the new one, is not a token.
+**Colours** can be in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, or the bare HSL channels shadcn/ui uses (`240 5.9% 10%`). A custom property with one of these values counts as a colour whatever its name. `tokens --json` keeps the value as written and adds its sRGB `hex`:
 
-Colour tokens are kept as written, in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()` or `color()` in any of its spaces. A custom property whose name doesn't say it's a colour is still read as one when its value is in one of those functions, or is bare HSL channels as shadcn/ui's `:root` writes them, such as `240 5.9% 10%`, which are read as the `hsl()` they're written for. `diff` converts both sides to sRGB hex before comparing, so a `:root` token such as `--brand: oklch(63.7% 0.237 25.331)` matches a Figma variable of `#fb2c36`.
+```json
+{ "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }
+```
 
-`tokens --json` gives each colour token that same sRGB hex as `hex`, next to its `value`: `{ "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }`, `#rrggbbaa` when the colour is translucent. The push sets Figma's variables from `hex`, since `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()` and throw on the rest. A value storysync can't convert, such as `currentColor` or an unresolved `var()`, has no `hex`. `tokens --check` compares `value` alone, so a baseline written without `hex` still checks clean.
+The push sets Figma variables from `hex`, since Figma's colour helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colours get `#rrggbbaa`. A value storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`. `tokens --check` compares only `value`, so baselines written before `hex` existed still pass.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
-Many Tailwind configs (notably shadcn/ui templates) define colors as `hsl(var(--background))` and put the actual values in `globals.css` under `:root`. storysync detects this pattern and automatically resolves the references:
+Many Tailwind configs, shadcn/ui's included, define colours as `hsl(var(--background))` and put the values in `globals.css` under `:root`. storysync resolves these references:
 
 ```ts
 // tailwind.config.ts
@@ -245,18 +249,17 @@ colors: { background: "hsl(var(--background))" }
 :root { --background: 0 0% 100%; }
 ```
 
-→ resolves to `hsl(0 0% 100%)`.
+That resolves to `hsl(0 0% 100%)`. It also handles:
 
-It also handles:
 - Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)` → `hsl(0 0% 100%)`)
-- Nested CSS variable chains (`--brand: var(--blue-500)`)
+- Nested variable chains (`--brand: var(--blue-500)`)
 - Fallback values (`var(--missing, 200 50% 50%)`)
 
-If no matching CSS variable is found (and no fallback is provided), the raw `var(...)` reference is preserved so you can see what didn't resolve.
+A reference with no matching variable and no fallback is left as the raw `var(...)`, so you can see what didn't resolve.
 
 ### Tailwind v4 `@theme`
 
-A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks rather than a config:
+A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead of a config:
 
 ```css
 @import "tailwindcss";
@@ -270,7 +273,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks rather th
 }
 ```
 
-With no `tailwind.config`, a `.css` file with an `@theme` block (`@theme inline` and the like included) is the Tailwind source when the project has no `:root` custom properties. One that has both, as shadcn/ui's v4 `globals.css` does, keeps reading `:root`, so its tokens and baselines don't change; pass `--source tailwind` to read its `@theme` instead. Variables are read by Tailwind's namespaces:
+With no `tailwind.config`, storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, so existing baselines don't change. Pass `--source tailwind` to read `@theme` instead.
 
 | Namespace | Category | Token name |
 |---|---|---|
@@ -280,7 +283,7 @@ With no `tailwind.config`, a `.css` file with an `@theme` block (`@theme inline`
 | `--shadow-*` | shadows | `--shadow-soft` → `soft` |
 | `--text-*`, `--font-*`, `--font-weight-*`, `--leading-*`, `--tracking-*` | typography | with the namespace, since they share a category: `text/hero`, `font/display`, `font/weight/bold`, `leading/snug` |
 
-Dashes in a name become `/`, as for `:root` properties. A `var()` is resolved against the theme itself, the project's `:root` (shadcn/ui's v4 `@theme inline { --color-background: var(--background); }`) and, when `tailwindcss` is installed, Tailwind's default theme, so `--color-primary: var(--color-blue-500)` gives blue-500's value. The default theme only resolves references; like a Tailwind config's defaults, it isn't read as the project's tokens. Later declarations win, `initial` removes a variable (`--color-*: initial` a namespace), and modifiers such as `--text-hero--line-height` and rules nested in `@theme`, such as `@keyframes`, are skipped. Other namespaces (`--breakpoint-*`, `--animate-*`, `--text-shadow-*` and so on) are reported as uncategorized. `--source css` still reads only `:root`, which is what an earlier storysync read for a project with both, so a baseline written then needs `--source css`, or a new baseline.
+Dashes in a name become `/`. A `var()` is resolved against the theme, the project's `:root`, and Tailwind's default theme when `tailwindcss` is installed, so `--color-primary: var(--color-blue-500)` gets blue-500's value. Tailwind's defaults are only used to resolve references; they aren't read as your tokens. Later declarations win, and `initial` removes a variable (or a whole namespace, as in `--color-*: initial`). Modifiers like `--text-hero--line-height` and nested rules like `@keyframes` are skipped, and other namespaces (`--breakpoint-*`, `--animate-*`, and so on) are listed as uncategorized.
 
 ## Component mapping rules
 
@@ -294,30 +297,28 @@ Dashes in a name become `/`, as for `:root` properties. A `var()` is resolved ag
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
 
-A component's props are the ones in the Props section of its Storybook documentation. The same documentation lists the props of each of its `subcomponents`, and the source of any MDX page attached to it; neither becomes a variant property of the component.
+Props come from the Props section of the component's Storybook docs. Subcomponents' props and attached MDX pages don't become variant properties.
 
 ## CLI reference
 
-The CLI exists for two purposes: **setup** (the `init` and `setup` commands wire your project up for an AI client) and **preview / CI** (the `tokens`, `map`, `list`, `inspect`, and `diff` commands give you deterministic output you can inspect locally or run in GitHub Actions). Day-to-day Figma syncing happens through the AI client using the skill + slash commands above — the CLI does not write to Figma directly.
+The CLI handles setup (`init`, `setup`) and gives deterministic output you can check locally or in CI (`tokens`, `map`, `snap`, `verify`, `list`, `inspect`, `diff`). It never writes to Figma itself. Your AI client does that, using the skill.
 
-A command that can't reach Storybook, or `diff` Figma, exits 1, and so does one whose server takes the connection but doesn't answer within `--connect-timeout` milliseconds (default 60000). Under `--json` it says why on stdout, as `{"error": "Error: Failed to connect to Storybook MCP at <url>: ..."}`, so a script reading the output still gets JSON to parse.
+A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it.
 
 ### `storysync init`
 
-Detect missing Storybook MCP setup and offer to fix it. Checks Storybook version (10.1+ required for component sync), whether `@storybook/addon-mcp` is installed, and whether it's registered in `addons` — then prompts before applying each fix to your `.storybook/main.ts`. An entry inside a comment doesn't count as registered, and the addon is added to the `addons` array that isn't commented out.
+Checks your Storybook setup and offers to fix it: the Storybook version (10.1+ is needed for components), whether `@storybook/addon-mcp` is installed, and whether it's registered in `.storybook/main.ts`. It asks before each change.
 
 ```text
 Options:
   --project <path>     Project root path (default: ".")
 ```
 
-The addon-mcp it installs matches the Storybook in `node_modules`, or before an install the lowest version `package.json` allows. addon-mcp now releases in lockstep with Storybook, and each release needs a Storybook at least as new as itself, so Storybook 10.6 and later get the addon-mcp of the same version. Earlier versions, and 10.6 prereleases older than addon-mcp's first lockstep release (10.6.0-alpha.4), get `^0.7.0`. An installed addon-mcp newer than Storybook, which an earlier `init` could install, doesn't load; `init` says so and offers the matching one. Declined, it is left as it is and `init` exits 1.
-
-It installs with the package manager whose lockfile (pnpm, yarn, bun or npm) is nearest the project, looking upward as far as the repository root, so a package in a workspace uses the workspace's. With no lockfile, it uses npm. Run with `--project` from another directory, the commands it prints for you to run, such as the install you declined, start by changing into the project.
+It installs the addon-mcp that matches your Storybook: the same version for Storybook 10.6 and later, and `^0.7.0` before that. An installed addon-mcp newer than Storybook won't load, so `init` offers the matching one, and exits 1 if you decline. It uses the package manager of the nearest lockfile, looking up to the repo root, or npm if there's none.
 
 ### `storysync setup`
 
-Drop the storysync skill, slash commands, and MCP setup notes into your project for the AI client you use.
+Adds the storysync skill, slash commands, and MCP setup notes to your project for the AI client you use.
 
 ```text
 Options:
@@ -325,8 +326,6 @@ Options:
   --project <path>     Project root path (default: ".")
   --force              Overwrite existing files
 ```
-
-Example:
 
 ```bash
 npx storysync setup --client claude
@@ -339,7 +338,7 @@ npx storysync setup --client codex
 
 ### `storysync tokens`
 
-Extract design tokens from your project and preview what Figma variable collections would be created.
+Extracts design tokens from your project and previews the Figma variable collections they'd create.
 
 ```text
 Options:
@@ -354,19 +353,17 @@ Options:
   --strict             Exit with code 1 if no tokens found or drift detected
 ```
 
-`--check` compares the current tokens against a committed baseline and lists what was added, removed or changed; `--strict` makes drift fail. Tokens are paired by category and name, as `diff` pairs them, so a category a theme file splits across exports, such as `fontSizes` and `fontWeights` in typography, is compared whole. The baseline is the `--json` output, taken with the same `--project` and `--source` as the check:
+`--check` compares against a committed baseline and lists tokens that were added, removed, or changed. Add `--strict` to fail on drift. Write the baseline with the same `--project` and `--source` you check with:
 
 ```bash
 mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.json
 ```
 
-A missing baseline is an error whatever the flags, and the message gives that command. Treated as a first run instead, a wrong `--baseline` path would pass every check, `--strict` included, having compared nothing. Under `--json` the extraction is still printed, with `"drift": "new"` and an `error`, so the output parses. Finding no tokens doesn't skip the check: the baseline is still read, so a mistyped `--project` fails on a missing baseline, or against an existing one reports every token in it as removed. A file that is not a baseline, such as a saved `--check --json`, fails with the command to recreate it.
-
-`--source auto` detects the source, as leaving it out does, so the drift-check action's `token_source` can be passed on as it is. Any other unknown `--source` is an error, under `--json` as `{"error": ...}`, naming the sources there are, and `diff --source` is checked the same way. Falling back to detection instead, `--source scss` would read whatever the project had, a Tailwind config say, and pass.
+A missing baseline is always an error, so a wrong `--baseline` path can't pass by comparing nothing. A file that isn't `tokens --json` output is an error too.
 
 ### `storysync map`
 
-Map all components to Figma variant definitions.
+Maps every component to Figma variant definitions.
 
 ```text
 Options:
@@ -381,7 +378,7 @@ Options:
 
 ### `storysync snap`
 
-Measure what each component variant actually looks like, by rendering the story in a headless browser and reading `getComputedStyle`. This replaces guessing styles from source: the AI client translates measured values instead of interpreting Tailwind classes, `cva` calls, or theme indirection.
+Renders each component variant in a headless browser and records its computed styles. The AI client then works from measured values instead of interpreting Tailwind classes, `cva` calls, or theme indirection.
 
 ```text
 Options:
@@ -402,45 +399,40 @@ Options:
   --strict-warnings      Implies --strict, and also fails on warnings
 ```
 
-`--strict` fails on variants or components that could not be measured, on a component measured only in part because it was capped, and on a run that measured nothing at all — snap still writes `styles.json` and a fresh `meta.json` in that case, so an empty result must not read as a clean one. A `--components` name that matches nothing is an error whatever the flags, and writes nothing. Warnings are separate and opt-in via `--strict-warnings`, because a component whose variants legitimately render the same (aliased option values, for instance) would otherwise fail every build. In CI, `--strict-warnings` is usually what you want: it turns "this story silently ignores its args" into a build failure rather than a line of output nobody reads.
+snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`.
 
-Writes `<out>/styles.json` containing, per component, full styles for a base variant plus only the properties each other variant changes. The file carries no timestamp, so repeat runs against unchanged code are byte-identical and it can be committed and diffed. With `--screenshots`, PNGs are written under `<out>/<component>/` and each variant's `screenshot` path is recorded relative to `styles.json`, so the file stays the same whichever directory or machine produced it.
+**Strict modes.** `--strict` fails on anything that couldn't be measured, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI.
 
-**Variant selection.** `representative` measures every declared value once against the other properties' defaults, so cost scales with the *sum* of variant values rather than their product — a `3 × 2 × 2` button is 5 renders instead of 12. That is useful for a quick check, but it is not enough to build a Figma component set: a set needs every combination to exist, or the variant picker has nothing to switch to. So the push runs `--variants all`, which measures the full product and makes the default combination the base.
+**Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
-**The combination limit.** Combinations multiply — four props of four values is already 256 — and a Figma component set with thousands of variants is unusable. Above `--max-combinations` (default 256), snap measures a subset chosen to cover every value, records a `cap` on that component, warns, and fails `--strict`. A limit set lower than covering every value takes cannot cover them all, so the cap's `uncovered` list and the warning name any value left out rather than claiming coverage it does not have. It never drops combinations silently. The skill has the agent stop and ask how to proceed: build the covering subset, re-run with a higher `--max-combinations`, or narrow which props are variants.
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props.
 
-**Requires Node 20+**, because Playwright does. Every other storysync command still runs on Node 18 — Playwright is loaded only when `snap` runs, so nothing else is affected.
-
-**Browser.** storysync depends on `playwright-core`, which downloads no browsers, so one is located at runtime: `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then an installed Chrome, then Edge, then a Playwright-managed download, then common system paths. If none is found the error lists every attempt, and the command to install one:
+**Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 
 ```bash
 npx playwright@<version> install chromium     # note: the full `playwright` package
 ```
 
-Use the `playwright` release that matches the `playwright-core` storysync has installed, which is the version the error prints. Each release launches only the browser build it shipped with, so `playwright@latest` installs one that an older `playwright-core` can't find, and the launch still fails.
+Use the version the error prints. Other Playwright versions install a browser that storysync's `playwright-core` can't launch.
 
-**Colours are recorded as sRGB hex.** Chromium reports a computed colour in the space it was written in: Tailwind v4's palette as `oklch(0.637 0.237 25.331)`, its opacity modifiers, which are a `color-mix()` in OKLab, as `oklab(0.637 0.214213 0.1014 / 0.5)`, and `lab()`, `lch()` and every `color()` space as themselves. snap converts each to `#rrggbb`, or `#rrggbbaa` when translucent, with CSS Color 4's conversions, so a fill, text colour, border or shadow in any of them reaches Figma and `verify` as the colour it is rather than as nothing drawn. A colour outside sRGB is clipped (see [Limitations](#limitations)).
+**What snap records:**
 
-**Gradients and background images are recorded.** A gradient fill has no `background-color`, so its `backgroundColor` is `null`, and one painted over a fill hides the colour that `backgroundColor` records. snap records the computed `background-image` as `backgroundImage`, its colours as hex, Tailwind v4's `bg-linear-to-r from-blue-600 to-violet-600` as `linear-gradient(to right, #155dfc 0%, #7f22fe 100%)`, and a `url()` as written. It is written only when there is one, so a `styles.json` without gradients reads as it did, and a variant without the gradient its base has records `backgroundImage: null`. A Storybook wrapper with a background image is measured as the component rather than looked past.
+- **Colours** as sRGB hex (`#rrggbbaa` when translucent), whatever space Chromium reports them in (`oklch`, `oklab`, `lab`, `color()`, and so on). Colours outside sRGB are clipped (see [Limitations](#limitations)).
+- **Gradients and background images** as `backgroundImage`, with colours as hex.
+- **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
+- **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
+- **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its colour.
+- **Font substitution.** snap warns when the font your code asks for didn't load and the browser used a fallback. Figma also needs the font installed, which storysync can't do for you.
 
-**Corner radii are recorded as drawn.** Chromium reports a radius as computed, not as drawn: Tailwind v4's `rounded-full`, `calc(infinity * 1px)`, as `3.35544e+07px`, a percentage as written, and `calc(50% - 2px)` or `min(8px, 10%)` as themselves. snap resolves a percentage against the border box, horizontal radii against its width and vertical against its height, sizes a `calc()` or `min()` in the page, and then scales corners that together run longer than a side, all by one factor, as CSS does. So `rounded-full` on a 32px-tall pill is recorded as 16, and so is v3's `9999px`, rather than as a radius the browser never drew. Figma has no elliptical corner, so one whose two radii differ, `10px / 20px` or `50%` of a box that isn't square, keeps the smaller.
+**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same. Plain CSF3 args-driven stories are the reliable shape.
 
-**Shadow layers that draw nothing are left out.** Tailwind fills every shadow and ring slot a class doesn't use with `0 0 #0000`, so `shadow-sm` computes to four empty layers before its two real ones. snap drops a layer that is fully transparent, or has no offset, blur or spread, so `boxShadow` lists only the layers that are drawn, each one a Figma effect.
+Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so a value like `Nav/Primary` can't be measured and is marked `args_unsupported`.
 
-**Text is measured on the element that holds it.** `text` describes the nearest element with text of its own, which is often a `<span>` inside the root, so it carries that element's `textTransform` and `letterSpacing`, when it has them, as well as its colour and font: an uppercase badge draws `BETA` from args of `Beta`, wider than the label as written. A percentage `letter-spacing`, which Chromium keeps as written, is resolved against the font size. An `opacity` on the text's element, or on one between it and the root, is folded into `text.color`'s alpha, so a label drawn at 60% white is `#ffffff99`; the root's own opacity stays in `opacity`.
-
-**Font substitution is detected.** The measured `fontFamily` is the family the code *asked for*, so a project naming a font it never loaded would otherwise measure — and score — as though that font were used while the browser rendered a fallback. snap probes whether the family actually applied and warns when it did not, naming it. Note that Figma needs the font available to its own editor too; storysync cannot install fonts into Figma, as the Plugin API has no such capability.
-
-**Stories must pass args through.** snap sets variant values via Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or wraps the component in a decorator that drops them will render its default state for *every* variant. snap warns when all of a component's variants measure identically, which catches the common cases — but a story whose variants happen to differ only in unmeasured ways would not be flagged. Plain CSF3 args-driven stories are the reliable shape.
-
-Values Storybook cannot carry in a URL are reported rather than measured. Its allowed character set is `[a-zA-Z0-9 _-]`, so an option like `Data Display` works while `Nav/Primary` is rejected — those variants are marked `args_unsupported` instead of silently recording the default render.
-
-**Variant names ignore case and punctuation.** Each variant is named from its combination, lowercased with punctuation collapsed, and that name is the key joining a measurement to the Figma node built from it. Two declared values that differ only in those respects — `Small` and `small`, `x-large` and `x large` — would therefore produce one name for two variants. snap numbers the duplicate (`size-small--2`) so nothing is lost, and warns, because the numbered name is what reaches Figma and says nothing about which value it came from. Renaming the declared values is the real fix.
+**Variant names ignore case and punctuation**, so `Small` and `small` would get the same name. snap numbers the duplicate (`size-small--2`) and warns. Renaming the values is the real fix.
 
 ### `storysync verify`
 
-Compare what was written to Figma against the styles `snap` measured, and report a fidelity score. The agent writes a component, reads the created nodes' real properties back in separate `use_figma` calls, a slice of the set at a time, writes what they return into `.storysync/figma-readback.json`, each entry with the time Figma read it and the checksum the readback computed in Figma, and this scores the result.
+Scores what was written to Figma against what `snap` measured. During a push, the agent reads the created nodes back from Figma and saves them to `.storysync/figma-readback.json`, and `verify` compares that file with the snap.
 
 ```text
 Options:
@@ -457,15 +449,11 @@ Options:
   --strict-measured      Implies --strict, and also fails on anything not measured
 ```
 
-The three strict flags cover different questions, and each is opt-in because each has a legitimate reason to be noisy:
-
 | Flag | Fails on |
 |---|---|
-| `--strict` | Properties that disagree; variants Figma never received; variants Figma reported with nothing comparable (`unscored`); a readback entry whose checksum is missing or doesn't match, whose component has the `nodeId` of another, that lacks a field the readback always returns, or that was read before the snap (an unverified readback); a run that compared nothing at all; and a component the snap failed to measure, or a snap with no components |
-| `--strict-age` | A snap older than `--max-age`, or one whose age can't be established |
-| `--strict-measured` | Variants inferred from source, unrecorded, or present in Figma but never measured |
-
-`--strict-measured` is the one that matters in CI: it turns "this component's styling was guessed" into a build failure rather than a line of output nobody reads.
+| `--strict` | Properties that disagree, variants missing from Figma or with nothing comparable, readback entries that fail their checks (below), and snap failures |
+| `--strict-age` | A snap older than `--max-age`, or one whose age is unknown |
+| `--strict-measured` | Variants that weren't measured, such as ones inferred from source. This is the one to use in CI. |
 
 ```text
 Fidelity: 95.0% (38/40 properties)
@@ -476,31 +464,24 @@ Fidelity: 95.0% (38/40 properties)
       borderRadiusUniform: measured 3, Figma 8
 ```
 
-Comparison is numeric rather than visual: measured values diff deterministically and cost nothing, where comparing screenshots means paying a model to render a judgement that won't reproduce.
+The comparison is numeric, not visual, so it's deterministic and free. Only properties Figma can report are scored; Figma has nothing to compare `lineHeight: "normal"` to, for example. Variants missing from Figma are reported separately instead of lowering the score.
 
-Only properties the readback actually reports are scored. Figma has no equivalent for `lineHeight: "normal"` or a measured width on an auto-layout frame, so counting those would manufacture drift. Variants Figma never received are reported separately rather than dragging the score down — a missing variant is a different problem from a wrong one.
+**Readback checks.** `verify` never contacts Figma, so before scoring it checks that the readback file is what Figma returned:
 
-Reporting *nothing* is not a pass, though, and nor is reporting less than the readback always does. A variant Figma reported without a single comparable property is not verified, and fails `--strict`: otherwise the writer being graded would choose its own denominator and score a perfect nothing. Such an entry lacks fields the readback template always returns, so it is reported as an incomplete readback (below); were it complete, it would be `unscored`. Likewise a snap that recorded a component failure, or no components at all, fails `--strict` and is printed as `! snap recorded a failure`. A single variant snap could not measure is reported but not failed on its own — some are expected (`args_unsupported`), and those built from source are already caught by `--strict-measured`.
+- Each entry carries a checksum computed inside Figma over exactly what it returned, so an entry that was edited, made up, or copied from another variant fails.
+- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties.
+- Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
+- No two components can share a `nodeId`.
 
-**The readback has to be what Figma returned.** `verify` compares two local files and never contacts Figma, so it can only score what the readback file says. On one live push the agent wrote that file from snap's own values plus the sizes that came off the Figma nodes, rather than from what the readback calls returned, so every property but size was snap compared with snap, and the score proved nothing about colour, padding, type or radius. So the skill's readback template computes a checksum of each entry inside Figma, over exactly what the call returns, and `verify` recomputes it: 32-bit FNV-1a over the entry as JSON with every object's keys sorted, under the component set's id (the readback's `nodeId`) and the variant's slug, so an entry copied onto another variant fails too, and so does one copied onto the same slug in another component, where every component without variant props has the slug `default`. A component with no `nodeId` has none of its entries' checksums checked, and all of them fail. Nor may two components have the same `nodeId`: a whole component's entries copied onto another, `nodeId` and all, carry checksums that match under that id, but an honest readback reads each component from a set of its own, so every entry of both is reported as a duplicated `nodeId`, since which of them Figma returned can't be told. An entry whose checksum is missing or doesn't match was edited, composed from something else, or copied, after Figma returned it. `verify` reports it as an unverified readback, apart from drift, scores none of its properties either way, and fails `--strict`; it never prints the checksum the entry should have had. A missing checksum fails like a wrong one: verify and the readback are new in 0.3.0, so no released skill wrote a readback without them, and an optional checksum would be no check, since leaving it out is the easy way to compose a file by hand. The checksum ignores how the file is laid out (indentation, key order, `1e-7` or `0.0000001`), but not a value: rounding Figma's `0.4000000059604645` to `0.4`, changing a colour's case, or dropping a `null` all count as edits.
+Entries that fail aren't scored and fail `--strict`. The checksum isn't a signature, though (see [Limitations](#limitations)).
 
-**And it has to be all of what the readback returns, from this run.** A template cut down to fewer fields still seals what it returns, and only the properties an entry reports are scored, so a readback cut down to `{ source, width, height }` would score 100% on every strict flag without comparing colour, padding, type or radius, and one cut down to leave out type and spacing would score without comparing those. So the skill's template returns every field it reads on every entry, `null` where Figma has nothing to report, and `verify` requires all thirteen, present even when `null`: `source`, `backgroundColor`, `color`, `borderRadiusUniform`, `padding`, `borderUniform`, `fontSize`, `fontWeight`, `fontFamily`, `gap`, `opacity`, `width` and `height`. An entry that lacks one is an incomplete readback. The text child's fields are `null` on a variant with no text child, and `fontSize`, `fontWeight` and `fontFamily` also where Figma reports them as mixed; `verify` scores a `null` text field as a match only where snap measured no text on the variant either, and as drift where it did. `gap` is `null` on a frame without auto layout, which matches a measured gap of `null` or zero and drifts from any other. The template also seals into each entry `readAt`, the time Figma read it, and an entry with none, or read before the snap's `measuredAt` in `meta.json`, is a stale readback, one reused from an earlier run. `use_figma` runs the template in Figma's environment, not on the machine that ran snap, so the two times come from different clocks, and an honest readback follows the snap by only the minute or two the build takes; `verify` lets `readAt` fall up to five minutes before `measuredAt`, so that a machine clock a few minutes fast doesn't fail an honest run. Without `meta.json`, only that each entry has a `readAt` is checked, and `--strict-age` fails on the unknown age. Both are unverified readbacks, reported, left unscored and failed like a checksum that doesn't match, and neither ever ends on "Figma matches".
+**Comparison details.** Text colour, size, weight, and family are compared against the element that holds the text. Colours are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, colour, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
 
-`color`, `fontSize`, `fontWeight` and `fontFamily` are compared with the styles snap measured on the element that owns the text, matching the Figma TEXT node the readback reads. Colors are compared as snap writes them, ignoring case: `#rrggbb`, `#rrggbbaa` for a translucent one, and `null` for one that draws nothing, so the readback carries a Figma paint's opacity as the alpha byte. Opacity uses a fixed 0.01 allowance rather than `--tolerance`, which is a pixel budget. A measured `null` gap and a reported gap of zero, or a reported `null` one from a frame without auto layout, count as the same rendering; a reported `null` gap against a measured one is drift.
-
-A flex element's gap is compared on its main axis alone. snap records `row-gap` and `column-gap` separately, but Figma's `itemSpacing` is the gap along the auto layout's direction, and the readback reports it on both keys, so `verify` compares it with the measured column gap in a flex row and the row gap in a flex column. The other axis's gap, which only parts wrapped lines, isn't scored.
-
-A border is compared on its width, colour and style. The push builds a dashed or dotted border as a stroke with a dash pattern, and the readback reads the style back from it, so a dashed border built as a solid stroke is drift. So is a `double`, `groove`, `ridge`, `inset` or `outset` border, which Figma's strokes can't draw: the push builds it solid and names it in its summary.
-
-**Staleness.** `snap` writes a `meta.json` beside `styles.json` recording when the measurement was taken and against which Storybook. It is deliberately a separate file: `styles.json` is meant to be committed and diffed, and an embedded timestamp would churn on every run and bury the changes that matter. `verify` uses it to notice it is scoring a measurement taken before the code changed — the one drift case nothing else catches, since every property matches and the score reads 100%.
-
-`--strict-age` fails when the age cannot be established at all — a missing or malformed `meta.json`, or one dated in the future. That matters because `meta.json` is exactly the file a project is likely to gitignore, being the one that churns; treating an unknown age as a pass would make the check succeed unconditionally in the setup it exists to protect. Age is reported on every run, so an unchecked one never passes for a checked one.
+**Staleness.** `snap` writes a `meta.json` next to `styles.json` recording when and against which Storybook it measured. It's a separate file so `styles.json` stays stable to diff. `verify` uses it to catch a snap taken before the code changed, which would otherwise score 100%. `--strict-age` fails when `meta.json` is missing or invalid, since it's often gitignored.
 
 ### `storysync list`
 
-List all components available in Storybook.
-
-Storybook's docs list also names MDX docs pages, such as an introduction or a usage guide. They have no stories to measure, so `list` and every command that reads components leave them out rather than reading them as components.
+Lists the components in Storybook. MDX docs pages, like an introduction, are left out here and in every other command that reads components.
 
 ```text
 Options:
@@ -510,9 +491,9 @@ Options:
 
 ### `storysync diff`
 
-Compare a Figma file against code tokens and Storybook components. Reads from Figma via MCP, extracts tokens from local code, and optionally maps Storybook components — then reports what's different.
+Compares a Figma file against your code's tokens and, with `--storybook`, your Storybook components.
 
-> Requires a Figma MCP endpoint reachable without browser-based OAuth (typically a local proxy from a supported MCP client). If the command hangs on auth or returns `401`/`403`, use the skill file's audit flow instead — it runs inside the client that already holds the OAuth session.
+> Requires a Figma MCP endpoint that works without browser OAuth, usually a local proxy from a supported MCP client. If it hangs on auth or returns `401`/`403`, use the skill's audit flow instead, which runs inside a client that's already signed in.
 
 ```text
 Options:
@@ -532,8 +513,6 @@ Options:
   --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails
 ```
 
-Example:
-
 ```bash
 # Diff tokens only
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
@@ -542,19 +521,15 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
 ```
 
-`--components` narrows both sides. Storybook components are selected as `snap` and `map` select them, and Figma's to the same names, so a component left out of the diff is not reported as missing from code. A name only Figma has is not a typo: it is reported as not in code, which fails `--strict`, since that is the answer to asking about it. When both sides were read, a name neither side has is an error whatever the flags. When Storybook can't be listed, no name can be told from a typo, so none is rejected: Figma is still narrowed to the names given, and the run is reported as partial, with `"storybookReadFailed": true` under `--json`, which fails `--strict`. `--components` without `--storybook` is an error too.
-
-A Storybook component that can't be mapped, one whose documentation Storybook fails to return, say, isn't compared. `diff` names it and the reason, and lists it under `"mappingFailures"` with `--json`, which fails `--strict`. It isn't reported as not in code where Figma has it, and the run is reported as partial, never ending on "No differences found".
-
-`diff` reads Figma with `use_figma`, within its limits. It returns at most 20kb per call, and it loads a file's pages only as a call switches to them, starting each call on the first, so a search of the whole file sees only the first page, while the push puts each category on a page of its own. So `diff` lists the pages, leaving out dividers, and in the same call reads the first page's component sets, and its components outside any set, since that page is already loaded. It reads each other page in calls of its own, each switching to that page once. Variables belong to the file, not a page, and are read in calls of their own. Every call returns as much as fits in 17,000 bytes of JSON and says where the next starts. A file whose pages and palette each fit in one response takes one call for the variables, one for the page list and the first page, and one for each other page, and each further 17,000 bytes takes one more.
-
-Each of those calls counts toward the limits Figma's MCP server sets on a seat's tool calls, by the minute and by the day ([rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/)). The calls run one after another, but that doesn't keep them under the per-minute limit: a file of many pages may reach it, and a large library uses more of the day's. A call the server refuses for the limit fails the read with a message saying the limit was hit, not as a page that can't be read, and the run is reported as partial, with `"figmaReadFailed": true` under `--json`. Run `diff` again later.
-
-A component whose own properties come to more than 17,000 bytes, such as a thousand icons as the options of one variant property, can't come back in any call. It fails the read, naming the component and its page, as a page that can't be read does, and the run is reported as partial, with `"figmaReadFailed": true` under `--json`, which fails `--strict`. A name on more than one page, an archived copy, say, is reported as `ambiguous`, which fails `--strict` too. None of its copies is compared, so the name is counted once, as ambiguous, and not also as matched or missing.
+- `--components` narrows both sides. A name only Figma has is reported as not in code, and a name neither side has is an error. It needs `--storybook`.
+- If Storybook can't be listed or a component can't be mapped, the run is reported as partial (`storybookReadFailed` or `mappingFailures` in `--json`) and fails `--strict`. A partial run never ends with "No differences found".
+- `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later.
+- A component too big for one call, such as a thousand icons as the options of one property, fails the read and is named.
+- A name on more than one Figma page, like an archived copy, is reported as `ambiguous` and fails `--strict`.
 
 ### `storysync inspect`
 
-Inspect one component's props and show how each maps to Figma.
+Shows one component's props and how each maps to Figma.
 
 ```text
 Options:
@@ -566,74 +541,70 @@ Options:
 
 ## Limitations
 
-Both directions have known constraints worth knowing before you rely on their output: the Figma → code diff and audit, and the code → Figma push, from what `snap` measures to what `verify` scores.
-
 ### Figma → code: `diff` and the audit
 
-- **Figma MCP auth**: The CLI `diff` command needs an authenticated Figma MCP endpoint. Most Figma MCP setups require browser-based OAuth that only supported MCP clients can complete. Use the skill file's audit flow inside Claude Code / Cursor / Codex if the CLI returns `401`/`403`.
-- **`use_figma` return contract**: The audit relies on `use_figma` surfacing the plugin code's return value as MCP tool output. This works when run from a supported MCP client; behavior from third-party CLIs is not guaranteed. If `use_figma` doesn't return values, the skill agent is instructed to look for read-only tools or fall back to a user-exported JSON snapshot.
-- **Multi-mode variables**: By default, only the first mode of each Figma variable collection is read. Use `--mode <name>` on the CLI (or instruct the agent in chat) to read a specific mode like "Light" or "Dark".
-- **Variable aliases**: Aliases are resolved up to 8 levels deep; cycles are detected. Aliases pointing at variables in remote/team libraries are not resolved.
-- **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
-- **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`). Two code components sharing a name (e.g. `Forms/Button` and `Nav/Button`) can't both be paired with Figma's single `Button`; `diff` reports the name as `ambiguous` and fails `--strict` rather than silently comparing one. The same goes for a name repeated across Figma pages, such as an archived copy of `Button` or one pushed to two categories' pages. Either way, `diff` compares none of the copies, so the name is reported only as `ambiguous`, never also as matched or missing.
-- **Colour tokens outside sRGB compare as their clipped hex**: `diff` converts a token's colour to sRGB hex, clipping one outside sRGB as `snap` does (see the next section), so `color(display-p3 1 0 0)` matches a Figma variable of `#ff0000`, as does any other colour that clips to it.
-- **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used, for the variables a push creates as well as for `diff`.
+- **Figma MCP auth:** CLI `diff` needs an authenticated Figma MCP endpoint, which usually means OAuth in a supported client. If it returns `401`/`403`, use the skill's audit flow in Claude Code, Cursor, or Codex.
+- **`use_figma` return values:** the audit needs `use_figma` to return the plugin code's result. That works in supported clients but isn't guaranteed elsewhere.
+- **Variable modes:** only each collection's first mode is read. Use `--mode <name>`, or ask the agent, for another mode like "Dark".
+- **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
+- **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
+- **Component names:** matched by lowercased name, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is reported as `ambiguous` instead of being guessed.
+- **Wide-gamut colour tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
+- **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }` aren't followed, for the push or for `diff`.
 
-### Code → Figma: `snap`, the push and `verify`
+### Code → Figma: `snap`, the push, and `verify`
 
-- **Story args wiring**: `storysync snap` varies variants through Storybook's `?args=` URL, so a story that ignores its args measures its default state for every variant. snap warns when all of a component's variants measure identically. See [`storysync snap`](#storysync-snap).
-- **Variant values must be URL-safe**: Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so an option value containing e.g. `/` cannot be measured and is reported as `args_unsupported`.
-- **Props without declared options**: A prop typed as a bare `string` or `number` with no `options` in its argType becomes no Figma variant property, so it is not measured. Storybook's documentation response does not always surface argType options.
-- **Figma sets text about a pixel apart from the browser**: Figma lays text out with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than the browser drew it. In one push, a chip labelled "Chip" in bold 11px Inter measured 38.59px wide in Chrome and 40px in Figma. `verify` allows 3% or 1px on width and height, whichever is larger, so a short label at a small size can still drift. The skill has the agent report that drift as a font-rendering difference rather than fix the text's width to squeeze it, which can clip the label, unless the variant has a stroke that isn't `OUTSIDE`, or the width is off by exactly twice its border: then the stroke was built wrong, and that's what gets fixed.
-- **A transparent border shows as an unfilled ring in Figma**: The browser draws an element's background under a transparent border, but Figma's fill stops where an `OUTSIDE` stroke begins. The push keeps the border's space with a stroke that paints nothing, so the size matches and the ring around the fill stays empty. A stroke tinted the background's color looks closer, but `verify` scores it as a border color the code doesn't have; the push summary names those variants so you can choose.
-- **Shadows aren't scored**: the readback doesn't read a node's effects, so `verify` never compares `boxShadow`, and a shadow built wrong, an inset ring built as a drop shadow say, isn't flagged. The push builds each layer as snap measured it, an `INNER_SHADOW` where it is inset.
-- **`verify` trusts the readback**: it compares two local files and can't contact Figma, so it scores what the readback file says. The checksum on each entry, sealed under the set's id, the slug and the time Figma read it, catches a readback edited, composed from snap's values, or copied from another variant or component after Figma returned it, and `verify` also catches a whole component's entries copied onto another under its `nodeId`, and a readback cut down to fewer fields or read before the snap. But the checksum is not a signature: the code that computes it is in the skill, so an agent that runs it over values it made up, or over a `readAt` it made up, passes. And `readAt` tells a readback from before the snap, less the five minutes allowed for the two clocks, not one from before a later fix: a readback reused after a fix round, rather than read again, still passes. Nor does it catch a readback template that echoes the values it sent rather than reading them off the nodes, since the checksum covers whatever the template returns. The falsification test in [the example's README](examples/storybook-vite/README.md#pushing-to-figma) covers that: change a node in Figma by hand, read it back, and `verify` should report exactly that drift.
-- **Colours outside sRGB are clipped**: Figma's fills are sRGB here, so snap converts every colour to sRGB hex, and one outside sRGB, a `color(display-p3 1 0 0)` red say, or one of Tailwind v4's more saturated shades like red-600, `oklch(57.7% 0.245 27.325)`, is clipped channel by channel to the nearest sRGB value: `#ff0000` and `#e7000b`. That is what Chromium paints on an sRGB canvas, but a wide-gamut screen shows the code's colour more saturated than Figma's, and CSS Color 4's own gamut mapping, which reduces chroma instead, would choose a slightly different hex.
-- **Gradient and image fills aren't scored**: snap records them as `backgroundImage`, but `verify` compares only `backgroundColor`, and the readback reads only a solid fill, so a gradient built as a solid colour, or not built at all, isn't reported as drift.
-- **Text transform and letter-spacing aren't scored**: snap records `text.textTransform` and `letterSpacing`, but `verify` compares only the text's colour, size, weight and family, so a label built without its uppercase or its tracking shows up only as width drift.
-- **CSS `outline` isn't measured**: snap reads borders and box shadows, not outlines, so a focus ring drawn with `outline` and `outline-offset`, on a selected variant say, never reaches Figma, and `verify` can't report it missing.
+- **Stories must use their args.** See [`storysync snap`](#storysync-snap).
+- **Variant values must be URL-safe.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported`.
+- **Props need declared options.** A bare `string` or `number` prop with no `options` in its argType doesn't become a variant, and Storybook's docs don't always include argType options.
+- **Text can be a pixel off.** Figma lays out text with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than in the browser. `verify` allows 3% or 1px, whichever is larger. The skill reports this as a font-rendering difference instead of forcing the width, unless a stroke was built wrong.
+- **Transparent borders show as an empty ring.** Browsers paint the background under a transparent border, but Figma's fill stops where an `OUTSIDE` stroke begins. The push keeps the size right and names those variants in its summary.
+- **Some properties aren't scored.** Shadows, gradients and image fills, text transform, and letter-spacing are recorded by snap but not compared by `verify`.
+- **CSS `outline` isn't measured,** so a focus ring drawn with `outline` never reaches Figma.
+- **Colours outside sRGB are clipped** channel by channel, as Chromium does on an sRGB screen, so Tailwind v4's `red-600` becomes `#e7000b`. A wide-gamut screen shows the code's colour more saturated than Figma's.
+- **The readback checksum isn't a signature.** The code that computes it is in the skill, so an agent that runs it over made-up values would pass. It also won't catch a readback reused after a fix round, or a template that echoes what it sent instead of reading the nodes. The [falsification test](examples/storybook-vite/README.md#pushing-to-figma) covers that: change a node in Figma by hand, read it back, and `verify` should report exactly that change.
 
 ## What's measured vs. inferred
 
-storysync deliberately splits deterministic extraction (the CLI) from Figma writes (the AI client). Where a value comes from matters, so:
+storysync splits deterministic extraction (the CLI) from Figma writes (the AI client), so it's clear where each value comes from:
 
 | Step | How it's produced |
 |---|---|
-| Design tokens | **Measured** — parsed from your Tailwind config, CSS custom properties, or theme file |
-| Component variant structure | **Measured** — derived from Storybook prop types and argType options |
-| Component styling | **Measured** — `getComputedStyle` on the real render, via `storysync snap` |
-| Drift reports | **Measured** — deterministic comparison, normalized on both sides |
-| Figma writes | **Agent-driven** — the client writes Plugin API code; storysync never writes to Figma |
-| Layout and composition | **Interpreted** — snap measures properties, not whether a label sits correctly inside its button |
+| Design tokens | **Measured:** parsed from your Tailwind config, CSS custom properties, or theme file |
+| Component variant structure | **Measured:** derived from Storybook prop types and argType options |
+| Component styling | **Measured:** `getComputedStyle` on the real render, via `storysync snap` |
+| Drift reports | **Measured:** deterministic comparison, normalized on both sides |
+| Figma writes | **Agent-driven:** the client writes Plugin API code; storysync never writes to Figma |
+| Layout and composition | **Interpreted:** snap measures properties, not whether a label sits correctly inside its button |
 
 ## Non-goals
 
-- **Figma → code.** storysync never writes source. That direction is where an LLM's mistakes are hardest to notice, and Figma's own MCP already attempts it via `get_design_context`. Drift in that direction is *reported* by `storysync diff`; it is not applied.
-- **Installing fonts into Figma.** The Plugin API has no such capability. `snap` will tell you when a font is missing on either side; putting it there is manual.
-- **Pixel-perfect layout reproduction.** `verify` scores properties — fills, spacing, radii, borders, type, size. Whether a label sits correctly inside its button is interpreted, not measured.
+- **Figma → code.** storysync never writes source. That's the direction where an LLM's mistakes are hardest to notice, and Figma's MCP already does it with `get_design_context`. `storysync diff` reports drift in that direction but doesn't apply it.
+- **Installing fonts into Figma.** The Plugin API can't. `snap` tells you when a font is missing; adding it is up to you.
+- **Pixel-perfect layout.** `verify` scores properties (fills, spacing, radii, borders, type, and size), not whether a label sits correctly inside its button.
 
 ## Requirements
 
-### Storybook (for component sync)
+### Storybook (for components)
 
-- **Storybook 10.1+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`). Storybook 9.x only supports token extraction — the docs tools that `list`/`map`/`inspect` depend on require Storybook 10's component manifests.
-- **`@storybook/addon-mcp`** installed (provides MCP endpoint at `/mcp`)
-- **Node.js 18+** — except `storysync snap`, which needs **Node 20+** because Playwright does. Playwright is loaded only when `snap` runs, so every other command works on Node 18.
-- Must be the **dev server** (`storybook dev`), not a static build
-- A Chromium-based browser, for `storysync snap` only — see [`storysync snap`](#storysync-snap)
+- **Storybook 10.1+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`). Storybook 9 supports token extraction only.
+- **`@storybook/addon-mcp`**, which serves MCP at `/mcp`. `storysync init` sets it up.
+- The **dev server** (`storybook dev`), not a static build.
+- **Node.js 18+**, or 20+ for `snap`.
+- A Chromium-based browser, for `snap` only.
 
-### Figma (for writing via Claude Code / Cursor)
+### Figma (for writing)
 
-- **Full seat** on a paid plan (required for write access; Dev seats are read-only)
-- Auth is **OAuth 2.0**, handled automatically by supported MCP clients
-- Write-to-canvas is **free during beta**, will become a paid usage-based feature
-- **Rate limits**: Starter plans = 6 tool calls/month. Full seats on Professional+ = per-minute limits
+- A **Full seat** on a paid plan. Dev seats are read-only.
+- OAuth, which supported MCP clients handle for you.
+- Writing to the canvas is free during Figma's beta and will become a paid, usage-based feature.
+- Rate limits: Starter plans get 6 tool calls a month, and Full seats on Professional and up get per-minute limits.
 
-### Token extraction (no extra requirements)
+### Tokens
 
-Token extraction reads local files only — no Storybook, no MCP connection, no auth needed. Works with `storysync tokens` as a standalone command.
+Token extraction only reads local files, so it needs no Storybook, MCP connection, or auth.
 
-No Anthropic API key needed. The mapping rules are deterministic, no LLM costs from storysync itself. Figma's `use_figma` tool is agent-driven on their side.
+storysync needs no Anthropic API key and makes no LLM calls of its own.
 
 ## License
 
