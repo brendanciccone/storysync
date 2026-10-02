@@ -271,7 +271,9 @@ async function descendToComponent(
         const children = Array.from(node.children);
         if (children.length !== 1) break;
         const cs = getComputedStyle(node);
-        const transparent = cs.backgroundColor === "rgba(0, 0, 0, 0)" || cs.backgroundColor === "transparent";
+        // A gradient or image is drawn whatever the colour beneath it.
+        const transparent = (cs.backgroundColor === "rgba(0, 0, 0, 0)" || cs.backgroundColor === "transparent") &&
+          cs.backgroundImage === "none";
         const noBorder = ["Top", "Right", "Bottom", "Left"]
           .every((s) => parseFloat(cs.getPropertyValue(`border-${s.toLowerCase()}-width`)) === 0);
         const noPadding = ["top", "right", "bottom", "left"]

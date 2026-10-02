@@ -263,6 +263,54 @@ test("normalizeStyles: captures text-descendant styles when provided", () => {
   assert.equal(normalizeStyles(PRIMARY_SM, BOX).text, null);
 });
 
+// --- Background image -------------------------------------------------------
+
+test("normalizeStyles: a gradient fill is recorded, though its backgroundColor is null", () => {
+  // background: linear-gradient(90deg, #2563eb, #7c3aed), as Chromium computes it.
+  const s = normalizeStyles(withOverrides({
+    "background-color": "rgba(0, 0, 0, 0)",
+    "background-image": "linear-gradient(90deg, rgb(37, 99, 235), rgb(124, 58, 237))",
+  }), BOX);
+  assert.equal(s.backgroundColor, null);
+  assert.equal(s.backgroundImage, "linear-gradient(90deg, #2563eb, #7c3aed)");
+});
+
+test("normalizeStyles: a gradient's colours are written as hex, in whatever space Chromium gives them", () => {
+  // Tailwind v4's bg-linear-to-r from-blue-600 to-violet-600.
+  const tailwind = normalizeStyles(withOverrides({
+    "background-image": "linear-gradient(to right, oklch(0.546 0.245 262.881) 0%, oklch(0.541 0.281 293.009) 100%)",
+  }), BOX);
+  assert.equal(tailwind.backgroundImage, "linear-gradient(to right, #155dfc 0%, #7f22fe 100%)");
+  const radial = normalizeStyles(withOverrides({
+    "background-image": "radial-gradient(circle, color(display-p3 1 0 0 / 0.5), rgba(0, 0, 0, 0))",
+  }), BOX);
+  assert.equal(radial.backgroundImage, "radial-gradient(circle, #ff000080, #00000000)");
+});
+
+test("normalizeStyles: an image layered over a fill keeps both, and a url() as written", () => {
+  const s = normalizeStyles(withOverrides({
+    "background-image": 'url("http://localhost:6006/rgb(1).png"), linear-gradient(rgba(0, 0, 0, 0), rgb(0, 0, 0))',
+  }), BOX);
+  // The fill is still measured: it is the layer beneath.
+  assert.equal(s.backgroundColor, "#2563eb");
+  assert.equal(s.backgroundImage, 'url("http://localhost:6006/rgb(1).png"), linear-gradient(#00000000, #000000)');
+});
+
+test("normalizeStyles: no background image is null", () => {
+  assert.equal(normalizeStyles(withOverrides({ "background-image": "none" }), BOX).backgroundImage, null);
+  assert.equal(normalizeStyles(PRIMARY_SM, BOX).backgroundImage, null);
+});
+
+test("diffFromBase: a gradient variant of a solid button differs from it", () => {
+  // Both used to measure the same backgroundColor, so the variant's delta was
+  // empty and Figma built it as the solid fill it covers.
+  const base = normalizeStyles(PRIMARY_SM, BOX);
+  const layered = normalizeStyles(withOverrides({
+    "background-image": "linear-gradient(90deg, rgb(249, 115, 22), rgb(219, 39, 119))",
+  }), BOX);
+  assert.deepEqual(diffFromBase(base, layered), { backgroundImage: "linear-gradient(90deg, #f97316, #db2777)" });
+});
+
 // --- Box shadow -------------------------------------------------------------
 
 test("splitTopLevel: ignores commas inside parentheses", () => {

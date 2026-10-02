@@ -42,7 +42,17 @@ export interface NormalizedStyles {
   gap: { row: number; column: number } | null;
   width: number;
   height: number;
+  /** The layer under `backgroundImage`, when there is one: seen only where the image is transparent. */
   backgroundColor: string | null;
+  /**
+   * The computed `background-image`, its colours as hex, or null for none: a
+   * gradient or image painted over `backgroundColor`. A gradient button has a
+   * `backgroundColor` of null and is still filled.
+   *
+   * normalizeStyles always sets it; it is optional only so a styles.json
+   * written before it was measured still reads.
+   */
+  backgroundImage?: string | null;
   color: string | null;
   border: { top: BorderSide | null; right: BorderSide | null; bottom: BorderSide | null; left: BorderSide | null } | null;
   /** Set when all four sides are identical — the common case for Figma strokes. */
@@ -85,7 +95,7 @@ export interface NormalizedStyles {
 export const CAPTURED_PROPERTIES: readonly string[] = [
   "display", "flex-direction", "align-items", "justify-content",
   "row-gap", "column-gap",
-  "background-color", "color", "opacity",
+  "background-color", "background-image", "color", "opacity",
   "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
   "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
   "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
@@ -180,6 +190,24 @@ function normalizeLetterSpacing(value: string | undefined): number {
   const raw = (value ?? "").trim();
   if (!raw || raw === "normal") return 0;
   return pxToNumber(raw) ?? 0;
+}
+
+/** A colour function as Chromium serialises one, in any space. */
+const COLOR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i;
+
+/**
+ * A computed `background-image`, or null for none, with each colour in its
+ * gradients written as hex like every other colour snap records: Tailwind
+ * v4's `bg-linear-to-r` computes to `linear-gradient(to right in oklab,
+ * oklch(...) 0%, oklch(...) 100%)`. A `url()` layer is kept as written.
+ */
+function normalizeBackgroundImage(value: string | undefined): string | null {
+  const raw = (value ?? "").trim();
+  if (!raw || raw === "none") return null;
+  const anyColor = new RegExp(COLOR_FUNCTION.source, "gi");
+  return splitTopLevel(raw)
+    .map((layer) => (/^url\(/i.test(layer) ? layer : layer.replace(anyColor, (c) => colorToHex(c) ?? c)))
+    .join(", ");
 }
 
 // --- Border -----------------------------------------------------------------
@@ -308,7 +336,7 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
     // Chromium writes it in its authored space: oklch(), oklab(), color() too.
     let color: string | null = null;
     let transparent = false;
-    const fnColor = rest.match(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i);
+    const fnColor = rest.match(COLOR_FUNCTION);
     if (fnColor) {
       color = normalizeColor(fnColor[0]);
       transparent = isFullyTransparent(fnColor[0]);
@@ -378,6 +406,7 @@ export function normalizeStyles(
     width: round2(box.width),
     height: round2(box.height),
     backgroundColor: normalizeColor(raw["background-color"]),
+    backgroundImage: normalizeBackgroundImage(raw["background-image"]),
     color: normalizeColor(raw["color"]),
     border: anyBorder ? border : null,
     borderUniform: anyBorder && allSame ? border.top : null,
@@ -562,7 +591,7 @@ export type StyleDelta = Partial<NormalizedStyles>;
 
 const STYLE_KEYS = [
   "display", "flexDirection", "alignItems", "justifyContent", "gap",
-  "width", "height", "backgroundColor", "color", "border", "borderUniform",
+  "width", "height", "backgroundColor", "backgroundImage", "color", "border", "borderUniform",
   "borderRadius", "borderRadiusUniform", "padding", "fontFamily", "fontSize",
   "fontWeight", "lineHeight", "letterSpacing", "boxShadow", "opacity", "text",
   "boxSizing", "fontAvailable",
