@@ -55,7 +55,12 @@ export interface ReadbackStyles {
   fontSize?: number | null;
   fontWeight?: number | null;
   fontFamily?: string | null;
-  /** The auto layout's spacing on both axes, null when the frame has no auto layout. */
+  /**
+   * The auto layout's `itemSpacing` on both keys, null when the frame has no
+   * auto layout. `itemSpacing` is the gap along the layout's direction only,
+   * so a flex element's measured gap is compared on that axis alone: see
+   * comparableGap.
+   */
   gap?: { row: number; column: number } | null;
   flexDirection?: string | null;
   opacity?: number;
@@ -129,6 +134,26 @@ const TEXT_PROPERTIES = new Set<string>(["color", "fontSize", "fontWeight", "fon
 function geometryTolerance(explicit: number, a: unknown, b: unknown): number {
   const largest = Math.max(Number(a) || 0, Number(b) || 0);
   return Math.max(explicit, MIN_GEOMETRY_TOLERANCE_PX, largest * GEOMETRY_TOLERANCE_RATIO);
+}
+
+/**
+ * The measured gap as Figma's auto layout can reproduce it.
+ *
+ * snap records each axis: `row-gap` and `column-gap`. Figma's `itemSpacing`
+ * is the gap along the layout's direction only, between the items, which in
+ * a flex row is CSS's column gap and in a flex column its row gap; the other
+ * axis's gap only parts wrapped lines. The readback reports `itemSpacing` on
+ * both keys, so comparing both measured axes, `gap-x-2`'s `{ row: 0, column:
+ * 8 }` say, would drift on every push that got it right, and a column's gap
+ * would be scored against its row's. So a flex element's gap is compared on
+ * its main axis alone, the same on both keys; any other display's as it was
+ * measured.
+ */
+function comparableGap(measured: NormalizedStyles, gap: unknown): unknown {
+  if (gap == null || typeof gap !== "object" || !String(measured.display ?? "").includes("flex")) return gap;
+  const { row, column } = gap as { row: number; column: number };
+  const main = String(measured.flexDirection ?? "row").startsWith("column") ? row : column;
+  return { row: main, column: main };
 }
 
 /**
@@ -415,7 +440,8 @@ export function propertyMatches(
  * mixed, matches only where snap found no text on the variant either: where
  * it found some, Figma lacks the text or sets it in more than one style,
  * which is drift. A null gap, from a frame without auto layout, is compared
- * as any gap is: it matches a measured gap of null or zero, and no other.
+ * as any gap is: it matches a measured gap of null or zero, and no other. A
+ * flex element's gap is compared on its main axis alone: see comparableGap.
  */
 export function verifyVariant(
   component: string,
@@ -449,10 +475,13 @@ export function verifyVariant(
     const figmaValue = (figma as Record<string, unknown>)[property];
     // Compare like with like: the readback reads these off Figma's text child,
     // so score them against the text styles snap measured on the corresponding
-    // descendant. Falls back to the root when the element owns no text.
+    // descendant. Falls back to the root when the element owns no text. And
+    // a flex element's gap on the one axis Figma's itemSpacing spans.
     const measuredValue = TEXT_PROPERTIES.has(property) && measuredText?.[property] != null
       ? measuredText[property]
-      : (measured as unknown as Record<string, unknown>)[property];
+      : property === "gap"
+        ? comparableGap(measured, measured.gap)
+        : (measured as unknown as Record<string, unknown>)[property];
     // No text in Figma and none measured: the root's colour and font, which
     // every element has, style no text there to compare them with.
     const noTextEitherSide = TEXT_PROPERTIES.has(property) && figmaValue == null && measuredText == null;

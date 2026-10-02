@@ -1028,6 +1028,34 @@ test("verify: a null gap, from a frame without auto layout, matches a measured n
   assert.deepEqual(drifted.variants[0].differences, [{ property: "gap", status: "mismatch", measured: { row: 6, column: 6 }, figma: null }]);
 });
 
+test("verify: a flex element's gap is compared on its main axis, the one Figma's itemSpacing spans", () => {
+  // snap records each axis, and the readback reports itemSpacing on both
+  // keys, so a correct push of gap-x-2, gap: 8px 16px or a flex column's
+  // gap-y-3 drifted on the axis itemSpacing does not span, and could not be
+  // fixed in Figma.
+  const pushed = (itemSpacing: number) => readbackWith({ a: { gap: { row: itemSpacing, column: itemSpacing } } });
+  const cases: [Partial<NormalizedStyles>, number, number][] = [
+    [{ display: "inline-flex", flexDirection: "row", gap: { row: 0, column: 8 } }, 8, 0],
+    [{ display: "inline-flex", flexDirection: "row", gap: { row: 8, column: 16 } }, 16, 8],
+    [{ display: "flex", flexDirection: "column", gap: { row: 12, column: 0 } }, 12, 0],
+    [{ display: "flex", flexDirection: "column-reverse", gap: { row: 12, column: 4 } }, 12, 4],
+  ];
+  for (const [styles, main, cross] of cases) {
+    const right = verify(snapWithText(null, styles), pushed(main), 0.5);
+    assert.equal(right.variants[0].status, "verified", `${JSON.stringify(styles)} with itemSpacing ${main}: ${JSON.stringify(right.variants[0].differences)}`);
+    // The cross axis's gap is drift, reported as the main axis it was scored on.
+    const wrong = verify(snapWithText(null, styles), pushed(cross), 0.5);
+    assert.deepEqual(wrong.variants[0].differences,
+      [{ property: "gap", status: "mismatch", measured: { row: main, column: main }, figma: { row: cross, column: cross } }],
+      `${JSON.stringify(styles)} with itemSpacing ${cross}`);
+  }
+  // Without auto layout, a flex row whose items have no gap between them matches.
+  assert.equal(verify(snapWithText(null, { gap: { row: 12, column: 0 } }), readbackWith({ a: { gap: null } }), 0.5).variants[0].status, "verified");
+  // Any other display's gap is compared on both axes, as measured.
+  const grid = verify(snapWithText(null, { display: "grid", gap: { row: 0, column: 8 } }), pushed(8), 0.5);
+  assert.equal(grid.variants[0].differences[0]?.property, "gap");
+});
+
 test("verify: a checksum that does not match is the one issue reported for an entry, however incomplete or old", () => {
   const file = readbackWith({ a: { readAt: undefined, padding: undefined } });
   (file.components["Forms/Button"].variants.a as Record<string, unknown>).opacity = 0.5;

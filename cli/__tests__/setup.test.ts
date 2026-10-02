@@ -562,6 +562,30 @@ test("every push instruction reads a translucent colour back with its alpha, and
   }
 });
 
+test("every push instruction sets itemSpacing from the gap along the layout's direction", () => {
+  // Figma's itemSpacing is the main-axis gap. The table said gap.column for
+  // every layout, which is 0 for a flex column's gap-y-3, where the items
+  // are 12 apart.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /`gap\.column`, or `gap\.row` when `flexDirection` is `column` or `column-reverse`,? (?:\||→) `itemSpacing`/,
+        `${path} sets itemSpacing from gap.column whatever the layout's direction`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push summary says a transparent border shows as an unfilled ring", () => {
   // The browser draws the background under a transparent border; Figma's
   // fill stops where the OUTSIDE stroke begins, and that stroke paints

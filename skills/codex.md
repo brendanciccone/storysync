@@ -176,7 +176,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | `backgroundColor` | fill (`null` means no fill, not black) |
    | `color` / `text.color` | text fill |
    | `padding` | auto-layout padding |
-   | `gap.column` | `itemSpacing` |
+   | `gap.column`, or `gap.row` when `flexDirection` is `column` or `column-reverse` | `itemSpacing`, the gap along the layout's direction (`verify` compares a flex element's gap on that axis alone) |
    | `borderRadiusUniform`, else `borderRadius` | `cornerRadius`, else per-corner |
    | `borderUniform` | stroke weight + colour (`null` means no stroke; a `color` of `null` is a transparent border, a stroke with an invisible paint: see below) |
    | a colour written `#rrggbbaa` | a translucent colour: `#rrggbb` with the paint's `opacity` at `aa` / 255, so `#4b556322` is `#4b5563` at an opacity of 34 / 255, about 0.133; for a shadow, the effect colour's `a` |
@@ -593,7 +593,9 @@ use_figma({
         // null without auto layout, where there is no gap. verify treats a
         // measured null gap and {0,0} as the same rendering, so this, or an
         // auto-layout frame with zero spacing, matches a block-level element,
-        // and null against a measured gap is drift.
+        // and null against a measured gap is drift. itemSpacing is the gap
+        // along the layout's direction, so verify compares a flex element's
+        // measured gap on that axis alone.
         gap: child.layoutMode && child.layoutMode !== 'NONE'
           ? { row: child.itemSpacing, column: child.itemSpacing }
           : null,
