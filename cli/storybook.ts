@@ -233,22 +233,37 @@ export class StorybookClient {
   // kebab-case versions of the title, so `ui-button` → category "UI").
   // Falls back to slashed names (`Forms/Button`) and section headings
   // when present, since not all Storybook MCP responses include IDs.
+  //
+  // The list names MDX docs pages too, under "# Docs" ("## Docs" in each
+  // source's part when Storybook composes several). A docs page has no
+  // stories, so it is not a component: read as one, it failed every snap and
+  // was reported by diff as a component missing from Figma.
   private parseComponentList(text: string): ComponentEntry[] {
     const entries: ComponentEntry[] = [];
     let current: ComponentEntry | null = null;
     let currentSection: string | null = null;
+    let inDocs = false;
 
     for (const line of text.split("\n")) {
       const heading = line.match(/^#{1,6}\s+(.+?)\s*$/);
       if (heading) {
         currentSection = heading[1].trim();
+        inDocs = currentSection.toLowerCase() === "docs";
         continue;
       }
+      if (inDocs) continue;
 
       const m = line.match(/^[\-\*]\s+(?:\*\*)?([^*(\n]+?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^)`"'\n]+)[`"']?\)/);
       if (m && !/^\s{2,}/.test(line)) {
         const rawName = m[1].trim();
         const id = m[2].trim();
+        // A docs page's ID is a story-style `guidelines-button--docs`.
+        // Storybook collapses repeated dashes in a title, so a component's ID
+        // never holds `--`, whatever heading the entry is under.
+        if (id.includes("--")) {
+          current = null;
+          continue;
+        }
         let title: string | undefined;
         let name = rawName;
 

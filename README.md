@@ -450,6 +450,8 @@ Reporting *nothing* is not a pass, though, and nor is reporting less than the re
 
 List all components available in Storybook.
 
+Storybook's docs list also names MDX docs pages, such as an introduction or a usage guide. They have no stories to measure, so `list` and every command that reads components leave them out rather than reading them as components.
+
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)

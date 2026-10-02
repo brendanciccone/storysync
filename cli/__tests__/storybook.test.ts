@@ -163,10 +163,16 @@ const EXAMPLE_BUTTON_DOC = [
 
 /**
  * Connects a StorybookClient to an in-memory stand-in for addon-mcp that
- * offers `tools`. Like the real server, a call it can't answer (an unknown
- * tool or component) is an `isError` result, not a protocol error.
+ * offers `tools`, answering the docs list with `list` and docs-show with the
+ * entry in `docs` under the ID asked for. Like the real server, a call it
+ * can't answer (an unknown tool or component) is an `isError` result, not a
+ * protocol error.
  */
-async function connectToFakeAddon(tools: DocsTools | null): Promise<StorybookClient> {
+async function connectToFakeAddon(
+  tools: DocsTools | null,
+  list = EXAMPLE_LIST,
+  docs: Record<string, string> = { "forms-button": EXAMPLE_BUTTON_DOC },
+): Promise<StorybookClient> {
   const server = new Server({ name: "fake-addon-mcp", version: "0.0.0" }, { capabilities: { tools: {} } });
   const names = tools ? [tools.list, tools.show] : ["preview-stories"];
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -175,9 +181,10 @@ async function connectToFakeAddon(tools: DocsTools | null): Promise<StorybookCli
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
     if (!names.includes(params.name)) return fail(`Tool ${params.name} not found`);
-    if (params.name === tools?.list) return { content: [{ type: "text" as const, text: EXAMPLE_LIST }] };
-    if (params.arguments?.id !== "forms-button") return fail(`Component or Docs Entry not found: "${params.arguments?.id}".`);
-    return { content: [{ type: "text" as const, text: EXAMPLE_BUTTON_DOC }] };
+    if (params.name === tools?.list) return { content: [{ type: "text" as const, text: list }] };
+    const doc = docs[String(params.arguments?.id)];
+    if (doc === undefined) return fail(`Component or Docs Entry not found: "${params.arguments?.id}".`);
+    return { content: [{ type: "text" as const, text: doc }] };
   });
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -227,6 +234,67 @@ test("StorybookClient: an unknown component ID is an error, not a component with
   } finally {
     await client.disconnect();
   }
+});
+
+/** The components StorybookClient reads from a docs list of `list`. */
+async function listed(list: string) {
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, list);
+  try {
+    return await client.listComponents();
+  } finally {
+    await client.disconnect();
+  }
+}
+
+test("StorybookClient: MDX docs pages in the docs list are not components", async () => {
+  // addon-mcp 10.6 with addon-docs and two unattached MDX pages, one of them
+  // a guide titled Guidelines/Button.
+  const entries = await listed([
+    "# Components", "",
+    "- Button (forms-button)", "  - Default (forms-button--default)",
+    "- Frozen (forms-frozen)", "  - Default (forms-frozen--default)",
+    "", "# Docs", "",
+    "- Guidelines/Button (guidelines-button--docs): # Button guidelines Use one primary button per view.",
+    "- Foundations/Introduction (foundations-introduction--docs): # Welcome This is the design system introduction.",
+  ].join("\n"));
+  assert.deepEqual(entries.map((e) => [e.id, e.name, e.storyIds]), [
+    ["forms-button", "Button", ["forms-button--default"]],
+    ["forms-frozen", "Frozen", ["forms-frozen--default"]],
+  ]);
+  // The guide no longer makes the name Button ambiguous.
+  assert.deepEqual(selectComponents(entries, ["Button"]).map((e) => e.id), ["forms-button"]);
+});
+
+test("StorybookClient: docs pages are left out of each source's part of a composed docs list", async () => {
+  const entries = await listed([
+    "# Design System", "id: design-system", "",
+    "## Components", "",
+    "- Button (forms-button)", "  - Default (forms-button--default)", "",
+    "## Docs", "",
+    "- Introduction (introduction--docs): Welcome", "",
+    "# Marketing", "id: marketing", "",
+    "## Components", "",
+    "- Card (card)", "  - Default (card--default)", "",
+    "## Docs", "",
+    "- Guidelines/Card (guidelines-card--docs)",
+  ].join("\n"));
+  assert.deepEqual(entries.map((e) => [e.id, e.storyIds]), [
+    ["forms-button", ["forms-button--default"]],
+    ["card", ["card--default"]],
+  ]);
+});
+
+test("StorybookClient: a docs page is told from a component by its ID, whatever heading it is under", async () => {
+  // A component's ID is its story IDs' part before `--`, so it never holds one.
+  const entries = await listed([
+    "- Button (forms-button)", "  - Default (forms-button--default)",
+    "- Introduction (introduction--docs): Welcome",
+    "- Card (data-display-card)", "  - Default (data-display-card--default)",
+  ].join("\n"));
+  assert.deepEqual(entries.map((e) => [e.id, e.storyIds]), [
+    ["forms-button", ["forms-button--default"]],
+    ["data-display-card", ["data-display-card--default"]],
+  ]);
 });
 
 // --- selectComponents ---
