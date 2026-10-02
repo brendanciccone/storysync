@@ -140,6 +140,38 @@ test("action Detect drift: a changed component is reported under its title, and 
   assert.doesNotMatch(r.report ?? "", /### Added|### Removed/);
 });
 
+test("action Detect drift: a baseline that is not map --json output fails with the command to recreate it", () => {
+  // The first is what the printed command writes with Storybook down: under
+  // --json, map's error goes to stdout, into the baseline.
+  const notBaselines = [
+    JSON.stringify({ error: "Error: Failed to connect to Storybook MCP at http://localhost:6006: fetch failed" }),
+    JSON.stringify({ components: [] }),
+    JSON.stringify({ summary: { total: 0 } }),
+    JSON.stringify({ components: [{}], summary: { total: 1 } }),
+    JSON.stringify([]),
+    "null",
+    "",
+    "{",
+  ];
+  for (const baseline of notBaselines) {
+    const r = detectDrift(baseline, [formsButton]);
+    assert.equal(r.status, 1, `${baseline}: ${r.stdout}${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /TypeError|SyntaxError/, baseline);
+    const errors = r.stdout.split("\n").filter((line) => line.startsWith("::error::"));
+    assert.equal(errors.length, 1, `${baseline}: ${r.stdout}`);
+    assert.match(errors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) is not map --json output/);
+    assert.ok(
+      errors[0].includes("Recreate it by running this in the repository root with Storybook running, then commit it: mkdir -p -- .storysync && npx storysync@0.3.0 map --storybook http://localhost:6006 --json > .storysync/baseline.json"),
+      errors[0],
+    );
+    assert.equal(r.outputs.result, undefined, baseline);
+    assert.equal(r.report, null, baseline);
+  }
+
+  const r = detectDrift(notBaselines[0], [formsButton]);
+  assert.match(r.stdout, /is not map --json output \(it holds an error: Failed to connect to Storybook MCP at http:\/\/localhost:6006: fetch failed\)\. Recreate/);
+});
+
 // --- Detect token drift ---
 
 interface Collection {

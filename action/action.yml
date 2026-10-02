@@ -563,7 +563,19 @@ runs:
           process.exit(0);
         }
 
-        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+        // map --json always writes components and a summary. A file without
+        // them isn't a baseline, such as the {"error": ...} the command above
+        // writes when Storybook isn't running, and would crash the step on a
+        // TypeError with nothing to say what was wrong.
+        let baseline = null;
+        try { baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")); } catch {}
+        const isRecord = (v) => typeof v === "object" && v !== null;
+        const isComponent = (c) => isRecord(c) && typeof c.name === "string" && Array.isArray(c.variantProperties);
+        if (!isRecord(baseline) || !Array.isArray(baseline.components) || !baseline.components.every(isComponent) || !isRecord(baseline.summary)) {
+          const held = isRecord(baseline) && typeof baseline.error === "string" ? " (it holds an error: " + baseline.error.replace(/^Error: /, "") + ")" : "";
+          console.log(escape("::error::The baseline at " + baselinePath + " (relative to " + where + ") is not map --json output" + held + ". Recreate it by " + create));
+          process.exit(1);
+        }
 
         // Components are told apart by their Storybook title, which is unique
         // where the name needn't be: Forms/Button and Nav/Button are both
