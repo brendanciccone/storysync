@@ -289,7 +289,17 @@ const RATE_LIMITED = /tool call limit|\brate limit(ed)?\b|too many requests|\bHT
 /** The size guard's own refusal, which names a component or page and is never a rate limit. */
 const GUARD_REFUSAL = "bytes as use_figma returns it, more than the";
 
-const isRateLimit = (reason: string) => !reason.includes(GUARD_REFUSAL) && RATE_LIMITED.test(reason);
+/**
+ * An error the plugin code threw, as use_figma returns it: "Error: " and the
+ * message, which can quote the file's own names, a page called "Rate
+ * limited", say. The server's refusal has been reported as a sentence of its
+ * own, not worded as a thrown error, so a reason worded as one is never read
+ * as a rate limit.
+ */
+const PLUGIN_ERROR = /^\s*Error:/;
+
+const isRateLimit = (reason: string) =>
+  !PLUGIN_ERROR.test(reason) && !reason.includes(GUARD_REFUSAL) && RATE_LIMITED.test(reason);
 
 export class FigmaClient {
   private client: Client | null = null;

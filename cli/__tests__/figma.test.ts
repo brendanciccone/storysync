@@ -223,6 +223,20 @@ test("getComponents: a page that can't be read fails the read, naming the page",
   }
 });
 
+test("getComponents: a page named like a rate-limit notice that can't be read is a page read failure, not a rate limit", async () => {
+  // A plugin error comes back as "Error: " and its message, which can quote
+  // the user's page and component names; they mustn't turn it into a rate
+  // limit, which would say to run diff later when the page will fail again.
+  for (const name of ["rate limited", "Too many requests"]) {
+    const file: FileSpec = { pages: [LIBRARY.pages[0], { name, nodes: [component("Logo")] }], failingPages: { [name]: `Page "${name}" could not be loaded` } };
+    const { result, error, calls } = await read(file, components);
+    assert.equal(result, null);
+    assert.ok(error && !(error instanceof FigmaRateLimitError), error?.message);
+    assert.equal(error.message, `Failed to read page "${name}" of the Figma file: Figma MCP tool "use_figma" failed: Error: Page "${name}" could not be loaded`);
+    assert.deepEqual(calls.map((c) => c.error ?? null), [null, `Error: Page "${name}" could not be loaded`]);
+  }
+});
+
 test("getComponents: skips page dividers, which hold nothing and can't be switched to", async () => {
   // Dividers between a file's sections are pages to the plugin API, flagged
   // isPageDivider. Switching to one fails in the stand-in, so a read that
