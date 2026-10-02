@@ -500,6 +500,163 @@ test("detectTokenSource: returns null when nothing found", () => {
   } finally { cleanup(dir); }
 });
 
+// --- Tailwind v4 @theme ---
+
+/** Every collection as [category, [[name, value], ...]], for one deepEqual. */
+function tokenTable(result: ReturnType<typeof extractTokens>) {
+  return result.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.value])]);
+}
+
+test("Tailwind v4: a CSS-first project's @theme is its token source, read by namespace", () => {
+  // Nothing but @theme: no config, no :root, so no token source was found.
+  const dir = makeProject({
+    "src/app.css": `@import "tailwindcss";
+
+@theme {
+  --color-brand-500: oklch(62.3% 0.214 259.815);
+  --color-card-foreground: #0a0a0a;
+  --spacing: 0.25rem;
+  --spacing-18: 4.5rem;
+  --radius-card: 0.75rem;
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 0.1);
+  --text-hero: 3.5rem;
+  --text-hero--line-height: 1.1;
+  --font-display: "Satoshi", sans-serif;
+  --font-weight-heavy: 850;
+  --leading-snug: 1.375;
+  --tracking-tightest: -0.075em;
+}`,
+  });
+  try {
+    const detected = detectTokenSource(dir);
+    assert.equal(detected?.type, "tailwind");
+    assert.equal(detected?.path, join(dir, "src/app.css"));
+    for (const result of [extractTokens(dir), extractTokens(dir, "tailwind")]) {
+      assert.equal(result.source, "tailwind");
+      assert.equal(result.sourcePath, join(dir, "src/app.css"));
+      assert.deepEqual(tokenTable(result), [
+        ["colors", [["brand/500", "oklch(62.3% 0.214 259.815)"], ["card/foreground", "#0a0a0a"]]],
+        ["spacing", [["DEFAULT", "0.25rem"], ["18", "4.5rem"]]],
+        ["typography", [
+          ["text/hero", "3.5rem"],
+          ["font/display", `"Satoshi", sans-serif`],
+          ["font/weight/heavy", "850"],
+          ["leading/snug", "1.375"],
+          ["tracking/tightest", "-0.075em"],
+        ]],
+        ["radius", [["card", "0.75rem"]]],
+        ["shadows", [["soft", "0 2px 8px rgb(0 0 0 / 0.1)"]]],
+      ]);
+      assert.equal(result.collections[0].tokens[0].hex, "#2b7fff");
+      assert.deepEqual(result.warnings, []);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind v4: var() resolves against the theme, :root and Tailwind's own theme", () => {
+  // shadcn/ui's v4 globals.css: @theme inline points at :root, and a
+  // project's theme can name Tailwind's default palette.
+  const dir = makeProject({
+    "app/globals.css": `@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --color-background: var(--background);
+  --color-primary: var(--color-blue-500);
+  --color-accent: var(--color-brand);
+  --color-brand: #3b82f6;
+  --color-link: var(--nowhere);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+}`,
+    "node_modules/tailwindcss/theme.css": `@theme default {
+  --color-blue-500: oklch(62.3% 0.214 259.815);
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+}`,
+  });
+  try {
+    assert.equal(detectTokenSource(dir)?.type, "tailwind");
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [
+      ["colors", [
+        ["background", "oklch(1 0 0)"],
+        ["primary", "oklch(62.3% 0.214 259.815)"],
+        ["accent", "#3b82f6"],
+        ["brand", "#3b82f6"],
+        // Kept as written, as a Tailwind config's unresolved var() is.
+        ["link", "var(--nowhere)"],
+      ]],
+      ["radius", [["sm", "calc(0.625rem - 4px)"], ["lg", "0.625rem"]]],
+    ]);
+    // Tailwind's defaults resolve references but aren't the project's tokens.
+    assert.equal(result.collections.flatMap((c) => c.tokens).some((t) => t.name.includes("blue") || t.name.includes("sans")), false);
+    // --source css still reads :root alone.
+    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [["colors", [["background", "oklch(1 0 0)"]]]]);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind v4: initial removes a variable or a namespace, and nested rules and other namespaces aren't tokens", () => {
+  const dir = makeProject({
+    "src/theme.css": `@theme {
+  --color-red-500: #ef4444;
+  --color-old: #ff0000;
+  --color-old: initial;
+  --spacing-*: initial;
+  --spacing-4: 1rem;
+  --breakpoint-3xl: 120rem;
+  --text-shadow-glow: 0 0 4px #ff0000;
+  --animate-wiggle: wiggle 1s ease-in-out infinite;
+  @keyframes wiggle {
+    0%, 100% { transform: rotate(-3deg); }
+    50% { --color-not-a-token: #000; }
+  }
+}
+/* @theme { --color-commented: #123456; } */
+@theme {
+  --color-*: initial;
+  --color-brand: #3b82f6;
+}`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [
+      ["colors", [["brand", "#3b82f6"]]],
+      ["spacing", [["4", "1rem"]]],
+    ]);
+    assert.deepEqual(result.warnings, [
+      "Uncategorized: --breakpoint-3xl: 120rem",
+      "Uncategorized: --text-shadow-glow: 0 0 4px #ff0000",
+      "Uncategorized: --animate-wiggle: wiggle 1s ease-in-out infinite",
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind v4: a tailwind.config still comes first, and an @theme only in a comment isn't one", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+    "src/app.css": `@theme { --color-brand: #0000ff; }`,
+  });
+  try {
+    assert.equal(detectTokenSource(dir)?.path, join(dir, "tailwind.config.js"));
+    assert.deepEqual(tokenTable(extractTokens(dir)), [["colors", [["brand", "#ff0000"]]]]);
+  } finally { cleanup(dir); }
+
+  const commented = makeProject({ "src/app.css": `@import "tailwindcss";\n/* @theme { --color-brand: #0000ff; } */\n` });
+  try {
+    assert.equal(detectTokenSource(commented), null);
+    assert.deepEqual(extractTokens(commented, "tailwind").warnings, ["No tailwind.config or CSS @theme block found"]);
+  } finally { cleanup(commented); }
+});
+
 // --- Colour hex ---
 
 test("hex: each colour token carries its sRGB hex next to the value as written", () => {

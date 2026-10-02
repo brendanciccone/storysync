@@ -111,6 +111,32 @@ test("tokens CLI: --json gives each colour's hex, and a baseline from before it 
   });
 });
 
+test("tokens CLI: a Tailwind v4 project's @theme is found, and checks clean against its own baseline", () => {
+  // It printed "No token source found", and --strict failed.
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "app.css"), `@import "tailwindcss";\n@theme {\n  --color-brand-500: oklch(63.7% 0.237 25.331);\n  --radius-card: 0.75rem;\n}\n`);
+    const r = tokens(dir, "--strict");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /Detected: tailwind \(src\/app\.css\)/);
+    assert.match(r.out, /brand\/500\s+oklch\(63\.7% 0\.237 25\.331\)/);
+
+    const json = tokens(dir, "--json");
+    const data = JSON.parse(json.stdout) as { source: string; collections: { category: string; tokens: { name: string; hex?: string }[] }[] };
+    assert.equal(data.source, "tailwind");
+    assert.deepEqual(data.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.hex])]), [
+      ["colors", [["brand/500", "#fb2c36"]]],
+      ["radius", [["card", undefined]]],
+    ]);
+
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), json.stdout);
+    const check = tokens(dir, "--check", "--strict");
+    assert.equal(check.status, 0, check.out);
+    assert.match(check.out, /No token drift detected/);
+  });
+});
+
 test("tokens CLI: the suggested command makes a baseline directory whose name starts with a dash", () => {
   // Without `--`, mkdir read "-baselines" as its options and failed, so the
   // command the message gives never wrote the baseline.

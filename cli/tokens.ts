@@ -1,7 +1,7 @@
 // Design token extraction from project source files.
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { colorToHex } from "./color.js";
 
 /** The token sources `--source` takes. Leaving it out, or `auto`, detects one. */
@@ -67,11 +67,28 @@ interface DetectedSource {
   path: string;
 }
 
-export function detectTokenSource(projectPath: string): DetectedSource | null {
-  for (const name of ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"]) {
+const TAILWIND_CONFIGS = ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"];
+
+function findTailwindConfig(projectPath: string): string | null {
+  for (const name of TAILWIND_CONFIGS) {
     const p = join(projectPath, name);
-    if (existsSync(p)) return { type: "tailwind", path: p };
+    if (existsSync(p)) return p;
   }
+  return null;
+}
+
+/**
+ * A Tailwind config comes first, then a Tailwind v4 `@theme` block, then
+ * `:root` custom properties. A v4 project's tokens are its `@theme`, so one
+ * that also has `:root`, as shadcn/ui's v4 globals.css does, is read through
+ * `@theme`, which resolves its references to `:root`.
+ */
+export function detectTokenSource(projectPath: string): DetectedSource | null {
+  const config = findTailwindConfig(projectPath);
+  if (config) return { type: "tailwind", path: config };
+
+  const themeCss = findTailwindThemeCSS(projectPath);
+  if (themeCss.length) return { type: "tailwind", path: themeCss[0] };
 
   const cssFiles = findCSSWithCustomProperties(projectPath);
   if (cssFiles.length) return { type: "css", path: cssFiles[0] };
@@ -83,6 +100,16 @@ export function detectTokenSource(projectPath: string): DetectedSource | null {
 }
 
 function findCSSWithCustomProperties(projectPath: string): string[] {
+  return findCSS(projectPath, (css) => /:root\s*\{/.test(css) && /--[\w-]+\s*:/.test(css));
+}
+
+/** Stylesheets with a Tailwind v4 `@theme` block that declares a variable. */
+function findTailwindThemeCSS(projectPath: string): string[] {
+  return findCSS(projectPath, (css) => readThemeBlocks(css).some((block) => readDeclarations(block).length > 0));
+}
+
+/** The project's stylesheets, CSS modules aside, whose text without comments passes `test`. */
+function findCSS(projectPath: string, test: (css: string) => boolean): string[] {
   const results: string[] = [];
   const srcDir = join(projectPath, "src");
   const appDir = join(projectPath, "app");
@@ -90,12 +117,12 @@ function findCSSWithCustomProperties(projectPath: string): string[] {
 
   for (const dir of [srcDir, appDir, stylesDir, projectPath]) {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
-    walkCSS(dir, results, projectPath, 0);
+    walkCSS(dir, results, test, 0);
   }
   return results;
 }
 
-function walkCSS(dir: string, results: string[], root: string, depth: number): void {
+function walkCSS(dir: string, results: string[], test: (css: string) => boolean, depth: number): void {
   if (depth > 5) return;
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
@@ -106,13 +133,10 @@ function walkCSS(dir: string, results: string[], root: string, depth: number): v
     let stat;
     try { stat = statSync(full); } catch { continue; }
     if (stat.isDirectory()) {
-      walkCSS(full, results, root, depth + 1);
+      walkCSS(full, results, test, depth + 1);
     } else if (entry.endsWith(".css") && !entry.endsWith(".module.css")) {
       try {
-        const content = readCss(full);
-        if (/:root\s*\{/.test(content) && /--[\w-]+\s*:/.test(content)) {
-          results.push(full);
-        }
+        if (test(readCss(full))) results.push(full);
       } catch { /* skip unreadable */ }
     }
   }
@@ -195,11 +219,11 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): T
   if (sourceType) {
     switch (sourceType) {
       case "tailwind": {
-        for (const name of ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"]) {
-          const p = join(projectPath, name);
-          if (existsSync(p)) return extractFromTailwind(p, projectPath);
-        }
-        return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config found"] };
+        const config = findTailwindConfig(projectPath);
+        if (config) return extractFromTailwind(config, projectPath);
+        const themeCss = findTailwindThemeCSS(projectPath);
+        if (themeCss.length) return extractFromTailwindTheme(themeCss, projectPath);
+        return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config or CSS @theme block found"] };
       }
       case "css": {
         const files = findCSSWithCustomProperties(projectPath);
@@ -220,7 +244,10 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): T
   }
 
   switch (detected.type) {
-    case "tailwind": return extractFromTailwind(detected.path, projectPath);
+    case "tailwind":
+      return detected.path.endsWith(".css")
+        ? extractFromTailwindTheme(findTailwindThemeCSS(projectPath), projectPath)
+        : extractFromTailwind(detected.path, projectPath);
     case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath));
     case "theme": return extractFromTheme(detected.path);
   }
@@ -506,6 +533,148 @@ function extractKeyValuePairs(block: string): [string, string][] {
     }
   }
   return pairs;
+}
+
+// --- Tailwind v4 @theme extraction ---
+
+/**
+ * The Tailwind v4 theme variable namespaces read as tokens, and their
+ * categories. Colours, spacing, radii and shadows are named without the
+ * namespace, as a Tailwind config's keys are: `--color-brand-500` is colors
+ * `brand/500`, and the bare `--spacing` is spacing `DEFAULT`. Typography
+ * holds several namespaces, so its names keep theirs: `--text-sm` is
+ * `text/sm`, `--font-sans` `font/sans`, `--font-weight-bold`
+ * `font/weight/bold`, `--leading-tight` `leading/tight`.
+ */
+const THEME_NAMESPACES: { namespace: string; category: TokenCategory; keepNamespace?: true }[] = [
+  { namespace: "color", category: "colors" },
+  { namespace: "spacing", category: "spacing" },
+  { namespace: "radius", category: "radius" },
+  { namespace: "shadow", category: "shadows" },
+  { namespace: "text", category: "typography", keepNamespace: true },
+  { namespace: "font", category: "typography", keepNamespace: true },
+  { namespace: "leading", category: "typography", keepNamespace: true },
+  { namespace: "tracking", category: "typography", keepNamespace: true },
+];
+
+/** A theme variable's category and token name, or null outside THEME_NAMESPACES. */
+function themeToken(varName: string): { category: TokenCategory; name: string } | null {
+  const bare = varName.slice(2);
+  // --text-shadow-* is text shadows, not font sizes.
+  if (bare.startsWith("text-shadow-")) return null;
+  for (const { namespace, category, keepNamespace } of THEME_NAMESPACES) {
+    if (bare !== namespace && !bare.startsWith(`${namespace}-`)) continue;
+    if (keepNamespace) return { category, name: bare.replace(/-/g, "/") };
+    const key = bare.slice(namespace.length + 1);
+    return { category, name: key ? key.replace(/-/g, "/") : "DEFAULT" };
+  }
+  return null;
+}
+
+/** The bodies of a stylesheet's `@theme` blocks, `@theme inline` and the like included. */
+function readThemeBlocks(css: string): string[] {
+  const blocks: string[] = [];
+  const start = /@theme\b[^{;]*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = start.exec(css)) !== null) {
+    let depth = 1;
+    let i = start.lastIndex;
+    while (i < css.length && depth > 0) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") depth--;
+      i++;
+    }
+    blocks.push(css.slice(start.lastIndex, i - 1));
+    start.lastIndex = i;
+  }
+  return blocks;
+}
+
+/**
+ * A block's own custom property declarations, in order, leaving out nested
+ * rules such as the `@keyframes` a theme may hold. A name can end in `*`, as
+ * in `--color-*: initial`, which clears a namespace.
+ */
+function readDeclarations(block: string): [string, string][] {
+  let flat = "";
+  let depth = 0;
+  for (const ch of block) {
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; flat += ";"; }
+    else if (depth === 0) flat += ch;
+  }
+  return [...flat.matchAll(/(?:^|[;\s])(--[\w-]*\*?)\s*:\s*([^;]+)/g)].map((d) => [d[1], d[2].trim()]);
+}
+
+/** Tailwind v4's own theme.css, whose variables a project's theme can refer to. */
+function findTailwindDefaultTheme(projectPath: string): string | null {
+  let dir = resolve(projectPath);
+  for (;;) {
+    const p = join(dir, "node_modules", "tailwindcss", "theme.css");
+    if (existsSync(p)) return p;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Tokens from Tailwind v4's CSS-first theme: `@theme { --color-brand-500:
+ * oklch(...); }`. Later declarations win, as they do in Tailwind, and
+ * `initial` removes one, or with `*` a namespace. A `var()` resolves against
+ * the theme itself, the project's `:root` (shadcn/ui's v4 `@theme inline`
+ * points at it) and Tailwind's default theme when it is installed; the
+ * defaults are not tokens themselves, as a Tailwind config's aren't. A
+ * modifier such as `--text-sm--line-height` belongs to its token and is
+ * skipped, and a namespace that is no token category is reported as
+ * uncategorized.
+ */
+function extractFromTailwindTheme(files: string[], projectPath: string): TokenExtractionResult {
+  const warnings: string[] = [];
+  const declared = new Map<string, string>();
+  for (const file of files) {
+    let css: string;
+    try { css = readCss(file); } catch { warnings.push(`Could not read ${file}`); continue; }
+    for (const block of readThemeBlocks(css)) {
+      for (const [name, value] of readDeclarations(block)) {
+        if (value !== "initial") declared.set(name, value);
+        else if (name.endsWith("*")) {
+          for (const key of declared.keys()) if (key.startsWith(name.slice(0, -1))) declared.delete(key);
+        } else declared.delete(name);
+      }
+    }
+  }
+
+  const vars = new Map<string, string>();
+  const defaults = findTailwindDefaultTheme(projectPath);
+  if (defaults) {
+    try {
+      for (const block of readThemeBlocks(readCss(defaults))) {
+        for (const [name, value] of readDeclarations(block)) vars.set(name, value);
+      }
+    } catch { /* resolve without them */ }
+  }
+  for (const [name, value] of readCssVars(findCSSWithCustomProperties(projectPath))) vars.set(name, value);
+  for (const [name, value] of declared) vars.set(name, value);
+
+  const categorized: Record<TokenCategory, TokenValue[]> = {
+    colors: [], spacing: [], typography: [], radius: [], shadows: [],
+  };
+  for (const [varName, value] of declared) {
+    if (varName.endsWith("*") || varName.slice(2).includes("--")) continue;
+    const token = themeToken(varName);
+    if (!token) {
+      warnings.push(`Uncategorized: ${varName}: ${value}`);
+      continue;
+    }
+    categorized[token.category].push({ name: token.name, value: resolveTailwindCssRefs(value, vars) });
+  }
+
+  const collections: TokenCollection[] = [];
+  for (const [category, tokens] of Object.entries(categorized) as [TokenCategory, TokenValue[]][]) {
+    if (tokens.length) collections.push({ category, tokens });
+  }
+  return { source: "tailwind", sourcePath: files[0], collections, warnings };
 }
 
 // --- CSS custom properties extraction ---

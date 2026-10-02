@@ -20,7 +20,7 @@ Before syncing components, extract design tokens from the project and create Fig
 npx storysync tokens --json --project .
 ```
 
-This auto-detects the token source (Tailwind config, CSS custom properties, or theme files) and outputs structured JSON:
+This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` block, CSS custom properties, or theme files) and outputs structured JSON:
 
 ```json
 {
@@ -73,7 +73,7 @@ use_figma({
 })
 ```
 
-   Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes.
+   Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`.
 
    Set each colour from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `value` is the colour as the source writes it, and `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a value in `oklch()`, `oklab()`, `lch()`, `hwb()` or `color()`, or bare HSL channels such as `0 0% 100%`, throws. `hex` is sRGB, `#rrggbbaa` when the colour is translucent, which `rgba` keeps. A colour token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
 

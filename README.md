@@ -175,7 +175,7 @@ Outputs: `drift` and `token_drift` are `true`, `false`, or `new` when there is n
 ```text
   Tokens                               Components
 
-  tailwind.config.ts                   Storybook MCP
+  tailwind.config.ts / @theme          Storybook MCP
   globals.css (:root)                        ↓
   theme.ts                   storysync tokens --json     storysync map --json
          ↓                          ↓                           ↓
@@ -219,7 +219,7 @@ storysync reads design tokens from your codebase and previews the Figma variable
 
 | Source | What it reads |
 |---|---|
-| **Tailwind** | `tailwind.config.ts/js` — `theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow` |
+| **Tailwind** | `tailwind.config.ts/js` — `theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`; or, with no config, Tailwind v4's `@theme { ... }` blocks in `.css` files (see below) |
 | **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files |
 | **Theme files** | `tokens.ts`, `theme.ts`, etc. — exported objects with `colors`, `spacing`, and similar keys |
 
@@ -253,6 +253,34 @@ It also handles:
 - Fallback values (`var(--missing, 200 50% 50%)`)
 
 If no matching CSS variable is found (and no fallback is provided), the raw `var(...)` reference is preserved so you can see what didn't resolve.
+
+### Tailwind v4 `@theme`
+
+A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks rather than a config:
+
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-brand-500: oklch(62.3% 0.214 259.815);
+  --spacing-18: 4.5rem;
+  --radius-card: 0.75rem;
+  --text-hero: 3.5rem;
+  --font-display: "Satoshi", sans-serif;
+}
+```
+
+With no `tailwind.config`, a `.css` file with an `@theme` block (`@theme inline` and the like included) is the Tailwind source, detected ahead of `:root` custom properties: a v4 project's tokens are its theme. Variables are read by Tailwind's namespaces:
+
+| Namespace | Category | Token name |
+|---|---|---|
+| `--color-*` | colors | without the namespace: `--color-brand-500` → `brand/500` |
+| `--spacing-*`, `--spacing` | spacing | `--spacing-18` → `18`; the bare `--spacing` base unit → `DEFAULT` |
+| `--radius-*` | radius | `--radius-card` → `card` |
+| `--shadow-*` | shadows | `--shadow-soft` → `soft` |
+| `--text-*`, `--font-*`, `--font-weight-*`, `--leading-*`, `--tracking-*` | typography | with the namespace, since they share a category: `text/hero`, `font/display`, `font/weight/bold`, `leading/snug` |
+
+Dashes in a name become `/`, as for `:root` properties. A `var()` is resolved against the theme itself, the project's `:root` (shadcn/ui's v4 `@theme inline { --color-background: var(--background); }`) and, when `tailwindcss` is installed, Tailwind's default theme, so `--color-primary: var(--color-blue-500)` gives blue-500's value. The default theme only resolves references; like a Tailwind config's defaults, it isn't read as the project's tokens. Later declarations win, `initial` removes a variable (`--color-*: initial` a namespace), and modifiers such as `--text-hero--line-height` and rules nested in `@theme`, such as `@keyframes`, are skipped. Other namespaces (`--breakpoint-*`, `--animate-*`, `--text-shadow-*` and so on) are reported as uncategorized. `--source css` still reads only `:root`, which is what an earlier storysync read for a project with both, so a baseline written then needs `--source css`, or a new baseline.
 
 ## Component mapping rules
 
@@ -531,7 +559,6 @@ Both directions have known constraints worth knowing before you rely on their ou
 - **Collection name mapping**: Figma collections are matched to code categories by lowercase name (`Colors` → `colors`, `Border Radius` → `radius`, etc.). Custom collection names like "Brand Primitives" won't auto-categorize and will appear as missing-from-code.
 - **Component name matching**: Components are matched by lowercased name. PascalCase code components and Title Case Figma components match if their lowercased forms are equal, but slash-paths in Figma names (e.g. `Button/Primary`) won't match a flat code name (`ButtonPrimary`). Two code components sharing a name (e.g. `Forms/Button` and `Nav/Button`) can't both be paired with Figma's single `Button`; `diff` reports the name as `ambiguous` and fails `--strict` rather than silently comparing one. The same goes for a name repeated across Figma pages, such as an archived copy of `Button` or one pushed to two categories' pages. Either way, `diff` compares none of the copies, so the name is reported only as `ambiguous`, never also as matched or missing.
 - **Colour tokens outside sRGB compare as their clipped hex**: `diff` converts a token's colour to sRGB hex, clipping one outside sRGB as `snap` does (see the next section), so `color(display-p3 1 0 0)` matches a Figma variable of `#ff0000`, as does any other colour that clips to it.
-- **Tailwind v4 `@theme` blocks aren't read yet**: tokens come from a Tailwind config, a theme file, or CSS custom properties in `:root`. A CSS-first Tailwind v4 project that declares its palette only in `@theme { ... }` gets no tokens until that block is supported.
 - **Tailwind CSS-var resolution**: When a Tailwind config references CSS variables (e.g. `hsl(var(--bg))`), only the `:root` block is read by default. Theme overrides like `.dark { ... }` are not currently followed; the `:root` (light) values are used, for the variables a push creates as well as for `diff`.
 
 ### Code → Figma: `snap`, the push and `verify`
