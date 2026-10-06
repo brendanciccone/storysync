@@ -1,10 +1,10 @@
-# Contributing to storysync
+# Contributing to Storysync
 
-Thanks for your interest in storysync. This guide covers the basics for working on the project locally.
+Thanks for your interest in Storysync. This guide covers the basics for working on the project locally.
 
 ## Local development setup
 
-storysync uses [pnpm](https://pnpm.io/) as its package manager. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored.
+Storysync uses [pnpm](https://pnpm.io/) as its package manager. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored.
 
 ```bash
 pnpm install

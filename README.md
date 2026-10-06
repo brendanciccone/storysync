@@ -1,6 +1,6 @@
-<img src="assets/logo.png" alt="storysync logo" width="88" height="88">
+<img src="assets/logo.png" alt="Storysync logo" width="88" height="88">
 
-# storysync
+# Storysync
 
 [![CI](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml/badge.svg)](https://github.com/brendanciccone/storysync/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/storysync)](https://www.npmjs.com/package/storysync)
@@ -11,7 +11,7 @@ Sync your design system from code to Figma, and diff Figma back against code, us
 
 ## What it does
 
-storysync reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview). Your AI client then uses [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create matching Figma variables and component sets.
+Storysync reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview). Your AI client then uses [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create matching Figma variables and component sets.
 
 Component styling is **measured, not guessed**. `storysync snap` renders each variant in a headless browser and reads its computed styles, so the fills, spacing, radii, and type in Figma come from the real render, not from an AI reading your source. After a push, `storysync verify` scores what landed in Figma against those measurements.
 
@@ -23,11 +23,11 @@ Component styling is **measured, not guessed**. `storysync snap` renders each va
 | **CLI** | Extract tokens, map components, measure rendered styles, score a push, or diff Figma against code |
 | **GitHub Action** | Detect token and component drift in CI on every push |
 
-> **Why skill files?** Writing to Figma needs Figma's `use_figma` tool, which only works inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor, and Codex. So storysync does the extracting and measuring with deterministic CLI commands, and the skill file tells your AI client how to turn that output into Figma variables and components.
+> **Why skill files?** Writing to Figma needs Figma's `use_figma` tool, which only works inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor, and Codex. So Storysync does the extracting and measuring with deterministic CLI commands, and the skill file tells your AI client how to turn that output into Figma variables and components.
 
 ## Quick start
 
-storysync has three workflows: **push** (code → Figma), **verify** (score what landed against what rendered), and **diff** (find drift in either direction). It never writes code. See [Non-goals](#non-goals).
+Storysync has three workflows: **push** (code → Figma), **verify** (score what landed against what rendered), and **diff** (find drift in either direction). It never writes code. See [Non-goals](#non-goals).
 
 ```bash
 npm install -g storysync                # or: pnpm add -g storysync
@@ -148,7 +148,7 @@ npx storysync@<version> map --storybook http://localhost:6006 --json > .storysyn
 npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 ```
 
-Commit both files. Use the storysync version the action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the action maps. The action's warnings and errors print these commands with the version filled in. You can also save the action's `json` and `tokens_json` outputs as your baselines.
+Commit both files. Use the Storysync version the action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the action maps. The action's warnings and errors print these commands with the version filled in. You can also save the action's `json` and `tokens_json` outputs as your baselines.
 
 - If you set `components` or `token_source`, pass the same values to `map --components` and `tokens --source`.
 - A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
@@ -217,7 +217,7 @@ Commit both files. Use the storysync version the action runs, which is the `vers
 
 ## Token extraction
 
-storysync reads design tokens from your codebase and previews the Figma variable collections the skill will create. Sources are detected automatically:
+Storysync reads design tokens from your codebase and previews the Figma variable collections the skill will create. Sources are detected automatically:
 
 | Source | What it reads |
 |---|---|
@@ -233,11 +233,11 @@ Token categories are **colors**, **spacing**, **typography**, **radius**, and **
 { "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }
 ```
 
-The push sets Figma variables from `hex`, since Figma's colour helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colours get `#rrggbbaa`. A value storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`. `tokens --check` compares only `value`, so baselines written before `hex` existed still pass.
+The push sets Figma variables from `hex`, since Figma's colour helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colours get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`. `tokens --check` compares only `value`, so baselines written before `hex` existed still pass.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
-Many Tailwind configs, shadcn/ui's included, define colours as `hsl(var(--background))` and put the values in `globals.css` under `:root`. storysync resolves these references:
+Many Tailwind configs, shadcn/ui's included, define colours as `hsl(var(--background))` and put the values in `globals.css` under `:root`. Storysync resolves these references:
 
 ```ts
 // tailwind.config.ts
@@ -273,7 +273,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead o
 }
 ```
 
-With no `tailwind.config`, storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, so existing baselines don't change. Pass `--source tailwind` to read `@theme` instead.
+With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, so existing baselines don't change. Pass `--source tailwind` to read `@theme` instead.
 
 | Namespace | Category | Token name |
 |---|---|---|
@@ -318,7 +318,7 @@ It installs the addon-mcp that matches your Storybook: the same version for Stor
 
 ### `storysync setup`
 
-Adds the storysync skill, slash commands, and MCP setup notes to your project for the AI client you use.
+Adds the Storysync skill, slash commands, and MCP setup notes to your project for the AI client you use.
 
 ```text
 Options:
@@ -413,7 +413,7 @@ snap writes `<out>/styles.json`, with full styles for a base variant plus only w
 npx playwright@<version> install chromium     # note: the full `playwright` package
 ```
 
-Use the version the error prints. Other Playwright versions install a browser that storysync's `playwright-core` can't launch.
+Use the version the error prints. Other Playwright versions install a browser that Storysync's `playwright-core` can't launch.
 
 **What snap records:**
 
@@ -422,7 +422,7 @@ Use the version the error prints. Other Playwright versions install a browser th
 - **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
 - **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
 - **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its colour.
-- **Font substitution.** snap warns when the font your code asks for didn't load and the browser used a fallback. Figma also needs the font installed, which storysync can't do for you.
+- **Font substitution.** snap warns when the font your code asks for didn't load and the browser used a fallback. Figma also needs the font installed, which Storysync can't do for you.
 
 **Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same. Plain CSF3 args-driven stories are the reliable shape.
 
@@ -566,7 +566,7 @@ Options:
 
 ## What's measured vs. inferred
 
-storysync splits deterministic extraction (the CLI) from Figma writes (the AI client), so it's clear where each value comes from:
+Storysync splits deterministic extraction (the CLI) from Figma writes (the AI client), so it's clear where each value comes from:
 
 | Step | How it's produced |
 |---|---|
@@ -574,12 +574,12 @@ storysync splits deterministic extraction (the CLI) from Figma writes (the AI cl
 | Component variant structure | **Measured:** derived from Storybook prop types and argType options |
 | Component styling | **Measured:** `getComputedStyle` on the real render, via `storysync snap` |
 | Drift reports | **Measured:** deterministic comparison, normalized on both sides |
-| Figma writes | **Agent-driven:** the client writes Plugin API code; storysync never writes to Figma |
+| Figma writes | **Agent-driven:** the client writes Plugin API code; Storysync never writes to Figma |
 | Layout and composition | **Interpreted:** snap measures properties, not whether a label sits correctly inside its button |
 
 ## Non-goals
 
-- **Figma → code.** storysync never writes source. That's the direction where an LLM's mistakes are hardest to notice, and Figma's MCP already does it with `get_design_context`. `storysync diff` reports drift in that direction but doesn't apply it.
+- **Figma → code.** Storysync never writes source. That's the direction where an LLM's mistakes are hardest to notice, and Figma's MCP already does it with `get_design_context`. `storysync diff` reports drift in that direction but doesn't apply it.
 - **Installing fonts into Figma.** The Plugin API can't. `snap` tells you when a font is missing; adding it is up to you.
 - **Pixel-perfect layout.** `verify` scores properties (fills, spacing, radii, borders, type, and size), not whether a label sits correctly inside its button.
 
@@ -604,7 +604,7 @@ storysync splits deterministic extraction (the CLI) from Figma writes (the AI cl
 
 Token extraction only reads local files, so it needs no Storybook, MCP connection, or auth.
 
-storysync needs no Anthropic API key and makes no LLM calls of its own.
+Storysync needs no Anthropic API key and makes no LLM calls of its own.
 
 ## License
 
