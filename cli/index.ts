@@ -5,7 +5,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient, selectComponents, findComponent } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
-import { mapComponent, explainProp, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
@@ -144,10 +144,12 @@ program
   .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
+  .option("--exclude-props <names>", "Comma-separated prop names never to map as variant properties, in any component")
   .option("--strict", "Exit with code 1 if any component fails or is capped")
   .action(async (opts) => {
     const json = !!opts.json;
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
+    const excludeProps = parsePropNames(opts.excludeProps);
     const storybook = await connectStorybook(opts.storybook, json, parseConnectTimeout(opts.connectTimeout));
     try {
       const spinner = json ? null : ora("Reading components...").start();
@@ -178,7 +180,7 @@ program
 
       for (const entry of entries) {
         try {
-          const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+          const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
           const def = mapComponent(component, maxCombinations);
           results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
           if (!json) {
@@ -228,6 +230,7 @@ program
   .option("--out <dir>", "Output directory", ".storysync/snaps")
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
   .option("--max-combinations <n>", "With --variants all, most combinations to measure per component before capping", String(DEFAULT_MAX_COMBINATIONS))
+  .option("--exclude-props <names>", "Comma-separated prop names never to make variant properties, in any component; the story's own args set them")
   .option("--screenshots", "Also save a PNG per variant (off by default)")
   .option("--timeout <ms>", "Per-story timeout in milliseconds", "10000")
   .option("--selector <css>", "Override the component root selector")
@@ -262,6 +265,7 @@ program
           selector: opts.selector as string | undefined,
           variants,
           maxCombinations,
+          excludeProps: parsePropNames(opts.excludeProps),
         },
         {
           storybook,

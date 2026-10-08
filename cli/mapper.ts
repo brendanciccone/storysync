@@ -483,6 +483,33 @@ export function cartesian(
   };
 }
 
+/**
+ * The names `--exclude-props` gives, comma-separated, trimmed; empty when
+ * the option isn't given.
+ */
+export function parsePropNames(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  return value.split(",").map((n) => n.trim()).filter(Boolean);
+}
+
+/**
+ * `component` without the props named in `names`, matched ignoring case,
+ * for `--exclude-props`.
+ *
+ * Every boolean a component's docs list becomes a variant property, though
+ * many only change behaviour: vaul's Drawer has 15 (`modal`, `dismissible`,
+ * `snapToSequentialPoint`...), 131072 combinations of what looks like one
+ * closed trigger, so its push stopped at the cap with no way to go on. Which
+ * props are visual is the project's call, not a list of names here to keep
+ * up, so the user names the ones to leave out. A prop left out is not passed
+ * to the story at all, so the story's own args decide it.
+ */
+export function withoutProps(component: StorybookComponent, names: readonly string[]): StorybookComponent {
+  if (!names.length) return component;
+  const excluded = new Set(names.map((n) => n.toLowerCase()));
+  return { ...component, props: component.props.filter((p) => !excluded.has(p.name.toLowerCase())) };
+}
+
 export function mapComponent(
   component: StorybookComponent,
   maxCombinations: number = DEFAULT_MAX_COMBINATIONS,

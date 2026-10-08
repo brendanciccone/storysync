@@ -7,6 +7,8 @@ import {
   extractEnumValues,
   splitUnion,
   explainProp,
+  withoutProps,
+  parsePropNames,
   resolveDefault,
   cartesian,
   totalCombinations,
@@ -291,6 +293,26 @@ test("mapProp: leaves defaultAssumed out where the docs give a default", () => {
 test("mapProp: returns null for skipped and unmappable props", () => {
   assert.equal(mapProp(prop({ name: "children" })), null);
   assert.equal(mapProp(prop({ name: "label", type: { name: "string" } })), null);
+});
+
+// --- withoutProps / parsePropNames (--exclude-props) ---
+
+test("parsePropNames: splits a comma-separated list, trimming and dropping blanks", () => {
+  assert.deepEqual(parsePropNames(" modal, loop ,,shouldFilter "), ["modal", "loop", "shouldFilter"]);
+  assert.deepEqual(parsePropNames(undefined), []);
+});
+
+test("withoutProps: leaves out the named props, ignoring case, and nothing else", () => {
+  const drawer = component([
+    prop({ name: "modal", type: { name: "boolean" } }),
+    prop({ name: "direction", type: { name: "union", raw: `"bottom" | "top"` } }),
+    prop({ name: "shouldScaleBackground", type: { name: "boolean" } }),
+  ], "Drawer");
+  assert.deepEqual(withoutProps(drawer, ["Modal", "shouldscalebackground"]).props.map((p) => p.name), ["direction"]);
+  assert.deepEqual(mapComponent(withoutProps(drawer, ["modal", "nope"])).variantProperties.map((p) => p.name), ["direction", "shouldScaleBackground"]);
+  assert.equal(withoutProps(drawer, []), drawer);
+  // The component it was given is left as it was.
+  assert.equal(drawer.props.length, 3);
 });
 
 // --- explainProp ---

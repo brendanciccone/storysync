@@ -179,6 +179,14 @@ test("map CLI: matches names and IDs as snap does, ignoring case and spacing", a
   assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 4], ["Card", 1]]);
 });
 
+test("map CLI: --exclude-props leaves the named props out, ignoring case", async () => {
+  const r = await run("map", "--storybook", storybook, "--components", "Button", "--exclude-props", "SHAPE, nothing", "--json");
+  assert.equal(r.status, 0, r.out);
+  const [button] = (JSON.parse(r.stdout) as { components: { variantProperties: { name: string }[]; combinations: number }[] }).components;
+  assert.deepEqual(button.variantProperties.map((p) => p.name), ["size"]);
+  assert.equal(button.combinations, 2);
+});
+
 test("map CLI: --json marks a default the docs don't give, and only that one", async () => {
   const r = await run("map", "--storybook", storybook, "--components", "Button", "--json");
   assert.equal(r.status, 0, r.out);

@@ -300,7 +300,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
 
-A union prop's values start with its default, so Figma's default variant is the code's. A boolean's Figma default is always `false`. Where the docs give no usable default, a value named `default` is assumed, or else the first value, or `false`, and map and snap mark the property `defaultAssumed: true`. Any other boolean prop becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `inspect` shows why a prop was skipped, and which defaults were assumed.
+A union prop's values start with its default, so Figma's default variant is the code's. A boolean's Figma default is always `false`. Where the docs give no usable default, a value named `default` is assumed, or else the first value, or `false`, and map and snap mark the property `defaultAssumed: true`. Any other boolean prop becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `map` and `snap` leave out the props `--exclude-props` names. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
 ## CLI reference
 
@@ -375,6 +375,9 @@ Options:
   --components <names>   Comma-separated component names or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
+  --exclude-props <names>
+                         Comma-separated prop names never to map as variant properties,
+                         in any component
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any component fails or is capped
 ```
@@ -393,6 +396,9 @@ Options:
   --variants <mode>      representative (default) or all
   --max-combinations <n> With --variants all, most combinations per component before
                          capping (default: 256)
+  --exclude-props <names>
+                         Comma-separated prop names never to make variant properties,
+                         in any component; the story's own args set them
   --screenshots          Also save a PNG per variant (off by default)
   --timeout <ms>         Per-story timeout (default: 10000)
   --selector <css>       Override the component root selector
@@ -408,7 +414,7 @@ snap writes `<out>/styles.json`, with full styles for a base variant plus only w
 
 **Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
-**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props.
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. `diff` has no such option, so it reports a prop left out of a push as missing from Figma.
 
 **Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 

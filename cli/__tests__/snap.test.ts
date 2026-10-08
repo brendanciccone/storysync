@@ -575,12 +575,44 @@ test("runSnap: a component within the limit is not capped", async () => {
   }
 });
 
+// vaul's Drawer maps 15 booleans, 131072 combinations, and was capped with no
+// way to leave its behavioural props out.
+test("runSnap: --exclude-props leaves the named props out of every component's variants", async () => {
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir, { variants: "all", excludeProps: ["MODAL", "loop"] }), {
+      storybook: {
+        listComponents: async () => [{ id: "overlay-drawer", name: "Drawer" }],
+        getComponent: async () => ({
+          name: "Drawer",
+          props: [
+            { name: "modal", type: { name: "boolean" }, defaultValue: "true" },
+            { name: "direction", type: { name: "union", raw: `"bottom" | "top"` }, defaultValue: "bottom" },
+            { name: "loop", type: { name: "boolean" } },
+          ],
+          stories: [{ id: "overlay-drawer--default", name: "Default" }],
+        }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => ({}), close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    const [drawer] = result.components;
+    assert.deepEqual(drawer.variantProperties.map((p) => p.name), ["direction"]);
+    assert.deepEqual(drawer.variants.map((v) => v.combination), [{ direction: "bottom" }, { direction: "top" }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("describeCap: names the total, the limit, and how to build the full set", () => {
   const message = describeCap("Forms/Button", {
     maxCombinations: 256, totalPossible: 300, generated: 256, droppedCount: 44, droppedSample: [],
   });
   assert.match(message, /Forms\/Button has 300 variant combinations, more than the limit of 256/);
   assert.match(message, /--max-combinations 300/);
+  assert.match(message, /leave out props that don't change how it looks with --exclude-props/);
 });
 
 test("uncoveredValues: names declared values no combination includes", () => {
