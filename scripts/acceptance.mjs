@@ -3367,6 +3367,11 @@ async function main() {
         ["pairs by the Storybook ID the push stored", /getSharedPluginData\('storysync', 'id'\)|storybookId/],
         ["reports a set Figma flags as errored", /errored in Figma \(can't read its properties\)/],
         ["finds an errored set by its node id", /`nodeId`/],
+        // map exits 1 on a name Storybook lacks, which a scope naming a
+        // Figma-only component has.
+        ["lists the components before it maps a scope", /first run `npx storysync list/],
+        ["maps only the scope's names that list has", /only the (?:scope's names|names in the scope) that list has/],
+        ["skips map when list has none of the scope", /If list has none of them, skip map/],
         // An icon library's components aren't drift.
         ["counts components outside any set not from the push, without listing them", /don't list it as Figma only, but count it/],
         ["lets those components leave the audit in sync", /components outside any set not from the push don't count against it/],
