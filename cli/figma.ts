@@ -30,9 +30,8 @@
 // saying so, rather than as a page that can't be read.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { VERSION } from "./version.js";
+import { connectWithFallback, isRequestTimeout, requestTimeoutError, DEFAULT_REQUEST_TIMEOUT_MS } from "./mcp-connect.js";
 
 export interface FigmaVariable {
   name: string;
@@ -310,20 +309,18 @@ const isRateLimit = (reason: string) =>
 export class FigmaClient {
   private client: Client | null = null;
   private url: string;
+  // Each use_figma call's limit, as --connect-timeout gives it, rather than
+  // the SDK's fixed 60 seconds.
+  private requestTimeoutMs: number;
 
-  constructor(url: string) {
+  constructor(url: string, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     this.url = url;
+    this.requestTimeoutMs = requestTimeoutMs;
   }
 
   async connect(): Promise<void> {
     this.client = new Client({ name: "storysync", version: VERSION }, {});
-    const mcpUrl = new URL(this.url);
-
-    try {
-      await this.client.connect(new StreamableHTTPClientTransport(mcpUrl));
-    } catch {
-      await this.client.connect(new SSEClientTransport(mcpUrl));
-    }
+    await connectWithFallback(this.client, new URL(this.url), "Figma", this.requestTimeoutMs);
   }
 
   async disconnect(): Promise<void> {
@@ -411,8 +408,9 @@ export class FigmaClient {
       result = await this.client.callTool({
         name: "use_figma",
         arguments: { code, description, fileKey, skillNames: "figma-use" },
-      });
+      }, undefined, { timeout: this.requestTimeoutMs });
     } catch (err) {
+      if (isRequestTimeout(err)) throw requestTimeoutError("Figma", "use_figma", this.requestTimeoutMs);
       // Past the limit, the server may refuse the request itself, with HTTP
       // 429, which the transport's error carries as its code.
       const reason = err instanceof Error ? err.message : String(err);

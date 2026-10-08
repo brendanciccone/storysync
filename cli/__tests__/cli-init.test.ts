@@ -253,3 +253,71 @@ test("init CLI: an addon-mcp release that matches Storybook, or 0.7 on any Story
     });
   }
 });
+
+// --- An install that fails ---
+
+/** A directory to use as PATH, holding only the stand-ins written into it. */
+function pathWith(dir: string, standIns: Record<string, string>): string {
+  const bin = join(dir, ".bin-stand-in");
+  mkdirSync(bin, { recursive: true });
+  for (const [name, script] of Object.entries(standIns)) {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
+    chmodSync(join(bin, name), 0o755);
+  }
+  return bin;
+}
+
+test("init CLI: when the package manager isn't installed, says so and why it was chosen, prints the command, and still registers the addon", { skip: process.platform === "win32" }, () => {
+  // The registry this was found on has bun.lock and packageManager bun, on a
+  // machine without bun: init printed "Command failed" and stopped, without
+  // the command to run or the offer to register the addon.
+  withProject({ storybook: "10.5.5" }, (dir) => {
+    rmSync(join(dir, "pnpm-lock.yaml"));
+    writeFileSync(join(dir, "bun.lock"), "");
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as Record<string, unknown>;
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ ...pkg, packageManager: "bun@1.4.0" }));
+
+    const r = init(dir, "y\ny\n", { ...process.env, PATH: pathWith(dir, {}) });
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /Install failed: bun isn't installed, or isn't on PATH\. init chose bun because package\.json's packageManager field names bun@1\.4\.0\./);
+    assert.match(r.out, /Install bun, or if the project uses another package manager, name it in package\.json's packageManager field and run init again\./);
+    assert.match(r.out, /Run manually: bun add -d "@storybook\/addon-mcp@\^0\.7\.0"$/m);
+    assert.doesNotMatch(r.out, /Command failed/);
+    // Registering doesn't depend on the install.
+    assert.match(r.out, /Add @storybook\/addon-mcp to \.storybook\/main config\?/);
+    assert.match(r.out, /Updated \.storybook\/main\.ts/);
+    assert.match(readFileSync(join(dir, ".storybook", "main.ts"), "utf8"), /addons: \[\n\s+\{ name: "@storybook\/addon-mcp"/);
+    assert.match(r.out, /Once the addon is installed, restart Storybook/);
+    assert.doesNotMatch(r.out, /Restart Storybook to apply changes/);
+  });
+});
+
+test("init CLI: a lockfile's package manager that isn't installed is named with its lockfile", { skip: process.platform === "win32" }, () => {
+  withProject({ storybook: "10.5.5" }, (dir) => {
+    const r = init(dir, "y\nn\n", { ...process.env, PATH: pathWith(dir, {}) });
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /Install failed: pnpm isn't installed, or isn't on PATH\. init chose pnpm because the project has pnpm-lock\.yaml\./);
+    assert.match(r.out, /Run manually: pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"$/m);
+    // Declined, the config is left alone.
+    assert.match(r.out, /Add @storybook\/addon-mcp to \.storybook\/main config\?/);
+    assert.equal(readFileSync(join(dir, ".storybook", "main.ts"), "utf8"), MAIN_WITHOUT_ADDON);
+  });
+});
+
+test("init CLI: an install that fails prints its exit code and the command, and still offers to register the addon", { skip: process.platform === "win32" }, () => {
+  // As on a network error or an ERESOLVE: the package manager's own output
+  // says why, so init says what to run once that is fixed.
+  withProject({ storybook: "10.5.5" }, (root) => {
+    const app = join(root, "my app");
+    mkdirSync(app);
+    for (const name of readdirSync(root)) if (name !== "my app") renameSync(join(root, name), join(app, name));
+    const bin = pathWith(root, { pnpm: "echo 'ERR_PNPM_FETCH_404' >&2; exit 1" });
+
+    const r = init("my app", "y\ny\n", { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` }, realpathSync(root));
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /ERR_PNPM_FETCH_404/);
+    assert.match(r.out, /Install failed: pnpm exited with code 1\./);
+    assert.match(r.out, /Run manually: cd "my app" && pnpm add -D "@storybook\/addon-mcp@\^0\.7\.0"$/m);
+    assert.match(r.out, /Updated \.storybook\/main\.ts/);
+  });
+});

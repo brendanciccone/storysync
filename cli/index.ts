@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { writeSync } from "node:fs";
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
@@ -16,6 +17,7 @@ import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
+import { Progress, widenZeroWidthTerminal } from "./progress.js";
 import type { TokenBaseline, TokenExtractionResult, TokenSourceType } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
@@ -24,11 +26,12 @@ import type { ComponentEntry } from "./storybook.js";
 
 /**
  * How long to wait for an MCP server to answer before giving up on it, as
- * --connect-timeout's default. It is the 60 seconds the MCP SDK gives the
- * initialize request, so a server that connected before still does. A
- * Storybook that is still starting refuses connections until it listens,
- * which fails at once rather than waiting, and the example's Storybook 10.6
- * answered initialize within 25ms of its port opening.
+ * --connect-timeout's default: to connect, and then for each request. It is
+ * the 60 seconds the MCP SDK gives a request, so a server that answered
+ * before still does. A Storybook that is still starting refuses connections
+ * until it listens, which fails at once rather than waiting, and the
+ * example's Storybook 10.6 answered initialize within 25ms of its port
+ * opening.
  */
 const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 
@@ -43,7 +46,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
  *
  * A server that takes the connection and never answers is unreachable too,
  * once `timeoutMs` has passed. Without a limit the run waited forever: the
- * Streamable HTTP initialize gives up after the SDK's 60 seconds, but the SSE
+ * Streamable HTTP initialize gives up after its request limit, but the SSE
  * fallback after it waits for its event stream with no limit at all.
  */
 async function connectMcp<T extends { connect(): Promise<void> }>(client: T, server: string, url: string, json: boolean, timeoutMs: number): Promise<T> {
@@ -73,8 +76,11 @@ async function connectMcp<T extends { connect(): Promise<void> }>(client: T, ser
   }
 }
 
+// The same limit holds each request once connected: a docs-show that never
+// answers fails that component, naming the flag, rather than waiting on the
+// SDK's own 60 seconds whatever --connect-timeout said.
 function connectStorybook(url: string, json: boolean, timeoutMs: number): Promise<StorybookClient> {
-  return connectMcp(new StorybookClient(url), "Storybook MCP", url, json, timeoutMs);
+  return connectMcp(new StorybookClient(url, { requestTimeoutMs: timeoutMs }), "Storybook MCP", url, json, timeoutMs);
 }
 
 /** Parses --connect-timeout, exiting with a clear message on anything but a positive number of milliseconds. */
@@ -93,6 +99,9 @@ function parseConnectTimeout(value: unknown): number {
   }
   return ms;
 }
+
+// Before any spinner starts: ora loops forever on a terminal reporting 0 columns.
+widenZeroWidthTerminal();
 
 const program = new Command();
 program.name("storysync").description("Sync design tokens and Storybook components to Figma").version(VERSION);
@@ -181,7 +190,12 @@ program
       const results: { id: string; name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
+      // Under --json nothing is printed until every component is read, which
+      // takes minutes on a large library, so say which one the run is on (on
+      // a terminal's stderr). Text mode prints a line as each one is read.
+      const progress = json ? new Progress("map") : null;
       for (const entry of entries) {
+        progress?.component(results.length + 1, entries.length, entry.title ?? entry.name);
         try {
           const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
           const def = mapComponent(component, maxCombinations);
@@ -205,6 +219,7 @@ program
           if (!json) console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.title ?? entry.name)} ${chalk.red(String(err))}`);
         }
       }
+      progress?.done();
 
       if (json) {
         console.log(JSON.stringify({ components: results, summary: { total: entries.length, mapped: entries.length - failed, failed, capped, totalCombinations: total } }));
@@ -257,6 +272,28 @@ program
     const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
 
     const storybook = await connectStorybook(opts.storybook, json, connectTimeoutMs);
+    // Where the run is, on a terminal: a component with many variants can
+    // take minutes, and under --json nothing else is printed until the end.
+    const progress = new Progress("snap");
+    // Playwright closes the browser on SIGTERM and SIGHUP but leaves the run
+    // going, and snap then recorded every component left as a failed browser
+    // session, wrote that over the last styles.json and exited 0. So a CI job
+    // cancelled, or an agent's command timed out, replaced a good snap with a
+    // broken one. Stop instead, writing nothing, as Ctrl-C does: exiting runs
+    // Playwright's exit handler, which kills the browser. Said on stderr,
+    // written at once since the process ends next, so a log or an agent
+    // reading it knows the snap on disk is the last one.
+    const stop = (code: number) => (signal: NodeJS.Signals) => {
+      progress.done();
+      try {
+        writeSync(2, `snap was stopped by ${signal} before it finished, so styles.json and meta.json in ${opts.out} were left as they were.\n`);
+      } catch {
+        // A closed or full stderr: the exit code says it.
+      }
+      process.exit(code);
+    };
+    process.on("SIGTERM", stop(143));
+    process.on("SIGHUP", stop(129));
     try {
       const result = await runSnap(
         {
@@ -273,9 +310,12 @@ program
         {
           storybook,
           launch: resolveAndLaunch,
-          onProgress: json ? undefined : (m) => console.log(m),
+          onProgress: json ? undefined : (m) => progress.print(() => console.log(m)),
+          onComponentStart: (position, total, label) => progress.component(position, total, label),
+          onVariantStart: (position, total) => progress.variant(position, total),
         },
       );
+      progress.done();
 
       if (json) {
         console.log(JSON.stringify(result));
@@ -322,6 +362,7 @@ program
         process.exitCode = 1;
       }
     } catch (err) {
+      progress.done();
       reportError(err, json);
       process.exitCode = 1;
     } finally {
@@ -795,7 +836,7 @@ program
     }
     const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
 
-    const figma = await connectMcp(new FigmaClient(opts.figma as string), "Figma MCP", opts.figma as string, json, connectTimeoutMs);
+    const figma = await connectMcp(new FigmaClient(opts.figma as string, connectTimeoutMs), "Figma MCP", opts.figma as string, json, connectTimeoutMs);
 
     // Optionally connect to Storybook MCP
     let storybook: StorybookClient | null = null;
@@ -878,7 +919,13 @@ program
           const codeComponents: CodeComponent[] = [];
           const unmappedEntries: ComponentEntry[] = [];
           mappingFailures = [];
+          // Which component the run is on: in the spinner, or where there
+          // is none spinning (--json, or not a terminal) as map says it.
+          const progress = mapSpinner?.isSpinning ? null : new Progress("diff");
           for (const entry of entries) {
+            const position = codeComponents.length + mappingFailures.length + 1;
+            if (mapSpinner) mapSpinner.text = `Mapping Storybook components ${position}/${entries.length} ${entry.title ?? entry.name}`;
+            progress?.component(position, entries.length, entry.title ?? entry.name);
             try {
               const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
               codeComponents.push({ ...mapComponent(component), id: entry.id });
@@ -887,6 +934,7 @@ program
               mappingFailures.push({ name: entry.name, id: entry.id, ...(entry.title ? { title: entry.title } : {}), error: String(err) });
             }
           }
+          progress?.done();
           if (!storybookReadFailed) mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
           if (!json && mappingFailures.length) {
             console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors:`));

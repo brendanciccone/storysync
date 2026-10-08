@@ -140,6 +140,8 @@ jobs:
 
 It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
 
+Runners don't come with bun, so a bun project needs [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun) as a step before the action, or its own `install_command`. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`.
+
 **Create the baselines first.** With Storybook running, in the project's directory:
 
 ```bash
@@ -320,7 +322,11 @@ A union prop's values start with its default, so Figma's default variant is the 
 
 The CLI handles setup (`init`, `setup`) and gives deterministic output you can check locally or in CI (`tokens`, `map`, `snap`, `verify`, `list`, `inspect`, `diff`). It never writes to Figma itself. Your AI client does that, using the skill.
 
-A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it.
+A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it. When the server answers with an HTTP error, the message gives the status and what to do about it, such as running `storysync init` when Storybook has no `/mcp`.
+
+`--connect-timeout` also limits each request once connected. A component whose docs don't come back in time fails on its own, and `--strict` catches it.
+
+`map`, `snap`, and `diff` read components one at a time, which can take minutes for a large library. On a terminal they show which component they're on, on stderr, so `--json` output stays clean. Piped or in CI, they print nothing extra, unless you set `STORYSYNC_PROGRESS=1`, which prints a line per component (and per snap variant) to stderr. That lets you follow a run in the background from its stderr file. `STORYSYNC_PROGRESS=0` turns the terminal line off.
 
 ### `storysync init`
 
@@ -331,7 +337,9 @@ Options:
   --project <path>     Project root path (default: ".")
 ```
 
-It installs the addon-mcp that matches your Storybook: the same version for Storybook 10.6 and later, and `^0.7.0` before that. An installed addon-mcp newer than Storybook won't load, so `init` offers the matching one, and exits 1 if you decline. It uses the package manager of the nearest lockfile, looking up to the repo root, or npm if there's none.
+It installs the addon-mcp that matches your Storybook: the same version for Storybook 10.6 and later, and `^0.7.0` before that. An installed addon-mcp newer than Storybook won't load, so `init` offers the matching one, and exits 1 if you decline. It uses the nearest package.json `packageManager` field or lockfile, looking up to the repo root. When both are in the same directory, `packageManager` wins. With neither, it uses npm.
+
+If the install fails, `init` exits 1 and prints the command to run by hand. If the package manager isn't installed, it says so and why it chose it. It still offers to register the addon, since that doesn't depend on the install.
 
 ### `storysync setup`
 
@@ -423,6 +431,8 @@ Options:
 ```
 
 snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`.
+
+If snap stops before it finishes, it doesn't write `styles.json` or `meta.json`, so the last ones stay as they were. Screenshots it already took are kept. It exits 130 after Ctrl-C, 143 after SIGTERM (a cancelled job or a command timeout), 129 after SIGHUP, and 1 if the browser crashes or is closed.
 
 **Strict modes.** `--strict` fails on anything that couldn't be measured, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI.
 

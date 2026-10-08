@@ -6,6 +6,9 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import {
   detectPackageManager,
+  choosePackageManager,
+  isOnPath,
+  howItEnded,
   findStorybookConfig,
   getStorybookVersion,
   isStorybookVersionOk,
@@ -109,6 +112,98 @@ test("detectPackageManager: stops at the repository root", () => {
   });
   try {
     assert.equal(detectPackageManager(join(dir, "repo", "packages", "ui")), "npm");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectPackageManager: package.json's packageManager outranks a lockfile beside it", () => {
+  // A stale lockfile from another package manager is often left behind.
+  // packageManager says which one the project uses, for corepack and the
+  // action alike.
+  const dir = makeProject({
+    "package.json": JSON.stringify({ packageManager: "bun@1.4.0" }),
+    "package-lock.json": "{}",
+  });
+  try {
+    assert.deepEqual(choosePackageManager(dir), { pm: "bun", reason: "package.json's packageManager field names bun@1.4.0" });
+    assert.equal(detectPackageManager(dir), "bun");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectPackageManager: packageManager is enough with no lockfile, and is read at the workspace root", () => {
+  const dir = makeProject({
+    "package.json": JSON.stringify({ private: true, packageManager: "pnpm@10.33.0+sha512.abc" }),
+    "packages/ui/package.json": JSON.stringify({ name: "ui" }),
+  });
+  try {
+    assert.equal(detectPackageManager(dir), "pnpm");
+    assert.deepEqual(choosePackageManager(join(dir, "packages", "ui")), { pm: "pnpm", reason: "../../package.json's packageManager field names pnpm@10.33.0+sha512.abc" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectPackageManager: a packageManager it can't install with falls back to the lockfile", () => {
+  for (const packageManager of ["deno@2.0.0", 7]) {
+    const dir = makeProject({ "package.json": JSON.stringify({ packageManager }), "yarn.lock": "" });
+    try {
+      assert.deepEqual(choosePackageManager(dir), { pm: "yarn", reason: "the project has yarn.lock" }, String(packageManager));
+    } finally {
+      cleanup(dir);
+    }
+  }
+});
+
+test("choosePackageManager: says which lockfile it went by, or that there was none", () => {
+  const dir = makeProject({
+    "bun.lock": "",
+    "packages/ui/package.json": "{}",
+    "other/.git/HEAD": "ref: refs/heads/main\n",
+    "other/package.json": "{not json",
+  });
+  try {
+    assert.deepEqual(choosePackageManager(join(dir, "packages", "ui")), { pm: "bun", reason: "the project has ../../bun.lock" });
+    // An invalid package.json is init's to report, when it reads it.
+    assert.deepEqual(choosePackageManager(join(dir, "other")), { pm: "npm", reason: "the project has no lockfile and no packageManager field" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("choosePackageManager: the nearest directory with either decides, so a project's own lockfile beats a packageManager above it", () => {
+  // A project with its own lockfile installs there, even inside a repo
+  // whose root declares another package manager.
+  const dir = makeProject({
+    "package.json": JSON.stringify({ private: true, packageManager: "yarn@4.5.0" }),
+    "apps/docs/package.json": JSON.stringify({ name: "docs" }),
+    "apps/docs/pnpm-lock.yaml": "",
+  });
+  try {
+    assert.deepEqual(choosePackageManager(join(dir, "apps", "docs")), { pm: "pnpm", reason: "the project has pnpm-lock.yaml" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("howItEnded: an exit code, or the signal that stopped an install that has none", () => {
+  assert.equal(howItEnded(Object.assign(new Error("Command failed: pnpm add -D x"), { status: 1, signal: null })), "exited with code 1");
+  // Killed, execSync's error has no status: it was "exited with Error:
+  // Command failed: ...".
+  assert.equal(howItEnded(Object.assign(new Error("Command failed: pnpm add -D x"), { status: null, signal: "SIGINT" })), "was stopped by SIGINT");
+  assert.equal(howItEnded(new Error("spawnSync /bin/sh ENOENT")), "couldn't run: spawnSync /bin/sh ENOENT");
+});
+
+test("isOnPath: finds a command in a directory on PATH, and only there", { skip: process.platform === "win32" }, () => {
+  const dir = makeProject({ "bin/bun": "#!/bin/sh\n" });
+  try {
+    assert.equal(isOnPath("bun", { PATH: join(dir, "bin") }), true);
+    assert.equal(isOnPath("bun", { PATH: dir }), false);
+    // A directory of the name is not the command.
+    assert.equal(isOnPath("bin", { PATH: dir }), false);
+    assert.equal(isOnPath("bun", {}), false);
   } finally {
     cleanup(dir);
   }
