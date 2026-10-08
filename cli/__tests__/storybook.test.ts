@@ -10,6 +10,7 @@ import {
   selectComponents,
   findComponent,
   toolResultText,
+  tableCells,
   StorybookClient,
   type DocsTools,
 } from "../storybook.js";
@@ -464,6 +465,36 @@ test("StorybookClient: a shadcn component's cva variants, printed with `| null`,
     assert.deepEqual(def.variantProperties, [
       { name: "variant", type: "VARIANT", values: ["default", "link", "outline", "secondary", "ghost", "destructive"], defaultValue: "default" },
       { name: "size", type: "VARIANT", values: ["default", "xs", "sm", "lg", "icon", "icon-xs", "icon-sm", "icon-lg"], defaultValue: "default" },
+    ]);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+// A props table, which docs without a generated Props block fall back to,
+// escapes each | of a union as \|. Split on every |, the variant row gave
+// the type `"a" \` and moved its default into the type's place.
+test("tableCells: splits a row only on an unescaped |", () => {
+  assert.deepEqual(tableCells('| variant | "a" \\| "b" \\| null | "b" |'), ["variant", '"a" | "b" | null', '"b"']);
+  assert.deepEqual(tableCells("| open | boolean |  |"), ["open", "boolean", ""]);
+  assert.deepEqual(tableCells("Name | Type"), ["Name", "Type"]);
+});
+
+test("StorybookClient: a union in a markdown props table maps whole", async () => {
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, EXAMPLE_LIST, {
+    "forms-button": [
+      "# Button", "", "ID: forms-button", "", "## Props", "",
+      "| Name | Type | Default |", "|------|------|---------|",
+      '| variant | `"primary" \\| "danger" \\| null` | `"danger"` |',
+      "| size | | md |",
+      "| disabled | `boolean` | `false` |",
+    ].join("\n"),
+  });
+  try {
+    const def = mapComponent(await client.getComponent("forms-button", "Button"));
+    assert.deepEqual(def.variantProperties, [
+      { name: "variant", type: "VARIANT", values: ["danger", "primary"], defaultValue: "danger" },
+      { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
     ]);
   } finally {
     await client.disconnect();
