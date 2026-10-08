@@ -93,13 +93,21 @@ function findTailwindConfig(projectPath: string): string | null {
  * that has both, as shadcn/ui's v4 globals.css does, keeps the tokens, names
  * and baselines it had before `@theme` was read; `@theme` is for a CSS-first
  * project that declares its palette nowhere else.
+ *
+ * A stylesheet that sets its variables only in a selector list, as
+ * `:root, .light { }`, with no `:root {` of its own, comes after `@theme`
+ * and a theme file: storysync read no such list before, so a project that
+ * has either keeps the source, and the baseline, it had.
  */
 export function detectTokenSource(projectPath: string): DetectedSource | null {
   const config = findTailwindConfig(projectPath);
   if (config) return { type: "tailwind", path: config };
 
   const cssFiles = findCSSWithCustomProperties(projectPath);
-  if (cssFiles.length) return { type: "css", path: cssFiles[0] };
+  const plainRoot = cssFiles.find((file) => {
+    try { return /:root\s*\{/.test(readCss(file)); } catch { return false; }
+  });
+  if (plainRoot) return { type: "css", path: cssFiles[0] };
 
   const themeCss = findTailwindThemeCSS(projectPath);
   if (themeCss.length) return { type: "tailwind", path: themeCss[0] };
@@ -107,11 +115,14 @@ export function detectTokenSource(projectPath: string): DetectedSource | null {
   const themeFile = findThemeFile(projectPath);
   if (themeFile) return { type: "theme", path: themeFile };
 
+  if (cssFiles.length) return { type: "css", path: cssFiles[0] };
+
   return null;
 }
 
+/** Stylesheets that declare a custom property for the default theme, as rootDeclarations reads it. */
 function findCSSWithCustomProperties(projectPath: string): string[] {
-  return findCSS(projectPath, (css) => /:root\s*\{/.test(css) && /--[\w-]+\s*:/.test(css));
+  return findCSS(projectPath, (css) => rootDeclarations(css).length > 0);
 }
 
 /** Stylesheets with a Tailwind v4 `@theme` block that declares a variable. */
@@ -408,49 +419,165 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
 }
 
 /**
- * Where a stylesheet's `@media (prefers-color-scheme: dark)` blocks start
- * and end. The `:root` in one holds the dark values, as create-next-app's
- * globals.css does: read in order with the rest, it overrode the light ones,
- * so its background was extracted as #0a0a0a. `@media not ...` is light.
+ * `text` split at each `separator` outside brackets, parentheses, braces
+ * and quotes, so `:is(.a, .b), :root` is two selectors and
+ * `require("a"), preset({ b, c })` two presets.
  */
-function darkSchemeRanges(css: string): [number, number][] {
-  const ranges: [number, number][] = [];
-  const start = /@media\b([^{;]*)\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = start.exec(css)) !== null) {
-    if (!/prefers-color-scheme\s*:\s*dark/i.test(m[1]) || /\bnot\b/i.test(m[1])) continue;
-    let depth = 1;
-    let i = start.lastIndex;
-    while (i < css.length && depth > 0) {
-      if (css[i] === "{") depth++;
-      else if (css[i] === "}") depth--;
-      i++;
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+    else if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    else if (ch === separator && depth === 0) {
+      parts.push(text.slice(from, i));
+      from = i + 1;
     }
-    ranges.push([m.index, i]);
   }
-  return ranges;
+  parts.push(text.slice(from));
+  return parts;
 }
 
 /**
- * The custom properties of the stylesheets' `:root` blocks, as written, a
- * later declaration winning, leaving out a `:root` for the dark color
- * scheme. A file that can't be read is skipped, and named in `warnings`
- * when there are any.
+ * The index just past the bracket that closes the one at `open`, `{` or
+ * `[`, skipping quoted text, or the text's length when it isn't closed.
+ */
+function closingIndex(text: string, open: number): number {
+  const [opener, closer] = text[open] === "[" ? ["[", "]"] : ["{", "}"];
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+    else if (ch === opener) depth++;
+    else if (ch === closer && --depth === 0) return i + 1;
+  }
+  return text.length;
+}
+
+/**
+ * Whether an at-rule is `@media` for the dark color scheme. The `:root` in
+ * one holds the dark values, as create-next-app's globals.css does: read in
+ * order with the rest, it overrode the light ones, so its background was
+ * extracted as #0a0a0a. `@media not ...` is light.
+ */
+function isDarkScheme(atRule: string): boolean {
+  return /^@media\b/i.test(atRule) && /prefers-color-scheme\s*:\s*dark/i.test(atRule) && !/\bnot\b/i.test(atRule);
+}
+
+/** A style rule, as styleRules reads it. */
+interface StyleRule {
+  /** Its selector list, as written. */
+  selector: string;
+  /** Its own declarations' text, without the rules nested in it. */
+  declarations: string;
+  /** The at-rules it is in, outermost first. */
+  atRules: string[];
+  /** Nested in another style rule, as CSS nesting writes `&.dark { }`. */
+  nested: boolean;
+}
+
+/**
+ * A stylesheet's style rules, in order, each with the at-rules it is in,
+ * `@layer` and `@media` included. A rule's declarations in an at-rule nested
+ * in it, as in `:root { @media print { --x: 1 } }`, are listed as the rule
+ * again inside that at-rule, after it. Quoted text is skipped, so a `}` in
+ * a `content` string ends no block.
+ */
+function styleRules(css: string): StyleRule[] {
+  const rules: StyleRule[] = [];
+  // Reads the block from `start` to `end`, listing its rules, and returns its
+  // own declarations' text. `parent` is the style rule it is in, if any.
+  const walk = (start: number, end: number, atRules: string[], parent: StyleRule | null): string => {
+    let own = "";
+    let from = start;
+    let prelude = start;
+    let quote: string | null = null;
+    for (let i = start; i < end; i++) {
+      const ch = css[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = null;
+      } else if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === ";" || ch === "}") prelude = i + 1;
+      else if (ch === "{") {
+        const close = closingIndex(css, i);
+        const head = css.slice(prelude, i).trim();
+        own += css.slice(from, prelude);
+        if (head.startsWith("@")) {
+          const inner = [...atRules, head];
+          const rule = parent && { ...parent, declarations: "", atRules: inner };
+          if (rule) rules.push(rule);
+          const declarations = walk(i + 1, close - 1, inner, parent);
+          if (rule) rule.declarations = declarations;
+        } else {
+          const rule: StyleRule = { selector: head, declarations: "", atRules, nested: parent !== null };
+          rules.push(rule);
+          rule.declarations = walk(i + 1, close - 1, atRules, rule);
+        }
+        i = close - 1;
+        from = prelude = close;
+      }
+    }
+    return own + css.slice(from, end);
+  };
+  walk(0, css.length, [], null);
+  return rules;
+}
+
+/**
+ * Whether a rule sets the default theme: its selector list holds a bare
+ * `:root`, as `:root { }` and `:root, .light { }` do, and it is no rule
+ * nested in another, nor in `@media` for the dark color scheme. A rule
+ * that only names a theme, as `.dark`, `.light`, `[data-theme="dark"]` or
+ * `:root.dark` do, sets that theme's values, not the default's. `html` is
+ * left out: `:root` outranks it whatever their order, so its values
+ * couldn't be read in turn with `:root`'s, and storysync never read it.
+ */
+function setsDefaultTheme(rule: StyleRule): boolean {
+  return !rule.nested &&
+    !rule.atRules.some(isDarkScheme) &&
+    splitTopLevel(rule.selector, ",").some((selector) => selector.trim().toLowerCase() === ":root");
+}
+
+/**
+ * The custom properties a stylesheet declares for the default theme, as
+ * written, in order. coder's index.css declares its palette in
+ * `@layer base { :root, .light { ... } }`: only a `:root {` was read,
+ * and its one was a scrollbar-color, so none of its 55 colors resolved.
+ */
+function rootDeclarations(css: string): [string, string][] {
+  const declarations: [string, string][] = [];
+  for (const rule of styleRules(css)) {
+    if (!setsDefaultTheme(rule)) continue;
+    for (const decl of rule.declarations.matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g)) {
+      declarations.push([decl[1].trim(), decl[2].trim()]);
+    }
+  }
+  return declarations;
+}
+
+/**
+ * The custom properties the stylesheets declare for the default theme, as
+ * written, a later declaration winning: those of each rule whose selector
+ * list holds `:root`, leaving out the dark color scheme's. A file that
+ * can't be read is skipped, and named in `warnings` when there are any.
  */
 function readRootDeclarations(files: string[], warnings?: string[]): Map<string, string> {
   const declared = new Map<string, string>();
   for (const file of files) {
     try {
-      const content = readCss(file);
-      const dark = darkSchemeRanges(content);
-      const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
-      for (const block of rootBlocks) {
-        if (dark.some(([from, to]) => block.index >= from && block.index < to)) continue;
-        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
-        for (const decl of declarations) {
-          declared.set(decl[1].trim(), decl[2].trim());
-        }
-      }
+      for (const [name, value] of rootDeclarations(readCss(file))) declared.set(name, value);
     } catch {
       warnings?.push(`Could not read ${file}`);
     }

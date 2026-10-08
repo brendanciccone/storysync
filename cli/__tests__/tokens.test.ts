@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, TOKEN_SOURCES } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES } from "../tokens.js";
 import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -1133,6 +1133,138 @@ test("unresolved: the warning tells a loop from a variable set only in terms of 
       "Unresolved: colors brand = var(--brand) (--brand isn't set in the theme file)",
     ]);
   } finally { cleanup(theme); }
+});
+
+// --- :root in a selector list ---
+
+/** As tokens --json writes it, which leaves out a Tailwind token's undefined group. */
+function asJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+test("Tailwind: :root's variables are read from a selector list such as `:root, .light` in @layer base, and a theme class's aren't", () => {
+  // coder's index.css declares its palette as `:root, .light { ... }`, with
+  // .dark and colorblind classes after it. Only a `:root {` was read, and
+  // its one held a scroll setting, so none of its 55 colors had a hex.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+  darkMode: ["selector"],
+  theme: {
+    extend: {
+      fontSize: {
+        tiny: ["0.6875rem", "1rem"],
+        body: ["0.9375rem", { lineHeight: "1.4rem", fontWeight: "450" }],
+      },
+      borderRadius: { lg: "var(--corner)", md: "calc(var(--corner) - 3px)" },
+      colors: {
+        ink: { strong: "hsl(var(--ink-strong))", soft: "hsl(var(--ink-soft))" },
+        paper: { base: "hsl(var(--paper-base))", raised: { top: "hsl(var(--paper-raised-top))" } },
+        accent: "hsl(var(--accent))",
+        scrim: "hsla(var(--scrim))",
+      },
+    },
+  },
+  plugins: [],
+};`,
+    "src/main.css": `@layer base {
+  :root,
+  .theme-day {
+    --ink-strong: 220 20% 12%;
+    --ink-soft: 220 10% 40%;
+    --paper-base: 0 0% 100%;
+    --paper-raised-top: 40 30% 97%;
+    --link-blue: 210 90% 45%;
+    --accent: var(--link-blue);
+    --scrim: 220 20% 12% / 60%;
+    --corner: 0.625rem;
+  }
+  .theme-night {
+    --ink-strong: 0 0% 98%;
+    --paper-base: 220 20% 8%;
+  }
+  .theme-day-deuteranopia {
+    --link-blue: 30 90% 45%;
+  }
+}
+
+@layer base {
+  :root { scroll-behavior: smooth; }
+}
+`,
+  });
+  try {
+    const result = extractTokens(dir);
+    const hex = (v: string) => tokenColorToHex(v);
+    assert.deepEqual(asJson(result.collections.map((c) => [c.category, c.tokens])), [
+      ["colors", [
+        { name: "ink/strong", value: "hsl(220 20% 12%)", group: "ink", hex: hex("hsl(220 20% 12%)") },
+        { name: "ink/soft", value: "hsl(220 10% 40%)", group: "ink", hex: hex("hsl(220 10% 40%)") },
+        { name: "paper/base", value: "hsl(0 0% 100%)", group: "paper", hex: "#ffffff" },
+        { name: "paper/raised/top", value: "hsl(40 30% 97%)", group: "paper/raised", hex: hex("hsl(40 30% 97%)") },
+        // A var() chain resolves to the default theme's value.
+        { name: "accent", value: "hsl(210 90% 45%)", hex: hex("hsl(210 90% 45%)") },
+        { name: "scrim", value: "hsla(220 20% 12% / 60%)", hex: hex("hsla(220 20% 12% / 60%)") },
+      ]],
+      ["radius", [{ name: "lg", value: "0.625rem", px: 10 }, { name: "md", value: "calc(0.625rem - 3px)", px: 7 }]],
+      ["typography", [{ name: "tiny", value: "0.6875rem", px: 11 }, { name: "body", value: "0.9375rem", px: 15 }]],
+    ]);
+    assert.ok(!result.warnings.some((w) => w.startsWith("Unresolved:")), result.warnings.join("\n"));
+
+    // CSS mode reads the same list, and not the theme classes.
+    const css = new Map(extractTokens(dir, "css").collections.flatMap((c) => c.tokens.map((t) => [t.name, t.value])));
+    assert.equal(css.get("ink/strong"), "220 20% 12%");
+    assert.equal(css.get("paper/base"), "0 0% 100%");
+    assert.equal(css.get("accent"), "210 90% 45%");
+  } finally { cleanup(dir); }
+});
+
+test("CSS: a rule counts when its selector list holds a bare :root, not when it scopes :root to a theme, nests in one, or is the dark scheme's", () => {
+  // valbuild/val declares its palette under `:host, :root, *[data-mode="light"]`.
+  const dir = makeProject({
+    "src/theme.css": `:host, :root, *[data-mode="light"] {
+  --color-surface: #fafafa;
+  --color-text: #111111;
+}
+:root { --color-text: #222222; }
+[data-mode="dark"]:root { --color-surface: #000001; }
+:root[data-theme="dark"] { --color-surface: #000002; }
+.dark, [data-mode="dark"] { --color-surface: #000003; }
+:root {
+  &.dark { --color-surface: #000004; }
+  @media (prefers-color-scheme: dark) { --color-text: #000005; }
+  @media (min-width: 40rem) { --color-accent: #3355ff; }
+}
+.quote::before { content: "}"; }
+:root { --color-border: #dddddd; }
+`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [
+      ["colors", [["color/surface", "#fafafa"], ["color/text", "#222222"], ["color/accent", "#3355ff"], ["color/border", "#dddddd"]]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: a stylesheet whose :root is only in a selector list is CSS, after @theme and a theme file", () => {
+  // `.light, :root {` was read already, as it ends in `:root {`.
+  const listed = `:root, .light { --color-brand: #ff0000; }`;
+  const alone = makeProject({ "src/vars.css": listed });
+  try {
+    assert.deepEqual(detectTokenSource(alone), { type: "css", path: join(alone, "src", "vars.css") });
+    assert.deepEqual(tokenTable(extractTokens(alone)), [["colors", [["color/brand", "#ff0000"]]]]);
+  } finally { cleanup(alone); }
+
+  // storysync read no such list before, so a project with @theme or a theme
+  // file keeps the source, and the baseline, it had.
+  const v4 = makeProject({ "src/app.css": `@theme { --color-brand: #0000ff; }`, "src/vars.css": listed });
+  try {
+    assert.equal(detectTokenSource(v4)?.type, "tailwind");
+    assert.deepEqual(tokenTable(extractTokens(v4)), [["colors", [["brand", "#0000ff"]]]]);
+  } finally { cleanup(v4); }
+  const themed = makeProject({ "src/tokens.ts": `export const colors = { brand: "#00ff00" };`, "src/vars.css": listed });
+  try {
+    assert.equal(detectTokenSource(themed)?.type, "theme");
+  } finally { cleanup(themed); }
 });
 
 // --- Drift detection ---
