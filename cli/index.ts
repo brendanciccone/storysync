@@ -519,7 +519,7 @@ program
     try {
       const entries = await storybook.listComponents();
       if (json) {
-        console.log(JSON.stringify({ components: entries.map((e) => ({ id: e.id, name: e.name, title: e.title, category: e.category, storyIds: e.storyIds ?? [] })) }));
+        console.log(JSON.stringify({ components: entries.map((e) => ({ id: e.id, name: e.name, title: e.title, category: e.category, ...(e.titleDerived ? { titleDerived: true } : {}), storyIds: e.storyIds ?? [] })) }));
         return;
       }
       // Each by its title and ID, either of which --components and inspect

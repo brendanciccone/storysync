@@ -171,8 +171,15 @@ export function deriveCategoryFromId(id: string, name: string): string | undefin
     .join(" ");
 }
 
-/** How long to wait for Storybook's index.json before rebuilding titles from IDs instead. */
-const INDEX_TIMEOUT_MS = 30_000;
+/**
+ * How long to keep waiting for Storybook's index.json once the docs list has
+ * answered, before rebuilding titles from IDs instead. The docs list is built
+ * from the same index, so by then Storybook has it ready, and a server that
+ * still hasn't sent it isn't going to: with a timeout of its own, 30 seconds,
+ * an index.json that never answered held up every command that lists
+ * components for all of it, or twice that for a Storybook under a sub-path.
+ */
+const INDEX_GRACE_MS = 5_000;
 
 /**
  * Where Storybook serves index.json: beside the Storybook URL's path, for one
@@ -188,11 +195,12 @@ export function indexUrls(storybookUrl: string): URL[] {
   return urls.filter((url, i) => urls.findIndex((u) => u.href === url.href) === i);
 }
 
-/** Storybook's index.json, or null when it can't be read. */
-async function fetchIndex(storybookUrl: string): Promise<unknown> {
+/** Storybook's index.json, or null when it can't be read before `signal` aborts. */
+async function fetchIndex(storybookUrl: string, signal: AbortSignal): Promise<unknown> {
   for (const url of indexUrls(storybookUrl)) {
+    if (signal.aborted) break;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(INDEX_TIMEOUT_MS) });
+      const res = await fetch(url, { signal });
       if (res.ok) return await res.json();
     } catch {
       // Not there, or not JSON: try the next place, then rebuild from IDs.
@@ -339,22 +347,26 @@ const SUBCOMPONENT_PROPS = /^#### Props[ \t]*\r?\n\s*```[\s\S]*?```/gm;
 
 export interface StorybookClientOptions {
   /**
-   * Reads Storybook's index.json, for the components' titles. By default it is
-   * fetched from the Storybook URL; tests pass their own. null reads none, so
-   * every title is rebuilt from its ID.
+   * Reads Storybook's index.json, for the components' titles, until `signal`
+   * aborts. By default it is fetched from the Storybook URL; tests pass their
+   * own. null reads none, so every title is rebuilt from its ID.
    */
-  readIndex?: (() => Promise<unknown>) | null;
+  readIndex?: ((signal: AbortSignal) => Promise<unknown>) | null;
+  /** How long to wait for the index once the docs list has answered: 5 seconds unless a test says otherwise. */
+  indexGraceMs?: number;
 }
 
 export class StorybookClient {
   private client: Client | null = null;
   private docsTools: DocsTools | null = null;
   private url: string;
-  private readIndex: (() => Promise<unknown>) | null | undefined;
+  private readIndex: ((signal: AbortSignal) => Promise<unknown>) | null | undefined;
+  private indexGraceMs: number;
 
   constructor(url: string, options: StorybookClientOptions = {}) {
     this.url = url;
     this.readIndex = options.readIndex;
+    this.indexGraceMs = options.indexGraceMs ?? INDEX_GRACE_MS;
   }
 
   // `transport` is for tests, which connect to an in-memory server. Nothing
@@ -404,16 +416,28 @@ export class StorybookClient {
   async listComponents(): Promise<ComponentEntry[]> {
     const { list } = await this.getDocsTools();
     // Read beside the docs list, not after it: on a busy Storybook each can
-    // take seconds.
-    const [text, titles] = await Promise.all([this.call(list, { withStoryIds: true }), this.readTitles()]);
-    return applyIndexTitles(this.parseComponentList(text), titles);
+    // take seconds. Once the list has answered, the index has a few seconds
+    // more, and is then given up on, its request with it, so nothing holds
+    // the command open.
+    const stop = new AbortController();
+    const stopped = new Promise<null>((resolve) => stop.signal.addEventListener("abort", () => resolve(null), { once: true }));
+    const titles = Promise.race([this.readTitles(stop.signal), stopped]);
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const text = await this.call(list, { withStoryIds: true });
+      grace = setTimeout(() => stop.abort(), this.indexGraceMs);
+      return applyIndexTitles(this.parseComponentList(text), await titles);
+    } finally {
+      clearTimeout(grace);
+      stop.abort();
+    }
   }
 
   /** The titles in Storybook's index, or null when there is none to read or it can't be read. */
-  private async readTitles(): Promise<Map<string, string> | null> {
-    const read = this.readIndex === undefined ? () => fetchIndex(this.url) : this.readIndex;
+  private async readTitles(signal: AbortSignal): Promise<Map<string, string> | null> {
+    const read = this.readIndex === undefined ? (s: AbortSignal) => fetchIndex(this.url, s) : this.readIndex;
     try {
-      return read ? indexTitles(await read()) : null;
+      return read ? indexTitles(await read(signal)) : null;
     } catch {
       return null;
     }

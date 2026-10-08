@@ -68,6 +68,8 @@ interface Catalog {
   list: string;
   docs: Record<string, string>;
   index?: unknown;
+  /** Whether a request for index.json is never answered. */
+  indexHangs?: boolean;
 }
 
 async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = [], figma: FileSpec = FIGMA_FILE, catalog: Catalog = { list: LIST, docs: DOCS }): Promise<StandIn> {
@@ -98,6 +100,7 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
   }
 
   const server = createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/index.json" && catalog.indexHangs) return;
     if (req.method === "GET" && req.url === "/index.json" && catalog.index !== undefined) {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(catalog.index));
       return;
@@ -487,6 +490,18 @@ test("list CLI: each component by its Storybook title and ID, its stories counte
   const derived = await run("list", "--storybook", storybook);
   assert.match(derived.out, /^ {2}Forms\/Button forms-button \(1 story\)$/m);
   assert.match(derived.out, /2 titles were rebuilt from IDs, since Storybook's index\.json couldn't be read or doesn't list them\./);
+});
+
+test("list CLI: an index.json that never answers holds the listing up for seconds, not half a minute", async () => {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { ...REGISTRY, indexHangs: true });
+  standIns.push(standIn);
+  const started = Date.now();
+  const r = await run("list", "--storybook", standIn.url, "--json");
+  assert.equal(r.status, 0, r.out);
+  assert.ok(Date.now() - started < 15_000, `took ${Date.now() - started}ms`);
+  // Rebuilt, as --json says of each title it rebuilt.
+  const components = (JSON.parse(r.stdout) as { components: { title?: string; titleDerived?: boolean }[] }).components;
+  assert.deepEqual(components.map((c) => [c.title, c.titleDerived]), [["UI Base/Button", true], ["UI Radix/Button", true], [undefined, undefined], [undefined, undefined]]);
 });
 
 test("map CLI: every component carries its ID and Storybook's title, and --components takes a title", async () => {

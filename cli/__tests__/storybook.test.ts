@@ -331,6 +331,36 @@ test("StorybookClient: without Storybook's index, titles are rebuilt from IDs as
   }
 });
 
+test("StorybookClient: an index that doesn't answer is given up soon after the docs list, its request with it", async () => {
+  // With a timeout of its own, 30 seconds, an index.json that never answered
+  // held up every command that lists components for all of it.
+  let signal: AbortSignal | undefined;
+  const hanging = (s: AbortSignal) => {
+    signal = s;
+    return new Promise<unknown>(() => {});
+  };
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex: hanging, indexGraceMs: 20 });
+  try {
+    const started = Date.now();
+    const [base] = await client.listComponents();
+    assert.ok(Date.now() - started < 2_000, `waited ${Date.now() - started}ms`);
+    assert.deepEqual([base.title, base.titleDerived], ["UI Base/Button", true]);
+    assert.equal(signal?.aborted, true);
+  } finally {
+    await client.disconnect();
+  }
+
+  // One that answers after the docs list, within those seconds, is read.
+  const late = () => new Promise<unknown>((resolve) => setTimeout(() => resolve(storybookIndex(REGISTRY_TITLES)), 30));
+  const patient = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex: late, indexGraceMs: 5_000 });
+  try {
+    const [base] = await patient.listComponents();
+    assert.deepEqual([base.title, base.titleDerived], ["ui/base/Button", undefined]);
+  } finally {
+    await patient.disconnect();
+  }
+});
+
 test("indexTitles: each component's title, by the ID its stories share", () => {
   const titles = indexTitles({ v: 5, entries: {
     "forms-button--primary": { id: "forms-button--primary", title: "Forms/Button" },
