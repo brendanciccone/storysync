@@ -3367,6 +3367,9 @@ async function main() {
         ["pairs by the Storybook ID the push stored", /getSharedPluginData\('storysync', 'id'\)|storybookId/],
         ["reports a set Figma flags as errored", /errored in Figma \(can't read its properties\)/],
         ["finds an errored set by its node id", /`nodeId`/],
+        // An icon library's components aren't drift.
+        ["counts components outside any set not from the push, without listing them", /don't list it as Figma only, but count it/],
+        ["lets those components leave the audit in sync", /components outside any set not from the push don't count against it/],
       ]) assert(pattern.test(audit), `${file}: the audit never ${what}`);
     }
     return `${files.length} files`;

@@ -855,6 +855,8 @@ test("every audit summary counts code-only, Figma-only, ambiguous and errored co
   // The summary counted only matched and mismatched components, so a report
   // whose every compared name matched read "Figma and code are in sync."
   // beside a component Figma lacked, or a name compared on neither copy.
+  // A designer's own components outside any set, an icon library's, are
+  // counted apart and don't keep the audit from being in sync.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -869,10 +871,10 @@ test("every audit summary counts code-only, Figma-only, ambiguous and errored co
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
       const audit = text.slice(text.search(/^(?:## Audit|Workflow:)$/m));
-      assert.match(audit, /N components matched,? \/? ?(?:N )?mismatched,? \/? ?(?:N )?code-only,? \/? ?(?:N )?Figma-only,? \/? ?(?:N )?ambiguous,? \/? ?(?:N )?errored in Figma\./, `${path}'s summary leaves out code-only, Figma-only, ambiguous or errored components`);
+      assert.match(audit, /N components matched,? \/? ?(?:N )?mismatched,? \/? ?(?:N )?code-only,? \/? ?(?:N )?Figma-only,? \/? ?(?:N )?ambiguous,? \/? ?(?:N )?errored in Figma, and N components outside any set not from the push, not compared\./, `${path}'s summary leaves out code-only, Figma-only, ambiguous or errored components, or those not from the push`);
       assert.match(audit, /`\?` (?:for )?ambiguous/, `${path} gives an ambiguous name no label`);
       assert.match(audit, /`!` (?:for )?errored in Figma/, `${path} gives a set Figma flags as errored no label`);
-      assert.match(audit, /"Figma and code are in sync\." only if everything matches and no name is ambiguous or set errored\. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync\./,
+      assert.match(audit, /"Figma and code are in sync\." only if everything matches and no name is ambiguous or set errored; components outside any set not from the push don't count against it\. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync\./,
         `${path} lets a report with an ambiguous name or an errored set say Figma and code are in sync`);
       assert.doesNotMatch(audit, /If everything matches, (?:confirm|say) "Figma and code are in sync/, `${path} still says in sync whenever everything compared matches`);
     }
