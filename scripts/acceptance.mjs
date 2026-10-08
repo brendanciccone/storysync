@@ -349,17 +349,20 @@ function shownText(markdown) {
 }
 
 /**
- * The pages for the label call, each `[name, layers]`: as use_figma loads
- * them, only the first is loaded when the call starts, and another lists no
- * layers until the call switches to it. Figma refuses to remove the page it
- * is on, or the last one. `figma` serves them; `pages` is what is left.
+ * The pages for the label call, each `[name, layers]`, the user on the one
+ * at `current`, the first unless given: as use_figma loads them, only that
+ * one is loaded when the call starts, and another lists no layers until the
+ * call loads it, with its `loadAsync` or by switching to it. Figma refuses
+ * to remove the page it is on, or the last one. `figma` serves them;
+ * `pages` is what is left.
  */
-function labelPages(spec) {
+function labelPages(spec, current = 0) {
   const pages = [];
   const loaded = new Set();
-  for (const [name, layers] of spec) {
-    const page = { type: "PAGE", name, layers: Array.from({ length: layers }, (_, i) => ({ id: `${name}:${i}` })) };
+  for (const [index, [name, layers]] of spec.entries()) {
+    const page = { type: "PAGE", id: `0:${index + 1}`, name, layers: Array.from({ length: layers }, (_, i) => ({ id: `${name}:${i}` })) };
     Object.defineProperty(page, "children", { get: () => (loaded.has(page) ? page.layers : []) });
+    page.loadAsync = async () => { loaded.add(page); };
     page.remove = () => {
       if (figma.currentPage === page) throw new Error("Cannot remove the current page");
       if (pages.length === 1) throw new Error("Cannot remove the last page");
@@ -367,10 +370,10 @@ function labelPages(spec) {
     };
     pages.push(page);
   }
-  loaded.add(pages[0]);
+  loaded.add(pages[current]);
   const figma = {
     root: { children: pages },
-    currentPage: pages[0],
+    currentPage: pages[current],
     setCurrentPageAsync: async (page) => {
       loaded.add(page);
       figma.currentPage = page;
@@ -3835,33 +3838,43 @@ async function main() {
     return `no escape added over four runs, with Figma's markdown read as ${results.join(" and as ")}`;
   });
 
-  await check("the label call removes Figma's empty Page 1, and keeps one a designer used, or the only page", async () => {
+  await check("the label call removes Figma's empty Page 1, keeps one a designer used, or the only page, and leaves the user where they were", async () => {
     // A live push left Page 1 empty beside the pages it made, and didn't say.
+    // And the call switched to Page 1 to load it, and stayed, so the user's
+    // view jumped at the end of every push.
     const code = useFigmaBlock(/^Label the sets measured from/);
     const set = describedNode("3:1", "COMPONENT_SET");
-    const outcome = async (pages) => {
-      const doc = labelPages(pages);
+    const outcome = async (pages, current, refuse = false) => {
+      const doc = labelPages(pages, current);
+      if (refuse) doc.pages.find((p) => p.name === "Page 1").remove = () => { throw new Error("Cannot remove this page"); };
       const result = await labelCall(code, { "3:1": set }, doc.figma)({ "3:1": "" });
-      return { pageOne: result.pageOne, left: doc.pages.map((p) => p.name).join() };
+      return { pageOne: result.pageOne, left: doc.pages.map((p) => p.name).join(), on: doc.figma.currentPage.name };
     };
+    // Each: the pages, the one the user is on, what the call returns, the
+    // pages left and the one the user is on after.
     const cases = [
-      [[["Page 1", 0], ["ui/base", 1]], "removed", "ui/base"],
+      [[["Page 1", 0], ["ui/base", 1]], 1, "removed", "ui/base", "ui/base"],
+      // On Page 1, the user is moved off it to remove it.
+      [[["Page 1", 0], ["ui/base", 1]], 0, "removed", "ui/base", "ui/base"],
       // Not loaded yet, it lists no layers: the call has to load it to see them.
-      [[["ui/base", 1], ["Page 1", 2]], "kept: it holds layers", "ui/base,Page 1"],
-      [[["Page 1", 0]], "kept: it is the only page", "Page 1"],
-      [[["Cover", 0], ["ui/base", 1]], "none", "Cover,ui/base"],
+      [[["ui/base", 1], ["Page 1", 2]], 0, "kept: it holds layers", "ui/base,Page 1", "ui/base"],
+      [[["Page 1", 0]], 0, "kept: it is the only page", "Page 1", "Page 1"],
+      [[["Cover", 0], ["ui/base", 1]], 1, "none", "Cover,ui/base", "ui/base"],
     ];
-    for (const [pages, pageOne, left] of cases) {
-      const got = await outcome(pages);
-      assert(got.pageOne === pageOne && got.left === left,
-        `pages ${JSON.stringify(pages)}: pageOne ${JSON.stringify(got.pageOne)}, leaving ${got.left}; expected ${JSON.stringify(pageOne)}, leaving ${left}`);
+    for (const [pages, current, pageOne, left, on] of cases) {
+      const got = await outcome(pages, current);
+      const want = { pageOne, left, on };
+      assert(JSON.stringify(got) === JSON.stringify(want), `pages ${JSON.stringify(pages)}, on ${pages[current][0]}: ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
     }
-    // A removal Figma refuses is said, after the labels, rather than lost in a throw.
-    const refusing = labelPages([["Page 1", 0], ["ui/base", 1]]);
-    refusing.pages[0].remove = () => { throw new Error("Cannot remove this page"); };
-    const refused = await labelCall(code, { "3:1": set }, refusing.figma)({ "3:1": "" });
-    assert(refused.pageOne === "kept: Figma refused to remove it (Cannot remove this page)", `a refused removal returned ${JSON.stringify(refused.pageOne)}`);
-    return cases.map(([, pageOne]) => pageOne).join("; ") + "; " + refused.pageOne;
+    // A removal Figma refuses is said, after the labels, rather than lost in
+    // a throw, and the user is left on the page they were on.
+    const refusal = "kept: Figma refused to remove it (Cannot remove this page)";
+    for (const [current, on] of [[0, "Page 1"], [1, "ui/base"]]) {
+      const got = await outcome([["Page 1", 0], ["ui/base", 1]], current, true);
+      const want = { pageOne: refusal, left: "Page 1,ui/base", on };
+      assert(JSON.stringify(got) === JSON.stringify(want), `a refused removal, on ${on}: ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    }
+    return cases.map(([, , pageOne]) => pageOne).join("; ") + "; " + refusal + ", the user left where they were each time";
   });
 
   heading("Readback checksums");

@@ -220,7 +220,7 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
 
    **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set and plain component this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger. Figma returns a description HTML-escaped, `"` as `&quot;` and `&` as `&amp;`, so one written back as it was read gains another escape on every push (a live push left `button[data-slot=&quot;dialog-trigger&quot;]` on Dialog): the template reads it unescaped, edits a designer's formatted description through `descriptionMarkdown` so their formatting stays, and writes only a description it changed, so a second run changes nothing.
 
-   The same call removes Figma's default page, `Page 1`, once the push has put every set on a page of its category, but only while it is as Figma made it: still named `Page 1`, empty, and not the file's only page. It returns `pageOne`: `removed`, `kept: it holds layers`, `kept: it is the only page`, `kept: Figma refused to remove it` with Figma's reason, or `none` where the file has no page of that name. Say in the summary which it was; a page a designer renamed or used is left alone.
+   The same call removes Figma's default page, `Page 1`, once the push has put every set on a page of its category, but only while it is as Figma made it: still named `Page 1`, empty, and not the file's only page. It returns `pageOne`: `removed`, `kept: it holds layers`, `kept: it is the only page`, `kept: Figma refused to remove it` with Figma's reason, or `none` where the file has no page of that name. It loads the page to count its layers without switching to it, so the user stays on the page they are on, unless that is the `Page 1` it removes. Say in the summary which it was; a page a designer renamed or used is left alone.
 
 ```js
 use_figma({
@@ -264,19 +264,23 @@ use_figma({
     }
     // Figma's default page, left empty once every set is on its category's
     // page: removed only as Figma made it, named Page 1 and empty, while
-    // another page remains. Switching to it loads it, so its layers count.
+    // another page remains. loadAsync loads it, so its layers count, without
+    // switching to it: the user stays on their page, and is moved off Page 1
+    // only to remove it, and back if Figma refuses.
     let pageOne = 'none';
     const blank = figma.root.children.find((p) => p.name === 'Page 1');
     if (blank) {
-      await figma.setCurrentPageAsync(blank);
+      await blank.loadAsync();
       const other = figma.root.children.find((p) => p !== blank);
       pageOne = blank.children.length ? 'kept: it holds layers' : !other ? 'kept: it is the only page' : 'removed';
       if (pageOne === 'removed') {
-        await figma.setCurrentPageAsync(other);
+        const onIt = figma.currentPage.id === blank.id;
+        if (onIt) await figma.setCurrentPageAsync(other);
         try {
           blank.remove();
         } catch (e) {
           pageOne = 'kept: Figma refused to remove it (' + String((e && e.message) || e) + ')';
+          if (onIt) await figma.setCurrentPageAsync(blank);
         }
       }
     }
