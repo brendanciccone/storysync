@@ -754,6 +754,9 @@ test("describeNoOpProperties: names each property and what to do about it", () =
   assert.match(one, /^`asChild`: every value measured the same, so it changes nothing snap records/);
   assert.match(one, /may not belong as Figma variant properties/);
   assert.match(describeNoOpProperties(["asChild", "side"])!, /^`asChild`, `side`: .* they change nothing/);
+  // Ready to run, as the cap warning's advice is.
+  assert.match(one, /leave it out of every component with `--exclude-props asChild`\. If the story drops it, pass it through/);
+  assert.match(describeNoOpProperties(["asChild", "side"])!, /leave them out of every component with `--exclude-props asChild,side`\./);
 });
 
 // --- elements that may not be the component ---

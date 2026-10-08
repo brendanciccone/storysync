@@ -264,7 +264,8 @@ export function describeNoOpProperties(names: string[]): string | null {
   return (
     `${list}: every value measured the same, so ${one ? "it changes" : "they change"} nothing snap records. ` +
     `If ${one ? "it changes" : "they change"} only behaviour, or something snap doesn't measure, such as content ` +
-    `that renders elsewhere, ${one ? "it" : "they"} may not belong as Figma variant properties; if the story ` +
+    `that renders elsewhere, ${one ? "it" : "they"} may not belong as Figma variant properties: leave ` +
+    `${one ? "it" : "them"} out of every component with \`--exclude-props ${names.join(",")}\`. If the story ` +
     `drops ${one ? "it" : "them"}, pass ${one ? "it" : "them"} through to the component.`
   );
 }
