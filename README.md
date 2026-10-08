@@ -430,7 +430,7 @@ Options:
                          in --out, keeping the rest
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant or component could not be measured, none were,
-                         or a component was capped
+                         a variant's args could not be checked, or a component was capped
   --strict-warnings      Implies --strict, and also fails on warnings
 ```
 
@@ -447,7 +447,7 @@ If snap stops before it finishes, it writes nothing: `styles.json`, `meta.json` 
 
 Each measured variant records the element as `element`, like `span[data-slot="switch"]`.
 
-**Strict modes.** `--strict` fails on anything that couldn't be measured, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI. That includes the warnings above about which element was measured, and one about a prop whose values all measure the same, so a closed dialog's story fails it until the story renders the dialog open.
+**Strict modes.** `--strict` fails on anything that couldn't be measured, on a variant whose args snap couldn't check (below), on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI. That includes the warnings above about which element was measured, and one about a prop whose values all measure the same, so a closed dialog's story fails it until the story renders the dialog open.
 
 **Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
@@ -476,7 +476,7 @@ Use the version the error prints. Other Playwright versions install a browser th
 
 Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so a value like `Nav/Primary` can't be measured and is marked `args_unsupported`.
 
-**Values the story's argTypes don't allow.** Storybook drops a URL value that the story's argTypes `options` don't list, or that an argTypes `if` hides for that combination, and renders the default instead. shadcn/ui's Badge story lists four of its six variants, for example. After each story renders, snap reads the args Storybook gave it from the preview. When a value is missing, snap sets it through the preview, as the Controls panel does, and measures what the component renders with it. The variant records the values as `rejectedArgs`, with `appliedVia: "preview"`, and snap warns with the story change that would let the URL take them. If the preview won't apply a value either, the variant is marked `arg_rejected` and not measured, so `--strict` fails and `verify` names it under the score.
+**Values the story's argTypes don't allow.** Storybook drops a URL value that the story's argTypes `options` don't list, or that an argTypes `if` hides for that combination, and renders the default instead. shadcn/ui's Badge story lists four of its six variants, for example. After each story renders, snap reads the args Storybook gave it from the preview. When a value is missing, snap sets it through the preview, as the Controls panel does, and measures what the component renders with it. The variant records the values as `rejectedArgs`, with `appliedVia: "preview"`, and snap warns with the story change that would let the URL take them. If the preview won't apply a value either, the variant is marked `arg_rejected` and not measured, so `--strict` fails and `verify` names it under the score. If snap can't read the preview for a variant at all, it can't tell whether the story took its values. It measures the variant, marks it `argsChecked: false` and warns, naming it. `--strict` fails on it, and `verify` names it under the score and fails it under `--strict-measured`.
 
 snap also records each story's argTypes as `argTypes`, with each arg's type, control, options and `if`, and lists the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`. Variant properties still come from the docs alone.
 
@@ -507,7 +507,7 @@ Options:
 |---|---|
 | `--strict` | Properties that disagree, variants missing from Figma or with nothing comparable, readback entries that fail their checks (below), snap failures, and components in the readback that the snap doesn't have |
 | `--strict-age` | A snap older than `--max-age`, or one whose age is unknown |
-| `--strict-measured` | Variants that weren't measured, such as ones inferred from source. This is the one to use in CI. |
+| `--strict-measured` | Variants that weren't measured, such as ones inferred from source, and variants snap measured without checking that the story took their values. This is the one to use in CI. |
 
 ```text
 Fidelity: 95.0% (38/40 properties)
@@ -518,7 +518,7 @@ Fidelity: 95.0% (38/40 properties)
       borderRadiusUniform: measured 3, Figma 8
 ```
 
-**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`.
+**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`. It also lists a component with variants Storybook wouldn't render with their values (`arg_rejected`), which weren't scored, and one with variants snap measured without checking that the story took their values (`argsChecked: false`), which fail `--strict-measured`.
 
 ```text
 Fidelity: 100.0% (12/12 properties)
@@ -630,7 +630,7 @@ Options:
 - **Stories must use their args.** See [`storysync snap`](#storysync-snap).
 - **Overlays are measured closed** unless their story renders them open, so a Dialog's Figma component would be its trigger. snap warns when it measures a closed trigger, and the push then asks whether to build the trigger, skip it, or stop so you can add a story that renders it open. `verify` names it under the score. A trigger built anyway says so on a `storysync:` line of its Figma description, and a skipped one is left out of the score with `verify --skip`.
 - **Variant values must be URL-safe.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported`.
-- **Values the story's argTypes reject are set through Storybook's preview.** That needs `window.__STORYBOOK_PREVIEW__`, which Storybook has had since version 7. snap warns when it can't read it, since a rejected value would then measure as the default. A value the preview won't apply either is reported as `arg_rejected`.
+- **Values the story's argTypes reject are set through Storybook's preview.** That needs `window.__STORYBOOK_PREVIEW__`, which Storybook has had since version 7. When snap can't read it, a rejected value would measure as the default, so snap marks those variants `argsChecked: false`, warns, and fails `--strict`. A value the preview won't apply either is reported as `arg_rejected`.
 - **Props need literal types.** Only a boolean or a union of string literals becomes a variant property. A `string` or `number` prop doesn't, even with `options` in its argType, since variant properties come from Storybook's docs. snap records the argTypes but doesn't make variants of them.
 - **Text can be a pixel off.** Figma lays out text with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than in the browser. `verify` allows 3% or 1px, whichever is larger. The skill reports this as a font-rendering difference instead of forcing the width, unless a stroke was built wrong.
 - **Transparent borders are filled as the browser fills them.** The browser paints the background under a transparent or translucent border unless the background is clipped to the padding box, as Tailwind's `bg-clip-padding` does. snap records which, and the push builds the border to match: an `INSIDE` stroke the fill runs under, or, with `bg-clip-padding`, an `OUTSIDE` stroke the fill stops at, so Figma shows the same unfilled ring the browser does. The size is right either way, and the summary names those variants.

@@ -374,6 +374,28 @@ test("verify CLI: variants Storybook wouldn't render are named beside the score 
   assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
 });
 
+test("verify CLI: variants snap measured without checking their args are named beside the score, and fail --strict-measured", () => {
+  // snap couldn't read Storybook's preview for b, so b may be the story's
+  // default under its name: scored, but not as surely measured.
+  const twoVariants = snap({ summary: { components: 1, variants: 2, rendered: 2, failed: 0, componentsFailed: 0, componentsWithWarnings: 1 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "ok", error: null, delta: {}, argsChecked: false },
+    ],
+  });
+  const figma = readbackOf({ a: MATCHING, b: MATCHING });
+  const r = verify(twoVariants, figma, "--strict");
+  assert.equal(r.status, 0, r.out);
+  // Under the score, beside the caveat that a and b measured the same.
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.equal(lines[at + 1], "  ! The score compares Figma with what snap measured, and snap warned about that for this component:");
+  assert.deepEqual(lines.slice(at + 2, at + 4).filter((line) => line.includes("couldn't check")), [
+    "      Forms/Button: snap couldn't check that Storybook gave the story the values of variant b, so it may have scored the story's default under its name; measure the component again",
+  ]);
+  assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
+});
+
 test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
   try {

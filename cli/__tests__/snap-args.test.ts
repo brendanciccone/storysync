@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   argMatches, argsNotInDocs, compactArgTypes, conditionHolds, describeArgRejections, describeUncheckedArgs,
-  findRejectedArgs, parseIllegalValueWarning, previewArgUpdate, rejectionsFromWarnings, stillRejected, typedArgValue,
+  findRejectedArgs, nameSlugs, parseIllegalValueWarning, previewArgUpdate, rejectionsFromWarnings, stillRejected, typedArgValue,
 } from "../snap-args.js";
 import type { StoryArgsSnapshot } from "../snap-args.js";
 import type { FigmaVariantProperty } from "../mapper.js";
@@ -216,9 +216,14 @@ test("describeArgRejections: values not measured say so, how to measure them, an
   assert.deepEqual(describeArgRejections("ui/base/Card", [{ combination: {}, status: "ok" }]), []);
 });
 
-test("describeUncheckedArgs: says when the preview couldn't be read", () => {
-  assert.equal(describeUncheckedArgs("X", 0, 3), null);
-  assert.match(describeUncheckedArgs("X", 3, 3, "the page has no window.__STORYBOOK_PREVIEW__")!,
-    /^snap couldn't read Storybook's preview to confirm that X's story was given the values asked for, for its variants \(the page has no window\.__STORYBOOK_PREVIEW__\)/);
-  assert.match(describeUncheckedArgs("X", 1, 3)!, /for 1 of 3 variants\./);
+test("describeUncheckedArgs: says when the preview couldn't be read, naming the variants", () => {
+  assert.equal(describeUncheckedArgs("X", [], 3), null);
+  const all = describeUncheckedArgs("X", ["a", "b", "c"], 3, { error: "the page has no window.__STORYBOOK_PREVIEW__", id: "x" })!;
+  assert.match(all, /^snap couldn't read Storybook's preview to confirm that X's story was given the values asked for, for its variants \(the page has no window\.__STORYBOOK_PREVIEW__\)\./);
+  assert.match(all, /those variants are marked argsChecked: false, which fails --strict and which verify names beside its score\. Measure the component again with --components x --merge\.$/);
+  // Some of them: named, the first few, so the user can find them.
+  assert.match(describeUncheckedArgs("X", ["variant-ghost"], 3)!, /for 1 of 3 variants \(variant-ghost\)\. .*that variant is marked argsChecked: false/);
+  const slugs = ["a", "b", "c", "d", "e", "f", "g"];
+  assert.match(describeUncheckedArgs("X", slugs, 9)!, /for 7 of 9 variants \(a, b, c, d, e and 2 more\)\./);
+  assert.equal(nameSlugs(["a", "b"]), "a, b");
 });

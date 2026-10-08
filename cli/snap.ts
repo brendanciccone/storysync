@@ -78,6 +78,12 @@ export interface SnapVariant {
   rejectedArgs?: ArgRejection[];
   /** `preview` when `rejectedArgs` were applied through Storybook's preview, so this was measured with them. */
   appliedVia?: "preview";
+  /**
+   * False when snap couldn't read Storybook's preview to check that the
+   * story was given this combination, so a value it didn't take would have
+   * been measured as its default. Absent when it checked.
+   */
+  argsChecked?: false;
 }
 
 export interface SnapComponent {
@@ -146,6 +152,22 @@ export interface SnapResult {
     /** Components with more combinations than the ceiling, measured as a subset. */
     componentsCapped: number;
   };
+}
+
+/** Whether `snap --strict` fails on `result`. */
+export function snapFailsStrict(result: SnapResult): boolean {
+  // Measuring nothing is a failure, not a clean run: snap still writes a
+  // styles.json and a freshly-stamped meta.json, so downstream freshness
+  // checks would read an empty result as a good one.
+  // A capped component was measured as a subset; building from it as if it
+  // were the whole component is the silent gap --strict exists to stop.
+  // So is a variant measured without knowing Storybook gave the story its
+  // values: one it didn't take leaves the default on screen.
+  return result.summary.failed > 0
+    || result.summary.componentsFailed > 0
+    || result.summary.components === 0
+    || result.summary.componentsCapped > 0
+    || result.components.some((c) => c.variants.some((v) => v.status === "ok" && v.argsChecked === false));
 }
 
 export interface SnapDeps {
@@ -835,7 +857,7 @@ async function snapComponent(
   // Variants whose args couldn't be checked against Storybook's preview, of
   // those captured, and why.
   let captures = 0;
-  let unchecked = 0;
+  const unchecked: string[] = [];
   let uncheckedError: string | undefined;
   try {
     checkpoint();
@@ -883,15 +905,18 @@ async function snapComponent(
         const undocumented = argsNotInDocs(args.argTypes, component.props.map((p) => p.name));
         if (undocumented.length) shell.argsNotInDocs = undocumented;
       }
-      if (args && !args.checked) {
-        unchecked++;
+      // Of a combination that asks for nothing, nothing can have been refused.
+      const notChecked = !!args && !args.checked && Object.keys(combination).length > 0;
+      if (notChecked) {
+        unchecked.push(slug);
         uncheckedError ??= args.error;
       }
       // For a variant the story still wasn't given values, those values.
       const rejectedArgs = captured.status === "arg_rejected" ? args?.unapplied : args?.rejected;
-      const argsRecord = rejectedArgs?.length
-        ? { rejectedArgs, ...(args?.appliedVia ? { appliedVia: args.appliedVia } : {}) }
-        : {};
+      const argsRecord = {
+        ...(rejectedArgs?.length ? { rejectedArgs, ...(args?.appliedVia ? { appliedVia: args.appliedVia } : {}) } : {}),
+        ...(notChecked ? { argsChecked: false as const } : {}),
+      };
 
       if (captured.status !== "ok" || !captured.raw || !captured.boundingBox) {
         // A failure because the browser went is not this variant's.
@@ -935,8 +960,8 @@ async function snapComponent(
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
   const label = entry.title ?? entry.name;
   shell.warnings.push(...describeArgRejections(label, shell.variants, { storyFile: shell.storyFile, id: entry.id }));
-  const notChecked = describeUncheckedArgs(label, unchecked, captures, uncheckedError);
-  if (notChecked) shell.warnings.push(notChecked);
+  const uncheckedWarning = describeUncheckedArgs(label, unchecked, captures, { error: uncheckedError, id: entry.id });
+  if (uncheckedWarning) shell.warnings.push(uncheckedWarning);
 
   const identical = detectIdenticalVariants(shell.variants);
   if (identical) {

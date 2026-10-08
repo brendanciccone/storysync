@@ -372,13 +372,34 @@ export function describeArgRejections(
   return warnings;
 }
 
-/** Warning for a component none of whose variants' args could be checked. */
-export function describeUncheckedArgs(label: string, unchecked: number, measured: number, error?: string): string | null {
-  if (!unchecked) return null;
-  const which = unchecked < measured ? `${unchecked} of ${measured} variants` : "its variants";
+/** How many slugs a warning names before saying how many more there are. */
+const SLUGS_NAMED = 5;
+
+/** `slugs` as a warning names them: the first few, then how many more. */
+export function nameSlugs(slugs: readonly string[]): string {
+  const named = slugs.slice(0, SLUGS_NAMED).join(", ");
+  return slugs.length > SLUGS_NAMED ? `${named} and ${slugs.length - SLUGS_NAMED} more` : named;
+}
+
+/**
+ * Warning for a component some of whose variants' args couldn't be checked:
+ * `slugs` are those variants, of `measured` captured. They were measured,
+ * and are marked `argsChecked: false`, since a value Storybook didn't take
+ * leaves its default on screen under the variant's name.
+ */
+export function describeUncheckedArgs(
+  label: string,
+  slugs: readonly string[],
+  measured: number,
+  options: { error?: string; id?: string } = {},
+): string | null {
+  if (!slugs.length) return null;
+  const which = slugs.length < measured ? `${slugs.length} of ${measured} variants (${nameSlugs(slugs)})` : "its variants";
+  const again = options.id ? `--components ${options.id} --merge` : "--components and --merge";
   return (
     `snap couldn't read Storybook's preview to confirm that ${label}'s story was given the values asked for, for ${which}` +
-    `${error ? ` (${error})` : ""}. A value the story's argTypes don't allow would have rendered as its default, ` +
-    `and been measured under that variant's name.`
+    `${options.error ? ` (${options.error})` : ""}. A value the story's argTypes don't allow would have rendered as its default, ` +
+    `and been measured under that variant's name, so ${slugs.length === 1 ? "that variant is" : "those variants are"} marked argsChecked: false, ` +
+    `which fails --strict and which verify names beside its score. Measure the component again with ${again}.`
   );
 }

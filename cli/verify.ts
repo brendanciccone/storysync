@@ -325,7 +325,7 @@ export interface VerifyResult {
 
 export interface ScoreCaveat {
   component: string;
-  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed" | "args-rejected";
+  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed" | "args-rejected" | "args-unchecked";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
   /** The properties whose default is assumed, for `default-assumed`. */
@@ -336,6 +336,12 @@ export interface ScoreCaveat {
    */
   values?: string[];
   variants?: number;
+  /**
+   * For `args-unchecked`: the variants snap measured without being able to
+   * check that Storybook gave the story their values, so any of them may
+   * have scored the story's default. `variants` counts them.
+   */
+  slugs?: string[];
 }
 
 export interface ReadbackIssue {
@@ -978,6 +984,10 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     const values = [...new Set(refused.flatMap((v) => (v.rejectedArgs ?? []).map((r) => `${r.name}=${r.value}`)))];
     caveats.push({ component: key, kind: "args-rejected", values, variants: refused.length });
   }
+  // Variants measured, and so scored, without snap knowing the story was
+  // given their values: any of them may be the default under their name.
+  const unchecked = (component.variants ?? []).filter((v) => v.status === "ok" && v.argsChecked === false).map((v) => v.slug);
+  if (unchecked.length) caveats.push({ component: key, kind: "args-unchecked", slugs: unchecked, variants: unchecked.length });
   return caveats;
 }
 

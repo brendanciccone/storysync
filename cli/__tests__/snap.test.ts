@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
-  parseMeasurementWarning,
+  parseMeasurementWarning, snapFailsStrict,
 } from "../snap.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
@@ -1468,22 +1468,36 @@ test("runSnap: an arg_rejected variant records only the values the story still w
   }
 });
 
-test("runSnap: a story whose args can't be checked says so", async () => {
+test("runSnap: a variant whose args can't be checked is measured, marked, named and fails --strict", async () => {
   // A page with no Storybook preview to read: what was given can't be known.
   const dir = tempDir();
   try {
     const page = screenshotPage();
+    const size = { name: "size", type: { name: "union" }, defaultValue: "sm", control: { type: "select", options: ["sm", "lg"] } };
     const result = await runSnap(options(dir, { selector: "#storybook-root > div" }), {
-      storybook: THREE_COMPONENTS as never,
+      storybook: {
+        listComponents: async () => [{ id: "forms-a", name: "A" }, { id: "forms-b", name: "B" }],
+        getComponent: async (id: string) => ({ name: id, props: id === "forms-a" ? [size] : [], stories: [{ id: `${id}--default`, name: "Default" }] }),
+      } as never,
       launch: async () => ({
         via: "stub",
         browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
       }) as never,
     });
-    for (const component of result.components) {
-      assert.deepEqual(component.warnings.filter((w) => /couldn't read Storybook's preview/.test(w)).length, 1);
-      assert.equal(component.argTypes, undefined);
-    }
+    const [a, b] = result.components;
+    // Measured, and marked: a value the story didn't take would be its default.
+    assert.deepEqual(a.variants.map((v) => [v.slug, v.status, v.argsChecked]), [["size-sm", "ok", false], ["size-lg", "ok", false]]);
+    const [warning, ...rest] = a.warnings.filter((w) => /couldn't read Storybook's preview/.test(w));
+    assert.deepEqual(rest, []);
+    assert.match(warning, /for its variants \(Storybook's preview returned nothing snap can read\)\./);
+    assert.match(warning, /Measure the component again with --components forms-a --merge\.$/);
+    assert.equal(a.argTypes, undefined);
+    // A story asked for nothing can't have refused anything.
+    assert.deepEqual([b.variants.map((v) => v.argsChecked), b.warnings], [[undefined], []]);
+    // The marked variants fail --strict, as a variant that couldn't be measured does.
+    assert.equal(snapFailsStrict(result), true);
+    for (const variant of a.variants) delete variant.argsChecked;
+    assert.equal(snapFailsStrict(result), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
