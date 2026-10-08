@@ -1037,9 +1037,11 @@ function layoutScenarios(snapDir) {
     },
 
     async defaults(build) {
-      // A component whose defaults are not its first values: the order is
-      // declared, not default first, so the grid is the same, and Figma's
-      // default, the top-left variant, is primary, sm, not disabled.
+      // Properties whose defaults are not their first values, as a BOOLEAN
+      // that defaults to true is (snap records a VARIANT's default first):
+      // the template follows PROPERTIES' order, never defaultValue, so the
+      // grid is the same, and Figma's default, the top-left variant, is
+      // primary, sm, not disabled.
       const { gap, properties, measured } = data();
       const shifted = properties.map((p) => ({ ...p, defaultValue: p.type === "BOOLEAN" ? "true" : p.values[p.values.length - 1] }));
       const doc = figmaDocument();

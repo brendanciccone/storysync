@@ -223,7 +223,14 @@ export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
   if (vals?.length) {
     const d = resolveDefault(prop.defaultValue);
     const defaultValue = d != null && vals.includes(d) ? d : vals[0];
-    return { name: prop.name, type: "VARIANT", values: vals, defaultValue };
+    // The default leads, the rest keep their order. The skill lays a Figma
+    // set out in this order, and Figma makes its top-left variant the set's
+    // default, so a default further along made Figma's default a variant the
+    // code never renders unasked. The order Storybook's docs print is
+    // TypeScript's, not the author's: shadcn's Button reads `"link" |
+    // "default" | ...` though its cva declares default first. A BOOLEAN keeps
+    // `true, false`, which the skill lays out `false, true` whatever it holds.
+    return { name: prop.name, type: "VARIANT", values: [defaultValue, ...vals.filter((v) => v !== defaultValue)], defaultValue };
   }
 
   return null;

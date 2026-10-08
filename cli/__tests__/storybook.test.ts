@@ -13,6 +13,7 @@ import {
   StorybookClient,
   type DocsTools,
 } from "../storybook.js";
+import { mapComponent } from "../mapper.js";
 
 test("deriveCategoryFromId: single-word category", () => {
   assert.equal(deriveCategoryFromId("ui-button", "Button"), "UI");
@@ -442,6 +443,31 @@ test("StorybookClient: a line of a prop's description is not a prop", async () =
     "}", "```",
   ].join("\n"));
   assert.deepEqual(props, [["tone", '"neutral" | "success" | "danger"'], ["dot", "boolean"], ["label", "string"]]);
+});
+
+test("StorybookClient: a shadcn component's cva variants, printed with `| null`, map to variant properties", async () => {
+  // addon-mcp 10.6.1 for shadcn/ui's Radix Button (shadcn-storybook-registry).
+  // cva's VariantProps add `| null` to every variant, which once dropped
+  // them all and left Button with asChild as its only property.
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, EXAMPLE_LIST, {
+    "ui-radix-button": [
+      "# Button", "", "ID: ui-radix-button", "", "## Stories", "", "### Default", "", "Story ID: ui-radix-button--default", "",
+      "## Props", "", "```", "export type Props = {",
+      '  variant?: "link" | "default" | "outline" | "secondary" | "ghost" | "destructive" | null = default;',
+      '  size?: "default" | "xs" | "sm" | "lg" | "icon" | "icon-xs" | "icon-sm" | "icon-lg" | null = default;',
+      "  asChild?: boolean = false;",
+      "}", "```",
+    ].join("\n"),
+  });
+  try {
+    const def = mapComponent(await client.getComponent("ui-radix-button", "Button"));
+    assert.deepEqual(def.variantProperties, [
+      { name: "variant", type: "VARIANT", values: ["default", "link", "outline", "secondary", "ghost", "destructive"], defaultValue: "default" },
+      { name: "size", type: "VARIANT", values: ["default", "xs", "sm", "lg", "icon", "icon-xs", "icon-sm", "icon-lg"], defaultValue: "default" },
+    ]);
+  } finally {
+    await client.disconnect();
+  }
 });
 
 // --- selectComponents ---

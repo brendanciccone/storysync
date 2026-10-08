@@ -193,6 +193,27 @@ test("mapProp: uses the declared default when it is one of the values", () => {
   assert.equal(result?.defaultValue, "md");
 });
 
+// Figma makes a set's top-left variant its default, and the skill lays the
+// set out in this order, so the default leads. The docs print TypeScript's
+// order, not the author's: shadcn's Button reads link first.
+test("mapProp: puts the declared default first and keeps the rest in order", () => {
+  assert.deepEqual(mapProp(prop({
+    name: "variant",
+    type: { name: "union", raw: `"link" | "default" | "outline" | "secondary" | "ghost" | "destructive" | null` },
+    defaultValue: "default",
+  })), {
+    name: "variant", type: "VARIANT",
+    values: ["default", "link", "outline", "secondary", "ghost", "destructive"],
+    defaultValue: "default",
+  });
+  assert.deepEqual(
+    mapProp(prop({ name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` }, defaultValue: "lg" }))?.values,
+    ["lg", "sm", "md"],
+  );
+  // With no declared default, nothing moves.
+  assert.deepEqual(mapProp(prop({ name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` } }))?.values, ["sm", "md", "lg"]);
+});
+
 test("mapProp: falls back to the first value when the default is not a valid option", () => {
   const result = mapProp(prop({
     name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` }, defaultValue: "enormous",
@@ -388,6 +409,18 @@ test("mapComponent: maps props and carries metadata through", () => {
   assert.equal(def.variantCombinations.length, 4);
   assert.equal(def.wasCapped, false);
   assert.equal(def.cap, undefined);
+});
+
+test("mapComponent: maps a shadcn Radix Button's cva variants, without asChild", () => {
+  // The Props block addon-mcp 10.6 prints for shadcn/ui's Radix Button.
+  const def = mapComponent(component([
+    prop({ name: "variant", type: { name: "union", raw: `"link" | "default" | "outline" | "secondary" | "ghost" | "destructive" | null` }, defaultValue: "default" }),
+    prop({ name: "size", type: { name: "union", raw: `"default" | "xs" | "sm" | "lg" | "icon" | "icon-xs" | "icon-sm" | "icon-lg" | null` }, defaultValue: "default" }),
+    prop({ name: "asChild", type: { name: "boolean" }, defaultValue: "false" }),
+  ]));
+  assert.deepEqual(def.variantProperties.map((p) => [p.name, p.values[0], p.values.length]), [["variant", "default", 6], ["size", "default", 8]]);
+  assert.equal(def.variantCombinations.length, 48);
+  assert.deepEqual(def.variantCombinations[0], { variant: "default", size: "default" });
 });
 
 test("mapComponent: a component with no mappable props yields one empty combination", () => {
