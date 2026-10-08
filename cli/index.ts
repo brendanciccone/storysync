@@ -19,7 +19,7 @@ import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
 import { Progress, widenZeroWidthTerminal } from "./progress.js";
 import type { TokenBaseline, TokenExtractionResult, TokenSourceType } from "./tokens.js";
-import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
+import type { CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import type { TokenDiffEntry, ComponentDiffEntry, CodeComponent } from "./diff.js";
 import type { ComponentEntry } from "./storybook.js";
