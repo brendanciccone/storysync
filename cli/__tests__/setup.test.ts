@@ -749,6 +749,13 @@ test("every push instruction builds a component with no variant properties as on
       assert.match(text, /renames (?:a set's one unnamed variant )?`=` and marks (?:the set )?as broken/, `${path} never says why a set of one unnamed variant is wrong`);
       assert.match(text, /plain component[^\n]*`''`[^\n]*`default`/, `${path} never says how a plain component reads back`);
       assert.match(text, /ask the user whether to convert it/, `${path} never asks before converting what an earlier push left`);
+      if (!path.includes("commands")) {
+        // appendChild moved the variant onto the page at its place inside the
+        // set, near 0,0, and out of any section the set was in.
+        assert.match(text, /parent\.insertChild\(parent\.children\.indexOf\(set\), variant\); Object\.assign\(variant, \{ x, y, name \}\)/,
+          `${path} never puts a converted variant where its set was`);
+        assert.doesNotMatch(text, /page\.appendChild\(variant\)/, `${path} still moves a converted variant onto the page`);
+      }
       assert.match(text, /^\d+\. Summarize[^\n]*built as one plain component/m, `${path}'s summary leaves out the plain components`);
     }
   } finally {
