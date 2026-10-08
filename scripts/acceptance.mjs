@@ -2742,6 +2742,32 @@ async function main() {
     return say;
   });
 
+  await check("text the browser doesn't show is passed over: an sr-only label, a hidden span, one not displayed or hidden", async () => {
+    // Base UI's Progress keeps a span of text in a fixed 1px box that clips
+    // it: snap measured it as Progress's text, cut off at 1px, and the push
+    // would have built a 1px label. An icon button's sr-only label gave the
+    // button a text it doesn't show in the same way.
+    const v3 = "position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; font-size: 20px";
+    const v4 = "position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border-width: 0; font-size: 20px";
+    const button = (inner) => `<div id="storybook-root"><button data-slot="button" style="display: inline-flex; gap: 4px; padding: 4px 8px; font: 600 12px sans-serif">${inner}</button></div>`;
+    const icon = `<svg width="16" height="16"><rect width="16" height="16"/></svg>`;
+    const m = await captureStories({
+      progress: { component: "Progress", html: `<div id="storybook-root"><div data-slot="progress" style="position: relative; width: 200px; height: 8px; background: #e5e5e5"><div style="width: 50%; height: 100%; background: #171717"></div><span style="position: fixed; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; white-space: nowrap">50%</span></div></div>` },
+      srOnly: { component: "Button", html: button(`${icon}<span style="${v3}">Close</span>`) },
+      srOnlyV4: { component: "Button", html: button(`${icon}<span style="${v4}">Close</span>`) },
+      // The label shown, after a hidden one: the shown one's 13px, not 20px.
+      shownAfter: { component: "Button", html: button(`<span style="${v3}">Close</span><span style="display: none; font-size: 20px">Off</span><span style="visibility: hidden; font-size: 20px">Off</span><span style="font-size: 13px">Save</span>`) },
+      // A label shown inside a box that hides others: visibility is
+      // inherited, and a child can show itself again.
+      shownInside: { component: "Button", html: button(`<span style="visibility: hidden; font-size: 20px">Off <span style="visibility: visible; font-size: 13px">On</span></span>`) },
+    });
+    const text = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.styles.text ?? null : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(text);
+    for (const name of ["progress", "srOnly", "srOnlyV4"]) assert(text[name] === null, `${name}: ${say}`);
+    for (const name of ["shownAfter", "shownInside"]) assert(text[name]?.fontSize === 13 && text[name].layout === undefined, `${name}: ${say}`);
+    return "no text on Progress or the icon buttons; the shown label's 13px beside hidden ones";
+  });
+
   await check("a story that throws after load is a render error, found without waiting out --timeout", async () => {
     // As ResizablePanelGroup does: Storybook paints the error after the load
     // event, and snap reported no root element, twice --timeout later.

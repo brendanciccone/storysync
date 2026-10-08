@@ -648,13 +648,34 @@ async function readMarkup(page: Page): Promise<string | null> {
   }, [...ROOT_CONTAINERS]).catch(() => null);
 }
 
-/** The nearest element at or under `root` holding text of its own, or null when there is none. */
+/**
+ * The nearest element at or under `root` holding text the browser shows, or
+ * null when there is none.
+ *
+ * Text that is in the page but not drawn is passed over, with everything
+ * under it: an element not displayed, text whose `visibility` hides it, and
+ * an element cut down to a pixel or less that clips what it holds, as
+ * Tailwind's `sr-only` does (1px, `overflow: hidden`) and as Base UI's
+ * Progress hides a span. Measured, an icon button's `sr-only` label gave
+ * the button a text it doesn't show, and the hidden span gave Progress a
+ * text cut off at 1px, which the push would build as a 1px label.
+ */
 async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHandle<Element> | null> {
   const handle = await root.evaluateHandle((node) => {
+    const hidden = (el: Element): boolean => {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none") return true;
+      // display: contents draws no box of its own, its children do.
+      if (cs.display === "contents") return false;
+      const box = el.getBoundingClientRect();
+      const clips = cs.overflowX !== "visible" || cs.overflowY !== "visible"
+        || (cs.clip !== "" && cs.clip !== "auto") || (cs.clipPath !== "" && cs.clipPath !== "none");
+      return box.width <= 1 && box.height <= 1 && clips;
+    };
     const find = (el: Element): Element | null => {
       for (const child of Array.from(el.childNodes)) {
-        if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim()) return el;
-        if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() && getComputedStyle(el).visibility === "visible") return el;
+        if (child.nodeType === Node.ELEMENT_NODE && !hidden(child as Element)) {
           const found = find(child as Element);
           if (found) return found;
         }
