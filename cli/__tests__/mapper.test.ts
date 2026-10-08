@@ -288,10 +288,13 @@ test("explainProp: marks a default the docs don't give as assumed", () => {
   assert.equal(explainProp(prop({ name: "textAlign", type: union })).defaultAssumed, true);
   assert.equal(explainProp(prop({ name: "loop", type: { name: "boolean" }, defaultValue: "false" })).defaultAssumed, false);
   assert.equal(explainProp(prop({ name: "shouldFilter", type: { name: "boolean" } })).defaultAssumed, true);
-  // A JSDoc default in prose is not a value either.
+  // A JSDoc default in prose is not a value either, nor is one outside the
+  // values, `null` among them: inspect says the docs give no usable default.
   assert.equal(explainProp(prop({
     name: "repositionInputs", type: { name: "boolean" }, defaultValue: "true when {@link snapPoints } is defined",
   })).defaultAssumed, true);
+  assert.equal(explainProp(prop({ name: "align", type: union, defaultValue: "justify" })).defaultAssumed, true);
+  assert.equal(explainProp(prop({ name: "align", type: { name: "union", raw: `"a" | "b" | null` }, defaultValue: "null" })).defaultAssumed, true);
 });
 
 // --- totalCombinations ---

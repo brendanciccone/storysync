@@ -713,7 +713,7 @@ program
         // a missing variant can be traced to its rule rather than to "skipped".
         const { property: v, reason, defaultAssumed } = explainProp(prop);
         if (v) {
-          const assumed = defaultAssumed ? chalk.dim(" (assumed: the docs give none)") : "";
+          const assumed = defaultAssumed ? chalk.dim(" (assumed: the docs give no usable default)") : "";
           console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}], default ${v.defaultValue}${assumed}`);
         } else {
           console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped: ${reason}`);

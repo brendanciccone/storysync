@@ -113,7 +113,7 @@ export function resolveDefault(raw: unknown): string | null {
 // `explainProp` both read it, so inspect's reason is the rule that applied.
 function skipReason(prop: StorybookProp): string | null {
   if (SKIP_PROPS.has(prop.name)) return "structural prop";
-  if (COMPOSITION_PROPS.has(prop.name)) return "composition prop: it changes which element renders, not how it looks";
+  if (COMPOSITION_PROPS.has(prop.name)) return "composition prop: it changes what renders, not how it looks";
   if (/^on[A-Z]/.test(prop.name)) return "event handler";
   if (prop.name.startsWith("aria-") || prop.name.startsWith("data-")) return "aria-* or data-* attribute";
 
