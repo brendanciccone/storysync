@@ -295,6 +295,55 @@ export function describeMeasurementNotes(
 }
 
 /**
+ * Thrown when a snap stops part-way, by a signal or because the browser went
+ * away. Nothing has been written by then, so an earlier styles.json and
+ * meta.json are left as they were: a partial result written over them, with a
+ * fresh measuredAt, would read to verify as a current measurement with most
+ * of its components failed.
+ */
+export class SnapInterruptedError extends Error {
+  readonly exitCode: number;
+
+  constructor(message: string, exitCode: number) {
+    super(message);
+    this.name = "SnapInterruptedError";
+    this.exitCode = exitCode;
+  }
+}
+
+type TerminationSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
+
+/** 128 plus the signal's number, as a shell reports a process the signal killed. */
+const SIGNAL_EXIT_CODES: Record<TerminationSignal, number> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+
+/**
+ * Calls `handler` on the first SIGINT, SIGTERM or SIGHUP, and exits on a
+ * second: the first stops the run at its next step, which can be a story or
+ * a documentation request still in flight. Returns a function that removes
+ * the listeners.
+ *
+ * Without this, playwright's own SIGTERM handler closed the browser and left
+ * the run going, so a CI cancellation or a tool's timeout recorded every
+ * remaining component as a failed browser session, wrote that over the last
+ * good styles.json and exited 0.
+ */
+function onTerminationSignals(handler: (signal: TerminationSignal) => void): () => void {
+  const listeners = (Object.keys(SIGNAL_EXIT_CODES) as TerminationSignal[]).map((signal) => {
+    let received = false;
+    const listener = () => {
+      if (received) process.exit(SIGNAL_EXIT_CODES[signal]);
+      received = true;
+      handler(signal);
+    };
+    process.on(signal, listener);
+    return { signal, listener };
+  });
+  return () => {
+    for (const { signal, listener } of listeners) process.off(signal, listener);
+  };
+}
+
+/**
  * Reports variant names that had to be renumbered to stay distinct.
  *
  * Renumbering keeps the measurements intact, but the slug is the name the
@@ -371,11 +420,38 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   if (entries.length) {
     const { browser, via } = await deps.launch({ headless: true });
     progress(`Browser: ${via}`);
+
+    let signalled: TerminationSignal | null = null;
+    const stopListening = onTerminationSignals((signal) => {
+      signalled = signal;
+      void browser.close().catch(() => { /* already gone */ });
+    });
+    // Called between steps: a run that can't finish stops here, before
+    // anything is written, rather than recording each component left as a
+    // failure. `isConnected` is absent only from test stand-ins.
+    const checkpoint = () => {
+      const stopped = signalled
+        ? { reason: `it received ${signalled}`, exitCode: SIGNAL_EXIT_CODES[signalled] }
+        : !(browser.isConnected?.() ?? true)
+          ? { reason: "the browser closed part-way through (it crashed, or something killed it)", exitCode: 1 }
+          : null;
+      if (!stopped) return;
+      throw new SnapInterruptedError(
+        `snap stopped because ${stopped.reason}, having finished ${components.length} of ${entries.length} ` +
+          `components, and wrote nothing: ${join(opts.outDir, SNAP_STYLES_FILENAME)} and ${SNAP_META_FILENAME} ` +
+          `are as they were.`,
+        stopped.exitCode,
+      );
+    };
+
     try {
       for (const entry of entries) {
-        components.push(await snapComponent(entry, opts, deps, browser, progress));
+        checkpoint();
+        components.push(await snapComponent(entry, opts, deps, browser, progress, checkpoint));
       }
+      checkpoint();
     } finally {
+      stopListening();
       await browser.close().catch(() => { /* already gone */ });
     }
   }
@@ -434,6 +510,7 @@ async function snapComponent(
   deps: SnapDeps,
   browser: Awaited<ReturnType<typeof resolveAndLaunch>>["browser"],
   progress: (m: string) => void,
+  checkpoint: () => void,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     name: entry.name,
@@ -489,6 +566,7 @@ async function snapComponent(
   let context: Awaited<ReturnType<typeof createContext>> | null = null;
   const notes: { slug: string; note: MeasurementNote }[] = [];
   try {
+    checkpoint();
     context = await createContext(browser);
     const page = await context.newPage();
 
@@ -507,6 +585,7 @@ async function snapComponent(
       }
 
       const capture = (): Promise<CaptureResult> => {
+        checkpoint();
         return captureStory(page, buildStoryUrl(opts.storybookUrl, storyId, param), {
           timeoutMs: opts.timeoutMs,
           selector: opts.selector,
@@ -521,6 +600,8 @@ async function snapComponent(
       if (captured.status === "timeout") captured = await capture();
 
       if (captured.status !== "ok" || !captured.raw || !captured.boundingBox) {
+        // A failure because the run is stopping is not this variant's.
+        checkpoint();
         shell.variants.push({ combination, slug, status: captured.status, error: captured.error });
         continue;
       }
@@ -548,6 +629,8 @@ async function snapComponent(
       shell.variants.push(variant);
     }
   } catch (err) {
+    if (err instanceof SnapInterruptedError) throw err;
+    checkpoint();
     shell.error = `browser session failed: ${String(err)}`;
   } finally {
     await context?.close().catch(() => { /* already gone */ });

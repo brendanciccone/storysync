@@ -3,12 +3,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
-  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, screenshotName,
+  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, SnapInterruptedError, screenshotName,
 } from "../snap.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
@@ -702,6 +702,86 @@ test("describeMeasurementNotes: a layout wrapper says how to point snap at the c
   assert.match(warnings[0], /rather than Switch in 2 of 3 measured variants\./);
   assert.match(warnings[0], /data-slot="switch"/);
   assert.deepEqual(describeMeasurementNotes("Switch", [], 3), []);
+});
+
+// --- a run that is stopped ---
+
+/** A browser whose pages fail to load, as stand-ins for runSnap, closed when `close` is called. */
+function stubBrowser(onNavigate: () => void = () => {}) {
+  let connected = true;
+  return {
+    isConnected: () => connected,
+    newContext: async () => ({
+      newPage: async () => ({
+        on: () => {}, off: () => {},
+        goto: async () => { onNavigate(); throw new Error("net::ERR_CONNECTION_REFUSED"); },
+      }),
+      close: async () => {},
+    }),
+    close: async () => { connected = false; },
+    disconnect: () => { connected = false; },
+  };
+}
+
+const THREE_COMPONENTS = {
+  listComponents: async () => [
+    { id: "forms-a", name: "A" }, { id: "forms-b", name: "B" }, { id: "forms-c", name: "C" },
+  ],
+  getComponent: async (id: string) => ({ name: id, props: [], stories: [{ id: `${id}--default`, name: "Default" }] }),
+};
+
+test("runSnap: a SIGTERM stops the run, writes nothing and leaves the last styles.json as it was", async () => {
+  // Playwright's own handler closed the browser and left the run going, which
+  // recorded each component left as a failed browser session, wrote that
+  // over the last good styles.json and meta.json, and exited 0.
+  const dir = tempDir();
+  const earlier = '{"version":1,"components":["the last good snap"]}\n';
+  writeFileSync(join(dir, "styles.json"), earlier);
+  const listeners = process.listenerCount("SIGTERM");
+  try {
+    let navigations = 0;
+    const browser = stubBrowser(() => {
+      if (++navigations === 1) process.emit("SIGTERM", "SIGTERM");
+    });
+    await assert.rejects(
+      () => runSnap(options(dir), { storybook: THREE_COMPONENTS as never, launch: async () => ({ via: "stub", browser }) as never }),
+      (err: unknown) => {
+        assert.ok(err instanceof SnapInterruptedError, String(err));
+        assert.equal(err.exitCode, 143);
+        assert.match(err.message, /received SIGTERM, having finished 0 of 3 components, and wrote nothing/);
+        return true;
+      },
+    );
+    assert.equal(navigations, 1, "the run went on after the signal");
+    assert.equal(readFileSync(join(dir, "styles.json"), "utf8"), earlier);
+    assert.equal(existsSync(join(dir, "meta.json")), false);
+    // And the run's listeners are gone, so a later signal ends the process as usual.
+    assert.equal(process.listenerCount("SIGTERM"), listeners);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a browser that goes away mid-run fails the run rather than failing every component left", async () => {
+  const dir = tempDir();
+  try {
+    let navigations = 0;
+    const browser = stubBrowser(() => {
+      if (++navigations === 2) browser.disconnect();
+    });
+    await assert.rejects(
+      () => runSnap(options(dir), { storybook: THREE_COMPONENTS as never, launch: async () => ({ via: "stub", browser }) as never }),
+      (err: unknown) => {
+        assert.ok(err instanceof SnapInterruptedError, String(err));
+        assert.equal(err.exitCode, 1);
+        assert.match(err.message, /the browser closed part-way through .* having finished 1 of 3 components/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(dir, "styles.json")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("runSnap: a story that times out is tried once more before it is recorded", async () => {

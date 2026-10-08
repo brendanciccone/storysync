@@ -8,7 +8,7 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
-import { runSnap } from "./snap.js";
+import { runSnap, SnapInterruptedError } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
 import type { ReadbackFile, ReadbackIssue, SnapAgeInfo } from "./verify.js";
@@ -316,7 +316,8 @@ program
       }
     } catch (err) {
       reportError(err, json);
-      process.exitCode = 1;
+      // 143 for a SIGTERM, as a shell reports a process it killed.
+      process.exitCode = err instanceof SnapInterruptedError ? err.exitCode : 1;
     } finally {
       await storybook.disconnect();
     }
