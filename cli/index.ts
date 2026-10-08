@@ -16,6 +16,7 @@ import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
+import { Progress } from "./progress.js";
 import type { TokenBaseline, TokenExtractionResult, TokenSourceType } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
@@ -180,7 +181,12 @@ program
       const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
+      // Under --json nothing is printed until every component is read, which
+      // takes minutes on a large library, so say which one the run is on (on
+      // a terminal's stderr). Text mode prints a line as each one is read.
+      const progress = json ? new Progress("map") : null;
       for (const entry of entries) {
+        progress?.component(results.length + 1, entries.length, entry.title ?? entry.name);
         try {
           const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
           const def = mapComponent(component, maxCombinations);
@@ -204,6 +210,7 @@ program
           if (!json) console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.title ?? entry.name)} ${chalk.red(String(err))}`);
         }
       }
+      progress?.done();
 
       if (json) {
         console.log(JSON.stringify({ components: results, summary: { total: entries.length, mapped: entries.length - failed, failed, capped, totalCombinations: total } }));
@@ -255,6 +262,9 @@ program
     const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
 
     const storybook = await connectStorybook(opts.storybook, json, connectTimeoutMs);
+    // Where the run is, on a terminal: a component with many variants can
+    // take minutes, and under --json nothing else is printed until the end.
+    const progress = new Progress("snap");
     try {
       const result = await runSnap(
         {
@@ -270,9 +280,12 @@ program
         {
           storybook,
           launch: resolveAndLaunch,
-          onProgress: json ? undefined : (m) => console.log(m),
+          onProgress: json ? undefined : (m) => progress.print(() => console.log(m)),
+          onComponentStart: (position, total, label) => progress.component(position, total, label),
+          onVariantStart: (position, total) => progress.variant(position, total),
         },
       );
+      progress.done();
 
       if (json) {
         console.log(JSON.stringify(result));
@@ -319,6 +332,7 @@ program
         process.exitCode = 1;
       }
     } catch (err) {
+      progress.done();
       reportError(err, json);
       process.exitCode = 1;
     } finally {
@@ -844,7 +858,13 @@ program
 
           const codeComponents: FigmaComponentDefinition[] = [];
           mappingFailures = [];
+          // Which component the run is on: in the spinner, or under --json
+          // on a terminal's stderr, as map says it.
+          const progress = json ? new Progress("diff") : null;
           for (const entry of entries) {
+            const position = codeComponents.length + mappingFailures.length + 1;
+            if (mapSpinner) mapSpinner.text = `Mapping Storybook components ${position}/${entries.length} ${entry.title ?? entry.name}`;
+            progress?.component(position, entries.length, entry.title ?? entry.name);
             try {
               const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
               codeComponents.push(mapComponent(component));
@@ -852,6 +872,7 @@ program
               mappingFailures.push({ name: entry.name, error: String(err) });
             }
           }
+          progress?.done();
           if (!storybookReadFailed) mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
           if (!json && mappingFailures.length) {
             console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors:`));

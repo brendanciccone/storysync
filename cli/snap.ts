@@ -102,6 +102,13 @@ export interface SnapDeps {
   launch: typeof resolveAndLaunch;
   /** Called with human-readable progress; no-op under --json. */
   onProgress?: (message: string) => void;
+  /**
+   * Called as each component starts, and as each of its variants does, so a
+   * terminal can say where a long run is. Given under --json too: it draws
+   * on stderr, and a component with many variants can take minutes.
+   */
+  onComponentStart?: (position: number, total: number, label: string) => void;
+  onVariantStart?: (position: number, total: number) => void;
   /** Injectable clock, so tests can assert on the recorded time. */
   now?: () => number;
 }
@@ -281,7 +288,8 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     const { browser, via } = await deps.launch({ headless: true });
     progress(`Browser: ${via}`);
     try {
-      for (const entry of entries) {
+      for (const [index, entry] of entries.entries()) {
+        deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
         components.push(await snapComponent(entry, opts, deps, browser, progress));
       }
     } finally {
@@ -402,6 +410,7 @@ async function snapComponent(
 
     for (const [index, combination] of combinations.entries()) {
       const slug = slugs[index];
+      deps.onVariantStart?.(index + 1, combinations.length);
       const { param, unsupported } = encodeStoryArgs(combination, definition.variantProperties);
 
       if (unsupported.length) {
