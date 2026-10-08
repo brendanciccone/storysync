@@ -1035,21 +1035,35 @@ export function tokenColorToHex(value: string): string | null {
 
 /**
  * A length in px, or null when it has no fixed one: px, rem at 16px, a
- * unitless 0, and calc() over them with + - * / and parentheses, nested
- * calc() included, as shadcn/ui writes its radius scale (`calc(0.625rem -
- * 4px)`) and Tailwind v4 multiplies its spacing. em and % depend on the
- * element, and vw, min() and the rest on more, so they are null, as is a
- * number with no unit other than 0: a font weight or a line-height ratio is
- * no length. Rounded to thousandths, so 0.1rem is 1.6, not
- * 1.6000000000000001, and diff rounds Figma's float to match.
+ * unitless 0, and calc() over px and rem with + - * / and parentheses,
+ * nested calc() included, as shadcn/ui writes its radius scale
+ * (`calc(0.625rem - 4px)`) and Tailwind v4 multiplies its spacing. em and %
+ * depend on the element, and vw, min() and the rest on more, so they are
+ * null, as is a number with no unit other than 0: a font weight or a
+ * line-height ratio is no length. Rounded to thousandths, so 0.1rem is 1.6,
+ * not 1.6000000000000001, and diff rounds Figma's float to match.
+ *
+ * Only what the browser accepts has a px, since a value it drops renders as
+ * nothing: arithmetic outside calc() (`1rem/2`), + or - without a space on
+ * each side (`calc(1rem-4px)` is one unknown unit to CSS), and a unitless 0
+ * inside calc() (`calc(0 + 4px)`, where 0 is a number) are null.
  */
 export function lengthToPx(value: string): number | null {
   const src = value.trim().toLowerCase();
+  const round = (n: number) => Math.round(n * 1000) / 1000 + 0; // + 0 makes -0 plain 0.
+  if (!src.startsWith("calc(")) {
+    const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|rem)?$/.exec(src);
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    if (!m[2]) return n === 0 ? 0 : null;
+    return round(m[2] === "rem" ? n * 16 : n);
+  }
   let i = 0;
   // A term's px, or its number when it has no unit. A syntax error, or an
   // operation CSS has no length for, throws, and the value is null.
   type Term = { n: number; length: boolean };
-  const skip = () => { while (/\s/.test(src[i] ?? "")) i++; };
+  const space = (at: number) => /\s/.test(src[at] ?? "");
+  const skip = () => { while (space(i)) i++; };
   const close = () => { skip(); if (src[i++] !== ")") throw new Error("no )"); };
   const atom = (): Term => {
     skip();
@@ -1059,7 +1073,7 @@ export function lengthToPx(value: string): number | null {
       close();
       return t;
     }
-    const m = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(px|rem)?(?![\w%.])/.exec(src.slice(i));
+    const m = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(px|rem)?(?![\w%.-])/.exec(src.slice(i));
     if (!m) throw new Error("no length");
     i += m[0].length;
     const n = parseFloat(m[0]);
@@ -1078,20 +1092,21 @@ export function lengthToPx(value: string): number | null {
   const sum = (): Term => {
     let t = product();
     for (skip(); src[i] === "+" || src[i] === "-"; skip()) {
+      // CSS reads `1rem-4px` as one dimension, and `1rem -4px` as two values.
+      if (!space(i - 1) || !space(i + 1)) throw new Error("no space around + or -");
       const op = src[i++];
       const r = product();
-      // A length and a number don't add, but 0 needs no unit.
-      if (t.length !== r.length && t.n !== 0 && r.n !== 0) throw new Error("no length");
-      t = { n: op === "+" ? t.n + r.n : t.n - r.n, length: t.length || r.length };
+      // A length and a number don't add, a unitless 0 included.
+      if (t.length !== r.length) throw new Error("no length");
+      t = { n: op === "+" ? t.n + r.n : t.n - r.n, length: t.length };
     }
     return t;
   };
   try {
-    const t = sum();
+    const t = atom();
     skip();
-    if (i !== src.length || (!t.length && t.n !== 0) || !Number.isFinite(t.n)) return null;
-    // + 0 makes -0 plain 0.
-    return Math.round(t.n * 1000) / 1000 + 0;
+    if (i !== src.length || !t.length || !Number.isFinite(t.n)) return null;
+    return round(t.n);
   } catch {
     return null;
   }

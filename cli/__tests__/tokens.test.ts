@@ -923,7 +923,8 @@ test("lengthToPx: px, rem at 16px and calc() over them, and nothing for a value 
   const cases: [string, number | null][] = [
     ["4px", 4], ["0.625rem", 10], ["-0.5rem", -8], ["0", 0], ["9999px", 9999], ["1e3px", 1000], ["1PX", 1],
     ["calc(0.625rem - 4px)", 6], ["calc(0.625rem + 16px)", 26], ["calc(0.25rem * 4)", 16], ["calc(4 * 0.25rem)", 16],
-    ["calc((1rem + 2px) * 2)", 36], ["calc(calc(1rem - 2px) / 2)", 7], ["calc(0 - 4px)", -4],
+    ["calc((1rem + 2px) * 2)", 36], ["calc(calc(1rem - 2px) / 2)", 7], ["calc(0px - 4px)", -4],
+    ["calc( 1rem - 4px )", 12], ["calc(1rem - -4px)", 20], ["calc(2*4px)", 8], ["CALC(1REM / 2)", 8],
     // Rounded, so binary noise doesn't make a mismatch.
     ["0.1rem", 1.6],
     // Relative to the element, or no length at all.
@@ -931,7 +932,13 @@ test("lengthToPx: px, rem at 16px and calc() over them, and nothing for a value 
     ["700", null], ["1.375", null], ["ui-sans-serif, system-ui", null], ["auto", null], ["", null],
     // Not CSS: a length and a number don't add, lengths don't multiply, and nothing divides by a length or 0.
     ["calc(1rem + 2)", null], ["calc(1px * 2px)", null], ["calc(4px / 1px)", null], ["calc(4px / 0)", null],
-    ["1rem / 1.5rem", null], ["1rem 2rem", null], ["calc(1rem", null],
+    ["1rem / 1.5rem", null], ["1rem 2rem", null], ["calc(1rem", null], ["calc(1rem) + 2px", null],
+    // Not CSS either, though it reads as sums: arithmetic outside calc(), + or
+    // - with no space on each side, which CSS reads as one dimension or two
+    // values, and a unitless 0 in calc(), which is a number there.
+    ["1rem/2", null], ["(4px)", null], ["4px + 2px", null],
+    ["calc(1rem-4px)", null], ["calc(4px+2px)", null], ["calc(1rem -4px)", null], ["calc(1rem- 4px)", null],
+    ["calc(0 + 4px)", null], ["calc(0 - 4px)", null], ["calc(0)", null],
     ["var(--radius)", null], ["calc(var(--radius) - 4px)", null],
   ];
   for (const [value, px] of cases) assert.equal(lengthToPx(value), px, value);
