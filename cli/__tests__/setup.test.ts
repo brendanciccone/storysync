@@ -398,11 +398,11 @@ test("every push instruction lays a set out in snap's order, not its children's"
   // children in, so the primary row's columns read sm, lg, sm disabled, lg
   // disabled and the others' sm, sm disabled, lg disabled, lg. The layout
   // follows snap's variantProperties as snap records them, each VARIANT's
-  // default first and the rest as Storybook's docs list them, a BOOLEAN false
-  // then true, and the layers panel, which shows the last child at the top,
-  // reads the same way. Figma takes the set's default variant from the
-  // top-left, which is the component's default but for a BOOLEAN that
-  // defaults to true, so the agent says which it is when it is not.
+  // default first and the rest as Storybook's docs list them, a BOOLEAN's
+  // default first too, and the layers panel, which shows the last child at
+  // the top, reads the same way. Figma takes the set's default variant from
+  // the top-left, which is then the component's default, and the agent says
+  // which it is when it is not.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -422,12 +422,14 @@ test("every push instruction lays a set out in snap's order, not its children's"
         `${path} never says the values run default first, then in Storybook's declared order`);
       assert.doesNotMatch(text, /not default first/, `${path} still says snap's values are not default first`);
       assert.doesNotMatch(text, /all-defaults variant[^\n]*top-left/, `${path} says the all-defaults variant is the top-left one, which it is not where a BOOLEAN defaults to true`);
-      assert.match(text, /a `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`/i,
-        `${path} never says how a BOOLEAN property is ordered`);
+      assert.match(text, /a `BOOLEAN` property runs its default first, `false, true`, or `true, false` when it defaults to `true`/i,
+        `${path} never says a BOOLEAN property runs its default first`);
+      assert.doesNotMatch(text, /`false` for a `BOOLEAN`, even one that defaults to `true`|`open=false` even if the component defaults to `open=true`/,
+        `${path} still makes false Figma's default for a BOOLEAN that defaults to true`);
       assert.match(text, /Figma makes the top-left variant the set's default variant/, `${path} never says where Figma takes the default variant from`);
-      assert.match(text, /the component's own default for a `VARIANT`, since snap records it first, but `false` for a `BOOLEAN`, even one that defaults to `true`/,
-        `${path} never says Figma's default is the component's own but for a BOOLEAN`);
-      assert.match(text, /`open=false` even if the component defaults to `open=true`/, `${path} gives no example of a default that is not the component's`);
+      assert.match(text, /the component's own default for a `VARIANT`, since snap records it first, and for a `BOOLEAN`/,
+        `${path} never says Figma's default is the component's own`);
+      assert.match(text, /`open=true` where the component defaults to `open=true`/, `${path} gives no example of a BOOLEAN that defaults to true`);
       assert.match(text, /say in the summary which variant Figma will treat as the default/, `${path} never has the agent report Figma's default`);
       assert.match(text, /A property marked `defaultAssumed: true` has no default in Storybook's docs, so its `defaultValue` is a guess: name those in the summary too\./,
         `${path} never has the agent report a default snap had to guess`);

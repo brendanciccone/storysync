@@ -1037,18 +1037,20 @@ function layoutScenarios(snapDir) {
     },
 
     async defaults(build) {
-      // Properties whose defaults are not their first values, as a BOOLEAN
-      // that defaults to true is (snap records a VARIANT's default first):
-      // the template follows PROPERTIES' order, never defaultValue, so the
-      // grid is the same, and Figma's default, the top-left variant, is
-      // primary, sm, not disabled.
+      // Each property runs default first. A BOOLEAN that defaults to true
+      // runs true, false, though map lists it true, false whatever its
+      // default, so Figma's default, the top-left variant, is disabled, as
+      // the component's is. A VARIANT's values run as PROPERTIES lists them,
+      // which snap does default first: so outline and lg, called the
+      // defaults here though listed last, stay where they are listed.
       const { gap, properties, measured } = data();
       const shifted = properties.map((p) => ({ ...p, defaultValue: p.type === "BOOLEAN" ? "true" : p.values[p.values.length - 1] }));
       const doc = figmaDocument();
       const set = await leftSet(build, doc, scrambled(measured));
       await pushSet(build, doc, { page: "Forms", set: "Button", variants: measured, part: PART, properties: shifted });
-      assertGridOf(set, GRID, [], gap);
-      return "the same grid with outline, lg and disabled the defaults";
+      const columns = [1, 0, 3, 2].map((c) => COLUMNS[c]);
+      assertGridOf(set, ROWS.map((row) => columns.map((column) => named(row, column))), [], gap);
+      return "disabled first where it defaults to true; outline and lg, called the defaults, where PROPERTIES lists them";
     },
 
     async frozen(build) {
@@ -2633,13 +2635,13 @@ async function main() {
     // out in that order: the primary row read sm, lg, sm disabled, lg disabled
     // and the others sm, sm disabled, lg disabled, lg. The layout orders the
     // set by the variantProperties snap records, each VARIANT's default first
-    // and then Storybook's declared order, a BOOLEAN false then true: rows
-    // primary, danger and outline, columns sm, sm disabled, lg, lg disabled,
-    // the layers panel reading the same way, and a variant snap does not have
-    // in a row of its own below. The same set laid out by properties whose
-    // defaults are not their first values comes out the same, since the
-    // template follows PROPERTIES' order, never defaultValue; and Frozen's
-    // one property is a column of 3.
+    // and then Storybook's declared order, a BOOLEAN's default first, here
+    // false: rows primary, danger and outline, columns sm, sm disabled, lg,
+    // lg disabled, the layers panel reading the same way, and a variant snap
+    // does not have in a row of its own below. With disabled defaulting to
+    // true, its true column comes first, so Figma's default variant is the
+    // component's; a VARIANT runs as PROPERTIES lists it, whatever its
+    // defaultValue says; and Frozen's one property is a column of 3.
     const declared = layout.declared();
     const build = loadSkillBuild();
     return `${declared}; ${await layout.scrambled(build)}; ${await layout.defaults(build)}; ${await layout.frozen(build)}`;
@@ -2664,7 +2666,7 @@ async function main() {
       sort: "cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));",
       columns: "const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((at) => at.slice(1).join());",
       rows: "const rows = [...new Set(grid.map((c) => c.at[0]))];",
-      values: "p.type === 'BOOLEAN' ? ['false', 'true'] : p.values",
+      values: "p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']",
       extras: "extra.sort((a, b) => (a.node.name > b.node.name) - (a.node.name < b.node.name) || byId(a, b));",
       target: "const target = order.map((c) => c.node).reverse();",
     };
@@ -2687,7 +2689,8 @@ async function main() {
       "leaves the extra row in the set's child order": (code) => code.replace(T.extras, ""),
       "takes each property's values default first": (code) => code.replace(T.values,
         "[p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]"),
-      "puts a BOOLEAN's true before its false": (code) => code.replace("['false', 'true']", "['true', 'false']"),
+      "puts a BOOLEAN's true before its false": (code) => code.replace(": ['false', 'true']", ": ['true', 'false']"),
+      "lays a BOOLEAN out false, true whatever its default": (code) => code.replace(T.values, "p.type === 'BOOLEAN' ? ['false', 'true'] : p.values"),
       "keeps whichever copy of a name comes first among the children in the grid": (code) => code
         .replace(T.sort, T.sort.replace(" || byId(a, b)", "")),
       "lays out a set with auto layout": (code) => between(code, "if (componentSet && componentSet.layoutMode !== 'NONE') {", "\n    }\n"),
