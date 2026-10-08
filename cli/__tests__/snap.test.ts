@@ -795,6 +795,9 @@ test("describeMeasurementNotes: a layout wrapper says how to point snap at the c
   assert.match(warnings[0], /^snap measured div, which holds 2 elements and draws nothing itself/);
   assert.match(warnings[0], /rather than Switch in 2 of 3 measured variants\./);
   assert.match(warnings[0], /data-slot="switch"/);
+  // Measured again with --components alone, styles.json held Switch alone,
+  // and verify scored a push of one component.
+  assert.match(warnings[0], /measure it by itself into this snap with --components, --selector and --merge \(without --merge, styles\.json would hold Switch alone\)\./);
   assert.deepEqual(describeMeasurementNotes("Switch", [], 3), []);
 });
 
