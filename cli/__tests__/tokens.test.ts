@@ -1317,6 +1317,26 @@ test("CSS: Tailwind v4's compiled :root, :host theme in a build is not the proje
   } finally { cleanup(own); }
 });
 
+test("CSS: an escaped quote in a class name, or a bare backtick, hides no :root rule after it", () => {
+  // Tailwind compiles `after:content-['']` to the class below. Its \\' was
+  // read as the start of a string, which swallowed the rest of the file,
+  // the comment included, so the file had no :root at all.
+  const dir = makeProject({
+    "src/app.css": `.after\\:content-\\[\\'\\'\\]::after { content: ''; }
+.say\\"hi { color: red; }
+/* Don't read this: :root { --color-old: #999999; } */
+:root { --color-ink: #111111; --tick: \`; }
+:root, .light { --color-paper: #ffffff; }
+:root { --color-link: #0000ee; }`,
+  });
+  try {
+    assert.deepEqual(detectTokenSource(dir)?.type, "css");
+    assert.deepEqual(tokenTable(extractTokens(dir)), [
+      ["colors", [["color/ink", "#111111"], ["color/paper", "#ffffff"], ["color/link", "#0000ee"]]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
 test("detectTokenSource: a stylesheet whose :root is only in a selector list is CSS, after @theme and a theme file", () => {
   // `.light, :root {` was read already, as it ends in `:root {`.
   const listed = `:root, .light { --color-brand: #ff0000; }`;

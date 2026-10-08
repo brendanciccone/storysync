@@ -199,7 +199,10 @@ function findThemeFile(projectPath: string): string | null {
  *
  * Quotes are tracked, so the `/*` in a content glob or the `//` in a URL
  * survives when it is in a string. `lineComments` is false for CSS, which
- * has only block comments: there `//` can start an unquoted `url(//cdn...)`.
+ * has only block comments: there `//` can start an unquoted `url(//cdn...)`,
+ * and a backslash escapes the character after it, so the `'` in Tailwind's
+ * `.after\:content-\[\'\'\]` starts no string that keeps the
+ * comments after it.
  */
 function stripComments(src: string, lineComments = true): string {
   let out = "";
@@ -210,6 +213,8 @@ function stripComments(src: string, lineComments = true): string {
       out += ch;
       if (ch === "\\") out += src[++i] ?? "";
       else if (ch === quote) quote = null;
+    } else if (ch === "\\" && !lineComments) {
+      out += ch + (src[++i] ?? "");
     } else if (ch === "'" || ch === '"' || ch === "`") {
       quote = ch;
       out += ch;
@@ -754,9 +759,13 @@ function splitTopLevel(text: string, separator: string): string[] {
 
 /**
  * The index just past the bracket that closes the one at `open`, `{` or
- * `[`, skipping quoted text, or the text's length when it isn't closed.
+ * `[`, skipping quoted text and escaped characters, or the text's length
+ * when it isn't closed. In `css`, a backtick is no quote. A backslash
+ * escapes what follows it outside quotes too: in CSS, as Tailwind's
+ * `.after\:content-\[\'\'\]` class does, and in a config's regex.
+ * Read as the start of a string, that `'` hid every rule after it.
  */
-function closingIndex(text: string, open: number): number {
+function closingIndex(text: string, open: number, css = false): number {
   const [opener, closer] = text[open] === "[" ? ["[", "]"] : ["{", "}"];
   let depth = 0;
   let quote: string | null = null;
@@ -765,7 +774,8 @@ function closingIndex(text: string, open: number): number {
     if (quote) {
       if (ch === "\\") i++;
       else if (ch === quote) quote = null;
-    } else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+    } else if (ch === "\\") i++;
+    else if (ch === "'" || ch === '"' || (ch === "`" && !css)) quote = ch;
     else if (ch === opener) depth++;
     else if (ch === closer && --depth === 0) return i + 1;
   }
@@ -815,10 +825,11 @@ function styleRules(css: string): StyleRule[] {
       if (quote) {
         if (ch === "\\") i++;
         else if (ch === quote) quote = null;
-      } else if (ch === "'" || ch === '"') quote = ch;
+      } else if (ch === "\\") i++;
+      else if (ch === "'" || ch === '"') quote = ch;
       else if (ch === ";" || ch === "}") prelude = i + 1;
       else if (ch === "{") {
-        const close = closingIndex(css, i);
+        const close = closingIndex(css, i, true);
         const head = css.slice(prelude, i).trim();
         own += css.slice(from, prelude);
         if (head.startsWith("@")) {
