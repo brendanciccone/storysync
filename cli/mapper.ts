@@ -139,7 +139,42 @@ function isLiteral(member: PropType): boolean {
 }
 
 function isQuotedLiteral(text: string): boolean {
-  return /^["'`].*["'`]$/.test(text.trim());
+  const t = text.trim();
+  // A template literal type with a placeholder, `${number}px`, stands for
+  // every string of that shape, not one value.
+  return /^["'`].*["'`]$/.test(t) && !(t.startsWith("`") && t.includes("${"));
+}
+
+/**
+ * A printed type's members: split on each `|` outside a string literal and
+ * outside brackets, braces, parentheses and type arguments, so a function
+ * type, `(value: string | null) => void`, or an array of a union, `("a" |
+ * "b")[]`, stays one member, and a literal holding a `|` stays whole.
+ */
+export function splitUnion(raw: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+    } else if ("([{<".includes(c)) {
+      depth++;
+    } else if (")]}".includes(c) || (c === ">" && raw[i - 1] !== "=")) {
+      // The `>` of an arrow, `=>`, closes nothing.
+      depth = Math.max(0, depth - 1);
+    } else if (c === "|" && depth === 0) {
+      parts.push(raw.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(raw.slice(start).trim());
+  return parts;
 }
 
 /**
@@ -151,10 +186,7 @@ function isQuotedLiteral(text: string): boolean {
  * rejected every variant of every cva component (all of shadcn/ui's).
  */
 export function definedMembers(raw: string): string[] {
-  return raw
-    .split("|")
-    .map((p) => p.trim())
-    .filter((p) => p && p !== "null" && p !== "undefined");
+  return splitUnion(raw).filter((p) => p && p !== "null" && p !== "undefined");
 }
 
 // A boolean, or a boolean that may be left unset: cva's boolean variants
@@ -243,9 +275,17 @@ export function explainProp(prop: StorybookProp): {
 function valuesReason(prop: StorybookProp): string {
   const { name, raw } = prop.type;
   if (raw) {
-    const others = definedMembers(raw).filter((p) => !isQuotedLiteral(p));
-    if (!others.length) return "union of only null or undefined";
-    return `union with non-literal members: ${others.join(", ")}`;
+    const members = definedMembers(raw);
+    if (!members.length) return "union of only null or undefined";
+    // The parser calls any type with a `|` in it a union, a function type
+    // whose parameter may be null among them, so say what the one member is.
+    if (members.length === 1) {
+      const [only] = members;
+      if (CALLBACK_TYPES.some((p) => p.test(only))) return "callback";
+      if (only === "string" || only === "number") return `free ${only}, with no fixed values`;
+      return `its type, ${only}, lists no values`;
+    }
+    return `union with non-literal members: ${members.filter((p) => !isQuotedLiteral(p)).join(", ")}`;
   }
   if (name === "union" || name === "enum") return `${name} with no literal members`;
   return `its type, ${name}, lists no values`;

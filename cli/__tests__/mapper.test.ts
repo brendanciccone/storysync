@@ -5,6 +5,7 @@ import {
   mapProp,
   shouldSkip,
   extractEnumValues,
+  splitUnion,
   explainProp,
   resolveDefault,
   cartesian,
@@ -134,6 +135,27 @@ test("extractEnumValues: still rejects a union with other non-literal members, o
   assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `null | undefined` } })), null);
 });
 
+// With null and undefined left out, a template literal type was all that
+// was left of `${number}px | null`, and it became a value named "${number}px".
+test("extractEnumValues: a template literal type with a placeholder is not a value", () => {
+  assert.equal(extractEnumValues(prop({ name: "width", type: { name: "union", raw: "`${number}px` | null" } })), null);
+  assert.equal(extractEnumValues(prop({ name: "width", type: { name: "union", raw: "`${number}px` | \"auto\"" } })), null);
+});
+
+test("splitUnion: splits only on a top-level |", () => {
+  assert.deepEqual(splitUnion(`"sm" | "lg" | null`), [`"sm"`, `"lg"`, "null"]);
+  assert.deepEqual(splitUnion("(value: string | null) => void"), ["(value: string | null) => void"]);
+  assert.deepEqual(splitUnion(`("a" | "b")[] | null`), [`("a" | "b")[]`, "null"]);
+  assert.deepEqual(splitUnion(`Array<"a" | "b"> | { kind: "x" | "y" }`), [`Array<"a" | "b">`, `{ kind: "x" | "y" }`]);
+  assert.deepEqual(splitUnion("(() => void) | null"), ["(() => void)", "null"]);
+  // A literal may hold a | of its own, or an escaped quote.
+  assert.deepEqual(splitUnion(`"a|b" | 'c\\'d' | "e"`), [`"a|b"`, `'c\\'d'`, `"e"`]);
+});
+
+test("extractEnumValues: a literal holding a | is one value", () => {
+  assert.deepEqual(extractEnumValues(prop({ name: "sep", type: { name: "union", raw: `"a|b" | "c" | undefined` } })), ["a|b", "c"]);
+});
+
 test("extractEnumValues: returns null when there is nothing to extract", () => {
   assert.equal(extractEnumValues(prop({ name: "label", type: { name: "string" } })), null);
 });
@@ -176,6 +198,19 @@ test("mapProp: a boolean that may be null or undefined is still a BOOLEAN", () =
   });
   // A boolean with another value besides is neither a BOOLEAN nor a set of literals.
   assert.equal(mapProp(prop({ name: "checked", type: { name: "union", raw: `boolean | "indeterminate"` } })), null);
+});
+
+// Only `boolean` left once null is gone is a BOOLEAN. Any other single member
+// is not: Base UI's InputOTP has `noScriptCSSFallback: string | null`.
+test("mapProp: a nullable union of one other member is not a BOOLEAN", () => {
+  assert.equal(mapProp(prop({ name: "noScriptCSSFallback", type: { name: "union", raw: "string | null" } })), null);
+  assert.equal(mapProp(prop({ name: "count", type: { name: "union", raw: "number | undefined" } })), null);
+  assert.deepEqual(mapProp(prop({ name: "tone", type: { name: "union", raw: `"a" | null` }, defaultValue: "a" })), {
+    name: "tone", type: "VARIANT", values: ["a"], defaultValue: "a",
+  });
+  assert.deepEqual(mapProp(prop({ name: "tone", type: { name: "union", raw: `"true" | null` }, defaultValue: "true" })), {
+    name: "tone", type: "VARIANT", values: ["true"], defaultValue: "true",
+  });
 });
 
 // Pins an ordering subtlety rather than leaving it accidental: `shouldSkip`
@@ -239,6 +274,11 @@ test("explainProp: says which rule left a prop out", () => {
   assert.equal(reason(prop({ name: "snap", type: { name: "union", raw: "string | number | null" } })), "union with non-literal members: string, number");
   // addon-mcp prints an alias by name, without its members.
   assert.equal(reason(prop({ name: "shortcuts", type: { name: "QuestionnaireShortcutMode" } })), "its type, QuestionnaireShortcutMode, lists no values");
+  // A type the parser calls a union for a | nested inside it is named whole.
+  assert.equal(reason(prop({ name: "validate", type: { name: "union", raw: "(value: string | null) => boolean" } })), "callback");
+  assert.equal(reason(prop({ name: "picked", type: { name: "union", raw: `("a" | "b")[] | null` } })), `its type, ("a" | "b")[], lists no values`);
+  assert.equal(reason(prop({ name: "fallback", type: { name: "union", raw: "string | null" } })), "free string, with no fixed values");
+  assert.equal(reason(prop({ name: "width", type: { name: "union", raw: "`${number}px` | null" } })), "its type, `${number}px`, lists no values");
   assert.equal(reason(prop({ name: "variant", type: { name: "union", raw: `"a" | "b" | null` } })), null);
 });
 
