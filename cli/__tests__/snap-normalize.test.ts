@@ -919,6 +919,22 @@ test("chooseMeasuredElement: a layout wrapper with no slot to go by is measured,
   assert.deepEqual(choice.kind === "tree" && choice.notes, [{ kind: "layout-wrapper", element: "div", children: 2 }]);
 });
 
+test("chooseMeasuredElement: finds the component's slot after a sibling, in a story that renders a fragment", () => {
+  // <><Label /><Switch /></>: only the story's first element was searched,
+  // so the label was measured, with nothing said.
+  const choice = chooseMeasuredElement(
+    root(node("label", { slot: "label" }), node("button", { slot: "switch", styles: FILLED })),
+    [], ["switch"],
+  );
+  assert.deepEqual(choice, { kind: "tree", path: [1], element: 'button[data-slot="switch"]', notes: [] });
+  // Behind display: contents too, and never inside a <noscript> or <template>.
+  const behind = chooseMeasuredElement(
+    root(node("template", { rendered: false }), node("p"), node("div", { rendered: false, styles: { display: "contents" } }, [node("span", { slot: "switch" })])),
+    [], ["switch"],
+  );
+  assert.deepEqual(behind.kind === "tree" && behind.path, [2, 0]);
+});
+
 test("chooseMeasuredElement: a container that draws is not taken for a layout wrapper", () => {
   const card = node("div", { styles: { "background-color": "rgb(255, 255, 255)", "border-top-width": "1px" } }, [node("h3"), node("p")]);
   const choice = chooseMeasuredElement(root(card), [], ["card"]);

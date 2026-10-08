@@ -697,6 +697,20 @@ function findOwnSlot(node: StoryNode, path: number[], slots: readonly string[]):
   return null;
 }
 
+/**
+ * findOwnSlot over each element the story renders at its top level, in
+ * document order: a story that returns `<><Label /><Switch /></>` has the
+ * switch second.
+ */
+function findOwnSlotInStory(container: StoryNode, slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of container.children.entries()) {
+    if (isNonRendered(child)) continue;
+    const found = findOwnSlot(child, [index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
 function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
   return (node.slot != null && slots.includes(node.slot)) || node.children.some((child) => hasOwnSlot(child, slots));
 }
@@ -707,11 +721,12 @@ function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
  *
  * In order:
  *
- *   1. The first element under the story's root carrying the component's own
- *      `data-slot`. shadcn/ui marks every component's root this way, so a
- *      Switch story that renders `<div class="flex gap-2"><Switch/><Label/></div>`
- *      measures the switch, not the row holding it and its label. Any project
- *      can point snap at a component's root the same way.
+ *   1. The first element the story renders carrying the component's own
+ *      `data-slot`, at any depth and after any sibling. shadcn/ui marks every
+ *      component's root this way, so a Switch story that renders
+ *      `<div class="flex gap-2"><Switch/><Label/></div>` measures the switch,
+ *      not the row holding it and its label. Any project can point snap at a
+ *      component's root the same way.
  *   2. Content rendered into a portal outside the story's root: an element
  *      with the component's own slot, or its `-content` slot, as an open
  *      Dialog's `dialog-content`.
@@ -730,7 +745,7 @@ export function chooseMeasuredElement(
 ): MeasuredChoice {
   const root = container ? findStoryRoot(container) : null;
 
-  const owned = root ? findOwnSlot(root.node, root.path, slots) : null;
+  const owned = container ? findOwnSlotInStory(container, slots) : null;
   if (owned) return { kind: "tree", path: owned.path, element: describeElement(owned.node), notes: [] };
 
   const portal = (wanted: (candidate: PortalNode) => boolean): MeasuredChoice | null => {
