@@ -411,6 +411,12 @@ test("addAddonToConfig: indents the entry as the file indents, tabs in a tab-ind
     ["four spaces, an entry a line", `const config = {\n    addons: [\n        "a",\n    ],\n};`, `\n    addons: [\n        ${entry}\n        "a",`],
     ["four spaces, on one line", `const config = {\n    addons: [],\n};`, `\n    addons: [\n        ${entry}],`],
     ["CRLF line endings", `const config = {\r\n\taddons: [\r\n\t\t"a",\r\n\t],\r\n};`, `\r\n\taddons: [\r\n\t\t${entry}\r\n\t\t"a",`],
+    // Comments say nothing of the code's indentation: a JSDoc block's
+    // lines are indented a space, and a comment may be indented with tabs.
+    ["two spaces, under a JSDoc block", `/**\n * Storybook config\n */\nconst config = {\n  addons: [],\n};`, `\n  addons: [\n    ${entry}],`],
+    ["two spaces, beside a comment indented with tabs", `const config = {\n\t// the addons\n  addons: [],\n};`, `\n  addons: [\n    ${entry}],`],
+    // A line aligned under an open bracket is no step.
+    ["two spaces, with a line aligned at three", `const config = {\n  stories: ["a",\n   "b"],\n  framework: {\n    name: "x",\n  },\n  addons: [],\n};`, `\n  addons: [\n    ${entry}],`],
   ];
   for (const [name, input, expected] of cases) {
     const result = addAddonToConfig(input);

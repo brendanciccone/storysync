@@ -318,19 +318,44 @@ export function addAddonToConfig(content: string): { content: string; ok: boolea
  * How to indent an entry of the `addons` array, in the file's own style: as
  * the array's first entry is, where it has one on a line of its own, and
  * otherwise a level deeper than the line `addons` is on. A level is a tab in
- * a file indented with tabs, and otherwise the file's own step of spaces, 2
- * where nothing is indented. A line indented with spaces in a file indented
- * with tabs reads as a mistake, and fails a linter that enforces tabs.
+ * a file whose code is indented with tabs, and otherwise the file's own
+ * step of spaces (see indentStep). A line indented with spaces in a file
+ * indented with tabs reads as a mistake, and fails a linter that enforces
+ * tabs. Comments are left out: a JSDoc block's ` * ` lines are indented a
+ * space, and a comment may be indented with tabs in a file of spaces.
  */
 function entryIndent(content: string, keyAt: number, insertAt: number): string {
   const next = /^[ \t]*\r?\n(?:[ \t]*\r?\n)*([ \t]*)(\S)/.exec(content.slice(insertAt));
   if (next && next[2] !== "]") return next[1];
   const lineStart = content.lastIndexOf("\n", keyAt - 1) + 1;
   const own = /^[ \t]*/.exec(content.slice(lineStart))?.[0] ?? "";
-  const indents = [...content.matchAll(/^([ \t]+)\S/gm)].map((line) => line[1]);
+  const indents = [...maskComments(content).matchAll(/^([ \t]*)\S/gm)].map((line) => line[1]);
   if (indents.some((indent) => indent.startsWith("\t"))) return `${own}\t`;
-  const step = Math.min(...indents.map((indent) => indent.length).filter((n) => n > 0));
-  return own + " ".repeat(Number.isFinite(step) ? step : 2);
+  return own + " ".repeat(indentStep(indents.map((indent) => indent.length)));
+}
+
+/**
+ * A file's step of spaces, from the depth of each line of its code in turn:
+ * the rise from one line to the next that is most common, the smaller of
+ * two as common, and 2 where no line is deeper than the one before. Not the
+ * least depth, which a line aligned under an open bracket, three spaces in
+ * a file of two, would set.
+ */
+function indentStep(depths: number[]): number {
+  const rises = new Map<number, number>();
+  for (let i = 1; i < depths.length; i++) {
+    const rise = depths[i] - depths[i - 1];
+    if (rise > 0) rises.set(rise, (rises.get(rise) ?? 0) + 1);
+  }
+  let step = 2;
+  let most = 0;
+  for (const [rise, count] of rises) {
+    if (count > most || (count === most && rise < step)) {
+      step = rise;
+      most = count;
+    }
+  }
+  return step;
 }
 
 // One reader of stdin for every prompt. A readline interface per prompt lost
