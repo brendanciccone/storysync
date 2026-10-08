@@ -30,7 +30,7 @@ const LIST = [
 ].join("\n");
 
 const DOCS: Record<string, string> = {
-  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n  asChild?: boolean = false;\n}\n```",
+  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n  asChild?: boolean = false;\n  tone?: \"info\" | number;\n}\n```",
   "data-display-card": "A card with no props.",
 };
 
@@ -454,6 +454,15 @@ test("inspect CLI: finds a component by name or ID, ignoring case", async () => 
     assert.match(r.out, /^Button$/m);
     assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\]/);
   }
+});
+
+test("inspect CLI: says why each prop left out was skipped, and gives each variant's default", async () => {
+  const r = await run("inspect", "--storybook", storybook, "--component", "Button");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\], default sm$/m);
+  assert.match(r.out, /asChild \(boolean\) -> skipped: composition prop/);
+  assert.match(r.out, /tone \(union\) -> skipped: union with non-literal members: number$/m);
+  assert.match(r.out, /1 variant properties, 2 combinations/);
 });
 
 // --- A Storybook or Figma that can't be reached ---

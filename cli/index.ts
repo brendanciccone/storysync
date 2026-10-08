@@ -5,7 +5,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient, selectComponents, findComponent } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
-import { mapComponent, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, explainProp, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
 import { runSnap } from "./snap.js";
@@ -709,11 +709,14 @@ program
 
       console.log(`\n${chalk.bold(component.name)}\n`);
       for (const prop of component.props) {
-        const v = def.variantProperties.find((vp) => vp.name === prop.name);
+        // Says why a prop was left out, and when a default is a guess, so
+        // a missing variant can be traced to its rule rather than to "skipped".
+        const { property: v, reason, defaultAssumed } = explainProp(prop);
         if (v) {
-          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}]`);
+          const assumed = defaultAssumed ? chalk.dim(" (assumed: the docs give none)") : "";
+          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}], default ${v.defaultValue}${assumed}`);
         } else {
-          console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped`);
+          console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped: ${reason}`);
         }
       }
       console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);

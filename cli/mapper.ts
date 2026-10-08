@@ -75,7 +75,7 @@ const SKIP_PROPS = new Set([
 // element, so `asChild=true` looks like whatever the story passes as the
 // child, and with the text child most stories pass, Radix's Slot throws and
 // nothing renders at all. `render`'s type, an element or a render function,
-// already kept it out.
+// already kept it out; naming it here lets inspect say why.
 const COMPOSITION_PROPS = new Set(["as", "asChild", "render"]);
 
 const CALLBACK_TYPES = [
@@ -108,21 +108,28 @@ export function resolveDefault(raw: unknown): string | null {
   return null;
 }
 
-export function shouldSkip(prop: StorybookProp): boolean {
-  if (SKIP_PROPS.has(prop.name)) return true;
-  if (COMPOSITION_PROPS.has(prop.name)) return true;
-  if (/^on[A-Z]/.test(prop.name)) return true;
-  if (prop.name.startsWith("aria-") || prop.name.startsWith("data-")) return true;
+// Why a prop is never a variant property, judged by its name or type alone,
+// before its values are looked at; null when it may be one. `shouldSkip` and
+// `explainProp` both read it, so inspect's reason is the rule that applied.
+function skipReason(prop: StorybookProp): string | null {
+  if (SKIP_PROPS.has(prop.name)) return "structural prop";
+  if (COMPOSITION_PROPS.has(prop.name)) return "composition prop: it changes which element renders, not how it looks";
+  if (/^on[A-Z]/.test(prop.name)) return "event handler";
+  if (prop.name.startsWith("aria-") || prop.name.startsWith("data-")) return "aria-* or data-* attribute";
 
   const t = prop.type.name;
-  if (CALLBACK_TYPES.some((p) => p.test(t))) return true;
-  if (NON_VISUAL_TYPES.some((p) => p.test(t))) return true;
+  if (CALLBACK_TYPES.some((p) => p.test(t))) return "callback";
+  if (NON_VISUAL_TYPES.some((p) => p.test(t))) return "content, ref or style object, not a value";
 
-  if (t === "string" || t === "number") {
-    return !(prop.control?.options && prop.control.options.length > 0);
+  if ((t === "string" || t === "number") && !prop.control?.options?.length) {
+    return `free ${t}, with no fixed values`;
   }
 
-  return false;
+  return null;
+}
+
+export function shouldSkip(prop: StorybookProp): boolean {
+  return skipReason(prop) !== null;
 }
 
 function isLiteral(member: PropType): boolean {
@@ -209,6 +216,39 @@ export function extractEnumValues(prop: StorybookProp): string[] | null {
   }
 
   return null;
+}
+
+/**
+ * How one prop maps, and why when it doesn't, for `inspect` to print.
+ *
+ * `defaultAssumed` is true when the docs gave no default the property's
+ * values include, so `mapProp` fell back to `false` or the first value: a
+ * guess, which is right only by luck when a library sets the default
+ * internally (cmdk's `shouldFilter` is true, mapped `false`).
+ */
+export function explainProp(prop: StorybookProp): {
+  property: FigmaVariantProperty | null;
+  reason: string | null;
+  defaultAssumed: boolean;
+} {
+  const property = mapProp(prop);
+  if (property) {
+    const d = resolveDefault(prop.defaultValue);
+    return { property, reason: null, defaultAssumed: d == null || !property.values.includes(d) };
+  }
+  return { property: null, reason: skipReason(prop) ?? valuesReason(prop), defaultAssumed: false };
+}
+
+// Why a prop that passed `skipReason` still has no values to map.
+function valuesReason(prop: StorybookProp): string {
+  const { name, raw } = prop.type;
+  if (raw) {
+    const others = definedMembers(raw).filter((p) => !isQuotedLiteral(p));
+    if (!others.length) return "union of only null or undefined";
+    return `union with non-literal members: ${others.join(", ")}`;
+  }
+  if (name === "union" || name === "enum") return `${name} with no literal members`;
+  return `its type, ${name}, lists no values`;
 }
 
 export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {

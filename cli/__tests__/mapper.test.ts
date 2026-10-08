@@ -5,6 +5,7 @@ import {
   mapProp,
   shouldSkip,
   extractEnumValues,
+  explainProp,
   resolveDefault,
   cartesian,
   totalCombinations,
@@ -224,6 +225,33 @@ test("mapProp: falls back to the first value when the default is not a valid opt
 test("mapProp: returns null for skipped and unmappable props", () => {
   assert.equal(mapProp(prop({ name: "children" })), null);
   assert.equal(mapProp(prop({ name: "label", type: { name: "string" } })), null);
+});
+
+// --- explainProp ---
+
+test("explainProp: says which rule left a prop out", () => {
+  const reason = (p: StorybookProp) => explainProp(p).reason;
+  assert.equal(reason(prop({ name: "className", type: { name: "union", raw: "string | ((state: ButtonState) => string)" } })), "structural prop");
+  assert.match(reason(prop({ name: "asChild", type: { name: "boolean" } })) ?? "", /^composition prop/);
+  assert.equal(reason(prop({ name: "onOpenChange", type: { name: "func" } })), "event handler");
+  assert.equal(reason(prop({ name: "label", type: { name: "string" } })), "free string, with no fixed values");
+  assert.equal(reason(prop({ name: "size", type: { name: "union", raw: `"sm" | number` } })), "union with non-literal members: number");
+  assert.equal(reason(prop({ name: "snap", type: { name: "union", raw: "string | number | null" } })), "union with non-literal members: string, number");
+  // addon-mcp prints an alias by name, without its members.
+  assert.equal(reason(prop({ name: "shortcuts", type: { name: "QuestionnaireShortcutMode" } })), "its type, QuestionnaireShortcutMode, lists no values");
+  assert.equal(reason(prop({ name: "variant", type: { name: "union", raw: `"a" | "b" | null` } })), null);
+});
+
+test("explainProp: marks a default the docs don't give as assumed", () => {
+  const union = { name: "union", raw: `"center" | "left" | "right"` };
+  assert.equal(explainProp(prop({ name: "align", type: union, defaultValue: "left" })).defaultAssumed, false);
+  assert.equal(explainProp(prop({ name: "textAlign", type: union })).defaultAssumed, true);
+  assert.equal(explainProp(prop({ name: "loop", type: { name: "boolean" }, defaultValue: "false" })).defaultAssumed, false);
+  assert.equal(explainProp(prop({ name: "shouldFilter", type: { name: "boolean" } })).defaultAssumed, true);
+  // A JSDoc default in prose is not a value either.
+  assert.equal(explainProp(prop({
+    name: "repositionInputs", type: { name: "boolean" }, defaultValue: "true when {@link snapPoints } is defined",
+  })).defaultAssumed, true);
 });
 
 // --- totalCombinations ---
