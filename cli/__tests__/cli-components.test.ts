@@ -385,6 +385,67 @@ test("diff CLI: a name on two Figma pages, neither the component's, is counted o
   assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 ambiguous$/m);
 });
 
+test("diff CLI: --exclude-props leaves out the props the push left out, so they aren't reported missing from Figma", async () => {
+  // The push ran snap with --exclude-props shape, so Figma's Button has no
+  // shape. diff mapped every prop, and reported it missing on every run.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm", "lg"] })] }, ...FIGMA_FILE.pages.slice(1)],
+  });
+  standIns.push(standIn);
+  const plain = await diffAgainst(standIn, "--components", "Button", "--json");
+  type Json = Omit<DiffJson, "components"> & { components: { name: string; status: string; details: string[] }[] };
+  assert.deepEqual((JSON.parse(plain.stdout) as Json).components.map((c) => [c.name, c.status, c.details]), [
+    ["Button", "variant_mismatch", ['prop "shape" missing from Figma']],
+  ]);
+  const excluded = await diffAgainst(standIn, "--components", "Button", "--exclude-props", "SHAPE, loop", "--strict");
+  assert.equal(excluded.status, 0, excluded.out);
+  assert.match(excluded.out, /Components in sync/);
+});
+
+test("diff CLI: a set Figma flags as errored is reported by name, page and node, and the rest of its page is still compared", async () => {
+  // 0.3.0 pushed a component with no variant properties as a set of one
+  // variant named "", which Figma flags as errored. Reading its properties
+  // threw, failing the whole page's read, and so the whole diff.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [
+      { name: "Forms", nodes: [set("Button", { "": [""] }, { errored: true })] },
+      { name: "Data display", nodes: [set("Toolbar", { size: ["sm"] }), component("Card")] },
+    ],
+  });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /! Button \(page Forms, node 1:1\) errored in Figma \(can't read its properties\): in get_componentPropertyDefinitions: Component set has existing errors/);
+  assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 errored in Figma$/m);
+  assert.doesNotMatch(r.out, /Figma read failed|No differences found|Components in sync/);
+
+  const strict = await diffAgainst(standIn, "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  const data = JSON.parse(strict.stdout) as Omit<DiffJson, "components"> & { components: { name: string; status: string; page?: string; nodeId?: string }[]; summary: { componentsErrored: number } };
+  assert.equal(data.figmaReadFailed, false);
+  assert.deepEqual(data.components.map((c) => [c.name, c.status, c.page, c.nodeId]), [
+    ["Button", "errored", "Forms", "1:1"],
+    ["Toolbar", "figma_only", "Data display", undefined],
+  ]);
+  assert.equal(data.summary.componentsErrored, 1);
+});
+
+test("diff CLI: a set the push stored a Storybook ID on is compared with that component, wherever it was moved", async () => {
+  // Moved to an archive page and renamed, Button's set was a name only
+  // Figma had, and the code's Button not in Figma.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [
+      { name: "Archive", nodes: [set("Old button", { size: ["sm", "lg"], shape: ["round", "square"] }, { storybookId: "forms-button" })] },
+      ...FIGMA_FILE.pages.slice(1),
+    ],
+  });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn, "--json");
+  const data = JSON.parse(r.stdout) as DiffJson & { summary: { componentsMatched: number } };
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
+  assert.equal(data.summary.componentsMatched, 2);
+});
+
 test("diff CLI: a Figma component too big for one use_figma response fails the read, and --strict", async () => {
   // A set of 1,500 icons can't come back in one 20kb response. Left out, the
   // diff would look complete without it; cut short by the limit, the response

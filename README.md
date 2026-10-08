@@ -314,7 +314,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
 
-A boolean prop the table doesn't skip becomes a variant property, behavioral ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map` and `snap` leaves out the props it names.
+A boolean prop the table doesn't skip becomes a variant property, behavioral ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map`, `snap` and `diff` leaves out the props it names.
 
 A union prop's values start with its default, and the push lays a boolean out with its default first, so Figma's default variant is the code's. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
@@ -446,7 +446,7 @@ Each measured variant records the element as `element`, like `span[data-slot="sw
 
 **Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
-**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. `diff` has no such option, so it reports a prop left out of a push as missing from Figma.
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. snap records them as `excludeProps` in `styles.json`, and the audit passes the same list to `map` so it doesn't report them as missing from Figma. The skill has the agent pass the same list to every snap of a push, since a run without it drops the record, and name the props in its summary. `diff` takes the same option.
 
 **Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 
@@ -553,6 +553,9 @@ Options:
   --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
+  --exclude-props <names>
+                         Comma-separated prop names the push left out with --exclude-props,
+                         left out here too, so they aren't reported missing from Figma
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails
 ```
@@ -570,6 +573,9 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybo
 - `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later.
 - A component too big for one call, such as a thousand icons as the options of one property, fails the read and is named.
 - A name two components share, like `ui/base/Button` and `ui/radix/Button`, is matched by page, as the push lays it out: each is compared with the set of its name on its category's page. Of the copies left, extra sets, like an archived copy, are reported as `figma_only`, and extra components as `code_only`. Copies left on both sides can't be told apart, so they're reported as `ambiguous` and fail `--strict`.
+- A set or component that carries the Storybook ID the push stored on it is matched by that ID first, wherever it was moved or however it was renamed. One whose ID code doesn't have is reported as `figma_only`. A component no ID matched is still matched by page if another shares its name, so after Base UI's `Button` is matched by ID, Radix's isn't compared with a designer's `Button` on another page. Files without IDs are matched by name and page as above.
+- Components outside any set are read too, since the push makes a component with no variant properties a plain component. One with no stored ID is matched only on its component's category page, so an icon named `Calendar` isn't taken for a `Calendar` component.
+- A set Figma flags as errored, which throws `Component set has existing errors` when its properties are read, is reported as `errored` with its page and node id, and fails `--strict`. The rest of its page is still compared.
 
 ### `storysync inspect`
 
@@ -592,7 +598,7 @@ Options:
 - **Variable modes:** only each collection's first mode is read. Use `--mode <name>`, or ask the agent, for another mode like "Dark".
 - **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
-- **Component names:** a component set is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
+- **Component names:** a component set without a Storybook ID stored on it, as an earlier push left it, is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
 - **Wide-gamut color tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
 - **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
 

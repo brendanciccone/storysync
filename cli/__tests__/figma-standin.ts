@@ -29,15 +29,26 @@ import type { AddressInfo } from "node:net";
 export const CODE_LIMIT = 50_000;
 export const RESPONSE_LIMIT = 20_000;
 
+/** What the push stores on a node, and how Figma treats it. */
+interface PushedSpec {
+  /** The Storybook ID the push stored with setSharedPluginData('storysync', 'id', ...). */
+  storybookId?: string;
+}
+
 /** A component set: each property's options, or BOOLEAN, with one variant per combination. */
-export interface SetSpec {
+export interface SetSpec extends PushedSpec {
   type: "COMPONENT_SET";
   name: string;
   options: Record<string, string[] | "BOOLEAN">;
+  /**
+   * A set Figma flags as errored, as one of a single variant named "" is:
+   * reading its componentPropertyDefinitions throws.
+   */
+  errored?: boolean;
 }
 
 /** A component outside any set. */
-export interface ComponentSpec {
+export interface ComponentSpec extends PushedSpec {
   type: "COMPONENT";
   name: string;
 }
@@ -83,8 +94,8 @@ export interface UseFigmaCall {
   error?: string;
 }
 
-export const set = (name: string, options: SetSpec["options"]): SetSpec => ({ type: "COMPONENT_SET", name, options });
-export const component = (name: string): ComponentSpec => ({ type: "COMPONENT", name });
+export const set = (name: string, options: SetSpec["options"], extra: Partial<Pick<SetSpec, "storybookId" | "errored">> = {}): SetSpec => ({ type: "COMPONENT_SET", name, options, ...extra });
+export const component = (name: string, extra: Partial<Pick<ComponentSpec, "storybookId">> = {}): ComponentSpec => ({ type: "COMPONENT", name, ...extra });
 export const frame = (name: string, children: NodeSpec[]): FrameSpec => ({ type: "FRAME", name, children });
 /** A page divider, named as Figma names one it creates. */
 export const divider = (name = "---"): PageSpec => ({ name, nodes: [], divider: true });
@@ -107,13 +118,23 @@ function figmaFor(file: FileSpec, call: UseFigmaCall): unknown {
 
   function build(spec: NodeSpec, parent: Node): Node {
     const node: Node = { id: `1:${nextId++}`, type: spec.type, name: spec.name, parent, children: [] };
+    // Shared plugin data reads as "" where none was stored, as in Figma.
+    const pluginData: Record<string, string> = spec.type !== "FRAME" && spec.storybookId ? { "storysync.id": spec.storybookId } : {};
+    node.getSharedPluginData = (namespace: string, key: string) => pluginData[`${namespace}.${key}`] ?? "";
     if (spec.type === "FRAME") {
       node.children = spec.children.map((c) => build(c, node));
     } else if (spec.type === "COMPONENT_SET") {
-      node.componentPropertyDefinitions = Object.fromEntries(Object.entries(spec.options).map(([prop, values]) =>
+      const definitions = Object.fromEntries(Object.entries(spec.options).map(([prop, values]) =>
         [prop, values === "BOOLEAN" ? { type: "BOOLEAN", defaultValue: false } : { type: "VARIANT", defaultValue: values[0], variantOptions: values }]));
+      Object.defineProperty(node, "componentPropertyDefinitions", {
+        get() {
+          // Figma's own wording, from a set of one variant named "".
+          if (spec.errored) throw new Error("in get_componentPropertyDefinitions: Component set has existing errors");
+          return definitions;
+        },
+      });
       node.children = Array.from({ length: combinations(spec.options) }, (_, i): Node => {
-        const variant: Node = { id: `1:${nextId++}`, type: "COMPONENT", name: `variant ${i}`, parent: node, children: [] };
+        const variant: Node = { id: `1:${nextId++}`, type: "COMPONENT", name: `variant ${i}`, parent: node, children: [], getSharedPluginData: () => "" };
         // Figma throws on reading a variant's componentPropertyDefinitions.
         Object.defineProperty(variant, "componentPropertyDefinitions", {
           get() { throw new Error("Can only get component property definitions of a component set or non-variant component"); },

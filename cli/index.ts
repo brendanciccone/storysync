@@ -818,10 +818,12 @@ program
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
   .option("--components <names>", "Comma-separated component names, titles or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
+  .option("--exclude-props <names>", "Comma-separated prop names the push left out with --exclude-props, left out of every component here too, so they aren't reported missing from Figma")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any differences found or a Figma or Storybook read fails")
   .action(async (opts) => {
     const json = !!opts.json;
+    const excludeProps = parsePropNames(opts.excludeProps);
 
     // Without --storybook there is no component diff for --components to
     // narrow, so the flag would be ignored and the run pass having diffed none.
@@ -934,7 +936,7 @@ program
             if (mapSpinner) mapSpinner.text = `Mapping Storybook components ${position}/${entries.length} ${entry.title ?? entry.name}`;
             progress?.component(position, entries.length, entry.title ?? entry.name);
             try {
-              const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+              const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
               codeComponents.push({ ...mapComponent(component), id: entry.id });
             } catch (err) {
               unmappedEntries.push(entry);
@@ -951,7 +953,7 @@ program
           // A component code has but could not map, or that --components
           // left out, was never compared, so Figma's copy of it is not "not
           // in code". Each is still paired, as in a diff of everything.
-          componentDiffs = diffComponents(codeComponents, figmaComponents, [...unmappedEntries, ...others], figmaReported);
+          componentDiffs = diffComponents(codeComponents, figmaComponents, [...unmappedEntries, ...others], figmaReported, { codeRead: !storybookReadFailed });
         }
       }
 
@@ -1009,6 +1011,10 @@ program
               for (const d of c.details) console.log(`      ${chalk.dim(d)}`);
             } else if (c.status === "ambiguous") {
               console.log(`  ${chalk.red("?")} ${chalk.bold(c.name)} ${chalk.red("ambiguous")} ${chalk.dim(c.details.join(", "))}`);
+            } else if (c.status === "errored") {
+              const where = [c.page != null ? `page ${c.page}` : null, c.nodeId != null ? `node ${c.nodeId}` : null].filter(Boolean).join(", ");
+              const [errored, ...rest] = c.details;
+              console.log(`  ${chalk.red("!")} ${chalk.bold(c.name)}${where ? chalk.dim(` (${where})`) : ""} ${chalk.red(errored)}${rest.length ? chalk.dim(`, ${rest.join(", ")}`) : ""}`);
             }
           }
         } else if (storybook && !figmaReadFailed && !storybookReadFailed && !mappingFailures.length) {
@@ -1031,6 +1037,7 @@ program
           if (summary.componentsCodeOnly) cParts.push(chalk.yellow(`${summary.componentsCodeOnly} code-only`));
           if (summary.componentsFigmaOnly) cParts.push(chalk.cyan(`${summary.componentsFigmaOnly} Figma-only`));
           if (summary.componentsAmbiguous) cParts.push(chalk.red(`${summary.componentsAmbiguous} ambiguous`));
+          if (summary.componentsErrored) cParts.push(chalk.red(`${summary.componentsErrored} errored in Figma`));
           if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
         }
 

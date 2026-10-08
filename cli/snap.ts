@@ -91,6 +91,12 @@ export interface SnapResult {
   storysyncVersion: string;
   storybookUrl: string;
   variantSelection: VariantSelection;
+  /**
+   * The props `--exclude-props` left out of every component, when it named
+   * any: the push builds from this file, so it records what an audit has to
+   * leave out too, or it reports each as missing from Figma.
+   */
+  excludeProps?: string[];
   components: SnapComponent[];
   summary: {
     components: number;
@@ -560,6 +566,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     storysyncVersion: VERSION,
     storybookUrl: opts.storybookUrl,
     variantSelection: opts.variants,
+    ...(opts.excludeProps?.length ? { excludeProps: opts.excludeProps } : {}),
     components,
     summary: {
       components: components.length,
