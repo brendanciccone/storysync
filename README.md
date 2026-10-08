@@ -400,7 +400,7 @@ Options:
   --strict-warnings      Implies --strict, and also fails on warnings
 ```
 
-snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`. A snap that is stopped (SIGTERM, Ctrl-C, or the browser crashing) writes nothing and exits non-zero, so the last `styles.json` stays as it was.
+snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`. A snap that is stopped (SIGTERM or Ctrl-C) writes nothing, screenshots included, and exits non-zero, so the last `styles.json` stays as it was. If the browser crashes, snap launches it once more and carries on; a second crash stops it the same way.
 
 **Which element is measured.** In each story, snap measures the first element anywhere in it carrying the component's own `data-slot` (`switch` for `Switch`, `input-otp` for `InputOTP`), as shadcn/ui puts on every component's root. Any project can point snap at a component's root the same way. Without one, it measures the story's first element that draws, past wrappers that draw nothing and hold one element. snap warns when that element is likely not the component:
 

@@ -3,12 +3,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
-  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, SnapInterruptedError, screenshotName,
+  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, SnapInterruptedError, screenshotName, ScreenshotStage,
 } from "../snap.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
@@ -774,15 +774,41 @@ test("runSnap: a SIGTERM stops the run, writes nothing and leaves the last style
   }
 });
 
-test("runSnap: a browser that goes away mid-run fails the run rather than failing every component left", async () => {
+test("runSnap: a browser that goes away mid-run is launched again, and the component it was on measured again", async () => {
+  // Stopping lost the whole run, however long it had been going, for one crash.
+  const dir = tempDir();
+  try {
+    const visited: string[] = [];
+    const first = stubBrowser(() => {
+      if (visited.push("first") === 2) first.disconnect();
+    });
+    const second = stubBrowser(() => { visited.push("second"); });
+    const browsers = [first, second];
+    const result = await runSnap(options(dir), {
+      storybook: THREE_COMPONENTS as never,
+      launch: async () => ({ via: "stub", browser: browsers.shift() }) as never,
+    });
+    // B's first try went with the first browser; B and C were measured with the second.
+    assert.deepEqual(visited, ["first", "first", "second", "second"]);
+    assert.deepEqual(result.components.map((c) => [c.name, c.error, c.variants.length]), [["A", null, 1], ["B", null, 1], ["C", null, 1]]);
+    assert.ok(existsSync(join(dir, "styles.json")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a browser that goes away twice fails the run rather than failing every component left", async () => {
   const dir = tempDir();
   try {
     let navigations = 0;
-    const browser = stubBrowser(() => {
-      if (++navigations === 2) browser.disconnect();
-    });
+    const launch = async () => {
+      const browser = stubBrowser(() => {
+        if (++navigations >= 2) browser.disconnect();
+      });
+      return { via: "stub", browser } as never;
+    };
     await assert.rejects(
-      () => runSnap(options(dir), { storybook: THREE_COMPONENTS as never, launch: async () => ({ via: "stub", browser }) as never }),
+      () => runSnap(options(dir), { storybook: THREE_COMPONENTS as never, launch }),
       (err: unknown) => {
         assert.ok(err instanceof SnapInterruptedError, String(err));
         assert.equal(err.exitCode, 1);
@@ -790,6 +816,7 @@ test("runSnap: a browser that goes away mid-run fails the run rather than failin
         return true;
       },
     );
+    assert.equal(navigations, 3);
     assert.equal(existsSync(join(dir, "styles.json")), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -864,6 +891,97 @@ test("runSnap: a story that times out after it loaded is not tried again", async
     });
     assert.equal(navigations, 1);
     assert.equal(result.components[0].variants[0].status, "timeout");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A page on which every story loads and its --selector element measures, with a screenshot. */
+function screenshotPage(onNavigate: () => void = () => {}) {
+  return {
+    on: () => {}, off: () => {},
+    goto: async () => { onNavigate(); return null; },
+    waitForSelector: async () => null,
+    addStyleTag: async () => null,
+    $: async () => {
+      let described = false;
+      return {
+        evaluate: async () => {
+          if (described) return null;
+          described = true;
+          return { tag: "div", slot: null, role: null };
+        },
+        evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+        boundingBox: async () => ({ x: 0, y: 0, width: 40, height: 20 }),
+        screenshot: async () => Buffer.from("new png"),
+      };
+    },
+    evaluate: async (_fn: unknown, arg?: unknown) => (arg ? {} : null),
+  };
+}
+
+test("runSnap: screenshots reach the output directory once the run has finished", async () => {
+  const dir = tempDir();
+  try {
+    const page = screenshotPage();
+    const result = await runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+      storybook: THREE_COMPONENTS as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    const recorded = result.components.map((c) => c.variants[0].screenshot);
+    assert.deepEqual(recorded, ["a/default.png", "b/default.png", "c/default.png"]);
+    for (const path of recorded) assert.equal(readFileSync(join(dir, path!), "utf8"), "new png");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a stopped run leaves the last run's screenshots as they were", async () => {
+  // Each PNG was written as its variant was measured, so a run stopped
+  // part-way replaced some of the screenshots of the styles.json it kept.
+  const dir = tempDir();
+  const earlier = join(dir, "a", "default.png");
+  mkdirSync(dirname(earlier), { recursive: true });
+  writeFileSync(earlier, "earlier png");
+  try {
+    let navigations = 0;
+    const page = screenshotPage(() => {
+      if (++navigations === 2) process.emit("SIGTERM", "SIGTERM");
+    });
+    await assert.rejects(
+      () => runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+        storybook: THREE_COMPONENTS as never,
+        launch: async () => ({
+          via: "stub",
+          browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+        }) as never,
+      }),
+      (err: unknown) => err instanceof SnapInterruptedError && /the screenshots are as they were/.test(err.message),
+    );
+    assert.equal(readFileSync(earlier, "utf8"), "earlier png");
+    assert.equal(existsSync(join(dir, "b")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ScreenshotStage: moves what it staged into the output directory, or discards it", () => {
+  const dir = tempDir();
+  const entry = { id: "forms-button", name: "Button", title: "Forms/Button" } as never;
+  try {
+    const kept = new ScreenshotStage(dir);
+    assert.equal(kept.write(entry, "variant-primary", Buffer.from("png")), "forms-button/variant-primary.png");
+    assert.equal(existsSync(join(dir, "forms-button")), false);
+    kept.commit();
+    assert.equal(readFileSync(join(dir, "forms-button", "variant-primary.png"), "utf8"), "png");
+
+    const dropped = new ScreenshotStage(dir);
+    dropped.write(entry, "variant-danger", Buffer.from("png"));
+    dropped.discard();
+    assert.equal(existsSync(join(dir, "forms-button", "variant-danger.png")), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -6,7 +6,8 @@
 // results out on disk.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
 import { mapComponent, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
@@ -299,18 +300,67 @@ export function describeMeasurementNotes(
 
 /**
  * Thrown when a snap stops part-way, by a signal or because the browser went
- * away. Nothing has been written by then, so an earlier styles.json and
- * meta.json are left as they were: a partial result written over them, with a
- * fresh measuredAt, would read to verify as a current measurement with most
- * of its components failed.
+ * away. Nothing has been written by then, so an earlier styles.json,
+ * meta.json and screenshots are left as they were: a partial result written
+ * over them, with a fresh measuredAt, would read to verify as a current
+ * measurement with most of its components failed.
  */
 export class SnapInterruptedError extends Error {
   readonly exitCode: number;
+  /** Whether the browser went away, rather than the run being told to stop. */
+  readonly browserLost: boolean;
 
-  constructor(message: string, exitCode: number) {
+  constructor(message: string, exitCode: number, browserLost = false) {
     super(message);
     this.name = "SnapInterruptedError";
     this.exitCode = exitCode;
+    this.browserLost = browserLost;
+  }
+}
+
+/**
+ * Screenshots taken during a run, kept in a directory of their own until it
+ * finishes, then moved to where styles.json records them. A run that stops
+ * part-way leaves the last run's screenshots as it leaves its styles.json,
+ * rather than some of them replaced by pictures of code they don't describe.
+ */
+export class ScreenshotStage {
+  private dir: string | null = null;
+  private readonly files = new Set<string>();
+
+  constructor(private readonly outDir: string) {}
+
+  /** Stages a variant's PNG, returning the path styles.json records for it. */
+  write(entry: ComponentEntry, slug: string, png: Buffer): string {
+    this.dir ??= mkdtempSync(join(tmpdir(), "storysync-screenshots-"));
+    const recorded = writeScreenshot(this.dir, entry, slug, png);
+    this.files.add(recorded);
+    return recorded;
+  }
+
+  /** Moves every staged PNG into the output directory. */
+  commit(): void {
+    for (const recorded of this.files) {
+      const from = join(this.dir!, recorded);
+      const to = join(this.outDir, recorded);
+      mkdirSync(dirname(to), { recursive: true });
+      try {
+        renameSync(from, to);
+      } catch (err) {
+        // The temporary directory is on another filesystem, as a tmpfs /tmp is.
+        if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+        copyFileSync(from, to);
+      }
+    }
+    this.files.clear();
+    this.discard();
+  }
+
+  /** Removes whatever is still staged. */
+  discard(): void {
+    if (this.dir) rmSync(this.dir, { recursive: true, force: true });
+    this.dir = null;
+    this.files.clear();
   }
 }
 
@@ -423,7 +473,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   // `--components` from surfacing as a browser-resolution failure on a machine
   // that has no browser at all.
   if (entries.length) {
-    const { browser, via } = await deps.launch({ headless: true });
+    let { browser, via } = await deps.launch({ headless: true });
     progress(`Browser: ${via}`);
 
     let signalled: TerminationSignal | null = null;
@@ -436,27 +486,43 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     // failure. `isConnected` is absent only from test stand-ins.
     const checkpoint = () => {
       const stopped = signalled
-        ? { reason: `it received ${signalled}`, exitCode: SIGNAL_EXIT_CODES[signalled] }
+        ? { reason: `it received ${signalled}`, exitCode: SIGNAL_EXIT_CODES[signalled], lost: false }
         : !(browser.isConnected?.() ?? true)
-          ? { reason: "the browser closed part-way through (it crashed, or something killed it)", exitCode: 1 }
+          ? { reason: "the browser closed part-way through (it crashed, or something killed it)", exitCode: 1, lost: true }
           : null;
       if (!stopped) return;
       throw new SnapInterruptedError(
         `snap stopped because ${stopped.reason}, having finished ${components.length} of ${entries.length} ` +
-          `components, and wrote nothing: ${join(opts.outDir, SNAP_STYLES_FILENAME)} and ${SNAP_META_FILENAME} ` +
-          `are as they were.`,
+          `components, and wrote nothing: ${join(opts.outDir, SNAP_STYLES_FILENAME)}, ${SNAP_META_FILENAME} ` +
+          `and the screenshots are as they were.`,
         stopped.exitCode,
+        stopped.lost,
       );
     };
 
+    const stage = new ScreenshotStage(opts.outDir);
+    let relaunched = false;
     try {
-      for (const entry of entries) {
-        checkpoint();
-        components.push(await snapComponent(entry, opts, deps, browser, progress, checkpoint));
+      for (let index = 0; index < entries.length;) {
+        try {
+          checkpoint();
+          components.push(await snapComponent(entries[index], opts, deps, browser, progress, checkpoint, stage));
+          index++;
+        } catch (err) {
+          // A browser that crashed is launched once more, and the component
+          // it was on measured again from the start: the run is otherwise
+          // lost whole, as long as it had been going. A second crash ends it.
+          if (!(err instanceof SnapInterruptedError) || !err.browserLost || relaunched) throw err;
+          relaunched = true;
+          progress(`  The browser closed part-way through ${entries[index].title ?? entries[index].name}; launching it again`);
+          ({ browser } = await deps.launch({ headless: true }));
+        }
       }
       checkpoint();
+      stage.commit();
     } finally {
       stopListening();
+      stage.discard();
       await browser.close().catch(() => { /* already gone */ });
     }
   }
@@ -516,6 +582,7 @@ async function snapComponent(
   browser: Awaited<ReturnType<typeof resolveAndLaunch>>["browser"],
   progress: (m: string) => void,
   checkpoint: () => void,
+  stage: ScreenshotStage,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     name: entry.name,
@@ -629,7 +696,7 @@ async function snapComponent(
       }
 
       if (captured.screenshot) {
-        variant.screenshot = writeScreenshot(opts.outDir, entry, slug, captured.screenshot);
+        variant.screenshot = stage.write(entry, slug, captured.screenshot);
       }
 
       shell.variants.push(variant);
