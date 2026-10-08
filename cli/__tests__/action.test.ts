@@ -267,6 +267,23 @@ test("action Detect token drift: a token baseline that is not tokens --json outp
   assert.match(r.stdout, /is not tokens --json output \(it holds an error: Could not read src\/theme\.ts\)\. Recreate/);
 });
 
+test("action Detect token drift: tokens' warnings are logged, and listed in the report, when tokens were found too", () => {
+  // They reached the report only when no tokens were found, so an
+  // uncategorized radius or an unresolved var() was never seen in CI.
+  const warned = (collections: Collection[]) => JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections, warnings: ["Unresolved: typography font/sans = var(--font-sans) (--font-sans is set only in terms of itself)"] });
+  const baseline = tokensJson([colors]);
+  const files = (current: Collection[]) => ({ ".storysync/tokens-baseline.json": baseline, "storysync-tokens-current.json": warned(current) });
+  const env = { TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json", TOKEN_SOURCE: "auto" };
+
+  const clean = run("Detect token drift", "storysync-token-drift.md", files([colors]), env);
+  assert.equal(clean.outputs.result, "false", clean.stdout);
+  assert.match(clean.stdout, /^storysync tokens: Unresolved: typography font\/sans = var\(--font-sans\)/m);
+
+  const drifted = run("Detect token drift", "storysync-token-drift.md", files([colors, fontSizes]), env);
+  assert.equal(drifted.outputs.result, "true", drifted.stdout);
+  assert.match(drifted.report ?? "", /### Warnings\n- Unresolved: typography font\/sans = var\(--font-sans\) \(--font-sans is set only in terms of itself\)\n/);
+});
+
 // --- Both ---
 
 test("action: the command a missing baseline prints makes a directory whose name starts with a dash", () => {

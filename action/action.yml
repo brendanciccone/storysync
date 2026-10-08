@@ -373,6 +373,10 @@ runs:
 
         const current = JSON.parse(fs.readFileSync("storysync-tokens-current.json", "utf8"));
         const collections = current.collections || [];
+        // What tokens warned about, a var() that didn't resolve or a variable
+        // it couldn't categorize, is logged whether or not anything drifted.
+        const warnings = Array.isArray(current.warnings) ? current.warnings : [];
+        for (const w of warnings) console.log("storysync tokens: " + w);
 
         // The command that writes the baseline, as the action extracts tokens,
         // with the storysync it runs.
@@ -477,6 +481,11 @@ runs:
         if (changed.length) {
           body += "### Changed collections\n";
           for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed\n";
+          body += "\n";
+        }
+        if (collections.length && warnings.length) {
+          body += "### Warnings\n";
+          for (const w of warnings) body += "- " + w + "\n";
           body += "\n";
         }
 
