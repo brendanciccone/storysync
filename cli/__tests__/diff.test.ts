@@ -760,6 +760,23 @@ test("narrowFigmaComponents: no names leaves Figma whole", () => {
   assert.equal(narrowFigmaComponents(FIGMA, undefined), FIGMA);
 });
 
+// --- Translucent color tokens ---
+
+test("diffTokens: a translucent color token matches Figma's color with its alpha, and not without it", () => {
+  // shadcn/ui's dark border is oklch(1 0 0 / 10%): tokens gives it the hex
+  // #ffffff1a, and a Figma variable set from that hex reads back with its
+  // alpha. Read as 6-digit hex, as the audit template wrote every color,
+  // it could never match.
+  const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "border", value: "oklch(1 0 0 / 10%)", hex: "#ffffff1a" }] }];
+  const variable = (value: string): FigmaVariable[] => [{ name: "border", value, collection: "Colors", resolvedType: "COLOR", mode: "Default" }];
+  assert.equal(diffTokens(code, variable("#FFFFFF1A"))[0].status, "match");
+  assert.equal(diffTokens(code, variable("#ffffff"))[0].status, "value_mismatch");
+  assert.equal(diffTokens(code, variable("#ffffff33"))[0].status, "value_mismatch");
+  // Without a hex, the value itself is converted, alpha and all.
+  const bare: TokenCollection[] = [{ category: "colors", tokens: [{ name: "border", value: "rgba(255, 255, 255, 0.1)" }] }];
+  assert.equal(diffTokens(bare, variable("#ffffff1a"))[0].status, "match");
+});
+
 // --- Pairing by the Storybook ID the push stored ---
 
 /** A Figma node the push stored a Storybook ID on, or none. */

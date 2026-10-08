@@ -1204,19 +1204,25 @@ function variablesFigma(variables) {
 }
 
 /**
- * One use_figma call's figma, serving pages of component sets. As in
- * use_figma, a call starts on the first page with only it loaded, a page loads
- * when the call switches to it and becomes figma.currentPage, and a search
- * from figma.root sees only the loaded pages. `switches` records each switch.
+ * One use_figma call's figma, serving pages of component sets, components and
+ * frames. As in use_figma, a call starts on the first page with only it
+ * loaded, a page loads when the call switches to it and becomes
+ * figma.currentPage, and a search from figma.root sees only the loaded pages.
+ * A search walks every node under the page, a set's variants included, as
+ * Figma's does. `switches` records each switch.
  */
 function pagesFigma(pages, switches = []) {
   const loaded = new Set([pages[0].id]);
-  const nodes = pages.map((p) => ({
-    id: p.id,
-    type: "PAGE",
-    name: p.name,
-    findAllWithCriteria: ({ types }) => (loaded.has(p.id) ? p.sets.filter((s) => types.includes(s.type)) : []),
-  }));
+  const nodes = pages.map((p) => {
+    const page = {
+      id: p.id,
+      type: "PAGE",
+      name: p.name,
+      findAllWithCriteria: ({ types }) => (loaded.has(p.id) ? descendants(p.sets).filter((n) => types.includes(n.type)) : []),
+    };
+    for (const node of p.sets) node.parent = page;
+    return page;
+  });
   const figma = {
     root: {
       children: nodes,
@@ -1233,12 +1239,55 @@ function pagesFigma(pages, switches = []) {
   return figma;
 }
 
-/** A component set as the audit reads it: its properties and its variant count. */
-function auditSet(name, options) {
+/** Every node under `nodes`, each before its children, as a search walks them. */
+function descendants(nodes) {
+  return nodes.flatMap((n) => [n, ...descendants(n.children ?? [])]);
+}
+
+let auditNodeIds = 0;
+
+/** A node's shared plugin data: the Storybook ID the push stored, or "" as Figma reads none. */
+function auditNode(type, name, storybookId = "") {
+  return {
+    type,
+    name,
+    id: `9:${++auditNodeIds}`,
+    children: [],
+    getSharedPluginData: (namespace, key) => (namespace === "storysync" && key === "id" ? storybookId : ""),
+  };
+}
+
+/**
+ * A component set as the audit reads it: its properties, and a variant, a
+ * component, per combination. `errored`, a set Figma flags as errored, as
+ * one of a single variant named "" is: reading its properties throws.
+ */
+function auditSet(name, options, { storybookId = "", errored = false } = {}) {
   const defs = Object.fromEntries(Object.entries(options).map(([prop, values]) =>
     [prop, values === "BOOLEAN" ? { type: "BOOLEAN", defaultValue: false } : { type: "VARIANT", variantOptions: values }]));
   const count = Object.values(options).reduce((n, values) => n * (values === "BOOLEAN" ? 2 : values.length), 1);
-  return { type: "COMPONENT_SET", name, componentPropertyDefinitions: defs, children: Array.from({ length: count }, () => ({})) };
+  const set = auditNode("COMPONENT_SET", name, storybookId);
+  Object.defineProperty(set, "componentPropertyDefinitions", {
+    get() {
+      if (errored) throw new Error("in get_componentPropertyDefinitions: Component set has existing errors");
+      return defs;
+    },
+  });
+  set.children = Array.from({ length: count }, (_, i) => Object.assign(auditNode("COMPONENT", `variant ${i}`), { parent: set }));
+  return set;
+}
+
+/** A component outside any set, as the push makes one with no variant properties, or a designer's own. */
+function auditComponent(name, { storybookId = "" } = {}) {
+  return auditNode("COMPONENT", name, storybookId);
+}
+
+/** A frame holding other nodes, as a designer groups components in one. */
+function auditFrame(name, children) {
+  const frame = auditNode("FRAME", name);
+  frame.children = children;
+  for (const child of children) child.parent = frame;
+  return frame;
 }
 
 /**
@@ -2920,7 +2969,7 @@ async function main() {
       const sets = pages.find((p) => p.id === page.id).sets.length;
       const calls = Math.max(1, Math.ceil(sets / batch));
       assert(read.length === calls, `read the ${sets} sets on ${page.name} in ${read.length} calls, not ${calls}, with BATCH ${batch}`);
-      for (const slice of read) found.push(...slice.componentSets.map((s) => `${page.name}/${s.name}`));
+      for (const slice of read) found.push(...slice.components.map((s) => `${page.name}/${s.name}`));
     }
     const expected = pages.flatMap((p) => p.sets.map((s) => `${p.name}/${s.name}`));
     assert(found.join() === expected.join(), `read ${found.length} sets (${found.slice(0, 3).join(", ")}...), expected ${expected.length} across ${pages.length} pages`);
@@ -2933,6 +2982,130 @@ async function main() {
       return new AsyncFunction("figma", body)(pagesFigma(widePages));
     }, wide.length);
     return `${found.length} sets across ${pages.length} pages; ${refused}`;
+  });
+
+  /**
+   * Runs the component read, or a mutant of it, over one page, from START 0
+   * to the last slice, and returns its entries. A mutation that changes
+   * nothing is a mistake in the check, not a mutant.
+   */
+  async function auditPage(sets, mutate = null) {
+    const shipped = useFigmaBlock(/^Read the component sets/);
+    const code = mutate ? mutate(shipped) : shipped;
+    assert(code !== shipped || !mutate, "a mutant of the component read changed nothing in it");
+    const pages = [{ id: "0:1", name: "ui/base", sets }];
+    const read = await readAllSlices(code, () => pagesFigma(pages), { PAGE_ID: "0:1" });
+    return read.flatMap((slice) => slice.components);
+  }
+
+  /** Throws unless every mutant, run through `assertOk`, fails it. Returns how many did. */
+  async function assertMutantsFail(mutants, run, assertOk) {
+    const survived = [];
+    for (const [name, mutate] of Object.entries(mutants)) {
+      let failure = null;
+      try {
+        assertOk(await run(mutate));
+      } catch (err) {
+        failure = err;
+      }
+      if (!failure || /changed nothing/.test(failure.message)) survived.push(`a read that ${name}${failure ? ` (${failure.message})` : ""}`);
+    }
+    assert(survived.length === 0, `these pass the check:\n${survived.join("\n")}`);
+    return Object.keys(mutants).length;
+  }
+
+  await check("the audit reads the components outside any set, not a set's variants, and the Storybook ID the push stored", async () => {
+    // The push makes a component with no variant properties a plain
+    // component, since a set of one variant named "" is one Figma flags as
+    // errored, and stores each component's Storybook ID on what it makes.
+    // Read for sets only, the audit never saw those components; read for
+    // every component, it would take each variant for one.
+    const sets = () => [
+      auditSet("Button", { size: ["sm", "lg"], disabled: "BOOLEAN" }, { storybookId: "ui-base-button" }),
+      auditComponent("Badge", { storybookId: "ui-base-badge" }),
+      auditFrame("Icons", [auditComponent("Calendar")]),
+    ];
+    const assertRead = (entries) => {
+      const got = entries.map((e) => [e.name, e.type, e.storybookId, e.variantCount, e.variantProperties.map((p) => `${p.name}:${p.values.join("|")}`).join(",")]);
+      const want = [
+        ["Button", "COMPONENT_SET", "ui-base-button", 4, "size:sm|lg,disabled:true|false"],
+        ["Badge", "COMPONENT", "ui-base-badge", 1, ""],
+        ["Calendar", "COMPONENT", null, 1, ""],
+      ];
+      assert(JSON.stringify(got) === JSON.stringify(want), `read ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+      assert(entries.every((e) => /^9:\d+$/.test(e.id) && e.error === undefined), `read ${JSON.stringify(entries)}`);
+    };
+    assertRead(await auditPage(sets()));
+    const mutants = {
+      "finds component sets only, as it did": (code) => code.replace("types: ['COMPONENT_SET', 'COMPONENT']", "types: ['COMPONENT_SET']"),
+      "takes a set's variants for components": (code) => code.replace(".filter(n => n.type === 'COMPONENT_SET' || (n.parent && n.parent.type !== 'COMPONENT_SET'))", ""),
+      "leaves out the Storybook ID the push stored": (code) => code.replace("node.getSharedPluginData('storysync', 'id') || null", "null"),
+    };
+    const count = await assertMutantsFail(mutants, (mutate) => auditPage(sets(), mutate), assertRead);
+    return `2 components and a set, no variants, with their IDs; ${count} mutants fail`;
+  });
+
+  await check("the audit reports a set Figma flags as errored, and reads on through the rest of its page", async () => {
+    // The live push's sets of one variant named "", which Figma renames "="
+    // and flags as errored: reading their componentPropertyDefinitions
+    // threw "Component set has existing errors", and the audit lost every
+    // set on the page.
+    const sets = () => [
+      auditSet("Avatar", { size: ["sm", "lg"] }),
+      auditSet("Button", { "": [""] }, { errored: true }),
+      auditSet("Card", { elevated: "BOOLEAN" }),
+      auditComponent("Separator"),
+    ];
+    const assertRead = (entries) => {
+      assert(JSON.stringify(entries.map((e) => e.name)) === JSON.stringify(["Avatar", "Button", "Card", "Separator"]), `read ${entries.map((e) => e.name).join(", ")}`);
+      const errored = entries[1];
+      assert(/Component set has existing errors/.test(errored.error ?? ""), `the errored set came back as ${JSON.stringify(errored)}`);
+      assert(errored.variantProperties.length === 0 && /^9:\d+$/.test(errored.id), `the errored set came back as ${JSON.stringify(errored)}`);
+      assert(entries[0].variantProperties.length === 1 && entries[2].variantProperties.length === 1 && entries.filter((e) => e.error !== undefined).length === 1,
+        `the sets beside it came back as ${JSON.stringify(entries)}`);
+    };
+    const shipped = await auditPage(sets());
+    assertRead(shipped);
+    const errored = shipped[1];
+    const mutants = {
+      "reads every set's properties with no try, as it did": (code) => code.replace(
+        /let defs = \{\};\s*try \{\s*defs = node\.componentPropertyDefinitions;\s*\} catch \(e\) \{[^}]*\}/, "const defs = node.componentPropertyDefinitions;"),
+      "skips an errored set without saying so": (code) => code.replace("entry.error = String((e && e.message) || e);", ""),
+    };
+    const count = await assertMutantsFail(mutants, (mutate) => auditPage(sets(), mutate), assertRead);
+    return `${errored.name} reported "${errored.error}", 3 others read; ${count} mutants fail`;
+  });
+
+  await check("the audit writes a translucent color variable with its alpha, as tokens writes its hex", async () => {
+    // shadcn/ui's dark tokens are translucent, oklch(1 0 0 / 10%), which
+    // tokens gives as #ffffff1a. The push sets the variable from that hex;
+    // read back as #ffffff, it could never match.
+    const { tokenColorToHex } = await import(pathToFileURL(join(ROOT, "dist", "cli", "tokens.js")).href);
+    const values = ["oklch(1 0 0 / 10%)", "rgba(0, 0, 0, 0.7)", "oklch(0.704 0.191 22.216 / 0.3)", "#171717", "oklch(0.985 0 0)"];
+    const tokens = values.map((value, i) => ({ name: `color/${i}`, hex: tokenColorToHex(value) }));
+    assert(tokens.every((t) => t.hex), `tokens gave no hex for ${values.filter((_, i) => !tokens[i].hex).join(", ")}`);
+    // As figma.util.rgba reads a hex, and as Figma stores the channels: 32-bit floats.
+    const rgba = (hex) => {
+      const [r, g, b, a = 255] = hex.slice(1).match(/../g).map((h) => parseInt(h, 16));
+      return { r: Math.fround(r / 255), g: Math.fround(g / 255), b: Math.fround(b / 255), a: Math.fround(a / 255) };
+    };
+    const variables = tokens.map((t) => ({ collection: "Colors", name: t.name, type: "COLOR", value: rgba(t.hex) }));
+    const read = async (mutate = null) => {
+      const code = useFigmaBlock(/^Read all variable collections/);
+      const run = mutate ? mutate(code) : code;
+      assert(run !== code || !mutate, "a mutant of the variables read changed nothing in it");
+      return (await readAllSlices(run, () => variablesFigma(variables))).flatMap((slice) => slice.variables);
+    };
+    const assertRead = (got) => {
+      const pairs = got.map((v, i) => [v.value, tokens[i].hex]);
+      assert(pairs.every(([figma, code]) => figma === code), `read ${pairs.map(([f, c]) => `${f} for ${c}`).join(", ")}`);
+    };
+    assertRead(await read());
+    const count = await assertMutantsFail({
+      "writes every color as 6-digit hex, as it did": (code) => code.replace("if (a < 255) channels.push(a);", ""),
+      "writes an opaque color with ff on the end": (code) => code.replace("if (a < 255) channels.push(a);", "channels.push(a);"),
+    }, read, assertRead);
+    return `${tokens.map((t) => t.hex).join(", ")} read back as written; ${count} mutants fail`;
   });
 
   heading("Scoring contract");
@@ -3126,6 +3299,27 @@ async function main() {
       const runs = [...text.matchAll(/npx storysync snap [^`\n]*/g)].map((m) => m[0]);
       assert(runs.length > 0, `${file} never runs snap`);
       for (const run of runs) assert(/--variants all/.test(run), `${file}: "${run}" measures a sample, not every combination`);
+    }
+    return `${files.length} files`;
+  });
+
+  await check("the audit instructions leave out the push's excluded props, and map only a scope's components", () => {
+    // The audit ran a plain map of every component: 11.5 minutes on a
+    // shadcn registry for an audit of ten, with every prop the push left out
+    // with --exclude-props reported missing from Figma.
+    const files = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-diff.md"];
+    for (const file of files) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const audit = file.startsWith("skills/") ? text.slice(text.indexOf("## Audit"), text.indexOf("\n## ", text.indexOf("## Audit") + 1)) : text;
+      assert(/npx storysync map /.test(audit), `${file}: the audit never runs map`);
+      for (const [what, pattern] of [
+        ["passes the push's --exclude-props", /--exclude-props/],
+        ["says where snap records them", /`excludeProps`[^.]*`\.storysync\/snaps\/styles\.json`/],
+        ["passes a scope with --components", /--components/],
+        ["lists every component to pair a scope with", /npx storysync list --storybook \S+ --json/],
+        ["pairs by the Storybook ID the push stored", /getSharedPluginData\('storysync', 'id'\)|storybookId/],
+        ["reports a set Figma flags as errored", /errored in Figma \(can't read its properties\)/],
+      ]) assert(pattern.test(audit), `${file}: the audit never ${what}`);
     }
     return `${files.length} files`;
   });

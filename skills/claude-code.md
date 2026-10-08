@@ -756,10 +756,12 @@ use_figma({
       const raw = v.valuesByMode[mode.modeId];
       let value = '';
       if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
-        const r = Math.round(raw.r * 255);
-        const g = Math.round(raw.g * 255);
-        const b = Math.round(raw.b * 255);
-        value = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+        // #rrggbb, then the alpha as two more digits when it comes to less
+        // than ff, as tokens writes a translucent color's hex.
+        const channels = [raw.r, raw.g, raw.b].map(x => Math.round(x * 255));
+        const a = Math.round((raw.a == null ? 1 : raw.a) * 255);
+        if (a < 255) channels.push(a);
+        value = '#' + channels.map(x => x.toString(16).padStart(2, '0')).join('');
       } else {
         value = String(raw);
       }
@@ -780,7 +782,7 @@ use_figma({
 })
 ```
 
-2. **Read Figma components** — read the component sets and their variant properties a page at a time. `use_figma` loads pages as it switches to them, starting each call on the first, and does not support `figma.loadAllPagesAsync()`, so a search from `figma.root` sees only the pages already loaded and misses the sets on every other — and the push puts each category on its own page. List the pages with a call that returns `JSON.stringify(figma.root.children.map(p => ({ id: p.id, name: p.name })))`, then make the call below once per page, as separate calls issued together, each switching to its page once:
+2. **Read Figma components** — read the component sets and their variant properties, and the components outside any set, a page at a time. The push makes a component with no variant properties a plain component rather than a set, so those are components too. `use_figma` loads pages as it switches to them, starting each call on the first, and does not support `figma.loadAllPagesAsync()`, so a search from `figma.root` sees only the pages already loaded and misses the sets on every other — and the push puts each category on its own page. List the pages with a call that returns `JSON.stringify(figma.root.children.map(p => ({ id: p.id, name: p.name })))`, then make the call below once per page, as separate calls issued together, each switching to its page once. Each entry has the node's `id`, its `type`, and the `storybookId` the push stored on it, or `null` where none did. Figma refuses to read the properties of a set it flags as errored, saying `Component set has existing errors`: that set comes back with that `error`, and the rest of its page is still read.
 
 ```js
 use_figma({
@@ -793,22 +795,40 @@ use_figma({
       throw new Error('No page with id ' + PAGE_ID);
     }
     await figma.setCurrentPageAsync(page);
-    const componentSets = page.findAllWithCriteria({ types: ['COMPONENT_SET'] });
+    // The component sets, and the components outside any set, not a set's variants.
+    const nodes = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
+      .filter(n => n.type === 'COMPONENT_SET' || (n.parent && n.parent.type !== 'COMPONENT_SET'));
     const results = [];
-    for (const cs of componentSets.slice(START, START + BATCH)) {
-      const defs = cs.componentPropertyDefinitions;
-      const props = [];
-      for (const [key, def] of Object.entries(defs)) {
-        if (def.type === 'VARIANT') {
-          props.push({ name: key, type: 'VARIANT', values: def.variantOptions || [] });
-        } else if (def.type === 'BOOLEAN') {
-          props.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
+    for (const node of nodes.slice(START, START + BATCH)) {
+      const entry = {
+        name: node.name,
+        type: node.type,
+        id: node.id,
+        // The Storybook ID the push stored on it, or null where none did.
+        storybookId: node.getSharedPluginData('storysync', 'id') || null,
+        variantProperties: [],
+        variantCount: node.type === 'COMPONENT_SET' ? node.children.length : 1,
+      };
+      if (node.type === 'COMPONENT_SET') {
+        // Figma throws on a set it flags as errored: report it and read on.
+        let defs = {};
+        try {
+          defs = node.componentPropertyDefinitions;
+        } catch (e) {
+          entry.error = String((e && e.message) || e);
+        }
+        for (const [key, def] of Object.entries(defs)) {
+          if (def.type === 'VARIANT') {
+            entry.variantProperties.push({ name: key, type: 'VARIANT', values: def.variantOptions || [] });
+          } else if (def.type === 'BOOLEAN') {
+            entry.variantProperties.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
+          }
         }
       }
-      results.push({ name: cs.name, variantProperties: props, variantCount: cs.children.length });
+      results.push(entry);
     }
-    const next = START + BATCH < componentSets.length ? START + BATCH : null;
-    const result = JSON.stringify({ page: page.name, total: componentSets.length, next, componentSets: results });
+    const next = START + BATCH < nodes.length ? START + BATCH : null;
+    const result = JSON.stringify({ page: page.name, total: nodes.length, next, components: results });
     // use_figma JSON-encodes what this returns: measure the encoded string.
     const size = JSON.stringify(result).length;
     if (size > 17000) {
@@ -816,7 +836,7 @@ use_figma({
     }
     return result;
   `,
-  description: "Read the component sets and variant properties on one page of the Figma file",
+  description: "Read the component sets, their variant properties and the components outside any set on one page of the Figma file",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
@@ -834,22 +854,31 @@ npx storysync tokens --json --project .
 npx storysync map --storybook http://localhost:6006 --json
 ```
 
+   Pass the `--exclude-props` the push used, if any, or every prop it left out is reported missing from Figma. snap records them as `excludeProps` at the top of `.storysync/snaps/styles.json`; if that file has none and the user says the push left props out, ask which. If the user asked about some components only, pass their names, titles or IDs with `--components`, since a map of every component can take many minutes, and run `npx storysync list --storybook http://localhost:6006 --json` too: it lists every component's `id`, `name`, `title` and `category` in one call, for step 6 to pair with.
+
 5. **Compare tokens** — match Figma variable collections to code token categories (Colors → colors, Spacing → spacing, etc.). For each token:
    - In code but not in Figma → **missing from Figma** (needs sync)
    - In Figma but not in code → **missing from code** (orphaned or manually added)
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
-   - Normalize before comparing: compare a color by its token's `hex` and a spacing, radius or size token by its `px`, which has rem and `calc()` worked out, where the token has one; otherwise lowercase hex colors, convert rem→px (1rem=16px), and strip units for numeric comparison. Round numbers to thousandths on both sides, since Figma can return a float with a tail of binary noise.
+   - Normalize before comparing: compare a color by its token's `hex` and a spacing, radius or size token by its `px`, which has rem and `calc()` worked out, where the token has one; otherwise lowercase hex colors, convert rem→px (1rem=16px), and strip units for numeric comparison. A translucent color is `#rrggbbaa` on both sides, step 1's template writing Figma's alpha as tokens does, so compare all eight digits. Round numbers to thousandths on both sides, since Figma can return a float with a tail of binary noise.
 
-6. **Compare components** — pair each code component with a Figma component set of its set name, case-insensitively: the last segment of its `title`, or its `name` when it has no title, as Components step 4 names sets, or its `name` where no set has that and it is no other component's set name, as an earlier push named them. A name one code component and one set have is a pair, whatever page the set is on. If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), tell them apart by page: a code component and a set of its name on its category's page (`Components` when it has none), each the only one of that name on that page on its side, are a pair, comparing page names ignoring case, spaces, `/`, `-` and `_`. Of the copies left, code components alone are code only, and sets alone Figma only. Copies left on both sides, even one of each, can't be told apart (a set on another page may be the component's, moved, or an archived copy beside a component not pushed yet): report the name as ambiguous, and only as ambiguous: compare none of the copies left, and don't also count them as matched, mismatched or missing. Name a component that shares its name by its `title`, and a set by its page and name. For each component:
+6. **Compare components** — pair each code component with a Figma component from step 2: a set, or a component outside any set, which is how the push builds a component with no variant properties.
+   - **By ID first.** A Figma component whose `storybookId` is a code component's `id` is that component's, whatever its name or page, since a designer may have moved or renamed it. If two carry the ID, as a copy of a set does, tell them apart by page as below. One whose `storybookId` no code component has is Figma only, pushed from a component code no longer has under that ID (removed, or its story moved): never pair it with another component by name.
+   - **Then by name**, for the code components no ID paired and the sets with no `storybookId`: pair each code component with a set of its set name, case-insensitively: the last segment of its `title`, or its `name` when it has no title, as Components step 4 names sets, or its `name` where no set has that and it is no other component's set name, as an earlier push named them. A name one code component and one set have is a pair, whatever page the set is on. If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), tell them apart by page: a code component and a set of its name on its category's page (`Components` when it has none), each the only one of that name on that page on its side, are a pair, comparing page names ignoring case, spaces, `/`, `-` and `_`. Of the copies left, code components alone are code only, and sets alone Figma only. Copies left on both sides, even one of each, can't be told apart (a set on another page may be the component's, moved, or an archived copy beside a component not pushed yet): report the name as ambiguous, and only as ambiguous: compare none of the copies left, and don't also count them as matched, mismatched or missing. Name a component that shares its name by its `title`, and a set by its page and name.
+   - **A component outside any set with no `storybookId`** may be a designer's own, such as an icon named `Calendar`. It pairs only with a code component the sets left code only, of its set name and on its category's page, each the only one there. It never makes a name ambiguous, and one left unpaired is Figma only.
+   - **A set with an `error`** is one Figma flags as errored, such as a set of one variant named `=`, which an earlier push made of a component with no variant properties. Pair it as any set, but report it as **errored in Figma (can't read its properties)**, by name, page and id, and compare nothing in it. Don't delete it unless the user asks.
+   - **When the audit is scoped**, pair as above with every component `list` gave, as components with no variant properties, so each Figma component pairs as it would in a whole audit. Compare and report only the components in scope, and a Figma component paired with none only if the scope names it, by name, page and name, or `storybookId`.
+
+   For each component:
    - In code/Storybook but not in Figma → **code only** (not yet synced)
    - In Figma but not in code/Storybook → **Figma only** (orphaned or renamed)
    - Both exist → compare variant properties: missing props, extra props, missing/extra values per prop.
 
 7. **Report** — present a structured drift report:
    - Group by category (tokens) or component name
-   - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch, `?` ambiguous
-   - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous.
-   - Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous. An ambiguous name was compared on none of its copies, so it can hide drift: while any is, name the ambiguous names instead, and never say the two are in sync.
+   - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch, `?` ambiguous, `!` errored in Figma
+   - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous, N errored in Figma.
+   - Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous or set errored. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync.
 
 ## Visual accuracy guidelines
 
