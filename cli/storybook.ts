@@ -1,8 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { VERSION } from "./version.js";
+import { connectWithFallback, isRequestTimeout, requestTimeoutError, DEFAULT_REQUEST_TIMEOUT_MS } from "./mcp-connect.js";
 import type { StorybookComponent, StorybookProp, PropType } from "./mapper.js";
 
 export interface ComponentEntry {
@@ -212,9 +211,13 @@ export class StorybookClient {
   private client: Client | null = null;
   private docsTools: DocsTools | null = null;
   private url: string;
+  // Each request's limit, as --connect-timeout gives it. Left to the SDK, a
+  // docs-show got 60 seconds whatever the flag said.
+  private requestTimeoutMs: number;
 
-  constructor(url: string) {
+  constructor(url: string, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     this.url = url;
+    this.requestTimeoutMs = requestTimeoutMs;
   }
 
   // `transport` is for tests, which connect to an in-memory server.
@@ -226,12 +229,7 @@ export class StorybookClient {
       return;
     }
 
-    const mcpUrl = new URL("/mcp", this.url);
-    try {
-      await this.client.connect(new StreamableHTTPClientTransport(mcpUrl));
-    } catch {
-      await this.client.connect(new SSEClientTransport(mcpUrl));
-    }
+    await connectWithFallback(this.client, new URL("/mcp", this.url), "Storybook", this.requestTimeoutMs);
   }
 
   async disconnect(): Promise<void> {
@@ -242,7 +240,8 @@ export class StorybookClient {
 
   async listAvailableTools(): Promise<string[]> {
     if (!this.client) throw new Error("Not connected");
-    const result = await this.client.listTools();
+    const client = this.client;
+    const result = await this.request("tools/list", () => client.listTools(undefined, { timeout: this.requestTimeoutMs }));
     return result.tools.map((t) => t.name);
   }
 
@@ -274,7 +273,22 @@ export class StorybookClient {
 
   private async call(tool: string, args: Record<string, unknown>): Promise<string> {
     if (!this.client) throw new Error("Not connected");
-    return toolResultText(tool, await this.client.callTool({ name: tool, arguments: args }));
+    const client = this.client;
+    return toolResultText(tool, await this.request(tool, () => client.callTool({ name: tool, arguments: args }, undefined, { timeout: this.requestTimeoutMs })));
+  }
+
+  /**
+   * Makes a request, failing one that outlasts its limit with an error that
+   * names the tool, the limit and the flag. map records it as that
+   * component's failure, so --strict fails on it.
+   */
+  private async request<T>(tool: string, send: () => Promise<T>): Promise<T> {
+    try {
+      return await send();
+    } catch (err) {
+      if (isRequestTimeout(err)) throw requestTimeoutError("Storybook", tool, this.requestTimeoutMs);
+      throw err;
+    }
   }
 
   // Parses the markdown list from the docs list tool (`docs-list`, formerly

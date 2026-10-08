@@ -24,11 +24,12 @@ import type { ComponentEntry } from "./storybook.js";
 
 /**
  * How long to wait for an MCP server to answer before giving up on it, as
- * --connect-timeout's default. It is the 60 seconds the MCP SDK gives the
- * initialize request, so a server that connected before still does. A
- * Storybook that is still starting refuses connections until it listens,
- * which fails at once rather than waiting, and the example's Storybook 10.6
- * answered initialize within 25ms of its port opening.
+ * --connect-timeout's default: to connect, and then for each request. It is
+ * the 60 seconds the MCP SDK gives a request, so a server that answered
+ * before still does. A Storybook that is still starting refuses connections
+ * until it listens, which fails at once rather than waiting, and the
+ * example's Storybook 10.6 answered initialize within 25ms of its port
+ * opening.
  */
 const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 
@@ -43,7 +44,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
  *
  * A server that takes the connection and never answers is unreachable too,
  * once `timeoutMs` has passed. Without a limit the run waited forever: the
- * Streamable HTTP initialize gives up after the SDK's 60 seconds, but the SSE
+ * Streamable HTTP initialize gives up after its request limit, but the SSE
  * fallback after it waits for its event stream with no limit at all.
  */
 async function connectMcp<T extends { connect(): Promise<void> }>(client: T, server: string, url: string, json: boolean, timeoutMs: number): Promise<T> {
@@ -73,8 +74,11 @@ async function connectMcp<T extends { connect(): Promise<void> }>(client: T, ser
   }
 }
 
+// The same limit holds each request once connected: a docs-show that never
+// answers fails that component, naming the flag, rather than waiting on the
+// SDK's own 60 seconds whatever --connect-timeout said.
 function connectStorybook(url: string, json: boolean, timeoutMs: number): Promise<StorybookClient> {
-  return connectMcp(new StorybookClient(url), "Storybook MCP", url, json, timeoutMs);
+  return connectMcp(new StorybookClient(url, timeoutMs), "Storybook MCP", url, json, timeoutMs);
 }
 
 /** Parses --connect-timeout, exiting with a clear message on anything but a positive number of milliseconds. */
@@ -761,7 +765,7 @@ program
     }
     const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
 
-    const figma = await connectMcp(new FigmaClient(opts.figma as string), "Figma MCP", opts.figma as string, json, connectTimeoutMs);
+    const figma = await connectMcp(new FigmaClient(opts.figma as string, connectTimeoutMs), "Figma MCP", opts.figma as string, json, connectTimeoutMs);
 
     // Optionally connect to Storybook MCP
     let storybook: StorybookClient | null = null;
