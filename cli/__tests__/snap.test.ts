@@ -1275,6 +1275,34 @@ test("runSnap --merge: refuses a snap it can't add to honestly, before measuring
   }
 });
 
+test("runSnap --merge: refuses other --exclude-props than the snap's, and keeps its record with the same", async () => {
+  // A merge without the flag measured those props again for the components
+  // it named, and wrote a styles.json with no excludeProps for the audit.
+  const dir = tempDir();
+  const merge = (excludeProps?: string[]) =>
+    runSnap(options(dir, { components: ["forms-b"], merge: true, ...(excludeProps ? { excludeProps } : {}) }), {
+      storybook: mergeStorybook("x") as never, launch: async () => ({ via: "stub", browser: stubBrowser() }) as never,
+    });
+  try {
+    await snapAt(dir, "first", "2026-10-01T10:00:00.000Z", { excludeProps: ["modal", "loop"] });
+    const before = readFileSync(join(dir, "styles.json"), "utf8");
+    for (const other of [undefined, ["modal"], ["modal", "loop", "orientation"]]) {
+      await assert.rejects(() => merge(other), /which were measured with --exclude-props modal,loop: pass the same, or run snap without --merge/);
+      assert.equal(readFileSync(join(dir, "styles.json"), "utf8"), before);
+    }
+    // The same names, in another order or case, are the same list.
+    const merged = await merge(["Loop", "modal"]);
+    assert.deepEqual(merged.excludeProps, ["Loop", "modal"]);
+    assert.deepEqual(readJson(join(dir, "styles.json")).excludeProps, ["Loop", "modal"]);
+
+    await snapAt(dir, "second", "2026-10-01T11:00:00.000Z");
+    await assert.rejects(() => merge(["modal"]), /which were measured with no --exclude-props: pass the same/);
+    await merge([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSnap --merge: two components sharing a key are warned about across the whole snap, once", async () => {
   const dir = tempDir();
   try {

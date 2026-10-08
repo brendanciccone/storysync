@@ -505,8 +505,9 @@ interface MergeBase {
 /**
  * Reads the snap `--merge` adds to, refusing one it can't add to honestly:
  * none at all, one with no time to keep its components' age by, or one
- * measured another way, from another Storybook or by another storysync,
- * whose components and the new ones would not describe the same thing.
+ * measured another way, with other props left out, from another Storybook
+ * or by another storysync, whose components and the new ones would not
+ * describe the same thing.
  * Read before anything is measured, so a long run doesn't end on it.
  */
 export function readMergeBase(opts: SnapOptions): MergeBase {
@@ -535,6 +536,14 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
   }
   if (result.variantSelection !== opts.variants) {
     throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with --variants ${result.variantSelection}: pass the same, or run snap without --merge.`);
+  }
+  // The kept components were measured without these props, and styles.json
+  // records this run's list alone, which the audit reads: another list would
+  // mix components measured two ways, and lose or misstate that record.
+  const excluded = (names: readonly string[] | undefined) => [...new Set((names ?? []).map((n) => n.toLowerCase()))].sort().join(",");
+  if (excluded(result.excludeProps) !== excluded(opts.excludeProps)) {
+    const was = result.excludeProps?.length ? `--exclude-props ${result.excludeProps.join(",")}` : "no --exclude-props";
+    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or run snap without --merge.`);
   }
   const url = (u: string) => String(u).replace(/\/+$/, "");
   if (url(result.storybookUrl) !== url(opts.storybookUrl)) {
