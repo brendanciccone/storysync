@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize,
-  canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS, scoreCaveats,
+  canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS, scoreCaveats, bindingReport,
 } from "../verify.js";
 import { describeMeasurementNotes, describeIdenticalVariants } from "../snap.js";
 import type { ReadbackFile } from "../verify.js";
@@ -1372,4 +1372,44 @@ test("verifyVariant: where the browser cut a label off or wrapped it, Figma's te
   const matched = (measured: NormalizedStyles, entry: Record<string, unknown>) => verifyVariant("C", "s", measured, complete(entry) as never, 0.5).matched;
   assert.equal(matched(plain, { textLayout: { width: 10, maxLines: 1 } }), matched(plain, {}));
   assert.equal(matched(cut, { textLayout: undefined }) + 1, matched(cut, { textLayout: { width: 94, maxLines: 1 } }));
+});
+
+// --- Variable bindings ---
+
+test("bindingReport: counts the fields bound, and names by component and field those bound to nothing at a variable's value", () => {
+  const unverified = new Set([JSON.stringify(["Forms/Button", "edited"])]);
+  const report = bindingReport({
+    "Forms/Button": {
+      nodeId: "1:2",
+      variants: {
+        a: { bound: { backgroundColor: "primary", borderRadiusUniform: "radius/md" }, unbound: [] },
+        b: { bound: { backgroundColor: "primary" }, unbound: ["borderRadiusUniform"] },
+        c: { bound: {}, unbound: ["borderRadiusUniform", "color"] },
+        // Not trusted, so not counted.
+        edited: { bound: {}, unbound: ["backgroundColor"] },
+        // From an earlier template, with no bindings to count.
+        old: { backgroundColor: "#2563eb" },
+      },
+    },
+  }, unverified);
+  assert.deepEqual(report, {
+    read: 3,
+    bound: 3,
+    unbound: [
+      { component: "Forms/Button", field: "borderRadiusUniform", variants: 2 },
+      { component: "Forms/Button", field: "color", variants: 1 },
+    ],
+  });
+  assert.deepEqual(bindingReport({}, new Set()), { read: 0, bound: 0, unbound: [] });
+});
+
+test("verify: bindings are reported beside the score and fail nothing, and a readback without them still scores", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  const result = verify(snap, readbackWith({ a: { bound: { backgroundColor: "primary" }, unbound: [] }, b: { bound: {}, unbound: ["backgroundColor"] } }), 0.5);
+  assert.equal(result.fidelity, 1);
+  assert.deepEqual(result.bindings, { read: 2, bound: 1, unbound: [{ component: "Forms/Button", field: "backgroundColor", variants: 1 }] });
+  assert.equal(result.readbackIssues.length, 0, "the later fields are sealed like any other, and none is required");
+  const older = verify(snap, readbackWith({ a: {}, b: {} }), 0.5);
+  assert.equal(older.fidelity, 1);
+  assert.deepEqual(older.bindings, { read: 0, bound: 0, unbound: [] });
 });

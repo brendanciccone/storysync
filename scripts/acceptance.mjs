@@ -546,7 +546,16 @@ function loadSkillReadback(mutate = null) {
   // `clock`, the time in ms Figma's Date gives the call, for a readback read
   // at another time: the template's own Date is shadowed with one fixed there.
   const run = async (componentSet, slugByName, sourceBySlug, opts) => {
-    const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
+    // The file's local variables, opts.variables, none unless given: each
+    // { id, name, valuesByMode }, as Figma gives one.
+    const variables = opts?.variables ?? [];
+    const figma = {
+      getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null),
+      variables: {
+        getLocalVariablesAsync: async () => variables,
+        getVariableByIdAsync: async (id) => variables.find((v) => v.id === id) ?? null,
+      },
+    };
     return new AsyncFunction("figma", "Date", code(componentSet.id, slugByName, sourceBySlug, opts))(figma, clockAt(opts?.clock));
   };
   const read = async (...args) => JSON.parse(await run(...args));
@@ -3038,6 +3047,63 @@ async function main() {
       assert(verdicts[edge].status === "drifted" && verdicts[edge].differences.map((d) => d.property).join() === "textLayout", `${edge}: ${say}`);
     }
     return say;
+  });
+
+  await check("the readback says what each field is bound to, and verify names a field bound to nothing at a variable's value", async () => {
+    // A falsification run had to detach the radius variable to edit a radius
+    // by hand. Detached at the same value, the readback, which read values
+    // alone, scored 100%: the link that keeps the library in step with the
+    // code was gone, and nothing said so.
+    const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+    const variants = expandVariants(button);
+    const base = variants[0].styles;
+    const color = (hex) => ({ ...rgb01(hex), a: 1 });
+    const variables = [
+      { id: "VariableID:1:1", name: "primary", resolvedType: "COLOR", valuesByMode: { "1:0": color(base.backgroundColor) } },
+      { id: "VariableID:1:2", name: "radius/md", resolvedType: "FLOAT", valuesByMode: { "1:0": base.borderRadiusUniform } },
+      { id: "VariableID:1:3", name: "radius/alias", resolvedType: "FLOAT", valuesByMode: { "1:0": { type: "VARIABLE_ALIAS", id: "VariableID:1:2" } } },
+    ];
+    const alias = (id) => ({ type: "VARIABLE_ALIAS", id });
+    const detached = variants[1].slug;
+    const sets = simulatedSets(snapDir, {
+      mutate: (node, v, component) => {
+        if (component.name !== "Button") return;
+        if (v.styles.backgroundColor === base.backgroundColor) node.fills = [{ ...node.fills[0], boundVariables: { color: alias("VariableID:1:1") } }];
+        // Every radius bound, but one, detached at the same value.
+        if (v.styles.borderRadiusUniform === base.borderRadiusUniform && v.slug !== detached) node.boundVariables = { topLeftRadius: alias("VariableID:1:2") };
+      },
+    });
+    const template = loadSkillReadback();
+    const withVariables = { ...template, read: (set, slugs, sources, opts) => template.read(set, slugs, sources, { ...opts, variables }) };
+    const components = {};
+    for (const set of sets) {
+      const { variants: read } = await readSet(withVariables, set, READ_BATCH);
+      components[set.component.title ?? set.component.name] = { nodeId: set.componentSet.id, variants: read };
+    }
+    const entry = components["Forms/Button"].variants;
+    assert(entry[variants[0].slug].bound.backgroundColor === "primary" && entry[variants[0].slug].bound.borderRadiusUniform === "radius/md",
+      `the first variant read back bound ${JSON.stringify(entry[variants[0].slug].bound)}`);
+    assert(JSON.stringify(entry[detached].unbound) === JSON.stringify(["borderRadiusUniform"]) && !("borderRadiusUniform" in entry[detached].bound),
+      `the detached variant read back ${JSON.stringify({ bound: entry[detached].bound, unbound: entry[detached].unbound })}`);
+    const path = join(WORK, "readback-bindings.json");
+    writeJson(path, { version: 1, fileKey: "acceptance", components });
+    const v = verifyJson(snapDir, path);
+    assert(v.json?.fidelity === 1, `the bound readback scored ${v.json?.fidelity}\n${v.out}`);
+    assert(JSON.stringify(v.json.bindings.unbound) === JSON.stringify([{ component: "Forms/Button", field: "borderRadiusUniform", variants: 1 }]),
+      `verify reported unbound ${JSON.stringify(v.json.bindings)}`);
+    const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path, "--strict"]);
+    assert(text.status === 0 && /Bound to no variable, though a variable has the value[^\n]*\n\s+Forms\/Button borderRadiusUniform, on 1 variant/.test(text.out),
+      `verify --strict exited ${text.status}:\n${text.out}`);
+    // A readback from before, without bindings, still scores, and says it can't see them.
+    const older = JSON.parse(JSON.stringify({ version: 1, fileKey: "acceptance", components }));
+    for (const component of Object.values(older.components)) {
+      for (const read of Object.values(component.variants)) { delete read.bound; delete read.unbound; delete read.textLayout; delete read.checksum; }
+    }
+    const olderPath = join(WORK, "readback-unbound-older.json");
+    writeJson(olderPath, sealed(older));
+    const old = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", olderPath, "--strict"]);
+    assert(old.status === 0 && /this readback doesn't say what is bound/.test(old.out), `an older readback: exit ${old.status}\n${old.out}`);
+    return `${v.json.bindings.bound} fields bound across ${v.json.bindings.read} variants; the detached radius named; an older readback scored, saying it can't see bindings`;
   });
 
   await check("a readback that reads render bounds, or gets a stroke or a color wrong, fails these checks", async () => {

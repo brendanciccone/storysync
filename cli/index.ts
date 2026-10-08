@@ -561,6 +561,23 @@ program
           }
         }
 
+        // Bindings, which no value shows: a token detached in Figma keeps
+        // its value. Not a --strict failure, since the push leaves a value
+        // unbound on purpose where several variables share it.
+        const { bindings } = result;
+        const scored = result.variants.filter((v) => v.status === "verified" || v.status === "drifted").length;
+        if (bindings.read > 0) {
+          console.log(chalk.dim(`  Variables: ${bindings.bound} ${bindings.bound === 1 ? "field" : "fields"} bound across ${bindings.read} ${bindings.read === 1 ? "variant" : "variants"}`));
+          if (bindings.unbound.length > 0) {
+            console.log(chalk.yellow("  ! Bound to no variable, though a variable has the value: a token detached in Figma, or one the push left unbound (its summary says which):"));
+            for (const u of bindings.unbound) {
+              console.log(chalk.yellow(`      ${u.component} ${u.field}, on ${u.variants} ${u.variants === 1 ? "variant" : "variants"}`));
+            }
+          }
+        } else if (scored > 0) {
+          console.log(chalk.dim("  Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen. Read it back with the skill's template as it is now."));
+        }
+
         const age = result.snapAge;
         if (age?.known) {
           const line = `  Measured ${formatAge(age.ageMs)} ago${age.storybookUrl ? ` from ${age.storybookUrl}` : ""}`;

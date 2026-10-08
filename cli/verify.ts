@@ -80,6 +80,19 @@ export interface ReadbackStyles {
    */
   textLayout?: ReadbackTextLayout | null;
   /**
+   * The variable each field is bound to, by name, for the fields bound to
+   * one: `backgroundColor`, `color`, `borderColor`, `borderRadiusUniform`,
+   * the four `padding` sides, `gap` and `fontSize`. Not scored: see
+   * bindingReport. An earlier template's readback has none.
+   */
+  bound?: Record<string, string>;
+  /**
+   * The fields of those bound to no variable, though a local variable has
+   * the value they show, in one of its modes: a token detached in Figma at
+   * the same value, or one the push never bound.
+   */
+  unbound?: string[];
+  /**
    * When the readback template read this entry, as an ISO 8601 time from
    * Figma's clock, sealed under the checksum: see READ_AT_SKEW_MS. Not a
    * style property.
@@ -327,6 +340,8 @@ export interface VerifyResult {
    * back to inferring it wholesale.
    */
   unmeasuredInFigma: { component: string; slug: string }[];
+  /** What the readback says of variable bindings: see bindingReport. */
+  bindings: BindingReport;
   /**
    * Readback entries verify cannot score as what Figma returned, measured or
    * not: see ReadbackIssue.
@@ -336,6 +351,24 @@ export interface VerifyResult {
    */
   readbackIssues: ReadbackIssue[];
   variants: VariantVerdict[];
+}
+
+/**
+ * What the readback entries verify could score say of variable bindings,
+ * from a template that reads them: see bindingReport.
+ */
+export interface BindingReport {
+  /** Entries that carry bindings. Fewer than were scored means a readback from an earlier template. */
+  read: number;
+  /** Fields bound to a variable, across those entries. */
+  bound: number;
+  /**
+   * Per component and field, how many variants have it bound to no
+   * variable though a local variable has its value: a token detached in
+   * Figma at the same value, or one the push left unbound, as it does where
+   * several variables share a value and the source names none.
+   */
+  unbound: { component: string; field: string; variants: number }[];
 }
 
 export interface ScoreCaveat {
@@ -728,12 +761,13 @@ export const READBACK_FIELDS = [
 
 /**
  * The fields the readback template returns that verify doesn't require:
- * `textLayout`, added after READBACK_FIELDS, so a readback an earlier
- * template read, which has none, still verifies. It is sealed under the
- * checksum like any other where an entry has it. An entry without it
- * isn't compared on how Figma fits its text.
+ * `textLayout`, `bound` and `unbound`, added after READBACK_FIELDS, so a
+ * readback an earlier template read, which has none of them, still
+ * verifies. Each is sealed under the checksum like any other where an
+ * entry has it. An entry without them isn't compared on how Figma fits its
+ * text, and says nothing of bindings, and verify says so beside the score.
  */
-export const READBACK_LATER_FIELDS = ["textLayout"] as const;
+export const READBACK_LATER_FIELDS = ["textLayout", "bound", "unbound"] as const;
 
 /**
  * The fields of READBACK_FIELDS an entry lacks. Present as `null` is
@@ -974,6 +1008,7 @@ export function verify(
   const caveats = (snap.components ?? [])
     .filter((component) => readbackComponents[componentKey(component)] != null)
     .flatMap(scoreCaveats);
+  const bindings = bindingReport(readbackComponents, unverified);
 
   return {
     version: READBACK_SCHEMA_VERSION,
@@ -997,12 +1032,52 @@ export function verify(
     snapIssues,
     snapWarnings,
     caveats,
+    bindings,
     componentsNotInSnap,
     skipped,
     unmeasuredInFigma,
     readbackIssues,
     variants: verdicts,
   };
+}
+
+/**
+ * The variable bindings the readback reports, from the entries verify can
+ * trust, those `unverified` doesn't name, as `JSON.stringify([component,
+ * slug])`.
+ *
+ * Reported, not scored. Values are compared already, a bound field's at the
+ * variable's value, so a binding changed to a variable of another value is
+ * drift there. What a value can't show is a field bound to no variable at a
+ * value a variable has: a token detached in Figma keeps its value, and
+ * scored 100% while the library had lost the link that keeps it in step
+ * with the code. The readback template finds those in Figma, where the
+ * variables are, so verify needs neither the tokens nor what the push
+ * meant to bind. Which of several variables of one value a field should be
+ * bound to only the component's source says, so a binding moved to
+ * another of the same value is not reported.
+ */
+export function bindingReport(components: ReadbackFile["components"], unverified: Set<string>): BindingReport {
+  let read = 0;
+  let bound = 0;
+  const unbound = new Map<string, { component: string; field: string; variants: number }>();
+  for (const [component, entry] of Object.entries(components ?? {})) {
+    for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
+      if (variant == null || typeof variant !== "object" || unverified.has(JSON.stringify([component, slug]))) continue;
+      const hasBound = variant.bound != null && typeof variant.bound === "object";
+      const hasUnbound = Array.isArray(variant.unbound);
+      if (!hasBound && !hasUnbound) continue;
+      read++;
+      if (hasBound) bound += Object.keys(variant.bound!).length;
+      for (const field of hasUnbound ? variant.unbound! : []) {
+        const key = JSON.stringify([component, field]);
+        const seen = unbound.get(key) ?? { component, field: String(field), variants: 0 };
+        seen.variants++;
+        unbound.set(key, seen);
+      }
+    }
+  }
+  return { read, bound, unbound: [...unbound.values()] };
 }
 
 /**

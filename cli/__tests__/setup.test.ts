@@ -638,7 +638,8 @@ async function runReadback(text: string, path: string, children: Record<string, 
     table("SOURCE_BY_SLUG", Object.fromEntries(names.map((name) => [name, "measured"]))),
   ].reduce((src, fill) => fill(src), code);
   const set = { id: "12:34", type: "COMPONENT_SET", name: "Dropzone", children };
-  const figma = { getNodeByIdAsync: async () => set };
+  // A file with no local variables, so nothing is bound or matches one.
+  const figma = { getNodeByIdAsync: async () => set, variables: { getLocalVariablesAsync: async () => [], getVariableByIdAsync: async () => null } };
   const run = new Function("figma", `return (async () => {${body}})();`) as (f: unknown) => Promise<string>;
   return JSON.parse(await run(figma));
 }
@@ -1507,11 +1508,16 @@ test("every push instruction tells a story that drops its args from props that c
   }
 });
 
-test("every push instruction sizes a label as snap measured it fits, and reads back how Figma fits it", () => {
+test("every push instruction sizes a label as snap measured it fits, and reads back how Figma fits it and what is bound", () => {
   // A live push built Attachment's vertical title, which the browser cut off
-  // at its card's width, as a text that hugged and ran past the card.
+  // at its card's width, as a text that hugged and ran past the card. And a
+  // token detached in Figma at the same value scored 100%: the readback read
+  // values alone.
   for (const [path, text] of installedPushTexts()) {
     assert.match(text, /`text\.layout`[^\n]*`textAutoResize = 'HEIGHT'`[^\n]*`textTruncation = 'ENDING'` and `maxLines = layout\.lines`/, `${path} doesn't size a label as the browser fitted it`);
-    assert.ok(text.includes("`textLayout`"), `${path} doesn't read back textLayout`);
+    for (const field of ["textLayout", "bound", "unbound"]) {
+      assert.ok(text.includes(`\`${field}\``), `${path} doesn't read back ${field}`);
+    }
+    assert.match(text, /the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound/, `${path}'s summary leaves out what verify found unbound`);
   }
 });

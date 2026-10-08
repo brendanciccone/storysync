@@ -663,6 +663,49 @@ use_figma({
       return found[0];
     });
 
+    // Variable bindings, which no value shows: a token detached in Figma
+    // keeps its value. bound names the variable each field is bound to;
+    // unbound lists the fields bound to none whose value a local variable
+    // has, in any of its modes, a color by its #rrggbb, as a translucent
+    // one is bound at an opacity. Lengths of 0 are left out.
+    const VARIABLES = await figma.variables.getLocalVariablesAsync();
+    const hex6 = (c) => '#' + [c.r, c.g, c.b].map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+    const hasValue = (value) => VARIABLES.some((v) => Object.values(v.valuesByMode).some((x) => (typeof value === 'number'
+      ? typeof x === 'number' && Math.abs(x - value) < 0.01 : x !== null && typeof x === 'object' && 'r' in x && hex6(x) === value)));
+    const NAMES = {};
+    const variableName = async (alias) => {
+      const id = ((Array.isArray(alias) ? alias[0] : alias) || {}).id;
+      if (id && !NAMES[id]) NAMES[id] = ((await figma.variables.getVariableByIdAsync(id)) || { name: id }).name;
+      return id ? NAMES[id] : null;
+    };
+    const bindingsOf = async (child, fill, stroke, text) => {
+      const own = child.boundVariables || {};
+      const paint = (p) => (p && p.type === 'SOLID' && p.visible !== false && p.opacity !== 0 ? hex6(p.color) : null);
+      const textFill = text && Array.isArray(text.fills) ? text.fills[0] : null;
+      const auto = child.layoutMode && child.layoutMode !== 'NONE';
+      // Each field, with its binding and the value it shows.
+      const FIELDS = [
+        ['backgroundColor', fill && fill.boundVariables && fill.boundVariables.color, paint(fill)],
+        ['color', textFill && textFill.boundVariables && textFill.boundVariables.color, paint(textFill)],
+        ['borderColor', stroke && stroke.boundVariables && stroke.boundVariables.color, paint(stroke)],
+        ['borderRadiusUniform', own.topLeftRadius, typeof child.cornerRadius === 'number' ? child.cornerRadius : null],
+        ['paddingTop', own.paddingTop, child.paddingTop],
+        ['paddingRight', own.paddingRight, child.paddingRight],
+        ['paddingBottom', own.paddingBottom, child.paddingBottom],
+        ['paddingLeft', own.paddingLeft, child.paddingLeft],
+        ['gap', own.itemSpacing, auto ? child.itemSpacing : null],
+        ['fontSize', text && text.boundVariables && text.boundVariables.fontSize, text && typeof text.fontSize === 'number' ? text.fontSize : null],
+      ];
+      const bound = {};
+      const unbound = [];
+      for (const [field, alias, value] of FIELDS) {
+        const name = alias ? await variableName(alias) : null;
+        if (name) bound[field] = name;
+        else if (value !== null && value !== undefined && value !== 0 && hasValue(value)) unbound.push(field);
+      }
+      return { bound, unbound };
+    };
+
     // Read back what is actually there, keyed by the snap variant slug.
     const readback = {};
     for (const child of children) {
@@ -728,6 +771,7 @@ use_figma({
         return WEIGHTS[key] != null ? WEIGHTS[key] : 400;
       };
       const slug = slugFor(child);
+      const bindings = await bindingsOf(child, fill, stroke, text);
       // Every field comes back on every variant, null where Figma has nothing
       // to report, never left out: verify reports an entry without one as
       // incomplete and scores none of it. Leave them all.
@@ -774,6 +818,9 @@ use_figma({
         textLayout: text && (text.textAutoResize !== 'WIDTH_AND_HEIGHT' || text.textTruncation === 'ENDING')
           ? { width: text.width, maxLines: text.textTruncation === 'ENDING' ? text.maxLines || 0 : null }
           : null,
+        // Bindings, which verify names beside the score: see bindingsOf.
+        bound: bindings.bound,
+        unbound: bindings.unbound,
       });
     }
     // total counts every variant in the set, read or not: if the slices add up
@@ -853,9 +900,9 @@ use_figma({
           "padding": { "top": 4, "right": 8, "bottom": 4, "left": 8 },
           "borderUniform": null, "fontSize": 12, "fontWeight": 600, "fontFamily": "Inter",
           "gap": { "row": 6, "column": 6 }, "opacity": 1, "width": 64, "height": 24,
-          "textLayout": null,
+          "textLayout": null, "bound": { "backgroundColor": "primary/600", "color": "white" }, "unbound": [],
           "readAt": "2026-10-01T22:19:04.123Z",
-          "checksum": "fnv1a:a731b390"
+          "checksum": "fnv1a:a61e11e7"
         }
       }
     },
@@ -868,9 +915,9 @@ use_figma({
           "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
           "borderUniform": null, "fontSize": null, "fontWeight": null, "fontFamily": null,
           "gap": null, "opacity": 1, "width": 8, "height": 8,
-          "textLayout": null,
+          "textLayout": null, "bound": {}, "unbound": ["backgroundColor"],
           "readAt": "2026-10-01T22:19:04.391Z",
-          "checksum": "fnv1a:cc4d409c"
+          "checksum": "fnv1a:5786a6b0"
         }
       }
     }
@@ -878,7 +925,7 @@ use_figma({
 }
 ```
 
-   **`textLayout` comes back on every variant too.** It is how Figma fits the text, compared where snap measured that the browser wrapped it or cut it off (step 3's table): a title the browser cut off at its card's width with an ellipsis, built as a text that hugs and runs past the card, drifts. A readback read before it was added has none, and still scores.
+   **`textLayout`, `bound` and `unbound` come back on every variant too.** `textLayout` is how Figma fits the text, compared where snap measured that the browser wrapped it or cut it off (step 3's table): a title the browser cut off at its card's width with an ellipsis, built as a text that hugs and runs past the card, drifts. `bound` names the variable each field is bound to, and `unbound` the fields bound to none though a variable in the file has their value, as the status dot's fill above is. `verify` doesn't score bindings, since the values are compared already, but names every field `unbound` lists beside the score: a token detached in Figma keeps its value, so no value shows it. Where the push left a value unbound on purpose, because several variables share it (Variable binding, below), the summary says so. A readback read before these three were added has none of them, and still scores; `verify` says it can't see bindings.
 
    **`source` is required on every variant**, and the template sets it from `SOURCE_BY_SLUG`: `"measured"` when the values came from `snap`, `"inferred"` when you fell back to reading source in step 3. Omitting it is not neutral: `verify` reports the entry as incomplete, since the template always returns it, and its provenance as `unrecorded`, and `--strict` and `--strict-measured` both fail on it, because a run that cannot distinguish measured from guessed is decorative. To correct one, correct the table and read the slice again: the checksum covers `source` too, so an entry whose `source` was changed in the file is an unverified readback.
 
@@ -892,7 +939,7 @@ npx storysync verify --strict-age
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, not Figma: where it names a component's error, measure that component again (step 3, with `--merge`), and where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, and that they hold the light theme alone where a `tokens` warning starts `Only the light theme is read`, components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any label built ending in an ellipsis where the browser cut it off flat (`text.layout`'s `truncation` of `clip`), any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
+7. Summarize what was synced: token collections created, and that they hold the light theme alone where a `tokens` warning starts `Only the light theme is read`, components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any label built ending in an ellipsis where the browser cut it off flat (`text.layout`'s `truncation` of `clip`), the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
 
 ## Variable binding
 
