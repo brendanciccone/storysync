@@ -295,7 +295,7 @@ function varRefs(value: string): string[] {
 /**
  * Why a variable left in a resolved value didn't resolve. Resolution goes
  * as deep as it can, so one that is set is in a loop, or past what it
- * follows: eight var()s deep, or a var() in a var()'s fallback.
+ * follows: eight var()s deep.
  */
 function whyUnresolved(name: string, written: Map<string, string> | undefined, where: string): string {
   const value = written?.get(name);
@@ -885,6 +885,43 @@ function resolveRootVars(declared: Map<string, string>): Map<string, string> {
   return allVars;
 }
 
+/**
+ * `value` with each var() in it replaced by what `replace` returns for its
+ * name and fallback, or kept when that is undefined. A fallback runs to its
+ * var()'s own `)`, so one that holds parentheses, as `var(--a, rgb(0 0 0))`
+ * and `var(--a, var(--b))` do, is read whole. A regex that ended it at the
+ * first `)` left the second behind once `--a` resolved, so quary's
+ * `var(--vscode-input-border, hsl(...))` came out as `#cecece)`, no color.
+ */
+function replaceVars(value: string, replace: (name: string, fallback: string | undefined) => string | undefined): string {
+  let out = "";
+  let from = 0;
+  const start = /var\(\s*(--[\w-]+)\s*/g;
+  let m: RegExpExecArray | null;
+  while ((m = start.exec(value)) !== null) {
+    let depth = 1;
+    let comma = -1;
+    let i = start.lastIndex;
+    for (; i < value.length; i++) {
+      const ch = value[i];
+      if (ch === "(") depth++;
+      else if (ch === ")" && --depth === 0) break;
+      else if (ch === "," && depth === 1 && comma === -1) comma = i;
+    }
+    // Not closed: the rest is left as written.
+    if (i === value.length) break;
+    // Anything but a comma after the name makes it no var() to resolve.
+    if (value.slice(start.lastIndex, comma === -1 ? i : comma).trim()) continue;
+    const replacement = replace(m[1], comma === -1 ? undefined : value.slice(comma + 1, i));
+    if (replacement !== undefined) {
+      out += value.slice(from, m.index) + replacement;
+      from = i + 1;
+    }
+    start.lastIndex = i + 1;
+  }
+  return out + value.slice(from);
+}
+
 // Replace `var(--name)` and `var(--name, fallback)` inside a Tailwind token value.
 // Also strips Tailwind's `<alpha-value>` opacity placeholder.
 export function resolveTailwindCssRefs(value: string, cssVars: Map<string, string>): string {
@@ -893,12 +930,7 @@ export function resolveTailwindCssRefs(value: string, cssVars: Map<string, strin
 
   // Replace each var(--name) or var(--name, fallback) with its resolved CSS value (depth-guarded).
   for (let depth = 0; depth < 8 && /var\(\s*--/.test(s); depth++) {
-    s = s.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)/g, (_match, name: string, fallback?: string) => {
-      const resolved = cssVars.get(name);
-      if (resolved != null) return resolved;
-      if (fallback != null) return fallback.trim();
-      return _match;
-    });
+    s = replaceVars(s, (name, fallback) => cssVars.get(name) ?? fallback?.trim());
   }
   return s.trim();
 }

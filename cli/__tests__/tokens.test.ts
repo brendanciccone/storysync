@@ -1267,6 +1267,38 @@ test("detectTokenSource: a stylesheet whose :root is only in a selector list is 
   } finally { cleanup(themed); }
 });
 
+// --- var() fallbacks ---
+
+test("resolveTailwindCssRefs: a fallback holding parentheses is read whole, leaving no stray )", () => {
+  // quary's `--border: var(--vscode-input-border, hsl(...))` came out as
+  // `#cecece)` once --vscode-input-border resolved, and had no hex.
+  const vars = new Map([["--line", "#cccccc"], ["--thin", "1px"]]);
+  assert.equal(resolveTailwindCssRefs("var(--line, hsl(0 0% 80%))", vars), "#cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--line, var(--thin))", vars), "#cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--missing, hsl(0 0% 80%))", vars), "hsl(0 0% 80%)");
+  assert.equal(resolveTailwindCssRefs("var(--missing, var(--line))", vars), "#cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--missing, var(--gone, rgb(1 2 3)))", vars), "rgb(1 2 3)");
+  assert.equal(resolveTailwindCssRefs("0 0 0 var(--thin, calc(1px + 1px)) var(--line)", vars), "0 0 0 1px #cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--missing)", vars), "var(--missing)");
+});
+
+test("Tailwind and CSS: a var() whose fallback holds parentheses resolves, so the color gets its hex", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { edge: "var(--edge)" } } } }`,
+    "src/app.css": `:root {
+  --vendor-edge: #c0c0c0;
+  --edge: var(--vendor-edge, hsl(0 0% 80%));
+  --color-rule: var(--vendor-edge, rgb(0 0 0));
+}`,
+  });
+  try {
+    assert.deepEqual(asJson(extractTokens(dir).collections[0].tokens), [{ name: "edge", value: "#c0c0c0", hex: "#c0c0c0" }]);
+    // CSS mode keeps a value with a var() as written, and gives its hex.
+    const rule = extractTokens(dir, "css").collections[0].tokens.find((t) => t.name === "color/rule");
+    assert.deepEqual(rule, { name: "color/rule", value: "var(--vendor-edge, rgb(0 0 0))", hex: "#c0c0c0" });
+  } finally { cleanup(dir); }
+});
+
 // --- Presets, re-exports and wrappers ---
 
 test("Tailwind: a preset in a relative file is read as the config is, and the config wins a name they share", () => {

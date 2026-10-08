@@ -267,7 +267,7 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 
 - Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)` → `hsl(0 0% 100%)`)
 - Nested variable chains (`--brand: var(--blue-500)`)
-- Fallback values (`var(--missing, 200 50% 50%)`)
+- Fallback values (`var(--missing, 200 50% 50%)`), including ones with parentheses (`var(--missing, var(--border))`, `var(--missing, rgb(0 0 0))`)
 
 A reference with no matching variable and no fallback is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
