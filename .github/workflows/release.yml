@@ -3,7 +3,7 @@ name: Release
 # Pushing a version tag stages that version on npm and creates its GitHub
 # Release. Tag a commit on main whose package.json already carries the version:
 #
-#   git tag v0.3.0 && git push origin v0.3.0
+#   git tag v0.4.0 && git push origin v0.4.0
 #
 # The version goes live on npm only when a maintainer approves it with 2FA
 # (npmjs.com, account menu, Staged Packages). So a leaked GitHub credential can

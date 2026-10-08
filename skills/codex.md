@@ -13,7 +13,7 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 - Storybook MCP: `codex mcp add storybook --url http://localhost:6006/mcp`
 - Figma MCP: the Figma plugin (**Plugins** in the ChatGPT desktop app, which Figma's setup guide calls the Codex app, or `/plugins` in the CLI), or `codex mcp add figma --url https://mcp.figma.com/mcp`, which signs in to Figma as it adds the server (`codex mcp login figma` signs in again later)
 - Figma Full seat (Dev seats are read-only)
-- storysync 0.3.0 or later, run as `npx storysync` — 0.2.0 and earlier have no `snap` or `verify`
+- storysync 0.4.0 or later, run as `npx storysync` — 0.3.0 has no token `px`, component `id` or `--exclude-props`, and 0.2.0 and earlier have no `snap` or `verify`
 
 ## Codex's sandbox
 

@@ -45,8 +45,8 @@ Releases are built and uploaded from CI, never from a laptop, and go live only a
 
    ```bash
    git switch main && git pull --ff-only
-   git tag v0.3.0
-   git push origin v0.3.0
+   git tag v0.4.0
+   git push origin v0.4.0
    ```
 
 5. When the run finishes, approve the version on npmjs.com: account menu → **Staged Packages** → **Approve**, with 2FA. The button stays disabled until npm's malware scan finishes. The run's summary shows the tarball's shasum; approve only if the card shows the same one.

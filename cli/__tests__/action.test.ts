@@ -10,8 +10,13 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { VERSION } from "../version.js";
 
 const ACTION = fileURLToPath(new URL("../../../action/action.yml", import.meta.url));
+
+// The action prints its baseline commands with the storysync it builds,
+// package.json's version, which run() passes as the step does.
+const AT_VERSION = `storysync@${VERSION.replace(/\./g, "\\.")}`;
 
 // The heredoc of the step with this name. The run: block is indented eight
 // spaces in the file, which YAML strips.
@@ -44,7 +49,7 @@ function run(step: string, report: string, files: Record<string, string>, env: R
       cwd: dir,
       input: script(step),
       encoding: "utf8",
-      env: { ...process.env, GITHUB_OUTPUT: outputFile, WORKING_DIRECTORY: ".", STORYSYNC_VERSION: "0.3.0", ...env },
+      env: { ...process.env, GITHUB_OUTPUT: outputFile, WORKING_DIRECTORY: ".", STORYSYNC_VERSION: VERSION, ...env },
     });
     const outputs: Record<string, string> = {};
     for (const m of readFileSync(outputFile, "utf8").matchAll(/^(\w+)<<STORYSYNC_EOF\n([\s\S]*?)\nSTORYSYNC_EOF$/gm)) outputs[m[1]] = m[2];
@@ -171,7 +176,7 @@ test("action Detect drift: a baseline that is not map --json output fails with t
     assert.equal(errors.length, 1, `${baseline}: ${r.stdout}`);
     assert.match(errors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) is not map --json output/);
     assert.ok(
-      errors[0].includes("Recreate it by running this in the repository root with Storybook running, then commit it: mkdir -p -- .storysync && npx storysync@0.3.0 map --storybook http://localhost:6006 --json > .storysync/baseline.json"),
+      errors[0].includes(`Recreate it by running this in the repository root with Storybook running, then commit it: mkdir -p -- .storysync && npx storysync@${VERSION} map --storybook http://localhost:6006 --json > .storysync/baseline.json`),
       errors[0],
     );
     assert.equal(r.outputs.result, undefined, baseline);
@@ -418,7 +423,7 @@ test("action Detect token drift: a token baseline that is not tokens --json outp
     assert.equal(errors.length, 1, `${baseline}: ${r.stdout}`);
     assert.match(errors[0], /^::error::The token baseline at \.storysync\/tokens-baseline\.json \(relative to the repository root\) is not tokens --json output/);
     assert.ok(
-      errors[0].includes("Recreate it by running this in the repository root, then commit it: mkdir -p -- .storysync && npx storysync@0.3.0 tokens --json > .storysync/tokens-baseline.json"),
+      errors[0].includes(`Recreate it by running this in the repository root, then commit it: mkdir -p -- .storysync && npx storysync@${VERSION} tokens --json > .storysync/tokens-baseline.json`),
       errors[0],
     );
     assert.equal(r.outputs.result, undefined, baseline);
@@ -454,7 +459,7 @@ test("action Detect token drift: drift that only adds tokens says a newer storys
   const upgraded = detectTokenDrift(baseline, [colors, fontSizes]);
   assert.equal(upgraded.outputs.result, "true", upgraded.stdout);
   assert.match(upgraded.outputs.error ?? "", /Detect token drift lists the changes\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in /);
-  assert.match(upgraded.report ?? "", /\nEvery change is an added token\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in .*storysync@0\.3\.0/);
+  assert.match(upgraded.report ?? "", new RegExp(String.raw`\nEvery change is an added token\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in .*` + AT_VERSION));
 
   // Added to a collection the baseline has counts too.
   const grown = detectTokenDrift(tokensJson([colors, { category: "typography", tokens: [fontSizes.tokens[0]] }]), [colors, fontSizes]);
@@ -508,14 +513,14 @@ test("action: the command a missing baseline prints makes a directory whose name
     const r = run(step, report, files, env);
     assert.equal(r.outputs.result, "new", r.stdout);
     const command = r.stdout.match(/then commit it: (.+?) \(the action's/)?.[1];
-    assert.match(command ?? "", /^mkdir -p -- -x && npx storysync@0\.3\.0 /, r.stdout);
+    assert.match(command ?? "", new RegExp(`^mkdir -p -- -x && npx ${AT_VERSION} `), r.stdout);
 
     // Run as printed, with an npx that echoes what it was asked to run.
     const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
     try {
       const created = spawnSync("sh", ["-c", `npx() { echo "$*"; }; ${command}`], { cwd: dir, encoding: "utf8" });
       assert.equal(created.status, 0, created.stderr);
-      assert.match(readFileSync(join(dir, path), "utf8"), /^storysync@0\.3\.0 (map|tokens) .*--json\n$/);
+      assert.match(readFileSync(join(dir, path), "utf8"), new RegExp(`^${AT_VERSION} (map|tokens) .*--json\n$`));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
