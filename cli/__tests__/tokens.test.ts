@@ -1504,6 +1504,42 @@ test("Tailwind: a preset in a relative file is read as the config is, and the co
   } finally { cleanup(dir); }
 });
 
+test("Tailwind: a config's theme key replaces a preset's, and every extend adds to it, as Tailwind merges them", () => {
+  const preset = `module.exports = {
+  theme: {
+    colors: { canvas: "#aaaaaa", line: "#000000" },
+    extend: { spacing: { gutter: "1rem" }, colors: { glow: "#ff00ff" } },
+  },
+};`;
+  const cases: [string, string[][]][] = [
+    // theme.colors replaces the preset's theme.colors, but its extend stays.
+    [`theme: { colors: { ink: "#111111" } }`, [["ink", "#111111"], ["glow", "#ff00ff"]]],
+    // theme.extend.colors adds to them, and wins a name.
+    [`theme: { extend: { colors: { ink: "#111111", line: "#222222" } } }`, [["canvas", "#aaaaaa"], ["glow", "#ff00ff"], ["ink", "#111111"], ["line", "#222222"]]],
+    // Both: the config's theme.colors, then each extend on top.
+    [`theme: { colors: { ink: "#111111" }, extend: { colors: { mark: "#ffff00" } } }`, [["ink", "#111111"], ["glow", "#ff00ff"], ["mark", "#ffff00"]]],
+  ];
+  for (const [theme, colors] of cases) {
+    const dir = makeProject({
+      "tailwind.config.js": `module.exports = { presets: [require("./preset.js")], ${theme} };`,
+      "preset.js": preset,
+    });
+    try {
+      assert.deepEqual(tokenTable(extractTokens(dir)), [["colors", colors], ["spacing", [["gutter", "1rem"]]]], theme);
+    } finally { cleanup(dir); }
+  }
+
+  // A later preset's theme key replaces an earlier one's.
+  const two = makeProject({
+    "tailwind.config.js": `module.exports = { presets: [require("./preset.js"), require("./later.js")] };`,
+    "preset.js": preset,
+    "later.js": `module.exports = { theme: { colors: { paper: "#ffffff" } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(two)), [["colors", [["paper", "#ffffff"], ["glow", "#ff00ff"]]], ["spacing", [["gutter", "1rem"]]]]);
+  } finally { cleanup(two); }
+});
+
 test("Tailwind: a preset declared above the config in its own file leaves the config's theme its own", () => {
   // JavaScript runs a preset declared in the file only above the config,
   // where its theme was the first in the file, read as the config's.

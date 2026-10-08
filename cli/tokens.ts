@@ -406,11 +406,11 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
   const unread = warnings.length;
   warnOfSpreads(themeBlocks, configPath, warnings);
 
-  // What the config gets from elsewhere: the config it re-exports, or its
-  // presets, read the same way. A later one wins a name, and the config
-  // itself wins over them all, as in Tailwind.
+  // What the config gets from elsewhere: the config it re-exports or
+  // spreads in, or its presets, read the same way, and merged by
+  // withLayers as Tailwind merges them.
   const imports = configImports(content);
-  const layers: TokenCollection[][] = [];
+  const layers: ThemeLayer[] = [];
   const reexport = reexportRef(content, imports);
   if (reexport) {
     const layer = readConfigRef(reexport, configPath, content, `${configPath} re-exports its config from ${reexport.spec}`, warnings);
@@ -428,7 +428,8 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
   if (wrapper) {
     warnings.push(`${configPath} builds its config with ${wrapper}, which storysync can't read statically, so the tokens it adds are missing`);
   }
-  const collections = withLayers(layers, own);
+  // The own theme's warnings were given as it was read.
+  const collections = withLayers(layers, own, themeLayer(themeBlocks, []));
   if (!collections.length && warnings.length === unread) {
     const plugins = /\bplugins\s*:\s*\[\s*[^\]\s]/.test(content) ? ", nor what a plugin adds" : "";
     warnings.push(`Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${configPath}. Tailwind's default theme isn't read${plugins}`);
@@ -513,23 +514,60 @@ function themeCollections(themeBlocks: ThemeBlocks, warnings: string[]): TokenCo
 
 const CATEGORY_ORDER: TokenCategory[] = ["colors", "spacing", "radius", "typography", "shadows"];
 
+/** The theme key each category is read from. */
+const CATEGORY_KEYS: [TokenCategory, string][] = [
+  ["colors", "colors"], ["spacing", "spacing"], ["radius", "borderRadius"], ["typography", "fontSize"], ["shadows", "boxShadow"],
+];
+
 /**
- * The tokens of each layer in turn, a later layer winning a name in its
- * category, so `own`, the config's own, win over every preset's. With no
- * layers, `own` as it is.
+ * A config's theme, or a preset's, as Tailwind merges it with others: the
+ * tokens under `theme` itself and under `theme.extend` apart, and the
+ * categories whose key `theme` itself sets.
  */
-function withLayers(layers: TokenCollection[][], own: TokenCollection[]): TokenCollection[] {
+interface ThemeLayer {
+  root: TokenCollection[];
+  extend: TokenCollection[];
+  sets: Set<TokenCategory>;
+}
+
+/** A theme's ThemeLayer, its dynamic values named in `warnings`. */
+function themeLayer(blocks: ThemeBlocks, warnings: string[]): ThemeLayer {
+  const entries = blocks.root ? splitTopLevel(blocks.root.slice(1, -1), ",") : [];
+  const keyOf = (entry: string) => /^\s*(['"]?)([\w$]+)\1\s*(?::|$)/.exec(entry)?.[2];
+  const root = `{ ${entries.filter((entry) => keyOf(entry) !== "extend").join(",")} }`;
+  const keys = new Set(entries.map(keyOf));
+  return {
+    root: themeCollections({ root, extend: "" }, warnings),
+    extend: themeCollections({ root: "", extend: blocks.extend }, warnings),
+    sets: new Set(CATEGORY_KEYS.filter(([, key]) => keys.has(key)).map(([category]) => category)),
+  };
+}
+
+/**
+ * The tokens of a config and the layers it takes a theme from, presets and
+ * the like, merged as Tailwind merges them. A category is the `theme` one
+ * of the last layer that sets it there, the config's own last of all, and
+ * then each layer's `theme.extend` on top in turn, a later one winning a
+ * name: Tailwind applies every extend over the theme. So a config's
+ * `theme.colors` replaces a preset's, and its `theme.extend.colors` adds to
+ * them. With no layers, `own`, the config's tokens as storysync has always
+ * read them, as they are.
+ */
+function withLayers(layers: ThemeLayer[], own: TokenCollection[], ownLayer: ThemeLayer): TokenCollection[] {
   if (!layers.length) return own;
-  let merged: TokenCollection[] = [];
-  for (const layer of [...layers, own]) {
-    merged = CATEGORY_ORDER.map((category) => {
-      const over = layer.filter((c) => c.category === category).flatMap((c) => c.tokens);
+  const all = [...layers, ownLayer];
+  const tokensIn = (collections: TokenCollection[], category: TokenCategory) =>
+    collections.filter((c) => c.category === category).flatMap((c) => c.tokens);
+  return CATEGORY_ORDER.map((category) => {
+    const top = [...all].reverse().find((layer) => layer.sets.has(category));
+    let tokens = top ? tokensIn(top.root, category) : [];
+    for (const layer of all) {
+      const over = tokensIn(layer.extend, category);
       const names = new Set(over.map((t) => t.name));
-      const under = merged.filter((c) => c.category === category).flatMap((c) => c.tokens).filter((t) => !names.has(t.name));
-      return { category, tokens: [...under, ...over] };
-    }).filter((c) => c.tokens.length);
-  }
-  return merged;
+      tokens = [...tokens.filter((t) => !names.has(t.name)), ...over];
+    }
+    return { category, tokens };
+  }).filter((c) => c.tokens.length);
 }
 
 /**
@@ -719,7 +757,7 @@ function resolveModule(from: string, spec: string): string | null {
  * sameera/quantum's `presets: [require("./tailwind.preset.js")]`: each read
  * as no tokens at all, with no warning to say why.
  */
-function readConfigRef(ref: ConfigRef, configPath: string, content: string, subject: string, warnings: string[]): TokenCollection[] | null {
+function readConfigRef(ref: ConfigRef, configPath: string, content: string, subject: string, warnings: string[]): ThemeLayer | null {
   const missing = "so the tokens it declares are missing";
   const from = ref.spec && !subject.endsWith(ref.spec) ? `, from ${ref.spec},` : "";
   let file = configPath;
@@ -762,7 +800,7 @@ function readConfigRef(ref: ConfigRef, configPath: string, content: string, subj
   }
   const blocks = extractThemeBlocks(object);
   warnOfSpreads(blocks, file, warnings);
-  return themeCollections(blocks, warnings);
+  return themeLayer(blocks, warnings);
 }
 
 /**
