@@ -17,6 +17,7 @@ import { extractFirstBalancedObject } from "../figma.js";
 import type { FigmaVariable, FigmaComponentInfo } from "../figma.js";
 import type { FigmaComponentDefinition } from "../mapper.js";
 import type { CodeComponent } from "../diff.js";
+import type { ComponentEntry } from "../storybook.js";
 
 // --- colorToHex ---
 
@@ -503,14 +504,34 @@ test("diffComponents: pages match ignoring case, spaces, - and _, as an earlier 
   ]);
 });
 
-test("diffComponents: of a shared name's copies left after pages, one on each side are a pair, and the rest are missing", () => {
+test("diffComponents: of a shared name's copies left after pages, one on each side are ambiguous, and the rest are missing", () => {
   const code = [titled("ui/base/Button", "ui-base-button"), titled("ui/radix/Button", "ui-radix-button")];
-  // Radix's Button was moved to a page of the designer's own.
+  // Radix's Button was moved to a page of the designer's own, or it was never
+  // pushed and the set is someone else's: nothing tells which, so the two are
+  // not compared, and the pages are named.
   const moved = diffComponents(code, [onPage("ui/base", "Button"), onPage("Buttons", "Button")]);
-  assert.deepEqual(moved.map((e) => [e.name, e.status, e.page]), [
-    ["ui/base/Button", "match", "ui/base"],
-    ["ui/radix/Button", "match", "Buttons"],
+  assert.deepEqual(moved.map((e) => [e.name, e.status, e.page, e.details]), [
+    ["Button", "ambiguous", undefined, [
+      "one copy in code and one in Figma are on different pages, besides 1 paired by page; neither of these was compared",
+      "in code for ui/radix; in Figma on Buttons",
+    ]],
+    ["ui/base/Button", "match", "ui/base", []],
   ]);
+  assert.equal(hasDifferences(computeDiffSummary([], moved)), true);
+
+  // Nav's Button not pushed yet, beside an archived Button: paired, it would
+  // have been compared with the archive's, and said to match.
+  const unpushed = diffComponents(
+    [titled("Forms/Button", "forms-button"), titled("Nav/Button", "nav-button")],
+    [onPage("Forms", "Button"), onPage("Archive", "Button")],
+  );
+  assert.deepEqual(unpushed.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["Forms/Button", "match"]]);
+  assert.deepEqual(unpushed[0].details.slice(1), ["in code for Nav; in Figma on Archive"]);
+
+  // One code component and one set of a name nobody else has are still a
+  // pair, whatever page the set is on.
+  const alone = diffComponents([titled("ui/radix/Button", "ui-radix-button")], [onPage("Buttons", "Button")]);
+  assert.deepEqual(alone.map((e) => [e.name, e.status, e.page]), [["Button", "match", "Buttons"]]);
 
   // An archived copy beside both: it is the Button not in code.
   const archived = diffComponents(code, [onPage("ui/base", "Button"), onPage("ui/radix", "Button"), onPage("Archive", "Button")]);
@@ -520,9 +541,9 @@ test("diffComponents: of a shared name's copies left after pages, one on each si
     ["Archive/Button", "figma_only"],
   ]);
 
-  // Radix's not pushed yet.
-  const unpushed = diffComponents(code, [onPage("ui/base", "Button")]);
-  assert.deepEqual(unpushed.map((e) => [e.name, e.status]), [["ui/base/Button", "match"], ["ui/radix/Button", "code_only"]]);
+  // Radix's not pushed yet, and no other copy to mistake for it.
+  const missing = diffComponents(code, [onPage("ui/base", "Button")]);
+  assert.deepEqual(missing.map((e) => [e.name, e.status]), [["ui/base/Button", "match"], ["ui/radix/Button", "code_only"]]);
 });
 
 test("diffComponents: copies no page tells apart are ambiguous, and only they are", () => {
@@ -559,6 +580,12 @@ test("diffComponents: a set is named by its title's last segment, or by the comp
   // A file pushed before: TooltipContent is still compared, as Tooltip.
   const earlier = diffComponents([code[0]], [onPage("ui/base", "TooltipContent")]);
   assert.deepEqual(earlier.map((e) => [e.name, e.status]), [["TooltipContent", "match"]]);
+
+  // But not a name another component's set goes by: Calendar is Calendar's
+  // set, so the DatePicker, not pushed yet, is not in Figma, rather than a
+  // second Calendar that made both ambiguous.
+  const partly = diffComponents(code.slice(1), [onPage("ui/base", "Calendar")]);
+  assert.deepEqual(partly.map((e) => [e.name, e.status]), [["Calendar", "match"], ["DatePicker", "code_only"]]);
 });
 
 test("diffComponents: a component code couldn't map reports nothing, nor does its set", () => {
@@ -581,11 +608,11 @@ function figmaComponent(name: string): FigmaComponentInfo {
 
 const FIGMA = [figmaComponent("Button"), figmaComponent("Card"), figmaComponent("Badge")];
 
-/** Diffs the selection the way the diff command does, with no variant props on either side. */
-function diffSelection(names: string[]) {
-  const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, names);
-  const code = entries.map((e) => ({ name: e.name, variantProperties: [], variantCombinations: [], wasCapped: false }));
-  return diffComponents(code, figmaComponents);
+/** Diffs the selection the way the diff command does, with no variant props on Storybook's side. */
+function diffSelection(names: string[], storybook: ComponentEntry[] = STORYBOOK, figma: FigmaComponentInfo[] = FIGMA) {
+  const { entries, others, figmaReported } = selectDiffComponents(storybook, figma, names);
+  const code = entries.map((e) => ({ ...e, variantProperties: [], variantCombinations: [], wasCapped: false }));
+  return diffComponents(code, figma, others, figmaReported);
 }
 
 test("selectDiffComponents: narrows Figma too, so unselected components are not reported missing from code", () => {
@@ -615,31 +642,55 @@ test("selectDiffComponents: a name neither side has is an error listing both sid
 });
 
 test("selectDiffComponents: no names leaves both sides whole", () => {
-  const { entries, figmaComponents } = selectDiffComponents(STORYBOOK, FIGMA, [" "]);
+  const { entries, others, figmaReported } = selectDiffComponents(STORYBOOK, FIGMA, [" "]);
   assert.equal(entries, STORYBOOK);
-  assert.equal(figmaComponents, FIGMA);
+  assert.deepEqual(others, []);
+  assert.equal(figmaReported, FIGMA);
 });
 
-test("selectDiffComponents: a component picked by ID or title brings only the set on its page", () => {
-  // Narrowed by name, ui-base-button brought Radix's Button too, which was
-  // then reported, or made the name ambiguous, though nobody asked about it.
+/** A set with no variant properties, as diffSelection's code components have none. */
+function bareOnPage(page: string, name: string): FigmaComponentInfo {
+  return { name, page, variantProperties: [], variantCount: 1 };
+}
+
+test("selectDiffComponents: a component picked by ID or title is paired as the whole diff pairs it", () => {
+  // Narrowed to the sets named like it, ui-base-button brought Radix's Button
+  // too, and a set moved off Radix's page was the only one left for
+  // ui-radix-button, and its pair, where the whole diff can't tell it apart.
   const entries = [
     { id: "ui-base-button", name: "Button", title: "ui/base/Button", category: "ui/base" },
     { id: "ui-radix-button", name: "Button", title: "ui/radix/Button", category: "ui/radix" },
   ];
-  const figma = [onPage("ui/base", "Button"), onPage("ui/radix", "Button")];
+  const figma = [bareOnPage("ui/base", "Button"), bareOnPage("ui/radix", "Button")];
   for (const name of ["ui-base-button", "UI/BASE/BUTTON"]) {
     const picked = selectDiffComponents(entries, figma, [name]);
-    assert.deepEqual(picked.entries.map((e) => e.id), ["ui-base-button"], name);
-    assert.deepEqual(picked.figmaComponents.map((c) => c.page), ["ui/base"], name);
+    assert.deepEqual([picked.entries.map((e) => e.id), picked.others.map((e) => e.id)], [["ui-base-button"], ["ui-radix-button"]], name);
+    assert.deepEqual(diffSelection([name], entries, figma).map((e) => [e.name, e.status, e.page]), [["ui/base/Button", "match", "ui/base"]], name);
   }
-  // The name both share picks both, and every set of it.
-  const both = selectDiffComponents(entries, [...figma, onPage("Archive", "Button")], ["Button"]);
-  assert.deepEqual(both.entries.map((e) => e.id), ["ui-base-button", "ui-radix-button"]);
-  assert.deepEqual(both.figmaComponents.map((c) => c.page), ["ui/base", "ui/radix", "Archive"]);
-  // A set only Figma has, by its page and name.
-  const archived = selectDiffComponents(entries, [...figma, onPage("Archive", "Button")], ["archive/button"]);
-  assert.deepEqual([archived.entries, archived.figmaComponents.map((c) => c.page)], [[], ["Archive"]]);
+
+  // Radix's set moved to a page of its own: the same answer for it as the
+  // whole diff gives, and none for Base UI's, which nobody asked about.
+  const moved = [bareOnPage("ui/base", "Button"), bareOnPage("Buttons", "Button")];
+  const whole = diffSelection([], entries, moved);
+  assert.deepEqual(whole.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["ui/base/Button", "match"]]);
+  assert.deepEqual(diffSelection(["ui-radix-button"], entries, moved), whole.slice(0, 1));
+  assert.deepEqual(diffSelection(["ui-base-button"], entries, moved), whole.slice(1));
+  // Asked about by its page and name, the moved set is the same ambiguous name.
+  assert.deepEqual(diffSelection(["buttons/button"], entries, moved), whole.slice(0, 1));
+
+  // An archived set isn't reported for a component picked by ID...
+  const archived = [...figma, bareOnPage("Archive", "Button")];
+  assert.deepEqual(diffSelection(["ui-base-button"], entries, archived).map((e) => [e.name, e.status]), [["ui/base/Button", "match"]]);
+  // ...but is for the name both share, which picks every set of it.
+  assert.deepEqual(diffSelection(["Button"], entries, archived).map((e) => [e.name, e.status]), [
+    ["ui/base/Button", "match"],
+    ["ui/radix/Button", "match"],
+    ["Archive/Button", "figma_only"],
+  ]);
+  // And so is a set only Figma has, by its page and name.
+  const named = selectDiffComponents(entries, archived, ["archive/button"]);
+  assert.deepEqual([named.entries, named.figmaReported.map((c) => c.page)], [[], ["Archive"]]);
+  assert.deepEqual(diffSelection(["archive/button"], entries, archived).map((e) => [e.name, e.status]), [["Archive/Button", "figma_only"]]);
 });
 
 // --- narrowFigmaComponents ---

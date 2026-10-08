@@ -396,24 +396,25 @@ test("diff CLI: a component code has but couldn't map is reported, never as not 
     pages: [{ name: "Data display", nodes: [component("Card")] }],
   });
   standIns.push(withButton, withoutButton);
-  type Failures = DiffJson & { hasDifferences: boolean; mappingFailures: { name: string; error: string }[] };
+  type Failures = DiffJson & { hasDifferences: boolean; mappingFailures: { name: string; id: string; title?: string; error: string }[] };
   const unmapped = /^Error: Storybook MCP tool "docs-show" failed: Storybook index could not be built \(docs-show\)$/;
 
   const text = await diffAgainst(withButton);
   assert.equal(text.status, 0, text.out);
-  assert.match(text.out, /Skipped 1 component\(s\) due to mapping errors:\n {2}Button: Error: Storybook MCP tool "docs-show" failed/);
-  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\) — component results are partial: Button was not compared/);
+  // Each failure is named by its title, which says which Button it is.
+  assert.match(text.out, /Skipped 1 component\(s\) due to mapping errors:\n {2}Forms\/Button: Error: Storybook MCP tool "docs-show" failed/);
+  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\) — component results are partial: Forms\/Button was not compared/);
   assert.doesNotMatch(text.out, /Button not in code|No differences found/);
   assert.match(text.out, /- Badge not in code/);
   const json = await diffAgainst(withButton, "--json");
   const data = JSON.parse(json.stdout) as Failures;
   assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
-  assert.deepEqual(data.mappingFailures.map((f) => f.name), ["Button"]);
+  assert.deepEqual(data.mappingFailures.map((f) => [f.name, f.id, f.title]), [["Button", "forms-button", "Forms/Button"]]);
   assert.match(data.mappingFailures[0].error, unmapped);
 
   const clean = await diffAgainst(withoutButton);
   assert.equal(clean.status, 0, clean.out);
-  assert.match(clean.out, /component results are partial: Button was not compared/);
+  assert.match(clean.out, /component results are partial: Forms\/Button was not compared/);
   assert.doesNotMatch(clean.out, /Components in sync|No differences found/);
   const strict = await diffAgainst(withoutButton, "--strict", "--json");
   assert.equal(strict.status, 1, strict.out);

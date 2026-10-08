@@ -759,6 +759,10 @@ test("every audit instruction reports a name repeated in code or in Figma as amb
       // of its own: by name alone, a library with Base UI and Radix copies of
       // every component compared none of them.
       assert.match(text, /share a name[^\n]*tell them apart by page|share a name[^\n]*on its category's page/, `${path} never tells a repeated name's copies apart by page`);
+      // A copy left on each side is no pair: the set may be the component's,
+      // moved, or an archived one beside a component not pushed yet.
+      assert.doesNotMatch(text, /one code component and one set are a pair, code|one on each side are a pair/, `${path} pairs the copies pages left by guess`);
+      assert.match(text, /share a name[^\n]*Copies left on both sides, even one of each, can't be told apart/, `${path} pairs the copies pages left by guess`);
       assert.match(text, /ignoring case, spaces, `\/`, `-` and `_`/, `${path} compares page names as written, not as diff does`);
     }
   } finally {

@@ -522,11 +522,11 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
 ```
 
-- `--components` narrows both sides. A name only Figma has is reported as not in code, and a name neither side has is an error. It needs `--storybook`.
+- `--components` narrows both sides. Each selected component is paired as in a full run, and a set is reported only if it's paired with one or `--components` names it. A name only Figma has is reported as not in code, and a name neither side has is an error. It needs `--storybook`.
 - If Storybook can't be listed or a component can't be mapped, the run is reported as partial (`storybookReadFailed` or `mappingFailures` in `--json`) and fails `--strict`. A partial run never ends with "No differences found".
 - `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later.
 - A component too big for one call, such as a thousand icons as the options of one property, fails the read and is named.
-- A name two components share, like `ui/base/Button` and `ui/radix/Button`, is compared page by page, as the push lays it out. Copies the pages don't tell apart, like an archived copy on a page of its own, are reported as `ambiguous` and fail `--strict`.
+- A name two components share, like `ui/base/Button` and `ui/radix/Button`, is matched by page, as the push lays it out: each is compared with the set of its name on its category's page. Of the copies left, extra sets, like an archived copy, are reported as `figma_only`, and extra components as `code_only`. Copies left on both sides can't be told apart, so they're reported as `ambiguous` and fail `--strict`.
 
 ### `storysync inspect`
 
@@ -549,7 +549,7 @@ Options:
 - **Variable modes:** only each collection's first mode is read. Use `--mode <name>`, or ask the agent, for another mode like "Dark".
 - **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
-- **Component names:** a component set is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page. Copies no page tells apart are reported as `ambiguous` instead of being guessed.
+- **Component names:** a component set is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
 - **Wide-gamut colour tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
 - **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }` aren't followed, for the push or for `diff`.
 

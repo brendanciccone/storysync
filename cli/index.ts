@@ -809,7 +809,7 @@ program
 
       // --- Component diff ---
       let componentDiffs: ComponentDiffEntry[] = [];
-      let mappingFailures: { name: string; error: string }[] = [];
+      let mappingFailures: { name: string; id?: string; title?: string; error: string }[] = [];
       if (storybook) {
         const compSpinner = json ? null : ora("Reading Figma components...").start();
         let figmaComponents: FigmaComponentInfo[] = [];
@@ -827,6 +827,9 @@ program
         if (!componentReadFailed) {
           const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
           let entries: Awaited<ReturnType<StorybookClient["listComponents"]>> = [];
+          // The components and sets --components leaves out of the report.
+          let others: ComponentEntry[] = [];
+          let figmaReported = figmaComponents;
           try {
             entries = await storybook.listComponents();
           } catch (err) {
@@ -844,7 +847,7 @@ program
               figmaComponents = narrowFigmaComponents(figmaComponents, names);
             } else {
               try {
-                ({ entries, figmaComponents } = selectDiffComponents(entries, figmaComponents, names));
+                ({ entries, others, figmaReported } = selectDiffComponents(entries, figmaComponents, names));
               } catch (err) {
                 mapSpinner?.stop();
                 reportError(err, json);
@@ -863,18 +866,19 @@ program
               codeComponents.push({ ...mapComponent(component), id: entry.id });
             } catch (err) {
               unmappedEntries.push(entry);
-              mappingFailures.push({ name: entry.name, error: String(err) });
+              mappingFailures.push({ name: entry.name, id: entry.id, ...(entry.title ? { title: entry.title } : {}), error: String(err) });
             }
           }
           if (!storybookReadFailed) mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
           if (!json && mappingFailures.length) {
             console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors:`));
-            for (const failure of mappingFailures) console.log(chalk.yellow(`  ${failure.name}: ${failure.error}`));
+            for (const failure of mappingFailures) console.log(chalk.yellow(`  ${failure.title ?? failure.name}: ${failure.error}`));
           }
 
-          // A component code has but could not map was never compared, so
-          // Figma's copy of it is not "not in code".
-          componentDiffs = diffComponents(codeComponents, figmaComponents, unmappedEntries);
+          // A component code has but could not map, or that --components
+          // left out, was never compared, so Figma's copy of it is not "not
+          // in code". Each is still paired, as in a diff of everything.
+          componentDiffs = diffComponents(codeComponents, figmaComponents, [...unmappedEntries, ...others], figmaReported);
         }
       }
 
@@ -900,7 +904,7 @@ program
           console.log(chalk.yellow("\nStorybook listing failed — component results are partial: nothing in code was read to match Figma against. See errors for details."));
         }
         if (mappingFailures.length) {
-          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
+          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.title ?? f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
         }
 
         const mismatched = tokenDiffs.filter((t) => t.status !== "match");
