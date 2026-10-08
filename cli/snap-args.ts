@@ -69,6 +69,12 @@ export interface StoryArgsSnapshot {
    */
   rendered: Record<string, unknown>;
   globals: Record<string, unknown>;
+  /**
+   * Each argType's `mapping`, from option key to the value the story is
+   * given, recorded as `rendered` is: Storybook judges an `if` on mapped
+   * values. Absent from a snapshot that has none.
+   */
+  mappings?: Record<string, Record<string, unknown>>;
 }
 
 /** What became of one variant's requested args. */
@@ -112,6 +118,22 @@ function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** A value the page recorded by its type alone, as `{ "$type": "object" }`. */
+function isOpaque(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.hasOwn(value, "$type");
+}
+
+/** `args` as the story is given them, each through its argType's mapping, as Storybook's prepareContext maps them. */
+export function mapArgs(args: Record<string, unknown>, mappings: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(args)) {
+    const mapping = mappings[name];
+    const key = value === null || PRIMITIVE.has(typeof value) ? String(value) : null;
+    out[name] = mapping && key !== null && Object.hasOwn(mapping, key) ? mapping[key] : value;
+  }
+  return out;
+}
+
 /**
  * Whether an argTypes `if` shows its arg, as Storybook's own
  * includeConditionalArg decides it: `{ arg | global, truthy | exists | eq | neq }`.
@@ -126,6 +148,10 @@ export function conditionHolds(
   const { arg, global, truthy, exists, eq, neq } = condition;
   if (defined([arg, global]) !== 1 || defined([truthy, exists, eq, neq]) > 1) return null;
   const value = typeof arg === "string" ? args[arg] : typeof global === "string" ? globals[global] : undefined;
+  // A value known only by its type can't be compared with an object; with
+  // anything else it is unequal, as Storybook's own comparison finds.
+  const compared = eq !== undefined ? eq : neq;
+  if (isOpaque(value) && typeof compared === "object" && compared !== null) return null;
   if (eq !== undefined) return sameValue(value, eq);
   if (neq !== undefined) return !sameValue(value, neq);
   if (exists !== undefined) return exists ? value !== undefined : value === undefined;
@@ -147,6 +173,8 @@ export function findRejectedArgs(
   // judging each `if` against the args the variant asks for.
   const asked: Record<string, unknown> = { ...snapshot.stored };
   for (const [name, value] of Object.entries(requested)) asked[name] = typedArgValue(value, snapshot.argTypes[name], byName.get(name));
+  // Storybook judges each `if` on the values the story is given, after mapping.
+  const mapped = mapArgs(asked, snapshot.mappings);
 
   const rejected: ArgRejection[] = [];
   for (const [name, value] of Object.entries(requested)) {
@@ -154,7 +182,7 @@ export function findRejectedArgs(
     // Judged on the combination asked for: a value the story is given now,
     // while another it rejected is missing, may be hidden once that one is
     // applied, as size is for variant=link.
-    const hidden = !!argType?.if && conditionHolds(argType.if, asked, snapshot.globals) === false;
+    const hidden = !!argType?.if && conditionHolds(argType.if, mapped, snapshot.globals) === false;
     if (!hidden && Object.hasOwn(snapshot.rendered, name) && argMatches(snapshot.rendered[name], value)) continue;
     const rejection: ArgRejection = { name, value, reasons: [] };
     if (!argType) {

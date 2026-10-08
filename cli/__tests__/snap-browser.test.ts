@@ -250,6 +250,8 @@ test("storyArgsInPage: a mapped arg is read by the value asked for, and one aime
   const snapshot = await inPage(fake.preview, () => storyArgsInPage({ storyId: fake.storyId, waitMs: 100 }));
   assert.deepEqual(snapshot && "rendered" in snapshot ? snapshot.rendered : snapshot, { icon: "star", label: "Hi" });
   assert.equal(snapshot && "argTypes" in snapshot ? snapshot.argTypes.icon.mapping : snapshot, true);
+  // Its mapping is read too, for judging an if as Storybook does.
+  assert.deepEqual(snapshot && "mappings" in snapshot ? snapshot.mappings : snapshot, { icon: { star: "★", heart: "♥" } });
 });
 
 test("applyStoryArgsInPage: waits for the render, lifts the if, updates, then remounts", async () => {
@@ -339,6 +341,17 @@ test("captureStory: a value the URL didn't apply is applied through the preview 
   const taken = await captureStory(previewPage(plain.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "secondary" }));
   assert.equal(taken.status, "ok");
   assert.deepEqual([taken.args?.rejected, taken.args?.appliedVia, plain.events], [[], undefined, []]);
+});
+
+test("captureStory: an if on a mapped arg is judged as Storybook judges it, so a value it gave isn't set again", async () => {
+  const argTypes: Record<string, FakeArgType> = {
+    tone: { options: ["a", "b"], mapping: { a: "loud", b: "quiet" }, type: { name: "enum" } },
+    size: { options: ["sm", "lg"], if: { arg: "tone", eq: "loud" }, type: { name: "enum" } },
+  };
+  const fake = fakePreview({ argTypes, initial: { tone: "b", size: "sm" }, url: { tone: "a", size: "lg" } });
+  const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ tone: "a", size: "lg" }));
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.args?.rejected, result.args?.appliedVia, fake.events], [[], undefined, []]);
 });
 
 test("captureStory: a value the preview won't apply either is arg_rejected, not the default measured as it", async () => {

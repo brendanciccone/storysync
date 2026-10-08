@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   argMatches, argsNotInDocs, compactArgTypes, conditionHolds, describeArgRejections, describeUncheckedArgs,
-  findRejectedArgs, nameSlugs, parseIllegalValueWarning, previewArgUpdate, rejectionsFromWarnings, stillRejected, typedArgValue,
+  findRejectedArgs, mapArgs, nameSlugs, parseIllegalValueWarning, previewArgUpdate, rejectionsFromWarnings, stillRejected, typedArgValue,
 } from "../snap-args.js";
 import type { StoryArgsSnapshot } from "../snap-args.js";
 import type { FigmaVariantProperty } from "../mapper.js";
@@ -82,6 +82,27 @@ test("findRejectedArgs: a value both unlisted and hidden names both reasons", ()
   assert.deepEqual(rejected.map((r) => [r.name, r.reasons]), [["variant", ["not-in-options"]], ["size", ["not-in-options", "hidden-by-if"]]]);
 });
 
+test("findRejectedArgs: an if is judged on the values the story is given, after mapping, as Storybook judges it", () => {
+  // tone a is given to the story as "loud", which shows size: Storybook
+  // gave size lg, so nothing was refused, and no if is to blame.
+  const snapshot: StoryArgsSnapshot = {
+    fileName: null,
+    argTypes: {
+      tone: { type: "enum", options: ["a", "b"], mapping: true },
+      size: { type: "enum", options: ["sm", "lg"], if: { arg: "tone", eq: "loud" } },
+    },
+    mappings: { tone: { a: "loud", b: "quiet" } },
+    stored: { tone: "a", size: "lg" },
+    rendered: { tone: "a", size: "lg" },
+    globals: {},
+  };
+  assert.deepEqual(findRejectedArgs({ tone: "a", size: "lg" }, snapshot), []);
+  // tone b maps to "quiet", which hides size.
+  const quiet = { ...snapshot, stored: { tone: "b", size: "lg" }, rendered: { tone: "b" } };
+  assert.deepEqual(findRejectedArgs({ tone: "b", size: "lg" }, quiet).map((r) => [r.name, r.reasons]), [["size", ["hidden-by-if"]]]);
+  assert.deepEqual(mapArgs({ tone: "a", size: "lg", on: true }, { tone: { a: "loud" }, on: { true: 1 } }), { tone: "loud", size: "lg", on: 1 });
+});
+
 test("findRejectedArgs: an arg the story's argTypes don't declare is rejected as such", () => {
   const rejected = findRejectedArgs({ orientation: "vertical" }, { ...BADGE, stored: {}, rendered: {} });
   assert.deepEqual(rejected, [{ name: "orientation", value: "vertical", reasons: ["not-in-argtypes"] }]);
@@ -107,6 +128,11 @@ test("conditionHolds: follows Storybook's includeConditionalArg", () => {
   assert.equal(conditionHolds({ arg: "count", exists: true }, args, {}), true);
   assert.equal(conditionHolds({ arg: "missing", exists: true }, args, {}), false);
   assert.equal(conditionHolds({ global: "theme", eq: "dark" }, args, { theme: "dark" }), true);
+  // A value known only by its type, as a mapping to an icon is: unequal to
+  // a string, and not to be compared with an object.
+  assert.equal(conditionHolds({ arg: "icon", eq: "star" }, { icon: { $type: "object" } }, {}), false);
+  assert.equal(conditionHolds({ arg: "icon", neq: { name: "star" } }, { icon: { $type: "object" } }, {}), null);
+  assert.equal(conditionHolds({ arg: "icon" }, { icon: { $type: "object" } }, {}), true);
   // One Storybook would throw on.
   assert.equal(conditionHolds({ arg: "variant", global: "theme" }, args, {}), null);
   assert.equal(conditionHolds({ arg: "variant", eq: "a", neq: "b" }, args, {}), null);

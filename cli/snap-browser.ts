@@ -853,8 +853,13 @@ export async function storyArgsInPage(args: { storyId: string; waitMs: number })
     };
 
     const argTypes: Record<string, StoryArgType> = {};
+    const mappings: Record<string, Record<string, unknown>> = {};
     for (const [name, t] of Object.entries(story.argTypes ?? {})) {
       if (!t) continue;
+      if (t.mapping && typeof t.mapping === "object") {
+        mappings[name] = {};
+        for (const [key, value] of Object.entries(t.mapping)) mappings[name][key] = plain(value);
+      }
       const control = t.control === false || (typeof t.control === "object" && t.control?.disable)
         ? false
         : typeof t.control === "string" ? t.control : t.control?.type;
@@ -892,7 +897,10 @@ export async function storyArgsInPage(args: { storyId: string; waitMs: number })
       // No args recorded for it: everything the store would hold is in `rendered`.
     }
     const fileName = story.parameters?.fileName;
-    return { fileName: typeof fileName === "string" ? fileName : null, argTypes, stored, rendered, globals: record(context.globals) };
+    return {
+      fileName: typeof fileName === "string" ? fileName : null, argTypes, stored, rendered, globals: record(context.globals),
+      ...(Object.keys(mappings).length ? { mappings } : {}),
+    };
   } catch (err) {
     return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
   }
@@ -1007,6 +1015,7 @@ function asSnapshot(value: unknown): StoryArgsSnapshot | { error: string } {
     stored: read!.stored!,
     rendered: read!.rendered!,
     globals: isRecord(read!.globals) ? read!.globals! : {},
+    ...(isRecord(read!.mappings) ? { mappings: read!.mappings! } : {}),
   };
 }
 
