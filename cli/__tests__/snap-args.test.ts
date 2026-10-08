@@ -263,7 +263,7 @@ test("describeArgRejections: values not measured say so, how to measure them, an
   assert.equal(rest.length, 0);
   assert.match(warning, /^Storybook wouldn't render 2 of ui\/base\/Button's variants with the values asked for, and snap couldn't set them through its preview either, so they were not measured \(status arg_rejected\)/);
   assert.match(warning, /`size` xs, sm: its argTypes `if: \{"arg":"variant","neq":"link"\}` hides it/);
-  assert.match(warning, /remove `if: \{"arg":"variant","neq":"link"\}` from argTypes\.size in \.\/registry\/ui\/button-story\/button-base\.stories\.tsx, then measure it again with --components ui-base-button --merge\.$/);
+  assert.match(warning, /remove `if: \{"arg":"variant","neq":"link"\}` from argTypes\.size in \.\/registry\/ui\/button-story\/button-base\.stories\.tsx, then measure the component again with --components ui-base-button --merge\.$/);
   // Nothing to say about a component whose story took every value.
   assert.deepEqual(describeArgRejections("ui/base/Card", [{ combination: {}, status: "ok" }]), []);
 });
@@ -280,6 +280,21 @@ test("describeArgRejections: a value no story change lets the URL carry is set w
   assert.deepEqual(rest, []);
   assert.match(refused, /`cols` 2: Storybook's URL reads it as a number, and the story's options list it only as a string, so no argTypes change lets the URL carry it\./);
   assert.match(refused, /No change to the story lets its URL carry it, and the variant's error says why the preview didn't take it either\.$/);
+});
+
+test("describeArgRejections: values set through the preview of a variant that then failed still name the story change", () => {
+  const ghost = findRejectedArgs({ variant: "ghost" }, BADGE);
+  const [some] = describeArgRejections("ui/base/Badge", [
+    { combination: { variant: "ghost" }, status: "ok", appliedVia: "preview" as const, rejectedArgs: ghost },
+    { combination: { variant: "link" }, status: "render_error", appliedVia: "preview" as const, rejectedArgs: findRejectedArgs({ variant: "link" }, BADGE) },
+  ], { storyFile: BADGE.fileName });
+  assert.match(some, /would have rendered those 2 variants without them/);
+  assert.match(some, /measured what the component renders with them, though 1 of those variants then failed, as their errors say\./);
+  assert.match(some, /add 'ghost', 'link' to argTypes\.variant\.options in /);
+  const [all] = describeArgRejections("ui/base/Badge", [
+    { combination: { variant: "ghost" }, status: "element_not_found", appliedVia: "preview" as const, rejectedArgs: ghost },
+  ]);
+  assert.match(all, /snap set them through Storybook's preview instead and then that variant failed, as its error says\. To let the story take them as well, add 'ghost' to argTypes\.variant\.options\.$/);
 });
 
 test("describeUncheckedArgs: says when the preview couldn't be read, naming the variants", () => {

@@ -1421,7 +1421,7 @@ test("runSnap: a value the story rejects is measured through the preview, or mar
     assert.match(applied, /^Storybook wouldn't take some of ui\/base\/Badge's values from the story URL, and would have rendered that variant without them/);
     assert.match(applied, /add 'ghost' to argTypes\.variant\.options in \.\/badge\.stories\.tsx\.$/);
     assert.match(refused, /^Storybook wouldn't render 1 of ui\/base\/Badge's variants with the values asked for/);
-    assert.match(refused, /add 'link' to argTypes\.variant\.options in \.\/badge\.stories\.tsx, then measure it again with --components ui-base-badge --merge\.$/);
+    assert.match(refused, /add 'link' to argTypes\.variant\.options in \.\/badge\.stories\.tsx, then measure the component again with --components ui-base-badge --merge\.$/);
     assert.deepEqual(rest, []);
 
     // The story's argTypes are recorded, and the choice the docs omit named.

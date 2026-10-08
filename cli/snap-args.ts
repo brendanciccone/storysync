@@ -413,12 +413,19 @@ export function describeArgRejections(
   };
 
   const warnings: string[] = [];
+  // Values set through the preview, whatever became of the variant after:
+  // a story change would have let the URL take them either way.
   const viaPreview = variants.filter((v) =>
-    v.appliedVia === "preview" && v.status === "ok" && v.rejectedArgs?.some((r) => r.reasons.some(fixable)));
+    v.appliedVia === "preview" && v.status !== "arg_rejected" && v.rejectedArgs?.some((r) => r.reasons.some(fixable)));
   if (viaPreview.length) {
     const { causes, fixes } = describe(viaPreview, fixable);
     const one = viaPreview.length === 1;
-    const outcome = "measured what the component renders with them, so the measurements are right";
+    const failed = viaPreview.filter((v) => v.status !== "ok").length;
+    const outcome = failed === 0
+      ? "measured what the component renders with them, so the measurements are right"
+      : failed === viaPreview.length
+        ? `then ${one ? "that variant failed, as its error says" : "those variants failed, as their errors say"}`
+        : `measured what the component renders with them, though ${failed} of those variants then failed, as their errors say`;
     warnings.push(
       `Storybook wouldn't take some of ${label}'s values from the story URL, and would have rendered ${one ? "that variant" : `those ${viaPreview.length} variants`} without them, as its default: ` +
         `${causes.join("; ")}. snap set them through Storybook's preview instead and ${outcome}. ` +
@@ -431,7 +438,7 @@ export function describeArgRejections(
     const one = refused.length === 1;
     const again = options.id ? `--components ${options.id} --merge` : "--components and --merge";
     const how = fixes.length
-      ? `To measure ${one ? "it" : "them"}, ${fixes.join("; and ")}, then measure it again with ${again}.`
+      ? `To measure ${one ? "it" : "them"}, ${fixes.join("; and ")}, then measure the component again with ${again}.`
       : `No change to the story lets its URL carry ${one ? "it" : "them"}, and ${one ? "the variant's error says" : "each variant's error says"} why the preview didn't take ${one ? "it" : "them"} either.`;
     warnings.push(
       `Storybook wouldn't render ${refused.length} of ${label}'s variants with the values asked for, and snap couldn't set them through its preview either, ` +
