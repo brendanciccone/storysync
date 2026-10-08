@@ -1299,6 +1299,39 @@ test("Tailwind and CSS: a var() whose fallback holds parentheses resolves, so th
   } finally { cleanup(dir); }
 });
 
+// --- Template literals ---
+
+test("Tailwind: a template literal is read as a string, and one with ${...} is skipped with a warning naming the token", () => {
+  // langflow and ever-teams write their radius scale in backticks, which
+  // were kept in the value, so it had no px.
+  const dir = makeProject({
+    "tailwind.config.mjs": `const base = 4;
+export default {
+  theme: {
+    extend: {
+      borderRadius: { lg: \`var(--corner)\`, md: \`calc(var(--corner) - 2px)\`, xl: \`\${base * 3}px\` },
+      fontSize: { lead: [\`1.125rem\`, { lineHeight: "1.6" }], huge: \`\${base}rem\` },
+      colors: { brand: \`#0f62fe\`, tint: \`\${"#0f62fe"}33\` },
+    },
+  },
+};`,
+    "src/app.css": `:root { --corner: 0.75rem; }`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(asJson(result.collections.map((c) => [c.category, c.tokens])), [
+      ["colors", [{ name: "brand", value: "#0f62fe", hex: "#0f62fe" }]],
+      ["radius", [{ name: "lg", value: "0.75rem", px: 12 }, { name: "md", value: "calc(0.75rem - 2px)", px: 10 }]],
+      ["typography", [{ name: "lead", value: "1.125rem", px: 18 }]],
+    ]);
+    for (const warning of [
+      "Skipped dynamic value: colors tint = `${\"#0f62fe\"}33`",
+      "Skipped dynamic value: borderRadius xl = `${base * 3}px`",
+      "Skipped dynamic value: fontSize huge = `${base}rem`",
+    ]) assert.ok(result.warnings.includes(warning), `${warning}\n${result.warnings.join("\n")}`);
+  } finally { cleanup(dir); }
+});
+
 // --- Presets, re-exports and wrappers ---
 
 test("Tailwind: a preset in a relative file is read as the config is, and the config wins a name they share", () => {

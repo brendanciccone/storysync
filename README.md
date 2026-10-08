@@ -279,6 +279,8 @@ Storysync reads a Tailwind config as text and never runs it. A preset in a relat
 
 Anything Storysync can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export from a package, or anything spread into the theme, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too, since Tailwind's default theme and what a plugin adds aren't read. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
 
+Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is skipped with a warning naming the token, since its value is known only when the config runs.
+
 ### Tailwind v4 `@theme`
 
 A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead of a config:

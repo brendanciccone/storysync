@@ -437,16 +437,16 @@ function themeCollections(themeBlocks: ThemeBlocks, warnings: string[]): TokenCo
   const colorTokens = extractTailwindColors(themeBlocks, warnings);
   if (colorTokens.length) collections.push({ category: "colors", tokens: colorTokens });
 
-  const spacingTokens = extractTailwindFlat(themeBlocks, "spacing");
+  const spacingTokens = extractTailwindFlat(themeBlocks, "spacing", warnings);
   if (spacingTokens.length) collections.push({ category: "spacing", tokens: spacingTokens });
 
-  const radiusTokens = extractTailwindFlat(themeBlocks, "borderRadius");
+  const radiusTokens = extractTailwindFlat(themeBlocks, "borderRadius", warnings);
   if (radiusTokens.length) collections.push({ category: "radius", tokens: radiusTokens });
 
-  const fontTokens = extractTailwindTypography(themeBlocks);
+  const fontTokens = extractTailwindTypography(themeBlocks, warnings);
   if (fontTokens.length) collections.push({ category: "typography", tokens: fontTokens });
 
-  const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
+  const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow", warnings);
   if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
 
   return collections;
@@ -986,19 +986,19 @@ function extractTailwindColors(blocks: ThemeBlocks, warnings: string[]): TokenVa
   return tokens;
 }
 
-function extractTailwindFlat(blocks: ThemeBlocks, key: string): TokenValue[] {
+function extractTailwindFlat(blocks: ThemeBlocks, key: string, warnings: string[]): TokenValue[] {
   const tokens: TokenValue[] = [];
   for (const block of [blocks.extend, blocks.root]) {
     if (!block) continue;
     const propBlock = findPropertyBlock(block, key);
     if (!propBlock) continue;
-    flattenObject(propBlock, "", tokens, key, []);
+    flattenObject(propBlock, "", tokens, key, warnings);
     if (tokens.length) break;
   }
   return tokens;
 }
 
-function extractTailwindTypography(blocks: ThemeBlocks): TokenValue[] {
+function extractTailwindTypography(blocks: ThemeBlocks, warnings: string[]): TokenValue[] {
   const tokens: TokenValue[] = [];
   for (const block of [blocks.extend, blocks.root]) {
     if (!block) continue;
@@ -1008,6 +1008,14 @@ function extractTailwindTypography(blocks: ThemeBlocks): TokenValue[] {
     // fontSize can be { sm: '0.875rem' } or { sm: ['0.875rem', { lineHeight: '1.25rem' }] }
     const pairs = extractKeyValuePairs(propBlock);
     for (const [name, value] of pairs) {
+      // A size in a template literal, alone or first in its array.
+      const literal = /^\[?\s*(`[^`]*`)/.exec(value);
+      if (literal) {
+        const size = templateString(literal[1]);
+        if (size === null) warnings.push(`Skipped dynamic value: fontSize ${name} = ${literal[1]}`);
+        else tokens.push({ name, value: size });
+        continue;
+      }
       // Handle array values - take just the size
       const sizeMatch = value.match(/^\[?\s*['"]?([^'"[\],]+)/);
       const resolved = sizeMatch ? sizeMatch[1].trim() : value;
@@ -1036,7 +1044,18 @@ function findPropertyBlock(block: string, key: string): string | null {
   return block.slice(braceStart + 1, i - 1);
 }
 
-function flattenObject(block: string, prefix: string, tokens: TokenValue[], _context: string, warnings: string[]): void {
+/**
+ * A template literal's text, as a quoted string's is read: langflow and
+ * ever-teams write their radius scale `calc(var(--radius) - 2px)` in
+ * backticks, which were kept, so it had no px. Null when it interpolates
+ * `${...}`, whose value is known only when the config runs.
+ */
+function templateString(literal: string): string | null {
+  const text = literal.slice(1, -1);
+  return text.includes("${") ? null : text.trim();
+}
+
+function flattenObject(block: string, prefix: string, tokens: TokenValue[], context: string, warnings: string[]): void {
   const pairs = extractKeyValuePairs(block);
 
   for (const [key, value] of pairs) {
@@ -1044,14 +1063,19 @@ function flattenObject(block: string, prefix: string, tokens: TokenValue[], _con
 
     if (value.trim().startsWith("{")) {
       // Nested object - recurse
-      flattenObject(value.slice(1, -1), name, tokens, _context, warnings);
+      flattenObject(value.slice(1, -1), name, tokens, context, warnings);
     } else {
-      const cleaned = value.replace(/^['"]|['"]$/g, "").trim();
+      const literal = /^`[^`]*`$/.test(value.trim()) ? templateString(value.trim()) : undefined;
+      if (literal === null) {
+        warnings.push(`Skipped dynamic value: ${context} ${name} = ${value.trim()}`);
+        continue;
+      }
+      const cleaned = literal ?? value.replace(/^['"]|['"]$/g, "").trim();
       if (cleaned && cleaned !== "...") {
         // Skip dynamic calls like theme() or require(), but allow CSS values that contain parentheses like rgb()
         const isDynamicCall = /(?:theme|require|resolve|fn)\s*\(/.test(cleaned);
         if (isDynamicCall) {
-          warnings.push(`Skipped dynamic value: ${name} = ${cleaned}`);
+          warnings.push(`Skipped dynamic value: ${context} ${name} = ${cleaned}`);
         } else {
           tokens.push({ name, value: cleaned, group: prefix || undefined });
         }
