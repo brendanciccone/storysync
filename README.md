@@ -154,6 +154,7 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 - A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
 - With no baseline, drift is `new` and the action warns that nothing was checked. With `fail_on_drift`, the job fails and prints the command that writes it.
 - A baseline that isn't `map --json` or `tokens --json` output always fails the job. That includes the `{"error": ...}` that `map --json` writes when Storybook isn't running.
+- A newer ref's Storysync can read tokens an older one didn't, such as shadcn/ui's radius scale, which token drift lists as added. When drift only adds tokens, the error and the drift report say so and print the command that writes a new baseline.
 
 | Input | Default | |
 |---|---|---|

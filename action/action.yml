@@ -375,7 +375,9 @@ runs:
         const collections = current.collections || [];
         // What tokens warned about, a var() that didn't resolve or a variable
         // it couldn't categorize, is logged whether or not anything drifted.
-        const warnings = Array.isArray(current.warnings) ? current.warnings : [];
+        // One line each: a CSS value can span lines, and a line of it
+        // starting with :: would be read as a workflow command.
+        const warnings = (Array.isArray(current.warnings) ? current.warnings : []).map(w => String(w).replace(/\s+/g, " ").trim());
         for (const w of warnings) console.log("storysync tokens: " + w);
 
         // The command that writes the baseline, as the action extracts tokens,
@@ -460,12 +462,17 @@ runs:
         }
 
         output("result", "true");
-        output("error", escape("Design tokens differ from " + baselinePath + " (relative to " + where + "). Detect token drift lists the changes. If they're intended, update the baseline by " + create));
+        // A newer storysync can read tokens an older one left out, shadcn/ui's
+        // radius scale say, which a baseline the older one wrote lists as
+        // added. Said only in the CLI, CI went red with no reason given.
+        const onlyAdded = !removed.length && changed.every(c => !c.changed);
+        const why = onlyAdded ? "If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't" : "If they're intended";
+        output("error", escape("Design tokens differ from " + baselinePath + " (relative to " + where + "). Detect token drift lists the changes. " + why + ", update the baseline by " + create));
 
         let body = "## Token drift\n\n";
         if (!collections.length) {
           body += "No tokens were found this run";
-          if (current.warnings && current.warnings.length) body += " (" + current.warnings.join("; ") + ")";
+          if (warnings.length) body += " (" + warnings.join("; ") + ")";
           body += ".\n\n";
         }
         if (added.length) {
@@ -483,9 +490,15 @@ runs:
           for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed\n";
           body += "\n";
         }
-        if (collections.length && warnings.length) {
+        if (onlyAdded) body += "Every change is an added token. " + why + ", update the baseline by " + create + ".\n\n";
+        // A note that :root was read is no warning. The rest are capped, as
+        // there can be one per uncategorized variable and an issue body
+        // holds 65,536 characters; the step's log has them all.
+        const listed = warnings.filter(w => !w.startsWith("Resolved CSS variable references from "));
+        if (collections.length && listed.length) {
           body += "### Warnings\n";
-          for (const w of warnings) body += "- " + w + "\n";
+          for (const w of listed.slice(0, 20)) body += "- " + w + "\n";
+          if (listed.length > 20) body += "- and " + (listed.length - 20) + " more, in the Detect token drift log\n";
           body += "\n";
         }
 
