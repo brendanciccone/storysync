@@ -958,9 +958,9 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     caveats.push({ component: key, kind: note.kind, element: note.element });
   }
   if (detectIdenticalVariants(component.variants ?? [])) caveats.push({ component: key, kind: "identical-variants" });
-  // A VARIANT's only: a boolean's Figma default is false whatever its
-  // default, as React's is for a boolean left out, so one assumed there
-  // changes nothing in Figma, and every optional boolean has one.
+  // A VARIANT's only: a boolean with no default is assumed false, as React
+  // treats a boolean left out, and the push lays it out default first, so
+  // Figma's default is the code's; and every optional boolean has one.
   const assumed = (component.variantProperties ?? []).filter((p) => p.defaultAssumed && p.type === "VARIANT").map((p) => p.name);
   if (assumed.length) caveats.push({ component: key, kind: "default-assumed", properties: assumed });
   return caveats;

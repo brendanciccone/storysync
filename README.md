@@ -514,7 +514,7 @@ Fidelity: 95.0% (38/40 properties)
       borderRadiusUniform: measured 3, Figma 8
 ```
 
-**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, and one with a variant property whose default is assumed (a boolean's Figma default is `false` either way). These don't fail `--strict`.
+**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`.
 
 ```text
 Fidelity: 100.0% (12/12 properties)

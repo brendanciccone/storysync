@@ -983,10 +983,13 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       assert.match(text, /restart Storybook/, `${path} leaves out restarting Storybook after init`);
       assert.match(text, /`bg-primary`[^\n]*`primary`[^\n]*leave it unbound and list it in the summary|`bg-primary` is `primary`[^\n]*leave the value unbound and list it in the summary/, `${path} picks among variables that share a value`);
       // Variables are named as tokens names them, and a class with an
-      // opacity modifier bound to its opaque variable lost the measured alpha.
+      // opacity modifier bound to its opaque variable lost the measured alpha
+      // when the paint was assigned: it binds at its alpha through setPaints
+      // (the Cursor rule, which has no template, by assigning it twice).
       assert.match(text, /`text-primary-foreground` (?:is|as) `primary\/foreground`/, `${path} names a variable tokens never creates`);
       assert.doesNotMatch(text, /is `primary-foreground`/, `${path} names a variable tokens never creates`);
-      assert.match(text, /opacity modifier[^\n]*leave that paint unbound/, `${path} binds a translucent paint to an opaque variable`);
+      assert.match(text, /opacity modifier[^\n]*bind it to (?:its variable, )?`destructive`,? with the paint's opacity at its alpha/, `${path} loses a translucent paint's alpha, or leaves it unbound`);
+      assert.doesNotMatch(text, /leave that paint unbound|reads back opaque/, `${path} still leaves an opacity-modified class unbound`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
