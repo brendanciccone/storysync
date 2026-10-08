@@ -455,13 +455,16 @@ program
         console.log(JSON.stringify(result));
       } else {
         const { summary } = result;
-        // Said on the score's own line: a score over the entries that were
-        // left must not be read as a score over all of them.
+        // Said on the score's own line, in so many words: a score over the
+        // entries that were left must not be read as a score over all of
+        // them. A trailing "excluded" after "100.0%" read as a clean pass to
+        // anyone who stopped at the percentage, while the run exited 0.
         const excluded = summary.unverifiedReadback;
+        const scope = excluded > 0 && result.fidelity != null ? " of verified entries" : "";
         const excludedNote = excluded > 0
-          ? chalk.red(` — ${excluded} unverified readback ${excluded === 1 ? "entry" : "entries"} excluded`)
+          ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`)
           : "";
-        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
         if (result.skipped.length > 0) {
           console.log(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }

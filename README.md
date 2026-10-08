@@ -535,7 +535,13 @@ The comparison is numeric, not visual, so it's deterministic and free. Only prop
 - Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
 - No two components can share a `nodeId`.
 
-Entries that fail aren't scored and fail `--strict`. The checksum isn't a signature, though (see [Limitations](#limitations)).
+Entries that fail aren't scored and fail `--strict`. Without `--strict` the run still exits 0, so the score's own line says it left them out, and can't be read as a clean pass:
+
+```text
+Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
+```
+
+The checksum isn't a signature, though (see [Limitations](#limitations)).
 
 **Comparison details.** Text color, size, weight, and family are compared against the element that holds the text. Colors are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, color, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
 

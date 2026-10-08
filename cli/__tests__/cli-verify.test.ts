@@ -112,7 +112,7 @@ test("verify CLI: a readback cut down to source, width and height, still sealed,
   const r = verify(snap(), readback({ source: "measured", width: 61.5, height: 24 }), "--strict-measured");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, which/);
-  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
 
@@ -195,7 +195,7 @@ test("verify CLI: a readback entry edited after Figma returned it fails --strict
   assert.match(r.out, /1 with an unverified readback/);
   assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it — nothing in it was scored/);
   assert.match(r.out, /Read these variants back again[^\n]*exactly as returned/);
-  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
   const { checksum: _checksum, ...edited } = file.components["Forms/Button"].variants.a;
   assert.doesNotMatch(r.out, new RegExp(readbackChecksum("1:2", "a", edited).slice("fnv1a:".length)), "printed the checksum that would pass");
@@ -237,10 +237,25 @@ test("verify CLI: one variant sealed and matching beside one edited fails --stri
   file.components["Forms/Button"].variants.b.backgroundColor = "#2563eb";
   const r = verify(snapOfTwo(), file, "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Fidelity: 100\.0% \(12\/12 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /^Fidelity: 100\.0% of verified entries \(12\/12 properties\); 1 entry unverified, not scored$/m);
   assert.match(r.out, /1 verified, 0 drifted, 0 missing from Figma, 1 with an unverified readback, across 2 variants/);
   assert.match(r.out, /Forms\/Button b readback entry does not match its checksum/);
   assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: without --strict, a score that left entries out says so on its own line, and a clean one doesn't", () => {
+  // A falsification run read "Fidelity: 100.0%" with an entry failing its
+  // checksum, and the run exited 0: the percentage alone read as a pass.
+  const file = readbackOf({ a: MATCHING, b: MATCHING });
+  file.components["Forms/Button"].variants.b.backgroundColor = "#ff00ff";
+  const r = verify(snapOfTwo(), file);
+  assert.equal(r.status, 0, r.out);
+  const headline = r.out.split("\n").find((line) => line.startsWith("Fidelity:"));
+  assert.equal(headline, "Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored");
+
+  const clean = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }));
+  assert.equal(clean.status, 0, clean.out);
+  assert.equal(clean.out.split("\n").find((line) => line.startsWith("Fidelity:")), "Fidelity: 100.0% (24/24 properties)");
 });
 
 test("verify CLI: a component with no nodeId, or another set's, fails --strict", () => {

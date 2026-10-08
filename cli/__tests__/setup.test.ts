@@ -1365,3 +1365,30 @@ test("verify requires exactly the fields the Claude template returns on every va
     rmSync(project, { recursive: true, force: true });
   }
 });
+
+/** Each push instruction setup installs, as [path, text]: the three skills and the push command. */
+function installedPushTexts(): [string, string][] {
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    return [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ].map((path) => [path, readFileSync(join(project, path), "utf8")]);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
+test("every push summary says how many entries verify left unverified when its score doesn't cover them", () => {
+  // Without --strict, verify exits 0 under a score of the entries it could
+  // verify: a summary quoting the percentage alone reads as a clean pass.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /fidelity score\**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified/,
+      `${path} reports the score without the entries verify left out of it`);
+  }
+});
