@@ -55,7 +55,7 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
 }
 ```
 
-If the command returns no collections, skip to Components.
+If a `warnings` entry says storysync can't read part of the Tailwind config statically, such as a preset from a package or a config built by a function, tell the user what it names: those tokens are missing from the output, so they won't reach Figma. If the command returns no collections, skip to Components.
 
 2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) to show a human-readable preview, or `npx storysync tokens --project . --all` to show every token.
 

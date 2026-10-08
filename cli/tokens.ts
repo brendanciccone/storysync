@@ -1,7 +1,7 @@
 // Design token extraction from project source files.
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { colorToHex } from "./color.js";
 
 /** The token sources `--source` takes. Leaving it out, or `auto`, detects one. */
@@ -357,7 +357,6 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): E
 function extractFromTailwind(configPath: string, projectRoot?: string): Extraction {
   const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
-  const collections: TokenCollection[] = [];
 
   if (/require\s*\(/.test(content)) {
     warnings.push("Config uses require() - some values may not be extracted");
@@ -368,21 +367,34 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
 
   // Extract theme.extend and theme objects
   const themeBlocks = extractThemeBlocks(content);
+  const own = themeCollections(themeBlocks, warnings);
+  // The warnings from here on name what storysync can't read.
+  const unread = warnings.length;
+  warnOfSpreads(themeBlocks, configPath, warnings);
 
-  const colorTokens = extractTailwindColors(themeBlocks, warnings);
-  if (colorTokens.length) collections.push({ category: "colors", tokens: colorTokens });
-
-  const spacingTokens = extractTailwindFlat(themeBlocks, "spacing");
-  if (spacingTokens.length) collections.push({ category: "spacing", tokens: spacingTokens });
-
-  const radiusTokens = extractTailwindFlat(themeBlocks, "borderRadius");
-  if (radiusTokens.length) collections.push({ category: "radius", tokens: radiusTokens });
-
-  const fontTokens = extractTailwindTypography(themeBlocks);
-  if (fontTokens.length) collections.push({ category: "typography", tokens: fontTokens });
-
-  const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
-  if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
+  // What the config gets from elsewhere: the config it re-exports, or its
+  // presets, read the same way. A later one wins a name, and the config
+  // itself wins over them all, as in Tailwind.
+  const imports = configImports(content);
+  const layers: TokenCollection[][] = [];
+  const reexport = reexportRef(content, imports);
+  if (reexport) {
+    const layer = readConfigRef(reexport, configPath, content, `${configPath} re-exports its config from ${reexport.spec}`, warnings);
+    if (layer) layers.push(layer);
+  }
+  for (const ref of presetRefs(content, imports)) {
+    const layer = readConfigRef(ref, configPath, content, `${configPath} takes the preset ${ref.label}`, warnings);
+    if (layer) layers.push(layer);
+  }
+  const wrapper = reexport ? null : wrapperCall(content, imports);
+  if (wrapper) {
+    warnings.push(`${configPath} builds its config with ${wrapper}, which storysync can't read statically, so the tokens it adds are missing`);
+  }
+  const collections = withLayers(layers, own);
+  if (!collections.length && warnings.length === unread) {
+    const plugins = /\bplugins\s*:\s*\[\s*[^\]\s]/.test(content) ? ", nor what a plugin adds" : "";
+    warnings.push(`Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${configPath}. Tailwind's default theme isn't read${plugins}`);
+  }
 
   // Resolve any `var(--name)` refs in token values against the project's :root CSS vars.
   // Common in shadcn/ui: `colors: { background: "hsl(var(--background))" }` with the actual
@@ -416,6 +428,281 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
     }
   }
   return false;
+}
+
+/** A theme's tokens, by category, in the order a Tailwind config's are listed. */
+function themeCollections(themeBlocks: ThemeBlocks, warnings: string[]): TokenCollection[] {
+  const collections: TokenCollection[] = [];
+
+  const colorTokens = extractTailwindColors(themeBlocks, warnings);
+  if (colorTokens.length) collections.push({ category: "colors", tokens: colorTokens });
+
+  const spacingTokens = extractTailwindFlat(themeBlocks, "spacing");
+  if (spacingTokens.length) collections.push({ category: "spacing", tokens: spacingTokens });
+
+  const radiusTokens = extractTailwindFlat(themeBlocks, "borderRadius");
+  if (radiusTokens.length) collections.push({ category: "radius", tokens: radiusTokens });
+
+  const fontTokens = extractTailwindTypography(themeBlocks);
+  if (fontTokens.length) collections.push({ category: "typography", tokens: fontTokens });
+
+  const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
+  if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
+
+  return collections;
+}
+
+const CATEGORY_ORDER: TokenCategory[] = ["colors", "spacing", "radius", "typography", "shadows"];
+
+/**
+ * The tokens of each layer in turn, a later layer winning a name in its
+ * category, so `own`, the config's own, win over every preset's. With no
+ * layers, `own` as it is.
+ */
+function withLayers(layers: TokenCollection[][], own: TokenCollection[]): TokenCollection[] {
+  if (!layers.length) return own;
+  let merged: TokenCollection[] = [];
+  for (const layer of [...layers, own]) {
+    merged = CATEGORY_ORDER.map((category) => {
+      const over = layer.filter((c) => c.category === category).flatMap((c) => c.tokens);
+      const names = new Set(over.map((t) => t.name));
+      const under = merged.filter((c) => c.category === category).flatMap((c) => c.tokens).filter((t) => !names.has(t.name));
+      return { category, tokens: [...under, ...over] };
+    }).filter((c) => c.tokens.length);
+  }
+  return merged;
+}
+
+/**
+ * Where a config gets a theme from outside itself: a preset, or the config
+ * it re-exports.
+ */
+interface ConfigRef {
+  /** As the config writes it, for a warning: `preset`, `require("./preset")`, `preset()`. */
+  label: string;
+  /** The module it comes from, when the config names one. */
+  spec?: string;
+  /** The export it is: `default`, or a named export's name. */
+  name?: string;
+  /** Built by a function call, so known only when the config runs. */
+  call?: boolean;
+  /** An object the config itself declares under this name. */
+  local?: string;
+}
+
+/** An imported name's module and export, and whether a call builds it. */
+interface ConfigImport { spec: string; name: string; call?: boolean }
+
+/**
+ * What each name a config imports or requires refers to: `import preset
+ * from "./preset"`, `import { a, b as c } from "m"`, `import * as m from
+ * "m"`, `const preset = require("./preset")` and `const { a } = require("m")`.
+ */
+function configImports(content: string): Map<string, ConfigImport> {
+  const imports = new Map<string, ConfigImport>();
+  const named = (list: string, spec: string, as: RegExp) => {
+    for (const part of list.split(",")) {
+      const m = as.exec(part.trim());
+      if (m) imports.set(m[2] ?? m[1], { spec, name: m[1] });
+    }
+  };
+  for (const m of content.matchAll(/\bimport\s+([\w$]+)\s*(?:,\s*\{([^}]*)\})?\s*from\s*(['"])([^'"]+)\3/g)) {
+    if (m[1] === "type") continue;
+    imports.set(m[1], { spec: m[4], name: "default" });
+    if (m[2]) named(m[2], m[4], /^(?:type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+  }
+  for (const m of content.matchAll(/\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/g)) {
+    named(m[1], m[3], /^(?:type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+  }
+  for (const m of content.matchAll(/\bimport\s+\*\s+as\s+([\w$]+)\s+from\s*(['"])([^'"]+)\2/g)) {
+    imports.set(m[1], { spec: m[3], name: "*" });
+  }
+  for (const m of content.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*require\(\s*(['"`])([^'"`]+)\2\s*\)(?:\.([\w$]+))?(\s*\()?/g)) {
+    imports.set(m[1], { spec: m[3], name: m[4] ?? "default", call: !!m[5] });
+  }
+  for (const m of content.matchAll(/\b(?:const|let|var)\s+\{([^}]*)\}\s*=\s*require\(\s*(['"`])([^'"`]+)\2\s*\)/g)) {
+    named(m[1], m[3], /^([\w$]+)(?:\s*:\s*([\w$]+))?$/);
+  }
+  return imports;
+}
+
+/** A config expression's ConfigRef: a require(), an imported name, or a call. */
+function configRef(expr: string, imports: Map<string, ConfigImport>): ConfigRef {
+  const label = expr.replace(/\s+/g, " ");
+  const required = /^require\(\s*(['"`])([^'"`]+)\1\s*\)(?:\.([\w$]+))?$/.exec(expr);
+  if (required) return { label, spec: required[2], name: required[3] ?? "default" };
+  const id = /^([\w$]+)(?:\.([\w$]+))?$/.exec(expr);
+  if (id) {
+    const imported = imports.get(id[1]);
+    if (!imported) return id[2] ? { label } : { label, local: id[1] };
+    if (imported.call) return { label, spec: imported.spec, call: true };
+    if (!id[2] || id[2] === "default") return { label, spec: imported.spec, name: imported.name };
+    // A namespace's member is its named export; another member, a property
+    // of an export, isn't read.
+    return imported.name === "*" ? { label, spec: imported.spec, name: id[2] } : { label, spec: imported.spec, call: true };
+  }
+  const call = /^(require\(\s*(['"`])([^'"`]+)\2\s*\)|[\w$.]+)\s*\(/.exec(expr);
+  if (call) {
+    const callee = call[3] ? `require("${call[3]}")` : call[1];
+    return { label: `${callee}()`, spec: call[3] ?? imports.get(call[1].split(".")[0])?.spec, call: true };
+  }
+  return { label };
+}
+
+/** The entries of a config's `presets: [...]`, as ConfigRefs. */
+function presetRefs(content: string, imports: Map<string, ConfigImport>): ConfigRef[] {
+  const m = /\bpresets\s*:\s*\[/.exec(content);
+  if (!m) return [];
+  const open = m.index + m[0].length - 1;
+  const list = content.slice(open + 1, closingIndex(content, open) - 1);
+  return splitTopLevel(list, ",").map((entry) => entry.trim()).filter(Boolean).map((entry) => configRef(entry, imports));
+}
+
+/** The expression a config exports, `module.exports = ...` or `export default ...`. */
+const EXPORTED = /(?:\bmodule\.exports\s*=|\bexport\s+default\b)\s*/;
+
+/**
+ * The config a config re-exports, as snowball-tech's `export { default }
+ * from "@snowball-tech/design-tokens/..."` does, or `module.exports =
+ * require("./base")`, or `export default` an imported name. Null when it
+ * exports a config of its own.
+ */
+function reexportRef(content: string, imports: Map<string, ConfigImport>): ConfigRef | null {
+  const from = /\bexport\s*\{\s*(?:default|([\w$]+)\s+as\s+default)\s*\}\s*from\s*(['"])([^'"]+)\2/.exec(content);
+  if (from) return { label: `export { ${from[1] ? `${from[1]} as ` : ""}default } from "${from[3]}"`, spec: from[3], name: from[1] ?? "default" };
+  const exported = new RegExp(EXPORTED.source + /(require\(\s*(['"`])[^'"`]+\2\s*\)(?:\.[\w$]+)?|[\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
+  if (!exported) return null;
+  if (exported[1].startsWith("require(")) return configRef(exported[1], imports);
+  // An imported call, as `require("x")("docs")`, is wrapperCall's.
+  const imported = imports.get(exported[1]);
+  return imported && !imported.call ? configRef(exported[1], imports) : null;
+}
+
+/**
+ * The function a config's export is built by, as `module.exports =
+ * withTW({ ... })` or `const config = require("@inmediam/ui/tailwind")("docs")`
+ * then `module.exports = config`, for a warning that what it adds isn't
+ * read. Null when the export is no call.
+ */
+function wrapperCall(content: string, imports: Map<string, ConfigImport>): string | null {
+  const direct = new RegExp(EXPORTED.source + /([\w$.]+)\s*\(/.source).exec(content);
+  if (direct && direct[1] !== "require" && direct[1] !== "function") return `${direct[1]}()`;
+  const required = new RegExp(EXPORTED.source + /require\(\s*(['"`])([^'"`]+)\1\s*\)(?:\.[\w$]+)?\s*\(/.source).exec(content);
+  if (required) return `require("${required[2]}")()`;
+  const id = new RegExp(EXPORTED.source + /([\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
+  if (!id) return null;
+  const imported = imports.get(id[1]);
+  if (imported?.call) return `require("${imported.spec}")()`;
+  const assigned = new RegExp(`\\b(?:const|let|var)\\s+${id[1].replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*([\\w$.]+)\\s*\\(`).exec(content);
+  return assigned && assigned[1] !== "require" ? `${assigned[1]}()` : null;
+}
+
+/**
+ * The object literal `name` is in a module: for `default`, what
+ * `module.exports` or `export default` is, directly or through a const; for
+ * another name, the const of that name, or `exports.name`. Null when it is
+ * no object literal, as when a function builds it.
+ */
+function exportedObject(content: string, name: string): string | null {
+  const objectAfter = (pattern: RegExp) => {
+    const m = pattern.exec(content);
+    if (!m) return null;
+    const open = m.index + m[0].length - 1;
+    return content.slice(open, closingIndex(content, open));
+  };
+  const local = (id: string) => objectAfter(new RegExp(`\\b(?:const|let|var)\\s+${id.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*\\{`));
+  if (name === "default" || name === "*") {
+    const direct = objectAfter(new RegExp(EXPORTED.source + "\\{"));
+    if (direct) return direct;
+    const id = new RegExp(EXPORTED.source + /([\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
+    return id ? local(id[1]) : null;
+  }
+  return local(name) ?? objectAfter(new RegExp(`\\b(?:module\\.)?exports\\.${name.replace(/\$/g, "\\$")}\\s*=\\s*\\{`));
+}
+
+/** The file a relative import names, with the extensions a Tailwind config's imports can leave out. */
+function resolveModule(from: string, spec: string): string | null {
+  const base = resolve(from, spec);
+  const extensions = [".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"];
+  // TypeScript's ESM imports name a .ts file by its .js.
+  const swapped = /\.[cm]?js$/.test(base) ? [".ts", ".cts", ".mts"].map((ext) => base.replace(/\.[cm]?js$/, ext)) : [];
+  const candidates = [base, ...extensions.map((ext) => base + ext), ...swapped, ...extensions.map((ext) => join(base, `index${ext}`))];
+  return candidates.find((p) => existsSync(p) && statSync(p).isFile()) ?? null;
+}
+
+/**
+ * The tokens of a preset, or of a config re-exported, read as the config
+ * is: an object literal in a relative file, or in the config itself, one
+ * level deep. Anything else, a package, a call, or a file storysync can't
+ * find, is named in a warning that starts with `subject`, and is null.
+ * zenkigen's config is `presets: [componentConfig]` from a package, and
+ * sameera/quantum's `presets: [require("./tailwind.preset.js")]`: each read
+ * as no tokens at all, with no warning to say why.
+ */
+function readConfigRef(ref: ConfigRef, configPath: string, content: string, subject: string, warnings: string[]): TokenCollection[] | null {
+  const missing = "so the tokens it declares are missing";
+  const from = ref.spec && !subject.endsWith(ref.spec) ? `, from ${ref.spec},` : "";
+  let file = configPath;
+  let object: string | null = null;
+  if (ref.call) {
+    warnings.push(`${subject}${from} built by a function call, which storysync can't read statically, ${missing}`);
+    return null;
+  }
+  if (ref.local) {
+    object = exportedObject(content, ref.local);
+  } else if (!ref.spec) {
+    warnings.push(`${subject}, which storysync can't read statically, ${missing}`);
+    return null;
+  } else if (!ref.spec.startsWith(".")) {
+    warnings.push(`${subject}${from ? `, from the package ${ref.spec},` : ", a package,"} which storysync can't read statically, ${missing}`);
+    return null;
+  } else {
+    const found = resolveModule(dirname(configPath), ref.spec);
+    if (!found) {
+      warnings.push(`${subject}, but storysync can't find ${ref.spec}, ${missing}`);
+      return null;
+    }
+    // Shown as the config's path is, relative when it is.
+    file = join(dirname(configPath), relative(resolve(dirname(configPath)), found));
+    try {
+      content = stripComments(readFileSync(file, "utf8"));
+    } catch {
+      warnings.push(`${subject}, but storysync can't read ${file}, ${missing}`);
+      return null;
+    }
+    object = exportedObject(content, ref.name ?? "default");
+  }
+  if (!object) {
+    warnings.push(`${subject}, which ${file} builds in a way storysync can't read statically, ${missing}`);
+    return null;
+  }
+  const nested = presetRefs(object, configImports(content));
+  if (nested.length) {
+    warnings.push(`${file} takes presets of its own, ${nested.map((r) => r.label).join(", ")}, which storysync doesn't follow, so the tokens they declare are missing`);
+  }
+  const blocks = extractThemeBlocks(object);
+  warnOfSpreads(blocks, file, warnings);
+  return themeCollections(blocks, warnings);
+}
+
+/**
+ * Names, in a warning, what a theme or its extend spreads in at the top,
+ * as edu-design-system's `theme: { ...applyTailwindConfig(edsTokens) }`
+ * does: storysync can't run it, so it read the theme as empty, saying only
+ * that the config used spread syntax.
+ */
+function warnOfSpreads(blocks: ThemeBlocks, path: string, warnings: string[]): void {
+  const spreads: string[] = [];
+  for (const block of [blocks.root, blocks.extend]) {
+    if (!block) continue;
+    for (const entry of splitTopLevel(block.slice(1, -1), ",")) {
+      const m = /^\s*\.\.\.\s*([\s\S]+?)\s*$/.exec(entry);
+      if (m) spreads.push(m[1].replace(/\s+/g, " "));
+    }
+  }
+  if (spreads.length) {
+    warnings.push(`The theme in ${path} spreads in ${spreads.join(", ")}, which storysync can't read statically, so the tokens it adds are missing`);
+  }
 }
 
 /**
@@ -621,8 +908,14 @@ interface ThemeBlocks {
   root: string;
 }
 
+/**
+ * A config's theme, and its extend. An ES module config can export its
+ * keys one by one, as `export const theme = { ... }`, which Tailwind reads
+ * as it does `theme: { ... }`; it was read as no theme at all.
+ */
 function extractThemeBlocks(content: string): ThemeBlocks {
-  const rootMatch = findBalancedBlock(content, /theme\s*:\s*\{/);
+  const rootMatch = findBalancedBlock(content, /theme\s*:\s*\{/) ??
+    findBalancedBlock(content, /\bexport\s+(?:const|let|var)\s+theme\s*(?::[^=]+)?=\s*\{/);
   const extendBlock = rootMatch ? findPropertyBlock(rootMatch, "extend") : null;
   return {
     extend: extendBlock ? `{${extendBlock}}` : "",

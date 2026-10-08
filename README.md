@@ -225,7 +225,7 @@ Storysync reads design tokens from your codebase and previews the Figma variable
 
 | Source | What it reads |
 |---|---|
-| **Tailwind** | `tailwind.config.ts/js` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
+| **Tailwind** | `tailwind.config.ts/js` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`, and those of a preset in a relative file, [see below](#tailwind-presets-and-configs-built-by-code)), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
 | **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`. |
 | **Theme files** | `tokens.ts`, `theme.ts`, and similar: exported objects with `colors`, `spacing`, and so on |
 
@@ -272,6 +272,12 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 A reference with no matching variable and no fallback is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
 Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. An `html { }` rule isn't read either, since `:root` overrides it whatever their order.
+
+### Tailwind presets and configs built by code
+
+Storysync reads a Tailwind config as text and never runs it. A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, is read the same way, one level deep. The config's own tokens win over a preset's of the same name, and a later preset wins over an earlier one, as in Tailwind. A config that re-exports another relative file is read through it.
+
+Anything Storysync can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export from a package, or anything spread into the theme, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too, since Tailwind's default theme and what a plugin adds aren't read. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
 
 ### Tailwind v4 `@theme`
 
