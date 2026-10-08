@@ -303,10 +303,11 @@ export function hasAddonMcpInConfig(content: string): boolean {
 /**
  * Adds addon-mcp at the start of the `addons` array. One commented out, often
  * left beside the real one, is passed over: written into, it uncomments the
- * line it lands on and breaks the file, or never loads.
+ * line it lands on and breaks the file, or never loads. The key may be
+ * quoted, as `storybook init` writes it (`"addons": [`), or not.
  */
 export function addAddonToConfig(content: string): { content: string; ok: boolean } {
-  const m = maskComments(content).match(/(addons\s*:\s*\[)/);
+  const m = maskComments(content).match(/(?<![\w$])(["']?)addons\1\s*:\s*\[/);
   if (!m) return { content, ok: false };
   const insertAt = (m.index ?? 0) + m[0].length;
   const newline = content.includes("\r\n") ? "\r\n" : "\n";

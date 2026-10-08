@@ -425,6 +425,19 @@ test("addAddonToConfig: indents the entry as the file indents, tabs in a tab-ind
   }
 });
 
+test("addAddonToConfig: finds the addons key quoted, as storybook init writes it", () => {
+  // storybook init writes main.ts with its keys quoted, and init couldn't
+  // find "addons": [ in it, so it asked the user to add the entry by hand.
+  const generated = `const config: StorybookConfig = {\n  "stories": [\n    "../src/**/*.mdx"\n  ],\n  "addons": [\n    "@chromatic-com/storybook",\n    "@storybook/addon-docs"\n  ],\n  "framework": {\n    "name": "@storybook/react-vite",\n    "options": {}\n  }\n};`;
+  const result = addAddonToConfig(generated);
+  assert.equal(result.ok, true);
+  assert.ok(result.content.includes(`\n  "addons": [\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },\n    "@chromatic-com/storybook",`), result.content);
+  assert.equal(hasAddonMcpInConfig(result.content), true);
+  assert.equal(addAddonToConfig(`const config = { 'addons': [] };`).ok, true, "single quotes");
+  // Not a key that ends in addons.
+  assert.equal(addAddonToConfig(`const config = { myaddons: [] };`).ok, false);
+});
+
 test("addAddonToConfig: returns ok=false when no addons array found", () => {
   const result = addAddonToConfig(`const config = { framework: '@storybook/nextjs-vite' };`);
   assert.equal(result.ok, false);
