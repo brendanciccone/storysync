@@ -1,0 +1,219 @@
+{
+  "fixture": {
+    "name": "card",
+    "sources": [
+      "design/budget/raw/card.raw.json (budget prototype: raw computed values per variant, normalized with storysync's own normalizers)",
+      "design/fidelity/raw2/ui-base-card--default.json (fidelity prototype: grid track counts and Chrome's SVG shape boxes for the same nodes)",
+      "design/fidelity/raw2/ui-base-card--default__size-sm.json (fidelity prototype: grid track counts and Chrome's SVG shape boxes for the same nodes)",
+      "agents/push2/styles.json (0.4.0 snap of the same story: slugs; root styles checked equal)"
+    ],
+    "notes": [
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-card",
+      "name": "Card",
+      "title": "ui/base/Card",
+      "category": "ui/base",
+      "storyId": "ui-base-card--default",
+      "variantProperties": [
+        {
+          "name": "size",
+          "type": "VARIANT",
+          "values": [
+            "default",
+            "sm"
+          ],
+          "defaultValue": "default"
+        }
+      ],
+      "base": {
+        "combination": {
+          "size": "default"
+        },
+        "slug": "size-default",
+        "styles": {
+          "display": "flex",
+          "flexDirection": "column",
+          "alignItems": "normal",
+          "justifyContent": "normal",
+          "gap": {
+            "row": 24,
+            "column": 24
+          },
+          "width": 384,
+          "height": 332,
+          "backgroundColor": "#ffffff",
+          "color": "#0a0a0a",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 14,
+            "topRight": 14,
+            "bottomRight": 14,
+            "bottomLeft": 14
+          },
+          "borderRadiusUniform": 14,
+          "padding": {
+            "top": 24,
+            "right": 0,
+            "bottom": 24,
+            "left": 0
+          },
+          "fontFamily": "system-ui",
+          "fontSize": 14,
+          "fontWeight": 400,
+          "lineHeight": 20,
+          "letterSpacing": 0,
+          "boxShadow": [
+            {
+              "offsetX": 0,
+              "offsetY": 0,
+              "blur": 0,
+              "spread": 1,
+              "color": "#0a0a0a1a",
+              "inset": false
+            },
+            {
+              "offsetX": 0,
+              "offsetY": 1,
+              "blur": 2,
+              "spread": 0,
+              "color": "#0000000d",
+              "inset": false
+            }
+          ],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": null,
+          "text": {
+            "color": "#0a0a0a",
+            "fontFamily": "system-ui",
+            "fontSize": 16,
+            "fontWeight": 500
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {
+            "size": "default"
+          },
+          "slug": "size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 384,
+            "height": 332
+          },
+          "element": "div[data-slot=\"card\"]",
+          "delta": {}
+        },
+        {
+          "combination": {
+            "size": "sm"
+          },
+          "slug": "size-sm",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 384,
+            "height": 297
+          },
+          "element": "div[data-slot=\"card\"]",
+          "delta": {
+            "gap": {
+              "row": 16,
+              "column": 16
+            },
+            "height": 297,
+            "padding": {
+              "top": 16,
+              "right": 0,
+              "bottom": 16,
+              "left": 0
+            },
+            "text": {
+              "color": "#0a0a0a",
+              "fontFamily": "system-ui",
+              "fontSize": 14,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"d":"flex","dir":"column","gap":[16,16],"pad":[16,0,16,0]},"box":[0,0,384,297]},
+              "card-header": {"L":{"ai":"flex-start","d":"grid","gap":[4,4],"pad":[0,16,0,16],"tracks":[1,2]},"box":[0,16,384,45]},
+              "card-header/card-title": {"box":[16,0,352,21],"tx":{"c":"Notifications","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,2,84,17],"lh":21,"n":1,"sz":14,"wt":500}},
+              "card-header/card-description": {"box":[16,25,352,20]},
+              "card-content": {"L":{"d":"grid","gap":[16,16],"pad":[0,16,0,16],"tracks":[1,3]},"box":[0,77,384,152]},
+              "card-content/div": {"box":[16,0,352,40]},
+              "card-content/div:2": {"box":[16,56,352,40]},
+              "card-content/div:3": {"box":[16,112,352,40]},
+              "card-footer": {"L":{"ai":"center","d":"flex","pad":[0,16,0,16]},"box":[0,245,384,36]},
+              "card-footer/button": {"box":[16,0,59.2,36]}
+            }
+          }
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"d":"flex","dir":"column","gap":[24,24],"pad":[24,0,24,0]},"box":[0,0,384,332],"clip":1,"el":"div[data-slot=card]","k":"","t":"F"},
+          {"L":{"ai":"flex-start","d":"grid","gap":[4,4],"pad":[0,24,0,24],"tracks":[1,2]},"box":[0,24,384,48],"el":"div[data-slot=card-header]","k":"card-header","r":[14,14,0,0],"t":"F"},
+          {"box":[24,0,336,24],"el":"div[data-slot=card-title]","k":"card-header/card-title","t":"T","tx":{"c":"Notifications","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,3,94.17,18],"lh":24,"n":1,"sz":16,"wt":500}},
+          {"box":[24,28,336,20],"el":"div[data-slot=card-description]","k":"card-header/card-description","t":"T","tx":{"c":"You have 3 unread messages.","col":"#737373","f":"system-ui","fk":1,"ink":[0,1,192.16,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"L":{"d":"grid","gap":[16,16],"pad":[0,24,0,24],"tracks":[1,3]},"box":[0,96,384,152],"el":"div[data-slot=card-content]","k":"card-content","t":"F"},
+          {"L":{"ai":"center","d":"flex","gap":[16,16]},"box":[24,0,336,40],"el":"div","k":"card-content/div","t":"F"},
+          {"box":[0,8,24,24],"clip":1,"el":"svg","k":"card-content/div/svg","shapes":[[10.27,21,3.46,1],[20,2,2,6],[3,2,18,15],[2,2,2,6]],"svg":"svg:284ce5f9","t":"V"},
+          {"L":{"d":"block"},"box":[40,0,191.08,40],"el":"div","k":"card-content/div/div","t":"F"},
+          {"box":[0,0,191.08,20],"el":"p","k":"card-content/div/div/p","t":"T","tx":{"c":"Your call has been confirmed.","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,1,191.08,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"box":[0,20,191.08,20],"el":"p","k":"card-content/div/div/p:2","t":"T","tx":{"c":"1 hour ago","col":"#0a0a0a99","f":"system-ui","fk":1,"ink":[0,1,67.41,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[16,16]},"box":[24,56,336,40],"el":"div","k":"card-content/div:2","t":"F"},
+          {"box":[0,8,24,24],"clip":1,"el":"svg","k":"card-content/div:2/svg","shapes":[[10.27,21,3.46,1],[20,2,2,6],[3,2,18,15],[2,2,2,6]],"svg":"svg:284ce5f9","t":"V"},
+          {"L":{"d":"block"},"box":[40,0,165.8,40],"el":"div","k":"card-content/div:2/div","t":"F"},
+          {"box":[0,0,165.8,20],"el":"p","k":"card-content/div:2/div/p","t":"T","tx":{"c":"You have a new message!","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,1,165.8,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"box":[0,20,165.8,20],"el":"p","k":"card-content/div:2/div/p:2","t":"T","tx":{"c":"1 hour ago","col":"#0a0a0a99","f":"system-ui","fk":1,"ink":[0,1,67.41,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[16,16]},"box":[24,112,336,40],"el":"div","k":"card-content/div:3","t":"F"},
+          {"box":[0,8,24,24],"clip":1,"el":"svg","k":"card-content/div:3/svg","shapes":[[10.27,21,3.46,1],[20,2,2,6],[3,2,18,15],[2,2,2,6]],"svg":"svg:284ce5f9","t":"V"},
+          {"L":{"d":"block"},"box":[40,0,221.59,40],"el":"div","k":"card-content/div:3/div","t":"F"},
+          {"box":[0,0,221.59,20],"el":"p","k":"card-content/div:3/div/p","t":"T","tx":{"c":"Your subscription is expiring soon!","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,1,221.59,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"box":[0,20,221.59,20],"el":"p","k":"card-content/div:3/div/p:2","t":"T","tx":{"c":"2 hours ago","col":"#0a0a0a99","f":"system-ui","fk":1,"ink":[0,1,76.41,17],"lh":20,"n":1,"sz":14,"wt":400}},
+          {"L":{"ai":"center","d":"flex","pad":[0,24,0,24]},"box":[0,272,384,36],"el":"div[data-slot=card-footer]","k":"card-footer","r":[0,0,14,14],"t":"F"},
+          {"L":{"ai":"center","d":"flex","gap":[6,6],"jc":"center","pad":[0,10,0,10]},"S":{"shrink":0},"bd":{"c":null,"s":"solid","w":1},"box":[24,0,59.2,36],"el":"button[data-slot=button]","k":"card-footer/button","r":8,"t":"F"},
+          {"box":[11,7.5,37.2,20],"el":"#text","k":"card-footer/button/#text","t":"T","tx":{"c":"Close","col":"#171717","f":"system-ui","fk":1,"ink":[0,1.5,37.2,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+        ],
+        "assets": {
+          "svg": {
+            "svg:284ce5f9": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M10.268 21a2 2 0 0 0 3.464 0\"/><path d=\"M22 8c0-2.3-.8-4.3-2-6\"/><path d=\"M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326\"/><path d=\"M4 2C2.8 3.7 2 5.7 2 8\"/></svg>"
+          },
+          "img": {}
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 2,
+    "rendered": 2,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

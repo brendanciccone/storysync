@@ -1,0 +1,120 @@
+{
+  "fixture": {
+    "name": "inputotp",
+    "sources": [
+      "design/budget/raw/inputotp.raw.json (budget prototype: raw computed values per variant, normalized with storysync's own normalizers)",
+      "agents/push2/styles.json (0.4.0 snap of the same story: slugs; root styles checked equal)"
+    ],
+    "notes": [
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them.",
+      "Snapped with --exclude-props textAlign,pushPasswordManagerStrategy, the behavior-only props, so it has one variant."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "excludeProps": [
+    "textAlign",
+    "pushPasswordManagerStrategy"
+  ],
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-inputotp",
+      "name": "InputOTP",
+      "title": "ui/base/InputOTP",
+      "category": "ui/base",
+      "storyId": "ui-base-inputotp--default",
+      "variantProperties": [],
+      "base": {
+        "combination": {},
+        "slug": "default",
+        "styles": {
+          "display": "flex",
+          "flexDirection": "row",
+          "alignItems": "center",
+          "justifyContent": "normal",
+          "gap": null,
+          "width": 216,
+          "height": 36,
+          "backgroundColor": null,
+          "color": "#0a0a0a",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 0,
+            "topRight": 0,
+            "bottomRight": 0,
+            "bottomLeft": 0
+          },
+          "borderRadiusUniform": 0,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "fontFamily": "system-ui",
+          "fontSize": 16,
+          "fontWeight": 400,
+          "lineHeight": 24,
+          "letterSpacing": 0,
+          "boxShadow": [],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": null,
+          "text": null
+        }
+      },
+      "variants": [
+        {
+          "combination": {},
+          "slug": "default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 216,
+            "height": 36
+          },
+          "element": "div",
+          "delta": {}
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"ai":"center","d":"flex"},"box":[0,0,216,36],"el":"div","k":"","t":"F"},
+          {"L":{"ai":"center","d":"flex"},"box":[0,0,216,36],"el":"div[data-slot=input-otp-group]","k":"input-otp-group","r":8,"t":"F"},
+          {"bd":{"c":"#e5e5e5","s":"solid","w":1},"box":[0,0,36,36],"el":"div[data-slot=input-otp-slot]","k":"input-otp-group/input-otp-slot","r":[8,0,0,8],"sh":[[0,1,2,0,"#0000000d"]],"t":"F"},
+          {"bd":{"c":"#e5e5e5","s":"solid","w":[1,1,1,0]},"box":[36,0,36,36],"el":"div[data-slot=input-otp-slot]","k":"input-otp-group/input-otp-slot:2","sh":[[0,1,2,0,"#0000000d"]],"t":"F"},
+          {"bd":{"c":"#e5e5e5","s":"solid","w":[1,1,1,0]},"box":[72,0,36,36],"el":"div[data-slot=input-otp-slot]","k":"input-otp-group/input-otp-slot:3","sh":[[0,1,2,0,"#0000000d"]],"t":"F"},
+          {"bd":{"c":"#e5e5e5","s":"solid","w":[1,1,1,0]},"box":[108,0,36,36],"el":"div[data-slot=input-otp-slot]","k":"input-otp-group/input-otp-slot:4","sh":[[0,1,2,0,"#0000000d"]],"t":"F"},
+          {"bd":{"c":"#e5e5e5","s":"solid","w":[1,1,1,0]},"box":[144,0,36,36],"el":"div[data-slot=input-otp-slot]","k":"input-otp-group/input-otp-slot:5","sh":[[0,1,2,0,"#0000000d"]],"t":"F"},
+          {"bd":{"c":"#e5e5e5","s":"solid","w":[1,1,1,0]},"box":[180,0,36,36],"el":"div[data-slot=input-otp-slot]","k":"input-otp-group/input-otp-slot:6","r":[0,8,8,0],"sh":[[0,1,2,0,"#0000000d"]],"t":"F"}
+        ],
+        "assets": {
+          "svg": {},
+          "img": {}
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 1,
+    "rendered": 1,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

@@ -1,0 +1,640 @@
+{
+  "fixture": {
+    "name": "button-icon",
+    "sources": [
+      "design/budget/raw/button.raw.json (budget prototype: raw computed values per variant, normalized with storysync's own normalizers)",
+      "design/fidelity/raw4/ui-base-button--with-icon.json (fidelity prototype: grid track counts and Chrome's SVG shape boxes for the same nodes)",
+      "design/fidelity/raw4/ui-base-button--with-icon__variant-outline_size-sm.json (fidelity prototype: grid track counts and Chrome's SVG shape boxes for the same nodes)"
+    ],
+    "notes": [
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them.",
+      "`variant=link` with a size other than the default is `args_hidden`: the story's `size` argType carries `if: { arg: \"variant\", neq: \"link\" }`, so Storybook rendered the default size; no measurements are kept for it."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-button",
+      "name": "Button",
+      "title": "ui/base/Button",
+      "category": "ui/base",
+      "storyId": "ui-base-button--with-icon",
+      "variantProperties": [
+        {
+          "name": "variant",
+          "type": "VARIANT",
+          "values": [
+            "default",
+            "link",
+            "outline",
+            "destructive"
+          ],
+          "defaultValue": "default"
+        },
+        {
+          "name": "size",
+          "type": "VARIANT",
+          "values": [
+            "default",
+            "xs",
+            "sm"
+          ],
+          "defaultValue": "default"
+        }
+      ],
+      "base": {
+        "combination": {
+          "variant": "default",
+          "size": "default"
+        },
+        "slug": "variant-default--size-default",
+        "styles": {
+          "display": "inline-flex",
+          "flexDirection": "row",
+          "alignItems": "center",
+          "justifyContent": "center",
+          "gap": {
+            "row": 6,
+            "column": 6
+          },
+          "width": 206.8,
+          "height": 36,
+          "backgroundColor": "#171717",
+          "backgroundClip": "padding-box",
+          "color": "#fafafa",
+          "border": {
+            "top": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            },
+            "right": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            },
+            "bottom": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            },
+            "left": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            }
+          },
+          "borderUniform": {
+            "width": 1,
+            "style": "solid",
+            "color": null
+          },
+          "borderRadius": {
+            "topLeft": 8,
+            "topRight": 8,
+            "bottomRight": 8,
+            "bottomLeft": 8
+          },
+          "borderRadiusUniform": 8,
+          "padding": {
+            "top": 0,
+            "right": 10,
+            "bottom": 0,
+            "left": 10
+          },
+          "fontFamily": "system-ui",
+          "fontSize": 14,
+          "fontWeight": 500,
+          "lineHeight": 20,
+          "letterSpacing": 0,
+          "boxShadow": [],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": null,
+          "text": {
+            "color": "#fafafa",
+            "fontFamily": "system-ui",
+            "fontSize": 14,
+            "fontWeight": 500
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {
+            "variant": "default",
+            "size": "default"
+          },
+          "slug": "variant-default--size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 206.8,
+            "height": 36
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {}
+        },
+        {
+          "combination": {
+            "variant": "default",
+            "size": "xs"
+          },
+          "slug": "variant-default--size-xs",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 177.66,
+            "height": 24
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "gap": {
+              "row": 4,
+              "column": 4
+            },
+            "width": 177.66,
+            "height": 24,
+            "padding": {
+              "top": 0,
+              "right": 8,
+              "bottom": 0,
+              "left": 8
+            },
+            "fontSize": 12,
+            "lineHeight": 16,
+            "text": {
+              "color": "#fafafa",
+              "fontFamily": "system-ui",
+              "fontSize": 12,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[4,4],"jc":"center","pad":[0,8,0,8]},"box":[0,0,177.66,24]},
+              "svg": {"box":[9,6,12,12],"shapes":[[1,3.5,10,3],[1,2,10,8]],"svg":"svg:7ecee7f9"},
+              "#text": {"box":[33,3.5,135.66,16],"tx":{"c":"Login with Email Button","col":"#fafafa","f":"system-ui","fk":1,"ink":[0,0.5,135.66,15],"lh":16,"n":1,"sz":12,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "default",
+            "size": "sm"
+          },
+          "slug": "variant-default--size-sm",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 204.8,
+            "height": 32
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "gap": {
+              "row": 4,
+              "column": 4
+            },
+            "width": 204.8,
+            "height": 32
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[4,4],"jc":"center","pad":[0,10,0,10]},"box":[0,0,204.8,32]},
+              "svg": {"box":[11,8,16,16]},
+              "#text": {"box":[39,5.5,154.8,20]}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "link",
+            "size": "default"
+          },
+          "slug": "variant-link--size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 206.8,
+            "height": 36
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "backgroundColor": null,
+            "color": "#171717",
+            "text": {
+              "color": "#171717",
+              "fontFamily": "system-ui",
+              "fontSize": 14,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "svg": {"svg":"svg:1df5bd5c"},
+              "#text": {"tx":{"c":"Login with Email Button","col":"#171717","f":"system-ui","fk":1,"ink":[0,1.5,154.8,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "link",
+            "size": "xs"
+          },
+          "slug": "variant-link--size-xs",
+          "status": "args_hidden",
+          "error": null,
+          "args": {
+            "hidden": [
+              {
+                "arg": "size",
+                "value": "xs",
+                "if": {
+                  "arg": "variant",
+                  "neq": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "default"
+          },
+          "slug": "variant-outline--size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 206.8,
+            "height": 36
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "backgroundColor": "#ffffff",
+            "color": "#0a0a0a",
+            "border": {
+              "top": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "right": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "bottom": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "left": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              }
+            },
+            "borderUniform": {
+              "width": 1,
+              "style": "solid",
+              "color": "#e5e5e5"
+            },
+            "boxShadow": [
+              {
+                "offsetX": 0,
+                "offsetY": 1,
+                "blur": 2,
+                "spread": 0,
+                "color": "#0000000d",
+                "inset": false
+              }
+            ],
+            "text": {
+              "color": "#0a0a0a",
+              "fontFamily": "system-ui",
+              "fontSize": 14,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "svg": {"svg":"svg:94c919cf"},
+              "#text": {"tx":{"c":"Login with Email Button","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,1.5,154.8,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "xs"
+          },
+          "slug": "variant-outline--size-xs",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 177.66,
+            "height": 24
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "gap": {
+              "row": 4,
+              "column": 4
+            },
+            "width": 177.66,
+            "height": 24,
+            "backgroundColor": "#ffffff",
+            "color": "#0a0a0a",
+            "border": {
+              "top": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "right": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "bottom": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "left": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              }
+            },
+            "borderUniform": {
+              "width": 1,
+              "style": "solid",
+              "color": "#e5e5e5"
+            },
+            "padding": {
+              "top": 0,
+              "right": 8,
+              "bottom": 0,
+              "left": 8
+            },
+            "fontSize": 12,
+            "lineHeight": 16,
+            "boxShadow": [
+              {
+                "offsetX": 0,
+                "offsetY": 1,
+                "blur": 2,
+                "spread": 0,
+                "color": "#0000000d",
+                "inset": false
+              }
+            ],
+            "text": {
+              "color": "#0a0a0a",
+              "fontFamily": "system-ui",
+              "fontSize": 12,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[4,4],"jc":"center","pad":[0,8,0,8]},"box":[0,0,177.66,24]},
+              "svg": {"box":[9,6,12,12],"shapes":[[1,3.5,10,3],[1,2,10,8]],"svg":"svg:9db91acf"},
+              "#text": {"box":[33,3.5,135.66,16],"tx":{"c":"Login with Email Button","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,0.5,135.66,15],"lh":16,"n":1,"sz":12,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "sm"
+          },
+          "slug": "variant-outline--size-sm",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 204.8,
+            "height": 32
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "gap": {
+              "row": 4,
+              "column": 4
+            },
+            "width": 204.8,
+            "height": 32,
+            "backgroundColor": "#ffffff",
+            "color": "#0a0a0a",
+            "border": {
+              "top": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "right": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "bottom": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              },
+              "left": {
+                "width": 1,
+                "style": "solid",
+                "color": "#e5e5e5"
+              }
+            },
+            "borderUniform": {
+              "width": 1,
+              "style": "solid",
+              "color": "#e5e5e5"
+            },
+            "boxShadow": [
+              {
+                "offsetX": 0,
+                "offsetY": 1,
+                "blur": 2,
+                "spread": 0,
+                "color": "#0000000d",
+                "inset": false
+              }
+            ],
+            "text": {
+              "color": "#0a0a0a",
+              "fontFamily": "system-ui",
+              "fontSize": 14,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[4,4],"jc":"center","pad":[0,10,0,10]},"box":[0,0,204.8,32]},
+              "svg": {"box":[11,8,16,16],"svg":"svg:94c919cf"},
+              "#text": {"box":[39,5.5,154.8,20],"tx":{"c":"Login with Email Button","col":"#0a0a0a","f":"system-ui","fk":1,"ink":[0,1.5,154.8,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "destructive",
+            "size": "default"
+          },
+          "slug": "variant-destructive--size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 206.8,
+            "height": 36
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "backgroundColor": "#df22251a",
+            "color": "#df2225",
+            "text": {
+              "color": "#df2225",
+              "fontFamily": "system-ui",
+              "fontSize": 14,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "svg": {"svg":"svg:8f850a3b"},
+              "#text": {"tx":{"c":"Login with Email Button","col":"#df2225","f":"system-ui","fk":1,"ink":[0,1.5,154.8,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "destructive",
+            "size": "xs"
+          },
+          "slug": "variant-destructive--size-xs",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 177.66,
+            "height": 24
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "gap": {
+              "row": 4,
+              "column": 4
+            },
+            "width": 177.66,
+            "height": 24,
+            "backgroundColor": "#df22251a",
+            "color": "#df2225",
+            "padding": {
+              "top": 0,
+              "right": 8,
+              "bottom": 0,
+              "left": 8
+            },
+            "fontSize": 12,
+            "lineHeight": 16,
+            "text": {
+              "color": "#df2225",
+              "fontFamily": "system-ui",
+              "fontSize": 12,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[4,4],"jc":"center","pad":[0,8,0,8]},"box":[0,0,177.66,24]},
+              "svg": {"box":[9,6,12,12],"shapes":[[1,3.5,10,3],[1,2,10,8]],"svg":"svg:98750b3b"},
+              "#text": {"box":[33,3.5,135.66,16],"tx":{"c":"Login with Email Button","col":"#df2225","f":"system-ui","fk":1,"ink":[0,0.5,135.66,15],"lh":16,"n":1,"sz":12,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "destructive",
+            "size": "sm"
+          },
+          "slug": "variant-destructive--size-sm",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 204.8,
+            "height": 32
+          },
+          "element": "button[data-slot=\"button\"]",
+          "delta": {
+            "gap": {
+              "row": 4,
+              "column": 4
+            },
+            "width": 204.8,
+            "height": 32,
+            "backgroundColor": "#df22251a",
+            "color": "#df2225",
+            "text": {
+              "color": "#df2225",
+              "fontFamily": "system-ui",
+              "fontSize": 14,
+              "fontWeight": 500
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[4,4],"jc":"center","pad":[0,10,0,10]},"box":[0,0,204.8,32]},
+              "svg": {"box":[11,8,16,16],"svg":"svg:8f850a3b"},
+              "#text": {"box":[39,5.5,154.8,20],"tx":{"c":"Login with Email Button","col":"#df2225","f":"system-ui","fk":1,"ink":[0,1.5,154.8,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+            }
+          }
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"jc":"center","pad":[0,10,0,10]},"box":[0,0,206.8,36],"el":"button[data-slot=button]","k":"","t":"F"},
+          {"S":{"shrink":0},"box":[11,10,16,16],"clip":1,"el":"svg","k":"svg","shapes":[[1.33,4.67,13.33,4],[1.33,2.67,13.33,10.67]],"svg":"svg:75dee6f9","t":"V"},
+          {"box":[41,7.5,154.8,20],"el":"#text","k":"#text","t":"T","tx":{"c":"Login with Email Button","col":"#fafafa","f":"system-ui","fk":1,"ink":[0,1.5,154.8,17],"lh":20,"n":1,"sz":14,"ta":"center","ws":"nowrap","wt":500}}
+        ],
+        "assets": {
+          "svg": {
+            "svg:1df5bd5c": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#171717\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>",
+            "svg:75dee6f9": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fafafa\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>",
+            "svg:7ecee7f9": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fafafa\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>",
+            "svg:8f850a3b": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#df2225\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>",
+            "svg:94c919cf": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>",
+            "svg:98750b3b": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#df2225\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>",
+            "svg:9db91acf": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"/><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"/></svg>"
+          },
+          "img": {}
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 11,
+    "rendered": 10,
+    "failed": 1,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}
