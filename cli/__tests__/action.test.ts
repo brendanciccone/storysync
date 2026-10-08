@@ -126,6 +126,10 @@ test("action Detect drift: two components named Button are told apart", () => {
   assert.equal(added.outputs.result, "true", added.stdout);
   assert.match(added.report ?? "", /### Added\n- \*\*Nav\/Button\*\* \(2 combinations\)\n/);
   assert.doesNotMatch(added.report ?? "", /### Changed|### Removed/);
+
+  // A component with no variant properties is one combination, as map says.
+  const single = detectDrift(mapJson([formsButton]), [formsButton, withId(component("Forms/Frozen", 0))]);
+  assert.match(single.report ?? "", /### Added\n- \*\*Forms\/Frozen\*\* \(1 combination\)\n/);
 });
 
 test("action Detect drift: a changed component is reported under its title, one with no title under its ID, and one from an old baseline under its name", () => {

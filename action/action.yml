@@ -706,7 +706,7 @@ runs:
 
         if (added.length) {
           body += "### Added\n";
-          for (const c of added) body += "- **" + label(c) + "** (" + c.combinations + " combinations)\n";
+          for (const c of added) body += "- **" + label(c) + "** (" + c.combinations + (c.combinations === 1 ? " combination" : " combinations") + ")\n";
           body += "\n";
         }
         if (removed.length) {
