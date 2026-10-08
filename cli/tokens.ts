@@ -397,8 +397,10 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
     warnings.push("Config uses spread syntax - some values may not be extracted");
   }
 
-  // Extract theme.extend and theme objects
-  const themeBlocks = extractThemeBlocks(content);
+  // Extract theme.extend and theme objects, from the object the config
+  // exports when it holds them.
+  const exported = exportedObject(content, "default");
+  const themeBlocks = ownThemeBlocks(content, exported);
   const own = themeCollections(themeBlocks, warnings);
   // The warnings from here on name what storysync can't read.
   const unread = warnings.length;
@@ -414,7 +416,7 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
     const layer = readConfigRef(reexport, configPath, content, `${configPath} re-exports its config from ${reexport.spec}`, warnings);
     if (layer) layers.push(layer);
   }
-  for (const ref of presetRefs(content, imports)) {
+  for (const ref of presetRefs(exported ?? content, imports)) {
     const layer = readConfigRef(ref, configPath, content, `${configPath} takes the preset ${ref.label}`, warnings);
     if (layer) layers.push(layer);
   }
@@ -460,6 +462,19 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
     }
   }
   return false;
+}
+
+/**
+ * A config's own theme: the one in `exported`, the object it exports, when
+ * that holds one, or else the first in the file, as storysync always read
+ * it. A preset a config declares above itself, as `const base = { theme:
+ * {...} }`, holds the first `theme:` in the file, so the config's own were
+ * lost. A config that exports no object literal, or one with no theme of
+ * its own, is read as before.
+ */
+function ownThemeBlocks(content: string, exported: string | null): ThemeBlocks {
+  const blocks = exported ? extractThemeBlocks(exported) : null;
+  return blocks?.root ? blocks : extractThemeBlocks(content);
 }
 
 /** `content` without the `key: [...]` array of each key, the first of each. */

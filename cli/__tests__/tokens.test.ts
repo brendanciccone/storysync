@@ -1504,6 +1504,37 @@ test("Tailwind: a preset in a relative file is read as the config is, and the co
   } finally { cleanup(dir); }
 });
 
+test("Tailwind: a preset declared above the config in its own file leaves the config's theme its own", () => {
+  // JavaScript runs a preset declared in the file only above the config,
+  // where its theme was the first in the file, read as the config's.
+  const dir = makeProject({
+    "tailwind.config.js": `const base = {
+  theme: { extend: { colors: { canvas: "#aaaaaa", line: "#000000" } } },
+};
+
+module.exports = {
+  presets: [base],
+  content: [],
+  theme: { extend: { colors: { ink: "#bbbbbb", line: "#111111" } } },
+};`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [["colors", [["canvas", "#aaaaaa"], ["ink", "#bbbbbb"], ["line", "#111111"]]]]);
+    assert.ok(!result.warnings.some((w) => w.includes("statically")), result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+
+  // Through a const, as a typed config is exported.
+  const typed = makeProject({
+    "tailwind.config.ts": `const base = { theme: { colors: { canvas: "#aaaaaa" } } };
+const config: Config = { presets: [base], theme: { extend: { spacing: { gutter: "1rem" } } } };
+export default config;`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(typed)), [["colors", [["canvas", "#aaaaaa"]]], ["spacing", [["gutter", "1rem"]]]]);
+  } finally { cleanup(typed); }
+});
+
 test("Tailwind: a preset imported by name from a TypeScript file is that export, not another in the file", () => {
   const dir = makeProject({
     "tailwind.config.ts": `import type { Config } from "tailwindcss";

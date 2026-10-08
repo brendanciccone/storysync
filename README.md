@@ -277,7 +277,7 @@ Variables are read from every rule whose selector list includes `:root`, such as
 
 ### Tailwind presets and configs built by code
 
-Storysync reads a Tailwind config as text and never runs it. A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, is read the same way, one level deep. The config's own tokens win over a preset's of the same name, and a later preset wins over an earlier one, as in Tailwind. A config that re-exports another relative file is read through it.
+Storysync reads a Tailwind config as text and never runs it. A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, or in an object the config file declares, is read the same way, one level deep. The config's own tokens win over a preset's of the same name, and a later preset wins over an earlier one, as in Tailwind. A config that re-exports another relative file is read through it.
 
 Anything Storysync can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export from a package, or anything spread into the theme, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too, since Tailwind's default theme and what a plugin adds aren't read. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
 
