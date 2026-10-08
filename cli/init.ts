@@ -309,8 +309,28 @@ export function addAddonToConfig(content: string): { content: string; ok: boolea
   const m = maskComments(content).match(/(addons\s*:\s*\[)/);
   if (!m) return { content, ok: false };
   const insertAt = (m.index ?? 0) + m[0].length;
-  const entry = `\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const entry = `${newline}${entryIndent(content, m.index ?? 0, insertAt)}{ name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
   return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
+}
+
+/**
+ * How to indent an entry of the `addons` array, in the file's own style: as
+ * the array's first entry is, where it has one on a line of its own, and
+ * otherwise a level deeper than the line `addons` is on. A level is a tab in
+ * a file indented with tabs, and otherwise the file's own step of spaces, 2
+ * where nothing is indented. A line indented with spaces in a file indented
+ * with tabs reads as a mistake, and fails a linter that enforces tabs.
+ */
+function entryIndent(content: string, keyAt: number, insertAt: number): string {
+  const next = /^[ \t]*\r?\n(?:[ \t]*\r?\n)*([ \t]*)(\S)/.exec(content.slice(insertAt));
+  if (next && next[2] !== "]") return next[1];
+  const lineStart = content.lastIndexOf("\n", keyAt - 1) + 1;
+  const own = /^[ \t]*/.exec(content.slice(lineStart))?.[0] ?? "";
+  const indents = [...content.matchAll(/^([ \t]+)\S/gm)].map((line) => line[1]);
+  if (indents.some((indent) => indent.startsWith("\t"))) return `${own}\t`;
+  const step = Math.min(...indents.map((indent) => indent.length).filter((n) => n > 0));
+  return own + " ".repeat(Number.isFinite(step) ? step : 2);
 }
 
 // One reader of stdin for every prompt. A readline interface per prompt lost
