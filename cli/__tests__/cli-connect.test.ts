@@ -1,13 +1,14 @@
 // Runs the compiled CLI against servers that refuse it, or take too long to
 // answer, end to end: what a run says when Storybook or Figma answers the
-// connection with an HTTP error, and how long a request may take once
-// connected. The servers are stand-ins on local ports, so this needs no
-// network, no Storybook and no Figma.
+// connection with an HTTP error, how long a request may take once
+// connected, and what a snap stopped while it waits leaves behind. The
+// servers are stand-ins on local ports, so this needs no network, no
+// Storybook and no Figma.
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -228,5 +229,45 @@ test("diff CLI: a use_figma that never answers fails the Figma read within --con
     assert.match(r.out, /Figma read failed — diff results above are partial/);
   } finally {
     rmSync(project, { recursive: true, force: true });
+  }
+});
+
+// --- A snap that is stopped ---
+
+test("snap CLI: SIGTERM stops the run without writing a styles.json", { timeout: 30_000 }, async (t) => {
+  // Playwright closed the browser on SIGTERM and left snap running: every
+  // component left was recorded as a failed browser session, written over
+  // the last styles.json, and the run exited 0.
+  const { url, calls } = await slowStandIn({ "docs-show": Infinity });
+  const out = mkdtempSync(join(tmpdir(), "storysync-sigterm-"));
+  try {
+    const child = spawn(process.execPath, [CLI, "snap", "--storybook", url, "--out", out, "--json", "--connect-timeout", "20000"], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", (d) => { output += d; });
+    child.stderr.on("data", (d) => { output += d; });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+
+    // The browser is up once snap asks for a component's docs.
+    const deadline = Date.now() + 15_000;
+    while (!calls.includes("docs-show") && child.exitCode === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!calls.includes("docs-show")) {
+      child.kill("SIGKILL");
+      await exited;
+      if (/Could not find a Chromium-based browser|needs Node 20 or newer/.test(output)) {
+        t.skip("no browser for snap here");
+        return;
+      }
+      assert.fail(`snap never read a component: ${output}`);
+    }
+
+    child.kill("SIGTERM");
+    const { code } = await exited;
+    assert.equal(code, 143, output);
+    assert.equal(existsSync(join(out, "styles.json")), false, "a stopped snap must not write styles.json");
+    assert.equal(existsSync(join(out, "meta.json")), false);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
   }
 });

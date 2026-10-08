@@ -265,6 +265,18 @@ program
     // Where the run is, on a terminal: a component with many variants can
     // take minutes, and under --json nothing else is printed until the end.
     const progress = new Progress("snap");
+    // Playwright closes the browser on SIGTERM and SIGHUP but leaves the run
+    // going, and snap then recorded every component left as a failed browser
+    // session, wrote that over the last styles.json and exited 0. So a CI job
+    // cancelled, or an agent's command timed out, replaced a good snap with a
+    // broken one. Stop instead, writing nothing, as Ctrl-C does: exiting runs
+    // Playwright's exit handler, which kills the browser.
+    const stop = (code: number) => () => {
+      progress.done();
+      process.exit(code);
+    };
+    process.on("SIGTERM", stop(143));
+    process.on("SIGHUP", stop(129));
     try {
       const result = await runSnap(
         {
