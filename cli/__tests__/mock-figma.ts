@@ -31,10 +31,19 @@
 // measure the test gives (measureFromTrees learns them from snap's ink boxes,
 // so a faithful build lands where the browser drew, and `textWidthFactor`
 // widens every line to stand in for a wider font); wrapping is greedy by
-// words; `<g>` in an imported SVG is flattened into its shapes; auto layout
-// does not wrap. Behaviors the design's Figma spike measures live (SVG stroke
-// scaling, whether clone() keeps plugin data) are options, defaulting to the
-// expected answer, so a test can run both.
+// words; `<g>` in an imported SVG is flattened into its shapes. Behaviors the
+// design's Figma spike measures live (SVG stroke scaling, whether clone()
+// keeps plugin data, a child filling across a hugging parent) are options,
+// defaulting to the expected answer, so a test can run both.
+//
+// What it refuses rather than guess, throwing a "mock-figma:" error from the
+// layout, so the call that set it up fails as a build Figma would collapse
+// should: a wrapping auto layout; a child that fills or grows along a parent
+// that hugs that axis, which the figma-use skill documents Figma collapsing
+// or compressing; and FILL on a text node that sizes itself on that axis
+// (WIDTH_AND_HEIGHT, or HEIGHT for its height), which the skill documents
+// Figma ignoring. A layout the mock refuses stays refused, on every read,
+// until a write fixes it.
 //
 // Also here, for the tree packages' tests: the T fixtures under
 // fixtures/tree/, and helpers to load and expand them.
@@ -88,6 +97,16 @@ export interface MockFigmaOptions {
   pages?: string[];
   /** What Figma stores for uploaded bytes, if it re-encodes them; the spike (item 10) settles it. Default: the bytes. */
   reencodeImage?: (bytes: Uint8Array) => Uint8Array;
+  /**
+   * What a child that fills across its parent (FILL on the cross axis,
+   * layoutAlign STRETCH) does when the parent hugs that axis. "stretch", the
+   * default: the parent hugs the children that do not fill, and the filling
+   * ones take that size, as the mock assumes Figma does. "refuse": the
+   * layout throws, for a build that must not rely on it. The spike's
+   * `sizing` item (11) settles it; along the flow, the case is always
+   * refused (see the file's header).
+   */
+  fillAcrossHug?: "stretch" | "refuse";
 }
 
 /**
@@ -685,10 +704,13 @@ class Doc {
     return `1:${this.next++}`;
   }
 
-  /** Lays out every page, when anything changed since the last time. */
+  /**
+   * Lays out every page, when anything changed since the last time. A layout
+   * the mock refuses throws, and leaves the document dirty, so every later
+   * read throws the same until a write fixes it.
+   */
   settle(): void {
     if (!this.dirty) return;
-    this.dirty = false;
     // A fill or a wrap can change a size a parent hugs, so run to a fixed point.
     for (let pass = 0; pass < 4; pass++) {
       const before = this.signature();
@@ -898,6 +920,16 @@ function strokeInset(n: Node): [number, number, number, number] {
   return n.weights.map((w) => w * share) as [number, number, number, number];
 }
 
+/** A layout the mock does not model: thrown, never laid out by a guess. */
+function unmodeled(node: Node, what: string, why: string): never {
+  throw new Error(`mock-figma: ${what} is not modeled ("${node.name}", ${node.id}); ${why}`);
+}
+
+/** Whether a text node sizes itself on `axis`, so that it ignores FILL there. */
+function sizesItself(k: Node, axis: Axis): boolean {
+  return k.type === "TEXT" && (k.textAutoResize === "WIDTH_AND_HEIGHT" || (axis === "y" && k.textAutoResize === "HEIGHT"));
+}
+
 /**
  * Lays out `node` and everything under it: text sizes itself, an auto-layout
  * frame sizes the axes it hugs to its in-flow children and then places them,
@@ -905,7 +937,8 @@ function strokeInset(n: Node): [number, number, number, number] {
  * figma-use skill describe it: children in order, `itemSpacing` apart from
  * the padding (SPACE_BETWEEN spreads the free space instead), each aligned
  * across by the frame's counterAxisAlignItems unless it stretches; hidden
- * and ABSOLUTE children take no part, and keep their own x and y.
+ * and ABSOLUTE children take no part, and keep their own x and y. Throws on
+ * a fill the mock does not model (unmodeled).
  */
 function layoutTree(node: Node): void {
   for (const kid of node.kids) layoutTree(kid);
@@ -923,10 +956,23 @@ function layoutTree(node: Node): void {
     k[SIZE[axis]] = r2(Math.max(0.01, value));
     if (k.type === "TEXT" && axis === "x" && k.textAutoResize === "HEIGHT") sizeText(k);
   };
-  const grows = (k: Node) => k.layoutGrow > 0 && node.primarySizing === "FIXED";
+  const grows = (k: Node) => k.layoutGrow > 0;
   const stretches = (k: Node) => k.layoutAlign === "STRETCH";
-  // Hug first, from what doesn't fill: a growing child keeps its size on a
-  // hugging axis, and a stretching one takes the size the others give.
+  for (const k of flow) {
+    if (grows(k) && node.primarySizing === "AUTO") {
+      unmodeled(k, "FILL or layoutGrow along a parent that hugs that axis",
+        "the figma-use skill documents Figma collapsing a FILL child of a HUG parent and compressing a growing one; fix the parent's size on that axis");
+    }
+    if (stretches(k) && node.counterSizing === "AUTO" && node.doc.options.fillAcrossHug === "refuse") {
+      unmodeled(k, "FILL across a parent that hugs that axis", "this MockFigma was made with fillAcrossHug 'refuse', until the spike's sizing item says what Figma does");
+    }
+    if ((grows(k) && sizesItself(k, main)) || (stretches(k) && sizesItself(k, cross))) {
+      unmodeled(k, "FILL on a text node that sizes itself on that axis",
+        "the figma-use skill documents Figma ignoring FILL on WIDTH_AND_HEIGHT text; set textAutoResize to HEIGHT (or NONE, for its height) first");
+    }
+  }
+  // Hug first, from what doesn't fill: a stretching child takes the size the
+  // others give (fillAcrossHug "stretch"), and grows only in a fixed parent.
   const spacing = node.primaryAlign === "SPACE_BETWEEN" ? 0 : node.itemSpacing;
   if (node.primarySizing === "AUTO") {
     const sum = flow.reduce((t, k) => t + size(k, main), 0) + spacing * Math.max(0, flow.length - 1);
@@ -1758,6 +1804,7 @@ export class MockFigma {
       measure: options.measure ?? { advance: estimateAdvance },
       clonePluginData: options.clonePluginData ?? true,
       svgStrokeScales: options.svgStrokeScales ?? true,
+      fillAcrossHug: options.fillAcrossHug ?? "stretch",
       reencodeImage: options.reencodeImage,
     }, options.pages ?? ["Page 1"]);
   }
@@ -1767,7 +1814,9 @@ export class MockFigma {
    * gets, as `new AsyncFunction("figma", code)`. Fails, as the tool does,
    * on code over 50,000 characters, a throw, a second page switch, or a
    * response over 20,000 bytes; what the code changed before failing stays
-   * changed, as it does in Figma.
+   * changed, as it does in Figma. The file is laid out before the call
+   * returns, so a layout the mock refuses fails the call that set it up,
+   * not a later one's read.
    */
   async run(code: string): Promise<MockRun> {
     const start = Date.now();
@@ -1782,12 +1831,12 @@ export class MockFigma {
     let value: unknown;
     try {
       value = await new AsyncFunction("figma", code)(figmaGlobal(this.doc, call));
+      this.doc.settle();
     } catch (err) {
       const text = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       return done({ ok: false, text, bytes: Buffer.byteLength(text), error: text });
     } finally {
       this.doc.call = null;
-      this.doc.settle();
     }
     const text = JSON.stringify(value) ?? "undefined";
     const bytes = Buffer.byteLength(text);

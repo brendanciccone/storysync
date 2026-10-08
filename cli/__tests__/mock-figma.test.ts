@@ -230,15 +230,60 @@ test("auto layout: FILL takes the room left along the flow and the whole room ac
   const row = await layout("f.layoutMode = 'HORIZONTAL'; f.resize(200, 50); f.paddingLeft = 10; f.paddingRight = 10; f.itemSpacing = 5; f.paddingTop = 5; f.paddingBottom = 5;",
     [[20, 10], [30, 10]], "kids[1].layoutSizingHorizontal = 'FILL'; kids[0].layoutSizingVertical = 'FILL';");
   assert.deepEqual(row.kids, [[10, 5, 20, 40], [35, 5, 155, 10]]);
-  // In a hugging frame, a stretched child takes the size the others give.
+  // In a hugging frame, a stretched child takes the size the others give: the
+  // mock's assumption, until the spike's sizing item settles it.
   const hug = await layout(`${HUG}`, [[20, 30], [10, 10]], "kids[1].layoutAlign = 'STRETCH';");
   assert.deepEqual(hug, { frame: [30, 30], kids: [[0, 0, 20, 30], [20, 0, 10, 30]] });
   const reads = await ok(new MockFigma(), `
-    const f = figma.createFrame(); f.layoutMode = 'HORIZONTAL';
+    const f = figma.createFrame(); f.layoutMode = 'HORIZONTAL'; f.primaryAxisSizingMode = 'FIXED';
     const k = figma.createFrame(); f.appendChild(k); k.layoutSizingHorizontal = 'FILL';
     const g = figma.createFrame(); f.appendChild(g); g.layoutMode = 'VERTICAL'; g.layoutSizingVertical = 'HUG';
     return [k.layoutSizingHorizontal, k.layoutSizingVertical, g.layoutSizingVertical, f.layoutSizingHorizontal];`);
-  assert.deepEqual(reads, ["FILL", "FIXED", "HUG", "HUG"]);
+  assert.deepEqual(reads, ["FILL", "FIXED", "HUG", "FIXED"]);
+});
+
+// Sidebar's sidebar-inner as section 8.4.7 would build it: hugging 16 + 688 + 16, its content growing.
+const SIDEBAR = `
+  const p = figma.createAutoLayout('VERTICAL'); p.name = 'sidebar-inner';
+  const kid = (h) => { const k = figma.createFrame(); k.resize(100, h); p.appendChild(k); return k; };
+  const [a, b, c] = [kid(16), kid(688), kid(16)];`;
+
+test("auto layout: FILL or layoutGrow along a hugging parent is refused, as Figma collapses it", async () => {
+  const figma = new MockFigma();
+  const refused = /mock-figma: FILL or layoutGrow along a parent that hugs that axis is not modeled \("Frame", [\d:]+\); the figma-use skill documents Figma collapsing/;
+  assert.match(await fails(figma, `${SIDEBAR} b.layoutSizingVertical = 'FILL'; return p.height;`), refused, "on a read in the call");
+  assert.match(await fails(new MockFigma(), `${SIDEBAR} b.layoutGrow = 1;`), refused, "or when the call ends");
+  // It stays refused, on every read, until a write fixes it.
+  assert.throws(() => figma.pages(), refused);
+  const fixed = await ok(figma, `
+    const p = figma.currentPage.findOne((n) => n.name === 'sidebar-inner');
+    p.primaryAxisSizingMode = 'FIXED'; p.resize(100, 720);
+    return p.children.map((k) => [k.y, k.height, k.layoutSizingVertical]);`);
+  assert.deepEqual(fixed, [[0, 16, "FIXED"], [16, 688, "FILL"], [704, 16, "FIXED"]]);
+  // Across a hugging parent it stretches, unless the test refuses that too.
+  const across = `${SIDEBAR} b.layoutSizingHorizontal = 'FILL'; a.resize(120, 16); return [p.width, b.width];`;
+  assert.deepEqual(await ok(new MockFigma(), across), [120, 120]);
+  assert.match(await fails(new MockFigma({ fillAcrossHug: "refuse" }), across), /mock-figma: FILL across a parent that hugs that axis is not modeled/);
+});
+
+test("auto layout: FILL on a text node that sizes itself is refused, as Figma ignores it; at HEIGHT it fills", async () => {
+  const text = (setup: string) => `
+    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+    const p = figma.createAutoLayout('HORIZONTAL'); p.resize(300, 40); p.paddingLeft = 10; p.paddingRight = 10;
+    const t = figma.createText(); t.characters = 'hello'; p.appendChild(t);
+    ${setup}
+    return [t.width, t.textAutoResize, t.layoutSizingHorizontal];`;
+  const ignored = /mock-figma: FILL on a text node that sizes itself on that axis is not modeled .*set textAutoResize to HEIGHT/;
+  assert.match(await fails(new MockFigma(), text("t.layoutSizingHorizontal = 'FILL';")), ignored);
+  assert.deepEqual(await ok(new MockFigma(), text("t.textAutoResize = 'HEIGHT'; t.layoutSizingHorizontal = 'FILL';")), [280, "HEIGHT", "FILL"]);
+  // Its height, too, while it hugs it.
+  const column = `
+    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+    const p = figma.createAutoLayout('VERTICAL'); p.resize(300, 200);
+    const t = figma.createText(); t.characters = 'hello'; p.appendChild(t); t.textAutoResize = 'HEIGHT';
+    t.layoutGrow = 1;`;
+  assert.match(await fails(new MockFigma(), column), ignored);
+  assert.deepEqual(await ok(new MockFigma(), `${column} t.textAutoResize = 'NONE'; return t.height;`), 200);
 });
 
 test("auto layout: sizing values only where Figma allows them, with its errors", async () => {
