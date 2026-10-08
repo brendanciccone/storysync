@@ -421,7 +421,7 @@ test("every push instruction lays a set out in snap's order, not its children's"
       assert.match(text, /in the order snap records them: a `VARIANT`'s default value first, then the rest in the order of the component's prop type as Storybook's docs list it \(a story's `argTypes` options are not read\)/,
         `${path} never says the values run default first, then in Storybook's declared order`);
       assert.doesNotMatch(text, /not default first/, `${path} still says snap's values are not default first`);
-      assert.doesNotMatch(text, /default first, then|all-defaults variant[^\n]*top-left/, `${path} still puts each property's default first`);
+      assert.doesNotMatch(text, /all-defaults variant[^\n]*top-left/, `${path} says the all-defaults variant is the top-left one, which it is not where a BOOLEAN defaults to true`);
       assert.match(text, /a `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`/i,
         `${path} never says how a BOOLEAN property is ordered`);
       assert.match(text, /Figma makes the top-left variant the set's default variant/, `${path} never says where Figma takes the default variant from`);

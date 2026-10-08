@@ -2545,13 +2545,14 @@ async function main() {
     // A re-push into a set an earlier build had left in another order laid it
     // out in that order: the primary row read sm, lg, sm disabled, lg disabled
     // and the others sm, sm disabled, lg disabled, lg. The layout orders the
-    // set by the variantProperties snap records, in Storybook's declared
-    // order, a BOOLEAN false then true: rows primary, danger and outline,
-    // columns sm, sm disabled, lg, lg disabled, the layers panel reading the
-    // same way, and a variant snap does not have in a row of its own below.
-    // The same set laid out by properties whose defaults are not their first
-    // values comes out the same, since the order is declared, not default
-    // first; and Frozen's one property is a column of 3.
+    // set by the variantProperties snap records, each VARIANT's default first
+    // and then Storybook's declared order, a BOOLEAN false then true: rows
+    // primary, danger and outline, columns sm, sm disabled, lg, lg disabled,
+    // the layers panel reading the same way, and a variant snap does not have
+    // in a row of its own below. The same set laid out by properties whose
+    // defaults are not their first values comes out the same, since the
+    // template follows PROPERTIES' order, never defaultValue; and Frozen's
+    // one property is a column of 3.
     const declared = layout.declared();
     const build = loadSkillBuild();
     return `${declared}; ${await layout.scrambled(build)}; ${await layout.defaults(build)}; ${await layout.frozen(build)}`;
