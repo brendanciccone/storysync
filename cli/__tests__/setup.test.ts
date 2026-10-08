@@ -825,6 +825,8 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       assert.match(text, /a designer's own included/, `${path} drops a designer's description`);
       // Skipped, they stayed in styles.json, and verify failed on them as missing.
       assert.match(text, /`--skip`[^\n]*leaves them out of the score/, `${path} lets verify fail a push on the components the user skipped`);
+      assert.match(text, /names a component's error,? (?:means )?measure that component again/, `${path} re-measures for every recorded snap failure`);
+      assert.match(text, /restart Storybook/, `${path} leaves out restarting Storybook after init`);
       assert.match(text, /`bg-primary`[^\n]*`primary`[^\n]*leave it unbound and list it in the summary|`bg-primary` is `primary`[^\n]*leave the value unbound and list it in the summary/, `${path} picks among variables that share a value`);
       // Variables are named as tokens names them, and a class with an
       // opacity modifier bound to its opaque variable lost the measured alpha.
