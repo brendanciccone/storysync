@@ -173,6 +173,12 @@ export type CaptureStatus = "ok" | "render_error" | "timeout" | "element_not_fou
 export interface CaptureResult {
   status: CaptureStatus;
   error: string | null;
+  /**
+   * Whether trying again may succeed: a timeout while the story loaded, as a
+   * busy Storybook's are. One later on, as a screenshot's of an element that
+   * never becomes visible, would only time out again.
+   */
+  retryable: boolean;
   raw: RawComputedStyles | null;
   textRaw: RawComputedStyles | null;
   boundingBox: { x: number; y: number; width: number; height: number } | null;
@@ -223,16 +229,18 @@ const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
  */
 export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
-    raw: null, textRaw: null, boundingBox: null, screenshot: null,
+    retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
     matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null },
   };
   const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
   let images: ImageRequests | null = null;
+  let loaded = false;
 
   try {
     // From before the navigation, so a request the story makes as it renders is seen.
     images = watchImageRequests(page);
     await page.goto(url, { waitUntil: "load", timeout: opts.timeoutMs });
+    loaded = true;
 
     let renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
@@ -266,15 +274,21 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts };
     }
 
-    const screenshot = opts.screenshot ? await target.screenshot({ type: "png" }) : null;
-    return { status: "ok", error: null, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts };
+    // Playwright waits for an element to be visible before taking its
+    // picture, which one with no width or height never is: it waited its own
+    // 30 seconds, whatever --timeout said, and failed a variant whose styles
+    // had been read. So an empty box is measured without a picture, and a
+    // picture otherwise waits no longer than --timeout.
+    const drawable = boundingBox.width > 0 && boundingBox.height > 0;
+    const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
+    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
     // a refused connection into a timeout. Its TimeoutError names itself, and
     // this file imports only playwright's types, so the class isn't to hand.
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
-    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty };
+    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
   } finally {
     images?.stop();
   }

@@ -598,11 +598,12 @@ async function snapComponent(
           component: { name: entry.name, title: entry.title },
         });
       };
-      // Once more on a timeout: a busy Storybook times out stories that
-      // render a moment later, and a variant left unmeasured gets built from
-      // source instead.
+      // Once more on a timeout loading the story: a busy Storybook times out
+      // stories that render a moment later, and a variant left unmeasured
+      // gets built from source instead. Not on one after it loaded, which
+      // would only take as long again.
       let captured = await capture();
-      if (captured.status === "timeout") captured = await capture();
+      if (captured.status === "timeout" && captured.retryable) captured = await capture();
 
       if (captured.status !== "ok" || !captured.raw || !captured.boundingBox) {
         // A failure because the run is stopping is not this variant's.

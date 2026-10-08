@@ -825,3 +825,46 @@ test("runSnap: a story that times out is tried once more before it is recorded",
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runSnap: a story that times out after it loaded is not tried again", async () => {
+  // A screenshot of an element that never becomes visible times out the
+  // same way every time.
+  const dir = tempDir();
+  try {
+    let navigations = 0;
+    const timeout = Object.assign(new Error("elementHandle.screenshot: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+    let described = false;
+    const target = {
+      evaluate: async () => {
+        if (described) return null;
+        described = true;
+        return { tag: "div", slot: null, role: null };
+      },
+      evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+      boundingBox: async () => ({ x: 0, y: 0, width: 40, height: 20 }),
+      screenshot: async () => { throw timeout; },
+    };
+    const page = {
+      on: () => {}, off: () => {},
+      goto: async () => { navigations++; return null; },
+      waitForSelector: async () => null,
+      addStyleTag: async () => null,
+      $: async () => target,
+      evaluate: async (_fn: unknown, arg?: unknown) => (arg ? {} : null),
+    };
+    const result = await runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({ name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    assert.equal(navigations, 1);
+    assert.equal(result.components[0].variants[0].status, "timeout");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

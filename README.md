@@ -391,7 +391,8 @@ Options:
   --max-combinations <n> With --variants all, most combinations per component before
                          capping (default: 256)
   --screenshots          Also save a PNG per variant (off by default)
-  --timeout <ms>         Per-story timeout (default: 10000); a story that times out is tried once more
+  --timeout <ms>         Per-story timeout (default: 10000); a story that times out loading is tried
+                         once more
   --selector <css>       Measure the element this matches instead of choosing one
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant or component could not be measured, none were,

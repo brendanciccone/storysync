@@ -43,6 +43,43 @@ function storyPage(opts: { errorFrom?: number; appears: boolean }) {
 
 const OPTS = { timeoutMs: 1000, screenshot: false };
 
+/**
+ * A story that loads and is measured through --selector, whose element has
+ * `box` and whose screenshot is `shoot`'s. Each screenshot's options are
+ * recorded.
+ */
+function measuredPage(box: { x: number; y: number; width: number; height: number }, shoot: () => Promise<Buffer>) {
+  const shots: { timeout?: number }[] = [];
+  let described = false;
+  const target = {
+    // The element's description, then its font stack, which the stand-in can't probe.
+    evaluate: async () => {
+      if (described) return null;
+      described = true;
+      return { tag: "div", slot: null, role: null };
+    },
+    evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+    boundingBox: async () => box,
+    screenshot: async (options: { timeout?: number }) => {
+      shots.push(options);
+      return shoot();
+    },
+  };
+  const page = {
+    ...LISTENS,
+    goto: async () => null,
+    waitForSelector: async () => null,
+    addStyleTag: async () => null,
+    $: async () => target,
+    // Storybook's error display, settling and images: nothing to report.
+    // The computed styles: none to speak of.
+    evaluate: async (fn: unknown, arg?: unknown) => (fn === storybookErrorInPage ? null : arg ? {} : false),
+  };
+  return { page: page as unknown as Page, shots };
+}
+
+const SHOT = { ...OPTS, screenshot: true, selector: "#storybook-root > div" };
+
 /** Playwright's TimeoutError, which sets its own name. */
 class TimeoutError extends Error {
   constructor(message: string) {
@@ -124,4 +161,40 @@ test("storyReadySelector: waits for an element that can draw, the component's sl
   const tooltip = storyReadySelector(["tooltip-content", "tooltip"]);
   assert.match(tooltip, /\[data-slot="tooltip-content"\], \[data-slot="tooltip"\], body/);
   assert.doesNotMatch(tooltip, /content-content/);
+});
+
+test("captureStory: a navigation that times out may be tried again", async () => {
+  const result = await captureStory(failingPage(new TimeoutError("page.goto: Timeout 1000ms exceeded.")), "http://localhost:6006/iframe.html?id=x", OPTS);
+  assert.equal(result.retryable, true);
+  const refused = await captureStory(failingPage(new Error("net::ERR_CONNECTION_REFUSED")), "http://localhost:6006/iframe.html?id=x", OPTS);
+  assert.equal(refused.retryable, false);
+});
+
+test("captureStory: a screenshot waits no longer than --timeout, and timing out is not worth a retry", async () => {
+  // It took Playwright's own 30 seconds whatever --timeout said, and snap
+  // then tried the variant again for 30 more.
+  const { page, shots } = measuredPage({ x: 0, y: 0, width: 40, height: 20 }, async () => {
+    throw new TimeoutError("elementHandle.screenshot: Timeout 1000ms exceeded.");
+  });
+  const result = await captureStory(page, "http://localhost:6006/iframe.html?id=x", SHOT);
+  assert.equal(result.status, "timeout");
+  assert.equal(result.retryable, false);
+  assert.deepEqual(shots.map((s) => s.timeout), [SHOT.timeoutMs]);
+});
+
+test("captureStory: an element with no width or height is measured without a screenshot", async () => {
+  // Playwright waits for it to be visible, which it never is: a closed
+  // Collapsible's content, measured 1264x0, timed out instead.
+  for (const box of [{ x: 0, y: 0, width: 1264, height: 0 }, { x: 0, y: 0, width: 0, height: 18 }]) {
+    const { page, shots } = measuredPage(box, async () => { throw new Error("screenshot taken"); });
+    const result = await captureStory(page, "http://localhost:6006/iframe.html?id=x", SHOT);
+    assert.equal(result.status, "ok", result.error ?? "");
+    assert.equal(result.screenshot, null);
+    assert.deepEqual(result.boundingBox, box);
+    assert.equal(shots.length, 0);
+  }
+  const { page } = measuredPage({ x: 0, y: 0, width: 40, height: 20 }, async () => Buffer.from("png"));
+  const drawn = await captureStory(page, "http://localhost:6006/iframe.html?id=x", SHOT);
+  assert.equal(drawn.status, "ok", drawn.error ?? "");
+  assert.equal(drawn.screenshot?.toString(), "png");
 });

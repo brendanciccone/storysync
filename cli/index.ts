@@ -229,7 +229,7 @@ program
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
   .option("--max-combinations <n>", "With --variants all, most combinations to measure per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--screenshots", "Also save a PNG per variant (off by default)")
-  .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out is tried once more", "10000")
+  .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, or a component was capped")
