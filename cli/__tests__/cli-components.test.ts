@@ -179,6 +179,16 @@ test("map CLI: matches names and IDs as snap does, ignoring case and spacing", a
   assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 4], ["Card", 1]]);
 });
 
+test("map CLI: --json marks a default the docs don't give, and only that one", async () => {
+  const r = await run("map", "--storybook", storybook, "--components", "Button", "--json");
+  assert.equal(r.status, 0, r.out);
+  const [button] = (JSON.parse(r.stdout) as { components: { variantProperties: unknown[] }[] }).components;
+  assert.deepEqual(button.variantProperties, [
+    { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+    { name: "shape", type: "VARIANT", values: ["round", "square"], defaultValue: "round", defaultAssumed: true },
+  ]);
+});
+
 /**
  * Runs diff in a project with no tokens, so only components differ, reading
  * Figma from the working stand-in and Storybook from `storybookUrl`.

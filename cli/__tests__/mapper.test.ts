@@ -175,8 +175,11 @@ test("resolveDefault: unwraps primitives, quotes, and docgen shapes", () => {
 // --- mapProp ---
 
 test("mapProp: maps booleans, honouring the declared default", () => {
-  assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" } })), {
+  assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" }, defaultValue: "false" })), {
     name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
+  });
+  assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" } })), {
+    name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
   });
   assert.deepEqual(mapProp(prop({ name: "loading", type: { name: "bool" }, defaultValue: true })), {
     name: "loading", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true",
@@ -184,7 +187,7 @@ test("mapProp: maps booleans, honouring the declared default", () => {
   // A boolean *control* is honoured when the declared type isn't itself
   // something `shouldSkip` rejects outright.
   assert.deepEqual(mapProp(prop({ name: "open", type: { name: "any" }, control: { type: "boolean" } })), {
-    name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
+    name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
   });
 });
 
@@ -194,7 +197,7 @@ test("mapProp: a boolean that may be null or undefined is still a BOOLEAN", () =
     name: "inset", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true",
   });
   assert.deepEqual(mapProp(prop({ name: "dot", type: { name: "union", raw: "true | false | undefined" } })), {
-    name: "dot", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
+    name: "dot", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
   });
   // A boolean with another value besides is neither a BOOLEAN nor a set of literals.
   assert.equal(mapProp(prop({ name: "checked", type: { name: "union", raw: `boolean | "indeterminate"` } })), null);
@@ -255,6 +258,34 @@ test("mapProp: falls back to the first value when the default is not a valid opt
     name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` }, defaultValue: "enormous",
   }));
   assert.equal(result?.defaultValue, "sm");
+  assert.equal(result?.defaultAssumed, true);
+});
+
+// shadcn/ui's Tailwind v3 Button sets its defaults only in cva's
+// defaultVariants, so the docs print none, and TypeScript's union order
+// put link first: Figma's default, and snap's base, were variant=link.
+test("mapProp: with no default in the docs, assumes the value named default", () => {
+  const variant = { name: "union", raw: `"link" | "default" | "outline" | null` };
+  assert.deepEqual(mapProp(prop({ name: "variant", type: variant })), {
+    name: "variant", type: "VARIANT", values: ["default", "link", "outline"], defaultValue: "default", defaultAssumed: true,
+  });
+  // A default the docs give wins over the name.
+  assert.equal(mapProp(prop({ name: "variant", type: variant, defaultValue: "outline" }))?.defaultValue, "outline");
+  // With no value of that name, the first.
+  assert.equal(mapProp(prop({ name: "align", type: { name: "union", raw: `"center" | "left"` } }))?.defaultValue, "center");
+});
+
+// Map JSON is a baseline the GitHub Action compares whole, so a property
+// whose default the docs give must come out exactly as it did before the
+// field existed.
+test("mapProp: leaves defaultAssumed out where the docs give a default", () => {
+  for (const p of [
+    prop({ name: "size", type: { name: "union", raw: `"sm" | "lg"` }, defaultValue: "sm" }),
+    prop({ name: "disabled", type: { name: "boolean" }, defaultValue: "false" }),
+    prop({ name: "open", type: { name: "boolean" }, defaultValue: true }),
+  ]) {
+    assert.equal(Object.hasOwn(mapProp(p) ?? {}, "defaultAssumed"), false, p.name);
+  }
 });
 
 test("mapProp: returns null for skipped and unmappable props", () => {

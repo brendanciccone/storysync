@@ -300,7 +300,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
 
-A union prop's values start with its default, so Figma's default variant is the code's. A boolean's Figma default is always `false`. Where the docs give no usable default, the first value, or `false`, is assumed. Any other boolean prop becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `inspect` shows why a prop was skipped, and which defaults were assumed.
+A union prop's values start with its default, so Figma's default variant is the code's. A boolean's Figma default is always `false`. Where the docs give no usable default, a value named `default` is assumed, or else the first value, or `false`, and map and snap mark the property `defaultAssumed: true`. Any other boolean prop becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
 ## CLI reference
 

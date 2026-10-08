@@ -25,6 +25,12 @@ export interface FigmaVariantProperty {
   type: "BOOLEAN" | "VARIANT";
   values: string[];
   defaultValue: string;
+  /**
+   * Present, and true, only when the docs gave no default the values
+   * include, so `defaultValue` is a guess. Left out otherwise, so map JSON
+   * written before it existed still matches wherever the docs give one.
+   */
+  defaultAssumed?: true;
 }
 
 // Details about a truncated variant expansion. Present only when `wasCapped`.
@@ -254,9 +260,9 @@ export function extractEnumValues(prop: StorybookProp): string[] | null {
  * How one prop maps, and why when it doesn't, for `inspect` to print.
  *
  * `defaultAssumed` is true when the docs gave no default the property's
- * values include, so `mapProp` fell back to `false` or the first value: a
- * guess, which is right only by luck when a library sets the default
- * internally (cmdk's `shouldFilter` is true, mapped `false`).
+ * values include, so `mapProp` fell back to a guess (see `guessDefault`),
+ * which is right only by luck when a library sets the default internally
+ * (cmdk's `shouldFilter` is true, mapped `false`).
  */
 export function explainProp(prop: StorybookProp): {
   property: FigmaVariantProperty | null;
@@ -264,11 +270,23 @@ export function explainProp(prop: StorybookProp): {
   defaultAssumed: boolean;
 } {
   const property = mapProp(prop);
-  if (property) {
-    const d = resolveDefault(prop.defaultValue);
-    return { property, reason: null, defaultAssumed: d == null || !property.values.includes(d) };
-  }
+  if (property) return { property, reason: null, defaultAssumed: property.defaultAssumed === true };
   return { property: null, reason: skipReason(prop) ?? valuesReason(prop), defaultAssumed: false };
+}
+
+/**
+ * The default to assume for a union whose docs give none: a value named
+ * `default` if there is one, else the first.
+ *
+ * cva's convention, which shadcn/ui follows, names a variant's default
+ * value `default` and sets it in `defaultVariants`, where docgen can't see
+ * it. A component that doesn't also destructure it with a default, as
+ * shadcn/ui's Tailwind v3 Button doesn't, prints none, and the first value
+ * is then TypeScript's union order, `link` for shadcn/ui's Button, which
+ * says nothing about the default.
+ */
+function guessDefault(values: string[]): string {
+  return values.includes("default") ? "default" : values[0];
 }
 
 // Why a prop that passed `skipReason` still has no values to map.
@@ -296,13 +314,15 @@ export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
 
   if (isBoolean(prop)) {
     const d = resolveDefault(prop.defaultValue);
-    return { name: prop.name, type: "BOOLEAN", values: ["true", "false"], defaultValue: d === "true" ? "true" : "false" };
+    const assumed = d !== "true" && d !== "false";
+    return { name: prop.name, type: "BOOLEAN", values: ["true", "false"], defaultValue: d === "true" ? "true" : "false", ...(assumed ? { defaultAssumed: true } : {}) };
   }
 
   const vals = extractEnumValues(prop);
   if (vals?.length) {
     const d = resolveDefault(prop.defaultValue);
-    const defaultValue = d != null && vals.includes(d) ? d : vals[0];
+    const assumed = d == null || !vals.includes(d);
+    const defaultValue = assumed ? guessDefault(vals) : d;
     // The default leads, the rest keep their order. The skill lays a Figma
     // set out in this order, and Figma makes its top-left variant the set's
     // default, so a default further along made Figma's default a variant the
@@ -310,7 +330,7 @@ export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
     // TypeScript's, not the author's: shadcn's Button reads `"link" |
     // "default" | ...` though its cva declares default first. A BOOLEAN keeps
     // `true, false`, which the skill lays out `false, true` whatever it holds.
-    return { name: prop.name, type: "VARIANT", values: [defaultValue, ...vals.filter((v) => v !== defaultValue)], defaultValue };
+    return { name: prop.name, type: "VARIANT", values: [defaultValue, ...vals.filter((v) => v !== defaultValue)], defaultValue, ...(assumed ? { defaultAssumed: true } : {}) };
   }
 
   return null;

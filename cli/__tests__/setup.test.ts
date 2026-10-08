@@ -429,6 +429,8 @@ test("every push instruction lays a set out in snap's order, not its children's"
         `${path} never says Figma's default is the component's own but for a BOOLEAN`);
       assert.match(text, /`open=false` even if the component defaults to `open=true`/, `${path} gives no example of a default that is not the component's`);
       assert.match(text, /say in the summary which variant Figma will treat as the default/, `${path} never has the agent report Figma's default`);
+      assert.match(text, /A property marked `defaultAssumed: true` has no default in Storybook's docs, so its `defaultValue` is a guess: name those in the summary too\./,
+        `${path} never has the agent report a default snap had to guess`);
       assert.match(text, /^\d+\. Summarize[^\n]*which variant Figma will treat as a set's default where that is not the component's default/m,
         `${path}'s summary step leaves out Figma's default variant`);
       assert.match(text, /With one property, each value is a row of one/i, `${path} never says how one property is laid out`);
