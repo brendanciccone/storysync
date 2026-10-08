@@ -398,11 +398,11 @@ test("every push instruction lays a set out in snap's order, not its children's"
   // children in, so the primary row's columns read sm, lg, sm disabled, lg
   // disabled and the others' sm, sm disabled, lg disabled, lg. The layout
   // follows snap's variantProperties as snap records them, each VARIANT's
-  // default first and the rest as Storybook's docs list them, a BOOLEAN false
-  // then true, and the layers panel, which shows the last child at the top,
-  // reads the same way. Figma takes the set's default variant from the
-  // top-left, which is the component's default but for a BOOLEAN that
-  // defaults to true, so the agent says which it is when it is not.
+  // default first and the rest as Storybook's docs list them, a BOOLEAN's
+  // default first too, and the layers panel, which shows the last child at
+  // the top, reads the same way. Figma takes the set's default variant from
+  // the top-left, which is then the component's default, and the agent says
+  // which it is when it is not.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -422,12 +422,14 @@ test("every push instruction lays a set out in snap's order, not its children's"
         `${path} never says the values run default first, then in Storybook's declared order`);
       assert.doesNotMatch(text, /not default first/, `${path} still says snap's values are not default first`);
       assert.doesNotMatch(text, /all-defaults variant[^\n]*top-left/, `${path} says the all-defaults variant is the top-left one, which it is not where a BOOLEAN defaults to true`);
-      assert.match(text, /a `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`/i,
-        `${path} never says how a BOOLEAN property is ordered`);
+      assert.match(text, /a `BOOLEAN` property runs its default first, `false, true`, or `true, false` when it defaults to `true`/i,
+        `${path} never says a BOOLEAN property runs its default first`);
+      assert.doesNotMatch(text, /`false` for a `BOOLEAN`, even one that defaults to `true`|`open=false` even if the component defaults to `open=true`/,
+        `${path} still makes false Figma's default for a BOOLEAN that defaults to true`);
       assert.match(text, /Figma makes the top-left variant the set's default variant/, `${path} never says where Figma takes the default variant from`);
-      assert.match(text, /the component's own default for a `VARIANT`, since snap records it first, but `false` for a `BOOLEAN`, even one that defaults to `true`/,
-        `${path} never says Figma's default is the component's own but for a BOOLEAN`);
-      assert.match(text, /`open=false` even if the component defaults to `open=true`/, `${path} gives no example of a default that is not the component's`);
+      assert.match(text, /the component's own default for a `VARIANT`, since snap records it first, and for a `BOOLEAN`/,
+        `${path} never says Figma's default is the component's own`);
+      assert.match(text, /`open=true` where the component defaults to `open=true`/, `${path} gives no example of a BOOLEAN that defaults to true`);
       assert.match(text, /say in the summary which variant Figma will treat as the default/, `${path} never has the agent report Figma's default`);
       assert.match(text, /A property marked `defaultAssumed: true` has no default in Storybook's docs, so its `defaultValue` is a guess: name those in the summary too\./,
         `${path} never has the agent report a default snap had to guess`);
@@ -531,7 +533,7 @@ test("every push instruction reports a pixel of text width as a font-rendering d
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /`width` a pixel or two off on a variant that hugs its text[^\n]*font-rendering difference[^\n]*clip the label/,
         `${path} never says to report a pixel of text width as a font-rendering difference`);
-      assert.match(text, /font-rendering difference[^\n]*only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight\. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border/,
+      assert.match(text, /font-rendering difference[^\n]*only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight\. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border/,
         `${path} calls a stroke built INSIDE a font-rendering difference`);
     }
   } finally {
@@ -681,11 +683,14 @@ test("every push instruction builds a border's style as a dash pattern and reads
   }
 });
 
-test("every push summary says a transparent border shows as an unfilled ring", () => {
-  // The browser draws the background under a transparent border; Figma's
-  // fill stops where the OUTSIDE stroke begins, and that stroke paints
-  // nothing, so the ring stays empty. The user can choose a tinted stroke
-  // instead, which verify then scores as a border color the code lacks.
+test("every push instruction builds a transparent border to fill as the browser does, by backgroundClip", () => {
+  // The skill said the browser always paints the background under a
+  // transparent border, and had the summary call every OUTSIDE ring wrong.
+  // That holds only where the background is not clipped: shadcn's Button
+  // has bg-clip-padding, so its fill stops at the border as Figma's does at
+  // an OUTSIDE stroke, and its Badge doesn't, so its fill runs under the
+  // border, as Figma's does under an INSIDE stroke that strokesIncludedInLayout
+  // keeps in the hugging frame's size.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -699,10 +704,159 @@ test("every push summary says a transparent border shows as an unfilled ring", (
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /In the browser the background runs under a transparent border, where Figma's fill stops/, `${path} still says the browser always fills under a transparent border`);
+      assert.match(text, /`backgroundClip`[^\n]*padding-box`[^\n]*`OUTSIDE`[^\n]*`INSIDE`, with `strokesIncludedInLayout = true` on a hugging frame/,
+        `${path} never builds a transparent border by backgroundClip`);
+      // One rule for a hugging frame, which used to say INSIDE only at a
+      // fixed size, then INSIDE on a hugging frame, and OUTSIDE at a fixed
+      // size "less the border", a border's width too large.
+      assert.match(text, /hugging frame[^\n]*OUTSIDE'?`, or `INSIDE` with `strokesIncludedInLayout = true`/, `${path} never builds a border INSIDE in a hugging frame's layout`);
+      assert.doesNotMatch(text, /Use `INSIDE` only when you give the frame a fixed size/, `${path} still allows INSIDE only at a fixed size`);
+      assert.doesNotMatch(text, /sized to the measured size less the border\b/, `${path} still sizes a padding-box frame less one border`);
       const summary = /^\d+\. Summarize[^\n]*/m.exec(text);
       assert.ok(summary, `${path} has no summary step`);
-      assert.match(summary[0], /transparent border was built as an `OUTSIDE` stroke[^\n]*`INSIDE` one on a fixed-size frame none[^\n]*transparent border as an unfilled ring[^\n]*background under a transparent border[^\n]*`OUTSIDE` stroke[^\n]*stroke tinted[^\n]*`verify` will then score as a border colou?r the code does not have/,
-        `${path}'s summary never says a transparent border shows as an unfilled ring, or offers a tinted stroke`);
+      assert.match(summary[0], /transparent or translucent border, say how its fill meets that border[^\n]*`backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`/,
+        `${path}'s summary never says how a transparent border's fill was built`);
+      assert.match(summary[0], /unfilled ring the browser fills[^\n]*stroke tinted[^\n]*`verify` will then score as a border colou?r the code does not have/,
+        `${path}'s summary never says when a ring is unfilled where the browser fills it`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction builds a component with no variant properties as one plain component", () => {
+  // A live push built Button, Badge, Dialog and Tooltip, which have no variant
+  // properties, as sets of one variant named '', which Figma renamed "=" and
+  // marked as broken, so the readback and the audit threw on them. Such a
+  // component is one plain component, read back as its one variant, named
+  // '', under the slug default, and a broken set an earlier push left is
+  // refused rather than built beside.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /no variant properties is one plain component/, `${path} builds a component with no variant properties as a set`);
+      assert.match(text, /renames (?:a set's one unnamed variant )?`=` and marks (?:the set )?as broken/, `${path} never says why a set of one unnamed variant is wrong`);
+      assert.match(text, /plain component[^\n]*`''`[^\n]*`default`/, `${path} never says how a plain component reads back`);
+      assert.match(text, /ask the user whether to convert it/, `${path} never asks before converting what an earlier push left`);
+      if (!path.includes("commands")) {
+        // appendChild moved the variant onto the page at its place inside the
+        // set, near 0,0, and out of any section the set was in.
+        assert.match(text, /parent\.insertChild\(parent\.children\.indexOf\(set\), variant\); Object\.assign\(variant, \{ x, y, name \}\)/,
+          `${path} never puts a converted variant where its set was`);
+        assert.doesNotMatch(text, /page\.appendChild\(variant\)/, `${path} still moves a converted variant onto the page`);
+      }
+      assert.match(text, /^\d+\. Summarize[^\n]*built as one plain component/m, `${path}'s summary leaves out the plain components`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction places a new set below the page's others and keeps its Storybook id on it", () => {
+  // Every set a live push created landed at 0,0, on top of the others.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /100 below (?:the lowest thing there|everything on its page)/, `${path} never says where a new set goes`);
+      assert.match(text, /[sg]etSharedPluginData\('storysync', 'id'/, `${path} never keeps the Storybook id on a set`);
+      // Sets a push before 0.4.0 left stacked at 0,0 are counted, never moved
+      // unasked.
+      assert.match(text, /`overlaps`[^\n]*never move one on your own/, `${path} never reports sets an earlier push stacked`);
+      assert.match(text, /^\d+\. Summarize[^\n]*`overlaps`/m, `${path}'s summary leaves out stacked sets`);
+      // A copy of a set keeps its id, so the id is a fallback for a renamed set.
+      assert.match(text, /by its name, (?:and |or )?where (?:none|nothing) has the name,? by (?:that id|the Storybook id it carries)/,
+        `${path} never finds a set by its name before its id`);
+      assert.match(text, /findAllWithCriteria\(\{ types: \['COMPONENT_SET', 'COMPONENT'\] \}\)/, `${path} never looks for a plain component`);
+      assert.match(text, /designer's own/, `${path} takes a designer's own plain component for one a push built`);
+      assert.doesNotMatch(text, /Look for it anywhere on its page with `page\.findAllWithCriteria\(\{ types: \['COMPONENT_SET'\] \}\)`|\(`page\.findAllWithCriteria\(\{ types: \['COMPONENT_SET'\] \}\)`, since a designer/,
+        `${path} still looks for a set by name among sets alone`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction keeps a bound color's alpha and never fails over a font", () => {
+  // A live push bound Attachment's #df22254d border to the destructive
+  // variable and read it back #df2225: Figma resets a paint assigned freshly
+  // bound to opacity 1. And Figma's plugin context loads neither a CSS
+  // keyword such as system-ui nor a platform face such as Menlo.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /opacity (?:of )?1/, `${path} never says Figma resets a bound paint's opacity`);
+      assert.match(text, /Roboto Mono[^\n]*Inter|Inter[^\n]*Roboto Mono/, `${path} names no stand-in for a font Figma can't load`);
+      assert.match(text, /Noto Serif for a serif/, `${path} sets a serif face in Inter`);
+      assert.match(text, /next one toward `?Regular`?/, `${path} never says which weight a family that lacks one loads`);
+      assert.match(text, /never (?:let a font fail the push|fails the part over a font)/i, `${path} lets a font fail the push`);
+      assert.match(text, /^\d+\. Summarize[^\n]*every font stand-in the build parts returned in `fonts`/m, `${path}'s summary leaves out the font stand-ins`);
+      assert.doesNotMatch(text, /the Google font used for a `fontFamily` that is a CSS keyword/, `${path} still names only a keyword's stand-in`);
+    }
+    for (const path of files.slice(0, 2)) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /const setPaints = /, `${path}'s build template has no setPaints`);
+      assert.match(text, /const loadFont = /, `${path}'s build template has no loadFont`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction prices a part at real entries, and builds a long one in smaller parts", () => {
+  // A live shadcn/ui snap's entries come to about a thousand characters, and
+  // 25 of Command's with the template and a push's own code came to some
+  // 48,000, near use_figma's 50,000. The skill said a few hundred, and never
+  // said to shrink a part.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /measured values run to a few hundred characters/, `${path} still prices an entry at a few hundred characters`);
+      assert.match(text, /passes 45,000 characters, build that set in parts of 15 instead/, `${path} never says to build a long part smaller`);
+      assert.match(text, /`border`[^\n]*`borderUniform`[^\n]*`borderRadius`[^\n]*`borderRadiusUniform`[^\n]*repeat/, `${path} never leaves the repeated border fields out`);
+    }
+    for (const path of files.slice(0, 3)) {
+      assert.match(readFileSync(join(project, path), "utf8"), /about a thousand characters/, `${path} never says how long an entry runs`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });

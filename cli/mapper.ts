@@ -329,7 +329,7 @@ export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
     // code never renders unasked. The order Storybook's docs print is
     // TypeScript's, not the author's: shadcn's Button reads `"link" |
     // "default" | ...` though its cva declares default first. A BOOLEAN keeps
-    // `true, false`, which the skill lays out `false, true` whatever it holds.
+    // `true, false`, for baselines written so; the skill lays it out default first.
     return { name: prop.name, type: "VARIANT", values: [defaultValue, ...vals.filter((v) => v !== defaultValue)], defaultValue, ...(assumed ? { defaultAssumed: true } : {}) };
   }
 

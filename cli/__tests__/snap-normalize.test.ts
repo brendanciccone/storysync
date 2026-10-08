@@ -24,6 +24,7 @@ import {
   isClosedTrigger,
   resolveFontFamily,
   isFontKeyword,
+  CAPTURED_PROPERTIES,
 } from "../snap-normalize.js";
 import type { RawComputedStyles, StoryNode, PortalNode } from "../snap-normalize.js";
 import type { FigmaVariantProperty } from "../mapper.js";
@@ -351,6 +352,35 @@ test("normalizeStyles: an image layered over a fill keeps both, and a url() as w
 test("normalizeStyles: no background image writes no field, so styles.json reads as it did", () => {
   assert.equal("backgroundImage" in normalizeStyles(withOverrides({ "background-image": "none" }), BOX), false);
   assert.equal("backgroundImage" in normalizeStyles(PRIMARY_SM, BOX), false);
+});
+
+// --- Background clip --------------------------------------------------------
+
+test("normalizeStyles: a background clipped to the padding box is recorded, a border-box one writes no field", () => {
+  // shadcn's Button has bg-clip-padding, so its fill stops at its transparent
+  // border; its Badge doesn't, so the fill runs under the border. The build
+  // draws the two differently, so snap records which.
+  assert.equal(normalizeStyles(withOverrides({ "background-clip": "padding-box" }), BOX).backgroundClip, "padding-box");
+  assert.equal("backgroundClip" in normalizeStyles(withOverrides({ "background-clip": "border-box" }), BOX), false);
+  // A styles.json from before it was measured reads as it did.
+  assert.equal("backgroundClip" in normalizeStyles(PRIMARY_SM, BOX), false);
+  // A value per layer, top first: the bottom one clips the color.
+  assert.equal(normalizeStyles(withOverrides({ "background-clip": "border-box, content-box" }), BOX).backgroundClip, "content-box");
+  assert.equal("backgroundClip" in normalizeStyles(withOverrides({ "background-clip": "padding-box, border-box" }), BOX), false);
+});
+
+test("the browser side is asked for background-clip, which normalizeStyles reads", () => {
+  // normalizeStyles only sees the properties snap-browser reads, so without
+  // this every element would measure as border-box.
+  assert.ok(CAPTURED_PROPERTIES.includes("background-clip"));
+});
+
+test("diffFromBase: a variant whose background runs under its border records null against a padding-box base", () => {
+  const base = normalizeStyles(withOverrides({ "background-clip": "padding-box" }), BOX);
+  const other = normalizeStyles(PRIMARY_SM, BOX);
+  const delta = diffFromBase(base, other);
+  assert.deepEqual(delta, { backgroundClip: null });
+  assert.equal(applyDelta(base, delta).backgroundClip, null);
 });
 
 test("diffFromBase: a gradient variant of a solid button differs from it", () => {
