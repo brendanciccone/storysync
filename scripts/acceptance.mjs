@@ -2297,7 +2297,7 @@ async function main() {
     return `${cases.length} radii`;
   });
 
-  await check("a gradient fill, a label's transform, opacity and tracking, and Tailwind's empty shadow slots measure as drawn", async () => {
+  await check("a gradient fill, a background clip, a label's transform, opacity and tracking, and Tailwind's empty shadow slots measure as drawn", async () => {
     const empty = "0 0 #0000";
     const cases = [
       // A gradient has no background-color: recorded as no fill, it was built unfilled.
@@ -2323,11 +2323,18 @@ async function main() {
           { offsetX: 0, offsetY: 1, blur: 3, spread: 0, color: "#0000001a", inset: false },
           { offsetX: 0, offsetY: 1, blur: 2, spread: -1, color: "#0000001a", inset: false },
         ]) },
+      // shadcn/ui's Button clips its fill to the padding box (bg-clip-padding),
+      // so it stops at the transparent border; its Badge doesn't, and the
+      // fill runs under the border. The build draws the two apart.
+      { html: `<button id="c8" style="display: inline-flex; border: 1px solid transparent; background: #2563eb; background-clip: padding-box">Go</button>`,
+        want: (s) => s.backgroundClip === "padding-box" && s.borderUniform?.color === null },
+      { html: `<span id="c9" style="display: inline-flex; border: 1px solid transparent; background: #2563eb">Go</span>`,
+        want: (s) => !("backgroundClip" in s) && s.borderUniform?.color === null },
     ];
     const measured = await measureCases("drawn", cases.map((c, i) => ({ html: c.html, selector: `#c${i}` })));
     for (const [i, c] of cases.entries()) {
       const { styles } = measured[i];
-      const shown = { backgroundColor: styles.backgroundColor, backgroundImage: styles.backgroundImage, opacity: styles.opacity,
+      const shown = { backgroundColor: styles.backgroundColor, backgroundImage: styles.backgroundImage, backgroundClip: styles.backgroundClip, opacity: styles.opacity,
         letterSpacing: styles.letterSpacing, text: styles.text, boxShadow: styles.boxShadow };
       assert(c.want(styles), `${c.html}\n  measured ${JSON.stringify(shown)}`);
     }

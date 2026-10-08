@@ -24,6 +24,7 @@ import {
   isClosedTrigger,
   resolveFontFamily,
   isFontKeyword,
+  CAPTURED_PROPERTIES,
 } from "../snap-normalize.js";
 import type { RawComputedStyles, StoryNode, PortalNode } from "../snap-normalize.js";
 import type { FigmaVariantProperty } from "../mapper.js";
@@ -366,6 +367,12 @@ test("normalizeStyles: a background clipped to the padding box is recorded, a bo
   // A value per layer, top first: the bottom one clips the color.
   assert.equal(normalizeStyles(withOverrides({ "background-clip": "border-box, content-box" }), BOX).backgroundClip, "content-box");
   assert.equal("backgroundClip" in normalizeStyles(withOverrides({ "background-clip": "padding-box, border-box" }), BOX), false);
+});
+
+test("the browser side is asked for background-clip, which normalizeStyles reads", () => {
+  // normalizeStyles only sees the properties snap-browser reads, so without
+  // this every element would measure as border-box.
+  assert.ok(CAPTURED_PROPERTIES.includes("background-clip"));
 });
 
 test("diffFromBase: a variant whose background runs under its border records null against a padding-box base", () => {
