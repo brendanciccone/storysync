@@ -22,6 +22,16 @@ export interface TokenValue {
    * is no colour storysync can convert, and on every other category.
    */
   hex?: string;
+  /**
+   * A radius, spacing or typography token's value in px, for the push's
+   * FLOAT variables and for diff: rem is 16px, and calc() is worked out, so
+   * shadcn/ui's `calc(0.625rem - 4px)` is 6. The agent did that arithmetic
+   * itself, and diff compared `calc(...)` with Figma's 6 as text, a mismatch
+   * every time. Absent when the value is no fixed length: em and % depend on
+   * the element, and a weight or a line-height ratio is no length at all.
+   * Like `hex`, `tokens --check` never compares it.
+   */
+  px?: number;
   group?: string;
 }
 
@@ -204,19 +214,59 @@ function readCss(file: string): string {
 
 // --- Main extraction ---
 
+/**
+ * An extraction, with the custom properties a var() left in a value resolves
+ * against, when the source has any.
+ */
+interface Extraction extends TokenExtractionResult {
+  vars?: Map<string, string>;
+}
+
+/** The categories whose tokens are lengths, and get a `px`. */
+const LENGTH_CATEGORIES: ReadonlySet<TokenCategory> = new Set(["radius", "spacing", "typography"]);
+
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
-  const result = extractFromSource(projectPath, sourceType);
+  const { vars, ...result } = extractFromSource(projectPath, sourceType);
   for (const collection of result.collections) {
-    if (collection.category !== "colors") continue;
     collection.tokens = collection.tokens.map((token) => {
-      const hex = tokenColorToHex(token.value);
-      return hex ? { ...token, hex } : token;
+      // `value` stays as the source writes it, for --check. CSS custom
+      // properties resolve a var() only when it is the whole value, so
+      // `calc(var(--radius) - 4px)` is resolved here, for hex and px alone.
+      const resolved = vars ? resolveTailwindCssRefs(token.value, vars) : token.value;
+      const unresolved = unresolvedRefs(resolved, vars);
+      if (unresolved) result.warnings.push(`Unresolved: ${collection.category} ${token.name} = ${token.value} (${unresolved})`);
+      if (collection.category === "colors") {
+        const hex = tokenColorToHex(resolved);
+        return hex ? { ...token, hex } : token;
+      }
+      if (LENGTH_CATEGORIES.has(collection.category)) {
+        const px = lengthToPx(resolved);
+        return px === null ? token : { ...token, px };
+      }
+      return token;
     });
   }
   return result;
 }
 
-function extractFromSource(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
+/**
+ * Why a value still holds a var() after resolution, naming each variable,
+ * or null when it holds none. Nothing flagged one before: the push took
+ * `var(--font-sans)` for a font family, and diff compared it with Figma's
+ * as text. A variable set nowhere storysync reads may be set at runtime, as
+ * next/font sets `--font-geist-mono`; one set only in terms of itself, as
+ * shadcn/ui's `@theme inline { --font-sans: var(--font-sans) }`, can't
+ * resolve from a stylesheet either.
+ */
+function unresolvedRefs(value: string, vars: Map<string, string> | undefined): string | null {
+  const names = [...new Set([...value.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]))];
+  if (!names.length) return null;
+  return names
+    .map((name) => (vars?.has(name) ? `${name} is set only in terms of itself` : `${name} isn't set in any stylesheet storysync reads`))
+    .join("; ");
+}
+
+function extractFromSource(projectPath: string, sourceType?: TokenSourceType): Extraction {
   if (sourceType) {
     switch (sourceType) {
       case "tailwind": {
@@ -228,7 +278,7 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): T
       }
       case "css": {
         const files = findCSSWithCustomProperties(projectPath);
-        if (files.length) return extractFromCSS(files);
+        if (files.length) return extractFromCSS(files, projectPath);
         return { source: "css", sourcePath: "", collections: [], warnings: ["No CSS files with custom properties found"] };
       }
       case "theme": {
@@ -249,14 +299,14 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): T
       return detected.path.endsWith(".css")
         ? extractFromTailwindTheme(findTailwindThemeCSS(projectPath), projectPath)
         : extractFromTailwind(detected.path, projectPath);
-    case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath));
+    case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath), projectPath);
     case "theme": return extractFromTheme(detected.path);
   }
 }
 
 // --- Tailwind extraction ---
 
-function extractFromTailwind(configPath: string, projectRoot?: string): TokenExtractionResult {
+function extractFromTailwind(configPath: string, projectRoot?: string): Extraction {
   const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];
@@ -291,6 +341,7 @@ function extractFromTailwind(configPath: string, projectRoot?: string): TokenExt
   // value defined in globals.css as `:root { --background: 0 0% 100%; }`.
   const root = projectRoot ?? join(configPath, "..");
   const cssFiles = findCSSWithCustomProperties(root);
+  let vars: Map<string, string> | undefined;
   if (cssFiles.length && collectionsHaveCssVarRefs(collections)) {
     const cssVars = readCssVars(cssFiles);
     if (cssVars.size) {
@@ -300,10 +351,11 @@ function extractFromTailwind(configPath: string, projectRoot?: string): TokenExt
         }
       }
       warnings.push(`Resolved CSS variable references from ${cssFiles[0]}`);
+      vars = cssVars;
     }
   }
 
-  return { source: "tailwind", sourcePath: configPath, collections, warnings };
+  return { source: "tailwind", sourcePath: configPath, collections, warnings, vars };
 }
 
 function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
@@ -620,18 +672,12 @@ function findTailwindDefaultTheme(projectPath: string): string | null {
 }
 
 /**
- * Tokens from Tailwind v4's CSS-first theme: `@theme { --color-brand-500:
- * oklch(...); }`. Later declarations win, as they do in Tailwind, and
- * `initial` removes one, or with `*` a namespace. A `var()` resolves against
- * the theme itself, the project's `:root` (shadcn/ui's v4 `@theme inline`
- * points at it) and Tailwind's default theme when it is installed; the
- * defaults are not tokens themselves, as a Tailwind config's aren't. A
- * modifier such as `--text-sm--line-height` belongs to its token and is
- * skipped, and a namespace that is no token category is reported as
- * uncategorized.
+ * The variables of a project's `@theme` blocks, in the order they are
+ * declared, which is the order their tokens are listed in. Later
+ * declarations win, as they do in Tailwind, and `initial` removes one, or
+ * with `*` a namespace.
  */
-function extractFromTailwindTheme(files: string[], projectPath: string): TokenExtractionResult {
-  const warnings: string[] = [];
+function readThemeDeclarations(files: string[], warnings: string[]): Map<string, string> {
   const declared = new Map<string, string>();
   for (const file of files) {
     let css: string;
@@ -645,7 +691,16 @@ function extractFromTailwindTheme(files: string[], projectPath: string): TokenEx
       }
     }
   }
+  return declared;
+}
 
+/**
+ * What a theme variable's `var()` resolves against: Tailwind's default theme
+ * when it is installed, the project's `:root` (shadcn/ui's v4 `@theme
+ * inline` points at it) and the theme itself, each winning over the one
+ * before.
+ */
+function themeVars(projectPath: string, root: Map<string, string>, declared: Map<string, string>): Map<string, string> {
   const vars = new Map<string, string>();
   const defaults = findTailwindDefaultTheme(projectPath);
   if (defaults) {
@@ -655,14 +710,36 @@ function extractFromTailwindTheme(files: string[], projectPath: string): TokenEx
       }
     } catch { /* resolve without them */ }
   }
-  for (const [name, value] of readCssVars(findCSSWithCustomProperties(projectPath))) vars.set(name, value);
+  for (const [name, value] of root) vars.set(name, value);
   for (const [name, value] of declared) vars.set(name, value);
+  return vars;
+}
+
+/**
+ * Whether a theme variable can be a token: not a namespace reset such as
+ * `--color-*`, nor a modifier such as `--text-sm--line-height`, which
+ * belongs to its token.
+ */
+function isThemeTokenName(varName: string): boolean {
+  return !varName.endsWith("*") && !varName.slice(2).includes("--");
+}
+
+/**
+ * Tokens from Tailwind v4's CSS-first theme: `@theme { --color-brand-500:
+ * oklch(...); }`, with each `var()` resolved by themeVars. Tailwind's
+ * defaults are not tokens themselves, as a Tailwind config's aren't. A
+ * namespace that is no token category is reported as uncategorized.
+ */
+function extractFromTailwindTheme(files: string[], projectPath: string): Extraction {
+  const warnings: string[] = [];
+  const declared = readThemeDeclarations(files, warnings);
+  const vars = themeVars(projectPath, readCssVars(findCSSWithCustomProperties(projectPath)), declared);
 
   const categorized: Record<TokenCategory, TokenValue[]> = {
     colors: [], spacing: [], typography: [], radius: [], shadows: [],
   };
   for (const [varName, value] of declared) {
-    if (varName.endsWith("*") || varName.slice(2).includes("--")) continue;
+    if (!isThemeTokenName(varName)) continue;
     const token = themeToken(varName);
     if (!token) {
       warnings.push(`Uncategorized: ${varName}: ${value}`);
@@ -675,12 +752,89 @@ function extractFromTailwindTheme(files: string[], projectPath: string): TokenEx
   for (const [category, tokens] of Object.entries(categorized) as [TokenCategory, TokenValue[]][]) {
     if (tokens.length) collections.push({ category, tokens });
   }
-  return { source: "tailwind", sourcePath: files[0], collections, warnings };
+  return { source: "tailwind", sourcePath: files[0], collections, warnings, vars };
+}
+
+/**
+ * Whether a theme variable's value refers to a `:root` custom property,
+ * directly or through other theme variables.
+ */
+function refersToRoot(value: string, root: Map<string, string>, declared: Map<string, string>, seen = new Set<string>()): boolean {
+  for (const [, name] of value.matchAll(/var\(\s*(--[\w-]+)/g)) {
+    if (root.has(name)) return true;
+    const next = declared.get(name);
+    if (next === undefined || seen.has(name)) continue;
+    seen.add(name);
+    if (refersToRoot(next, root, declared, seen)) return true;
+  }
+  return false;
+}
+
+/**
+ * Adds to a `:root` extraction the project's `@theme` variables that are
+ * built from `:root`'s. shadcn/ui's v4 globals.css keeps one radius in
+ * `:root`, `--radius`, and the scale its components render in `@theme
+ * inline`: `--radius-sm: calc(var(--radius) - 4px)`, and so on to 4xl. Read
+ * through `:root` alone, the push had one radius to bind sm, md, lg and xl
+ * to. So spacing, radius, shadow and typography variables whose value refers
+ * to a `:root` variable are read too, named as `--source tailwind` names
+ * them, which leaves every `:root` token's name and value as it was.
+ * Colours aren't: `:root` already holds what `@theme`'s point at. A variable
+ * `:root` declares itself is read from `:root`, as it wins in the browser.
+ * The rest of `@theme`'s tokens are named in a warning, since `--source
+ * tailwind` would read them.
+ */
+function addRootDerivedTheme(
+  projectPath: string,
+  root: Map<string, string>,
+  categorized: Record<TokenCategory, TokenValue[]>,
+  warnings: string[],
+): void {
+  const files = findTailwindThemeCSS(projectPath);
+  if (!files.length) return;
+  const declared = readThemeDeclarations(files, warnings);
+  const vars = themeVars(projectPath, root, declared);
+  const left = new Map<TokenCategory, string[]>();
+  for (const [varName, value] of declared) {
+    if (!isThemeTokenName(varName) || root.has(varName)) continue;
+    const token = themeToken(varName);
+    if (!token) continue;
+    const derived = refersToRoot(value, root, declared);
+    if (!derived) left.set(token.category, [...(left.get(token.category) ?? []), token.name]);
+    if (!derived || token.category === "colors") continue;
+    if (categorized[token.category].some((t) => t.name === token.name)) continue;
+    categorized[token.category].push({ name: token.name, value: resolveTailwindCssRefs(value, vars) });
+  }
+  if (left.size) {
+    // A palette in @theme runs to hundreds, so each category names a few.
+    const few = (names: string[]) => names.length > 8 ? `${names.slice(0, 6).join(", ")} and ${names.length - 6} more` : names.join(", ");
+    const named = [...left].map(([category, names]) => `${category} ${few(names)}`).join("; ");
+    warnings.push(`Not read from @theme, since they aren't built from :root's variables: ${named}. Pass --source tailwind to read @theme instead`);
+  }
 }
 
 // --- CSS custom properties extraction ---
 
-function extractFromCSS(files: string[]): TokenExtractionResult {
+/**
+ * The bare names of Tailwind's scales, which are their unnamed value, as
+ * `@theme`'s bare `--spacing` is spacing `DEFAULT`. shadcn/ui's `:root`
+ * holds its one radius as the bare `--radius`, which matched no prefix: it
+ * was reported uncategorized, so no radius reached the push, `tokens --check`
+ * or the Action, and a changed radius passed them all.
+ */
+const BARE_SCALES = new Map<string, TokenCategory>([
+  ["--spacing", "spacing"],
+  ["--radius", "radius"],
+  ["--shadow", "shadows"],
+]);
+
+/**
+ * Tokens from the project's `:root` custom properties, categorized by name,
+ * or by value for a colour, and named after the variable: `--radius-md` is
+ * radius `radius/md`. A Tailwind v4 project's `@theme` variables built from
+ * them are added by addRootDerivedTheme.
+ */
+function extractFromCSS(files: string[], projectPath: string): Extraction {
   const warnings: string[] = [];
   const allVars = new Map<string, string>();
 
@@ -756,17 +910,21 @@ function extractFromCSS(files: string[]): TokenExtractionResult {
       categorized.typography.push({ name: shortName, value });
     } else if (shadowPrefixes.some((p) => varName.startsWith(p))) {
       categorized.shadows.push({ name: shortName, value });
+    } else if (BARE_SCALES.has(varName)) {
+      categorized[BARE_SCALES.get(varName)!].push({ name: "DEFAULT", value });
     } else {
       warnings.push(`Uncategorized: ${varName}: ${value}`);
     }
   }
+
+  addRootDerivedTheme(projectPath, allVars, categorized, warnings);
 
   const collections: TokenCollection[] = [];
   for (const [category, tokens] of Object.entries(categorized) as [TokenCategory, TokenValue[]][]) {
     if (tokens.length) collections.push({ category, tokens });
   }
 
-  return { source: "css", sourcePath: files[0], collections, warnings };
+  return { source: "css", sourcePath: files[0], collections, warnings, vars: allVars };
 }
 
 // Recursively resolve var(--name) and var(--name, fallback). Cycle/depth-guarded.
@@ -815,9 +973,73 @@ export function tokenColorToHex(value: string): string | null {
   return colorToHex(BARE_HSL.test(v) ? `hsl(${v})` : v);
 }
 
+/**
+ * A length in px, or null when it has no fixed one: px, rem at 16px, a
+ * unitless 0, and calc() over them with + - * / and parentheses, nested
+ * calc() included, as shadcn/ui writes its radius scale (`calc(0.625rem -
+ * 4px)`) and Tailwind v4 multiplies its spacing. em and % depend on the
+ * element, and vw, min() and the rest on more, so they are null, as is a
+ * number with no unit other than 0: a font weight or a line-height ratio is
+ * no length. Rounded to thousandths, so 0.1rem is 1.6, not
+ * 1.6000000000000001, and diff rounds Figma's float to match.
+ */
+export function lengthToPx(value: string): number | null {
+  const src = value.trim().toLowerCase();
+  let i = 0;
+  // A term's px, or its number when it has no unit. A syntax error, or an
+  // operation CSS has no length for, throws, and the value is null.
+  type Term = { n: number; length: boolean };
+  const skip = () => { while (/\s/.test(src[i] ?? "")) i++; };
+  const close = () => { skip(); if (src[i++] !== ")") throw new Error("no )"); };
+  const atom = (): Term => {
+    skip();
+    if (src.startsWith("calc(", i) || src[i] === "(") {
+      i = src.indexOf("(", i) + 1;
+      const t = sum();
+      close();
+      return t;
+    }
+    const m = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(px|rem)?(?![\w%.])/.exec(src.slice(i));
+    if (!m) throw new Error("no length");
+    i += m[0].length;
+    const n = parseFloat(m[0]);
+    return m[1] === "rem" ? { n: n * 16, length: true } : { n, length: m[1] === "px" };
+  };
+  const product = (): Term => {
+    let t = atom();
+    for (skip(); src[i] === "*" || src[i] === "/"; skip()) {
+      const op = src[i++];
+      const r = atom();
+      if (op === "*" ? t.length && r.length : r.length || r.n === 0) throw new Error("no length");
+      t = op === "*" ? { n: t.n * r.n, length: t.length || r.length } : { n: t.n / r.n, length: t.length };
+    }
+    return t;
+  };
+  const sum = (): Term => {
+    let t = product();
+    for (skip(); src[i] === "+" || src[i] === "-"; skip()) {
+      const op = src[i++];
+      const r = product();
+      // A length and a number don't add, but 0 needs no unit.
+      if (t.length !== r.length && t.n !== 0 && r.n !== 0) throw new Error("no length");
+      t = { n: op === "+" ? t.n + r.n : t.n - r.n, length: t.length || r.length };
+    }
+    return t;
+  };
+  try {
+    const t = sum();
+    skip();
+    if (i !== src.length || (!t.length && t.n !== 0) || !Number.isFinite(t.n)) return null;
+    // + 0 makes -0 plain 0.
+    return Math.round(t.n * 1000) / 1000 + 0;
+  } catch {
+    return null;
+  }
+}
+
 // --- Theme file extraction ---
 
-function extractFromTheme(filePath: string): TokenExtractionResult {
+function extractFromTheme(filePath: string): Extraction {
   const content = stripComments(readFileSync(filePath, "utf8"));
   const warnings: string[] = [];
   const collections: TokenCollection[] = [];

@@ -33,9 +33,9 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
 
 2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) for a human-readable preview, or add `--all` to show every token.
 
-3. **Create Figma variable collections** — use the JSON output to create Figma variables via `use_figma` (with the file key and `skillNames: "figma-use"`), one collection at a time. Reuse a collection of the same name rather than creating a second. A call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow, so split a large collection (a full colour palette runs to hundreds) across calls of a few dozen variables each. Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each colour from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a `value` in `oklch()` or another CSS Color 4 space, or bare HSL channels such as `0 0% 100%`, throws. A colour token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
+3. **Create Figma variable collections** — use the JSON output to create Figma variables via `use_figma` (with the file key and `skillNames: "figma-use"`), one collection at a time. Reuse a collection of the same name rather than creating a second. A call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow, so split a large collection (a full colour palette runs to hundreds) across calls of a few dozen variables each. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, one in em or % (as letter spacing often is), and any token whose `value` still holds a `var()`: `tokens` warns about each, since no stylesheet it reads sets that variable (next/font, say, sets a font's at runtime). Set each colour from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a `value` in `oklch()` or another CSS Color 4 space, or bare HSL channels such as `0 0% 100%`, throws. A colour token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
 
-4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
+4. **Verify** — confirm the variable collections were created with the expected count, less the tokens you left out. If any are missing, retry.
 
 ## Components
 
@@ -172,6 +172,8 @@ When token variable collections exist, bind component properties to variables in
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
+A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a colour, its `px` for a length. When several variables share the value, as shadcn/ui's `primary` and `sidebar/primary` do, bind the one the component's source names (`bg-primary`, `rounded-md`); if it names none, leave the value unbound and list it in the summary rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
+
 This way, when tokens change in code and storysync runs again, updating the variables updates every component.
 
 ## Audit
@@ -200,7 +202,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - In code but not in Figma → **missing from Figma** (needs sync)
    - In Figma but not in code → **missing from code** (orphaned or manually added)
    - Both exist but values differ → **value mismatch** (show both values)
-   - Normalize before comparing: lowercase hex, convert rem→px, strip units for numerics.
+   - Normalize before comparing: compare a colour by its token's `hex` and a spacing, radius or size token by its `px` (rem and `calc()` worked out) where the token has one; otherwise lowercase hex, convert rem→px, strip units for numerics. Round numbers to thousandths on both sides.
 
 6. **Compare components** — match by name (case-insensitive). If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing. For each:
    - In code/Storybook but not in Figma → **code only**

@@ -222,10 +222,10 @@ Storysync reads design tokens from your codebase and previews the Figma variable
 | Source | What it reads |
 |---|---|
 | **Tailwind** | `tailwind.config.ts/js` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
-| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files |
+| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`. |
 | **Theme files** | `tokens.ts`, `theme.ts`, and similar: exported objects with `colors`, `spacing`, and so on |
 
-Token categories are **colors**, **spacing**, **typography**, **radius**, and **shadows**. Commented-out tokens are skipped.
+Token categories are **colors**, **spacing**, **typography**, **radius**, and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped.
 
 **Colours** can be in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, or the bare HSL channels shadcn/ui uses (`240 5.9% 10%`). A custom property with one of these values counts as a colour whatever its name. `tokens --json` keeps the value as written and adds its sRGB `hex`:
 
@@ -233,7 +233,17 @@ Token categories are **colors**, **spacing**, **typography**, **radius**, and **
 { "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }
 ```
 
-The push sets Figma variables from `hex`, since Figma's colour helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colours get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`. `tokens --check` compares only `value`, so baselines written before `hex` existed still pass.
+The push sets Figma variables from `hex`, since Figma's colour helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colours get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`.
+
+**Lengths** in radius, spacing, and typography get `px`, with rem (16px) and `calc()` worked out. The push sets FLOAT variables from it, and `diff` compares in px:
+
+```json
+{ "name": "sm", "value": "calc(0.625rem - 4px)", "px": 6 }
+```
+
+A value in em or %, or with no unit, like a font weight, has no `px`. `tokens --check` compares only `value`, so baselines written before `hex` and `px` existed still pass.
+
+A `var()` that doesn't resolve stays as written, and a warning names the token, for example a font that next/font sets at runtime.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
@@ -255,7 +265,7 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 - Nested variable chains (`--brand: var(--blue-500)`)
 - Fallback values (`var(--missing, 200 50% 50%)`)
 
-A reference with no matching variable and no fallback is left as the raw `var(...)`, so you can see what didn't resolve.
+A reference with no matching variable and no fallback is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
 ### Tailwind v4 `@theme`
 
@@ -273,7 +283,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead o
 }
 ```
 
-With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, so existing baselines don't change. Pass `--source tailwind` to read `@theme` instead.
+With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, and a baseline from an earlier version lists them as added. `@theme` colours aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead.
 
 | Namespace | Category | Token name |
 |---|---|---|
@@ -283,7 +293,7 @@ With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` incl
 | `--shadow-*` | shadows | `--shadow-soft` → `soft` |
 | `--text-*`, `--font-*`, `--font-weight-*`, `--leading-*`, `--tracking-*` | typography | with the namespace, since they share a category: `text/hero`, `font/display`, `font/weight/bold`, `leading/snug` |
 
-Dashes in a name become `/`. A `var()` is resolved against the theme, the project's `:root`, and Tailwind's default theme when `tailwindcss` is installed, so `--color-primary: var(--color-blue-500)` gets blue-500's value. Tailwind's defaults are only used to resolve references; they aren't read as your tokens. Later declarations win, and `initial` removes a variable (or a whole namespace, as in `--color-*: initial`). Modifiers like `--text-hero--line-height` and nested rules like `@keyframes` are skipped, and other namespaces (`--breakpoint-*`, `--animate-*`, and so on) are listed as uncategorized.
+Dashes in a name become `/`. A `var()` is resolved against the theme, the project's `:root`, and Tailwind's default theme when `tailwindcss` is installed, so `--color-primary: var(--color-blue-500)` gets blue-500's value. Tailwind's defaults are only used to resolve references; they aren't read as your tokens, so a project that uses Tailwind's default spacing, type, or shadow scales has no tokens for them. Later declarations win, and `initial` removes a variable (or a whole namespace, as in `--color-*: initial`). Modifiers like `--text-hero--line-height` and nested rules like `@keyframes` are skipped, and other namespaces (`--breakpoint-*`, `--animate-*`, and so on) are listed as uncategorized.
 
 ## Component mapping rules
 

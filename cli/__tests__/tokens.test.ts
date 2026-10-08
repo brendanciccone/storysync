@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, TOKEN_SOURCES } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, TOKEN_SOURCES } from "../tokens.js";
 import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -601,8 +601,12 @@ test("Tailwind v4: var() resolves against the theme, :root and Tailwind's own th
     ]);
     // Tailwind's defaults resolve references but aren't the project's tokens.
     assert.equal(result.collections.flatMap((c) => c.tokens).some((t) => t.name.includes("blue") || t.name.includes("sans")), false);
-    // --source css still reads :root alone.
-    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [["colors", [["background", "oklch(1 0 0)"]]]]);
+    // --source css reads :root's colours, not @theme's, and its radius with
+    // the scale @theme builds from it.
+    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [
+      ["colors", [["background", "oklch(1 0 0)"]]],
+      ["radius", [["DEFAULT", "0.625rem"], ["sm", "calc(0.625rem - 4px)"], ["lg", "0.625rem"]]],
+    ]);
   } finally { cleanup(dir); }
 });
 
@@ -685,7 +689,7 @@ test("hex: each colour token carries its sRGB hex next to the value as written",
         { name: "color/text", value: "currentColor" },
         { name: "color/link", value: "var(--nowhere)" },
       ]],
-      ["spacing", [{ name: "spacing/4", value: "1rem" }]],
+      ["spacing", [{ name: "spacing/4", value: "1rem", px: 16 }]],
     ]);
   } finally { cleanup(dir); }
 });
@@ -715,6 +719,307 @@ test("hex: --check compares the value, so a baseline written before hex checks c
     const shifted = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map((t) => ({ ...t, hex: "#fb2c37" })) })) });
     assert.equal(hasDrift(compareTokens(shifted, current)), false);
   } finally { cleanup(dir); }
+});
+
+test("hex: a colour whose :root value holds a var() gets the hex of what it resolves to, its value kept as written", () => {
+  // :root resolves a var() only when it is the whole value, so this one had
+  // no hex, and diff compared `hsl(var(--brand))` with Figma's as text.
+  const dir = makeProject({ "styles.css": `:root { --brand: 210 40% 50%; --ring: hsl(var(--brand) / 50%); }` });
+  try {
+    const colors = extractTokens(dir).collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => [t.name, t.value, t.hex]), [
+      ["brand", "210 40% 50%", tokenColorToHex("hsl(210 40% 50%)")],
+      ["ring", "hsl(var(--brand) / 50%)", tokenColorToHex("hsl(210 40% 50% / 50%)")],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+// --- Bare scale names and shadcn/ui v4 ---
+
+test("CSS: a bare --radius, --spacing or --shadow is its category's DEFAULT, not uncategorized", () => {
+  // shadcn/ui's :root holds its one radius as the bare --radius. Reported
+  // uncategorized, it reached neither the push nor --check, so a changed
+  // radius passed. DEFAULT is what @theme's bare --spacing is named.
+  const dir = makeProject({
+    "styles.css": `:root {
+      --radius: 0.5rem;
+      --spacing: 0.25rem;
+      --shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+      --radius-card: 0.75rem;
+    }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(tokenTable(result), [
+      ["spacing", [["DEFAULT", "0.25rem"]]],
+      ["radius", [["DEFAULT", "0.5rem"], ["radius/card", "0.75rem"]]],
+      ["shadows", [["DEFAULT", "0 1px 2px rgb(0 0 0 / 0.05)"]]],
+    ]);
+    assert.deepEqual(result.warnings, []);
+  } finally { cleanup(dir); }
+});
+
+/** shadcn/ui's v4 globals.css, cut down: @theme inline points at :root. */
+const SHADCN_V4_GLOBALS = `@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-primary: var(--primary);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+}
+
+:root {
+  --radius: 0.625rem;
+  --primary: oklch(0.205 0 0);
+  --background: oklch(1 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+}
+`;
+
+test("CSS: shadcn/ui v4 gives :root's colours and radius, and the radius scale @theme builds from it, in px", () => {
+  // Read through :root alone, there was no radius at all, and the bare
+  // --radius alone would leave the push one radius to bind sm, md, lg and
+  // xl to. @theme's colours point at :root's and aren't read twice; its
+  // fonts aren't built from :root, so a warning names them.
+  const dir = makeProject({ "app/globals.css": SHADCN_V4_GLOBALS });
+  try {
+    assert.equal(detectTokenSource(dir)?.type, "css");
+    const auto = extractTokens(dir);
+    assert.deepEqual(extractTokens(dir, "css"), auto);
+    assert.equal(auto.source, "css");
+    assert.deepEqual(auto.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.value, t.hex ?? t.px])]), [
+      ["colors", [["primary", "oklch(0.205 0 0)", "#171717"], ["background", "oklch(1 0 0)", "#ffffff"]]],
+      ["radius", [
+        ["DEFAULT", "0.625rem", 10],
+        ["sm", "calc(0.625rem - 4px)", 6],
+        ["md", "calc(0.625rem - 2px)", 8],
+        ["lg", "0.625rem", 10],
+        ["xl", "calc(0.625rem + 4px)", 14],
+      ]],
+    ]);
+    assert.deepEqual(auto.warnings, [
+      "Not read from @theme, since they aren't built from :root's variables: typography font/sans, font/mono. Pass --source tailwind to read @theme instead",
+    ]);
+
+    // A baseline from before lists the colours alone, so it sees the radius
+    // as added once, and nothing changed or removed.
+    const colorsOnly = baselineOf({ ...auto, collections: auto.collections.filter((c) => c.category === "colors") });
+    const upgraded = compareTokens(colorsOnly, auto);
+    assert.deepEqual(upgraded.added.map((a) => [a.category, a.tokens.map((t) => t.name)]), [["radius", ["DEFAULT", "sm", "md", "lg", "xl"]]]);
+    assert.deepEqual([upgraded.removed, upgraded.changed], [[], []]);
+
+    // And a changed --radius is drift on every radius.
+    const baseline = baselineOf(auto);
+    writeFileSync(join(dir, "app/globals.css"), SHADCN_V4_GLOBALS.replace("--radius: 0.625rem", "--radius: 0.5rem"));
+    assert.deepEqual(compareTokens(baseline, extractTokens(dir)).changed.map((c) => [c.token, c.to]), [
+      ["DEFAULT", "0.5rem"],
+      ["sm", "calc(0.5rem - 4px)"],
+      ["md", "calc(0.5rem - 2px)"],
+      ["lg", "0.5rem"],
+      ["xl", "calc(0.5rem + 4px)"],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("CSS: only @theme variables built from :root are read through it, and :root's own declaration wins", () => {
+  const dir = makeProject({
+    "src/app.css": `@theme {
+  --radius-card: 0.75rem;
+  --spacing: var(--space-unit);
+  --radius-pill: var(--radius-card);
+  --radius-xs: calc(var(--radius-sm) / 2);
+  --radius-sm: calc(var(--radius) - 4px);
+  --color-brand: #3b82f6;
+  --shadow-soft: 0 2px 4px var(--shadow-color);
+  --radius-md: var(--radius);
+}`,
+    "src/tokens.css": `:root {
+  --space-unit: 4px;
+  --radius: 8px;
+  --radius-md: 6px;
+  --shadow-color: rgb(0 0 0 / 0.1);
+}`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(tokenTable(result), [
+      ["colors", [["shadow/color", "rgb(0 0 0 / 0.1)"]]],
+      // Through another @theme variable counts.
+      ["spacing", [["space/unit", "4px"], ["DEFAULT", "4px"]]],
+      ["radius", [["DEFAULT", "8px"], ["radius/md", "6px"], ["xs", "calc(calc(8px - 4px) / 2)"], ["sm", "calc(8px - 4px)"]]],
+      ["shadows", [["soft", "0 2px 4px rgb(0 0 0 / 0.1)"]]],
+    ]);
+    assert.deepEqual(result.warnings, [
+      "Not read from @theme, since they aren't built from :root's variables: radius card, pill; colors brand. Pass --source tailwind to read @theme instead",
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("CSS: the warning naming what @theme declares beyond :root names a few of a palette, not all of it", () => {
+  const steps = Array.from({ length: 10 }, (_, i) => (i + 1) * 100);
+  const dir = makeProject({
+    "app/globals.css": `@theme {\n${steps.map((n) => `  --color-brand-${n}: #3b82f6;`).join("\n")}\n}\n:root { --background: #ffffff; }`,
+  });
+  try {
+    assert.deepEqual(extractTokens(dir).warnings, [
+      "Not read from @theme, since they aren't built from :root's variables: colors brand/100, brand/200, brand/300, brand/400, brand/500, brand/600 and 4 more. Pass --source tailwind to read @theme instead",
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("order: tokens are listed as their source declares them, @theme's in its order and :root's in its", () => {
+  // shadcn/ui's v4 globals.css declares its @theme colours in the reverse
+  // of :root's order; each source keeps its own.
+  const dir = makeProject({
+    "app/globals.css": `@theme inline {
+  --color-card: var(--card);
+  --color-background: var(--background);
+}
+:root {
+  --background: #ffffff;
+  --card: #000000;
+}`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")), [["colors", [["card", "#000000"], ["background", "#ffffff"]]]]);
+    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [["colors", [["background", "#ffffff"], ["card", "#000000"]]]]);
+  } finally { cleanup(dir); }
+});
+
+// --- px ---
+
+test("lengthToPx: px, rem at 16px and calc() over them, and nothing for a value with no fixed length", () => {
+  const cases: [string, number | null][] = [
+    ["4px", 4], ["0.625rem", 10], ["-0.5rem", -8], ["0", 0], ["9999px", 9999], ["1e3px", 1000], ["1PX", 1],
+    ["calc(0.625rem - 4px)", 6], ["calc(0.625rem + 16px)", 26], ["calc(0.25rem * 4)", 16], ["calc(4 * 0.25rem)", 16],
+    ["calc((1rem + 2px) * 2)", 36], ["calc(calc(1rem - 2px) / 2)", 7], ["calc(0 - 4px)", -4],
+    // Rounded, so binary noise doesn't make a mismatch.
+    ["0.1rem", 1.6],
+    // Relative to the element, or no length at all.
+    ["1em", null], ["-0.025em", null], ["50%", null], ["100vw", null], ["min(1rem, 4px)", null],
+    ["700", null], ["1.375", null], ["ui-sans-serif, system-ui", null], ["auto", null], ["", null],
+    // Not CSS: a length and a number don't add, lengths don't multiply, and nothing divides by a length or 0.
+    ["calc(1rem + 2)", null], ["calc(1px * 2px)", null], ["calc(4px / 1px)", null], ["calc(4px / 0)", null],
+    ["1rem / 1.5rem", null], ["1rem 2rem", null], ["calc(1rem", null],
+    ["var(--radius)", null], ["calc(var(--radius) - 4px)", null],
+  ];
+  for (const [value, px] of cases) assert.equal(lengthToPx(value), px, value);
+});
+
+test("px: radius, spacing and font-size tokens carry their px; weights, ratios, em, fonts, shadows and colours don't", () => {
+  // The skill had the agent convert rem itself, and calc() not at all.
+  const dir = makeProject({
+    "src/app.css": `@theme {
+  --spacing: 0.25rem;
+  --radius-sm: calc(var(--radius-base) - 4px);
+  --radius-base: 0.625rem;
+  --text-sm: 0.875rem;
+  --font-weight-bold: 700;
+  --leading-snug: 1.375;
+  --tracking-tight: -0.025em;
+  --font-display: "Satoshi", sans-serif;
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 0.1);
+  --color-brand: #3b82f6;
+}`,
+  });
+  try {
+    assert.deepEqual(extractTokens(dir).collections.map((c) => [c.category, c.tokens]), [
+      ["colors", [{ name: "brand", value: "#3b82f6", hex: "#3b82f6" }]],
+      ["spacing", [{ name: "DEFAULT", value: "0.25rem", px: 4 }]],
+      ["typography", [
+        { name: "text/sm", value: "0.875rem", px: 14 },
+        { name: "font/weight/bold", value: "700" },
+        { name: "leading/snug", value: "1.375" },
+        { name: "tracking/tight", value: "-0.025em" },
+        { name: "font/display", value: `"Satoshi", sans-serif` },
+      ]],
+      ["radius", [{ name: "sm", value: "calc(0.625rem - 4px)", px: 6 }, { name: "base", value: "0.625rem", px: 10 }]],
+      ["shadows", [{ name: "soft", value: "0 2px 8px rgb(0 0 0 / 0.1)" }]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("px: a Tailwind config's radius built on :root's --radius, as shadcn/ui v3 writes it, carries px", () => {
+  const dir = makeProject({
+    "tailwind.config.ts": `export default { theme: { extend: { borderRadius: { lg: "var(--radius)", md: "calc(var(--radius) - 2px)", sm: "calc(var(--radius) - 4px)" } } } }`,
+    "app/globals.css": `@layer base { :root { --background: 0 0% 100%; --radius: 0.5rem; } }`,
+  });
+  try {
+    const radius = extractTokens(dir).collections.find((c) => c.category === "radius");
+    assert.deepEqual(radius?.tokens.map((t) => [t.name, t.value, t.px]), [
+      ["lg", "0.5rem", 8],
+      ["md", "calc(0.5rem - 2px)", 6],
+      ["sm", "calc(0.5rem - 4px)", 4],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("px: a :root value that holds a var() gets the px of what it resolves to, its value kept as written", () => {
+  // --check compares the value, so resolving it would be drift on every
+  // baseline that has it.
+  const dir = makeProject({ "styles.css": `:root { --radius: 0.5rem; --radius-sm: calc(var(--radius) - 2px); }` });
+  try {
+    const radius = extractTokens(dir).collections.find((c) => c.category === "radius");
+    assert.deepEqual(radius?.tokens, [
+      { name: "DEFAULT", value: "0.5rem", px: 8 },
+      { name: "radius/sm", value: "calc(var(--radius) - 2px)", px: 6 },
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("px: --check compares the value, so a baseline written before px checks clean", () => {
+  const dir = makeProject({ "src/app.css": `@theme { --radius-sm: calc(0.625rem - 4px); --spacing: 0.25rem; }` });
+  try {
+    const current = extractTokens(dir);
+    assert.ok(current.collections.every((c) => c.tokens.every((t) => t.px !== undefined)));
+    const old = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map(({ name, value }) => ({ name, value })) })) });
+    assert.equal(hasDrift(compareTokens(old, current)), false);
+    const shifted = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map((t) => ({ ...t, px: 99 })) })) });
+    assert.equal(hasDrift(compareTokens(shifted, current)), false);
+  } finally { cleanup(dir); }
+});
+
+// --- Unresolved var() ---
+
+test("unresolved: a token whose var() didn't resolve is named in a warning, saying why", () => {
+  // shadcn/ui's @theme inline sets --font-sans to itself, and next/font sets
+  // --font-geist-mono at runtime. Both were listed as ordinary tokens, and
+  // the push took `var(--font-sans)` for a font family.
+  const theme = makeProject({
+    "app/globals.css": `@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --radius-card: calc(var(--radius) + 2px);
+  --color-brand: #3b82f6;
+}`,
+  });
+  try {
+    const result = extractTokens(theme);
+    assert.deepEqual(result.warnings, [
+      "Unresolved: typography font/sans = var(--font-sans) (--font-sans is set only in terms of itself)",
+      "Unresolved: typography font/mono = var(--font-geist-mono) (--font-geist-mono isn't set in any stylesheet storysync reads)",
+      "Unresolved: radius card = calc(var(--radius) + 2px) (--radius isn't set in any stylesheet storysync reads)",
+    ]);
+    // Kept as written, with no px to guess at.
+    assert.deepEqual(result.collections.find((c) => c.category === "radius")?.tokens, [{ name: "card", value: "calc(var(--radius) + 2px)" }]);
+  } finally { cleanup(theme); }
+
+  const config = makeProject({ "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "hsl(var(--brand))", plain: "#ffffff" } } } }` });
+  try {
+    assert.deepEqual(extractTokens(config).warnings, [
+      "Unresolved: colors brand = hsl(var(--brand)) (--brand isn't set in any stylesheet storysync reads)",
+    ]);
+  } finally { cleanup(config); }
 });
 
 // --- Drift detection ---
