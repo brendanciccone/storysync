@@ -2634,7 +2634,7 @@ async function main() {
       for (const [name, { component, timeoutMs = 10000 }] of Object.entries(pages)) {
         const started = Date.now();
         const capture = await captureStory(tab, `http://127.0.0.1:${server.address().port}/${name}`, { timeoutMs, screenshot: false, component: { name: component } });
-        const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts) : null;
+        const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts, capture.textLayout) : null;
         measured[name] = { ...capture, styles, ms: Date.now() - started };
       }
       return measured;
@@ -2691,6 +2691,32 @@ async function main() {
     assert(typeof markup.portal === "string" && markup.portal !== markup.left, `a portal beside the root: ${say}`);
     assert(markup.ticking === null, `markup that changed while it was measured: ${say}`);
     return "the same for the same story, apart for a style or a portal, null while ticking";
+  });
+
+  await check("text the browser cuts off or wraps is recorded with the width it was laid out in, and a label on one line isn't", async () => {
+    // Attachment's vertical title has Tailwind's truncate, so the browser cut
+    // it off at the card's width with an ellipsis; snap recorded nothing of
+    // it, and the push built a title that ran 28px past its card.
+    const card = (inner, extra = "") => `<div id="storybook-root"><div data-slot="attachment" style="display: flex; flex-direction: column; width: 120px; padding: 8px; border: 1px solid #e5e5e5; box-sizing: border-box; font: 500 14px/20px sans-serif${extra}">${inner}</div></div>`;
+    const long = "sales-dashboard-quarterly-final-v2.png";
+    const m = await captureStories({
+      truncate: { component: "Attachment", html: card(`<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${long}</span>`) },
+      clip: { component: "Attachment", html: card(`<span style="display: block; overflow: hidden; white-space: nowrap">${long}</span>`) },
+      wrap: { component: "Attachment", html: card(`<span style="display: block">A quarterly report of sales, by region and by product line</span>`) },
+      clamp: { component: "Attachment", html: card(`<span style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden">A quarterly report of sales, by region and by product line, for the board</span>`) },
+      // An inline label wraps and is cut off by the block it is in.
+      inline: { component: "Attachment", html: card(`<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap"><span>${long}</span></div>`) },
+      label: { component: "Button", html: `<div id="storybook-root"><button data-slot="button" style="display: inline-flex; padding: 4px 8px; font: 600 12px sans-serif">Save</button></div>` },
+    });
+    const layout = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.styles.text?.layout ?? null : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(layout);
+    assert(JSON.stringify(layout.truncate) === JSON.stringify({ width: 102, lines: 1, truncation: "ellipsis" }), `truncate: ${say}`);
+    assert(JSON.stringify(layout.clip) === JSON.stringify({ width: 102, lines: 1, truncation: "clip" }), `clip: ${say}`);
+    assert(layout.wrap?.width === 102 && layout.wrap.lines >= 3 && layout.wrap.truncation === undefined, `wrap: ${say}`);
+    assert(JSON.stringify(layout.clamp) === JSON.stringify({ width: 102, lines: 2, truncation: "ellipsis" }), `clamp: ${say}`);
+    assert(JSON.stringify(layout.inline) === JSON.stringify({ width: 102, lines: 1, truncation: "ellipsis" }), `inline: ${say}`);
+    assert(layout.label === null, `a one-line label: ${say}`);
+    return say;
   });
 
   await check("a story that throws after load is a render error, found without waiting out --timeout", async () => {

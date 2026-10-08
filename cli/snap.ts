@@ -908,7 +908,7 @@ async function snapComponent(
         continue;
       }
 
-      const styles = normalizeStyles(captured.raw, captured.boundingBox, captured.textRaw, captured.fontAvailable, captured.fonts);
+      const styles = normalizeStyles(captured.raw, captured.boundingBox, captured.textRaw, captured.fontAvailable, captured.fonts, captured.textLayout);
       const variant: SnapVariant = {
         combination, slug, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },

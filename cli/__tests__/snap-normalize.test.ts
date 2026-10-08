@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeStyles,
+  normalizeTextLayout,
   normalizeColor,
   pxToNumber,
   firstFontFamily,
@@ -1067,4 +1068,31 @@ test("chooseMeasuredElement: without slots, an open trigger's aria-controls name
 test("chooseMeasuredElement: the component's slot in the story's root wins over a portal", () => {
   const choice = chooseMeasuredElement(root(node("div", { slot: "popover", styles: FILLED })), [portal({ slot: "popover-content" })], ["popover"]);
   assert.deepEqual(choice.kind === "tree" && choice.path, [0]);
+});
+
+test("normalizeTextLayout: records text the browser cut off or wrapped, and leaves a line at its own width out", () => {
+  const raw = { width: 102, lines: 1, overflowsX: false, overflowsY: false, textOverflow: "clip", lineClamp: null };
+  // On one line at its own width: a Figma text that hugs reproduces it.
+  assert.equal(normalizeTextLayout(raw), null);
+  assert.equal(normalizeTextLayout(null), null);
+  // Tailwind's truncate: cut off at the side, with an ellipsis.
+  assert.deepEqual(normalizeTextLayout({ ...raw, overflowsX: true, textOverflow: "ellipsis" }), { width: 102, lines: 1, truncation: "ellipsis" });
+  assert.deepEqual(normalizeTextLayout({ ...raw, overflowsX: true }), { width: 102, lines: 1, truncation: "clip" });
+  // Wrapped onto three lines, all drawn.
+  assert.deepEqual(normalizeTextLayout({ ...raw, lines: 3 }), { width: 102, lines: 3 });
+  // line-clamp-2 over four lines: two drawn, ending in an ellipsis.
+  assert.deepEqual(normalizeTextLayout({ ...raw, lines: 4, overflowsY: true, lineClamp: 2 }), { width: 102, lines: 2, truncation: "ellipsis" });
+  // A clamp the text fits within is only wrapping.
+  assert.deepEqual(normalizeTextLayout({ ...raw, lines: 2, lineClamp: 3 }), { width: 102, lines: 2 });
+  // Rounded as every length snap records, and nothing for a box of no width.
+  assert.deepEqual(normalizeTextLayout({ ...raw, width: 101.996, lines: 2 }), { width: 102, lines: 2 });
+  assert.equal(normalizeTextLayout({ ...raw, width: 0, lines: 2 }), null);
+});
+
+test("normalizeStyles: a text's layout is written only where there is one, so older snaps diff as they did", () => {
+  const text = { color: "rgb(10, 10, 10)", "font-family": "Inter", "font-size": "14px", "font-weight": "500", "text-transform": "none", "letter-spacing": "normal", opacity: "1" };
+  const plain = normalizeStyles(PRIMARY_SM, BOX, text, null, undefined, { width: 102, lines: 1, overflowsX: false, overflowsY: false, textOverflow: "clip", lineClamp: null });
+  assert.equal("layout" in plain.text!, false);
+  const cut = normalizeStyles(PRIMARY_SM, BOX, text, null, undefined, { width: 102, lines: 1, overflowsX: true, overflowsY: false, textOverflow: "ellipsis", lineClamp: null });
+  assert.deepEqual(cut.text!.layout, { width: 102, lines: 1, truncation: "ellipsis" });
 });

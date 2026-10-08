@@ -49,6 +49,46 @@ export interface TextStyles {
   textTransform?: string;
   /** In px, a percentage resolved against the text's own font size; absent for none. */
   letterSpacing?: number;
+  /**
+   * How the browser fitted the text into its box, where it didn't sit on
+   * one line at its own width: written only when it wrapped onto more
+   * lines or was cut off, so a styles.json from before it was measured, and
+   * every label on one line, reads and diffs as it did. A live push built
+   * Attachment's vertical title, which `truncate` cuts off at the card's
+   * width, as a text that hugged its 140px and ran 28px past a 120px card.
+   */
+  layout?: TextLayout;
+}
+
+/** See TextStyles.layout. */
+export interface TextLayout {
+  /** The width, in px, the text was laid out in: the content box of the block that holds it. */
+  width: number;
+  /** The lines it drew: 1 for a line cut off, and a line clamp's count for one it clamped. */
+  lines: number;
+  /**
+   * How it was cut off, absent where it drew all of it: `ellipsis` for
+   * `text-overflow: ellipsis`, as Tailwind's `truncate` sets, and for a line
+   * clamp, as `line-clamp-2` sets; `clip` for text cut off flat at its box.
+   */
+  truncation?: "ellipsis" | "clip";
+}
+
+/**
+ * What the page read of how the text fits its box, for normalizeStyles to
+ * make a TextLayout of: the content width of the block that lays the text
+ * out (the text's holder, or its nearest ancestor that isn't inline), the
+ * lines the holder's own text runs over, whether that block's content runs
+ * past it horizontally or vertically where its overflow hides it, its
+ * `text-overflow`, and its line clamp, or null without one.
+ */
+export interface RawTextLayout {
+  width: number;
+  lines: number;
+  overflowsX: boolean;
+  overflowsY: boolean;
+  textOverflow: string;
+  lineClamp: number | null;
 }
 
 export interface NormalizedStyles {
@@ -858,6 +898,7 @@ export function normalizeStyles(
   textRaw?: RawComputedStyles | null,
   fontAvailable: boolean | null = null,
   fonts?: { root?: FontProbe | null; text?: FontProbe | null },
+  textLayout?: RawTextLayout | null,
 ): NormalizedStyles {
   const border = {
     top: parseBorderSide(raw["border-top-width"], raw["border-top-style"], raw["border-top-color"]),
@@ -919,13 +960,14 @@ export function normalizeStyles(
     opacity: Number.isFinite(opacity) ? round2(opacity) : 1,
     boxSizing: (raw["box-sizing"] ?? "content-box").trim(),
     fontAvailable: rootFont ? rootFont.available : fontAvailable,
-    text: textRaw ? normalizeText(textRaw, fonts?.text) : null,
+    text: textRaw ? normalizeText(textRaw, fonts?.text, textLayout) : null,
   };
 }
 
-function normalizeText(textRaw: RawComputedStyles, font?: FontProbe | null): TextStyles {
+function normalizeText(textRaw: RawComputedStyles, font?: FontProbe | null, raw?: RawTextLayout | null): TextStyles {
   const textTransform = (textRaw["text-transform"] ?? "").trim() || "none";
   const letterSpacing = normalizeLetterSpacing(textRaw["letter-spacing"], pxOrZero(textRaw["font-size"]));
+  const layout = normalizeTextLayout(raw);
   return {
     color: withOpacity(normalizeColor(textRaw["color"]), Number(textRaw["opacity"] ?? 1)),
     fontFamily: (font ? resolveFontFamily(font).family : "") || firstFontFamily(textRaw["font-family"]),
@@ -933,7 +975,25 @@ function normalizeText(textRaw: RawComputedStyles, font?: FontProbe | null): Tex
     fontWeight: normalizeFontWeight(textRaw["font-weight"]),
     ...(textTransform !== "none" ? { textTransform } : {}),
     ...(letterSpacing !== 0 ? { letterSpacing } : {}),
+    ...(layout ? { layout } : {}),
   };
+}
+
+/**
+ * How the text fits its box, or null where it sits on one line at its own
+ * width, which a Figma text that hugs its content reproduces. A line clamp
+ * that cut the text off draws its count of lines, ending in an ellipsis; a
+ * line cut off at the side ends in one where `text-overflow` says so, and
+ * flat otherwise; text that wraps draws all its lines at its box's width.
+ */
+export function normalizeTextLayout(raw?: RawTextLayout | null): TextLayout | null {
+  if (!raw || !Number.isFinite(raw.width) || raw.width <= 0) return null;
+  const width = round2(raw.width);
+  if (raw.lineClamp && raw.lineClamp > 0 && raw.overflowsY) return { width, lines: raw.lineClamp, truncation: "ellipsis" };
+  if (raw.overflowsX) {
+    return { width, lines: Math.max(1, raw.lines), truncation: raw.textOverflow.trim() === "ellipsis" ? "ellipsis" : "clip" };
+  }
+  return raw.lines > 1 ? { width, lines: raw.lines } : null;
 }
 
 // --- Storybook args encoding ------------------------------------------------

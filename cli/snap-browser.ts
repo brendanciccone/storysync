@@ -11,7 +11,7 @@ import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
   chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
 } from "./snap-normalize.js";
-import type { RawComputedStyles, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
+import type { RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -198,6 +198,8 @@ export interface CaptureResult {
   fontAvailable: boolean | null;
   /** What the page probed of the root's and the text's font stacks, for normalizeStyles. */
   fonts: { root: FontProbe | null; text: FontProbe | null };
+  /** How the text fits its box, as readTextLayout reads it, for normalizeStyles; null without text. */
+  textLayout: RawTextLayout | null;
   /**
    * A checksum of the story's markup, as readMarkup reads it, or null when
    * it changed while the variant was measured, or couldn't be read. snap
@@ -237,7 +239,7 @@ const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
 export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
     retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
-    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, markup: null,
+    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, textLayout: null, markup: null,
   };
   const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
   let images: ImageRequests | null = null;
@@ -279,13 +281,14 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
     const holder = await findTextHolder(target);
     const textRaw = holder ? await readTextStyles(page, holder, target, TEXT_PROPERTIES) : null;
+    const textLayout = holder ? await readTextLayout(holder, target) : null;
     const fonts = { root: await probeFontStack(target), text: holder ? await probeFontStack(holder) : null };
     const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
     const boundingBox = await target.boundingBox();
 
     // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {
-      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts };
+      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts, textLayout };
     }
 
     // Playwright waits for an element to be visible before taking its
@@ -297,7 +300,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
     const markupAfter = await readMarkup(page);
     const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
-    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, markup };
+    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
@@ -663,6 +666,51 @@ async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHand
   const holder = handle.asElement();
   if (!holder) await handle.dispose();
   return holder;
+}
+
+/**
+ * How the text fits the block that lays it out, for normalizeTextLayout:
+ * that block is the holder, or its nearest ancestor up to the measured root
+ * that isn't `display: inline`, since an inline element wraps at its
+ * container's width and has none of its own to clip at. The lines are
+ * counted from the holder's own text, its rects grouped by height, so a
+ * line cut off with an ellipsis is one, as is a nested label's line.
+ */
+async function readTextLayout(holder: ElementHandle<Element>, root: ElementHandle<Element>): Promise<RawTextLayout | null> {
+  return holder.evaluate((text, node) => {
+    let block = text as HTMLElement;
+    while (block !== node && block.parentElement && getComputedStyle(block).display === "inline") block = block.parentElement;
+    const cs = getComputedStyle(block);
+    const px = (value: string) => parseFloat(value) || 0;
+    const width = block.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight);
+    const rects: DOMRect[] = [];
+    for (const child of Array.from(text.childNodes)) {
+      if (child.nodeType !== Node.TEXT_NODE || !(child.textContent ?? "").trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(child);
+      rects.push(...Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0));
+    }
+    rects.sort((a, b) => a.top - b.top);
+    let lines = 0;
+    let bottom = -Infinity;
+    for (const rect of rects) {
+      if ((rect.top + rect.bottom) / 2 > bottom) {
+        lines++;
+        bottom = rect.bottom;
+      } else {
+        bottom = Math.max(bottom, rect.bottom);
+      }
+    }
+    const clamp = parseInt(cs.getPropertyValue("-webkit-line-clamp") || cs.getPropertyValue("line-clamp"), 10);
+    return {
+      width,
+      lines,
+      overflowsX: cs.overflowX !== "visible" && block.scrollWidth > block.clientWidth + 0.5,
+      overflowsY: cs.overflowY !== "visible" && block.scrollHeight > block.clientHeight + 0.5,
+      textOverflow: cs.textOverflow,
+      lineClamp: Number.isFinite(clamp) && clamp > 0 ? clamp : null,
+    };
+  }, root).catch(() => null);
 }
 
 /**
