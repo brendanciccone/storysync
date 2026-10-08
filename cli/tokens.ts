@@ -848,7 +848,9 @@ function warnOfSpreads(blocks: ThemeBlocks, path: string, warnings: string[]): v
 /**
  * `text` split at each `separator` outside brackets, parentheses, braces
  * and quotes, so `:is(.a, .b), :root` is two selectors and
- * `require("a"), preset({ b, c })` two presets.
+ * `require("a"), preset({ b, c })` two presets. A backslash escapes the
+ * character after it, so the `\{` in a selector such as `.a\{b, :root`
+ * opens nothing, and its `:root` is a selector of its own.
  */
 function splitTopLevel(text: string, separator: string): string[] {
   const parts: string[] = [];
@@ -860,7 +862,8 @@ function splitTopLevel(text: string, separator: string): string[] {
     if (quote) {
       if (ch === "\\") i++;
       else if (ch === quote) quote = null;
-    } else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+    } else if (ch === "\\") i++;
+    else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
     else if (ch === "(" || ch === "[" || ch === "{") depth++;
     else if (ch === ")" || ch === "]" || ch === "}") depth--;
     else if (ch === separator && depth === 0) {

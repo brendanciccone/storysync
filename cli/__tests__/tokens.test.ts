@@ -1327,12 +1327,13 @@ test("CSS: an escaped quote in a class name, or a bare backtick, hides no :root 
 /* Don't read this: :root { --color-old: #999999; } */
 :root { --color-ink: #111111; --tick: \`; }
 :root, .light { --color-paper: #ffffff; }
-:root { --color-link: #0000ee; }`,
+:root { --color-link: #0000ee; }
+.odd\\{name, :root { --color-mark: #ffff00; }`,
   });
   try {
     assert.deepEqual(detectTokenSource(dir)?.type, "css");
     assert.deepEqual(tokenTable(extractTokens(dir)), [
-      ["colors", [["color/ink", "#111111"], ["color/paper", "#ffffff"], ["color/link", "#0000ee"]]],
+      ["colors", [["color/ink", "#111111"], ["color/paper", "#ffffff"], ["color/link", "#0000ee"], ["color/mark", "#ffff00"]]],
     ]);
   } finally { cleanup(dir); }
 });
