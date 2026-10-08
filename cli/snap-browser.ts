@@ -6,9 +6,12 @@
 
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import type { Browser, BrowserContext, Page, ElementHandle } from "playwright-core";
-import { CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, isPassThroughWrapper } from "./snap-normalize.js";
-import type { RawComputedStyles } from "./snap-normalize.js";
+import type { Browser, BrowserContext, Page, ElementHandle, Request } from "playwright-core";
+import {
+  CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
+  chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
+} from "./snap-normalize.js";
+import type { RawComputedStyles, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -170,21 +173,53 @@ export type CaptureStatus = "ok" | "render_error" | "timeout" | "element_not_fou
 export interface CaptureResult {
   status: CaptureStatus;
   error: string | null;
+  /**
+   * Whether trying again may succeed: a timeout while the story loaded, as a
+   * busy Storybook's are. One later on, as a screenshot's of an element that
+   * never becomes visible, would only time out again.
+   */
+  retryable: boolean;
   raw: RawComputedStyles | null;
   textRaw: RawComputedStyles | null;
   boundingBox: { x: number; y: number; width: number; height: number } | null;
   screenshot: Buffer | null;
   /** What the root-element heuristic settled on, for debugging. */
   matchedSelector: string | null;
+  /** The element measured, as describeElement names it: `button[data-slot="switch"]`. */
+  element: string | null;
+  /** Why the measured element may not be the component, for snap to warn about. */
+  notes: MeasurementNote[];
   /**
-   * Whether the browser could render the element's first declared font family,
-   * or null when it could not be determined. A declared font that never loaded
-   * would otherwise be measured as though it had been used.
+   * Whether the browser could render the element's font, as resolveFontFamily
+   * decides it from `fonts.root`, or null when it could not be determined.
+   * A declared font that never loaded would otherwise be measured as though
+   * it had been used.
    */
   fontAvailable: boolean | null;
+  /** What the page probed of the root's and the text's font stacks, for normalizeStyles. */
+  fonts: { root: FontProbe | null; text: FontProbe | null };
 }
 
-const ROOT_SELECTORS = ["#storybook-root > *", "#root > *"] as const;
+export interface CaptureOptions {
+  timeoutMs: number;
+  /** Measures the element this matches as it is, rather than choosing one. */
+  selector?: string;
+  screenshot: boolean;
+  /** The component the story renders, whose `data-slot` marks its root: see chooseMeasuredElement. */
+  component?: { name: string; title?: string };
+}
+
+/** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
+const ROOT_CONTAINERS = ["#storybook-root", "#root"] as const;
+
+/** Storybook's mark, on <body>, of a story that threw while it rendered. */
+const STORYBOOK_ERROR_SELECTORS = ["body.sb-show-errordisplay", "body.sb-show-preparingstory-error"] as const;
+
+/** The longest settle() waits for images still loading, within --timeout. */
+const IMAGE_WAIT_MS = 5000;
+
+/** How much of a story chooseMeasuredElement is shown: a chart can render thousands of SVG nodes. */
+const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
 
 /**
  * Reads one story's rendered styles.
@@ -192,118 +227,312 @@ const ROOT_SELECTORS = ["#storybook-root > *", "#root > *"] as const;
  * Failures are returned rather than thrown: a single story that won't render
  * should not abandon a whole snap run.
  */
-export async function captureStory(
-  page: Page,
-  url: string,
-  opts: { timeoutMs: number; selector?: string; screenshot: boolean },
-): Promise<CaptureResult> {
+export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
-    raw: null, textRaw: null, boundingBox: null, screenshot: null,
-    matchedSelector: null, fontAvailable: null,
+    retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
+    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null },
   };
+  const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
+  let images: ImageRequests | null = null;
+  let loaded = false;
 
   try {
+    // From before the navigation, so a request the story makes as it renders is seen.
+    images = watchImageRequests(page);
     await page.goto(url, { waitUntil: "load", timeout: opts.timeoutMs });
+    loaded = true;
 
-    const renderError = await readStorybookError(page);
+    let renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
 
-    const rootSelector = await waitForRoot(page, opts.selector, opts.timeoutMs);
-    if (!rootSelector) {
-      return { status: "element_not_found", error: `no element matched ${opts.selector ?? ROOT_SELECTORS.join(" or ")}`, ...empty };
+    const appeared = await waitForStory(page, opts.selector, slots, opts.timeoutMs);
+    // Storybook paints a story's error after the page has loaded. The wait
+    // ends on it, or times out on a story that threw before rendering
+    // anything; either way an error shown now is why nothing is there.
+    renderError = await readStorybookError(page);
+    if (renderError) return { status: "render_error", error: renderError, ...empty };
+    if (!appeared) {
+      // What was waited for: storyReadySelector passes over a <noscript> or
+      // <style> in the root, so `#storybook-root > *` may well match one.
+      const error = opts.selector
+        ? `no element matched ${opts.selector}`
+        : `nothing that draws rendered under ${ROOT_CONTAINERS.join(" or ")}`;
+      return { status: "element_not_found", error, ...empty };
     }
 
-    await settle(page);
+    await settle(page, images, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
 
-    const handle = await page.$(rootSelector);
-    if (!handle) return { status: "element_not_found", error: `element vanished after load: ${rootSelector}`, ...empty };
-
-    // Descend past layout-only wrappers so measurements describe the component.
-    const target = opts.selector ? handle : await descendToComponent(handle);
+    const located = opts.selector ? await locateSelector(page, opts.selector) : await locateComponent(page, slots);
+    if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
+    const { target, element, notes, matchedSelector } = located;
 
     const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
-    const textRaw = await readTextStyles(page, target, TEXT_PROPERTIES);
-    const fontAvailable = await readFontAvailability(page, target);
+    const holder = await findTextHolder(target);
+    const textRaw = holder ? await readTextStyles(page, holder, target, TEXT_PROPERTIES) : null;
+    const fonts = { root: await probeFontStack(target), text: holder ? await probeFontStack(holder) : null };
+    const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
     const boundingBox = await target.boundingBox();
-    const screenshot = opts.screenshot ? await target.screenshot({ type: "png" }) : null;
 
+    // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {
-      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, fontAvailable };
+      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts };
     }
 
-    return { status: "ok", error: null, raw, textRaw, boundingBox, screenshot, matchedSelector: rootSelector, fontAvailable };
+    // Playwright waits for an element to be visible before taking its
+    // picture, which one with no width or height never is: it waited its own
+    // 30 seconds, whatever --timeout said, and failed a variant whose styles
+    // had been read. So an empty box is measured without a picture, and a
+    // picture otherwise waits no longer than --timeout.
+    const drawable = boundingBox.width > 0 && boundingBox.height > 0;
+    const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
+    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
     // a refused connection into a timeout. Its TimeoutError names itself, and
     // this file imports only playwright's types, so the class isn't to hand.
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
-    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty };
+    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
+  } finally {
+    images?.stop();
   }
 }
 
 /** Storybook renders thrown errors into the preview rather than failing the load. */
+export function storybookErrorInPage(): string | null {
+  const shown =
+    document.body.classList.contains("sb-show-errordisplay") ||
+    document.body.classList.contains("sb-show-preparingstory-error");
+  if (!shown) return null;
+  const node = document.querySelector("#error-message, .sb-errordisplay_code, #error-stack");
+  const text = (node?.textContent ?? document.body.innerText ?? "").trim();
+  return text.slice(0, 300) || "Storybook reported a render error";
+}
+
 async function readStorybookError(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
-    const shown =
-      document.body.classList.contains("sb-show-errordisplay") ||
-      document.body.classList.contains("sb-show-preparingstory-error");
-    if (!shown) return null;
-    const node = document.querySelector("#error-message, .sb-errordisplay_code, #error-stack");
-    const text = (node?.textContent ?? document.body.innerText ?? "").trim();
-    return text.slice(0, 300) || "Storybook reported a render error";
-  });
+  return page.evaluate(storybookErrorInPage);
 }
 
-async function waitForRoot(page: Page, selector: string | undefined, timeoutMs: number): Promise<string | null> {
-  const candidates = selector ? [selector] : ROOT_SELECTORS;
-  for (const candidate of candidates) {
-    try {
-      await page.waitForSelector(candidate, { state: "attached", timeout: timeoutMs });
-      return candidate;
-    } catch {
-      // Try the next candidate; older Storybook mounts at #root.
-    }
+/**
+ * What waitForStory waits for, unless --selector names something else: a
+ * child of the story's root that can draw, the component's own `data-slot`
+ * or its `-content` slot anywhere, so content rendered only into a portal
+ * counts, or Storybook's error display.
+ *
+ * One selector, so one wait: a story that never renders costs one --timeout,
+ * where waiting on each root in turn cost one per root, and `#root` never
+ * exists from Storybook 7 on.
+ */
+export function storyReadySelector(slots: readonly string[]): string {
+  return [
+    ...ROOT_CONTAINERS.map((container) => `${container} > :not(${NON_RENDERED_TAGS.join(", ")})`),
+    ...[...new Set([...slots, ...contentSlots(slots)])].map((slot) => `[data-slot="${slot}"]`),
+    ...STORYBOOK_ERROR_SELECTORS,
+  ].join(", ");
+}
+
+async function waitForStory(page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number): Promise<boolean> {
+  try {
+    await page.waitForSelector(selector ?? storyReadySelector(slots), { state: "attached", timeout: timeoutMs });
+    return true;
+  } catch {
+    return false;
   }
-  return null;
 }
 
-/** Kill animations and wait for fonts and two frames, so styles are stable. */
-async function settle(page: Page): Promise<void> {
+/** Image requests in flight on a page, from now until stop(). */
+interface ImageRequests {
+  pending(): number;
+  stop(): void;
+}
+
+function watchImageRequests(page: Page): ImageRequests {
+  const inFlight = new Set<Request>();
+  const started = (request: Request) => {
+    if (request.resourceType() === "image") inFlight.add(request);
+  };
+  const ended = (request: Request) => {
+    inFlight.delete(request);
+  };
+  page.on("request", started);
+  page.on("requestfinished", ended);
+  page.on("requestfailed", ended);
+  return {
+    pending: () => inFlight.size,
+    stop: () => {
+      page.off("request", started);
+      page.off("requestfinished", ended);
+      page.off("requestfailed", ended);
+    },
+  };
+}
+
+/** Whether an `<img>` on the page is still loading. A lazy one off screen never starts, so it isn't waited for. */
+function imagesLoadingInPage(): boolean {
+  return Array.from(document.images).some((img) => !img.complete && img.loading !== "lazy");
+}
+
+/**
+ * Kills animations, then waits for fonts, two frames, and any image still
+ * loading, so styles are stable and an image is measured as it ends up.
+ *
+ * An image is waited for while an `<img>` is incomplete or a request for one
+ * is in flight. Radix's and Base UI's Avatar load theirs with `new Image()`
+ * and show the fallback until it has loaded, so without the request there is
+ * nothing in the page to say one is coming, and the same story measured its
+ * initials in one run and its photo in the next. Bounded by `budgetMs`: an
+ * image slower than that is measured as the page shows it then.
+ */
+async function settle(page: Page, images: ImageRequests, budgetMs: number): Promise<void> {
   await page.addStyleTag({
     content: "*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }",
   }).catch(() => { /* a missing head is not worth failing over */ });
 
-  await page.evaluate(async () => {
-    try { await document.fonts.ready; } catch { /* fonts API unavailable */ }
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
-  });
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    await page.evaluate(async () => {
+      try { await document.fonts.ready; } catch { /* fonts API unavailable */ }
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+    });
+    const loading = images.pending() > 0 || await page.evaluate(imagesLoadingInPage);
+    if (!loading || Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** What `--selector` matched, measured as it is. */
+async function locateSelector(page: Page, selector: string): Promise<Located | { error: string }> {
+  const target = await page.$(selector);
+  if (!target) return { error: `element vanished after load: ${selector}` };
+  const element = describeElement(await target.evaluate((el) => ({
+    tag: el.tagName.toLowerCase(), slot: el.getAttribute("data-slot"), role: el.getAttribute("role"),
+  })));
+  return { target, element, notes: [], matchedSelector: selector };
+}
+
+interface Located {
+  target: ElementHandle<Element>;
+  element: string;
+  notes: MeasurementNote[];
+  matchedSelector: string | null;
 }
 
 /**
- * Storybook decorators commonly wrap a story in padding-free, background-free
- * containers. Measuring those would describe the wrapper, not the component, so
- * descend while the current node is a single-child pass-through element. The
- * decision is isPassThroughWrapper's, made here rather than in the page so it
- * reads a background colour with the same converter as every other colour.
+ * The element chooseMeasuredElement picks, from what the page shows of the
+ * story's root and of any portal outside it.
  */
-async function descendToComponent(handle: ElementHandle<Element>): Promise<ElementHandle<Element>> {
-  const MAX_DEPTH = 4;
-  let node = handle;
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    const raw = await node.evaluate((el, props) => {
-      if (el.children.length !== 1) return null;
-      const cs = getComputedStyle(el);
-      const out: Record<string, string> = {};
-      for (const p of props) out[p] = cs.getPropertyValue(p);
-      return out;
-    }, WRAPPER_PROPERTIES);
-    if (!raw || !isPassThroughWrapper(raw)) break;
-    const child = (await node.evaluateHandle((el) => el.children[0])).asElement();
-    if (!child) break;
-    node = child;
+async function locateComponent(page: Page, slots: readonly string[]): Promise<Located | { error: string }> {
+  // The root holding the story, or failing that the first that exists.
+  let container: ElementHandle<Element> | null = null;
+  let containerSelector: string | null = null;
+  for (const candidate of ROOT_CONTAINERS) {
+    const found = await page.$(candidate);
+    if (!found) continue;
+    const holdsStory = await found.evaluate(
+      (el, tags) => Array.from(el.children).some((child) => !tags.includes(child.tagName.toLowerCase())),
+      [...NON_RENDERED_TAGS],
+    );
+    if (!container || holdsStory) {
+      container = found;
+      containerSelector = candidate;
+    }
+    if (holdsStory) break;
   }
-  return node;
+
+  const tree = container
+    ? await container.evaluate(readStoryTreeInPage, { props: WRAPPER_PROPERTIES, ...TREE_LIMITS })
+    : null;
+  const portalsHandle = await page.evaluateHandle(findPortalsInPage, { container, slots: [...new Set([...slots, ...contentSlots(slots)])] });
+  try {
+    const portals: PortalNode[] = await portalsHandle.evaluate((elements) => elements.map((el) => ({
+      tag: el.tagName.toLowerCase(),
+      slot: el.getAttribute("data-slot"),
+      role: el.getAttribute("role"),
+      id: el.id || null,
+      rendered: el.getClientRects().length > 0,
+    })));
+    const choice = chooseMeasuredElement(tree, portals, slots);
+    if (choice.kind === "none") return { error: choice.error };
+
+    const handle = choice.kind === "tree" && container
+      ? await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), choice.path)
+      : await portalsHandle.evaluateHandle((elements, index) => elements[index], choice.kind === "portal" ? choice.index : -1);
+    const target = handle.asElement();
+    if (!target) {
+      await handle.dispose();
+      return { error: `element vanished after load: ${choice.element}` };
+    }
+    return {
+      target,
+      element: choice.element,
+      notes: choice.notes,
+      matchedSelector: choice.kind === "portal" ? `portal ${choice.element}` : containerSelector,
+    };
+  } finally {
+    await portalsHandle.dispose();
+  }
+}
+
+/**
+ * Runs in the page: the story's container and everything under it, as
+ * StoryNodes, cut short past `maxDepth` levels or `maxNodes` elements.
+ */
+function readStoryTreeInPage(
+  container: Element,
+  args: { props: readonly string[]; maxDepth: number; maxNodes: number },
+): StoryNode {
+  let budget = args.maxNodes;
+  const read = (el: Element, depth: number): StoryNode => {
+    budget--;
+    const cs = getComputedStyle(el);
+    const styles: Record<string, string> = {};
+    for (const p of args.props) styles[p] = cs.getPropertyValue(p);
+    const node: StoryNode = {
+      tag: el.tagName.toLowerCase(),
+      slot: el.getAttribute("data-slot"),
+      role: el.getAttribute("role"),
+      hasPopup: el.getAttribute("aria-haspopup"),
+      expanded: el.getAttribute("aria-expanded"),
+      controls: el.getAttribute("aria-controls"),
+      state: el.getAttribute("data-state"),
+      open: el.hasAttribute("data-popup-open") || el.hasAttribute("data-open"),
+      dir: el.getAttribute("dir"),
+      orientation: el.getAttribute("data-orientation") ?? el.getAttribute("aria-orientation"),
+      label: el.getAttribute("aria-label") ?? el.getAttribute("aria-labelledby"),
+      position: cs.position,
+      rendered: el.getClientRects().length > 0,
+      styles,
+      children: [],
+    };
+    if (depth < args.maxDepth) {
+      for (const child of Array.from(el.children)) {
+        if (budget <= 0) break;
+        node.children.push(read(child, depth + 1));
+      }
+    }
+    return node;
+  };
+  return read(container, 0);
+}
+
+/**
+ * Runs in the page: elements outside the story's container that may be its
+ * content in a portal, in document order. One carrying one of `slots`, the
+ * component's own and its content's, or one an element in the container
+ * names in `aria-controls`. Storybook's own error and loading screens are
+ * left out.
+ */
+function findPortalsInPage(args: { container: Element | null; slots: string[] }): Element[] {
+  const wanted = new Set(args.slots);
+  const controlled = new Set<string>();
+  for (const el of Array.from(args.container?.querySelectorAll("[aria-controls]") ?? [])) {
+    for (const id of (el.getAttribute("aria-controls") ?? "").split(/\s+/)) if (id) controlled.add(id);
+  }
+  const storybook = "#storybook-docs, .sb-errordisplay, .sb-nopreview, .sb-preparing-story, .sb-preparing-docs";
+  return Array.from(document.body.querySelectorAll("[data-slot], [id]")).filter((el) =>
+    !(args.container?.contains(el) ?? false) &&
+    !el.closest(storybook) &&
+    (wanted.has(el.getAttribute("data-slot") ?? "") || controlled.has(el.id)));
 }
 
 /**
@@ -374,103 +603,135 @@ async function readComputedStyles(
   );
 }
 
+
+/** The nearest element at or under `root` holding text of its own, or null when there is none. */
+async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHandle<Element> | null> {
+  const handle = await root.evaluateHandle((node) => {
+    const find = (el: Element): Element | null => {
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim()) return el;
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          const found = find(child as Element);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return find(node);
+  });
+  const holder = handle.asElement();
+  if (!holder) await handle.dispose();
+  return holder;
+}
+
 /**
- * Styles of the nearest descendant that actually owns text, with `opacity`
- * the product of every opacity from it up to the measured root, the root's
- * excluded: `<button><span style="opacity: 0.6">` draws its label at 60%.
+ * Styles of the element holding the text, with `opacity` the product of
+ * every opacity from it up to the measured root, the root's excluded:
+ * `<button><span style="opacity: 0.6">` draws its label at 60%.
  */
 async function readTextStyles(
   page: Page,
-  handle: ElementHandle<Element>,
+  holder: ElementHandle<Element>,
+  root: ElementHandle<Element>,
   properties: readonly string[],
-): Promise<RawComputedStyles | null> {
+): Promise<RawComputedStyles> {
   return page.evaluate(
-    ([node, props]) => {
-      const findTextHolder = (el: Element): Element | null => {
-        for (const child of Array.from(el.childNodes)) {
-          if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim()) return el;
-          if (child.nodeType === Node.ELEMENT_NODE) {
-            const found = findTextHolder(child as Element);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      const holder = findTextHolder(node as Element);
-      if (!holder) return null;
-      const cs = getComputedStyle(holder);
+    ([text, node, props]) => {
+      const cs = getComputedStyle(text as Element);
       const out: Record<string, string> = {};
       for (const p of props as string[]) out[p] = cs.getPropertyValue(p);
       let opacity = 1;
-      for (let el: Element | null = holder; el && el !== node; el = el.parentElement) {
+      for (let el: Element | null = text as Element; el && el !== node; el = el.parentElement) {
         const own = parseFloat(getComputedStyle(el).opacity);
         if (Number.isFinite(own)) opacity *= own;
       }
       out["opacity"] = String(opacity);
       return out;
     },
-    [handle, properties] as const,
+    [holder, root, properties] as const,
   );
 }
 
 /**
- * Whether the first declared font family can actually be rendered.
+ * Which families of an element's font stack the browser draws with.
  *
- * `getComputedStyle` reports the font stack as authored, not what the browser
- * resolved to, so a project naming a font it never loaded measures identically
- * to one that loaded it — and would score full marks against Figma while the
- * screenshots showed a different typeface.
+ * `getComputedStyle` reports the stack as authored, not what the browser
+ * resolved it to, so a project naming a font it never loaded measures
+ * identically to one that loaded it, and would score full marks against
+ * Figma while the screenshots showed a different typeface. resolveFontFamily
+ * reads the result.
  *
  * Two signals, because neither is sufficient alone:
  *
  *   - `document.fonts.check` returns *true* for any family not declared via
  *     `@font-face`, including names that categorically do not exist. It is
- *     therefore useless for missing system fonts, and only meaningful when it
- *     returns false — which happens for a declared webfont whose file failed
- *     to load, the one case the canvas probe cannot see.
- *   - A canvas width probe renders a string as `"X", monospace` and again as
- *     `monospace`. Identical advance widths mean X never applied. This is what
- *     actually catches a missing system font.
+ *     only meaningful when it returns false, which happens for a declared
+ *     webfont whose file failed to load, the one case the canvas probe
+ *     cannot see.
+ *   - A canvas width probe renders a string as `X, monospace` and again as
+ *     `monospace`. Identical advance widths mean X never applied. This is
+ *     what catches a missing system font, and a keyword the browser doesn't
+ *     implement: Chrome draws `-apple-system, monospace` exactly as
+ *     `monospace`.
  *
- * Two fallbacks are probed because a family whose metrics happen to coincide
- * with one base would be misread as absent.
+ * Each family is probed as it is written: quoted, `"system-ui"`, it is a
+ * family name, which Chrome gives to `BlinkMacSystemFont`, and unquoted a
+ * keyword. Two fallbacks are probed because a family whose metrics happen
+ * to coincide with one base would be misread as absent. A generic family is
+ * not probed: it always resolves to some face.
  */
-async function readFontAvailability(
-  page: Page,
-  handle: ElementHandle<Element>,
-): Promise<boolean | null> {
-  return page.evaluate((node) => {
+async function probeFontStack(handle: ElementHandle<Element>): Promise<FontProbe | null> {
+  return handle.evaluate((node) => {
     try {
-      const cs = getComputedStyle(node as Element);
-      const first = (cs.fontFamily || "").split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
-      if (!first) return null;
+      const cs = getComputedStyle(node);
+      // Split on the commas between families, not those inside quotes.
+      const written: string[] = [];
+      let current = "";
+      let quote: string | null = null;
+      for (const ch of cs.fontFamily || "") {
+        if (quote) {
+          if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+          quote = ch;
+        } else if (ch === ",") {
+          if (current.trim()) written.push(current.trim());
+          current = "";
+          continue;
+        }
+        current += ch;
+      }
+      if (current.trim()) written.push(current.trim());
+      if (!written.length) return null;
 
-      const GENERIC = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace"];
-      if (GENERIC.includes(first.toLowerCase())) return null;
-
+      const families = written.map((family) => family.replace(/^(['"])(.*)\1$/, "$2"));
+      const GENERIC = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "math", "emoji", "fangsong"];
       const size = cs.fontSize || "16px";
       const weight = cs.fontWeight || "400";
 
-      // A declared webfont that failed to load is definitively unavailable.
-      if (document.fonts.check(`${weight} ${size} "${first}"`) === false) return false;
-
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-
+      const ctx = document.createElement("canvas").getContext("2d");
       const PROBE = "mmmmmmmmmmlliWWQQ@#%&08";
-      const widthWith = (family: string) => {
-        ctx.font = `${weight} 72px ${family}`;
-        return ctx.measureText(PROBE).width;
+      const widthWith = (stack: string) => {
+        ctx!.font = `${weight} 72px ${stack}`;
+        return ctx!.measureText(PROBE).width;
       };
+      const bases = ["monospace", "serif"];
+      const baseWidths = ctx ? bases.map(widthWith) : [];
 
-      // Applied if it changes the advance width against *either* base.
-      for (const base of ["monospace", "serif"]) {
-        if (widthWith(`"${first}", ${base}`) !== widthWith(base)) return true;
-      }
-      return false;
+      const applied = written.map((family, index) => {
+        if (family === families[index] && GENERIC.includes(family.toLowerCase())) return null;
+        // A declared webfont that failed to load is definitively unavailable.
+        try {
+          if (document.fonts.check(`${weight} ${size} ${family}`) === false) return false;
+        } catch {
+          // Not a font the shorthand can parse; the canvas can still tell.
+        }
+        if (!ctx) return null;
+        // Applied if it changes the advance width against *either* base.
+        return bases.some((base, b) => widthWith(`${family}, ${base}`) !== baseWidths[b]);
+      });
+      return { families, applied };
     } catch {
       return null;
     }
-  }, handle);
+  });
 }

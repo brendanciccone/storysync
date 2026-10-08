@@ -5,7 +5,9 @@
 // snap-normalize.ts; this module decides *what* to render and how to lay the
 // results out on disk.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
 import { mapComponent, withoutProps, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
@@ -15,11 +17,11 @@ import { selectComponents, componentKey } from "./storybook.js";
 import type { ComponentEntry, StorybookClient } from "./storybook.js";
 import {
   normalizeStyles, encodeStoryArgs, buildStoryUrl,
-  assignVariantSlugs, componentSlug, diffFromBase,
+  assignVariantSlugs, componentSlug, componentSlots, contentSlots, diffFromBase,
 } from "./snap-normalize.js";
-import type { NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
+import type { MeasurementNote, NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
 import { resolveAndLaunch, createContext, captureStory } from "./snap-browser.js";
-import type { CaptureStatus } from "./snap-browser.js";
+import type { CaptureResult, CaptureStatus } from "./snap-browser.js";
 
 export const SNAP_SCHEMA_VERSION = 1;
 
@@ -51,6 +53,13 @@ export interface SnapVariant {
   /** PNG path relative to the directory containing styles.json, when screenshots are enabled. */
   screenshot?: string;
   boundingBox?: { width: number; height: number };
+  /**
+   * The element measured, as its tag with its `data-slot` or `role`:
+   * `button[data-slot="switch"]`. Recorded so that a measurement of the
+   * wrong element, a story's layout wrapper or an overlay's trigger, can be
+   * seen in the file rather than only in a screenshot.
+   */
+  element?: string;
 }
 
 export interface SnapComponent {
@@ -217,6 +226,163 @@ function detectIdenticalVariants(variants: SnapVariant[]): string | null {
 }
 
 /**
+ * Variant properties whose values all measured the same wherever the other
+ * properties held still: an axis that changes nothing snap records, such as
+ * Radix's `asChild`, or a prop the story drops on its way to the component.
+ * detectIdenticalVariants only fires when every variant matches, which one
+ * live axis beside a dead one hides.
+ *
+ * A property is judged only where at least two of its values were measured
+ * against the same values of the others, and is named only if none of those
+ * comparisons differed.
+ */
+export function detectNoOpProperties(properties: FigmaVariantProperty[], variants: SnapVariant[]): string[] {
+  const measured = variants.filter((v) => v.status === "ok");
+  const noOps: string[] = [];
+  for (const property of properties) {
+    // Keyed by the other properties' values: this property's value -> what it measured.
+    const groups = new Map<string, Map<string, string>>();
+    for (const variant of measured) {
+      const value = variant.combination[property.name];
+      if (value === undefined) continue;
+      const others = JSON.stringify(Object.entries(variant.combination).filter(([name]) => name !== property.name));
+      const group = groups.get(others) ?? new Map<string, string>();
+      group.set(value, JSON.stringify(variant.delta ?? {}));
+      groups.set(others, group);
+    }
+    const compared = [...groups.values()].filter((group) => group.size >= 2);
+    if (compared.length && compared.every((group) => new Set(group.values()).size === 1)) noOps.push(property.name);
+  }
+  return noOps;
+}
+
+/** Warning for properties detectNoOpProperties found. */
+export function describeNoOpProperties(names: string[]): string | null {
+  if (!names.length) return null;
+  const list = names.map((name) => `\`${name}\``).join(", ");
+  const one = names.length === 1;
+  return (
+    `${list}: every value measured the same, so ${one ? "it changes" : "they change"} nothing snap records. ` +
+    `If ${one ? "it changes" : "they change"} only behaviour, or something snap doesn't measure, such as content ` +
+    `that renders elsewhere, ${one ? "it" : "they"} may not belong as Figma variant properties; if the story ` +
+    `drops ${one ? "it" : "them"}, pass ${one ? "it" : "them"} through to the component.`
+  );
+}
+
+/**
+ * Warnings for a component whose measured element may not be the component:
+ * a closed trigger, or a story's layout wrapper. One per distinct note, which
+ * says how many variants it applies to when not all of them.
+ */
+export function describeMeasurementNotes(
+  name: string,
+  notes: { slug: string; note: MeasurementNote }[],
+  measured: number,
+  title?: string,
+): string[] {
+  const slot = componentSlots(name)[0] ?? "";
+  // The content slots chooseMeasuredElement takes, as it takes them.
+  const content = contentSlots(componentSlots(name, title)).map((s) => `"${s}"`).join(" or ");
+  const groups = new Map<string, { note: MeasurementNote; slugs: string[] }>();
+  for (const { slug, note } of notes) {
+    const key = JSON.stringify(note);
+    const group = groups.get(key) ?? { note, slugs: [] };
+    group.slugs.push(slug);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map(({ note, slugs }) => {
+    const which = slugs.length < measured ? ` in ${slugs.length} of ${measured} measured variants` : "";
+    if (note.kind === "closed-trigger") {
+      return (
+        `snap measured ${note.element}, a closed trigger, rather than ${name}${which}. What it opens renders ` +
+        `only while open, usually in a portal outside the story's root, so the Figma component would be the ` +
+        `trigger. To measure the content, have the story snap renders (the Default story, or else the first) ` +
+        `render ${name} open, with defaultOpen for example: snap measures open content that carries ` +
+        `data-slot=${content} or that the trigger's aria-controls names.`
+      );
+    }
+    return (
+      `snap measured ${note.element}, which holds ${note.children} elements and draws nothing itself (no fill, ` +
+      `border or shadow), so it may be the story's layout wrapper rather than ${name}${which}. If it is, give ` +
+      `${name}'s root element data-slot="${slot}", render ${name} on its own in the story snap renders, or ` +
+      `snap it by itself with --components and --selector. If ${name} is itself a layout container, this is expected.`
+    );
+  });
+}
+
+/**
+ * Thrown when the browser goes away part-way through a run. runSnap launches
+ * it once more on the first; on a second, the run stops with this before
+ * anything is written, so an earlier styles.json, meta.json and screenshots
+ * are left as they were: a partial result written over them, with a fresh
+ * measuredAt, would read to verify as a current measurement with most of its
+ * components failed.
+ */
+export class BrowserLostError extends Error {}
+
+/**
+ * Screenshots taken during a run, kept in a directory of their own until it
+ * finishes, then moved to where styles.json records them. A run that stops
+ * part-way leaves the last run's screenshots as it leaves its styles.json,
+ * rather than some of them replaced by pictures of code they don't describe.
+ */
+export class ScreenshotStage {
+  private dir: string | null = null;
+  private readonly files = new Set<string>();
+
+  constructor(private readonly outDir: string) {}
+
+  // The snap command exits at once on a signal, past runSnap's finally, so
+  // what is staged goes with the process however it ends.
+  private readonly onExit = (): void => {
+    try {
+      this.discard();
+    } catch {
+      // Left in the OS's temporary directory, which it clears.
+    }
+  };
+
+  /** Stages a variant's PNG, returning the path styles.json records for it. */
+  write(entry: ComponentEntry, slug: string, png: Buffer): string {
+    if (!this.dir) {
+      this.dir = mkdtempSync(join(tmpdir(), "storysync-screenshots-"));
+      process.on("exit", this.onExit);
+    }
+    const recorded = writeScreenshot(this.dir, entry, slug, png);
+    this.files.add(recorded);
+    return recorded;
+  }
+
+  /** Moves every staged PNG into the output directory. */
+  commit(): void {
+    for (const recorded of this.files) {
+      const from = join(this.dir!, recorded);
+      const to = join(this.outDir, recorded);
+      mkdirSync(dirname(to), { recursive: true });
+      try {
+        renameSync(from, to);
+      } catch (err) {
+        // The temporary directory is on another filesystem, as a tmpfs /tmp is.
+        if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+        copyFileSync(from, to);
+      }
+    }
+    this.files.clear();
+    this.discard();
+  }
+
+  /** Removes whatever is still staged. */
+  discard(): void {
+    if (this.dir) {
+      rmSync(this.dir, { recursive: true, force: true });
+      process.off("exit", this.onExit);
+    }
+    this.dir = null;
+    this.files.clear();
+  }
+}
+
+/**
  * Reports variant names that had to be renumbered to stay distinct.
  *
  * Renumbering keeps the measurements intact, but the slug is the name the
@@ -246,11 +412,14 @@ export function describeSlugCollisions(collisions: SlugCollision[]): string | nu
 /**
  * Flags a declared font the browser could not render.
  *
- * The measured `fontFamily` is the first *declared* family, not the resolved
- * one, so a project naming a font it never loaded measures identically to one
- * that loaded it — and would score full marks against Figma while rendering a
- * different typeface. Worth saying out loud, because the resulting Figma text
- * will be wrong in a way no numeric comparison can see.
+ * A named font that never loaded is recorded as the `fontFamily` the code
+ * asked for, so it measures like one that loaded, and would score full marks
+ * against Figma while rendering a different typeface. Worth saying out loud,
+ * because the resulting Figma text will be wrong in a way no numeric
+ * comparison can see. Another platform's alias for its UI font, such as
+ * `-apple-system`, or a platform's font a system stack lists after one, such
+ * as `SFMono-Regular`, is passed over rather than flagged: see
+ * resolveFontFamily.
  */
 export function detectFontSubstitution(component: SnapComponent): string | null {
   const base = component.base?.styles;
@@ -290,28 +459,63 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   // `--components` from surfacing as a browser-resolution failure on a machine
   // that has no browser at all.
   if (entries.length) {
-    const { browser, via } = await deps.launch({ headless: true });
+    let { browser, via } = await deps.launch({ headless: true });
     progress(`Browser: ${via}`);
     // A browser that goes before the run ends, crashed or killed from
     // outside, failed every component left as a broken session, and the run
-    // then wrote that over the last styles.json and exited 0. Stop instead,
-    // writing nothing, as a stopped snap does.
+    // then wrote that over the last styles.json and exited 0. It is launched
+    // once more instead, and the component it was on measured again from the
+    // start: the run, however long it had been going, is otherwise lost
+    // whole, as snap has no resume. If it goes a second time the run stops,
+    // writing nothing. Signals are the CLI's to handle: the snap command
+    // exits on SIGINT, SIGTERM and SIGHUP at once, writing nothing either.
     let lost = false;
-    browser.on?.("disconnected", () => { lost = true; });
-    const gone = () => lost || browser.isConnected?.() === false;
+    const watch = (watched: typeof browser) => {
+      lost = false;
+      // Only the browser in use: the one it replaced can report its loss late.
+      watched.on?.("disconnected", () => { if (watched === browser) lost = true; });
+    };
+    watch(browser);
+    // Called between steps, so a run that can't finish stops before anything
+    // is written. The disconnected event and the failures it causes can
+    // arrive in either order, so the browser is asked too. `on` and
+    // `isConnected` are absent only from test stand-ins.
+    const checkpoint = () => {
+      if (!lost && browser.isConnected?.() !== false) return;
+      const kept = opts.screenshots
+        ? `${SNAP_STYLES_FILENAME}, ${SNAP_META_FILENAME} and the screenshots were`
+        : `${SNAP_STYLES_FILENAME} and ${SNAP_META_FILENAME} were`;
+      throw new BrowserLostError(
+        `The browser closed before snap finished (it crashed, or something stopped it), with ${components.length} of ${entries.length} components read. ` +
+          `${kept} left as they were. Run snap again.`,
+      );
+    };
+
+    const stage = new ScreenshotStage(opts.outDir);
+    let relaunched = false;
     try {
-      for (const [index, entry] of entries.entries()) {
-        if (gone()) break;
+      for (let index = 0; index < entries.length;) {
+        const entry = entries[index];
         deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
-        components.push(await snapComponent(entry, opts, deps, browser, progress));
+        try {
+          checkpoint();
+          const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage);
+          // Its failures may have been the browser going.
+          checkpoint();
+          components.push(measured);
+          index++;
+        } catch (err) {
+          if (!(err instanceof BrowserLostError) || relaunched) throw err;
+          relaunched = true;
+          progress(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
+          await browser.close().catch(() => { /* already gone */ });
+          ({ browser } = await deps.launch({ headless: true }));
+          watch(browser);
+        }
       }
-      if (gone()) {
-        throw new Error(
-          `The browser closed before snap finished (it crashed, or something stopped it), with ${components.length} of ${entries.length} components read. ` +
-            `${SNAP_STYLES_FILENAME} and ${SNAP_META_FILENAME} were left as they were. Run snap again.`,
-        );
-      }
+      stage.commit();
     } finally {
+      stage.discard();
       await browser.close().catch(() => { /* already gone */ });
     }
   }
@@ -378,6 +582,8 @@ async function snapComponent(
   deps: SnapDeps,
   browser: Awaited<ReturnType<typeof resolveAndLaunch>>["browser"],
   progress: (m: string) => void,
+  checkpoint: () => void,
+  stage: ScreenshotStage,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     id: entry.id,
@@ -432,7 +638,9 @@ async function snapComponent(
   // against this component rather than abandoning the whole run, and so a
   // context whose first page fails to open still gets closed.
   let context: Awaited<ReturnType<typeof createContext>> | null = null;
+  const notes: { slug: string; note: MeasurementNote }[] = [];
   try {
+    checkpoint();
     context = await createContext(browser);
     const page = await context.newPage();
 
@@ -451,22 +659,36 @@ async function snapComponent(
         continue;
       }
 
-      const capture = await captureStory(page, buildStoryUrl(opts.storybookUrl, storyId, param), {
-        timeoutMs: opts.timeoutMs,
-        selector: opts.selector,
-        screenshot: opts.screenshots,
-      });
+      const capture = (): Promise<CaptureResult> => {
+        checkpoint();
+        return captureStory(page, buildStoryUrl(opts.storybookUrl, storyId, param), {
+          timeoutMs: opts.timeoutMs,
+          selector: opts.selector,
+          screenshot: opts.screenshots,
+          component: { name: entry.name, title: entry.title },
+        });
+      };
+      // Once more on a timeout loading the story: a busy Storybook times out
+      // stories that render a moment later, and a variant left unmeasured
+      // gets built from source instead. Not on one after it loaded, which
+      // would only take as long again.
+      let captured = await capture();
+      if (captured.status === "timeout" && captured.retryable) captured = await capture();
 
-      if (capture.status !== "ok" || !capture.raw || !capture.boundingBox) {
-        shell.variants.push({ combination, slug, status: capture.status, error: capture.error });
+      if (captured.status !== "ok" || !captured.raw || !captured.boundingBox) {
+        // A failure because the browser went is not this variant's.
+        checkpoint();
+        shell.variants.push({ combination, slug, status: captured.status, error: captured.error });
         continue;
       }
 
-      const styles = normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable);
+      const styles = normalizeStyles(captured.raw, captured.boundingBox, captured.textRaw, captured.fontAvailable, captured.fonts);
       const variant: SnapVariant = {
         combination, slug, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },
+        ...(captured.element ? { element: captured.element } : {}),
       };
+      for (const note of captured.notes) notes.push({ slug, note });
 
       // The first successful render becomes the reference for every delta.
       if (!shell.base) {
@@ -476,20 +698,30 @@ async function snapComponent(
         variant.delta = diffFromBase(shell.base.styles, styles);
       }
 
-      if (capture.screenshot) {
-        variant.screenshot = writeScreenshot(opts.outDir, entry, slug, capture.screenshot);
+      if (captured.screenshot) {
+        variant.screenshot = stage.write(entry, slug, captured.screenshot);
       }
 
       shell.variants.push(variant);
     }
   } catch (err) {
+    if (err instanceof BrowserLostError) throw err;
+    checkpoint();
     shell.error = `browser session failed: ${String(err)}`;
   } finally {
     await context?.close().catch(() => { /* already gone */ });
   }
 
+  const measured = shell.variants.filter((v) => v.status === "ok").length;
+  shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
+
   const identical = detectIdenticalVariants(shell.variants);
-  if (identical) shell.warnings.push(identical);
+  if (identical) {
+    shell.warnings.push(identical);
+  } else {
+    const noOps = describeNoOpProperties(detectNoOpProperties(definition.variantProperties, shell.variants));
+    if (noOps) shell.warnings.push(noOps);
+  }
 
   const substituted = detectFontSubstitution(shell);
   if (substituted) shell.warnings.push(substituted);
@@ -505,6 +737,21 @@ async function snapComponent(
   return shell;
 }
 
+/** Longest variant slug used whole as a screenshot's file name. */
+const MAX_SCREENSHOT_NAME = 120;
+
+/**
+ * A screenshot's file name: its variant's slug, or for a slug too long for a
+ * file name, its start and a hash of the whole. Every combination of
+ * vaul's Drawer, 16 props, comes to a slug of some 330 characters, past the
+ * 255 most filesystems allow, and writing it failed the whole component.
+ */
+export function screenshotName(slug: string): string {
+  if (slug.length <= MAX_SCREENSHOT_NAME) return `${slug}.png`;
+  const hash = createHash("sha1").update(slug).digest("hex").slice(0, 10);
+  return `${slug.slice(0, MAX_SCREENSHOT_NAME - hash.length - 2)}--${hash}.png`;
+}
+
 export function writeScreenshot(
   outDir: string,
   entry: ComponentEntry,
@@ -513,7 +760,7 @@ export function writeScreenshot(
 ): string {
   // By title, or by ID without one: by name, two untitled components of one
   // name wrote over each other's screenshots.
-  const path = join(outDir, componentSlug(entry.name, entry.title ?? entry.id), `${slug}.png`);
+  const path = join(outDir, componentSlug(entry.name, entry.title ?? entry.id), screenshotName(slug));
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, png);
   // Recorded relative to the directory holding styles.json, with posix

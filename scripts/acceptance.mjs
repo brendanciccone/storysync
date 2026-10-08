@@ -2014,6 +2014,93 @@ async function main() {
     return "the button inside both transparent wrappers, the gradient banner itself";
   });
 
+  /**
+   * Serves each page by name, as Storybook's iframe would serve a story,
+   * and measures it through snap's capture as the component named, in the
+   * browser snap launches. `/slow.png` answers after `slowImageMs`.
+   */
+  async function captureStories(pages, { slowImageMs = 0 } = {}) {
+    const { createServer } = await import("node:http");
+    const { resolveAndLaunch, createContext, captureStory } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-browser.js")).href);
+    const { normalizeStyles } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-normalize.js")).href);
+    // A 1x1 PNG.
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const server = createServer((req, res) => {
+      const name = decodeURIComponent(req.url.slice(1));
+      if (name === "slow.png") {
+        setTimeout(() => res.writeHead(200, { "content-type": "image/png" }).end(png), slowImageMs);
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><html><head></head><body>${pages[name]?.html ?? ""}</body></html>`);
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    const { browser } = await resolveAndLaunch();
+    try {
+      const tab = await (await createContext(browser)).newPage();
+      const measured = {};
+      for (const [name, { component, timeoutMs = 10000 }] of Object.entries(pages)) {
+        const started = Date.now();
+        const capture = await captureStory(tab, `http://127.0.0.1:${server.address().port}/${name}`, { timeoutMs, screenshot: false, component: { name: component } });
+        const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts) : null;
+        measured[name] = { ...capture, styles, ms: Date.now() - started };
+      }
+      return measured;
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }
+
+  await check("snap measures the component, not a <noscript>, a story's layout row or an overlay's closed trigger", async () => {
+    // Rendered as shadcn/ui renders them: input-otp puts a <noscript> first
+    // and its data-slot on a transparent <input> over the boxes it draws, a
+    // Switch story wraps the switch and its label in a flex row, and a
+    // Dialog's content renders into a portal only while it is open.
+    const filled = "background: #e5e5e5; border: 1px solid #d4d4d4";
+    const m = await captureStories({
+      otp: { component: "InputOTP", html: `<div id="storybook-root"><noscript><style>.x{}</style></noscript><div style="display: flex; position: relative"><div style="display: flex"><div style="width: 36px; height: 36px; ${filled}"></div><div style="width: 36px; height: 36px; ${filled}"></div></div><div style="position: absolute; inset: 0"><input data-slot="input-otp" style="position: absolute; inset: 0; width: 100%; background: transparent; border: 0"></div></div></div>` },
+      switch: { component: "Switch", html: `<div id="storybook-root"><div style="display: flex; gap: 8px; align-items: center"><button data-slot="switch" style="width: 32px; height: 18px; padding: 0; ${filled}"></button><label>Airplane Mode</label></div></div>` },
+      row: { component: "Toggle", html: `<div id="storybook-root"><div style="display: flex; gap: 8px"><button style="${filled}">On</button><label>Airplane Mode</label></div></div>` },
+      closed: { component: "Dialog", html: `<div id="storybook-root"><button data-slot="dialog-trigger" aria-haspopup="dialog" aria-expanded="false">Open</button></div>` },
+      open: { component: "Dialog", html: `<div id="storybook-root"><button data-slot="dialog-trigger" aria-haspopup="dialog" aria-expanded="true">Open</button></div><div data-slot="dialog-content" role="dialog" style="position: fixed; top: 40px; left: 40px; width: 300px; padding: 24px; background: #ffffff; border-radius: 8px">Hello</div>` },
+    });
+    const seen = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, `${c.status} ${c.element} ${JSON.stringify(c.notes)} ${c.boundingBox?.width}x${c.boundingBox?.height}`]));
+    const say = JSON.stringify(seen, null, 2);
+    assert(m.otp.status === "ok" && m.otp.element === "div" && m.otp.notes.length === 0 && m.otp.boundingBox.height === 38, `InputOTP: ${say}`);
+    assert(m.switch.element === 'button[data-slot="switch"]' && m.switch.boundingBox.width === 32 && m.switch.notes.length === 0, `Switch: ${say}`);
+    assert(m.row.element === "div" && m.row.notes[0]?.kind === "layout-wrapper", `a row with no slot: ${say}`);
+    assert(m.closed.notes[0]?.kind === "closed-trigger", `a closed Dialog: ${say}`);
+    assert(m.open.element === 'div[data-slot="dialog-content"]' && m.open.styles.backgroundColor === "#ffffff" && m.open.boundingBox.width === 348, `an open Dialog: ${say}`);
+    return "the OTP boxes, the switch, the open dialog; the row and the trigger flagged";
+  });
+
+  await check("a story that throws after load is a render error, found without waiting out --timeout", async () => {
+    // As ResizablePanelGroup does: Storybook paints the error after the load
+    // event, and snap reported no root element, twice --timeout later.
+    const { thrown, empty } = await captureStories({
+      thrown: { component: "ResizablePanelGroup", html: `<div id="storybook-root"></div><div id="error-message"></div><script>setTimeout(() => { document.getElementById("error-message").textContent = "We detected that you use an implicit action arg while rendering"; document.body.classList.add("sb-show-errordisplay"); }, 300)</script>` },
+      empty: { component: "Empty", html: `<div id="storybook-root"></div>`, timeoutMs: 1500 },
+    });
+    assert(thrown.status === "render_error" && /implicit action arg/.test(thrown.error) && thrown.ms < 5000, `a thrown story: ${thrown.status} ${thrown.error} after ${thrown.ms}ms`);
+    assert(empty.status === "element_not_found" && empty.ms < 2 * 1500, `an empty story: ${empty.status} after ${empty.ms}ms, for a --timeout of 1500`);
+    return `render_error in ${thrown.ms}ms; an empty story given up on in ${empty.ms}ms`;
+  });
+
+  await check("a system font stack is recorded as the font Chrome drew, and an avatar's photo as loaded", async () => {
+    // Tailwind v4's default stack opens with -apple-system, which Chrome
+    // doesn't implement; snap recorded it on every component, warned that
+    // it failed to load, and verify scored it as drift. And an Avatar loads
+    // its photo with new Image(), showing its initials until it arrives.
+    const m = await captureStories({
+      stack: { component: "Button", html: `<div id="storybook-root"><button style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #171717; color: #fff">Go</button></div>` },
+      avatar: { component: "Avatar", html: `<div id="storybook-root"><span data-slot="avatar" style="display: flex; width: 32px; height: 32px; background: #f5f5f5"><span id="fallback" style="display: flex; color: #737373">CN</span></span></div><script>requestAnimationFrame(() => { const img = new Image(); img.onload = () => { const shown = document.createElement("img"); shown.src = img.src; document.getElementById("fallback").replaceWith(shown); }; img.src = "/slow.png"; })</script>` },
+    }, { slowImageMs: 1000 });
+    assert(m.stack.styles.fontFamily === "system-ui" && m.stack.styles.fontAvailable === null && m.stack.styles.text?.fontFamily === "system-ui",
+      `the system stack: ${JSON.stringify({ fontFamily: m.stack.styles.fontFamily, fontAvailable: m.stack.styles.fontAvailable, text: m.stack.styles.text?.fontFamily, probe: m.stack.fonts.root })}`);
+    assert(m.avatar.styles.text === null, `the avatar measured its fallback, text ${JSON.stringify(m.avatar.styles.text)}`);
+    return "system-ui with no warning; the photo, after 1s";
+  });
+
   await check("a refused connection is a render error even when the story's URL says timeout; a server that never answers is a timeout", async () => {
     const { createServer } = await import("node:http");
     const { resolveAndLaunch, createContext, captureStory } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-browser.js")).href);

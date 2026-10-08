@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { applyDelta } from "./snap-normalize.js";
+import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
 import { SNAP_META_FILENAME } from "./snap.js";
 import { componentKey } from "./storybook.js";
@@ -492,6 +492,11 @@ export function verifyVariant(
     // No text in Figma and none measured: the root's colour and font, which
     // every element has, style no text there to compare them with.
     const noTextEitherSide = TEXT_PROPERTIES.has(property) && figmaValue == null && measuredText == null;
+    // A family snap measured as a CSS keyword, `system-ui` or `sans-serif`,
+    // names the platform's font, which no Figma font is called, so whatever
+    // the push set it to would drift on every variant with no fix to make.
+    // Unscored, as `lineHeight: "normal"` is.
+    if (!noTextEitherSide && property === "fontFamily" && typeof measuredValue === "string" && isFontKeyword(measuredValue)) continue;
 
     if (noTextEitherSide || propertyMatches(property, measuredValue, figmaValue, tolerance)) {
       matched++;

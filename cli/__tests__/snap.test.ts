@@ -3,11 +3,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues } from "../snap.js";
-import type { SnapOptions } from "../snap.js";
+import {
+  runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
+  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
+} from "../snap.js";
+import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
 function tempDir(): string {
@@ -531,6 +535,27 @@ test("writeScreenshot: an untitled component's screenshots go under its ID, not 
   }
 });
 
+test("writeScreenshot: a slug too long for a file name is shortened, distinctly and the same every run", () => {
+  // Every combination of vaul's Drawer is a slug of some 330 characters, past
+  // the 255 a file name can have: writing it failed the whole component.
+  const long = Array.from({ length: 16 }, (_, i) => `prop${i}-false`).join("--") + "--direction-bottom";
+  // Differing only past the part of it kept whole.
+  const other = long.replace("direction-bottom", "direction-top");
+  const dir = tempDir();
+  try {
+    const recorded = writeScreenshot(dir, { id: "ui-drawer", name: "Drawer", title: "UI/Drawer" } as never, long, Buffer.from("png"));
+    assert.ok(existsSync(join(dir, recorded)));
+    const name = recorded.split("/").pop()!;
+    assert.ok(name.length <= 124, name);
+    assert.equal(name, screenshotName(long));
+    assert.notEqual(screenshotName(other), name);
+    // A slug that fits is the file name, as before.
+    assert.equal(screenshotName("variant-primary"), "variant-primary.png");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- every combination, and the cap ---
 
 const SIZE_PROPS = [
@@ -678,4 +703,387 @@ test("describeCap: never claims coverage the subset does not have", () => {
   assert.match(short, /which leave out disabled=true entirely/);
   assert.doesNotMatch(short, /cover every value/);
   assert.match(describeCap("Forms/Button", { ...cap, uncovered: [] }), /cover every value/);
+});
+
+// --- properties that change nothing ---
+
+const SWITCH_PROPS = [
+  { name: "asChild", type: "BOOLEAN", values: ["false", "true"], defaultValue: "false" },
+  { name: "size", type: "VARIANT", values: ["default", "sm"], defaultValue: "default" },
+] as never[];
+
+function measuredVariant(combination: Record<string, string>, delta: Record<string, unknown>, status: SnapVariant["status"] = "ok"): SnapVariant {
+  return { combination, slug: JSON.stringify(combination), status, error: null, delta: delta as never };
+}
+
+test("detectNoOpProperties: names a property whose values measure the same wherever the others hold still", () => {
+  // Radix Switch, every combination: asChild changed nothing, size did, so
+  // the all-identical warning never fired and asChild became a Figma axis.
+  const small = { width: 24, height: 14 };
+  const variants = [
+    measuredVariant({ asChild: "false", size: "default" }, {}),
+    measuredVariant({ asChild: "true", size: "default" }, {}),
+    measuredVariant({ asChild: "false", size: "sm" }, small),
+    measuredVariant({ asChild: "true", size: "sm" }, small),
+  ];
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, variants), ["asChild"]);
+  // Representative mode measures each value against the others' defaults.
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, [variants[0], variants[1], variants[2]]), ["asChild"]);
+});
+
+test("detectNoOpProperties: a property is judged only on values measured side by side", () => {
+  const variants = [
+    measuredVariant({ asChild: "false", size: "default" }, {}),
+    measuredVariant({ asChild: "true", size: "default" }, {}, "element_not_found"),
+    measuredVariant({ asChild: "false", size: "sm" }, { width: 24 }),
+  ];
+  // asChild=true never rendered, so nothing says asChild changes nothing.
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, variants), []);
+  // One that differs anywhere is live.
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, [
+    measuredVariant({ asChild: "false", size: "default" }, {}),
+    measuredVariant({ asChild: "true", size: "default" }, {}),
+    measuredVariant({ asChild: "false", size: "sm" }, { width: 24 }),
+    measuredVariant({ asChild: "true", size: "sm" }, { width: 30 }),
+  ]), []);
+});
+
+test("describeNoOpProperties: names each property and what to do about it", () => {
+  assert.equal(describeNoOpProperties([]), null);
+  const one = describeNoOpProperties(["asChild"])!;
+  assert.match(one, /^`asChild`: every value measured the same, so it changes nothing snap records/);
+  assert.match(one, /may not belong as Figma variant properties/);
+  assert.match(describeNoOpProperties(["asChild", "side"])!, /^`asChild`, `side`: .* they change nothing/);
+});
+
+// --- elements that may not be the component ---
+
+test("describeMeasurementNotes: a closed trigger says what to change so the content is measured", () => {
+  const [warning] = describeMeasurementNotes("Dialog", [
+    { slug: "default", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+  ], 1);
+  assert.match(warning, /^snap measured button\[data-slot="dialog-trigger"\], a closed trigger, rather than Dialog\./);
+  assert.match(warning, /render Dialog open, with defaultOpen/);
+  assert.match(warning, /data-slot="dialog-content"/);
+});
+
+test("describeMeasurementNotes: a closed trigger names the content slots snap takes, from the title too", () => {
+  const trigger = [{ slug: "default", note: { kind: "closed-trigger" as const, element: 'button[data-slot="tooltip-trigger"]' } }];
+  // TooltipContent's own slot is already its content's: it was told to add
+  // data-slot="tooltip-content-content".
+  const [tooltip] = describeMeasurementNotes("TooltipContent", trigger, 1, "ui/base/Tooltip");
+  assert.match(tooltip, /carries data-slot="tooltip-content" or that/);
+  assert.doesNotMatch(tooltip, /content-content/);
+  // A component named apart from its title is matched by both.
+  const [demo] = describeMeasurementNotes("DialogDemo", trigger, 1, "Overlays/Dialog");
+  assert.match(demo, /data-slot="dialog-demo-content" or "dialog-content"/);
+});
+
+test("describeMeasurementNotes: a layout wrapper says how to point snap at the component", () => {
+  const notes = [
+    { slug: "size-default", note: { kind: "layout-wrapper" as const, element: "div", children: 2 } },
+    { slug: "size-sm", note: { kind: "layout-wrapper" as const, element: "div", children: 2 } },
+  ];
+  const warnings = describeMeasurementNotes("Switch", notes, 3);
+  // One warning for the same element across variants, saying how many.
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^snap measured div, which holds 2 elements and draws nothing itself/);
+  assert.match(warnings[0], /rather than Switch in 2 of 3 measured variants\./);
+  assert.match(warnings[0], /data-slot="switch"/);
+  assert.deepEqual(describeMeasurementNotes("Switch", [], 3), []);
+});
+
+// --- a run that is stopped ---
+
+/** A browser whose pages fail to load, as stand-ins for runSnap, closed when `close` is called. */
+function stubBrowser(onNavigate: () => void = () => {}) {
+  let connected = true;
+  return {
+    isConnected: () => connected,
+    newContext: async () => ({
+      newPage: async () => ({
+        on: () => {}, off: () => {},
+        goto: async () => { onNavigate(); throw new Error("net::ERR_CONNECTION_REFUSED"); },
+      }),
+      close: async () => {},
+    }),
+    close: async () => { connected = false; },
+    disconnect: () => { connected = false; },
+  };
+}
+
+const THREE_COMPONENTS = {
+  listComponents: async () => [
+    { id: "forms-a", name: "A" }, { id: "forms-b", name: "B" }, { id: "forms-c", name: "C" },
+  ],
+  getComponent: async (id: string) => ({ name: id, props: [], stories: [{ id: `${id}--default`, name: "Default" }] }),
+};
+
+test("runSnap: leaves signals to the snap command, which exits on them at once", async () => {
+  // runSnap and the CLI each listened for SIGTERM: two notices, and a stop
+  // that waited on a docs request still in flight. The snap command's
+  // handlers are the only ones (cli-connect.test.ts runs them for real).
+  const dir = tempDir();
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const before = signals.map((signal) => process.listenerCount(signal));
+  try {
+    const during: number[][] = [];
+    const browser = stubBrowser(() => { during.push(signals.map((signal) => process.listenerCount(signal))); });
+    await runSnap(options(dir), { storybook: THREE_COMPONENTS as never, launch: async () => ({ via: "stub", browser }) as never });
+    assert.equal(during.length, 3);
+    for (const counts of during) assert.deepEqual(counts, before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a browser that goes away mid-run is launched again, and the component it was on measured again", async () => {
+  // Stopping lost the whole run, however long it had been going, for one crash.
+  const dir = tempDir();
+  try {
+    const visited: string[] = [];
+    const first = stubBrowser(() => {
+      if (visited.push("first") === 2) first.disconnect();
+    });
+    const second = stubBrowser(() => { visited.push("second"); });
+    const browsers = [first, second];
+    const result = await runSnap(options(dir), {
+      storybook: THREE_COMPONENTS as never,
+      launch: async () => ({ via: "stub", browser: browsers.shift() }) as never,
+    });
+    // B's first try went with the first browser; B and C were measured with the second.
+    assert.deepEqual(visited, ["first", "first", "second", "second"]);
+    assert.deepEqual(result.components.map((c) => [c.name, c.error, c.variants.length]), [["A", null, 1], ["B", null, 1], ["C", null, 1]]);
+    assert.ok(existsSync(join(dir, "styles.json")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a browser that goes away twice fails the run rather than failing every component left", async () => {
+  const dir = tempDir();
+  try {
+    let navigations = 0;
+    const launch = async () => {
+      const browser = stubBrowser(() => {
+        if (++navigations >= 2) browser.disconnect();
+      });
+      return { via: "stub", browser } as never;
+    };
+    await assert.rejects(
+      () => runSnap(options(dir), { storybook: THREE_COMPONENTS as never, launch }),
+      (err: unknown) => {
+        assert.ok(err instanceof BrowserLostError, String(err));
+        assert.equal(
+          String(err),
+          "Error: The browser closed before snap finished (it crashed, or something stopped it), with 1 of 3 components read. " +
+            "styles.json and meta.json were left as they were. Run snap again.",
+        );
+        return true;
+      },
+    );
+    assert.equal(navigations, 3);
+    assert.equal(existsSync(join(dir, "styles.json")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a story that times out is tried once more before it is recorded", async () => {
+  // A busy Storybook times out stories that render a moment later, and the
+  // push builds an unmeasured variant from source.
+  const dir = tempDir();
+  try {
+    let navigations = 0;
+    const timeout = Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+    const result = await runSnap(options(dir), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({ name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({
+            newPage: async () => ({ on: () => {}, off: () => {}, goto: async () => { navigations++; throw timeout; } }),
+            close: async () => {},
+          }),
+          close: async () => {},
+        },
+      }) as never,
+    });
+    assert.equal(navigations, 2);
+    assert.equal(result.components[0].variants[0].status, "timeout");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a story that times out after it loaded is not tried again", async () => {
+  // A screenshot of an element that never becomes visible times out the
+  // same way every time.
+  const dir = tempDir();
+  try {
+    let navigations = 0;
+    const timeout = Object.assign(new Error("elementHandle.screenshot: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+    let described = false;
+    const target = {
+      evaluate: async () => {
+        if (described) return null;
+        described = true;
+        return { tag: "div", slot: null, role: null };
+      },
+      evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+      boundingBox: async () => ({ x: 0, y: 0, width: 40, height: 20 }),
+      screenshot: async () => { throw timeout; },
+    };
+    const page = {
+      on: () => {}, off: () => {},
+      goto: async () => { navigations++; return null; },
+      waitForSelector: async () => null,
+      addStyleTag: async () => null,
+      $: async () => target,
+      evaluate: async (_fn: unknown, arg?: unknown) => (arg ? {} : null),
+    };
+    const result = await runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({ name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    assert.equal(navigations, 1);
+    assert.equal(result.components[0].variants[0].status, "timeout");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A page on which every story loads and its --selector element measures, with a screenshot. */
+function screenshotPage(onNavigate: () => void = () => {}) {
+  return {
+    on: () => {}, off: () => {},
+    goto: async () => { onNavigate(); return null; },
+    waitForSelector: async () => null,
+    addStyleTag: async () => null,
+    $: async () => {
+      let described = false;
+      return {
+        evaluate: async () => {
+          if (described) return null;
+          described = true;
+          return { tag: "div", slot: null, role: null };
+        },
+        evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+        boundingBox: async () => ({ x: 0, y: 0, width: 40, height: 20 }),
+        screenshot: async () => Buffer.from("new png"),
+      };
+    },
+    evaluate: async (_fn: unknown, arg?: unknown) => (arg ? {} : null),
+  };
+}
+
+test("runSnap: screenshots reach the output directory once the run has finished", async () => {
+  const dir = tempDir();
+  try {
+    const page = screenshotPage();
+    const result = await runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+      storybook: THREE_COMPONENTS as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    const recorded = result.components.map((c) => c.variants[0].screenshot);
+    assert.deepEqual(recorded, ["forms-a/default.png", "forms-b/default.png", "forms-c/default.png"]);
+    for (const path of recorded) assert.equal(readFileSync(join(dir, path!), "utf8"), "new png");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a stopped run leaves the last run's screenshots as they were", async () => {
+  // Each PNG was written as its variant was measured, so a run stopped
+  // part-way replaced some of the screenshots of the styles.json it kept.
+  const dir = tempDir();
+  const earlier = join(dir, "forms-a", "default.png");
+  mkdirSync(dirname(earlier), { recursive: true });
+  writeFileSync(earlier, "earlier png");
+  try {
+    // A measured, then the browser lost on B, and lost again once relaunched.
+    let navigations = 0;
+    let current = { connected: true };
+    const page = screenshotPage(() => {
+      if (++navigations >= 2) current.connected = false;
+    });
+    const launch = async () => {
+      const state = { connected: true };
+      current = state;
+      const browser = {
+        isConnected: () => state.connected,
+        newContext: async () => ({ newPage: async () => page, close: async () => {} }),
+        close: async () => {},
+      };
+      return { via: "stub", browser } as never;
+    };
+    await assert.rejects(
+      () => runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), { storybook: THREE_COMPONENTS as never, launch }),
+      (err: unknown) => err instanceof BrowserLostError && /styles\.json, meta\.json and the screenshots were left as they were/.test(err.message),
+    );
+    assert.equal(navigations, 3);
+    assert.equal(readFileSync(earlier, "utf8"), "earlier png");
+    assert.equal(existsSync(join(dir, "forms-b")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ScreenshotStage: moves what it staged into the output directory, or discards it", () => {
+  const dir = tempDir();
+  const entry = { id: "forms-button", name: "Button", title: "Forms/Button" } as never;
+  try {
+    const kept = new ScreenshotStage(dir);
+    assert.equal(kept.write(entry, "variant-primary", Buffer.from("png")), "forms-button/variant-primary.png");
+    assert.equal(existsSync(join(dir, "forms-button")), false);
+    kept.commit();
+    assert.equal(readFileSync(join(dir, "forms-button", "variant-primary.png"), "utf8"), "png");
+
+    const dropped = new ScreenshotStage(dir);
+    dropped.write(entry, "variant-danger", Buffer.from("png"));
+    dropped.discard();
+    assert.equal(existsSync(join(dir, "forms-button", "variant-danger.png")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ScreenshotStage: what it staged goes with the process when it exits part-way", { skip: process.platform === "win32" }, () => {
+  // The snap command exits at once on a signal, past runSnap's finally, which
+  // left the staged PNGs in the OS's temporary directory.
+  const out = tempDir();
+  const tmp = tempDir();
+  try {
+    const snap = new URL("../snap.js", import.meta.url).href;
+    const script = [
+      `const { ScreenshotStage } = await import(${JSON.stringify(snap)});`,
+      `const { readdirSync, writeSync } = await import("node:fs");`,
+      `new ScreenshotStage(${JSON.stringify(out)}).write({ id: "forms-button", name: "Button" }, "default", Buffer.from("png"));`,
+      `writeSync(1, String(readdirSync(${JSON.stringify(tmp)}).length));`,
+      `process.exit(143);`,
+    ].join("\n");
+    const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp },
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 143, run.stderr);
+    assert.equal(run.stdout, "1", "nothing was staged");
+    assert.deepEqual(readdirSync(tmp), []);
+    assert.deepEqual(readdirSync(out), []);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

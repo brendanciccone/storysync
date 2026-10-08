@@ -250,8 +250,8 @@ program
   .option("--max-combinations <n>", "With --variants all, most combinations to measure per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--exclude-props <names>", "Comma-separated prop names never to make variant properties, in any component; the story's own args set them")
   .option("--screenshots", "Also save a PNG per variant (off by default)")
-  .option("--timeout <ms>", "Per-story timeout in milliseconds", "10000")
-  .option("--selector <css>", "Override the component root selector")
+  .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
+  .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
@@ -279,19 +279,26 @@ program
     // going, and snap then recorded every component left as a failed browser
     // session, wrote that over the last styles.json and exited 0. So a CI job
     // cancelled, or an agent's command timed out, replaced a good snap with a
-    // broken one. Stop instead, writing nothing, as Ctrl-C does: exiting runs
-    // Playwright's exit handler, which kills the browser. Said on stderr,
-    // written at once since the process ends next, so a log or an agent
-    // reading it knows the snap on disk is the last one.
+    // broken one. Stop instead, at once, writing nothing: not after a docs
+    // request or a story still in flight, which can take --connect-timeout
+    // or --timeout. Exiting runs Playwright's exit handler, which kills the
+    // browser, and removes the screenshots staged so far. These are the
+    // run's only signal handlers, and come before Playwright's, so Ctrl-C
+    // says the same and exits 130 rather than by Playwright's own handler.
+    // Said on stderr, written at once since the process ends next, so a log
+    // or an agent reading it knows the snap on disk is the last one.
+    const left = opts.screenshots ? "styles.json, meta.json and the screenshots" : "styles.json and meta.json";
     const stop = (code: number) => (signal: NodeJS.Signals) => {
       progress.done();
       try {
-        writeSync(2, `snap was stopped by ${signal} before it finished, so styles.json and meta.json in ${opts.out} were left as they were.\n`);
+        writeSync(2, `snap was stopped by ${signal} before it finished, so ${left} in ${opts.out} were left as they were.\n`);
       } catch {
         // A closed or full stderr: the exit code says it.
       }
       process.exit(code);
     };
+    // 128 plus the signal's number, as a shell reports a process it killed.
+    process.on("SIGINT", stop(130));
     process.on("SIGTERM", stop(143));
     process.on("SIGHUP", stop(129));
     try {

@@ -44,7 +44,7 @@ Two more properties worth a look:
 
   The font choice is load-bearing, because it has to satisfy two constraints at once. The browser must actually render it, or `snap` measures a fallback. And Figma's *plugin* context — where `use_figma` writes — must have it: that context exposes only Google Fonts, so system fonts like Arial or Helvetica that a designer sees in the desktop app's picker are unavailable to the agent doing the push, and Figma substitutes (Arial becomes Arimo, which has no SemiBold, so the weight drifts too). Bundling a Google font from npm is the one arrangement that satisfies both with no network.
 
-  To see the substitution detector fire, point `fontFamily` at a font that is not installed and delete the `preview.ts` imports: `fontAvailable` flips to `false` with a warning naming the family. That matters because `fontFamily` records the family the code *asked for*, not the one that rendered — without this check, a project would score full marks on a typeface the screenshots would show is different.
+  To see the substitution detector fire, point `fontFamily` at a font that is not installed and delete the `preview.ts` imports: `fontAvailable` flips to `false` with a warning naming the family. That matters because a named font that didn't load is recorded as the family the code *asked for*, not the fallback that rendered — without this check, a project would score full marks on a typeface the screenshots would show is different.
 
 Run it twice and diff `styles.json`: byte-identical. The timestamp lives in `meta.json` beside it, so the measurements stay diffable in review.
 

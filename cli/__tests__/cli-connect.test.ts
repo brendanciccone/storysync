@@ -284,12 +284,14 @@ test("diff CLI: a use_figma that never answers fails the Figma read within --con
 
 const CLEAR = "\r\u001b[2K";
 
-for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129], ["SIGINT", 130]] as const) {
   test(`snap CLI: ${signal} stops the run without writing a styles.json, and clears the status line`, { timeout: 30_000, skip: process.platform === "win32" }, async (t) => {
     // Playwright closed the browser on SIGTERM and left snap running: every
     // component left was recorded as a failed browser session, written over
     // the last styles.json, and the run exited 0. SIGHUP, a closed terminal,
-    // did the same.
+    // did the same. Ctrl-C ended it by Playwright's handler, saying nothing.
+    // The docs request in flight never answers, so the run stops at once,
+    // not when the request gives up.
     const { url, calls } = await slowStandIn({ "docs-show": Infinity });
     const out = mkdtempSync(join(tmpdir(), "storysync-sigterm-"));
     // stderr made to look like a terminal, so the status line is drawn.
@@ -334,15 +336,18 @@ for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
   });
 }
 
-test("runSnap: a browser that goes partway through stops the run, leaving the last styles.json as it was", async () => {
+test("runSnap: a browser that goes partway through twice stops the run, leaving the last styles.json as it was", async () => {
   // Chrome crashing, or killed from outside, failed every component left as
   // a broken browser session; the run then wrote that over the last
-  // styles.json and meta.json, and exited 0.
+  // styles.json and meta.json, and exited 0. It is launched once more now,
+  // and a second loss stops the run. Here the browsers say so only by their
+  // disconnected event.
   const out = mkdtempSync(join(tmpdir(), "storysync-lost-"));
   writeFileSync(join(out, "styles.json"), "last good snap\n");
   const read: string[] = [];
   let disconnected: (() => void) | undefined;
-  let closed = false;
+  let launches = 0;
+  let closed = 0;
   try {
     await assert.rejects(
       runSnap({ storybookUrl: "http://localhost:6006", outDir: out, screenshots: false, timeoutMs: 1000, variants: "representative" }, {
@@ -354,58 +359,94 @@ test("runSnap: a browser that goes partway through stops the run, leaving the la
           ],
           getComponent: async (id: string) => {
             read.push(id);
-            // The browser goes while the first component is read.
+            // Each browser goes while the first component is read.
             if (id === "forms-button") disconnected?.();
             return { name: id, props: [], stories: [{ id: `${id}--default`, name: "Default" }] };
           },
         } as never,
-        launch: async () => ({
-          via: "stub",
-          browser: {
-            on: (event: string, listener: () => void) => { if (event === "disconnected") disconnected = listener; },
-            newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
-            close: async () => { closed = true; },
-          },
-        }) as never,
+        launch: async () => {
+          launches++;
+          return {
+            via: "stub",
+            browser: {
+              on: (event: string, listener: () => void) => { if (event === "disconnected") disconnected = listener; },
+              newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+              close: async () => { closed++; },
+            },
+          } as never;
+        },
       }),
-      /^Error: The browser closed before snap finished \(it crashed, or something stopped it\), with 1 of 3 components read\. styles\.json and meta\.json were left as they were\. Run snap again\.$/,
+      /^Error: The browser closed before snap finished \(it crashed, or something stopped it\), with 0 of 3 components read\. styles\.json and meta\.json were left as they were\. Run snap again\.$/,
     );
-    // No more components were tried, and nothing was written.
-    assert.deepEqual(read, ["forms-button"]);
+    // The first component was read again with the second browser, and no
+    // more components were tried, and nothing was written.
+    assert.equal(launches, 2);
+    assert.deepEqual(read, ["forms-button", "forms-button"]);
     assert.equal(readFileSync(join(out, "styles.json"), "utf8"), "last good snap\n");
     assert.equal(existsSync(join(out, "meta.json")), false);
-    assert.equal(closed, true);
+    assert.ok(closed >= 2, `closed ${closed} browsers`);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
 });
 
-test("runSnap: a browser found no longer connected after the last component still writes nothing", async () => {
+test("runSnap: a browser found closed once a component has finished is relaunched, and the component measured again", async () => {
   // The disconnected event and the failures it causes can arrive in either
-  // order, so the browser is asked too.
+  // order, so the browser is asked too, after each component as well: the
+  // component's failures may have been the browser going.
   const out = mkdtempSync(join(tmpdir(), "storysync-lost-"));
-  let connected = true;
+  const read: string[] = [];
+  try {
+    const browsers = [false, true].map((stays) => {
+      let connected = true;
+      return {
+        on: () => {},
+        isConnected: () => connected,
+        newContext: async () => ({ newPage: async () => ({}), close: async () => { if (!stays) connected = false; } }),
+        close: async () => {},
+      };
+    });
+    const result = await runSnap({ storybookUrl: "http://localhost:6006", outDir: out, screenshots: false, timeoutMs: 1000, variants: "representative" }, {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async (id: string) => {
+          read.push(id);
+          return { name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] };
+        },
+      } as never,
+      launch: async () => ({ via: "stub", browser: browsers.shift() }) as never,
+    });
+    assert.deepEqual(read, ["forms-button", "forms-button"]);
+    assert.equal(result.components.length, 1);
+    assert.ok(existsSync(join(out, "styles.json")));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a browser found closed after the last component, twice, still writes nothing", async () => {
+  const out = mkdtempSync(join(tmpdir(), "storysync-lost-"));
   try {
     await assert.rejects(
       runSnap({ storybookUrl: "http://localhost:6006", outDir: out, screenshots: false, timeoutMs: 1000, variants: "representative" }, {
         storybook: {
           listComponents: async () => [{ id: "forms-button", name: "Button" }],
-          getComponent: async () => {
-            connected = false;
-            return { name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] };
-          },
+          getComponent: async () => ({ name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] }),
         } as never,
-        launch: async () => ({
-          via: "stub",
-          browser: {
-            on: () => {},
-            isConnected: () => connected,
-            newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
-            close: async () => {},
-          },
-        }) as never,
+        launch: async () => {
+          let connected = true;
+          return {
+            via: "stub",
+            browser: {
+              on: () => {},
+              isConnected: () => connected,
+              newContext: async () => ({ newPage: async () => ({}), close: async () => { connected = false; } }),
+              close: async () => {},
+            },
+          } as never;
+        },
       }),
-      /with 1 of 1 components read/,
+      /with 0 of 1 components read/,
     );
     assert.equal(existsSync(join(out, "styles.json")), false);
   } finally {

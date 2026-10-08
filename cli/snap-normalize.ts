@@ -83,6 +83,13 @@ export interface NormalizedStyles {
   /** Set when all four corners are equal — maps to Figma `cornerRadius`. */
   borderRadiusUniform: number | null;
   padding: { top: number; right: number; bottom: number; left: number };
+  /**
+   * The family the browser drew with, as resolveFontFamily picks it out of
+   * the stack: the first that applied, past any other platform's alias for
+   * its UI font. A named font that didn't load is kept, as what the code
+   * asked for, with `fontAvailable` false. It can be a CSS keyword, such as
+   * `system-ui` or `sans-serif`, which names no font Figma has.
+   */
   fontFamily: string;
   fontSize: number;
   fontWeight: number;
@@ -99,11 +106,11 @@ export interface NormalizedStyles {
   boxSizing: string;
   /**
    * Whether the browser could actually render `fontFamily`, or null when
-   * undetermined.
+   * undetermined, or when `fontFamily` is a CSS keyword, which always
+   * resolves to some face.
    *
-   * `fontFamily` is the *declared* first family, not the resolved one, so a
-   * project naming a font it never loaded would otherwise measure and score as
-   * though that font were used while rendering a fallback. Recording
+   * A project naming a font it never loaded would otherwise measure and score
+   * as though that font were used while rendering a fallback. Recording
    * availability keeps the substitution visible instead of silent.
    */
   fontAvailable: boolean | null;
@@ -199,6 +206,85 @@ export function firstFontFamily(value: string | undefined): string {
   if (!value) return "";
   const first = value.split(",")[0]?.trim() ?? "";
   return first.replace(/^['"]|['"]$/g, "");
+}
+
+// --- Fonts ------------------------------------------------------------------
+
+/**
+ * An element's computed font stack, with each family's quotes stripped, and
+ * whether the browser drew with it, as snap-browser probed it in the page:
+ * true when it applied, false when the browser passed over it, null when that
+ * couldn't be told, as for a generic family, which always resolves to some face.
+ */
+export interface FontProbe {
+  families: string[];
+  applied: (boolean | null)[];
+}
+
+/** CSS's generic families, each resolving to whatever face the platform maps it to. */
+const GENERIC_FONT_FAMILIES = new Set([
+  "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong",
+]);
+
+/**
+ * A platform's name for its own UI font: Safari's `-apple-system`, Chrome's
+ * old `BlinkMacSystemFont`, which Chromium computes to `"system-ui"`, and the
+ * `ui-*` keywords only Safari implements. A system font stack lists several
+ * so that each browser finds one, so one a browser passes over is not a font
+ * that failed to load.
+ */
+export function isSystemFontAlias(family: string): boolean {
+  const name = family.trim().toLowerCase();
+  return name.startsWith("-") || name.startsWith("ui-") || name === "system-ui" || name === "blinkmacsystemfont";
+}
+
+/**
+ * Whether a family is a CSS keyword rather than a font: a generic family or a
+ * platform's alias for its UI font. No font in Figma has that name, so there
+ * is nothing to set it to or compare it with.
+ */
+export function isFontKeyword(family: string | null | undefined): boolean {
+  const name = (family ?? "").trim().toLowerCase();
+  return GENERIC_FONT_FAMILIES.has(name) || isSystemFontAlias(name);
+}
+
+/**
+ * The family snap records for an element, and whether the browser could
+ * render it.
+ *
+ * `getComputedStyle` gives the stack as written, so its first family is what
+ * the code asked for, not what was drawn. Tailwind v4's default stack opens
+ * `-apple-system, BlinkMacSystemFont`, and Chrome implements neither name as
+ * written: it skips the first and draws the second as `system-ui`. Recording
+ * the first family put `-apple-system` on every component, with a warning
+ * that it failed to load and a fontFamily drift no Figma font could clear.
+ *
+ * So aliases the browser passed over are skipped, and the first family it
+ * drew with is recorded. A named font it passed over ahead of any alias or
+ * keyword is kept, with `available: false`: it is what the code meant to
+ * draw, and its absence is worth saying. Once the stack has named an alias
+ * or keyword, it is a list of each platform's spelling of its own font, and
+ * a named font missing there is one for another platform: Tailwind's mono
+ * stack, `ui-monospace, SFMono-Regular, Menlo, ...`, draws Menlo in Chrome
+ * on macOS, and SFMono-Regular, which Chrome there doesn't see, is not a font
+ * the code failed to load. A keyword is available as null, since there is no
+ * font to have been missing.
+ */
+export function resolveFontFamily(probe: FontProbe): { family: string; available: boolean | null } {
+  let platformList = false;
+  for (const [index, family] of probe.families.entries()) {
+    const applied = probe.applied[index] ?? null;
+    const keyword = isFontKeyword(family);
+    if (applied === false && (keyword || platformList)) {
+      platformList = true;
+      continue;
+    }
+    if (applied === false) return { family, available: false };
+    return { family, available: keyword ? null : applied };
+  }
+  // Nothing in the stack applied, so the browser's default font drew it.
+  return { family: probe.families[0] ?? "", available: probe.families.length ? false : null };
 }
 
 function normalizeFontWeight(value: string | undefined): number {
@@ -439,13 +525,317 @@ export function isPassThroughWrapper(raw: RawComputedStyles): boolean {
     ["top", "right", "bottom", "left"].every((side) => zero(`border-${side}-width`) && zero(`padding-${side}`));
 }
 
+// --- Choosing the element to measure ----------------------------------------
+
+/**
+ * Elements that never draw, so are never a story's component. input-otp
+ * renders a `<noscript>` ahead of its input, and measuring the first child of
+ * the story's root then found no layout box at all.
+ */
+export const NON_RENDERED_TAGS: readonly string[] = ["noscript", "script", "style", "template", "link", "meta", "title", "base"];
+
+/** One element of a rendered story, as snap-browser reads it out of the page. */
+export interface StoryNode {
+  tag: string;
+  /** `data-slot`, which shadcn/ui puts on each component's root element: `switch`, `dialog-trigger`. */
+  slot: string | null;
+  role: string | null;
+  /** `aria-haspopup`, `aria-expanded` and `aria-controls`, as written. */
+  hasPopup: string | null;
+  expanded: string | null;
+  controls: string | null;
+  /** `data-state`, which Radix sets to `open` or `closed`. */
+  state: string | null;
+  /** Whether it carries `data-popup-open` or `data-open`, Base UI's mark of an open trigger. */
+  open: boolean;
+  /** `dir`, `data-orientation` (else `aria-orientation`) and `aria-label` (else `aria-labelledby`), as written. */
+  dir: string | null;
+  orientation: string | null;
+  label: string | null;
+  /** The computed `position`. */
+  position: string;
+  /** Whether it has a layout box: false for `display: none` and `display: contents`. */
+  rendered: boolean;
+  /** WRAPPER_PROPERTIES, computed. */
+  styles: RawComputedStyles;
+  /**
+   * Element children in DOM order, so a child's index here is its index among
+   * the element's children. Cut short past a size limit, from the end.
+   */
+  children: StoryNode[];
+}
+
+/** An element outside the story's root that may be its content, rendered into a portal. */
+export interface PortalNode {
+  tag: string;
+  slot: string | null;
+  role: string | null;
+  id: string | null;
+  rendered: boolean;
+}
+
+/** Why the element snap measured may not be the component. */
+export type MeasurementNote =
+  | { kind: "layout-wrapper"; element: string; children: number }
+  | { kind: "closed-trigger"; element: string };
+
+export type MeasuredChoice =
+  /** An element under the story's root, by its index at each level down from the root's container. */
+  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[] }
+  /** One of the portal candidates, by index. */
+  | { kind: "portal"; index: number; element: string; notes: MeasurementNote[] }
+  | { kind: "none"; error: string };
+
+/** How deep snap looks past wrappers that draw nothing, as it always has. */
+const MAX_WRAPPER_DEPTH = 4;
+
+/**
+ * The `data-slot` values a component's own root would carry: its name and its
+ * title's last segment, kebab-cased, as shadcn/ui writes them (`InputOTP` is
+ * `input-otp`, `ResizablePanelGroup` is `resizable-panel-group`).
+ */
+export function componentSlots(name: string, title?: string): string[] {
+  const kebab = (value: string) => value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  const leaf = title?.split("/").pop() ?? "";
+  return [...new Set([kebab(name), kebab(leaf)].filter(Boolean))];
+}
+
+/**
+ * The `data-slot` values of a component's content, which an overlay renders
+ * outside the story's root while open: each of its own slots' `-content`
+ * form, as an open Dialog's `dialog-content`, and a slot already ending in
+ * `-content` as it is, as TooltipContent's `tooltip-content`.
+ */
+export function contentSlots(slots: readonly string[]): string[] {
+  return [...new Set(slots.map((slot) => (slot.endsWith("-content") ? slot : `${slot}-content`)))];
+}
+
+/** `tag`, with its `data-slot` or else its `role`: how a measured element is named in styles.json and warnings. */
+export function describeElement(node: { tag: string; slot: string | null; role: string | null }): string {
+  if (node.slot) return `${node.tag}[data-slot="${node.slot}"]`;
+  if (node.role) return `${node.tag}[role="${node.role}"]`;
+  return node.tag;
+}
+
+function isNonRendered(node: StoryNode): boolean {
+  return NON_RENDERED_TAGS.includes(node.tag);
+}
+
+function isDisplayContents(node: StoryNode): boolean {
+  return (node.styles["display"] ?? "").trim() === "contents";
+}
+
+/** Children that take up space: what a reader would see as the element's parts. */
+function drawnChildren(node: StoryNode): StoryNode[] {
+  return node.children.filter((child) => !isNonRendered(child) && (child.rendered || isDisplayContents(child)));
+}
+
+/** Whether an element paints nothing itself: no fill, image, shadow or border, whatever its padding. */
+function drawsNothing(styles: RawComputedStyles): boolean {
+  return isFullyTransparent(styles["background-color"]) &&
+    normalizeBackgroundImage(styles["background-image"]) == null &&
+    parseBoxShadow(styles["box-shadow"]).length === 0 &&
+    ["top", "right", "bottom", "left"].every((side) => parseFloat(styles[`border-${side}-width`] ?? "") === 0);
+}
+
+/**
+ * Whether an element is the trigger of something it isn't showing: a
+ * dialog, menu, popover or tooltip whose content renders only while it is
+ * open, usually in a portal outside the story's root. Read off ARIA, which
+ * any accessible trigger carries, and shadcn/ui's `*-trigger` slot, which
+ * Base UI's tooltip and hover card triggers have nothing else to go by.
+ *
+ * A select or combobox is left out: closed, it is the field showing its
+ * value, which is the component, and what it opens is the transient part.
+ */
+export function isClosedTrigger(node: StoryNode): boolean {
+  const popup = (node.hasPopup ?? "").trim().toLowerCase();
+  if (node.role === "combobox" || popup === "listbox") return false;
+  const trigger =
+    (popup !== "" && popup !== "false") ||
+    (node.slot?.endsWith("-trigger") ?? false) ||
+    (node.expanded === "false" && node.controls != null) ||
+    (node.state === "closed" && (node.tag === "button" || node.role === "button"));
+  return trigger && !isOpen(node);
+}
+
+function isOpen(node: StoryNode): boolean {
+  return node.expanded === "true" || node.state === "open" || node.open;
+}
+
+/**
+ * The story's own top element: its container's first child that draws,
+ * looking through `display: contents`. Falls back to the first child that
+ * could, so a story rendering only hidden elements is still reported as
+ * having no layout box.
+ */
+function findStoryRoot(container: StoryNode): { path: number[]; node: StoryNode } | null {
+  let fallback: { path: number[]; node: StoryNode } | null = null;
+  const visit = (node: StoryNode, path: number[]): { path: number[]; node: StoryNode } | null => {
+    for (const [index, child] of node.children.entries()) {
+      if (isNonRendered(child)) continue;
+      const at = { path: [...path, index], node: child };
+      if (child.rendered) return at;
+      fallback ??= at;
+      if (isDisplayContents(child)) {
+        const inside = visit(child, at.path);
+        if (inside) return inside;
+      }
+    }
+    return null;
+  };
+  return visit(container, []) ?? fallback;
+}
+
+/**
+ * The first element at or under `node`, in document order, whose `data-slot`
+ * is one of the component's own and which is laid out in the flow. One taken
+ * out of the flow is not what the story lays out: input-otp puts its slot on
+ * a transparent `<input>` stretched over the boxes it draws.
+ */
+function findOwnSlot(node: StoryNode, path: number[], slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  const position = node.position.trim();
+  if (node.slot && slots.includes(node.slot) && node.rendered && position !== "absolute" && position !== "fixed") {
+    return { path, node };
+  }
+  for (const [index, child] of node.children.entries()) {
+    const found = findOwnSlot(child, [...path, index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * findOwnSlot over each element the story renders at its top level, in
+ * document order: a story that returns `<><Label /><Switch /></>` has the
+ * switch second.
+ */
+function findOwnSlotInStory(container: StoryNode, slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of container.children.entries()) {
+    if (isNonRendered(child)) continue;
+    const found = findOwnSlot(child, [index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Tags whose children are its own parts, as a list's items or a form's fields are, never a story's layout. */
+const COMPONENT_ROOT_TAGS: readonly string[] = ["nav", "ol", "ul", "menu", "dl", "form", "fieldset", "table"];
+
+/**
+ * Whether an element bears a mark of a component's root, which a story's
+ * layout `<div>` doesn't: a role, a direction or orientation, an accessible
+ * label, or a tag that means a list, form or table. A RadioGroup, Tabs or
+ * Accordion root draws nothing and holds several elements, as a layout row
+ * does, and in a project without `data-slot` this is what tells them apart.
+ */
+export function hasComponentRootMarks(node: StoryNode): boolean {
+  const role = (node.role ?? "").trim().toLowerCase();
+  return (role !== "" && role !== "presentation" && role !== "none") ||
+    Boolean(node.dir?.trim()) ||
+    Boolean(node.orientation?.trim()) ||
+    Boolean(node.label?.trim()) ||
+    COMPONENT_ROOT_TAGS.includes(node.tag);
+}
+
+function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
+  return (node.slot != null && slots.includes(node.slot)) || node.children.some((child) => hasOwnSlot(child, slots));
+}
+
+/**
+ * Picks the element snap measures for a story, and says why it may not be
+ * the component.
+ *
+ * In order:
+ *
+ *   1. The first element the story renders carrying the component's own
+ *      `data-slot`, at any depth and after any sibling. shadcn/ui marks every
+ *      component's root this way, so a Switch story that renders
+ *      `<div class="flex gap-2"><Switch/><Label/></div>` measures the switch,
+ *      not the row holding it and its label. Any project can point snap at a
+ *      component's root the same way.
+ *   2. Content rendered into a portal outside the story's root: an element
+ *      with the component's own slot, or its `-content` slot, as an open
+ *      Dialog's `dialog-content`.
+ *   3. Otherwise, as snap always has, the root, past single-child wrappers
+ *      that draw nothing. When that is an open trigger whose `aria-controls`
+ *      names an element in a portal, that element is measured instead.
+ *
+ * What 3 settles on is flagged when it is a closed trigger, or holds several
+ * elements while drawing nothing itself and bearing no mark of a component's
+ * root, which is how a story's layout wrapper looks. Neither is certain, so
+ * each is a note for a warning.
+ */
+export function chooseMeasuredElement(
+  container: StoryNode | null,
+  portals: readonly PortalNode[],
+  slots: readonly string[],
+): MeasuredChoice {
+  const root = container ? findStoryRoot(container) : null;
+
+  const owned = container ? findOwnSlotInStory(container, slots) : null;
+  if (owned) return { kind: "tree", path: owned.path, element: describeElement(owned.node), notes: [] };
+
+  const portal = (wanted: (candidate: PortalNode) => boolean): MeasuredChoice | null => {
+    const index = portals.findIndex((candidate) => candidate.rendered && wanted(candidate));
+    return index < 0 ? null : { kind: "portal", index, element: describeElement(portals[index]), notes: [] };
+  };
+  const portaled =
+    portal((candidate) => candidate.slot != null && slots.includes(candidate.slot)) ??
+    portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
+  if (portaled) return portaled;
+
+  if (!root) {
+    return { kind: "none", error: "the story rendered no element that draws (only elements such as noscript, script or style, or none)" };
+  }
+
+  let { path, node } = root;
+  for (let depth = 0; depth < MAX_WRAPPER_DEPTH; depth++) {
+    const children = drawnChildren(node);
+    if (children.length !== 1 || !isPassThroughWrapper(node.styles)) break;
+    path = [...path, node.children.indexOf(children[0])];
+    node = children[0];
+  }
+
+  const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
+  const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
+  if (opened) return opened;
+
+  const element = describeElement(node);
+  const notes: MeasurementNote[] = [];
+  if (isClosedTrigger(node)) {
+    notes.push({ kind: "closed-trigger", element });
+  } else {
+    const children = drawnChildren(node).length;
+    if (children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots)) {
+      notes.push({ kind: "layout-wrapper", element, children });
+    }
+  }
+  return { kind: "tree", path, element, notes };
+}
+
 // --- normalizeStyles --------------------------------------------------------
 
+/**
+ * Normalizes one element's raw computed styles.
+ *
+ * `fonts` carries what the page probed of the root's and the text's font
+ * stacks, and with it each family is the one resolveFontFamily picks, and
+ * `fontAvailable` its availability. Without it, as from a caller that never
+ * probed, each is the stack's first family and `fontAvailable` as passed.
+ */
 export function normalizeStyles(
   raw: RawComputedStyles,
   box: { width: number; height: number },
   textRaw?: RawComputedStyles | null,
   fontAvailable: boolean | null = null,
+  fonts?: { root?: FontProbe | null; text?: FontProbe | null },
 ): NormalizedStyles {
   const border = {
     top: parseBorderSide(raw["border-top-width"], raw["border-top-style"], raw["border-top-color"]),
@@ -473,6 +863,7 @@ export function normalizeStyles(
 
   const opacity = Number(raw["opacity"]);
   const backgroundImage = normalizeBackgroundImage(raw["background-image"]);
+  const rootFont = fonts?.root ? resolveFontFamily(fonts.root) : null;
 
   return {
     display: (raw["display"] ?? "").trim(),
@@ -495,7 +886,7 @@ export function normalizeStyles(
       bottom: pxOrZero(raw["padding-bottom"]),
       left: pxOrZero(raw["padding-left"]),
     },
-    fontFamily: firstFontFamily(raw["font-family"]),
+    fontFamily: rootFont?.family || firstFontFamily(raw["font-family"]),
     fontSize: pxOrZero(raw["font-size"]),
     fontWeight: normalizeFontWeight(raw["font-weight"]),
     lineHeight: normalizeLineHeight(raw["line-height"]),
@@ -503,17 +894,17 @@ export function normalizeStyles(
     boxShadow: parseBoxShadow(raw["box-shadow"]),
     opacity: Number.isFinite(opacity) ? round2(opacity) : 1,
     boxSizing: (raw["box-sizing"] ?? "content-box").trim(),
-    fontAvailable,
-    text: textRaw ? normalizeText(textRaw) : null,
+    fontAvailable: rootFont ? rootFont.available : fontAvailable,
+    text: textRaw ? normalizeText(textRaw, fonts?.text) : null,
   };
 }
 
-function normalizeText(textRaw: RawComputedStyles): TextStyles {
+function normalizeText(textRaw: RawComputedStyles, font?: FontProbe | null): TextStyles {
   const textTransform = (textRaw["text-transform"] ?? "").trim() || "none";
   const letterSpacing = normalizeLetterSpacing(textRaw["letter-spacing"], pxOrZero(textRaw["font-size"]));
   return {
     color: withOpacity(normalizeColor(textRaw["color"]), Number(textRaw["opacity"] ?? 1)),
-    fontFamily: firstFontFamily(textRaw["font-family"]),
+    fontFamily: (font ? resolveFontFamily(font).family : "") || firstFontFamily(textRaw["font-family"]),
     fontSize: pxOrZero(textRaw["font-size"]),
     fontWeight: normalizeFontWeight(textRaw["font-weight"]),
     ...(textTransform !== "none" ? { textTransform } : {}),

@@ -18,8 +18,14 @@ import {
   componentSlug,
   diffFromBase,
   applyDelta,
+  componentSlots,
+  contentSlots,
+  chooseMeasuredElement,
+  isClosedTrigger,
+  resolveFontFamily,
+  isFontKeyword,
 } from "../snap-normalize.js";
-import type { RawComputedStyles } from "../snap-normalize.js";
+import type { RawComputedStyles, StoryNode, PortalNode } from "../snap-normalize.js";
 import type { FigmaVariantProperty } from "../mapper.js";
 
 // Captured from a real Chromium render of a Storybook story, so the fixtures
@@ -734,4 +740,301 @@ test("diffFromBase: a font that stopped resolving shows up as a delta", () => {
   const base = normalizeStyles(PRIMARY_SM, BOX, null, true);
   const variant = normalizeStyles(PRIMARY_SM, BOX, null, false);
   assert.deepEqual(diffFromBase(base, variant), { fontAvailable: false });
+});
+
+// --- fonts: what the browser drew with ---------------------------------------
+
+test("resolveFontFamily: a system stack records the font Chrome drew, not -apple-system", () => {
+  // Tailwind v4's default stack as Chromium computes it: BlinkMacSystemFont
+  // becomes "system-ui", and Chrome implements no -apple-system at all, so a
+  // canvas draws `-apple-system, monospace` exactly as monospace.
+  const resolved = resolveFontFamily({
+    families: ["-apple-system", "system-ui", "Segoe UI", "Roboto", "sans-serif"],
+    applied: [false, true, false, true, null],
+  });
+  assert.deepEqual(resolved, { family: "system-ui", available: null });
+});
+
+test("resolveFontFamily: Tailwind's ui-sans-serif, which only Safari implements, is passed over", () => {
+  assert.deepEqual(
+    resolveFontFamily({ families: ["ui-sans-serif", "system-ui", "sans-serif"], applied: [false, null, null] }),
+    { family: "system-ui", available: null },
+  );
+});
+
+test("resolveFontFamily: a named font that didn't load is kept, and flagged", () => {
+  // What the code meant to draw, and worth a warning, unlike an alias.
+  assert.deepEqual(resolveFontFamily({ families: ["Inter", "sans-serif"], applied: [false, null] }), { family: "Inter", available: false });
+  assert.deepEqual(resolveFontFamily({ families: ["Inter", "sans-serif"], applied: [true, null] }), { family: "Inter", available: true });
+  // Ahead of a system stack, it is still the font the code asked for.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["Inter", "-apple-system", "system-ui", "sans-serif"], applied: [false, false, true, null] }),
+    { family: "Inter", available: false },
+  );
+});
+
+test("resolveFontFamily: past a system keyword, a platform's font this machine lacks is passed over, not flagged", () => {
+  // Tailwind's mono stack (v3 and v4), and preflight's for code and kbd, as
+  // Chrome on macOS probes it: ui-monospace and SFMono-Regular don't apply,
+  // Menlo draws. Recording SFMono-Regular as a font that failed to load
+  // warned on every mono component, and failed --strict-warnings.
+  assert.deepEqual(
+    resolveFontFamily({
+      families: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"],
+      applied: [false, false, true, true, false, false, true, null],
+    }),
+    { family: "Menlo", available: true },
+  );
+  // Tailwind's serif stack draws Georgia.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["ui-serif", "Georgia", "Cambria", "Times New Roman", "Times", "serif"], applied: [false, true, false, true, true, null] }),
+    { family: "Georgia", available: true },
+  );
+  // Tailwind 4.3's sans stack where BlinkMacSystemFont doesn't resolve, as
+  // off macOS: Segoe UI and Roboto are Windows' and Android's.
+  const sans = ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "Helvetica Neue", "Noto Sans", "Arial", "sans-serif"];
+  assert.deepEqual(
+    resolveFontFamily({ families: sans, applied: [false, false, false, false, false, false, true, null] }),
+    { family: "Arial", available: true },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: sans, applied: [false, false, false, false, false, false, false, null] }),
+    { family: "sans-serif", available: null },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: ["-apple-system", "Segoe UI", "Roboto"], applied: [false, false, true] }),
+    { family: "Roboto", available: true },
+  );
+});
+
+test("resolveFontFamily: a generic family or an unprobed one is recorded as it is", () => {
+  assert.deepEqual(resolveFontFamily({ families: ["sans-serif"], applied: [null] }), { family: "sans-serif", available: null });
+  assert.deepEqual(resolveFontFamily({ families: ["Inter", "Arial"], applied: [null, null] }), { family: "Inter", available: null });
+  // Nothing applied: the browser's default font drew it.
+  assert.deepEqual(resolveFontFamily({ families: ["-apple-system"], applied: [false] }), { family: "-apple-system", available: false });
+  assert.deepEqual(resolveFontFamily({ families: [], applied: [] }), { family: "", available: null });
+});
+
+test("isFontKeyword: generic families and system aliases, never a font's name", () => {
+  for (const keyword of ["sans-serif", "monospace", "system-ui", "ui-sans-serif", "-apple-system", "BlinkMacSystemFont", "SYSTEM-UI"]) {
+    assert.equal(isFontKeyword(keyword), true, keyword);
+  }
+  for (const font of ["Inter", "Roboto", "Segoe UI", "Helvetica Neue", "", null]) {
+    assert.equal(isFontKeyword(font), false, String(font));
+  }
+});
+
+test("normalizeStyles: probed fonts give the root's and the text's family as drawn", () => {
+  const apple = { families: ["-apple-system", "system-ui", "sans-serif"], applied: [false, true, null] };
+  const s = normalizeStyles(
+    withOverrides({ "font-family": "-apple-system, \"system-ui\", sans-serif" }),
+    BOX,
+    { color: "rgb(255, 255, 255)", "font-family": "-apple-system, \"system-ui\", sans-serif", "font-size": "12px", "font-weight": "600" },
+    null,
+    { root: apple, text: apple },
+  );
+  assert.equal(s.fontFamily, "system-ui");
+  assert.equal(s.fontAvailable, null);
+  assert.equal(s.text?.fontFamily, "system-ui");
+
+  // Without probes, as from a caller that never ran them: the first family, as before.
+  const legacy = normalizeStyles(withOverrides({ "font-family": "-apple-system, sans-serif" }), BOX, null, false);
+  assert.equal(legacy.fontFamily, "-apple-system");
+  assert.equal(legacy.fontAvailable, false);
+});
+
+// --- choosing the element to measure -------------------------------------------
+
+const DRAWS_NOTHING: RawComputedStyles = {
+  display: "block", "background-color": "rgba(0, 0, 0, 0)", "background-image": "none", "box-shadow": "none",
+  "border-top-width": "0px", "border-right-width": "0px", "border-bottom-width": "0px", "border-left-width": "0px",
+  "padding-top": "0px", "padding-right": "0px", "padding-bottom": "0px", "padding-left": "0px",
+};
+
+/** A StoryNode that draws nothing unless `styles` says otherwise, in the flow, with a box. */
+function node(tag: string, attrs: Partial<Omit<StoryNode, "tag" | "children" | "styles">> & { styles?: RawComputedStyles } = {}, children: StoryNode[] = []): StoryNode {
+  const { styles, ...rest } = attrs;
+  return {
+    tag, slot: null, role: null, hasPopup: null, expanded: null, controls: null, state: null, open: false,
+    dir: null, orientation: null, label: null, position: "static", rendered: true, ...rest, styles: { ...DRAWS_NOTHING, ...styles }, children,
+  };
+}
+
+const FILLED: RawComputedStyles = { display: "inline-flex", "background-color": "rgb(37, 99, 235)" };
+const root = (...children: StoryNode[]) => node("div", {}, children);
+const portal = (attrs: Partial<PortalNode>): PortalNode => ({ tag: "div", slot: null, role: null, id: null, rendered: true, ...attrs });
+
+test("componentSlots: a component's name and title leaf, kebab-cased as shadcn/ui writes data-slot", () => {
+  assert.deepEqual(componentSlots("Switch"), ["switch"]);
+  assert.deepEqual(componentSlots("InputOTP"), ["input-otp"]);
+  assert.deepEqual(componentSlots("OTPInput"), ["otp-input"]);
+  assert.deepEqual(componentSlots("ResizablePanelGroup"), ["resizable-panel-group"]);
+  assert.deepEqual(componentSlots("TooltipContent", "ui/base/Tooltip"), ["tooltip-content", "tooltip"]);
+  assert.deepEqual(componentSlots("Button", "Forms/Button"), ["button"]);
+});
+
+test("contentSlots: each slot's -content form, never doubled", () => {
+  assert.deepEqual(contentSlots(["dialog"]), ["dialog-content"]);
+  assert.deepEqual(contentSlots(componentSlots("TooltipContent", "ui/base/Tooltip")), ["tooltip-content"]);
+  assert.deepEqual(contentSlots(["dialog-demo", "dialog"]), ["dialog-demo-content", "dialog-content"]);
+  assert.deepEqual(contentSlots([]), []);
+});
+
+test("chooseMeasuredElement: a <noscript> ahead of the component is passed over", () => {
+  // input-otp renders <noscript><style/></noscript> first: measuring the
+  // root's first child found no layout box, on every variant.
+  const choice = chooseMeasuredElement(
+    root(node("noscript", { rendered: false }), node("div", { styles: FILLED })),
+    [], ["input-otp"],
+  );
+  assert.equal(choice.kind, "tree");
+  assert.deepEqual(choice.kind === "tree" && choice.path, [1]);
+});
+
+test("chooseMeasuredElement: an element with no box is passed over, unless nothing else is there", () => {
+  const hidden = node("div", { rendered: false, styles: { display: "none" } });
+  const picked = chooseMeasuredElement(root(hidden, node("button", { styles: FILLED })), [], []);
+  assert.deepEqual(picked.kind === "tree" && picked.path, [1]);
+  // Still measured, so the capture reports the missing layout box.
+  const only = chooseMeasuredElement(root(hidden), [], []);
+  assert.deepEqual(only.kind === "tree" && only.path, [0]);
+  assert.equal(chooseMeasuredElement(root(node("style", { rendered: false })), [], []).kind, "none");
+  assert.equal(chooseMeasuredElement(root(), [], []).kind, "none");
+});
+
+test("chooseMeasuredElement: looks through display: contents", () => {
+  const contents = node("div", { rendered: false, styles: { display: "contents" } }, [node("button", { styles: FILLED })]);
+  const choice = chooseMeasuredElement(root(contents), [], []);
+  assert.deepEqual(choice.kind === "tree" && choice.path, [0, 0]);
+});
+
+test("chooseMeasuredElement: measures the component's own data-slot inside a story's layout wrapper", () => {
+  // The shadcn Switch story: <div class="flex items-center gap-2"><Switch/><Label/></div>,
+  // Base UI adding a visually hidden input. snap measured the 135x18 row.
+  const row = node("div", { styles: { display: "flex" } }, [
+    node("span", { slot: "switch", styles: FILLED }, [node("span", { slot: "switch-thumb" })]),
+    node("input", { position: "absolute" }),
+    node("label", { slot: "label" }),
+  ]);
+  const choice = chooseMeasuredElement(root(row), [], ["switch"]);
+  assert.deepEqual(choice, { kind: "tree", path: [0, 0], element: 'span[data-slot="switch"]', notes: [] });
+});
+
+test("chooseMeasuredElement: a layout wrapper with no slot to go by is measured, and flagged", () => {
+  const row = node("div", { styles: { display: "flex" } }, [node("button", { styles: FILLED }), node("label")]);
+  const choice = chooseMeasuredElement(root(row), [], ["switch"]);
+  assert.equal(choice.kind, "tree");
+  assert.deepEqual(choice.kind === "tree" && choice.notes, [{ kind: "layout-wrapper", element: "div", children: 2 }]);
+});
+
+test("chooseMeasuredElement: finds the component's slot after a sibling, in a story that renders a fragment", () => {
+  // <><Label /><Switch /></>: only the story's first element was searched,
+  // so the label was measured, with nothing said.
+  const choice = chooseMeasuredElement(
+    root(node("label", { slot: "label" }), node("button", { slot: "switch", styles: FILLED })),
+    [], ["switch"],
+  );
+  assert.deepEqual(choice, { kind: "tree", path: [1], element: 'button[data-slot="switch"]', notes: [] });
+  // Behind display: contents too, and never inside a <noscript> or <template>.
+  const behind = chooseMeasuredElement(
+    root(node("template", { rendered: false }), node("p"), node("div", { rendered: false, styles: { display: "contents" } }, [node("span", { slot: "switch" })])),
+    [], ["switch"],
+  );
+  assert.deepEqual(behind.kind === "tree" && behind.path, [2, 0]);
+});
+
+test("chooseMeasuredElement: a component root without data-slot is not taken for a layout wrapper", () => {
+  // A RadioGroup, Tabs or Accordion root in a project without data-slot
+  // (Tailwind v3 shadcn, a custom Radix wrapper) draws nothing and holds
+  // several elements, as a story's layout row does, but bears a role, a
+  // direction, an orientation, a label or a list's tag.
+  const parts = () => [node("button", { styles: FILLED }), node("button", { styles: FILLED })];
+  for (const marked of [
+    node("div", { role: "radiogroup", styles: { display: "grid" } }, parts()),
+    node("div", { dir: "ltr", styles: { display: "flex" } }, parts()),
+    node("div", { orientation: "horizontal", styles: { display: "flex" } }, parts()),
+    node("div", { label: "Text alignment", styles: { display: "flex" } }, parts()),
+    node("ol", { styles: { display: "flex" } }, parts()),
+    node("nav", { styles: { display: "flex" } }, parts()),
+  ]) {
+    const choice = chooseMeasuredElement(root(marked), [], ["radio-group"]);
+    assert.deepEqual(choice.kind === "tree" && choice.notes, [], JSON.stringify({ ...marked, children: [] }));
+  }
+  // A role that says it means nothing is no mark.
+  const presentational = chooseMeasuredElement(root(node("div", { role: "presentation", styles: { display: "flex" } }, parts())), [], []);
+  assert.equal(presentational.kind === "tree" && presentational.notes[0]?.kind, "layout-wrapper");
+});
+
+test("chooseMeasuredElement: a container that draws is not taken for a layout wrapper", () => {
+  const card = node("div", { styles: { "background-color": "rgb(255, 255, 255)", "border-top-width": "1px" } }, [node("h3"), node("p")]);
+  const choice = chooseMeasuredElement(root(card), [], ["card"]);
+  assert.deepEqual(choice.kind === "tree" && choice.notes, []);
+});
+
+test("chooseMeasuredElement: a slot on an element out of the flow is not the component", () => {
+  // input-otp puts the slot on a transparent <input> stretched over the
+  // boxes it draws: the container is what to measure, and with the
+  // component's own slot inside it, it is no layout wrapper.
+  const otp = node("div", { styles: { display: "flex" } }, [
+    node("div", { slot: "input-otp-group", styles: { display: "flex" } }, [node("div", { styles: FILLED }), node("div", { styles: FILLED })]),
+    node("div", { position: "absolute" }, [node("input", { slot: "input-otp", position: "absolute" })]),
+  ]);
+  const choice = chooseMeasuredElement(root(node("noscript", { rendered: false }), otp), [], ["input-otp"]);
+  assert.deepEqual(choice, { kind: "tree", path: [1], element: "div", notes: [] });
+});
+
+test("chooseMeasuredElement: the bundled example's shape, a filled button behind a wrapper, is measured as before", () => {
+  const button = node("button", { styles: FILLED });
+  const choice = chooseMeasuredElement(root(node("div", {}, [button])), [], ["button"]);
+  assert.deepEqual(choice, { kind: "tree", path: [0, 0], element: "button", notes: [] });
+});
+
+test("isClosedTrigger: ARIA's and shadcn/ui's marks of a trigger whose content isn't showing", () => {
+  assert.equal(isClosedTrigger(node("button", { hasPopup: "dialog", expanded: "false" })), true);
+  assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger" })), true);
+  assert.equal(isClosedTrigger(node("button", { state: "closed" })), true);
+  assert.equal(isClosedTrigger(node("button", { expanded: "false", controls: "radix-1" })), true);
+  // Open, it shows what it opens.
+  assert.equal(isClosedTrigger(node("button", { hasPopup: "dialog", expanded: "true" })), false);
+  assert.equal(isClosedTrigger(node("button", { slot: "popover-trigger", open: true })), false);
+  // A closed select is the field showing its value, which is the component.
+  assert.equal(isClosedTrigger(node("button", { role: "combobox", hasPopup: "listbox", expanded: "false" })), false);
+  // A closed Collapsible's root is no trigger.
+  assert.equal(isClosedTrigger(node("div", { state: "closed" })), false);
+  assert.equal(isClosedTrigger(node("button")), false);
+});
+
+test("chooseMeasuredElement: a closed overlay's trigger is measured, and flagged", () => {
+  const trigger = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false", styles: { display: "inline-block" } });
+  const choice = chooseMeasuredElement(root(trigger), [], ["dialog"]);
+  assert.deepEqual(choice.kind === "tree" && choice.notes, [{ kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' }]);
+});
+
+test("chooseMeasuredElement: open content in a portal is measured in place of the trigger", () => {
+  const trigger = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "true" });
+  const portals = [portal({ slot: "dialog-overlay" }), portal({ slot: "dialog-content", role: "dialog" })];
+  assert.deepEqual(chooseMeasuredElement(root(trigger), portals, ["dialog"]), {
+    kind: "portal", index: 1, element: 'div[data-slot="dialog-content"]', notes: [],
+  });
+  // The component's own slot, as TooltipContent's, even with nothing in the root.
+  assert.deepEqual(chooseMeasuredElement(root(), [portal({ slot: "tooltip-content" })], ["tooltip-content", "tooltip"]), {
+    kind: "portal", index: 0, element: 'div[data-slot="tooltip-content"]', notes: [],
+  });
+  // Content with no box is not measured.
+  const hidden = chooseMeasuredElement(root(trigger), [portal({ slot: "dialog-content", rendered: false })], ["dialog"]);
+  assert.equal(hidden.kind, "tree");
+});
+
+test("chooseMeasuredElement: without slots, an open trigger's aria-controls names its content", () => {
+  const open = node("button", { hasPopup: "menu", expanded: "true", controls: "menu-1" });
+  const portals = [portal({ id: "other" }), portal({ id: "menu-1", role: "menu" })];
+  assert.deepEqual(chooseMeasuredElement(root(open), portals, ["dropdown"]), { kind: "portal", index: 1, element: 'div[role="menu"]', notes: [] });
+  // Closed, the trigger is what there is.
+  const closed = node("button", { hasPopup: "menu", expanded: "false", controls: "menu-1" });
+  assert.equal(chooseMeasuredElement(root(closed), portals, ["dropdown"]).kind, "tree");
+});
+
+test("chooseMeasuredElement: the component's slot in the story's root wins over a portal", () => {
+  const choice = chooseMeasuredElement(root(node("div", { slot: "popover", styles: FILLED })), [portal({ slot: "popover-content" })], ["popover"]);
+  assert.deepEqual(choice.kind === "tree" && choice.path, [0]);
 });
