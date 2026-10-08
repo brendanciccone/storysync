@@ -154,7 +154,7 @@ test("diffTokens: matching color in different formats", () => {
 });
 
 test("diffTokens: a Tailwind v4 oklch token matches Figma's hex variable for it", () => {
-  // Tailwind v4 and shadcn/ui write colours in oklch, and Figma reads its
+  // Tailwind v4 and shadcn/ui write colors in oklch, and Figma reads its
   // variables back as sRGB hex. Compared as written, every one was a mismatch.
   const code: TokenCollection[] = [
     {
@@ -203,7 +203,7 @@ test("diffTokens: bare HSL channels, as shadcn/ui's :root writes them, match Fig
   assert.equal(diffTokens([{ category: "colors", tokens: [code[0].tokens[0]] }], off)[0].status, "value_mismatch");
 });
 
-test("diffTokens: an oklch token still mismatches a Figma colour one step off", () => {
+test("diffTokens: an oklch token still mismatches a Figma color one step off", () => {
   const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "red/500", value: "oklch(63.7% 0.237 25.331)" }] }];
   const figma: FigmaVariable[] = [
     { name: "red/500", value: "#fb2c37", collection: "Colors", resolvedType: "COLOR", mode: "Default" },

@@ -110,7 +110,7 @@ test("propertyMatches: colors compare case-insensitively", () => {
   assert.equal(propertyMatches("backgroundColor", null, "#000000", 0.5), false);
 });
 
-test("propertyMatches: lengths honour the tolerance", () => {
+test("propertyMatches: lengths honor the tolerance", () => {
   assert.equal(propertyMatches("fontSize", 12, 12.3, 0.5), true);
   assert.equal(propertyMatches("fontSize", 12, 13, 0.5), false);
   assert.equal(propertyMatches("borderRadiusUniform", 3, 3, 0), true);
@@ -140,7 +140,7 @@ test("propertyMatches: shadows compare layer by layer", () => {
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, inset: false }], 0.5), false);
 });
 
-test("propertyMatches: borders compare width, colour and style", () => {
+test("propertyMatches: borders compare width, color and style", () => {
   const b = { width: 2, style: "solid", color: "#9ca3af" };
   assert.equal(propertyMatches("borderUniform", b, { ...b }, 0.5), true);
   assert.equal(propertyMatches("borderUniform", b, { ...b, width: 4 }, 0.5), false);
@@ -492,7 +492,7 @@ test("propertyMatches: geometry still catches a real mismatch", () => {
   assert.equal(propertyMatches("height", 23, 120, 0.5), false);
 });
 
-test("propertyMatches: an explicit tolerance above the floor is honoured", () => {
+test("propertyMatches: an explicit tolerance above the floor is honored", () => {
   assert.equal(propertyMatches("width", 55, 58, 0.5), false);
   assert.equal(propertyMatches("width", 55, 58, 4), true);
 });
@@ -800,9 +800,9 @@ test("readbackChecksum: numbers are compared as values, whatever notation the fi
   assert.equal(readbackChecksum("1:2", "a", JSON.parse(JSON.stringify(float))), readbackChecksum("1:2", "a", float));
 });
 
-test("readbackChecksum: a colour is its string, null is not absent, and the entry is bound to its set, its slug and its readAt", () => {
+test("readbackChecksum: a color is its string, null is not absent, and the entry is bound to its set, its slug and its readAt", () => {
   const checksum = readbackChecksum("1:2", "a", ENTRY);
-  assert.notEqual(readbackChecksum("1:2", "a", { ...ENTRY, backgroundColor: "#2563EB" }), checksum, "a colour's case is a change");
+  assert.notEqual(readbackChecksum("1:2", "a", { ...ENTRY, backgroundColor: "#2563EB" }), checksum, "a color's case is a change");
   const { color: _color, ...absent } = ENTRY;
   assert.notEqual(readbackChecksum("1:2", "a", absent), checksum, "a null removed is a change");
   assert.notEqual(readbackChecksum("1:2", "a", { ...ENTRY, fontSize: null }), checksum, "a null added is a change");
@@ -985,7 +985,7 @@ test("verify: a shared nodeId flags every entry of every component that has it, 
 
 // A template cut down to fewer fields still seals what it returns, and verify
 // scores only what an entry reports: cut down to { source, width, height }, it
-// scored 100% on every strict flag without comparing colour, padding, type or
+// scored 100% on every strict flag without comparing color, padding, type or
 // radius.
 
 test("verify: a sealed entry cut down to source, width and height is incomplete, and nothing in it is scored", () => {

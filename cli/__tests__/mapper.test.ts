@@ -176,7 +176,7 @@ test("resolveDefault: unwraps primitives, quotes, and docgen shapes", () => {
 
 // --- mapProp ---
 
-test("mapProp: maps booleans, honouring the declared default", () => {
+test("mapProp: maps booleans, honoring the declared default", () => {
   assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" }, defaultValue: "false" })), {
     name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
   });
@@ -186,7 +186,7 @@ test("mapProp: maps booleans, honouring the declared default", () => {
   assert.deepEqual(mapProp(prop({ name: "loading", type: { name: "bool" }, defaultValue: true })), {
     name: "loading", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true",
   });
-  // A boolean *control* is honoured when the declared type isn't itself
+  // A boolean *control* is honored when the declared type isn't itself
   // something `shouldSkip` rejects outright.
   assert.deepEqual(mapProp(prop({ name: "open", type: { name: "any" }, control: { type: "boolean" } })), {
     name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
@@ -409,7 +409,7 @@ test("cartesian: a product exactly at the cap is not treated as capped", () => {
   assert.equal(result.combinations.length, 256);
 });
 
-// --- capped behaviour ---
+// --- capped behavior ---
 
 // Regression test for the original bug: cartesian() returned early from inside
 // the property loop, so combinations were emitted without keys for properties
@@ -564,7 +564,7 @@ test("mapComponent: surfaces cap info when the product is truncated", () => {
   assert.equal(def.variantCombinations.length, 256);
 });
 
-test("cartesian: honours a custom ceiling", () => {
+test("cartesian: honors a custom ceiling", () => {
   const props = [
     { name: "a", type: "VARIANT", values: ["1", "2", "3"], defaultValue: "1" },
     { name: "b", type: "VARIANT", values: ["x", "y", "z"], defaultValue: "x" },

@@ -95,7 +95,7 @@ test("tokens CLI: --check --strict passes an unchanged config with a commented-o
   });
 });
 
-test("tokens CLI: --json gives each colour's hex, and a baseline from before it still checks clean", () => {
+test("tokens CLI: --json gives each color's hex, and a baseline from before it still checks clean", () => {
   withProject((dir) => {
     writeFileSync(join(dir, "tailwind.config.ts"), tailwind("oklch(63.7% 0.237 25.331)"));
     const created = spawnSync(process.execPath, [CLI, "tokens", "--json"], { cwd: dir, encoding: "utf8" });
@@ -358,7 +358,7 @@ test("tokens CLI: --check says how to update the baseline, and that a newer stor
     writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
     const current = JSON.parse(tokens(dir, "--json").stdout) as { collections: { category: string }[] };
     // A baseline as storysync 0.3.0 wrote it for shadcn/ui v4: :root's
-    // colours, with --radius uncategorized.
+    // colors, with --radius uncategorized.
     mkdirSync(join(dir, ".storysync"));
     writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), JSON.stringify({ ...current, collections: current.collections.filter((c) => c.category === "colors") }));
     const upgraded = tokens(dir, "--check");

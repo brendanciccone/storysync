@@ -482,7 +482,7 @@ test("StorybookClient: a story line without an ID adds no story", async () => {
   assert.deepEqual(entries[0].storyIds, ["forms-button--default"]);
 });
 
-test("StorybookClient: still reads bold, labelled and quoted IDs, non-ASCII IDs and CRLF line ends", async () => {
+test("StorybookClient: still reads bold, labeled and quoted IDs, non-ASCII IDs and CRLF line ends", async () => {
   const entries = await listed([
     "- **Button** (id: `forms-button`)", "  - **Primary** (id: `forms-button--primary`)",
     "- Schaltfläche (formulare-schaltfläche): Ein Knopf (rund).", "  - Standard (formulare-schaltfläche--standard)",
@@ -527,7 +527,7 @@ test("StorybookClient: a component description with its own Props or Docs headin
   // headings of its own; only addon-mcp's generated Props block counts.
   const props = await propsOf([
     "# Notice", "", "ID: x-card", "",
-    "Shows a message.", "", "## Docs", "", "See the guidelines page.", "", "## Props", "", "Pass `level` to set the colour.", "",
+    "Shows a message.", "", "## Docs", "", "See the guidelines page.", "", "## Props", "", "Pass `level` to set the color.", "",
     "## Stories", "", "### Default", "", "Story ID: x-card--default", "",
     "## Props", "",
     "```", "export type Props = {", "  /**", "    ", "  */", '  level?: "info" | "warn" = "info";', "}", "```",

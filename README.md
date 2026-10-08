@@ -230,13 +230,13 @@ Storysync reads design tokens from your codebase and previews the Figma variable
 
 Token categories are **colors**, **spacing**, **typography**, **radius**, and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped.
 
-**Colours** can be in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, or the bare HSL channels shadcn/ui uses (`240 5.9% 10%`). A custom property with one of these values counts as a colour whatever its name. `tokens --json` keeps the value as written and adds its sRGB `hex`:
+**Colors** can be in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, or the bare HSL channels shadcn/ui uses (`240 5.9% 10%`). A custom property with one of these values counts as a color whatever its name. `tokens --json` keeps the value as written and adds its sRGB `hex`:
 
 ```json
 { "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }
 ```
 
-The push sets Figma variables from `hex`, since Figma's colour helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colours get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`.
+The push sets Figma variables from `hex`, since Figma's color helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colors get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`.
 
 **Lengths** in radius, spacing, and typography get `px`, with rem (16px) and `calc()` worked out. The push sets FLOAT variables from it, and `diff` compares in px:
 
@@ -250,7 +250,7 @@ A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning na
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
-Many Tailwind configs, shadcn/ui's included, define colours as `hsl(var(--background))` and put the values in `globals.css` under `:root`. Storysync resolves these references:
+Many Tailwind configs, shadcn/ui's included, define colors as `hsl(var(--background))` and put the values in `globals.css` under `:root`. Storysync resolves these references:
 
 ```ts
 // tailwind.config.ts
@@ -286,7 +286,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead o
 }
 ```
 
-With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, so a category can hold `:root`'s `radius/md` next to `@theme`'s `sm`, and a baseline from an earlier version lists them as added. `@theme` colours aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead.
+With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, so a category can hold `:root`'s `radius/md` next to `@theme`'s `sm`, and a baseline from an earlier version lists them as added. `@theme` colors aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead.
 
 | Namespace | Category | Token name |
 |---|---|---|
@@ -314,7 +314,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
 
-A boolean prop the table doesn't skip becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map` and `snap` leaves out the props it names.
+A boolean prop the table doesn't skip becomes a variant property, behavioral ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map` and `snap` leaves out the props it names.
 
 A union prop's values start with its default, so Figma's default variant is the code's, while a boolean's Figma default is always `false`. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
@@ -433,7 +433,7 @@ Options:
 
 snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`.
 
-If snap stops before it finishes, it writes nothing: `styles.json`, `meta.json` and the screenshots stay as the last run left them, and it says so on stderr. It exits 130 after Ctrl-C, 143 after SIGTERM (a cancelled job or a command timeout) and 129 after SIGHUP. If the browser crashes or is closed, snap launches it once more and measures the component it was on again; if it goes a second time, snap stops the same way and exits 1.
+If snap stops before it finishes, it writes nothing: `styles.json`, `meta.json` and the screenshots stay as the last run left them, and it says so on stderr. It exits 130 after Ctrl-C, 143 after SIGTERM (a canceled job or a command timeout) and 129 after SIGHUP. If the browser crashes or is closed, snap launches it once more and measures the component it was on again; if it goes a second time, snap stops the same way and exits 1.
 
 **Which element is measured.** In each story, snap measures the first element anywhere in it carrying the component's own `data-slot` (`switch` for `Switch`, `input-otp` for `InputOTP`), as shadcn/ui puts on every component's root. Any project can point snap at a component's root the same way. Without one, it measures the story's first element that draws, past wrappers that draw nothing and hold one element. snap warns when that element is likely not the component:
 
@@ -458,11 +458,11 @@ Use the version the error prints. Other Playwright versions install a browser th
 
 **What snap records:**
 
-- **Colours** as sRGB hex (`#rrggbbaa` when translucent), whatever space Chromium reports them in (`oklch`, `oklab`, `lab`, `color()`, and so on). Colours outside sRGB are clipped (see [Limitations](#limitations)).
-- **Gradients and background images** as `backgroundImage`, with colours as hex.
+- **Colors** as sRGB hex (`#rrggbbaa` when translucent), whatever space Chromium reports them in (`oklch`, `oklab`, `lab`, `color()`, and so on). Colors outside sRGB are clipped (see [Limitations](#limitations)).
+- **Gradients and background images** as `backgroundImage`, with colors as hex.
 - **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
 - **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
-- **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its colour.
+- **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its color.
 - **Fonts** as the family the browser drew with. A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `system-ui`, since Chrome skips `-apple-system`, and its mono stack as the platform's font, such as `Menlo` on macOS. snap warns when a named font your code asks for didn't load and the browser used a fallback, but not about another platform's font listed after a system keyword, like `SFMono-Regular`. Figma also needs the font installed, which Storysync can't do for you.
 - **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
 
@@ -517,7 +517,7 @@ The comparison is numeric, not visual, so it's deterministic and free. Only prop
 
 Entries that fail aren't scored and fail `--strict`. The checksum isn't a signature, though (see [Limitations](#limitations)).
 
-**Comparison details.** Text colour, size, weight, and family are compared against the element that holds the text. Colours are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, colour, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
+**Comparison details.** Text color, size, weight, and family are compared against the element that holds the text. Colors are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, color, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
 
 **Staleness.** `snap` writes a `meta.json` next to `styles.json` recording when and against which Storybook it measured. It's a separate file so `styles.json` stays stable to diff. `verify` uses it to catch a snap taken before the code changed, which would otherwise score 100%. `--strict-age` fails when `meta.json` is missing or invalid, since it's often gitignored.
 
@@ -592,7 +592,7 @@ Options:
 - **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
 - **Component names:** a component set is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
-- **Wide-gamut colour tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
+- **Wide-gamut color tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
 - **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
 
 ### Code → Figma: `snap`, the push, and `verify`
@@ -605,7 +605,7 @@ Options:
 - **Transparent borders show as an empty ring.** Browsers paint the background under a transparent border, but Figma's fill stops where an `OUTSIDE` stroke begins. The push keeps the size right and names those variants in its summary.
 - **Some properties aren't scored.** Shadows, gradients and image fills, text transform, and letter-spacing are recorded by snap but not compared by `verify`.
 - **CSS `outline` isn't measured,** so a focus ring drawn with `outline` never reaches Figma.
-- **Colours outside sRGB are clipped** channel by channel, as Chromium does on an sRGB screen, so Tailwind v4's `red-600` becomes `#e7000b`. A wide-gamut screen shows the code's colour more saturated than Figma's.
+- **Colors outside sRGB are clipped** channel by channel, as Chromium does on an sRGB screen, so Tailwind v4's `red-600` becomes `#e7000b`. A wide-gamut screen shows the code's color more saturated than Figma's.
 - **The readback checksum isn't a signature.** The code that computes it is in the skill, so an agent that runs it over made-up values would pass. It also won't catch a readback reused after a fix round, or a template that echoes what it sent instead of reading the nodes. The [falsification test](examples/storybook-vite/README.md#pushing-to-figma) covers that: change a node in Figma by hand, read it back, and `verify` should report exactly that change.
 
 ## What's measured vs. inferred

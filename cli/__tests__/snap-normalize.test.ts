@@ -100,8 +100,8 @@ test("normalizeColor: partial alpha is preserved", () => {
   assert.equal(normalizeColor("rgba(0, 0, 0, 0.5)"), "#00000080");
 });
 
-test("normalizeColor: reads Chromium's CSS Color 4 serialisations rather than recording no fill", () => {
-  // Chromium reports a computed colour in its authored space. Each of these
+test("normalizeColor: reads Chromium's CSS Color 4 serializations rather than recording no fill", () => {
+  // Chromium reports a computed color in its authored space. Each of these
   // used to come back null, which snap records as nothing drawn: Tailwind v4's
   // red-500 button measured as unfilled.
   assert.equal(normalizeColor("oklch(0.637 0.237 25.331)"), "#fb2c36");
@@ -114,7 +114,7 @@ test("normalizeColor: reads Chromium's CSS Color 4 serialisations rather than re
   assert.equal(normalizeColor("color(display-p3 1 0 0)"), "#ff0000");
 });
 
-test("normalizeColor: a CSS Color 4 colour with zero alpha is still absent", () => {
+test("normalizeColor: a CSS Color 4 color with zero alpha is still absent", () => {
   // color-mix(in oklab, red 0%, transparent) computes to this.
   assert.equal(normalizeColor("oklab(0 0 0 / 0)"), null);
   assert.equal(normalizeColor("oklch(0.5 0.1 30 / none)"), null);
@@ -300,16 +300,16 @@ test("normalizeStyles: a percentage letter-spacing is a share of the font size",
   assert.equal(text.text?.letterSpacing, -1);
 });
 
-test("normalizeStyles: an opacity between the root and its text is folded into the text colour", () => {
+test("normalizeStyles: an opacity between the root and its text is folded into the text color", () => {
   // <button style="color: #fff"><span style="opacity: 0.6">Draft</span></button>:
   // drawn at 60%, so verify can tell it from an opaque white label.
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, opacity: "0.6" }).text?.color, "#ffffff99");
-  // A translucent colour's alpha is multiplied, not replaced.
+  // A translucent color's alpha is multiplied, not replaced.
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, color: "rgba(255, 255, 255, 0.5)", opacity: "0.5" }).text?.color, "#ffffff40");
-  // Opaque stays #rrggbb, and nothing left is no colour at all.
+  // Opaque stays #rrggbb, and nothing left is no color at all.
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, LABEL).text?.color, "#ffffff");
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, opacity: "0" }).text?.color, null);
-  // The root's own opacity stays the frame's, out of the text colour.
+  // The root's own opacity stays the frame's, out of the text color.
   const faded = normalizeStyles(withOverrides({ opacity: "0.4" }), BOX, LABEL);
   assert.equal(faded.opacity, 0.4);
   assert.equal(faded.text?.color, "#ffffff");
@@ -327,7 +327,7 @@ test("normalizeStyles: a gradient fill is recorded, though its backgroundColor i
   assert.equal(s.backgroundImage, "linear-gradient(90deg, #2563eb, #7c3aed)");
 });
 
-test("normalizeStyles: a gradient's colours are written as hex, in whatever space Chromium gives them", () => {
+test("normalizeStyles: a gradient's colors are written as hex, in whatever space Chromium gives them", () => {
   // Tailwind v4's bg-linear-to-r from-blue-600 to-violet-600.
   const tailwind = normalizeStyles(withOverrides({
     "background-image": "linear-gradient(to right, oklch(0.546 0.245 262.881) 0%, oklch(0.541 0.281 293.009) 100%)",
@@ -412,7 +412,7 @@ test("parseBoxShadow: handles negative offsets and hex colors", () => {
   assert.deepEqual(layer, { offsetX: -2, offsetY: -4, blur: 6, spread: 1, color: "#ff0000", inset: false });
 });
 
-test("parseBoxShadow: reads a colour Chromium writes in oklch, oklab or color()", () => {
+test("parseBoxShadow: reads a color Chromium writes in oklch, oklab or color()", () => {
   // Chromium's computed box-shadow for a ring and an inset layer in Tailwind v4's red-500.
   assert.deepEqual(
     parseBoxShadow("oklch(0.637 0.237 25.331) 0px 1px 2px 3px, oklch(0.637 0.237 25.331 / 0.5) 1px 1px 0px 0px inset"),
@@ -444,14 +444,14 @@ test("parseBoxShadow: drops the 0 0 #0000 layers Tailwind fills its unused slots
   );
 });
 
-test("parseBoxShadow: a layer with no offset, blur or spread draws nothing, whatever its colour", () => {
+test("parseBoxShadow: a layer with no offset, blur or spread draws nothing, whatever its color", () => {
   // v3's ring-1: a white ring-offset layer of zero size, the ring, an empty slot.
   assert.deepEqual(
     parseBoxShadow("rgb(255, 255, 255) 0px 0px 0px 0px, rgb(59, 130, 246) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"),
     [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#3b82f6", inset: false }],
   );
   assert.deepEqual(parseBoxShadow("rgb(255, 255, 255) 0px 0px 0px 0px inset"), []);
-  // A fully transparent layer draws nothing however big, in any colour space.
+  // A fully transparent layer draws nothing however big, in any color space.
   assert.deepEqual(parseBoxShadow("oklab(0 0 0 / 0) 0px 4px 6px -1px"), []);
   assert.deepEqual(parseBoxShadow("transparent 0px 4px 6px 0px"), []);
 });
@@ -465,7 +465,7 @@ test("isFullyTransparent: zero alpha in any form, and nothing it can't read", ()
   }
 });
 
-test("normalizeStyles: a Tailwind v4 component's colours, as Chromium computes them, all reach hex", () => {
+test("normalizeStyles: a Tailwind v4 component's colors, as Chromium computes them, all reach hex", () => {
   const sides = ["top", "right", "bottom", "left"];
   const raw = withOverrides({
     "background-color": "oklch(0.637 0.237 25.331)",
@@ -500,7 +500,7 @@ test("isPassThroughWrapper: a block or contents wrapper that draws nothing is lo
   assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "transparent" }), true);
 });
 
-test("isPassThroughWrapper: a transparent background in any colour space is transparent", () => {
+test("isPassThroughWrapper: a transparent background in any color space is transparent", () => {
   // Tailwind v4's bg-black/0, a color-mix in oklab, computes to this. Read as
   // a fill, it stopped the descent and snap measured the full-width wrapper.
   assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "oklab(0 0 0 / 0)" }), true);
@@ -513,7 +513,7 @@ test("isPassThroughWrapper: a wrapper that draws anything is the component", () 
   for (const [property, value] of [
     ["background-color", "oklch(0.637 0.237 25.331)"],
     ["background-color", "oklab(0 0 0 / 0.05)"],
-    // A colour it can't read is not taken for transparent.
+    // A color it can't read is not taken for transparent.
     ["background-color", "device-cmyk(0 0 0 1)"],
     ["background-image", "linear-gradient(90deg, rgb(37, 99, 235), rgb(124, 58, 237))"],
     ["box-shadow", "rgba(0, 0, 0, 0.1) 0px 1px 2px 0px"],

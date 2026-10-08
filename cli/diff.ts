@@ -81,7 +81,7 @@ export function figmaCollectionToCategory(collectionName: string): string {
 
 // --- Value normalization ---
 
-// Colours are compared as sRGB hex, converted from any form a browser or a
+// Colors are compared as sRGB hex, converted from any form a browser or a
 // token source writes, oklch() and the rest of CSS Color 4 included. The
 // converter lives in color.ts, shared with snap; it is re-exported here, where
 // it has always been imported from.
@@ -124,7 +124,7 @@ export function canonicalizeCompound(input: string): string {
 
 /**
  * What tokens worked out for a token, compared in place of its value when it
- * has it: a colour's hex, a length's px. tokens resolves a var() inside a
+ * has it: a color's hex, a length's px. tokens resolves a var() inside a
  * value for them, which a value from `:root` can keep, as in
  * `calc(var(--radius) - 4px)`.
  */

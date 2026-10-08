@@ -16,10 +16,10 @@ export interface TokenValue {
   /** As the source writes it. `tokens --check` compares this. */
   value: string;
   /**
-   * A colour token's value as sRGB hex, `#rrggbb` or `#rrggbbaa`, for the
+   * A color token's value as sRGB hex, `#rrggbb` or `#rrggbbaa`, for the
    * push: figma.util.rgb() and rgba() take only hex, rgb(), hsl() and lab(),
    * so a token in oklch() or bare HSL channels threw. Absent when the value
-   * is no colour storysync can convert, and on every other category.
+   * is no color storysync can convert, and on every other category.
    */
   hex?: string;
   /**
@@ -175,7 +175,7 @@ function findThemeFile(projectPath: string): string | null {
  * property isn't read as a token: `// primary: "#ff0000"` above the real
  * `primary` became a second primary, which made `tokens --check` drift
  * against a baseline taken from the same config, and a commented-out block
- * of colours was read in place of the real ones.
+ * of colors was read in place of the real ones.
  *
  * Quotes are tracked, so the `/*` in a content glob or the `//` in a URL
  * survives when it is in a string. `lineComments` is false for CSS, which
@@ -433,7 +433,7 @@ function darkSchemeRanges(css: string): [number, number][] {
 
 /**
  * The custom properties of the stylesheets' `:root` blocks, as written, a
- * later declaration winning, leaving out a `:root` for the dark colour
+ * later declaration winning, leaving out a `:root` for the dark color
  * scheme. A file that can't be read is skipped, and named in `warnings`
  * when there are any.
  */
@@ -675,7 +675,7 @@ function extractKeyValuePairs(block: string): [string, string][] {
 
 /**
  * The Tailwind v4 theme variable namespaces read as tokens, and their
- * categories. Colours, spacing, radii and shadows are named without the
+ * categories. Colors, spacing, radii and shadows are named without the
  * namespace, as a Tailwind config's keys are: `--color-brand-500` is colors
  * `brand/500`, and the bare `--spacing` is spacing `DEFAULT`. Typography
  * holds several namespaces, so its names keep theirs: `--text-sm` is
@@ -866,7 +866,7 @@ function refersToRoot(value: string, root: Map<string, string>, declared: Map<st
  * to. So spacing, radius, shadow and typography variables whose value refers
  * to a `:root` variable are read too, named as `--source tailwind` names
  * them, which leaves every `:root` token's name and value as it was.
- * Colours aren't: `:root` already holds what `@theme`'s point at. A variable
+ * Colors aren't: `:root` already holds what `@theme`'s point at. A variable
  * `:root` declares itself is read from `:root`, and resolved to its `:root`
  * value, as it wins in the browser. The rest of `@theme`'s tokens are named
  * in a warning: those `--source tailwind` would read, and apart, those whose
@@ -939,7 +939,7 @@ const BARE_SCALES = new Map<string, TokenCategory>([
 
 /**
  * Tokens from the project's `:root` custom properties, categorized by name,
- * or by value for a colour, and named after the variable: `--radius-md` is
+ * or by value for a color, and named after the variable: `--radius-md` is
  * radius `radius/md`. A Tailwind v4 project's `@theme` variables built from
  * them are added by addRootDerivedTheme.
  */
@@ -1031,9 +1031,9 @@ function resolveCssVar(value: string, allVars: Map<string, string>, depth: numbe
 }
 
 /**
- * Whether a custom property's value is a colour, for one whose name doesn't
- * say. Every colour function diff converts counts, so a token written in
- * lab(), lch(), oklab(), color(display-p3 ...) or hwb() is a colour, as an
+ * Whether a custom property's value is a color, for one whose name doesn't
+ * say. Every color function diff converts counts, so a token written in
+ * lab(), lch(), oklab(), color(display-p3 ...) or hwb() is a color, as an
  * oklch() one always was, rather than being dropped as uncategorized, where
  * neither diff nor `tokens --check` would ever see it.
  */
@@ -1045,7 +1045,7 @@ function isColorValue(value: string): boolean {
 }
 
 /**
- * Bare HSL channels, as shadcn/ui's `:root` holds its colours for a Tailwind
+ * Bare HSL channels, as shadcn/ui's `:root` holds its colors for a Tailwind
  * config's `hsl(var(--background))`: `0 0% 100%`, `240 5.9% 10%`, with an
  * optional `/ alpha`. Whole numbers only used to be read, so shadcn's
  * `--sidebar-primary: 240 5.9% 10%` was dropped as uncategorized.
@@ -1053,7 +1053,7 @@ function isColorValue(value: string): boolean {
 const BARE_HSL = /^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%(?:\s*\/\s*(?:\d+(?:\.\d+)?|\.\d+)%?)?$/;
 
 /**
- * A colour token's value as sRGB hex, or null when it is no colour colorToHex
+ * A color token's value as sRGB hex, or null when it is no color colorToHex
  * reads: an unresolved `var()`, `currentColor` or `color-mix()`. Bare HSL
  * channels are read as the hsl() they are written for; colorToHex alone
  * returned null for them, so diff compared `0 0% 100%` with Figma's `#ffffff`

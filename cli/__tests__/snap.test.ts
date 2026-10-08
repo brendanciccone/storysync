@@ -645,7 +645,7 @@ test("runSnap: a component within the limit is not capped", async () => {
 });
 
 // vaul's Drawer maps 15 booleans, 131072 combinations, and was capped with no
-// way to leave its behavioural props out.
+// way to leave its behavioral props out.
 test("runSnap: --exclude-props leaves the named props out of every component's variants", async () => {
   const dir = tempDir();
   try {

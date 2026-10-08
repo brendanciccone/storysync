@@ -12,7 +12,7 @@ function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "storysync-setup-"));
 }
 
-/** Runs setup and returns what it printed, without colour codes. */
+/** Runs setup and returns what it printed, without color codes. */
 function setupOutput(project: string, force: boolean, client: Client = "claude"): string {
   const lines: string[] = [];
   const original = console.log;
@@ -184,7 +184,7 @@ test("the Cursor rule asks for every readback property the Claude template retur
   // push. The Cursor rule describes the readback in prose instead, and verify
   // ignores any property it doesn't know by snap's name. The rule used to ask
   // for Figma's fields (fills, cornerRadius, strokeWeight) beside a few of
-  // snap's, so verify could pass at 100% while fill, text colour, radius and
+  // snap's, so verify could pass at 100% while fill, text color, radius and
   // border were never compared.
   const project = tempProject();
   try {
@@ -539,10 +539,10 @@ test("every push instruction reports a pixel of text width as a font-rendering d
   }
 });
 
-test("every push instruction reads a translucent colour back with its alpha, and a hidden paint as null", () => {
-  // snap writes a translucent colour as #rrggbbaa, a soft Chip's background
-  // #4b556322, and verify compares colours as written. The readback converted
-  // only the paint's colour, so every translucent fill and stroke drifted:
+test("every push instruction reads a translucent color back with its alpha, and a hidden paint as null", () => {
+  // snap writes a translucent color as #rrggbbaa, a soft Chip's background
+  // #4b556322, and verify compares colors as written. The readback converted
+  // only the paint's color, so every translucent fill and stroke drifted:
   // Figma keeps the alpha in the paint's opacity. A paint hidden with the eye
   // icon draws nothing at any opacity, as snap records a transparent border.
   const project = tempProject();
@@ -558,9 +558,9 @@ test("every push instruction reads a translucent colour back with its alpha, and
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
-      assert.doesNotMatch(text, /toHex\((?:fill|stroke|text\.fills\[0\])\.color\)|fill as `#rrggbb`/, `${path} still reads a colour without its alpha`);
-      assert.match(text, /alpha[^\n]*(?:as )?two more (?:lowercase )?hex digits/, `${path} never appends a translucent colour's alpha`);
-      assert.match(text, /`?#rrggbbaa`?[^\n]*`?opacity`?/, `${path} never says a translucent colour's alpha is its paint's opacity`);
+      assert.doesNotMatch(text, /toHex\((?:fill|stroke|text\.fills\[0\])\.color\)|fill as `#rrggbb`/, `${path} still reads a color without its alpha`);
+      assert.match(text, /alpha[^\n]*(?:as )?two more (?:lowercase )?hex digits/, `${path} never appends a translucent color's alpha`);
+      assert.match(text, /`?#rrggbbaa`?[^\n]*`?opacity`?/, `${path} never says a translucent color's alpha is its paint's opacity`);
       assert.match(text, /visible: false/, `${path} never reads a hidden paint as drawing nothing`);
     }
   } finally {
@@ -685,7 +685,7 @@ test("every push summary says a transparent border shows as an unfilled ring", (
   // The browser draws the background under a transparent border; Figma's
   // fill stops where the OUTSIDE stroke begins, and that stroke paints
   // nothing, so the ring stays empty. The user can choose a tinted stroke
-  // instead, which verify then scores as a border colour the code lacks.
+  // instead, which verify then scores as a border color the code lacks.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -740,7 +740,7 @@ test("every push instruction sets FLOAT variables from px, and leaves out a toke
   }
 });
 
-test("every audit instruction compares a length by its px and a colour by its hex", () => {
+test("every audit instruction compares a length by its px and a color by its hex", () => {
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -754,7 +754,7 @@ test("every audit instruction compares a length by its px and a colour by its he
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
-      assert.match(text, /Normalize before comparing: compare a colour by its token's `hex` and a [^\n]*by its `px`/, `${path} compares calc() radii as text`);
+      assert.match(text, /Normalize before comparing: compare a color by its token's `hex` and a [^\n]*by its `px`/, `${path} compares calc() radii as text`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
@@ -763,7 +763,7 @@ test("every audit instruction compares a length by its px and a colour by its he
 
 test("every push instruction offers --exclude-props for a capped component", () => {
   // Told to "narrow which props are variants", the agent had no way to: the
-  // CLI took every boolean, behavioural ones like vaul's Drawer's included.
+  // CLI took every boolean, behavioral ones like vaul's Drawer's included.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -1102,7 +1102,7 @@ test("every push instruction writes the readback exactly as returned, and says v
       assert.match(line, /exactly as (?:the calls )?returned/, `${path} never says to write the entries exactly as returned`);
       assert.match(line, /merging the slices/, `${path} never says to merge the slices`);
       assert.match(line, /[Nn]ever fill in or recompute a value, from snap/, `${path} never forbids filling a value in from snap`);
-      assert.match(line, /read fewer variants per call[^\n]*rather than summarising/, `${path} lets a long response be summarised`);
+      assert.match(line, /read fewer variants per call[^\n]*rather than summarizing/, `${path} lets a long response be summarized`);
       assert.match(line, /`verify`[^\n]*checksum is missing or (?:does not|doesn't) match[^\n]*`--strict`/, `${path} never says verify flags a checksum that doesn't match`);
       assert.match(line, /`readAt` and `checksum` included/, `${path} never says to copy each entry's readAt`);
       assert.match(line, /`verify`[^\n]*lacks a field[^\n]*before the snap[^\n]*`--strict`/, `${path} never says verify flags an entry cut down or read before the snap`);

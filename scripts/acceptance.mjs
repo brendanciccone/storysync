@@ -164,14 +164,14 @@ function rgb01(hex) {
   };
 }
 
-/** The alpha of a `#rrggbbaa` colour, 1 for `#rrggbb`. */
+/** The alpha of a `#rrggbbaa` color, 1 for `#rrggbb`. */
 function alpha01(hex) {
   const h = hex.replace("#", "");
   return h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
 }
 
 /**
- * A SOLID paint of a colour snap measured, as Figma holds it: the colour's
+ * A SOLID paint of a color snap measured, as Figma holds it: the color's
  * alpha, from `#rrggbbaa`, in the paint's opacity, and each number a 32-bit
  * float, as Figma reports them. `extra` overrides the paint's own fields.
  */
@@ -225,7 +225,7 @@ function renderBounds(node) {
  * strokeWeight of 1 Figma gives every node. A box shadow becomes an effect.
  * As in Figma, the node's own width and height leave out the stroke outside
  * them, so they are the measured border box less that stroke, and
- * absoluteRenderBounds is what Figma's would be. A translucent colour's alpha
+ * absoluteRenderBounds is what Figma's would be. A translucent color's alpha
  * is its paint's opacity. `strokeAlign` builds the stroke another way: INSIDE,
  * at the measured size, as the skill says to for a frame given a fixed size,
  * or CENTER. `strokeHidden` builds a transparent border's stroke as a designer
@@ -349,7 +349,7 @@ function jsTable(entries) {
  * The smallest slice whose encoded size passes the guard, measured with the
  * guard lifted, then run as shipped: it has to be refused, and the slice one
  * smaller returned. It lands under 20kb, and under the guard before encoding,
- * so a guard loosened towards 20kb, or one measuring the string before
+ * so a guard loosened toward 20kb, or one measuring the string before
  * use_figma encodes it, returns it and fails here. `run(n, guarded)` makes one
  * call over the first n items and returns the string the template returns;
  * the refusal has to say what to do, matching `remedy`.
@@ -545,7 +545,7 @@ async function buildReadback(snapDir, { mutate, withholdSource, onRead, readback
  * built INSIDE at a fixed size, and CENTER. The same transparent border built
  * with its paint hidden by the eye icon, visible at full opacity but for
  * `visible: false`, draws nothing either. And a translucent fill, border and
- * text colour, snap's `#rrggbbaa` (the soft Chip's background is #4b556322),
+ * text color, snap's `#rrggbbaa` (the soft Chip's background is #4b556322),
  * are Figma paints whose opacity holds the alpha.
  */
 function edgeVariants(snapDir) {
@@ -906,7 +906,7 @@ async function leftSet(build, doc, variants, { page = "Forms", set = "Button" } 
 
 /**
  * Throws unless `set` is laid out as `rows`, each a list of variant names with
- * null for a gap, and `extra` in a row of its own below: neighbouring columns
+ * null for a gap, and `extra` in a row of its own below: neighboring columns
  * and rows exactly `gap` apart, each column as wide as its widest variant and
  * each row as tall as its tallest, the set reaching `gap` past the last of
  * them, nothing overlapping, and the layers panel reading the same way, row by
@@ -1396,7 +1396,7 @@ async function assertNullsScored(snapDir, { template = loadSkillReadback(), bin 
   const cases = [
     { slug: "textless", styles: { ...plain, text: null }, figma: { text: false } },
     { slug: "flat", styles: block, figma: { layoutMode: "NONE" } },
-    { slug: "unlabelled", styles: plain, figma: { text: false } },
+    { slug: "unlabeled", styles: plain, figma: { text: false } },
     { slug: "ungapped", styles: plain, figma: { layoutMode: "NONE" } },
   ];
   const children = cases.map(({ slug, styles, figma }) => {
@@ -1431,7 +1431,7 @@ async function assertNullsScored(snapDir, { template = loadSkillReadback(), bin 
   const scored = v.json.variants.map((x) => `${x.slug} ${x.status} ${x.matched}/${x.matched + x.mismatched}` +
     (x.differences.length ? ` ${x.differences.map((d) => d.property).join("+")}` : "")).join(", ");
   const want = "textless verified 12/12, flat verified 10/10, " +
-    "unlabelled drifted 8/12 color+fontSize+fontWeight+fontFamily, ungapped drifted 11/12 gap";
+    "unlabeled drifted 8/12 color+fontSize+fontWeight+fontFamily, ungapped drifted 11/12 gap";
   assert(scored === want, `scored ${scored}, not ${want}`);
   return `no text and no text measured 12/12, no auto layout on a block element 10/10; ` +
     `a label lost in Figma drifts on its four text fields, an auto layout lost on its gap`;
@@ -1479,11 +1479,11 @@ async function assertComposedFlagged(snapDir, { bin } = {}) {
 }
 
 /**
- * Throws unless one colour edited in a readback the template returned is
+ * Throws unless one color edited in a readback the template returned is
  * flagged on exactly that variant, with nothing in it scored, every other
  * variant still verified, and --strict failed. The edit is the one that hides
  * drift: the variant's fill is magenta in Figma, read back as such, and the
- * file is then changed to the colour snap measured.
+ * file is then changed to the color snap measured.
  */
 async function assertEditFlagged(snapDir, { bin } = {}) {
   const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
@@ -1504,7 +1504,7 @@ async function assertEditFlagged(snapDir, { bin } = {}) {
     `read back as Figma has it, the magenta variant was ${drifted?.status}`);
 
   entry.backgroundColor = measured;
-  const path = join(WORK, "readback-recoloured.json");
+  const path = join(WORK, "readback-recolored.json");
   writeJson(path, file);
   const v = verifyJson(snapDir, path, [], { bin });
   assert(v.json?.summary, `verify did not score the edited readback\n${v.out.trim()}`);
@@ -1518,7 +1518,7 @@ async function assertEditFlagged(snapDir, { bin } = {}) {
   const wrong = others.filter((x) => x.status !== "verified");
   assert(wrong.length === 0 && v.json.fidelity === 1, `the other variants: ${wrong.map((x) => `${x.slug} ${x.status}`).join(", ") || "verified"}, fidelity ${v.json.fidelity}`);
   assert(exitOf(snapDir, path, ["--strict"], { bin }) === 1, "--strict passed");
-  return `the recoloured ${slug} flagged and unscored, the other ${others.length} verified, --strict failed`;
+  return `the recolored ${slug} flagged and unscored, the other ${others.length} verified, --strict failed`;
 }
 
 /**
@@ -1827,13 +1827,13 @@ async function main() {
     return "fill, border, type, radius and opacity all exact";
   });
 
-  await check("colours written in oklch, oklab, lab, lch, color() and hwb measure to the sRGB hex Chromium paints", async () => {
-    // Chromium reports a computed colour in the space it was written in, and
+  await check("colors written in oklch, oklab, lab, lch, color() and hwb measure to the sRGB hex Chromium paints", async () => {
+    // Chromium reports a computed color in the space it was written in, and
     // Tailwind v4 writes its palette in oklch, so a converter that only read
     // rgb() measured every such fill, text, border and shadow as nothing at
     // all. The example's Button is written in hex, so this renders its own
-    // page through snap's capture and normalisation, in the browser snap
-    // launches. Each colour is set on fill, text, all four borders and a
+    // page through snap's capture and normalization, in the browser snap
+    // launches. Each color is set on fill, text, all four borders and a
     // shadow, and each must come back as the hex given: CSS Color 4's
     // conversion, clipped to sRGB, which is also the pixel Chromium paints
     // for it on an sRGB canvas, checked here too.
@@ -1855,7 +1855,7 @@ async function main() {
       { css: "color(rec2020 0.5 0.2 0.8)", hex: "#a02cdb", computed: /^color\(rec2020 / },
       { css: "hwb(120 20% 30%)", hex: "#33b333", computed: /^rgb\(/ },
     ];
-    const page = join(WORK, "colours.html");
+    const page = join(WORK, "colors.html");
     writeFileSync(page, `<!doctype html><html><body><div id="root">${swatches.map((s, i) =>
       `<div id="swatch-${i}" style="display: inline-block; padding: 4px; background-color: ${s.css}; color: ${s.css}; ` +
       `border: 2px solid ${s.css}; box-shadow: 0 1px 2px ${s.css};">Aa</div>`).join("")}</div>` +
@@ -1896,12 +1896,12 @@ async function main() {
     } finally {
       await browser.close();
     }
-    return `${swatches.length} colours, fill, text, border and shadow each`;
+    return `${swatches.length} colors, fill, text, border and shadow each`;
   });
 
   /**
    * Renders each case on a page of its own through snap's capture and
-   * normalisation, in the browser snap launches, and hands back the styles.
+   * normalization, in the browser snap launches, and hands back the styles.
    * A case with an id is measured by selector; one without is measured as a
    * story is, from #storybook-root down past any wrappers.
    */
@@ -1962,7 +1962,7 @@ async function main() {
       // A gradient has no background-color: recorded as no fill, it was built unfilled.
       { html: `<button id="c0" style="display: inline-flex; border: 0; color: #fff; background: linear-gradient(90deg, #2563eb, #7c3aed)">Go</button>`,
         want: (s) => s.backgroundColor === null && s.backgroundImage === "linear-gradient(90deg, #2563eb, #7c3aed)" },
-      // Tailwind v4's gradient stops are oklch, written as hex like every colour.
+      // Tailwind v4's gradient stops are oklch, written as hex like every color.
       { html: `<button id="c1" style="display: inline-flex; border: 0; background-image: linear-gradient(to right in oklab, oklch(54.6% 0.245 262.881) 0%, oklch(54.1% 0.281 293.009) 100%)">Go</button>`,
         want: (s) => s.backgroundImage === "linear-gradient(to right, #155dfc 0%, #7f22fe 100%)" },
       // A fill under a gradient is kept, as the layer beneath.
@@ -2278,18 +2278,18 @@ async function main() {
       `all ${edges.length}, with the one-sided border and strokes INSIDE and CENTER, scored with no size drift`;
   });
 
-  await check("a translucent fill, stroke and text colour read back as snap writes them, alpha and all", async () => {
-    // snap writes a translucent colour as #rrggbbaa, a soft Chip's background
-    // #4b556322, and verify compares colours as written. Figma keeps a
+  await check("a translucent fill, stroke and text color read back as snap writes them, alpha and all", async () => {
+    // snap writes a translucent color as #rrggbbaa, a soft Chip's background
+    // #4b556322, and verify compares colors as written. Figma keeps a
     // paint's alpha in its opacity, so a readback that converts only the
-    // paint's colour reads #4b5563, and every translucent paint drifts. And a
+    // paint's color reads #4b5563, and every translucent paint drifts. And a
     // stroke hidden with the eye icon reads as null, as snap records a
     // transparent border, whatever its paint's opacity.
     const edges = Object.fromEntries(edgeVariants(snapDir).map((e) => [e.edge, e]));
     const { styles } = edges.translucent;
     const want = { backgroundColor: "#4b556322", color: "#111827b3", border: "#2563eb4d" };
     assert(styles.backgroundColor === want.backgroundColor && (styles.text?.color ?? styles.color) === want.color
-      && styles.borderUniform?.color === want.border, "the translucent edge variant no longer carries the colours this check reads");
+      && styles.borderUniform?.color === want.border, "the translucent edge variant no longer carries the colors this check reads");
     const built = figmaNode("translucent", styles);
     const opacities = [built.fills[0], built.strokes[0], built.findOne(() => true).fills[0]].map((p) => Math.round(p.opacity * 255));
     assert(opacities.join() === "34,77,179", `the simulated paints' opacities come to ${opacities.join()} of 255, not 34,77,179`);
@@ -2306,7 +2306,7 @@ async function main() {
     assert(JSON.stringify(got) === JSON.stringify(want), `read back ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
     const hidden = slice.readback["edge-hidden-stroke"].borderUniform;
     assert(hidden?.width === 1 && hidden.color === null, `a stroke hidden with visible: false read back as ${JSON.stringify(hidden)}`);
-    // An agent may set a paint's opacity to the decimal it recognises, 0.7 for
+    // An agent may set a paint's opacity to the decimal it recognizes, 0.7 for
     // snap's b3 (rgba(0,0,0,0.7) rounds to 179). Figma keeps it as a 32-bit
     // float, 0.69999…, which has to read back b3, not b2.
     const decimal = figmaNode("decimal", { ...styles, backgroundColor: "#000000b3" });
@@ -2321,14 +2321,14 @@ async function main() {
       `${verdicts.translucent.status} and ${verdicts["hidden-stroke"].status}`;
   });
 
-  await check("a readback that reads render bounds, or gets a stroke or a colour wrong, fails these checks", async () => {
+  await check("a readback that reads render bounds, or gets a stroke or a color wrong, fails these checks", async () => {
     // Each mutant rewrites the shipped readback template, and has to fail
     // the checks above, which the template passes.
     const T = {
       size: "width: child.width + edge('Left') + edge('Right'),\n        height: child.height + edge('Top') + edge('Bottom'),",
       outside: "const outside = stroke ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;",
       side: "return outside * (typeof own === 'number' ? own : child.strokeWeight);",
-      colour: "color: hexOf(stroke) }",
+      color: "color: hexOf(stroke) }",
       hidden: "if (paint.visible === false) return null;",
       alpha: "+ (alpha < 255 ? byte(alpha) : '');",
       opacity: "* (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255 + 1e-4);",
@@ -2344,11 +2344,11 @@ async function main() {
       "counts a stroke only while its paint shows": (code) => code.replace(T.outside,
         "const outside = stroke && hexOf(stroke) ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;"),
       "reads strokeWeight, never each side's weight": (code) => code.replace(T.side, "return outside * child.strokeWeight;"),
-      "reports the colour of a stroke that paints nothing": (code) => code.replace(T.colour,
+      "reports the color of a stroke that paints nothing": (code) => code.replace(T.color,
         "color: hexOf({ ...stroke, visible: true, opacity: 1 }) }"),
-      "reports the colour of a stroke hidden with visible: false": (code) => code.replace(T.hidden, ""),
-      "drops a translucent colour's alpha, as toHex(paint.color) did": (code) => code.replace(T.alpha, ";"),
-      "reads a paint's colour without its opacity": (code) => code.replace(T.opacity, "* 255 + 1e-4);"),
+      "reports the color of a stroke hidden with visible: false": (code) => code.replace(T.hidden, ""),
+      "drops a translucent color's alpha, as toHex(paint.color) did": (code) => code.replace(T.alpha, ";"),
+      "reads a paint's color without its opacity": (code) => code.replace(T.opacity, "* 255 + 1e-4);"),
     };
     const failed = [];
     for (const [mutant, mutate] of Object.entries(mutants)) {
@@ -2773,7 +2773,7 @@ async function main() {
   await check("a readback rebuilt from snap's values, as the live push wrote it, is flagged on every variant and fails --strict", () =>
     assertComposedFlagged(snapDir));
 
-  await check("a colour edited in the readback after Figma returned it is flagged on exactly that variant", () => assertEditFlagged(snapDir));
+  await check("a color edited in the readback after Figma returned it is flagged on exactly that variant", () => assertEditFlagged(snapDir));
 
   await check("an entry copied onto the same slug in another component is flagged on exactly that one", () => assertCopyFlagged(snapDir));
 
@@ -2879,7 +2879,7 @@ async function main() {
     }
 
     const long = Array.from({ length: 400 }, (_, i) => ({
-      collection: "Semantic colours", name: `color/semantic/interactive/surface-${i}/background-hover-pressed`, type: "COLOR", value: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
+      collection: "Semantic colors", name: `color/semantic/interactive/surface-${i}/background-hover-pressed`, type: "COLOR", value: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
     }));
     const refused = await assertGuardRefuses((n, guarded) => {
       const body = withConstants(guarded ? code : liftGuard(code), { START: 0, BATCH: n });
@@ -2941,7 +2941,7 @@ async function main() {
 
   await check("verify scores an exact reference readback at 100%", () => {
     // The baseline the other scoring checks perturb, built without the skill
-    // template, so each of them isolates one behaviour of verify.
+    // template, so each of them isolates one behavior of verify.
     writeJson(reference, sealed(referenceReadback(snapDir)));
     const v = verifyJson(snapDir, reference);
     assert(v.json?.fidelity === 1, `fidelity ${v.json?.fidelity}\n${v.out.trim()}`);

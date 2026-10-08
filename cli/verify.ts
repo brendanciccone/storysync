@@ -5,7 +5,7 @@
 // readback against `snap`'s measurements and produces a fidelity score.
 //
 // Numeric rather than visual on purpose: comparing rendered screenshots means
-// feeding images to a model and getting a judgement, where comparing measured
+// feeding images to a model and getting a judgment, where comparing measured
 // values is deterministic, cheap, and reproducible.
 
 import { readFileSync } from "node:fs";
@@ -39,7 +39,7 @@ export interface ReadbackStyles {
   /** Omitted by older writers; treated as `unrecorded`, never as measured. */
   source?: StyleSource;
   /**
-   * Colours as snap writes them: `#rrggbb`, `#rrggbbaa` when translucent, and
+   * Colors as snap writes them: `#rrggbb`, `#rrggbbaa` when translucent, and
    * null when nothing is drawn, so a Figma paint's opacity is the alpha byte.
    */
   backgroundColor?: string | null;
@@ -224,7 +224,7 @@ export interface SnapAgeKnown {
 /**
  * Why the age could not be established.
  *
- * Modelled explicitly rather than as an absent value: `meta.json` is the file a
+ * Modeled explicitly rather than as an absent value: `meta.json` is the file a
  * consuming project is most likely to gitignore, precisely because it churns
  * every run — which is the whole reason the timestamp lives outside
  * `styles.json`. An unknown age silently passing would mean the intended usage
@@ -310,7 +310,7 @@ export interface ReadbackIssue {
    * of the two Figma returned cannot be told, so every entry of both is
    * reported. `checksum_mismatch`: it carries one its contents, set and slug
    * do not produce, so it was edited, composed, or copied from another
-   * variant or component, afterwards.
+   * variant or component, afterward.
    *
    * The rest are entries whose checksum matches. `incomplete`: it lacks a
    * field the readback template always returns, listed in `missing`, so the
@@ -489,7 +489,7 @@ export function verifyVariant(
       : property === "gap"
         ? comparableGap(measured, measured.gap)
         : (measured as unknown as Record<string, unknown>)[property];
-    // No text in Figma and none measured: the root's colour and font, which
+    // No text in Figma and none measured: the root's color and font, which
     // every element has, style no text there to compare them with.
     const noTextEitherSide = TEXT_PROPERTIES.has(property) && figmaValue == null && measuredText == null;
     // A family snap measured as a CSS keyword, `system-ui` or `sans-serif`,
@@ -537,7 +537,7 @@ export function expandSnap(snap: SnapResult): Map<string, Map<string, Normalized
 // scores whatever the readback file says. On a live push the agent wrote that
 // file from snap's values plus the sizes that came off the Figma nodes, rather
 // than from what the readback calls returned, and verify then compared snap
-// with snap for every property but size: the score said nothing about colour,
+// with snap for every property but size: the score said nothing about color,
 // padding, type or radius.
 //
 // So the skill's readback template computes a checksum of each entry inside
@@ -568,7 +568,7 @@ export const CHECKSUM_PREFIX = "fnv1a:";
  * Numbers are written as JavaScript writes them, the shortest form that reads
  * back as the same double, so 0.0000001, 1E-7 and 1e-7 are one number, while
  * 0.4 and the 0.4000000059604645 Figma reports for it are two. Strings are
- * compared exactly, so a colour's case counts, and null is a value where an
+ * compared exactly, so a color's case counts, and null is a value where an
  * absent key is not. Mirrors `canon` in the skill's readback template: the
  * two must agree character for character.
  */
@@ -620,7 +620,7 @@ export function readbackChecksum(setId: string, slug: string, entry: object): st
  * A template cut down to fewer fields still seals what it returns, so its
  * checksums match, and verify scores only the properties an entry reports:
  * cut down to `{ source, width, height }`, it would score 100% on every
- * strict flag without comparing colour, padding, type or radius, and cut
+ * strict flag without comparing color, padding, type or radius, and cut
  * down to leave out the text child's three fields and `gap`, without
  * comparing type or spacing. So an entry that lacks any of these is
  * incomplete, and none of it is scored. Where Figma has nothing to report

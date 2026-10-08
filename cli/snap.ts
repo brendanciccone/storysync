@@ -263,7 +263,7 @@ export function describeNoOpProperties(names: string[]): string | null {
   const one = names.length === 1;
   return (
     `${list}: every value measured the same, so ${one ? "it changes" : "they change"} nothing snap records. ` +
-    `If ${one ? "it changes" : "they change"} only behaviour, or something snap doesn't measure, such as content ` +
+    `If ${one ? "it changes" : "they change"} only behavior, or something snap doesn't measure, such as content ` +
     `that renders elsewhere, ${one ? "it" : "they"} may not belong as Figma variant properties: leave ` +
     `${one ? "it" : "them"} out of every component with \`--exclude-props ${names.join(",")}\`. If the story ` +
     `drops ${one ? "it" : "them"}, pass ${one ? "it" : "them"} through to the component.`
@@ -525,7 +525,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   components.sort((a, b) => componentKey(a).localeCompare(componentKey(b)));
 
   // Components are keyed by `title ?? id` everywhere downstream — the
-  // readback, verify's expansion, the skills' file organisation. Two
+  // readback, verify's expansion, the skills' file organization. Two
   // components sharing that key would silently collapse into one during
   // verification, so the collision has to be said out loud here, where the
   // data is produced. A title from Storybook's index is one component's, and

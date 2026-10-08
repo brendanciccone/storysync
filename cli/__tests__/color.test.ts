@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { colorToHex, formatHex } from "../color.js";
 
 // Expected values are CSS Color 4's conversions, clipped to sRGB, and each
-// was checked against the pixel Chromium paints for the same colour on an
+// was checked against the pixel Chromium paints for the same color on an
 // sRGB canvas, read back with getImageData; sRGB red is also round-tripped
-// through Chromium's own serialisation of it in each space. The authored and
+// through Chromium's own serialization of it in each space. The authored and
 // computed forms are both tested because a token holds the first and
 // getComputedStyle returns the second.
 
 test("colorToHex: Tailwind v4's oklch palette converts to the sRGB hex Chromium paints for it", () => {
-  // As written in Tailwind's theme.css, and as Chromium serialises it computed.
+  // As written in Tailwind's theme.css, and as Chromium serializes it computed.
   for (const [authored, computed, hex] of [
     ["oklch(63.7% 0.237 25.331)", "oklch(0.637 0.237 25.331)", "#fb2c36"], // red-500
     ["oklch(62.3% 0.214 259.815)", "oklch(0.623 0.214 259.815)", "#2b7fff"], // blue-500
@@ -20,13 +20,13 @@ test("colorToHex: Tailwind v4's oklch palette converts to the sRGB hex Chromium 
   }
 });
 
-test("colorToHex: an oklch colour outside sRGB is clipped, as Chromium's sRGB canvas is", () => {
+test("colorToHex: an oklch color outside sRGB is clipped, as Chromium's sRGB canvas is", () => {
   // red-600 converts to a negative green, green-500 to a negative red.
   assert.equal(colorToHex("oklch(57.7% 0.245 27.325)"), "#e7000b");
   assert.equal(colorToHex("oklch(72.3% 0.219 149.579)"), "#00c950");
 });
 
-test("colorToHex: a display-p3 colour outside sRGB is clipped to the nearest sRGB value", () => {
+test("colorToHex: a display-p3 color outside sRGB is clipped to the nearest sRGB value", () => {
   // P3's red is about (1.093, -0.227, -0.150) in sRGB.
   assert.equal(colorToHex("color(display-p3 1 0 0)"), "#ff0000");
   assert.equal(colorToHex("color(display-p3 0 1 0)"), "#00ff00");
@@ -81,7 +81,7 @@ test("colorToHex: every color() space matches the pixel Chromium paints", () => 
 });
 
 test("colorToHex: display-p3-linear is read as linear light, not gamma-encoded like display-p3", () => {
-  // Chromium serialises color(from <this> srgb r g b) as color(srgb 0.778111 0.47012 0.932468).
+  // Chromium serializes color(from <this> srgb r g b) as color(srgb 0.778111 0.47012 0.932468).
   assert.equal(colorToHex("color(display-p3-linear 0.5 0.2 0.8)"), "#c678ee");
 });
 
@@ -150,7 +150,7 @@ test("colorToHex: hwb(), and modern rgb() and hsl(), as Chromium computes them",
   // Chromium computes each of these to rgb(): hwb(120 20% 30%) is rgb(51, 179, 51).
   assert.equal(colorToHex("hwb(120 20% 30%)"), "#33b333");
   assert.equal(colorToHex("hwb(120 20% 30% / 0.5)"), "#33b33380");
-  assert.equal(colorToHex("hwb(0 60% 60%)"), "#808080"); // whiteness and blackness past 100% are grey
+  assert.equal(colorToHex("hwb(0 60% 60%)"), "#808080"); // whiteness and blackness past 100% are gray
   assert.equal(colorToHex("hsl(120 50 50)"), "#40bf40");
   assert.equal(colorToHex("hsl(0.5turn 50% 50%)"), "#40bfbf");
   assert.equal(colorToHex("rgb(10 20 30 / 40%)"), "#0a141e66");
@@ -178,7 +178,7 @@ test("colorToHex: what it can't convert is null, never a guess", () => {
     "oklch(0.5 0.1 30px)",
     "oklch(0.5 0.1 30",
     "device-cmyk(0 0 0 1)",
-    "constructor", // a key every object has, not a named colour
+    "constructor", // a key every object has, not a named color
   ]) {
     assert.equal(colorToHex(c), null, c);
   }

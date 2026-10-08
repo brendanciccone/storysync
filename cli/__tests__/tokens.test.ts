@@ -128,7 +128,7 @@ test("CSS: --text-* with hex value categorized as colors", () => {
   } finally { cleanup(dir); }
 });
 
-test("CSS: values in any CSS colour function are colours, not uncategorized", () => {
+test("CSS: values in any CSS color function are colors, not uncategorized", () => {
   // Names that say nothing, so only the value can: oklch() always counted,
   // and lab(), lch(), oklab(), color() and hwb() were dropped with a warning,
   // out of reach of diff and tokens --check.
@@ -154,8 +154,8 @@ test("CSS: values in any CSS colour function are colours, not uncategorized", ()
   } finally { cleanup(dir); }
 });
 
-test("CSS: bare HSL channels with decimals are colours, as shadcn/ui writes them", () => {
-  // Whole numbers only were read, so shadcn's sidebar colours were dropped
+test("CSS: bare HSL channels with decimals are colors, as shadcn/ui writes them", () => {
+  // Whole numbers only were read, so shadcn's sidebar colors were dropped
   // as uncategorized.
   const dir = makeProject({
     "styles.css": `:root {
@@ -601,7 +601,7 @@ test("Tailwind v4: var() resolves against the theme, :root and Tailwind's own th
     ]);
     // Tailwind's defaults resolve references but aren't the project's tokens.
     assert.equal(result.collections.flatMap((c) => c.tokens).some((t) => t.name.includes("blue") || t.name.includes("sans")), false);
-    // --source css reads :root's colours, not @theme's, and its radius with
+    // --source css reads :root's colors, not @theme's, and its radius with
     // the scale @theme builds from it.
     assert.deepEqual(tokenTable(extractTokens(dir, "css")), [
       ["colors", [["background", "oklch(1 0 0)"]]],
@@ -663,11 +663,11 @@ test("Tailwind v4: a tailwind.config still comes first, and an @theme only in a 
   } finally { cleanup(commented); }
 });
 
-// --- Colour hex ---
+// --- Color hex ---
 
-test("hex: each colour token carries its sRGB hex next to the value as written", () => {
+test("hex: each color token carries its sRGB hex next to the value as written", () => {
   // figma.util.rgb() takes only hex, rgb(), hsl() and lab(), so the push
-  // threw on an oklch() token or bare HSL channels; it sets colours from hex.
+  // threw on an oklch() token or bare HSL channels; it sets colors from hex.
   const dir = makeProject({
     "styles.css": `:root {
       --brand: oklch(63.7% 0.237 25.331);
@@ -694,7 +694,7 @@ test("hex: each colour token carries its sRGB hex next to the value as written",
   } finally { cleanup(dir); }
 });
 
-test("hex: a Tailwind colour resolved from :root carries the hex of what it resolved to", () => {
+test("hex: a Tailwind color resolved from :root carries the hex of what it resolved to", () => {
   const dir = makeProject({
     "tailwind.config.ts": `export default { theme: { extend: { colors: { background: "hsl(var(--background))", brand: { 500: "#3B82F6" } } } } }`,
     "app/globals.css": `:root { --background: 222.2 84% 4.9%; }`,
@@ -715,13 +715,13 @@ test("hex: --check compares the value, so a baseline written before hex checks c
     assert.equal(current.collections[0].tokens[0].hex, "#fb2c36");
     const old = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map(({ name, value }) => ({ name, value })) })) });
     assert.equal(hasDrift(compareTokens(old, current)), false);
-    // And a hex that differs, as a later colour conversion fix might make it, is not drift.
+    // And a hex that differs, as a later color conversion fix might make it, is not drift.
     const shifted = baselineOf({ ...current, collections: current.collections.map((c) => ({ ...c, tokens: c.tokens.map((t) => ({ ...t, hex: "#fb2c37" })) })) });
     assert.equal(hasDrift(compareTokens(shifted, current)), false);
   } finally { cleanup(dir); }
 });
 
-test("hex: a colour whose :root value holds a var() gets the hex of what it resolves to, its value kept as written", () => {
+test("hex: a color whose :root value holds a var() gets the hex of what it resolves to, its value kept as written", () => {
   // :root resolves a var() only when it is the whole value, so this one had
   // no hex, and diff compared `hsl(var(--brand))` with Figma's as text.
   const dir = makeProject({ "styles.css": `:root { --brand: 210 40% 50%; --ring: hsl(var(--brand) / 50%); }` });
@@ -786,10 +786,10 @@ const SHADCN_V4_GLOBALS = `@import "tailwindcss";
 }
 `;
 
-test("CSS: shadcn/ui v4 gives :root's colours and radius, and the radius scale @theme builds from it, in px", () => {
+test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @theme builds from it, in px", () => {
   // Read through :root alone, there was no radius at all, and the bare
   // --radius alone would leave the push one radius to bind sm, md, lg and
-  // xl to. @theme's colours point at :root's and aren't read twice; its
+  // xl to. @theme's colors point at :root's and aren't read twice; its
   // fonts don't resolve from any stylesheet, so a warning names them.
   const dir = makeProject({ "app/globals.css": SHADCN_V4_GLOBALS });
   try {
@@ -812,7 +812,7 @@ test("CSS: shadcn/ui v4 gives :root's colours and radius, and the radius scale @
       "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
     ]);
 
-    // A baseline from before lists the colours alone, so it sees the radius
+    // A baseline from before lists the colors alone, so it sees the radius
     // as added once, and nothing changed or removed.
     const colorsOnly = baselineOf({ ...auto, collections: auto.collections.filter((c) => c.category === "colors") });
     const upgraded = compareTokens(colorsOnly, auto);
@@ -886,7 +886,7 @@ test("CSS: an @theme variable built from one both declare is worked out from :ro
   } finally { cleanup(dir); }
 });
 
-test("CSS: a :root for the dark colour scheme doesn't override the light one", () => {
+test("CSS: a :root for the dark color scheme doesn't override the light one", () => {
   // create-next-app's globals.css. Read in order with the rest, its dark
   // :root won, and the light theme's tokens came out #0a0a0a on #ededed.
   const globals = `@import "tailwindcss";
@@ -950,7 +950,7 @@ test("CSS: the warning naming what @theme declares beyond :root names a few of a
 });
 
 test("order: tokens are listed as their source declares them, @theme's in its order and :root's in its", () => {
-  // shadcn/ui's v4 globals.css declares its @theme colours in the reverse
+  // shadcn/ui's v4 globals.css declares its @theme colors in the reverse
   // of :root's order; each source keeps its own.
   const dir = makeProject({
     "app/globals.css": `@theme inline {
@@ -995,7 +995,7 @@ test("lengthToPx: px, rem at 16px and calc() over them, and nothing for a value 
   for (const [value, px] of cases) assert.equal(lengthToPx(value), px, value);
 });
 
-test("px: radius, spacing and font-size tokens carry their px; weights, ratios, em, fonts, shadows and colours don't", () => {
+test("px: radius, spacing and font-size tokens carry their px; weights, ratios, em, fonts, shadows and colors don't", () => {
   // The skill had the agent convert rem itself, and calc() not at all.
   const dir = makeProject({
     "src/app.css": `@theme {

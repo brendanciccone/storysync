@@ -1,6 +1,6 @@
 // Runs the compiled `verify` command against fixture files, so the exit codes
 // and printed verdicts are covered in CI — the acceptance suite checks the same
-// behaviour end to end, but needs a running Storybook and does not run there.
+// behavior end to end, but needs a running Storybook and does not run there.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

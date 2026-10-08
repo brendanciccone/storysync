@@ -29,7 +29,7 @@ export interface BoxShadowLayer {
 
 export interface TextStyles {
   /**
-   * The text's colour as drawn: an `opacity` on the element holding the text,
+   * The text's color as drawn: an `opacity` on the element holding the text,
    * or on one between it and the measured root, is folded into its alpha. The
    * root's own opacity is the frame's `opacity`, not part of this.
    */
@@ -62,7 +62,7 @@ export interface NormalizedStyles {
   /** The layer under `backgroundImage`, when there is one: seen only where the image is transparent. */
   backgroundColor: string | null;
   /**
-   * The computed `background-image`, its colours as hex: a gradient or image
+   * The computed `background-image`, its colors as hex: a gradient or image
    * painted over `backgroundColor`. A gradient button has a `backgroundColor`
    * of null and is still filled.
    *
@@ -175,7 +175,7 @@ function pxOrZero(value: string | undefined): number {
  * null. `getComputedStyle` reports an absent background as `rgba(0, 0, 0, 0)`,
  * which is meaningfully "no fill" rather than "transparent black".
  *
- * Chromium reports a colour in the space it was written in, so Tailwind v4's
+ * Chromium reports a color in the space it was written in, so Tailwind v4's
  * `oklch(...)` palette, its `oklab(... / 0.5)` opacity modifiers and every
  * `color(...)` space all come through here; colorToHex converts each to sRGB.
  * One it couldn't read would come back null, and null is "no fill": a red
@@ -193,8 +193,8 @@ export function normalizeColor(value: string | undefined): string | null {
 }
 
 /**
- * Whether a colour has zero alpha. Read off the hex, since normalizeColor's
- * null can't tell a transparent colour from one it couldn't read.
+ * Whether a color has zero alpha. Read off the hex, since normalizeColor's
+ * null can't tell a transparent color from one it couldn't read.
  */
 export function isFullyTransparent(value: string | undefined): boolean {
   const hex = colorToHex(value ?? "");
@@ -317,8 +317,8 @@ function normalizeLetterSpacing(value: string | undefined, fontSize: number): nu
 }
 
 /**
- * A hex colour drawn at an opacity: its alpha multiplied by it, rounded as
- * formatHex rounds alpha, the byte dropped when opaque and the colour null,
+ * A hex color drawn at an opacity: its alpha multiplied by it, rounded as
+ * formatHex rounds alpha, the byte dropped when opaque and the color null,
  * no fill, when nothing is left.
  */
 function withOpacity(hex: string | null, opacity: number): string | null {
@@ -329,12 +329,12 @@ function withOpacity(hex: string | null, opacity: number): string | null {
   return scaled >= 255 ? hex.slice(0, 7) : `${hex.slice(0, 7)}${scaled.toString(16).padStart(2, "0")}`;
 }
 
-/** A colour function as Chromium serialises one, in any space. */
+/** A color function as Chromium serializes one, in any space. */
 const COLOR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i;
 
 /**
- * A computed `background-image`, or null for none, with each colour in its
- * gradients written as hex like every other colour snap records: Tailwind
+ * A computed `background-image`, or null for none, with each color in its
+ * gradients written as hex like every other color snap records: Tailwind
  * v4's `bg-linear-to-r` computes to `linear-gradient(to right, oklch(...) 0%,
  * oklch(...) 100%)`, Chromium dropping its default `in oklab`. A `url()`
  * layer is kept as written.
@@ -509,11 +509,11 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
  * and background-free containers, and measuring one would describe the
  * wrapper, not the component.
  *
- * Its background is transparent by its colour's alpha, in whatever space
+ * Its background is transparent by its color's alpha, in whatever space
  * Chromium writes it: Tailwind v4's `bg-black/0` computes to
- * `oklab(0 0 0 / 0)`, not `rgba(0, 0, 0, 0)`. A colour that can't be read is
+ * `oklab(0 0 0 / 0)`, not `rgba(0, 0, 0, 0)`. A color that can't be read is
  * not taken for transparent, and nor is a background image, which is drawn
- * whatever the colour beneath it.
+ * whatever the color beneath it.
  */
 export function isPassThroughWrapper(raw: RawComputedStyles): boolean {
   const display = (raw["display"] ?? "").trim();

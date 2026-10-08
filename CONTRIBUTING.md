@@ -51,7 +51,7 @@ Releases are built and uploaded from CI, never from a laptop, and go live only a
 
 5. When the run finishes, approve the version on npmjs.com: account menu → **Staged Packages** → **Approve**, with 2FA. The button stays disabled until npm's malware scan finishes. The run's summary shows the tarball's shasum; approve only if the card shows the same one.
 
-The tag must be `v` plus the exact `package.json` version, and it must point at a commit on `main`, or the workflow stops before staging. These checks catch mistakes; the approval in step 5 is what guards against misuse. Push one tag at a time: GitHub starts no workflow when more than three tags are pushed at once. A prerelease tag such as `v0.4.0-rc.1` goes to npm's `next` dist-tag and is marked as a prerelease on GitHub. If a run fails or is cancelled, re-run it: it skips what is already done. If you reject a staged version, delete its GitHub Release and tag before tagging again.
+The tag must be `v` plus the exact `package.json` version, and it must point at a commit on `main`, or the workflow stops before staging. These checks catch mistakes; the approval in step 5 is what guards against misuse. Push one tag at a time: GitHub starts no workflow when more than three tags are pushed at once. A prerelease tag such as `v0.4.0-rc.1` goes to npm's `next` dist-tag and is marked as a prerelease on GitHub. If a run fails or is canceled, re-run it: it skips what is already done. If you reject a staged version, delete its GitHub Release and tag before tagging again.
 
 ### One-time npm setup
 
@@ -63,9 +63,9 @@ npm has to trust the workflow before the first release. On npmjs.com, open the `
 | Repository | `storysync` |
 | Workflow filename | `release.yml` |
 | Environment name | *(leave blank)* |
-| Allowed actions | leave **Allow npm publish** and **Allow npm dist-tag** unticked |
+| Allowed actions | leave **Allow npm publish** and **Allow npm dist-tag** unchecked |
 
-With both boxes unticked, the connection can only stage, which is what the workflow does. Fields are case-sensitive, and a connection can't be edited, only deleted and recreated. npm accepts a workflow if any of the package's connections match, so delete any other connection, especially one created before 20 May 2026 (npm set those to allow direct publishing) or one with **Allow npm publish** ticked.
+With both boxes unchecked, the connection can only stage, which is what the workflow does. Fields are case-sensitive, and a connection can't be edited, only deleted and recreated. npm accepts a workflow if any of the package's connections match, so delete any other connection, especially one created before 20 May 2026 (npm set those to allow direct publishing) or one with **Allow npm publish** ticked.
 
 Once a release has gone out this way, set Settings → Publishing access to "Require two-factor authentication and disallow tokens". Trusted publishing keeps working, and no npm token is stored in GitHub.
 

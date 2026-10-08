@@ -497,7 +497,7 @@ export function parsePropNames(value: unknown): string[] {
  * for `--exclude-props`.
  *
  * Every boolean a component's docs list becomes a variant property, though
- * many only change behaviour: vaul's Drawer has 15 (`modal`, `dismissible`,
+ * many only change behavior: vaul's Drawer has 15 (`modal`, `dismissible`,
  * `snapToSequentialPoint`...), 131072 combinations of what looks like one
  * closed trigger, so its push stopped at the cap with no way to go on. Which
  * props are visual is the project's call, not a list of names here to keep

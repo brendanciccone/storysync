@@ -67,7 +67,7 @@ function reason(err: unknown): string {
     : "";
   const said = (typeof cause?.message === "string" && cause.message) || each || (typeof cause?.code === "string" && cause.code) || "";
   if (said && !message.includes(said)) message += `: ${said}`;
-  // Said inside a sentence of its own, which supplies the full stop.
+  // Said inside a sentence of its own, which supplies the period.
   return message.replace(/\.$/, "");
 }
 

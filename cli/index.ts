@@ -278,7 +278,7 @@ program
     // Playwright closes the browser on SIGTERM and SIGHUP but leaves the run
     // going, and snap then recorded every component left as a failed browser
     // session, wrote that over the last styles.json and exited 0. So a CI job
-    // cancelled, or an agent's command timed out, replaced a good snap with a
+    // canceled, or an agent's command timed out, replaced a good snap with a
     // broken one. Stop instead, at once, writing nothing: not after a docs
     // request or a story still in flight, which can take --connect-timeout
     // or --timeout. Exiting runs Playwright's exit handler, which kills the
