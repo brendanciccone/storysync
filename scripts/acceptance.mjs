@@ -16,7 +16,7 @@
 //                   worktree to check an older or newer build
 //   KEEP_WORKDIR=1  keep the temporary directory for inspection
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -57,6 +57,68 @@ function assert(condition, message) {
 function cli(args, opts = {}) {
   const r = spawnSync(process.execPath, [opts.bin ?? CLI, ...args], { encoding: "utf8", cwd: opts.cwd ?? WORK });
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+/** Runs the built CLI without blocking, so a server in this process can answer it. */
+function cliAsync(args, opts = {}) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [opts.bin ?? CLI, ...args], { cwd: opts.cwd ?? WORK });
+    let out = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { out += chunk; });
+    child.on("close", (status) => done({ status, out }));
+  });
+}
+
+/**
+ * The example's Storybook behind a proxy that serves the module at `path`,
+ * as Vite compiles it, through `rewrite`: a story changed for one check
+ * while the example's files stay as they are. Everything else, its MCP
+ * endpoint and Vite's websocket included, passes through untouched.
+ */
+async function rewritingStorybook(path, rewrite) {
+  const { createServer, request } = await import("node:http");
+  const { connect } = await import("node:net");
+  const target = new URL(STORYBOOK);
+  const port = Number(target.port || 80);
+  const server = createServer((req, res) => {
+    const rewritten = req.url.split("?")[0] === path;
+    const headers = { ...req.headers, host: target.host };
+    if (rewritten) headers["accept-encoding"] = "identity";
+    const upstream = request({ hostname: target.hostname, port, path: req.url, method: req.method, headers }, (answer) => {
+      if (!rewritten) {
+        res.writeHead(answer.statusCode, answer.headers);
+        answer.pipe(res);
+        return;
+      }
+      const chunks = [];
+      answer.on("data", (chunk) => chunks.push(chunk));
+      answer.on("end", () => {
+        const { "content-length": _length, etag: _etag, ...rest } = answer.headers;
+        res.writeHead(answer.statusCode, rest).end(rewrite(Buffer.concat(chunks).toString("utf8")));
+      });
+    });
+    upstream.on("error", (err) => res.writeHead(502).end(String(err)));
+    req.pipe(upstream);
+  });
+  server.on("upgrade", (req, socket, head) => {
+    const upstream = connect(port, target.hostname, () => {
+      const lines = Object.entries({ ...req.headers, host: target.host }).map(([name, value]) => `${name}: ${value}`);
+      upstream.write(`${req.method} ${req.url} HTTP/1.1\r\n${lines.join("\r\n")}\r\n\r\n`);
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on("error", () => socket.destroy());
+    socket.on("error", () => upstream.destroy());
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((done) => {
+      server.closeAllConnections?.();
+      server.close(() => done());
+    }),
+  };
 }
 
 function readJson(path) {
@@ -2288,6 +2350,81 @@ async function main() {
     assert(JSON.stringify(button.cap.uncovered) === JSON.stringify(["disabled=true"]), `uncovered: ${JSON.stringify(button.cap.uncovered)}`);
     assert(/leave out disabled=true/.test(r.out) && !/cover every value/.test(r.out), "warning claims coverage the subset lacks");
     return "12 over a limit of 4: warned, recorded, gap named, --strict failed";
+  });
+
+  await check("the example's stories take every value they're given, and snap records their argTypes", () => {
+    // Its argTypes list every option, so nothing goes through the preview,
+    // and the story's own argTypes are recorded as Storybook holds them.
+    const snap = readJson(join(snapDir, "styles.json"));
+    const button = snap.components.find((c) => c.name === "Button");
+    const through = snap.components.flatMap((c) => c.variants.filter((v) => v.rejectedArgs || v.appliedVia).map((v) => `${c.name} ${v.slug}`));
+    assert(through.length === 0, `variants the story didn't take: ${through.join(", ")}`);
+    assert(!snap.components.some((c) => c.warnings.some((w) => /story URL|Storybook's preview/.test(w))), "an args warning on the example");
+    assert(JSON.stringify(button.argTypes?.variant) === JSON.stringify({ type: "enum", control: "select", options: ["primary", "danger", "outline"] }),
+      `Button's variant argType: ${JSON.stringify(button.argTypes)}`);
+    assert(button.storyFile === "./src/Button.stories.tsx", `story file: ${button.storyFile}`);
+    return `argTypes ${Object.keys(button.argTypes).join(", ")}, none rejected`;
+  });
+
+  await check("a value the story's argTypes reject is measured through Storybook's preview, as the component renders it", async () => {
+    // Storybook drops a URL value its argTypes options don't list, and hides
+    // an arg whose argTypes `if` fails, rendering the default instead: snap
+    // measured that under the variant's name, as it did for shadcn/ui's
+    // Badge ghost and link, and Figma got 36 variants that looked like the
+    // default. Served here with outline left out of the options and size
+    // hidden for it, every Button variant must still measure as the
+    // unchanged story renders it. Each page load fetches the story's module,
+    // so every copy served is counted, and any without both edits.
+    let served = 0;
+    let unedited = 0;
+    const storybook = await rewritingStorybook("/src/Button.stories.tsx", (code) => {
+      let edits = 0;
+      const changed = code
+        .replace(/options:\s*\[\s*"primary",\s*"danger",\s*"outline"\s*\]/, () => { edits++; return 'options: ["primary", "danger"]'; })
+        .replace(/options:\s*\[\s*"sm",\s*"lg"\s*\]/, () => { edits++; return 'options: ["sm", "lg"], if: { arg: "variant", neq: "outline" }'; });
+      served++;
+      if (edits !== 2) unedited++;
+      return changed;
+    });
+    const out = join(WORK, "rejected");
+    let r;
+    try {
+      r = await cliAsync(["snap", "--storybook", storybook.url, "--components", "Button", "--variants", "all", "--out", out, "--strict"]);
+    } finally {
+      await storybook.close();
+    }
+    assert(served > 0 && unedited === 0, `${unedited} of ${served} copies of the story served without both argTypes changed: Vite compiled ${EXAMPLE_STORIES} differently, so update this check`);
+    assert(r.status === 0, `snap --strict exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+
+    // The true component: all 12 variants measure as the unchanged story renders them.
+    assert(expandVariants(button).length === 12, `measured ${expandVariants(button).length} of 12 Button variants`);
+    const truth = Object.fromEntries(expandVariants(readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button")).map((v) => [v.slug, v.styles]));
+    for (const { slug, styles } of expandVariants(button)) {
+      assert(JSON.stringify(styles) === JSON.stringify(truth[slug]),
+        `${slug} measured ${JSON.stringify(styles)}\n      unchanged story: ${JSON.stringify(truth[slug])}`);
+    }
+    const outline = Object.fromEntries(expandVariants(button).map((v) => [v.slug, v.styles]))["variant-outline--size-lg--disabled-false"];
+    assert(outline?.backgroundColor === null && outline.fontSize === 18, `outline/lg: ${JSON.stringify(outline)}`);
+    assert(JSON.stringify(button.argTypes?.size) === JSON.stringify({ type: "enum", control: "select", options: ["sm", "lg"], if: { arg: "variant", neq: "outline" } }),
+      `the rewritten story wasn't served: size is ${JSON.stringify(button.argTypes?.size)}`);
+
+    // Through the preview: the outline variants, each for both reasons.
+    const through = button.variants.filter((v) => v.appliedVia === "preview");
+    assert(through.length === 4 && through.every((v) => v.combination.variant === "outline" && v.status === "ok"),
+      `applied through the preview: ${through.map((v) => `${v.slug} ${v.status}`).join(", ") || "none"}`);
+    const reasons = (v) => v.rejectedArgs.map((a) => `${a.name}=${a.value}:${a.reasons.join("+")}`).join(" ");
+    for (const v of through) {
+      const want = `variant=outline:not-in-options size=${v.combination.size}:hidden-by-if`;
+      assert(reasons(v) === want, `${v.slug} rejected ${reasons(v)}, expected ${want}`);
+    }
+    assert(button.variants.every((v) => v.appliedVia || !v.rejectedArgs), "a variant rejected but not applied");
+
+    // And the story change that would let the URL take them.
+    assert(/add 'outline' to argTypes\.variant\.options in \.\/src\/Button\.stories\.tsx/.test(r.out) &&
+      /remove `if: \{"arg":"variant","neq":"outline"\}` from argTypes\.size in \.\/src\/Button\.stories\.tsx/.test(r.out),
+      `no warning with the story change:\n${r.out.trim()}`);
+    return "4 outline variants through the preview, all 12 as the unchanged story measures";
   });
 
   await check("snapshots are stamped with the running version", () => {

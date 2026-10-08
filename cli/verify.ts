@@ -325,11 +325,17 @@ export interface VerifyResult {
 
 export interface ScoreCaveat {
   component: string;
-  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed";
+  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed" | "args-rejected";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
   /** The properties whose default is assumed, for `default-assumed`. */
   properties?: string[];
+  /**
+   * For `args-rejected`: the values Storybook wouldn't give the story, as
+   * `prop=value`, and how many variants snap therefore didn't measure.
+   */
+  values?: string[];
+  variants?: number;
 }
 
 export interface ReadbackIssue {
@@ -899,9 +905,11 @@ export function verify(
   }
   // A single unmeasured variant is reported but does not fail --strict on its
   // own. Some are expected — args_unsupported, for a value Storybook cannot
-  // pass in a URL — and the skill has the agent build those from source and
-  // label them inferred, which provenance already fails under
-  // --strict-measured. `snap --strict` is the gate for measurement failures.
+  // pass in a URL, or arg_rejected, for one the story's argTypes refuse,
+  // which the caveats name too — and the skill has the agent build those
+  // from source and label them inferred, which provenance already fails
+  // under --strict-measured. `snap --strict` is the gate for measurement
+  // failures.
   if (snap.summary?.failed) {
     snapWarnings.push(
       `${snap.summary.failed} variant(s) could not be measured; any built from source are listed under provenance`,
@@ -963,6 +971,13 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
   // Figma's default is the code's; and every optional boolean has one.
   const assumed = (component.variantProperties ?? []).filter((p) => p.defaultAssumed && p.type === "VARIANT").map((p) => p.name);
   if (assumed.length) caveats.push({ component: key, kind: "default-assumed", properties: assumed });
+  // Variants Storybook rendered as its default rather than as asked: not
+  // measured, so not scored, which a score over the rest doesn't show.
+  const refused = (component.variants ?? []).filter((v) => v.status === "arg_rejected");
+  if (refused.length) {
+    const values = [...new Set(refused.flatMap((v) => (v.rejectedArgs ?? []).map((r) => `${r.name}=${r.value}`)))];
+    caveats.push({ component: key, kind: "args-rejected", values, variants: refused.length });
+  }
   return caveats;
 }
 

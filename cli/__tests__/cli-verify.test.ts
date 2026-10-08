@@ -351,6 +351,29 @@ test("verify CLI: what snap warned about a scored component is said beside the s
   ]);
 });
 
+test("verify CLI: variants Storybook wouldn't render are named beside the score as unmeasured, and fail --strict-measured", () => {
+  // Storybook rendered its default for variant=link, as for a value outside
+  // the story's options: snap measured nothing, so nothing may score it.
+  const rejectedArgs = [{ name: "variant", value: "link", reasons: ["not-in-options"], options: ["default"] }];
+  const twoVariants = snap({ summary: { components: 1, variants: 2, rendered: 1, failed: 1, componentsFailed: 0, componentsWithWarnings: 1 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "arg_rejected", error: "Storybook didn't give the story variant=link", rejectedArgs },
+    ],
+  });
+  const figma = readbackOf({ a: MATCHING, b: { ...MATCHING, source: "inferred" } });
+  const r = verify(twoVariants, figma, "--strict");
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.deepEqual(lines.slice(at + 1, at + 3), [
+    "  ! The score compares Figma with what snap measured, and snap warned about that for this component:",
+    "      Forms/Button: Storybook wouldn't render variant=link, so snap didn't measure 1 variant and nothing here scored it; snap's warning names the story change that lets it",
+  ]);
+  assert.match(r.out, /Forms\/Button b \[unmeasured — written to Figma but never scored\]/);
+  assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
+});
+
 test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
   try {

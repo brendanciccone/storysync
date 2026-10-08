@@ -148,6 +148,10 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const names = (caveat.properties ?? []).map((name) => `\`${name}\``).join(", ");
       return `Storybook's docs give no default for ${names}, so the default variant in Figma is a guess`;
     }
+    case "args-rejected": {
+      const count = caveat.variants ?? 0;
+      return `Storybook wouldn't render ${(caveat.values ?? []).join(", ")}, so snap didn't measure ${count} ${count === 1 ? "variant" : "variants"} and nothing here scored ${count === 1 ? "it" : "them"}; snap's warning names the story change that lets it`;
+    }
   }
 }
 
@@ -367,6 +371,12 @@ program
         }
         for (const component of result.components.filter((c) => c.error != null)) {
           console.log(chalk.yellow(`\n  ✗ ${component.title ?? component.name}: ${component.error}`));
+        }
+        // Said, not warned: snap still takes variant properties from the docs alone.
+        for (const component of result.components.filter((c) => c.argsNotInDocs?.length)) {
+          const names = component.argsNotInDocs!.map((name) => `\`${name}\``).join(", ");
+          const one = component.argsNotInDocs!.length === 1;
+          console.log(chalk.dim(`\n  i ${component.title ?? component.name}: the story declares ${names}, which Storybook's docs don't list, so ${one ? "it isn't a variant property" : "they aren't variant properties"}`));
         }
         const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
         if (failed.length) {

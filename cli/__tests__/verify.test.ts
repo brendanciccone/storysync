@@ -1310,6 +1310,21 @@ test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants
   assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]).components[0]), []);
 });
 
+test("scoreCaveats: names the values Storybook wouldn't render, and how many variants that left unmeasured", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", status: "arg_rejected" }, { slug: "c", status: "arg_rejected" }, { slug: "d", status: "timeout" }]);
+  const rejected = (name: string, value: string) => [{ name, value, reasons: ["not-in-options"], options: ["default"] }];
+  const component = snap.components[0];
+  component.variants[1].rejectedArgs = rejected("variant", "ghost") as never;
+  component.variants[2].rejectedArgs = [...rejected("variant", "ghost"), ...rejected("size", "xs")] as never;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-rejected"), [
+    { component: "Forms/Button", kind: "args-rejected", values: ["variant=ghost", "size=xs"], variants: 2 },
+  ]);
+  // Values applied through the preview were measured: nothing to say.
+  component.variants[1].status = "ok";
+  component.variants[2].status = "ok";
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-rejected"), []);
+});
+
 test("verify: caveats are given for the components the readback scored, and fail nothing", () => {
   const snap = snapWith([{ slug: "a" }]);
   const trigger = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);
