@@ -140,6 +140,8 @@ jobs:
 
 It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
 
+Runners don't come with bun, so a bun project needs [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun) as a step before the action, or its own `install_command`. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`.
+
 **Create the baselines first.** With Storybook running, in the project's directory:
 
 ```bash
