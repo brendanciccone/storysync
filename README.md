@@ -271,7 +271,7 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 
 A reference with no matching variable and no fallback is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
-Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. An `html { }` rule isn't read either, since `:root` overrides it whatever their order.
+Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order.
 
 ### Tailwind presets and configs built by code
 

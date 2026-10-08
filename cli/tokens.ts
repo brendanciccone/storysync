@@ -843,9 +843,17 @@ function styleRules(css: string): StyleRule[] {
 }
 
 /**
- * Whether a rule sets the default theme: its selector list holds a bare
- * `:root`, as `:root { }` and `:root, .light { }` do, and it is no rule
- * nested in another, nor in `@media` for the dark color scheme. A rule
+ * A selector for the root element alone: `:root`, or `html:root`, `*:root`
+ * and `:root:root`, which select the same element and which storysync read
+ * before selector lists were. A rule that sets `html:root { }` alone lost
+ * every token when only a bare `:root` counted.
+ */
+const ROOT_SELECTOR = /^(?:html|\*)?(?::root)+$/i;
+
+/**
+ * Whether a rule sets the default theme: its selector list holds `:root`,
+ * as `:root { }`, `html:root { }` and `:root, .light { }` do, and it is no
+ * rule nested in another, nor in `@media` for the dark color scheme. A rule
  * that only names a theme, as `.dark`, `.light`, `[data-theme="dark"]` or
  * `:root.dark` do, sets that theme's values, not the default's. `html` is
  * left out: `:root` outranks it whatever their order, so its values
@@ -854,7 +862,7 @@ function styleRules(css: string): StyleRule[] {
 function setsDefaultTheme(rule: StyleRule): boolean {
   return !rule.nested &&
     !rule.atRules.some(isDarkScheme) &&
-    splitTopLevel(rule.selector, ",").some((selector) => selector.trim().toLowerCase() === ":root");
+    splitTopLevel(rule.selector, ",").some((selector) => ROOT_SELECTOR.test(selector.trim()));
 }
 
 /**

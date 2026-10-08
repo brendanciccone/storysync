@@ -1245,6 +1245,27 @@ test("CSS: a rule counts when its selector list holds a bare :root, not when it 
   } finally { cleanup(dir); }
 });
 
+test("CSS: html:root, *:root and :root:root are :root, as earlier versions read them, and html alone isn't", () => {
+  const alone = makeProject({ "src/app.css": `html:root { --color-ink: #111111; --radius: 4px; }` });
+  try {
+    assert.deepEqual(detectTokenSource(alone), { type: "css", path: join(alone, "src", "app.css") });
+    assert.deepEqual(tokenTable(extractTokens(alone)), [["colors", [["color/ink", "#111111"]]], ["radius", [["DEFAULT", "4px"]]]]);
+  } finally { cleanup(alone); }
+
+  const mixed = makeProject({
+    "src/app.css": `:root { --color-paper: #ffffff; }
+HTML:root { --color-ink: #111111; }
+html { --color-rule: #222222; }
+*:root, .light { --color-link: #0000ee; }
+:root:root { --color-mark: #ffff00; }`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(mixed, "css")), [
+      ["colors", [["color/paper", "#ffffff"], ["color/ink", "#111111"], ["color/link", "#0000ee"], ["color/mark", "#ffff00"]]],
+    ]);
+  } finally { cleanup(mixed); }
+});
+
 test("detectTokenSource: a stylesheet whose :root is only in a selector list is CSS, after @theme and a theme file", () => {
   // `.light, :root {` was read already, as it ends in `:root {`.
   const listed = `:root, .light { --color-brand: #ff0000; }`;
