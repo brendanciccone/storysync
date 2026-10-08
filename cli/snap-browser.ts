@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import type { Browser, BrowserContext, Page, ElementHandle, Request } from "playwright-core";
 import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
-  chooseMeasuredElement, componentSlots, describeElement, resolveFontFamily,
+  chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
 } from "./snap-normalize.js";
 import type { RawComputedStyles, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
 
@@ -308,7 +308,7 @@ async function readStorybookError(page: Page): Promise<string | null> {
 export function storyReadySelector(slots: readonly string[]): string {
   return [
     ...ROOT_CONTAINERS.map((container) => `${container} > :not(${NON_RENDERED_TAGS.join(", ")})`),
-    ...slots.flatMap((slot) => [`[data-slot="${slot}"]`, `[data-slot="${slot}-content"]`]),
+    ...[...new Set([...slots, ...contentSlots(slots)])].map((slot) => `[data-slot="${slot}"]`),
     ...STORYBOOK_ERROR_SELECTORS,
   ].join(", ");
 }
@@ -424,7 +424,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
   const tree = container
     ? await container.evaluate(readStoryTreeInPage, { props: WRAPPER_PROPERTIES, ...TREE_LIMITS })
     : null;
-  const portalsHandle = await page.evaluateHandle(findPortalsInPage, { container, slots: [...slots] });
+  const portalsHandle = await page.evaluateHandle(findPortalsInPage, { container, slots: [...new Set([...slots, ...contentSlots(slots)])] });
   try {
     const portals: PortalNode[] = await portalsHandle.evaluate((elements) => elements.map((el) => ({
       tag: el.tagName.toLowerCase(),
@@ -499,12 +499,13 @@ function readStoryTreeInPage(
 
 /**
  * Runs in the page: elements outside the story's container that may be its
- * content in a portal, in document order. One carrying the component's own
- * slot or its `-content` slot, or one an element in the container names in
- * `aria-controls`. Storybook's own error and loading screens are left out.
+ * content in a portal, in document order. One carrying one of `slots`, the
+ * component's own and its content's, or one an element in the container
+ * names in `aria-controls`. Storybook's own error and loading screens are
+ * left out.
  */
 function findPortalsInPage(args: { container: Element | null; slots: string[] }): Element[] {
-  const wanted = new Set(args.slots.flatMap((slot) => [slot, `${slot}-content`]));
+  const wanted = new Set(args.slots);
   const controlled = new Set<string>();
   for (const el of Array.from(args.container?.querySelectorAll("[aria-controls]") ?? [])) {
     for (const id of (el.getAttribute("aria-controls") ?? "").split(/\s+/)) if (id) controlled.add(id);

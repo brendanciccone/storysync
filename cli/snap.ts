@@ -16,7 +16,7 @@ import { selectComponents } from "./storybook.js";
 import type { ComponentEntry, StorybookClient } from "./storybook.js";
 import {
   normalizeStyles, encodeStoryArgs, buildStoryUrl,
-  assignVariantSlugs, componentSlug, componentSlots, diffFromBase,
+  assignVariantSlugs, componentSlug, componentSlots, contentSlots, diffFromBase,
 } from "./snap-normalize.js";
 import type { MeasurementNote, NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
 import { resolveAndLaunch, createContext, captureStory } from "./snap-browser.js";
@@ -265,8 +265,11 @@ export function describeMeasurementNotes(
   name: string,
   notes: { slug: string; note: MeasurementNote }[],
   measured: number,
+  title?: string,
 ): string[] {
   const slot = componentSlots(name)[0] ?? "";
+  // The content slots chooseMeasuredElement takes, as it takes them.
+  const content = contentSlots(componentSlots(name, title)).map((s) => `"${s}"`).join(" or ");
   const groups = new Map<string, { note: MeasurementNote; slugs: string[] }>();
   for (const { slug, note } of notes) {
     const key = JSON.stringify(note);
@@ -282,7 +285,7 @@ export function describeMeasurementNotes(
         `only while open, usually in a portal outside the story's root, so the Figma component would be the ` +
         `trigger. To measure the content, have the story snap renders (the Default story, or else the first) ` +
         `render ${name} open, with defaultOpen for example: snap measures open content that carries ` +
-        `data-slot="${slot}-content" or that the trigger's aria-controls names.`
+        `data-slot=${content} or that the trigger's aria-controls names.`
       );
     }
     return (
@@ -639,7 +642,7 @@ async function snapComponent(
   }
 
   const measured = shell.variants.filter((v) => v.status === "ok").length;
-  shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured));
+  shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
 
   const identical = detectIdenticalVariants(shell.variants);
   if (identical) {

@@ -690,6 +690,18 @@ test("describeMeasurementNotes: a closed trigger says what to change so the cont
   assert.match(warning, /data-slot="dialog-content"/);
 });
 
+test("describeMeasurementNotes: a closed trigger names the content slots snap takes, from the title too", () => {
+  const trigger = [{ slug: "default", note: { kind: "closed-trigger" as const, element: 'button[data-slot="tooltip-trigger"]' } }];
+  // TooltipContent's own slot is already its content's: it was told to add
+  // data-slot="tooltip-content-content".
+  const [tooltip] = describeMeasurementNotes("TooltipContent", trigger, 1, "ui/base/Tooltip");
+  assert.match(tooltip, /carries data-slot="tooltip-content" or that/);
+  assert.doesNotMatch(tooltip, /content-content/);
+  // A component named apart from its title is matched by both.
+  const [demo] = describeMeasurementNotes("DialogDemo", trigger, 1, "Overlays/Dialog");
+  assert.match(demo, /data-slot="dialog-demo-content" or "dialog-content"/);
+});
+
 test("describeMeasurementNotes: a layout wrapper says how to point snap at the component", () => {
   const notes = [
     { slug: "size-default", note: { kind: "layout-wrapper" as const, element: "div", children: 2 } },

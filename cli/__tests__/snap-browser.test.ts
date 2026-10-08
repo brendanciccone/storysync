@@ -120,4 +120,8 @@ test("storyReadySelector: waits for an element that can draw, the component's sl
   // Content only in a portal, as an open dialog's, ends it too.
   assert.match(selector, /\[data-slot="input-otp"\], \[data-slot="input-otp-content"\]/);
   assert.match(selector, /body\.sb-show-errordisplay, body\.sb-show-preparingstory-error$/);
+  // A slot already ending in -content is not doubled.
+  const tooltip = storyReadySelector(["tooltip-content", "tooltip"]);
+  assert.match(tooltip, /\[data-slot="tooltip-content"\], \[data-slot="tooltip"\], body/);
+  assert.doesNotMatch(tooltip, /content-content/);
 });

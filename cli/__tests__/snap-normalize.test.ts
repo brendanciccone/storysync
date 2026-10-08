@@ -19,6 +19,7 @@ import {
   diffFromBase,
   applyDelta,
   componentSlots,
+  contentSlots,
   chooseMeasuredElement,
   isClosedTrigger,
   resolveFontFamily,
@@ -870,6 +871,13 @@ test("componentSlots: a component's name and title leaf, kebab-cased as shadcn/u
   assert.deepEqual(componentSlots("ResizablePanelGroup"), ["resizable-panel-group"]);
   assert.deepEqual(componentSlots("TooltipContent", "ui/base/Tooltip"), ["tooltip-content", "tooltip"]);
   assert.deepEqual(componentSlots("Button", "Forms/Button"), ["button"]);
+});
+
+test("contentSlots: each slot's -content form, never doubled", () => {
+  assert.deepEqual(contentSlots(["dialog"]), ["dialog-content"]);
+  assert.deepEqual(contentSlots(componentSlots("TooltipContent", "ui/base/Tooltip")), ["tooltip-content"]);
+  assert.deepEqual(contentSlots(["dialog-demo", "dialog"]), ["dialog-demo-content", "dialog-content"]);
+  assert.deepEqual(contentSlots([]), []);
 });
 
 test("chooseMeasuredElement: a <noscript> ahead of the component is passed over", () => {

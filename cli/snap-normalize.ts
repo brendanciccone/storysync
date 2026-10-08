@@ -606,6 +606,16 @@ export function componentSlots(name: string, title?: string): string[] {
   return [...new Set([kebab(name), kebab(leaf)].filter(Boolean))];
 }
 
+/**
+ * The `data-slot` values of a component's content, which an overlay renders
+ * outside the story's root while open: each of its own slots' `-content`
+ * form, as an open Dialog's `dialog-content`, and a slot already ending in
+ * `-content` as it is, as TooltipContent's `tooltip-content`.
+ */
+export function contentSlots(slots: readonly string[]): string[] {
+  return [...new Set(slots.map((slot) => (slot.endsWith("-content") ? slot : `${slot}-content`)))];
+}
+
 /** `tag`, with its `data-slot` or else its `role`: how a measured element is named in styles.json and warnings. */
 export function describeElement(node: { tag: string; slot: string | null; role: string | null }): string {
   if (node.slot) return `${node.tag}[data-slot="${node.slot}"]`;
@@ -778,7 +788,7 @@ export function chooseMeasuredElement(
   };
   const portaled =
     portal((candidate) => candidate.slot != null && slots.includes(candidate.slot)) ??
-    portal((candidate) => candidate.slot != null && slots.some((slot) => candidate.slot === `${slot}-content`));
+    portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
   if (portaled) return portaled;
 
   if (!root) {
