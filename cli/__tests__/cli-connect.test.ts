@@ -366,6 +366,10 @@ test("snap CLI: --merge without --components fails before connecting, saying wha
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component/);
   assert.doesNotMatch(r.out, /Connecting|refused/);
+  // Under --json, as JSON on stdout, where the push reads why snap failed.
+  const json = await run("snap", "--storybook", "http://127.0.0.1:9", "--merge", "--json");
+  assert.equal(json.status, 1, json.out);
+  assert.match(JSON.parse(json.stdout).error, /^Error: --merge measures the components --components names/);
 });
 
 test("snap CLI: a signal once the run has written everything doesn't say it stopped before it finished", { timeout: 30_000, skip: process.platform === "win32" }, async () => {

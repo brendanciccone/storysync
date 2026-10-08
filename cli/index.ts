@@ -288,9 +288,10 @@ program
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
     const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
     // Without --components there is nothing to merge: the run measures
-    // every component, which is the whole snap.
+    // every component, which is the whole snap. As JSON under --json, as a
+    // merge refused for its base is, since the push reads the reason there.
     if (opts.merge && !opts.components) {
-      console.error(chalk.red("--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component"));
+      reportError(new Error("--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component"), json);
       process.exit(1);
     }
 
