@@ -1317,6 +1317,27 @@ test("CSS: Tailwind v4's compiled :root, :host theme in a build is not the proje
   } finally { cleanup(own); }
 });
 
+test("CSS: a Storybook build or a .min.css is read as earlier versions read it, without its selector lists", () => {
+  // A build bundles the stylesheets of the packages a project imports, and
+  // a vendored kit is minified: their `:root, .light` lists are a
+  // package's palette, which no earlier version read.
+  const dir = makeProject({
+    "src/app.css": `:root { --color-brand: #ff0000; }`,
+    "storybook-static/assets/iframe-1.css": `:root, .light, .light-theme { --gray-1: #fcfcfc; }
+.light, :root { --color-surface: #fafafa; }
+:root { --color-brand: #ff0000; }`,
+    "public/vendor/kit.min.css": `:root,[data-kit-theme=light]{--kit-blue:#0d6efd}:root{--color-line:#dddddd}`,
+    "src/themes.css": `:root, .light { --color-ink: #111111; }`,
+  });
+  try {
+    for (const source of [undefined, "css"] as const) {
+      assert.deepEqual(tokenTable(extractTokens(dir, source)), [
+        ["colors", [["color/brand", "#ff0000"], ["color/ink", "#111111"], ["color/line", "#dddddd"], ["color/surface", "#fafafa"]]],
+      ]);
+    }
+  } finally { cleanup(dir); }
+});
+
 test("CSS: an escaped quote in a class name, or a bare backtick, hides no :root rule after it", () => {
   // Tailwind compiles `after:content-['']` to the class below. Its \\' was
   // read as the start of a string, which swallowed the rest of the file,

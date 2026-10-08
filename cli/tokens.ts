@@ -135,7 +135,21 @@ export function detectTokenSource(projectPath: string): DetectedSource | null {
 
 /** Stylesheets that declare a custom property for the default theme, as rootDeclarations reads it. */
 function findCSSWithCustomProperties(projectPath: string): string[] {
-  return findCSS(projectPath, (css) => rootDeclarations(css).length > 0);
+  return findCSS(projectPath, (css, file) => rootDeclarations(css, isBundled(file)).length > 0);
+}
+
+/**
+ * Whether a stylesheet bundles other packages' styles rather than being
+ * the project's own: a Storybook build in storybook-static/, which
+ * storysync walks, or a minified `.min.css`, as a vendored Bootstrap is.
+ * Their selector lists, as Bootstrap's `:root, [data-bs-theme=light]` and
+ * Radix Colors' `:root, .light, .light-theme`, hold no project tokens, and
+ * no earlier version read them, so they aren't read there: read, they
+ * added a package's palette to a project's tokens whenever a build was
+ * present.
+ */
+function isBundled(file: string): boolean {
+  return file.endsWith(".min.css") || file.split(/[\\/]/).includes("storybook-static");
 }
 
 /** Stylesheets with a Tailwind v4 `@theme` block that declares a variable. */
@@ -144,7 +158,7 @@ function findTailwindThemeCSS(projectPath: string): string[] {
 }
 
 /** The project's stylesheets, CSS modules aside, whose text without comments passes `test`. */
-function findCSS(projectPath: string, test: (css: string) => boolean): string[] {
+function findCSS(projectPath: string, test: (css: string, file: string) => boolean): string[] {
   const results: string[] = [];
   const srcDir = join(projectPath, "src");
   const appDir = join(projectPath, "app");
@@ -157,7 +171,7 @@ function findCSS(projectPath: string, test: (css: string) => boolean): string[] 
   return results;
 }
 
-function walkCSS(dir: string, results: string[], test: (css: string) => boolean, depth: number): void {
+function walkCSS(dir: string, results: string[], test: (css: string, file: string) => boolean, depth: number): void {
   if (depth > 5) return;
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
@@ -171,7 +185,7 @@ function walkCSS(dir: string, results: string[], test: (css: string) => boolean,
       walkCSS(full, results, test, depth + 1);
     } else if (entry.endsWith(".css") && !entry.endsWith(".module.css")) {
       try {
-        if (test(readCss(full))) results.push(full);
+        if (test(readCss(full), full)) results.push(full);
       } catch { /* skip unreadable */ }
     }
   }
@@ -987,12 +1001,15 @@ const ROOT_SELECTOR = /^(?:html|\*)?(?::root)+$/i;
  * `:root.dark` do, sets that theme's values, not the default's. `html` is
  * left out: `:root` outranks it whatever their order, so its values
  * couldn't be read in turn with `:root`'s, and storysync never read it.
+ * In a `bundled` stylesheet, only a list that ends in `:root` counts, as
+ * earlier versions read it.
  */
-function setsDefaultTheme(rule: StyleRule): boolean {
+function setsDefaultTheme(rule: StyleRule, bundled = false): boolean {
+  const selectors = splitTopLevel(rule.selector, ",").map((selector) => selector.trim());
   return !rule.nested &&
     !rule.atRules.some(isDarkScheme) &&
     !isCompiledTailwindTheme(rule) &&
-    splitTopLevel(rule.selector, ",").some((selector) => ROOT_SELECTOR.test(selector.trim()));
+    (bundled ? ROOT_SELECTOR.test(selectors[selectors.length - 1]) : selectors.some((selector) => ROOT_SELECTOR.test(selector)));
 }
 
 /**
@@ -1016,11 +1033,12 @@ function isCompiledTailwindTheme(rule: StyleRule): boolean {
  * written, in order. coder's index.css declares its palette in
  * `@layer base { :root, .light { ... } }`: only a `:root {` was read,
  * and its one was a scrollbar-color, so none of its 55 colors resolved.
+ * `bundled` is isBundled's.
  */
-function rootDeclarations(css: string): [string, string][] {
+function rootDeclarations(css: string, bundled = false): [string, string][] {
   const declarations: [string, string][] = [];
   for (const rule of styleRules(css)) {
-    if (!setsDefaultTheme(rule)) continue;
+    if (!setsDefaultTheme(rule, bundled)) continue;
     for (const decl of rule.declarations.matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g)) {
       declarations.push([decl[1].trim(), decl[2].trim()]);
     }
@@ -1038,7 +1056,7 @@ function readRootDeclarations(files: string[], warnings?: string[]): Map<string,
   const declared = new Map<string, string>();
   for (const file of files) {
     try {
-      for (const [name, value] of rootDeclarations(readCss(file))) declared.set(name, value);
+      for (const [name, value] of rootDeclarations(readCss(file), isBundled(file))) declared.set(name, value);
     } catch {
       warnings?.push(`Could not read ${file}`);
     }
