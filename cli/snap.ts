@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
-import { mapComponent, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, withoutProps, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
 import { selectComponents } from "./storybook.js";
@@ -35,6 +35,8 @@ export interface SnapOptions {
   variants: VariantSelection;
   /** Ceiling on combinations measured per component under `variants: "all"`. */
   maxCombinations?: number;
+  /** Props never to make variant properties of, in any component (`--exclude-props`). */
+  excludeProps?: string[];
 }
 
 export type SnapVariantStatus = CaptureStatus | "args_unsupported";
@@ -182,7 +184,8 @@ export function describeCap(name: string, cap: CapInfo & { uncovered?: string[] 
   return (
     `${name} has ${cap.totalPossible} variant combinations, more than the limit of ${cap.maxCombinations}, ` +
     `so ${cap.generated} were measured${coverage}. Building the full set needs ` +
-    `--max-combinations ${cap.totalPossible}; otherwise build the subset or narrow which props are variants.`
+    `--max-combinations ${cap.totalPossible}; otherwise build the subset, or leave out props that don't change ` +
+    `how it looks with --exclude-props.`
   );
 }
 
@@ -365,7 +368,7 @@ async function snapComponent(
     return shell;
   }
 
-  const definition = mapComponent(component, opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS);
+  const definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS);
   const storyId = pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;

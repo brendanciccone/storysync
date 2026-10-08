@@ -290,14 +290,20 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 | Storybook prop type | Figma output |
 |---|---|
 | `boolean` | Boolean variant property |
-| `enum` / `union` of string literals | Variant property with matching values |
+| `enum` / `union` of string literals (a `null` or `undefined` member is ignored) | Variant property with matching values |
 | `string` (free text) | Skipped |
 | `number` (free value) | Skipped |
 | `function` / `callback` | Skipped |
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
+| `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
+| `aria-*` / `data-*` attributes | Skipped |
 
-Props come from the Props section of the component's Storybook docs. Subcomponents' props and attached MDX pages don't become variant properties.
+Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
+
+A boolean prop the table doesn't skip becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map` and `snap` leaves out the props it names.
+
+A union prop's values start with its default, so Figma's default variant is the code's, while a boolean's Figma default is always `false`. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
 ## CLI reference
 
@@ -372,6 +378,9 @@ Options:
   --components <names>   Comma-separated component names or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
+  --exclude-props <names>
+                         Comma-separated prop names never to map as variant properties,
+                         in any component
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any component fails or is capped
 ```
@@ -390,6 +399,9 @@ Options:
   --variants <mode>      representative (default) or all
   --max-combinations <n> With --variants all, most combinations per component before
                          capping (default: 256)
+  --exclude-props <names>
+                         Comma-separated prop names never to make variant properties,
+                         in any component; the story's own args set them
   --screenshots          Also save a PNG per variant (off by default)
   --timeout <ms>         Per-story timeout (default: 10000)
   --selector <css>       Override the component root selector
@@ -405,7 +417,7 @@ snap writes `<out>/styles.json`, with full styles for a base variant plus only w
 
 **Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
-**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props.
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. `diff` has no such option, so it reports a prop left out of a push as missing from Figma.
 
 **Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 
@@ -529,7 +541,7 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybo
 
 ### `storysync inspect`
 
-Shows one component's props and how each maps to Figma.
+Shows one component's props, how each maps to Figma, and why a prop was skipped. A default the docs don't give is marked as assumed.
 
 ```text
 Options:
@@ -556,7 +568,7 @@ Options:
 
 - **Stories must use their args.** See [`storysync snap`](#storysync-snap).
 - **Variant values must be URL-safe.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported`.
-- **Props need declared options.** A bare `string` or `number` prop with no `options` in its argType doesn't become a variant, and Storybook's docs don't always include argType options.
+- **Props need literal types.** Only a boolean or a union of string literals becomes a variant property. A `string` or `number` prop doesn't, even with `options` in its argType, since argTypes aren't read.
 - **Text can be a pixel off.** Figma lays out text with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than in the browser. `verify` allows 3% or 1px, whichever is larger. The skill reports this as a font-rendering difference instead of forcing the width, unless a stroke was built wrong.
 - **Transparent borders show as an empty ring.** Browsers paint the background under a transparent border, but Figma's fill stops where an `OUTSIDE` stroke begins. The push keeps the size right and names those variants in its summary.
 - **Some properties aren't scored.** Shadows, gradients and image fills, text transform, and letter-spacing are recorded by snap but not compared by `verify`.
@@ -571,7 +583,7 @@ Storysync splits deterministic extraction (the CLI) from Figma writes (the AI cl
 | Step | How it's produced |
 |---|---|
 | Design tokens | **Measured:** parsed from your Tailwind config, CSS custom properties, or theme file |
-| Component variant structure | **Measured:** derived from Storybook prop types and argType options |
+| Component variant structure | **Measured:** derived from the prop types in Storybook's docs, not story argTypes |
 | Component styling | **Measured:** `getComputedStyle` on the real render, via `storysync snap` |
 | Drift reports | **Measured:** deterministic comparison, normalized on both sides |
 | Figma writes | **Agent-driven:** the client writes Plugin API code; Storysync never writes to Figma |

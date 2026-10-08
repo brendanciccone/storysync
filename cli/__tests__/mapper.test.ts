@@ -5,6 +5,10 @@ import {
   mapProp,
   shouldSkip,
   extractEnumValues,
+  splitUnion,
+  explainProp,
+  withoutProps,
+  parsePropNames,
   resolveDefault,
   cartesian,
   totalCombinations,
@@ -30,6 +34,15 @@ test("shouldSkip: skips structural and style props", () => {
   for (const name of ["children", "className", "class", "style", "ref", "key", "as"]) {
     assert.equal(shouldSkip(prop({ name })), true, `expected ${name} to be skipped`);
   }
+});
+
+// Radix's asChild hands the component's look to its child, and with the
+// text child most stories pass it renders nothing; Base UI's render swaps
+// the element. Neither is a design choice a Figma variant can show.
+test("shouldSkip: skips composition props that swap the rendered element", () => {
+  assert.equal(shouldSkip(prop({ name: "asChild", type: { name: "boolean" }, defaultValue: "false" })), true);
+  assert.equal(shouldSkip(prop({ name: "render", type: { name: "union", raw: "ReactElement | ComponentRenderFn<HTMLProps, ButtonState>" } })), true);
+  assert.equal(mapProp(prop({ name: "asChild", type: { name: "boolean" } })), null);
 });
 
 test("shouldSkip: skips event handlers", () => {
@@ -110,6 +123,41 @@ test("extractEnumValues: rejects a raw union with non-literal members", () => {
   assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `"sm" | number` } })), null);
 });
 
+// react-docgen-typescript prints cva's VariantProps as `"a" | "b" | null`,
+// so every variant of a shadcn component carries a `| null`. It means the
+// prop can be left unset, not that null is a value.
+test("extractEnumValues: leaves null and undefined out of a raw union", () => {
+  assert.deepEqual(extractEnumValues(prop({ name: "variant", type: { name: "union", raw: `"a" | "b" | null` } })), ["a", "b"]);
+  assert.deepEqual(extractEnumValues(prop({ name: "variant", type: { name: "union", raw: `"a" | undefined` } })), ["a"]);
+  assert.deepEqual(extractEnumValues(prop({ name: "variant", type: { name: "union", raw: `null | "a" | undefined | "b"` } })), ["a", "b"]);
+});
+
+test("extractEnumValues: still rejects a union with other non-literal members, or none at all", () => {
+  assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `"sm" | number | null` } })), null);
+  assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `null | undefined` } })), null);
+});
+
+// With null and undefined left out, a template literal type was all that
+// was left of `${number}px | null`, and it became a value named "${number}px".
+test("extractEnumValues: a template literal type with a placeholder is not a value", () => {
+  assert.equal(extractEnumValues(prop({ name: "width", type: { name: "union", raw: "`${number}px` | null" } })), null);
+  assert.equal(extractEnumValues(prop({ name: "width", type: { name: "union", raw: "`${number}px` | \"auto\"" } })), null);
+});
+
+test("splitUnion: splits only on a top-level |", () => {
+  assert.deepEqual(splitUnion(`"sm" | "lg" | null`), [`"sm"`, `"lg"`, "null"]);
+  assert.deepEqual(splitUnion("(value: string | null) => void"), ["(value: string | null) => void"]);
+  assert.deepEqual(splitUnion(`("a" | "b")[] | null`), [`("a" | "b")[]`, "null"]);
+  assert.deepEqual(splitUnion(`Array<"a" | "b"> | { kind: "x" | "y" }`), [`Array<"a" | "b">`, `{ kind: "x" | "y" }`]);
+  assert.deepEqual(splitUnion("(() => void) | null"), ["(() => void)", "null"]);
+  // A literal may hold a | of its own, or an escaped quote.
+  assert.deepEqual(splitUnion(`"a|b" | 'c\\'d' | "e"`), [`"a|b"`, `'c\\'d'`, `"e"`]);
+});
+
+test("extractEnumValues: a literal holding a | is one value", () => {
+  assert.deepEqual(extractEnumValues(prop({ name: "sep", type: { name: "union", raw: `"a|b" | "c" | undefined` } })), ["a|b", "c"]);
+});
+
 test("extractEnumValues: returns null when there is nothing to extract", () => {
   assert.equal(extractEnumValues(prop({ name: "label", type: { name: "string" } })), null);
 });
@@ -129,8 +177,11 @@ test("resolveDefault: unwraps primitives, quotes, and docgen shapes", () => {
 // --- mapProp ---
 
 test("mapProp: maps booleans, honouring the declared default", () => {
-  assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" } })), {
+  assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" }, defaultValue: "false" })), {
     name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
+  });
+  assert.deepEqual(mapProp(prop({ name: "disabled", type: { name: "boolean" } })), {
+    name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
   });
   assert.deepEqual(mapProp(prop({ name: "loading", type: { name: "bool" }, defaultValue: true })), {
     name: "loading", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true",
@@ -138,7 +189,32 @@ test("mapProp: maps booleans, honouring the declared default", () => {
   // A boolean *control* is honoured when the declared type isn't itself
   // something `shouldSkip` rejects outright.
   assert.deepEqual(mapProp(prop({ name: "open", type: { name: "any" }, control: { type: "boolean" } })), {
-    name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
+    name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
+  });
+});
+
+test("mapProp: a boolean that may be null or undefined is still a BOOLEAN", () => {
+  // cva's boolean variants print as `boolean | null`.
+  assert.deepEqual(mapProp(prop({ name: "inset", type: { name: "union", raw: "boolean | null" }, defaultValue: "true" })), {
+    name: "inset", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true",
+  });
+  assert.deepEqual(mapProp(prop({ name: "dot", type: { name: "union", raw: "true | false | undefined" } })), {
+    name: "dot", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true,
+  });
+  // A boolean with another value besides is neither a BOOLEAN nor a set of literals.
+  assert.equal(mapProp(prop({ name: "checked", type: { name: "union", raw: `boolean | "indeterminate"` } })), null);
+});
+
+// Only `boolean` left once null is gone is a BOOLEAN. Any other single member
+// is not: Base UI's InputOTP has `noScriptCSSFallback: string | null`.
+test("mapProp: a nullable union of one other member is not a BOOLEAN", () => {
+  assert.equal(mapProp(prop({ name: "noScriptCSSFallback", type: { name: "union", raw: "string | null" } })), null);
+  assert.equal(mapProp(prop({ name: "count", type: { name: "union", raw: "number | undefined" } })), null);
+  assert.deepEqual(mapProp(prop({ name: "tone", type: { name: "union", raw: `"a" | null` }, defaultValue: "a" })), {
+    name: "tone", type: "VARIANT", values: ["a"], defaultValue: "a",
+  });
+  assert.deepEqual(mapProp(prop({ name: "tone", type: { name: "union", raw: `"true" | null` }, defaultValue: "true" })), {
+    name: "tone", type: "VARIANT", values: ["true"], defaultValue: "true",
   });
 });
 
@@ -158,16 +234,120 @@ test("mapProp: uses the declared default when it is one of the values", () => {
   assert.equal(result?.defaultValue, "md");
 });
 
+// Figma makes a set's top-left variant its default, and the skill lays the
+// set out in this order, so the default leads. The docs print TypeScript's
+// order, not the author's: shadcn's Button reads link first.
+test("mapProp: puts the declared default first and keeps the rest in order", () => {
+  assert.deepEqual(mapProp(prop({
+    name: "variant",
+    type: { name: "union", raw: `"link" | "default" | "outline" | "secondary" | "ghost" | "destructive" | null` },
+    defaultValue: "default",
+  })), {
+    name: "variant", type: "VARIANT",
+    values: ["default", "link", "outline", "secondary", "ghost", "destructive"],
+    defaultValue: "default",
+  });
+  assert.deepEqual(
+    mapProp(prop({ name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` }, defaultValue: "lg" }))?.values,
+    ["lg", "sm", "md"],
+  );
+  // With no declared default, nothing moves.
+  assert.deepEqual(mapProp(prop({ name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` } }))?.values, ["sm", "md", "lg"]);
+});
+
 test("mapProp: falls back to the first value when the default is not a valid option", () => {
   const result = mapProp(prop({
     name: "size", type: { name: "union", raw: `"sm" | "md" | "lg"` }, defaultValue: "enormous",
   }));
   assert.equal(result?.defaultValue, "sm");
+  assert.equal(result?.defaultAssumed, true);
+});
+
+// shadcn/ui's Tailwind v3 Button sets its defaults only in cva's
+// defaultVariants, so the docs print none, and TypeScript's union order
+// put link first: Figma's default, and snap's base, were variant=link.
+test("mapProp: with no default in the docs, assumes the value named default", () => {
+  const variant = { name: "union", raw: `"link" | "default" | "outline" | null` };
+  assert.deepEqual(mapProp(prop({ name: "variant", type: variant })), {
+    name: "variant", type: "VARIANT", values: ["default", "link", "outline"], defaultValue: "default", defaultAssumed: true,
+  });
+  // A default the docs give wins over the name.
+  assert.equal(mapProp(prop({ name: "variant", type: variant, defaultValue: "outline" }))?.defaultValue, "outline");
+  // With no value of that name, the first.
+  assert.equal(mapProp(prop({ name: "align", type: { name: "union", raw: `"center" | "left"` } }))?.defaultValue, "center");
+});
+
+// Map JSON is a baseline the GitHub Action compares whole, so a property
+// whose default the docs give must come out exactly as it did before the
+// field existed.
+test("mapProp: leaves defaultAssumed out where the docs give a default", () => {
+  for (const p of [
+    prop({ name: "size", type: { name: "union", raw: `"sm" | "lg"` }, defaultValue: "sm" }),
+    prop({ name: "disabled", type: { name: "boolean" }, defaultValue: "false" }),
+    prop({ name: "open", type: { name: "boolean" }, defaultValue: true }),
+  ]) {
+    assert.equal(Object.hasOwn(mapProp(p) ?? {}, "defaultAssumed"), false, p.name);
+  }
 });
 
 test("mapProp: returns null for skipped and unmappable props", () => {
   assert.equal(mapProp(prop({ name: "children" })), null);
   assert.equal(mapProp(prop({ name: "label", type: { name: "string" } })), null);
+});
+
+// --- withoutProps / parsePropNames (--exclude-props) ---
+
+test("parsePropNames: splits a comma-separated list, trimming and dropping blanks", () => {
+  assert.deepEqual(parsePropNames(" modal, loop ,,shouldFilter "), ["modal", "loop", "shouldFilter"]);
+  assert.deepEqual(parsePropNames(undefined), []);
+});
+
+test("withoutProps: leaves out the named props, ignoring case, and nothing else", () => {
+  const drawer = component([
+    prop({ name: "modal", type: { name: "boolean" } }),
+    prop({ name: "direction", type: { name: "union", raw: `"bottom" | "top"` } }),
+    prop({ name: "shouldScaleBackground", type: { name: "boolean" } }),
+  ], "Drawer");
+  assert.deepEqual(withoutProps(drawer, ["Modal", "shouldscalebackground"]).props.map((p) => p.name), ["direction"]);
+  assert.deepEqual(mapComponent(withoutProps(drawer, ["modal", "nope"])).variantProperties.map((p) => p.name), ["direction", "shouldScaleBackground"]);
+  assert.equal(withoutProps(drawer, []), drawer);
+  // The component it was given is left as it was.
+  assert.equal(drawer.props.length, 3);
+});
+
+// --- explainProp ---
+
+test("explainProp: says which rule left a prop out", () => {
+  const reason = (p: StorybookProp) => explainProp(p).reason;
+  assert.equal(reason(prop({ name: "className", type: { name: "union", raw: "string | ((state: ButtonState) => string)" } })), "structural prop");
+  assert.match(reason(prop({ name: "asChild", type: { name: "boolean" } })) ?? "", /^composition prop/);
+  assert.equal(reason(prop({ name: "onOpenChange", type: { name: "func" } })), "event handler");
+  assert.equal(reason(prop({ name: "label", type: { name: "string" } })), "free string, with no fixed values");
+  assert.equal(reason(prop({ name: "size", type: { name: "union", raw: `"sm" | number` } })), "union with non-literal members: number");
+  assert.equal(reason(prop({ name: "snap", type: { name: "union", raw: "string | number | null" } })), "union with non-literal members: string, number");
+  // addon-mcp prints an alias by name, without its members.
+  assert.equal(reason(prop({ name: "shortcuts", type: { name: "QuestionnaireShortcutMode" } })), "its type, QuestionnaireShortcutMode, lists no values");
+  // A type the parser calls a union for a | nested inside it is named whole.
+  assert.equal(reason(prop({ name: "validate", type: { name: "union", raw: "(value: string | null) => boolean" } })), "callback");
+  assert.equal(reason(prop({ name: "picked", type: { name: "union", raw: `("a" | "b")[] | null` } })), `its type, ("a" | "b")[], lists no values`);
+  assert.equal(reason(prop({ name: "fallback", type: { name: "union", raw: "string | null" } })), "free string, with no fixed values");
+  assert.equal(reason(prop({ name: "width", type: { name: "union", raw: "`${number}px` | null" } })), "its type, `${number}px`, lists no values");
+  assert.equal(reason(prop({ name: "variant", type: { name: "union", raw: `"a" | "b" | null` } })), null);
+});
+
+test("explainProp: marks a default the docs don't give as assumed", () => {
+  const union = { name: "union", raw: `"center" | "left" | "right"` };
+  assert.equal(explainProp(prop({ name: "align", type: union, defaultValue: "left" })).defaultAssumed, false);
+  assert.equal(explainProp(prop({ name: "textAlign", type: union })).defaultAssumed, true);
+  assert.equal(explainProp(prop({ name: "loop", type: { name: "boolean" }, defaultValue: "false" })).defaultAssumed, false);
+  assert.equal(explainProp(prop({ name: "shouldFilter", type: { name: "boolean" } })).defaultAssumed, true);
+  // A JSDoc default in prose is not a value either, nor is one outside the
+  // values, `null` among them: inspect says the docs give no usable default.
+  assert.equal(explainProp(prop({
+    name: "repositionInputs", type: { name: "boolean" }, defaultValue: "true when {@link snapPoints } is defined",
+  })).defaultAssumed, true);
+  assert.equal(explainProp(prop({ name: "align", type: union, defaultValue: "justify" })).defaultAssumed, true);
+  assert.equal(explainProp(prop({ name: "align", type: { name: "union", raw: `"a" | "b" | null` }, defaultValue: "null" })).defaultAssumed, true);
 });
 
 // --- totalCombinations ---
@@ -353,6 +533,18 @@ test("mapComponent: maps props and carries metadata through", () => {
   assert.equal(def.variantCombinations.length, 4);
   assert.equal(def.wasCapped, false);
   assert.equal(def.cap, undefined);
+});
+
+test("mapComponent: maps a shadcn Radix Button's cva variants, without asChild", () => {
+  // The Props block addon-mcp 10.6 prints for shadcn/ui's Radix Button.
+  const def = mapComponent(component([
+    prop({ name: "variant", type: { name: "union", raw: `"link" | "default" | "outline" | "secondary" | "ghost" | "destructive" | null` }, defaultValue: "default" }),
+    prop({ name: "size", type: { name: "union", raw: `"default" | "xs" | "sm" | "lg" | "icon" | "icon-xs" | "icon-sm" | "icon-lg" | null` }, defaultValue: "default" }),
+    prop({ name: "asChild", type: { name: "boolean" }, defaultValue: "false" }),
+  ]));
+  assert.deepEqual(def.variantProperties.map((p) => [p.name, p.values[0], p.values.length]), [["variant", "default", 6], ["size", "default", 8]]);
+  assert.equal(def.variantCombinations.length, 48);
+  assert.deepEqual(def.variantCombinations[0], { variant: "default", size: "default" });
 });
 
 test("mapComponent: a component with no mappable props yields one empty combination", () => {

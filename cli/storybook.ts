@@ -426,7 +426,7 @@ export class StorybookClient {
       const separator = lines[i + 1];
       if (!separator || !/^\s*\|[\s-:|]+\|\s*$/.test(separator)) continue;
 
-      const cols = header.split("|").map((c) => c.trim().toLowerCase()).filter(Boolean);
+      const cols = tableCells(header).map((c) => c.toLowerCase());
       const nameIdx = cols.findIndex((c) => c === "name" || c === "property" || c === "prop");
       const typeIdx = cols.findIndex((c) => c === "type" || c === "control");
       const defaultIdx = cols.findIndex((c) => c === "default" || c === "default value");
@@ -435,11 +435,11 @@ export class StorybookClient {
       for (let j = i + 2; j < lines.length; j++) {
         const row = lines[j];
         if (!row.trim().startsWith("|")) break;
-        const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
+        const cells = tableCells(row);
         if (cells.length <= Math.max(nameIdx, typeIdx)) continue;
 
         const name = cells[nameIdx].replace(/`/g, "").trim();
-        const typeStr = cells[typeIdx].replace(/`/g, "").replace(/\\\|/g, "|").trim();
+        const typeStr = cells[typeIdx].replace(/`/g, "").trim();
         const defaultValue = defaultIdx >= 0 && cells[defaultIdx]
           ? cells[defaultIdx].replace(/`/g, "").replace(/^["']|["']$/g, "").replace(/-$/, "").trim() || undefined
           : undefined;
@@ -461,6 +461,19 @@ export class StorybookClient {
   private parseStories(docId: string, text: string): { id: string; name: string }[] {
     return parseStories(docId, text);
   }
+}
+
+/**
+ * A markdown table row's cells, trimmed. Markdown writes a `|` inside a cell
+ * as `\|`, and every union type in a props table has one, so the row is split
+ * only on a bare `|` and each `\|` then read as `|`: split on every `|`, a
+ * row of `"a" \| "b"` gave the type `"a" \` and moved every cell after it
+ * along by one. An empty cell is kept, so the cells after it stay in their
+ * columns.
+ */
+export function tableCells(row: string): string[] {
+  const inner = row.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
+  return inner.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, "|").trim());
 }
 
 // Matches an ID label followed by a story ID, quoted or bare. Storybook's

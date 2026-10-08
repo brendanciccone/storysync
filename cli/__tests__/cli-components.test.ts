@@ -30,7 +30,7 @@ const LIST = [
 ].join("\n");
 
 const DOCS: Record<string, string> = {
-  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n}\n```",
+  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n  shape?: \"round\" | \"square\";\n  asChild?: boolean = false;\n  tone?: \"info\" | number;\n}\n```",
   "data-display-card": "A card with no props.",
 };
 
@@ -38,7 +38,7 @@ const DOCS: Record<string, string> = {
 // the code, Card is in code too, and Badge exists only in Figma.
 const FIGMA_FILE: FileSpec = {
   pages: [
-    { name: "Forms", nodes: [set("Button", { size: ["sm", "lg"] })] },
+    { name: "Forms", nodes: [set("Button", { size: ["sm", "lg"], shape: ["round", "square"] })] },
     { name: "Data display", nodes: [component("Card")] },
     { name: "Feedback", nodes: [component("Badge")] },
   ],
@@ -176,7 +176,25 @@ test("map CLI: matches names and IDs as snap does, ignoring case and spacing", a
   const r = await run("map", "--storybook", storybook, "--components", " button , DATA-DISPLAY-CARD", "--json");
   assert.equal(r.status, 0, r.out);
   const data = JSON.parse(r.stdout) as { components: { name: string; combinations: number }[] };
-  assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 2], ["Card", 1]]);
+  assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 4], ["Card", 1]]);
+});
+
+test("map CLI: --exclude-props leaves the named props out, ignoring case", async () => {
+  const r = await run("map", "--storybook", storybook, "--components", "Button", "--exclude-props", "SHAPE, nothing", "--json");
+  assert.equal(r.status, 0, r.out);
+  const [button] = (JSON.parse(r.stdout) as { components: { variantProperties: { name: string }[]; combinations: number }[] }).components;
+  assert.deepEqual(button.variantProperties.map((p) => p.name), ["size"]);
+  assert.equal(button.combinations, 2);
+});
+
+test("map CLI: --json marks a default the docs don't give, and only that one", async () => {
+  const r = await run("map", "--storybook", storybook, "--components", "Button", "--json");
+  assert.equal(r.status, 0, r.out);
+  const [button] = (JSON.parse(r.stdout) as { components: { variantProperties: unknown[] }[] }).components;
+  assert.deepEqual(button.variantProperties, [
+    { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+    { name: "shape", type: "VARIANT", values: ["round", "square"], defaultValue: "round", defaultAssumed: true },
+  ]);
 });
 
 /**
@@ -454,6 +472,17 @@ test("inspect CLI: finds a component by name or ID, ignoring case", async () => 
     assert.match(r.out, /^Button$/m);
     assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\]/);
   }
+});
+
+test("inspect CLI: says why each prop left out was skipped, and gives each variant's default", async () => {
+  const r = await run("inspect", "--storybook", storybook, "--component", "Button");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\], default sm$/m);
+  // The docs give shape no default, so its first value stands in for one.
+  assert.match(r.out, /shape \(union\) -> VARIANT \[round, square\], default round \(assumed: the docs give no usable default\)$/m);
+  assert.match(r.out, /asChild \(boolean\) -> skipped: composition prop/);
+  assert.match(r.out, /tone \(union\) -> skipped: union with non-literal members: number$/m);
+  assert.match(r.out, /2 variant properties, 4 combinations/);
 });
 
 // --- A Storybook or Figma that can't be reached ---

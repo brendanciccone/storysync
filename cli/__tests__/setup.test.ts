@@ -397,11 +397,12 @@ test("every push instruction lays a set out in snap's order, not its children's"
   // A re-push laid a set out in the order an earlier build had left its
   // children in, so the primary row's columns read sm, lg, sm disabled, lg
   // disabled and the others' sm, sm disabled, lg disabled, lg. The layout
-  // follows snap's variantProperties in the order Storybook declares them, a
-  // BOOLEAN false then true, and the layers panel, which shows the last child
-  // at the top, reads the same way. Figma takes the set's default variant
-  // from the top-left, so the agent says which that is when it is not the
-  // component's own default.
+  // follows snap's variantProperties as snap records them, each VARIANT's
+  // default first and the rest as Storybook's docs list them, a BOOLEAN false
+  // then true, and the layers panel, which shows the last child at the top,
+  // reads the same way. Figma takes the set's default variant from the
+  // top-left, which is the component's default but for a BOOLEAN that
+  // defaults to true, so the agent says which it is when it is not.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -417,14 +418,19 @@ test("every push instruction lays a set out in snap's order, not its children's"
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /`variantProperties`[^\n]*copied as they are/, `${path} never has each part carry snap's variantProperties`);
       assert.match(text, /never by the set's children/, `${path} lets the layout follow the set's child order`);
-      assert.match(text, /in the order snap records them, which is the order of the component's prop type as Storybook's docs list it \(a story's `argTypes` options are not read\), not default first/,
-        `${path} never says the values run in Storybook's declared order`);
-      assert.doesNotMatch(text, /default first, then|all-defaults variant[^\n]*top-left/, `${path} still puts each property's default first`);
+      assert.match(text, /in the order snap records them: a `VARIANT`'s default value first, then the rest in the order of the component's prop type as Storybook's docs list it \(a story's `argTypes` options are not read\)/,
+        `${path} never says the values run default first, then in Storybook's declared order`);
+      assert.doesNotMatch(text, /not default first/, `${path} still says snap's values are not default first`);
+      assert.doesNotMatch(text, /all-defaults variant[^\n]*top-left/, `${path} says the all-defaults variant is the top-left one, which it is not where a BOOLEAN defaults to true`);
       assert.match(text, /a `BOOLEAN` property runs `false, true`, though snap lists its values `true, false`/i,
         `${path} never says how a BOOLEAN property is ordered`);
       assert.match(text, /Figma makes the top-left variant the set's default variant/, `${path} never says where Figma takes the default variant from`);
-      assert.match(text, /`size=sm` even if the component defaults to `md`/, `${path} gives no example of a default that is not the component's`);
+      assert.match(text, /the component's own default for a `VARIANT`, since snap records it first, but `false` for a `BOOLEAN`, even one that defaults to `true`/,
+        `${path} never says Figma's default is the component's own but for a BOOLEAN`);
+      assert.match(text, /`open=false` even if the component defaults to `open=true`/, `${path} gives no example of a default that is not the component's`);
       assert.match(text, /say in the summary which variant Figma will treat as the default/, `${path} never has the agent report Figma's default`);
+      assert.match(text, /A property marked `defaultAssumed: true` has no default in Storybook's docs, so its `defaultValue` is a guess: name those in the summary too\./,
+        `${path} never has the agent report a default snap had to guess`);
       assert.match(text, /^\d+\. Summarize[^\n]*which variant Figma will treat as a set's default where that is not the component's default/m,
         `${path}'s summary step leaves out Figma's default variant`);
       assert.match(text, /With one property, each value is a row of one/i, `${path} never says how one property is laid out`);
