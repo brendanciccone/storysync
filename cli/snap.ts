@@ -287,10 +287,24 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   if (entries.length) {
     const { browser, via } = await deps.launch({ headless: true });
     progress(`Browser: ${via}`);
+    // A browser that goes before the run ends, crashed or killed from
+    // outside, failed every component left as a broken session, and the run
+    // then wrote that over the last styles.json and exited 0. Stop instead,
+    // writing nothing, as a stopped snap does.
+    let lost = false;
+    browser.on?.("disconnected", () => { lost = true; });
+    const gone = () => lost || browser.isConnected?.() === false;
     try {
       for (const [index, entry] of entries.entries()) {
+        if (gone()) break;
         deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
         components.push(await snapComponent(entry, opts, deps, browser, progress));
+      }
+      if (gone()) {
+        throw new Error(
+          `The browser closed before snap finished (it crashed, or something stopped it), with ${components.length} of ${entries.length} components read. ` +
+            `${SNAP_STYLES_FILENAME} and ${SNAP_META_FILENAME} were left as they were. Run snap again.`,
+        );
       }
     } finally {
       await browser.close().catch(() => { /* already gone */ });

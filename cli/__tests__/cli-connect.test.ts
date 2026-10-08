@@ -8,7 +8,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { connectFailure } from "../mcp-connect.js";
+import { runSnap } from "../snap.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
@@ -281,39 +282,132 @@ test("diff CLI: a use_figma that never answers fails the Figma read within --con
 
 // --- A snap that is stopped ---
 
-test("snap CLI: SIGTERM stops the run without writing a styles.json", { timeout: 30_000 }, async (t) => {
-  // Playwright closed the browser on SIGTERM and left snap running: every
-  // component left was recorded as a failed browser session, written over
-  // the last styles.json, and the run exited 0.
-  const { url, calls } = await slowStandIn({ "docs-show": Infinity });
-  const out = mkdtempSync(join(tmpdir(), "storysync-sigterm-"));
-  try {
-    const child = spawn(process.execPath, [CLI, "snap", "--storybook", url, "--out", out, "--json", "--connect-timeout", "20000"], { stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    child.stdout.on("data", (d) => { output += d; });
-    child.stderr.on("data", (d) => { output += d; });
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+const CLEAR = "\r\u001b[2K";
 
-    // The browser is up once snap asks for a component's docs.
-    const deadline = Date.now() + 15_000;
-    while (!calls.includes("docs-show") && child.exitCode === null && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (!calls.includes("docs-show")) {
-      child.kill("SIGKILL");
-      await exited;
-      if (/Could not find a Chromium-based browser|needs Node 20 or newer/.test(output)) {
-        t.skip("no browser for snap here");
-        return;
+for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+  test(`snap CLI: ${signal} stops the run without writing a styles.json, and clears the status line`, { timeout: 30_000, skip: process.platform === "win32" }, async (t) => {
+    // Playwright closed the browser on SIGTERM and left snap running: every
+    // component left was recorded as a failed browser session, written over
+    // the last styles.json, and the run exited 0. SIGHUP, a closed terminal,
+    // did the same.
+    const { url, calls } = await slowStandIn({ "docs-show": Infinity });
+    const out = mkdtempSync(join(tmpdir(), "storysync-sigterm-"));
+    // stderr made to look like a terminal, so the status line is drawn.
+    const preload = join(out, "tty.cjs");
+    writeFileSync(preload, "Object.defineProperty(process.stderr, 'isTTY', { value: true }); process.stderr.columns = 120;\n");
+    const env: NodeJS.ProcessEnv = { ...process.env, TERM: "xterm-256color" };
+    delete env.CI;
+    delete env.STORYSYNC_PROGRESS;
+    try {
+      const child = spawn(process.execPath, ["--require", preload, CLI, "snap", "--storybook", url, "--out", out, "--json", "--connect-timeout", "20000"], { env, stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (d) => { output += d; });
+      child.stderr.on("data", (d) => { output += d; });
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+
+      // The browser is up once snap asks for a component's docs.
+      const deadline = Date.now() + 15_000;
+      while (!calls.includes("docs-show") && child.exitCode === null && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      assert.fail(`snap never read a component: ${output}`);
-    }
+      if (!calls.includes("docs-show")) {
+        child.kill("SIGKILL");
+        await exited;
+        if (/Could not find a Chromium-based browser|needs Node 20 or newer/.test(output)) {
+          t.skip("no browser for snap here");
+          return;
+        }
+        assert.fail(`snap never read a component: ${output}`);
+      }
 
-    child.kill("SIGTERM");
-    const { code } = await exited;
-    assert.equal(code, 143, output);
-    assert.equal(existsSync(join(out, "styles.json")), false, "a stopped snap must not write styles.json");
+      child.kill(signal);
+      const exit = await exited;
+      assert.equal(exit.code, code, output);
+      assert.equal(existsSync(join(out, "styles.json")), false, "a stopped snap must not write styles.json");
+      assert.equal(existsSync(join(out, "meta.json")), false);
+      // The line was drawn, then cleared before snap said it stopped.
+      assert.ok(output.includes(`${CLEAR}snap 1/1 Forms/Button`), JSON.stringify(output));
+      assert.ok(output.endsWith(`${CLEAR}snap was stopped by ${signal} before it finished, so styles.json and meta.json in ${out} were left as they were.\n`), JSON.stringify(output));
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+}
+
+test("runSnap: a browser that goes partway through stops the run, leaving the last styles.json as it was", async () => {
+  // Chrome crashing, or killed from outside, failed every component left as
+  // a broken browser session; the run then wrote that over the last
+  // styles.json and meta.json, and exited 0.
+  const out = mkdtempSync(join(tmpdir(), "storysync-lost-"));
+  writeFileSync(join(out, "styles.json"), "last good snap\n");
+  const read: string[] = [];
+  let disconnected: (() => void) | undefined;
+  let closed = false;
+  try {
+    await assert.rejects(
+      runSnap({ storybookUrl: "http://localhost:6006", outDir: out, screenshots: false, timeoutMs: 1000, variants: "representative" }, {
+        storybook: {
+          listComponents: async () => [
+            { id: "forms-button", name: "Button" },
+            { id: "forms-card", name: "Card" },
+            { id: "forms-input", name: "Input" },
+          ],
+          getComponent: async (id: string) => {
+            read.push(id);
+            // The browser goes while the first component is read.
+            if (id === "forms-button") disconnected?.();
+            return { name: id, props: [], stories: [{ id: `${id}--default`, name: "Default" }] };
+          },
+        } as never,
+        launch: async () => ({
+          via: "stub",
+          browser: {
+            on: (event: string, listener: () => void) => { if (event === "disconnected") disconnected = listener; },
+            newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+            close: async () => { closed = true; },
+          },
+        }) as never,
+      }),
+      /^Error: The browser closed before snap finished \(it crashed, or something stopped it\), with 1 of 3 components read\. styles\.json and meta\.json were left as they were\. Run snap again\.$/,
+    );
+    // No more components were tried, and nothing was written.
+    assert.deepEqual(read, ["forms-button"]);
+    assert.equal(readFileSync(join(out, "styles.json"), "utf8"), "last good snap\n");
     assert.equal(existsSync(join(out, "meta.json")), false);
+    assert.equal(closed, true);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a browser found no longer connected after the last component still writes nothing", async () => {
+  // The disconnected event and the failures it causes can arrive in either
+  // order, so the browser is asked too.
+  const out = mkdtempSync(join(tmpdir(), "storysync-lost-"));
+  let connected = true;
+  try {
+    await assert.rejects(
+      runSnap({ storybookUrl: "http://localhost:6006", outDir: out, screenshots: false, timeoutMs: 1000, variants: "representative" }, {
+        storybook: {
+          listComponents: async () => [{ id: "forms-button", name: "Button" }],
+          getComponent: async () => {
+            connected = false;
+            return { name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] };
+          },
+        } as never,
+        launch: async () => ({
+          via: "stub",
+          browser: {
+            on: () => {},
+            isConnected: () => connected,
+            newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+            close: async () => {},
+          },
+        }) as never,
+      }),
+      /with 1 of 1 components read/,
+    );
+    assert.equal(existsSync(join(out, "styles.json")), false);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }

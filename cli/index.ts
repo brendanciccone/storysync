@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { writeSync } from "node:fs";
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
@@ -273,9 +274,16 @@ program
     // session, wrote that over the last styles.json and exited 0. So a CI job
     // cancelled, or an agent's command timed out, replaced a good snap with a
     // broken one. Stop instead, writing nothing, as Ctrl-C does: exiting runs
-    // Playwright's exit handler, which kills the browser.
-    const stop = (code: number) => () => {
+    // Playwright's exit handler, which kills the browser. Said on stderr,
+    // written at once since the process ends next, so a log or an agent
+    // reading it knows the snap on disk is the last one.
+    const stop = (code: number) => (signal: NodeJS.Signals) => {
       progress.done();
+      try {
+        writeSync(2, `snap was stopped by ${signal} before it finished, so styles.json and meta.json in ${opts.out} were left as they were.\n`);
+      } catch {
+        // A closed or full stderr: the exit code says it.
+      }
       process.exit(code);
     };
     process.on("SIGTERM", stop(143));

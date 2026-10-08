@@ -409,7 +409,7 @@ Options:
 
 snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`.
 
-A snap stopped before it finishes, with Ctrl-C or by SIGTERM from a cancelled job or a command timeout, writes nothing, so the last `styles.json` stays as it was.
+If snap stops before it finishes, it doesn't write `styles.json` or `meta.json`, so the last ones stay as they were. Screenshots it already took are kept. It exits 130 after Ctrl-C, 143 after SIGTERM (a cancelled job or a command timeout), 129 after SIGHUP, and 1 if the browser crashes or is closed.
 
 **Strict modes.** `--strict` fails on anything that couldn't be measured, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI.
 
