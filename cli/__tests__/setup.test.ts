@@ -707,6 +707,12 @@ test("every push instruction builds a transparent border to fill as the browser 
       assert.doesNotMatch(text, /In the browser the background runs under a transparent border, where Figma's fill stops/, `${path} still says the browser always fills under a transparent border`);
       assert.match(text, /`backgroundClip`[^\n]*padding-box`[^\n]*`OUTSIDE`[^\n]*`INSIDE`, with `strokesIncludedInLayout = true` on a hugging frame/,
         `${path} never builds a transparent border by backgroundClip`);
+      // One rule for a hugging frame, which used to say INSIDE only at a
+      // fixed size, then INSIDE on a hugging frame, and OUTSIDE at a fixed
+      // size "less the border", a border's width too large.
+      assert.match(text, /hugging frame[^\n]*OUTSIDE'?`, or `INSIDE` with `strokesIncludedInLayout = true`/, `${path} never builds a border INSIDE in a hugging frame's layout`);
+      assert.doesNotMatch(text, /Use `INSIDE` only when you give the frame a fixed size/, `${path} still allows INSIDE only at a fixed size`);
+      assert.doesNotMatch(text, /sized to the measured size less the border\b/, `${path} still sizes a padding-box frame less one border`);
       const summary = /^\d+\. Summarize[^\n]*/m.exec(text);
       assert.ok(summary, `${path} has no summary step`);
       assert.match(summary[0], /transparent or translucent border, say how its fill meets that border[^\n]*`backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`/,

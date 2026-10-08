@@ -228,13 +228,16 @@ function renderBounds(node) {
  * absoluteRenderBounds is what Figma's would be. A translucent color's alpha
  * is its paint's opacity. `strokeAlign` builds the stroke another way: INSIDE,
  * at the measured size, as the skill says to for a frame given a fixed size,
- * and for a hugging one whose fill runs under a transparent border, with
- * `strokesIncludedInLayout`, or CENTER. `strokeHidden` builds a transparent
+ * or CENTER. With `hugging`, an INSIDE stroke is on a frame that hugs its
+ * content, as for a fill that runs under a transparent border: with
+ * `strokesIncludedInLayout` the stroke adds to the frame's size, which comes
+ * to the measured size, and without it the stroke eats into the padding and
+ * the frame is the measured size less the stroke. `strokeHidden` builds a transparent
  * border's stroke as a designer might, a paint of full opacity hidden with the
  * eye icon, `visible: false`. A width or height of 0, a closed Collapsible's,
  * is built at 0.01, the least Figma takes, as the skill says.
  */
-function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false } = {}) {
+function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false, hugging = false } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
   const textNode = {
     type: "TEXT",
@@ -246,7 +249,8 @@ function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, st
   const border = Object.fromEntries(SIDES.map((side) => [side, st.borderUniform ?? st.border?.[side.toLowerCase()] ?? null]));
   const drawn = SIDES.map((side) => border[side]).find(Boolean) ?? null;
   const weight = Object.fromEntries(SIDES.map((side) => [side, drawn ? border[side]?.width ?? 0 : 1]));
-  const share = drawn ? OUTSIDE_SHARE[strokeAlign] : 0;
+  // How much of the stroke the node's own size leaves out of the measured one.
+  const share = !drawn ? 0 : strokeAlign === "INSIDE" && hugging && !strokesIncludedInLayout ? 1 : OUTSIDE_SHARE[strokeAlign];
   const node = {
     name,
     fills: st.backgroundColor ? [solidPaint(st.backgroundColor)] : [],
@@ -568,7 +572,9 @@ async function buildReadback(snapDir, { mutate, withholdSource, onRead, readback
  * wrong: a transparent 1px border is in the border box, 2px each way, though
  * it paints nothing; a box shadow is not; a border on one side only makes
  * Figma report strokeWeight as mixed; and the outline Button's 2px border is
- * built INSIDE at a fixed size, and CENTER. The same transparent border built
+ * built INSIDE at a fixed size, and CENTER. The transparent border is built
+ * INSIDE too, on a hugging frame with strokesIncludedInLayout, as the skill
+ * says for one the fill runs under. The same transparent border built
  * with its paint hidden by the eye icon, visible at full opacity but for
  * `visible: false`, draws nothing either. And a translucent fill, border and
  * text color, snap's `#rrggbbaa` (the soft Chip's background is #4b556322),
@@ -594,6 +600,7 @@ function edgeVariants(snapDir) {
     { edge: "inside-stroke", styles: outline, strokeAlign: "INSIDE" },
     { edge: "center-stroke", styles: outline, strokeAlign: "CENTER" },
     { edge: "hidden-stroke", styles: transparent, strokeHidden: true },
+    { edge: "clear-inside", styles: transparent, strokeAlign: "INSIDE", strokesIncludedInLayout: true, hugging: true },
     {
       edge: "translucent",
       styles: {
@@ -605,14 +612,13 @@ function edgeVariants(snapDir) {
 }
 
 /**
- * Scores the edge variants through a readback template: a snap holding them
+ * Scores the edge variants, or `edges`, through a readback template: a snap holding them
  * as one component, a simulated set built from them, read back a slice at a
  * time, and verify's verdict on each, keyed by edge. Each has to report a
  * width and a height, so a template that drops them cannot pass by having
  * nothing compared.
  */
-async function scoreEdges(snapDir, readback) {
-  const edges = edgeVariants(snapDir);
+async function scoreEdges(snapDir, readback, edges = edgeVariants(snapDir)) {
   const slug = (e) => `edge-${e.edge}`;
   const dir = join(WORK, "snap-edges");
   mkdirSync(dir, { recursive: true });
@@ -633,7 +639,7 @@ async function scoreEdges(snapDir, readback) {
     const name = `edge=${e.edge}`;
     slugByName[name] = slug(e);
     sourceBySlug[slug(e)] = "measured";
-    return figmaNode(name, e.styles, { strokeAlign: e.strokeAlign, strokeHidden: e.strokeHidden });
+    return figmaNode(name, e.styles, e);
   });
   const componentSet = { id: "set:Edges", type: "COMPONENT_SET", name: "Edges", children };
   const { variants } = await readSet(readback, { componentSet, slugByName, sourceBySlug }, READ_BATCH);
@@ -2727,8 +2733,16 @@ async function main() {
     const reach = ["OUTSIDE", "CENTER", "INSIDE"].map((align) => beyond(node("inside-stroke", align))).join("; ");
     assert(reach === "4,4; 2,2; 0,0", `a visible 2px stroke reaches ${reach} past the node, OUTSIDE, CENTER and INSIDE`);
     assertEdges(await scoreEdges(snapDir, loadSkillReadback()));
+    // The same border INSIDE on a hugging frame without strokesIncludedInLayout
+    // eats into the padding, 2px short each way (the width less the text's
+    // rounding), and verify says so.
+    const { styles: transparent } = edges.find((e) => e.edge === "clear-inside");
+    const eaten = await scoreEdges(snapDir, loadSkillReadback(), [{ edge: "eaten", styles: transparent, strokeAlign: "INSIDE", hugging: true }]);
+    const short = eaten.eaten.differences.filter((d) => d.property === "width" || d.property === "height").map((d) => d.figma - d.measured);
+    assert(short.length === 2 && short.every((d) => Math.abs(d + 2) < 0.5), `an INSIDE stroke that eats into a hugging frame's padding drifted ${JSON.stringify(eaten.eaten.differences)}`);
     return `render bounds would read the transparent border 2px short, hidden or not, and the shadow 24px over; ` +
-      `all ${edges.length}, with the one-sided border and strokes INSIDE and CENTER, scored with no size drift`;
+      `all ${edges.length}, with the one-sided border, strokes INSIDE and CENTER, and a transparent one INSIDE in the layout, ` +
+      `scored with no size drift; INSIDE out of the layout reads 2px short`;
   });
 
   await check("a translucent fill, stroke and text color read back as snap writes them, alpha and all", async () => {
