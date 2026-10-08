@@ -261,17 +261,27 @@ export function isFontKeyword(family: string | null | undefined): boolean {
  * that it failed to load and a fontFamily drift no Figma font could clear.
  *
  * So aliases the browser passed over are skipped, and the first family it
- * drew with is recorded. A named font it passed over is kept, with
- * `available: false`: it is what the code meant to draw, and its absence is
- * worth saying. A keyword is available as null, since there is no font to
- * have been missing.
+ * drew with is recorded. A named font it passed over ahead of any alias or
+ * keyword is kept, with `available: false`: it is what the code meant to
+ * draw, and its absence is worth saying. Once the stack has named an alias
+ * or keyword, it is a list of each platform's spelling of its own font, and
+ * a named font missing there is one for another platform: Tailwind's mono
+ * stack, `ui-monospace, SFMono-Regular, Menlo, ...`, draws Menlo in Chrome
+ * on macOS, and SFMono-Regular, which Chrome there doesn't see, is not a font
+ * the code failed to load. A keyword is available as null, since there is no
+ * font to have been missing.
  */
 export function resolveFontFamily(probe: FontProbe): { family: string; available: boolean | null } {
+  let platformList = false;
   for (const [index, family] of probe.families.entries()) {
     const applied = probe.applied[index] ?? null;
-    if (applied === false && isSystemFontAlias(family)) continue;
+    const keyword = isFontKeyword(family);
+    if (applied === false && (keyword || platformList)) {
+      platformList = true;
+      continue;
+    }
     if (applied === false) return { family, available: false };
-    return { family, available: isFontKeyword(family) ? null : applied };
+    return { family, available: keyword ? null : applied };
   }
   // Nothing in the stack applied, so the browser's default font drew it.
   return { family: probe.families[0] ?? "", available: probe.families.length ? false : null };

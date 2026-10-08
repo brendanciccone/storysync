@@ -378,7 +378,9 @@ export function describeSlugCollisions(collisions: SlugCollision[]): string | nu
  * against Figma while rendering a different typeface. Worth saying out loud,
  * because the resulting Figma text will be wrong in a way no numeric
  * comparison can see. Another platform's alias for its UI font, such as
- * `-apple-system`, is passed over rather than flagged: see resolveFontFamily.
+ * `-apple-system`, or a platform's font a system stack lists after one, such
+ * as `SFMono-Regular`, is passed over rather than flagged: see
+ * resolveFontFamily.
  */
 export function detectFontSubstitution(component: SnapComponent): string | null {
   const base = component.base?.styles;

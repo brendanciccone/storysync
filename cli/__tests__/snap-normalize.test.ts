@@ -765,9 +765,44 @@ test("resolveFontFamily: a named font that didn't load is kept, and flagged", ()
   // What the code meant to draw, and worth a warning, unlike an alias.
   assert.deepEqual(resolveFontFamily({ families: ["Inter", "sans-serif"], applied: [false, null] }), { family: "Inter", available: false });
   assert.deepEqual(resolveFontFamily({ families: ["Inter", "sans-serif"], applied: [true, null] }), { family: "Inter", available: true });
+  // Ahead of a system stack, it is still the font the code asked for.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["Inter", "-apple-system", "system-ui", "sans-serif"], applied: [false, false, true, null] }),
+    { family: "Inter", available: false },
+  );
+});
+
+test("resolveFontFamily: past a system keyword, a platform's font this machine lacks is passed over, not flagged", () => {
+  // Tailwind's mono stack (v3 and v4), and preflight's for code and kbd, as
+  // Chrome on macOS probes it: ui-monospace and SFMono-Regular don't apply,
+  // Menlo draws. Recording SFMono-Regular as a font that failed to load
+  // warned on every mono component, and failed --strict-warnings.
+  assert.deepEqual(
+    resolveFontFamily({
+      families: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"],
+      applied: [false, false, true, true, false, false, true, null],
+    }),
+    { family: "Menlo", available: true },
+  );
+  // Tailwind's serif stack draws Georgia.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["ui-serif", "Georgia", "Cambria", "Times New Roman", "Times", "serif"], applied: [false, true, false, true, true, null] }),
+    { family: "Georgia", available: true },
+  );
+  // Tailwind 4.3's sans stack where BlinkMacSystemFont doesn't resolve, as
+  // off macOS: Segoe UI and Roboto are Windows' and Android's.
+  const sans = ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "Helvetica Neue", "Noto Sans", "Arial", "sans-serif"];
+  assert.deepEqual(
+    resolveFontFamily({ families: sans, applied: [false, false, false, false, false, false, true, null] }),
+    { family: "Arial", available: true },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: sans, applied: [false, false, false, false, false, false, false, null] }),
+    { family: "sans-serif", available: null },
+  );
   assert.deepEqual(
     resolveFontFamily({ families: ["-apple-system", "Segoe UI", "Roboto"], applied: [false, false, true] }),
-    { family: "Segoe UI", available: false },
+    { family: "Roboto", available: true },
   );
 });
 
