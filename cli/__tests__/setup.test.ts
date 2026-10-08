@@ -826,6 +826,11 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       // Skipped, they stayed in styles.json, and verify failed on them as missing.
       assert.match(text, /`--skip`[^\n]*leaves them out of the score/, `${path} lets verify fail a push on the components the user skipped`);
       assert.match(text, /`bg-primary`[^\n]*`primary`[^\n]*leave it unbound and list it in the summary|`bg-primary` is `primary`[^\n]*leave the value unbound and list it in the summary/, `${path} picks among variables that share a value`);
+      // Variables are named as tokens names them, and a class with an
+      // opacity modifier bound to its opaque variable lost the measured alpha.
+      assert.match(text, /`text-primary-foreground` (?:is|as) `primary\/foreground`/, `${path} names a variable tokens never creates`);
+      assert.doesNotMatch(text, /is `primary-foreground`/, `${path} names a variable tokens never creates`);
+      assert.match(text, /opacity modifier[^\n]*leave that paint unbound/, `${path} binds a translucent paint to an opaque variable`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
