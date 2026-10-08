@@ -1717,13 +1717,15 @@ function buildScenarios(snapDir) {
 // --- Simulated Figma for the audit -------------------------------------------
 
 /** One use_figma call's figma, serving local variables. */
-function variablesFigma(variables) {
+function variablesFigma(variables, modes = {}) {
   const collections = [];
   const byId = new Map();
   variables.forEach((v, i) => {
     let coll = collections.find((c) => c.name === v.collection);
     if (!coll) {
-      coll = { name: v.collection, modes: [{ modeId: `${v.collection}:default`, name: "Default" }], variableIds: [] };
+      // Its modes, by name, the first its default: one, "Default", unless `modes` gives the collection's.
+      const names = modes[v.collection] ?? ["Default"];
+      coll = { name: v.collection, modes: names.map((name) => ({ modeId: `${v.collection}:${name}`, name })), variableIds: [] };
       collections.push(coll);
     }
     const id = `VariableID:${i}`;
@@ -3751,6 +3753,22 @@ async function main() {
       return new AsyncFunction("figma", body)(variablesFigma(long));
     }, long.length);
     return `${counts.join(", ")}; ${refused}`;
+  });
+
+  await check("the audit's variables read returns each collection's modes once, for the summary to name the ones not compared", async () => {
+    // It reads each collection's first mode, and an audit of shadcn/ui said
+    // "39 matched" with no word of a Dark mode it never compared.
+    const code = useFigmaBlock(/^Read all variable collections/);
+    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
+    const variables = Array.from({ length: batch + 3 }, (_, i) => (i < batch
+      ? { collection: "Colors", name: `color/${i}`, type: "COLOR", value: { r: 0, g: 0, b: 0, a: 1 } }
+      : { collection: "Radius", name: `radius/${i}`, type: "FLOAT", value: i }));
+    const read = await readAllSlices(code, () => variablesFigma(variables, { Colors: ["Light", "Dark"] }));
+    assert(read.length === 2, `read in ${read.length} calls`);
+    assert(JSON.stringify(read[0].modes) === JSON.stringify([{ collection: "Colors", modes: ["Light", "Dark"] }, { collection: "Radius", modes: ["Default"] }]),
+      `the first slice returns modes ${JSON.stringify(read[0].modes)}`);
+    assert(read.slice(1).every((slice) => slice.modes === undefined), "a later slice returns the modes again");
+    return "Colors: Light, Dark; Radius: Default, on the first of 2 slices";
   });
 
   await check("the audit reads the component sets on every page, not only the one loaded first", async () => {

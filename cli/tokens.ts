@@ -1,7 +1,7 @@
 // Design token extraction from project source files.
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { colorToHex } from "./color.js";
 
 /** The token sources `--source` takes. Leaving it out, or `auto`, detects one. */
@@ -234,6 +234,13 @@ const LENGTH_CATEGORIES: ReadonlySet<TokenCategory> = new Set(["radius", "spacin
 
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
   const { vars, written, varsFrom, ...result } = extractFromSource(projectPath, sourceType);
+  // Where the tokens came through the stylesheets' variables, say that a
+  // dark theme's are not among them, so a comparison of these tokens, an
+  // audit's "39 matched" say, isn't read as covering both themes.
+  if (vars && varsFrom !== "the theme file") {
+    const dark = darkThemeWarning(projectPath);
+    if (dark) result.warnings.push(dark);
+  }
   for (const collection of result.collections) {
     collection.tokens = collection.tokens.map((token) => {
       // `value` stays as the source writes it, for --check. CSS custom
@@ -429,6 +436,45 @@ function darkSchemeRanges(css: string): [number, number][] {
     ranges.push([m.index, i]);
   }
   return ranges;
+}
+
+/** A selector for a dark theme: `.dark`, as shadcn/ui and Tailwind's class strategy write it, or a `data-theme="dark"` or like attribute. */
+const DARK_SELECTOR = /\.(?:dark|dark-mode|dark-theme|theme-dark)(?![\w-])|\[data-[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?dark["']?\s*\]/i;
+
+/**
+ * A warning naming how many custom properties the project's stylesheets set
+ * for a dark theme, none of which tokens reads: in a rule for a dark
+ * selector, or a `:root` in `@media (prefers-color-scheme: dark)`. Null
+ * when they set none. tokens extracts the light theme's alone, and said
+ * nothing of it, so an audit of shadcn/ui's 31 colors reported them
+ * matched with no word of the 31 dark values never compared.
+ */
+function darkThemeWarning(projectPath: string): string | null {
+  const found: string[] = [];
+  for (const file of new Set(findCSSWithCustomProperties(projectPath).map((f) => resolve(f)))) {
+    let css: string;
+    try {
+      css = readCss(file);
+    } catch {
+      continue;
+    }
+    const media = darkSchemeRanges(css);
+    const names = new Set<string>();
+    const where = new Set<string>();
+    // Innermost rules: a selector, then declarations with no block in them.
+    for (const rule of css.matchAll(/([^{};]*)\{([^{}]*)\}/g)) {
+      const selector = rule[1].trim().replace(/\s+/g, " ");
+      const inMedia = media.some(([from, to]) => rule.index >= from && rule.index < to) && /:root/.test(selector);
+      if (!inMedia && !DARK_SELECTOR.test(selector)) continue;
+      const declared = [...rule[2].matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]);
+      if (!declared.length) continue;
+      for (const name of declared) names.add(name);
+      where.add(inMedia ? "@media (prefers-color-scheme: dark)" : selector);
+    }
+    if (names.size) found.push(`${relative(resolve(projectPath), file) || file} sets ${names.size} for ${[...where].join(", ")}`);
+  }
+  if (!found.length) return null;
+  return `Only the light theme is read: ${found.join("; ")}, which no token here holds, so a comparison of these tokens covers the light theme alone`;
 }
 
 /**

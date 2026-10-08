@@ -1461,3 +1461,34 @@ test("every step a command names is the step it means, in the command or the ski
   }
   assert.match(push, /to step 7's `verify`/, "the push command no longer sends skipped components to its own step 7's verify");
 });
+
+test("every audit says what its token counts don't cover: other modes, the dark theme, unread tokens and Tailwind's default scales", () => {
+  // An audit of shadcn/ui ended "39 matched, 0 missing", silent on the
+  // dark theme neither side compared, the fonts tokens couldn't resolve,
+  // and the spacing and type Tailwind's defaults give, which have no tokens.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    for (const path of [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-diff.md"),
+    ]) {
+      const text = readFileSync(join(project, path), "utf8");
+      const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
+      assert.match(audit, /every mode of a Figma collection but its first/, `${path} doesn't name the modes it didn't compare`);
+      assert.match(audit, /`Only the light theme is read`/, `${path} doesn't name the dark theme tokens doesn't read`);
+      assert.match(audit, /`Unresolved:`, `Not read from @theme`, `Uncategorized:`/, `${path} doesn't name the tokens tokens didn't read`);
+      assert.match(audit, /Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract/, `${path} doesn't name Tailwind's default scales`);
+      assert.match(audit, /Beside the token counts, say what they cover and what they don't/, `${path}'s summary gives the counts alone`);
+      assert.match(audit, /modes/, `${path} never reads each collection's modes`);
+      assert.match(audit, /never say the two are in sync\. Say with it what the audit compares: tokens, in the modes it noted, and each component's variant properties, not the styles the push's `verify` scores\./,
+        `${path}'s "in sync" doesn't say it covers tokens and variant properties, not styles`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
