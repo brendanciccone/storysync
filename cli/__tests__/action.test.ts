@@ -267,6 +267,72 @@ test("action Detect token drift: a token baseline that is not tokens --json outp
   assert.match(r.stdout, /is not tokens --json output \(it holds an error: Could not read src\/theme\.ts\)\. Recreate/);
 });
 
+test("action Detect token drift: tokens' warnings are logged, and listed in the report, when tokens were found too", () => {
+  // They reached the report only when no tokens were found, so an
+  // uncategorized radius or an unresolved var() was never seen in CI.
+  const warned = (collections: Collection[]) => JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections, warnings: ["Unresolved: typography font/sans = var(--font-sans) (--font-sans is set only in terms of itself)"] });
+  const baseline = tokensJson([colors]);
+  const files = (current: Collection[]) => ({ ".storysync/tokens-baseline.json": baseline, "storysync-tokens-current.json": warned(current) });
+  const env = { TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json", TOKEN_SOURCE: "auto" };
+
+  const clean = run("Detect token drift", "storysync-token-drift.md", files([colors]), env);
+  assert.equal(clean.outputs.result, "false", clean.stdout);
+  assert.match(clean.stdout, /^storysync tokens: Unresolved: typography font\/sans = var\(--font-sans\)/m);
+
+  const drifted = run("Detect token drift", "storysync-token-drift.md", files([colors, fontSizes]), env);
+  assert.equal(drifted.outputs.result, "true", drifted.stdout);
+  assert.match(drifted.report ?? "", /### Warnings\n- Unresolved: typography font\/sans = var\(--font-sans\) \(--font-sans is set only in terms of itself\)\n/);
+});
+
+test("action Detect token drift: drift that only adds tokens says a newer storysync may read more", () => {
+  // A 0.3.0 baseline of shadcn/ui v4 lists no radius, which this storysync
+  // reads; only the CLI said why, so the Action's fail_on_drift went red
+  // with "If they're intended".
+  const baseline = tokensJson([colors]);
+  const upgraded = detectTokenDrift(baseline, [colors, fontSizes]);
+  assert.equal(upgraded.outputs.result, "true", upgraded.stdout);
+  assert.match(upgraded.outputs.error ?? "", /Detect token drift lists the changes\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in /);
+  assert.match(upgraded.report ?? "", /\nEvery change is an added token\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in .*storysync@0\.3\.0/);
+
+  // Added to a collection the baseline has counts too.
+  const grown = detectTokenDrift(tokensJson([colors, { category: "typography", tokens: [fontSizes.tokens[0]] }]), [colors, fontSizes]);
+  assert.match(grown.outputs.error ?? "", /If the tokens are new, or this storysync reads/);
+
+  // A changed or removed token is no upgrade.
+  for (const current of [[colors, { category: "typography", tokens: [{ name: "sm", value: "99px" }, fontSizes.tokens[1]] }], []]) {
+    const r = detectTokenDrift(tokensJson([colors, fontSizes]), current);
+    assert.equal(r.outputs.result, "true", r.stdout);
+    assert.match(r.outputs.error ?? "", /Detect token drift lists the changes\. If they're intended, update the baseline by/);
+    assert.doesNotMatch(r.report ?? "", /Every change is an added token/);
+  }
+});
+
+test("action Detect token drift: a warning is one line in the log, and the report lists twenty", () => {
+  // A multi-line CSS value put raw newlines in the log, where a line
+  // starting :: is a workflow command, and an issue body holds 65,536
+  // characters.
+  const warnings = [
+    "Resolved CSS variable references from app/globals.css",
+    "Uncategorized: --ease-out: cubic-bezier(\n::warning::0.2, 0, 0, 1\n  )",
+    ...Array.from({ length: 24 }, (_, i) => `Uncategorized: --z-${i}: ${i}`),
+  ];
+  const current = JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections: [colors, fontSizes], warnings });
+  const r = run("Detect token drift", "storysync-token-drift.md", { ".storysync/tokens-baseline.json": tokensJson([colors]), "storysync-tokens-current.json": current }, {
+    TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json",
+    TOKEN_SOURCE: "auto",
+  });
+  assert.equal(r.outputs.result, "true", r.stdout);
+  assert.match(r.stdout, /^storysync tokens: Uncategorized: --ease-out: cubic-bezier\( ::warning::0\.2, 0, 0, 1 \)$/m);
+  assert.doesNotMatch(r.stdout, /^::warning::0\.2/m);
+  assert.match(r.stdout, /^storysync tokens: Resolved CSS variable references from app\/globals\.css$/m);
+  assert.match(r.stdout, /^storysync tokens: Uncategorized: --z-23: 23$/m);
+
+  const listed = (r.report ?? "").split("### Warnings\n")[1] ?? "";
+  assert.doesNotMatch(listed, /Resolved CSS variable references/);
+  assert.equal(listed.split("\n").filter((line) => line.startsWith("- Uncategorized: ")).length, 20);
+  assert.match(listed, /^- and 5 more, in the Detect token drift log$/m);
+});
+
 // --- Both ---
 
 test("action: the command a missing baseline prints makes a directory whose name starts with a dash", () => {

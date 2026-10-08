@@ -1,7 +1,7 @@
 // Diff engine — compares code-extracted tokens and component mappings against Figma state.
 
-import type { TokenCollection, TokenCategory } from "./tokens.js";
-import { tokenColorToHex } from "./tokens.js";
+import type { TokenCollection, TokenCategory, TokenValue } from "./tokens.js";
+import { tokenColorToHex, lengthToPx } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents } from "./storybook.js";
@@ -79,20 +79,21 @@ export function figmaCollectionToCategory(collectionName: string): string {
 // it has always been imported from.
 export { colorToHex };
 
-// Convert numeric values (rem/px/unitless) to a comparable canonical form.
-// Returns the value as a string of pixels (e.g. "16") for numeric values, or the original normalized string otherwise.
+// Convert numeric values to a comparable canonical form. A length becomes a
+// string of pixels (e.g. "16"), worked out by tokens' lengthToPx, so rem and
+// calc() count; a unitless number, as Figma gives a FLOAT variable's value,
+// stays itself. Both are rounded to thousandths, so a float with a tail of
+// binary noise still matches. Anything else is returned normalized, to
+// compare as text.
 export function numericToPx(input: string): string {
   let s = input.trim().toLowerCase();
   s = s.replace(/;$/, "").replace(/^['"]|['"]$/g, "");
 
-  const rem = s.match(/^(-?[\d.]+)rem$/);
-  if (rem) return stripTrailingZero(parseFloat(rem[1]) * 16);
+  const px = lengthToPx(s);
+  if (px !== null) return stripTrailingZero(px);
 
-  const px = s.match(/^(-?[\d.]+)px$/);
-  if (px) return stripTrailingZero(parseFloat(px[1]));
-
-  const unitless = s.match(/^-?[\d.]+$/);
-  if (unitless) return stripTrailingZero(parseFloat(s));
+  const unitless = s.match(/^-?[\d.]+(?:e[+-]?\d+)?$/);
+  if (unitless) return stripTrailingZero(Math.round(parseFloat(s) * 1000) / 1000);
 
   return s;
 }
@@ -113,6 +114,20 @@ export function canonicalizeCompound(input: string): string {
   return s;
 }
 
+/**
+ * What tokens worked out for a token, compared in place of its value when it
+ * has it: a colour's hex, a length's px. tokens resolves a var() inside a
+ * value for them, which a value from `:root` can keep, as in
+ * `calc(var(--radius) - 4px)`.
+ */
+function workedOutForCompare(category: string, token: TokenValue): string | undefined {
+  if (category === "colors") return token.hex?.toLowerCase();
+  if (category === "spacing" || category === "radius" || category === "typography") {
+    return token.px === undefined ? undefined : stripTrailingZero(token.px);
+  }
+  return undefined;
+}
+
 function normalizeForCompare(category: string, value: string): string {
   if (category === "colors") {
     // tokenColorToHex also reads bare HSL channels, `0 0% 100%`, as hsl().
@@ -131,10 +146,10 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
   const entries: TokenDiffEntry[] = [];
 
   // Build code map: "category/tokenName" → value
-  const codeMap = new Map<string, { value: string; category: string }>();
+  const codeMap = new Map<string, { value: string; category: string; workedOut?: string }>();
   for (const coll of codeTokens) {
     for (const token of coll.tokens) {
-      codeMap.set(`${coll.category}/${token.name}`, { value: token.value, category: coll.category });
+      codeMap.set(`${coll.category}/${token.name}`, { value: token.value, category: coll.category, workedOut: workedOutForCompare(coll.category, token) });
     }
   }
 
@@ -155,7 +170,7 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
     if (!figma) {
       entries.push({ category, name, codeValue: code.value, figmaValue: null, status: "missing_from_figma" });
     } else {
-      const codeNorm = normalizeForCompare(category, code.value);
+      const codeNorm = code.workedOut ?? normalizeForCompare(category, code.value);
       const figmaNorm = normalizeForCompare(category, figma.value);
       entries.push({
         category,

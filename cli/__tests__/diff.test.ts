@@ -91,6 +91,24 @@ test("numericToPx: non-numeric returned as-is normalized", () => {
   assert.equal(numericToPx("auto"), "auto");
 });
 
+test("numericToPx: calc() is worked out, as shadcn/ui writes its radius scale", () => {
+  assert.equal(numericToPx("calc(0.625rem - 4px)"), "6");
+  assert.equal(numericToPx("calc(0.25rem * 4)"), "16");
+  // Not a fixed length: compared as written.
+  assert.equal(numericToPx("calc(1em - 4px)"), "calc(1em - 4px)");
+  assert.equal(numericToPx("-0.025em"), "-0.025em");
+});
+
+test("numericToPx: a float's binary noise is rounded off on both sides", () => {
+  // 0.1rem was 1.6000000000000001, and a float Figma hands back can carry
+  // the same kind of tail.
+  assert.equal(numericToPx("0.1rem"), "1.6");
+  assert.equal(numericToPx("1.600000023841858"), "1.6");
+  assert.equal(numericToPx("0.30000001192092896"), "0.3");
+  // A real difference still shows.
+  assert.equal(numericToPx("10.002"), "10.002");
+});
+
 // --- canonicalizeCompound ---
 
 test("canonicalizeCompound: collapses whitespace", () => {
@@ -200,6 +218,41 @@ test("diffTokens: rem vs px equivalence", () => {
   ];
   const diffs = diffTokens(code, figma);
   assert.equal(diffs[0].status, "match");
+});
+
+test("diffTokens: shadcn/ui's calc() radius scale matches the px a correct push gives Figma", () => {
+  // Compared as written, 6 of 7 radii were a mismatch against an exactly
+  // right Figma file: only lg, a bare rem, matched.
+  const code: TokenCollection[] = [{
+    category: "radius",
+    tokens: [
+      { name: "sm", value: "calc(0.625rem - 4px)", px: 6 },
+      { name: "md", value: "calc(0.625rem - 2px)", px: 8 },
+      { name: "lg", value: "0.625rem", px: 10 },
+      { name: "xl", value: "calc(0.625rem + 4px)", px: 14 },
+      { name: "4xl", value: "calc(0.625rem + 16px)", px: 26 },
+    ],
+  }];
+  const figma: FigmaVariable[] = [["sm", "6"], ["md", "8"], ["lg", "10"], ["xl", "14"], ["4xl", "26"]].map(([name, value]) => (
+    { name, value, collection: "Radius", resolvedType: "FLOAT", mode: "Default" }
+  ));
+  for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
+  // Without px, as a hand-built collection might be, the value is worked out the same way.
+  const bare = code.map((c) => ({ ...c, tokens: c.tokens.map(({ name, value }) => ({ name, value })) }));
+  for (const entry of diffTokens(bare, figma)) assert.equal(entry.status, "match", entry.name);
+  assert.equal(diffTokens(code, [{ ...figma[0], value: "5" }])[0].status, "value_mismatch");
+});
+
+test("diffTokens: a :root token's px and hex are compared, as its value keeps the var() they were resolved from", () => {
+  const code: TokenCollection[] = [
+    { category: "radius", tokens: [{ name: "radius/sm", value: "calc(var(--radius) - 2px)", px: 6 }] },
+    { category: "colors", tokens: [{ name: "ring", value: "hsl(var(--brand))", hex: "#4d80b3" }] },
+  ];
+  const figma: FigmaVariable[] = [
+    { name: "radius/sm", value: "6", collection: "Radius", resolvedType: "FLOAT", mode: "Default" },
+    { name: "ring", value: "#4D80B3", collection: "Colors", resolvedType: "COLOR", mode: "Default" },
+  ];
+  for (const entry of diffTokens(code, figma)) assert.equal(entry.status, "match", entry.name);
 });
 
 test("diffTokens: value mismatch", () => {

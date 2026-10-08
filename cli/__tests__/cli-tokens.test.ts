@@ -309,3 +309,69 @@ test("tokens CLI: --source auto detects the source, as leaving it out does", () 
     assert.match(check.out, /No token drift detected/);
   });
 });
+
+/** shadcn/ui's v4 layout: :root, which detection picks, and @theme inline built from it. */
+const SHADCN_V4 = `@import "tailwindcss";
+@theme inline {
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+}
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+}
+`;
+
+test("tokens CLI: with --source, the text output names the source read, not the one detection picks", () => {
+  // It said "Detected: css (app/globals.css)" and then listed @theme's tokens.
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    const tw = tokens(dir, "--source", "tailwind");
+    assert.equal(tw.status, 0, tw.out);
+    assert.match(tw.out, /Source: tailwind \(app\/globals\.css\), from --source/);
+    assert.doesNotMatch(tw.out, /Detected/);
+
+    assert.match(tokens(dir).out, /Detected: css \(app\/globals\.css\)/);
+
+    // A source that isn't there says so, and why.
+    const theme = tokens(dir, "--source", "theme");
+    assert.doesNotMatch(theme.out, /Detected|Source:/);
+    assert.match(theme.out, /No tokens found\.\n\s+No theme file found/);
+  });
+});
+
+test("tokens CLI: the text output gives each length's px where its value doesn't say it", () => {
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    const r = tokens(dir);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /\n {4}DEFAULT {18}0\.625rem = 10px\n {4}sm {23}calc\(0\.625rem - 4px\) = 6px\n {4}lg {23}0\.625rem = 10px\n/);
+  });
+});
+
+test("tokens CLI: --check says how to update the baseline, and that a newer storysync can read more tokens", () => {
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    const current = JSON.parse(tokens(dir, "--json").stdout) as { collections: { category: string }[] };
+    // A baseline as storysync 0.3.0 wrote it for shadcn/ui v4: :root's
+    // colours, with --radius uncategorized.
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), JSON.stringify({ ...current, collections: current.collections.filter((c) => c.category === "colors") }));
+    const upgraded = tokens(dir, "--check");
+    assert.equal(upgraded.status, 0, upgraded.out);
+    assert.match(upgraded.out, /\+ radius: DEFAULT, sm, lg\n/);
+    assert.match(upgraded.out, /If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
+    assert.equal(tokens(dir, "--check", "--strict").status, 1);
+
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), tokens(dir, "--json").stdout);
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4.replace("--radius: 0.625rem", "--radius: 0.5rem"));
+    const changed = tokens(dir, "--check", "--strict");
+    assert.equal(changed.status, 1, changed.out);
+    assert.match(changed.out, /~ radius\/DEFAULT: 0\.625rem → 0\.5rem/);
+    assert.match(changed.out, /If the change is intended, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
+  });
+});

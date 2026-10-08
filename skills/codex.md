@@ -44,7 +44,7 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
     },
     {
       "category": "spacing",
-      "tokens": [{ "name": "4", "value": "1rem" }, ...]
+      "tokens": [{ "name": "4", "value": "1rem", "px": 16 }, ...]
     }
   ],
   "summary": { "totalTokens": 42, "collections": 4 }
@@ -74,7 +74,7 @@ use_figma({
     const spacing = figma.variables.createVariableCollection('Spacing');
     const spMode = spacing.modes[0];
     const sp4 = figma.variables.createVariable('4', spacing, 'FLOAT');
-    sp4.setValueForMode(spMode.modeId, 16); // 1rem = 16px
+    sp4.setValueForMode(spMode.modeId, 16); // its token's px
 
     // ... repeat for each spacing token
   `,
@@ -84,13 +84,13 @@ use_figma({
 })
 ```
 
-   Convert rem values to px (1rem = 16px) for Figma FLOAT variables. Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`.
+   Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6, and `value` is as the source writes it. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, such as one in em or % (as letter spacing often is), which depends on the element. Leave out too, and say which, any token a `tokens` warning starting `Unresolved:` names: its `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). A `value` can keep a `var()` that did resolve, as `calc(var(--radius) - 4px)` in `:root` does; set that token from its `px` or `hex` as usual. If no token in the output has a `px` at all, an older storysync ran: use a plain rem `value` times 16, or a px one as is, in place of `px`.
 
    Set each colour from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `value` is the colour as the source writes it, and `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a value in `oklch()`, `oklab()`, `lch()`, `hwb()` or `color()`, or bare HSL channels such as `0 0% 100%`, throws. `hex` is sRGB, `#rrggbbaa` when the colour is translucent, which `rgba` keeps. A colour token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
 
    A `use_figma` call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow. Split a large collection — a full colour palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created rather than creating another.
 
-4. **Verify** — confirm the variable collections were created with the expected count. If any are missing, retry.
+4. **Verify** — confirm the variable collections were created with the expected count, less the tokens you left out. If any are missing, retry.
 
 ## Components
 
@@ -734,6 +734,8 @@ When token variable collections exist, bind component properties to variables in
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
+A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a colour, its `px` for a length. When several variables share the value, as shadcn/ui's `primary` and `sidebar/primary` do, bind the one the component's source names (`bg-primary`, `rounded-md`); if it names none, leave the value unbound and list it in the summary rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
+
 This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 
 ## Audit
@@ -843,7 +845,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - In code but not in Figma → **missing from Figma** (needs sync)
    - In Figma but not in code → **missing from code** (orphaned or manually added)
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
-   - Normalize before comparing: lowercase hex colors, convert rem→px (1rem=16px), strip units for numeric comparison.
+   - Normalize before comparing: compare a colour by its token's `hex` and a spacing, radius or size token by its `px`, which has rem and `calc()` worked out, where the token has one; otherwise lowercase hex colors, convert rem→px (1rem=16px), and strip units for numeric comparison. Round numbers to thousandths on both sides, since Figma can return a float with a tail of binary noise.
 
 6. **Compare components** — match by name (case-insensitive). If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing. For each component:
    - In code/Storybook but not in Figma → **code only** (not yet synced)
