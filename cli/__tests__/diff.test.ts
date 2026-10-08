@@ -972,3 +972,12 @@ test("diffComponents: a component paired by ID is named as the push names its se
     ["TooltipContent", "figma_only", "UI Base"],
   ]);
 });
+
+test("diffComponents: with code not read, a node's stored ID is not said to be one code no longer has", () => {
+  // Storybook's listing failed: nothing of code is known.
+  const figma = [pushed("ui/base", "Button", "ui-base-button")];
+  assert.deepEqual(diffComponents([], figma, [], figma, { codeRead: false }).map((e) => [e.status, e.details]), [
+    ["figma_only", ["1 variant prop in Figma", "pushed from ui-base-button"]],
+  ]);
+  assert.deepEqual(diffComponents([], figma).map((e) => e.details[1]), ["pushed from ui-base-button, which code no longer has"]);
+});

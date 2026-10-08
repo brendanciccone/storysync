@@ -367,12 +367,17 @@ export function narrowFigmaComponents(
  * code". Of the sets paired with none, only those in `figmaReported` are
  * reported, and an ambiguous name only with a compared component or such a
  * set among its copies.
+ *
+ * `codeRead: false` says Storybook's listing failed, so nothing of code is
+ * known: a node whose stored ID no component has is then not said to be one
+ * code no longer has.
  */
 export function diffComponents(
   codeComponents: CodeComponent[],
   figmaComponents: FigmaComponentInfo[],
   notCompared: { name: string; title?: string; category?: string; id?: string }[] = [],
   figmaReported: readonly FigmaComponentInfo[] = figmaComponents,
+  { codeRead = true }: { codeRead?: boolean } = {},
 ): ComponentDiffEntry[] {
   const code: (CodeComponent & { notCompared?: true })[] = [
     ...codeComponents,
@@ -505,7 +510,9 @@ export function diffComponents(
       ? null
       : codeIds.has(f.storybookId)
         ? `carries the Storybook ID ${f.storybookId} of a component paired with another`
-        : `pushed from ${f.storybookId}, which code no longer has`;
+        : codeRead
+          ? `pushed from ${f.storybookId}, which code no longer has`
+          : `pushed from ${f.storybookId}`;
     if (f.error != null) {
       entries.push({ name: figmaLabel(f), status: "errored", details: [erroredDetail(f), notInCode ?? "no component in code pairs with it"], ...where(null, f) });
       return;

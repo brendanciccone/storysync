@@ -953,7 +953,7 @@ program
           // A component code has but could not map, or that --components
           // left out, was never compared, so Figma's copy of it is not "not
           // in code". Each is still paired, as in a diff of everything.
-          componentDiffs = diffComponents(codeComponents, figmaComponents, [...unmappedEntries, ...others], figmaReported);
+          componentDiffs = diffComponents(codeComponents, figmaComponents, [...unmappedEntries, ...others], figmaReported, { codeRead: !storybookReadFailed });
         }
       }
 
