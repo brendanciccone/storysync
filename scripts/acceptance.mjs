@@ -1387,7 +1387,7 @@ function buildScenarios(snapDir) {
         page: "Data", set: "Badge", storyId: "data-badge", title: "Data/Badge", part: 25, properties, variants: [{ name, styles: st }],
       });
       const [first] = await push(styles);
-      assert(JSON.stringify({ ...first, id: 0, name: 0 }) === JSON.stringify({ id: 0, name: 0, variants: 1, added: 1, updated: 0, rows: 1, columns: 1, extra: 0, fonts: {} }),
+      assert(JSON.stringify({ ...first, id: 0, name: 0 }) === JSON.stringify({ id: 0, name: 0, variants: 1, added: 1, updated: 0, rows: 1, columns: 1, extra: 0, overlaps: 0, fonts: {} }),
         `the part returned ${JSON.stringify(first)}`);
       const [component] = doc.nodes("COMPONENT");
       assert(doc.nodes("COMPONENT_SET").length === 0 && doc.nodes("COMPONENT").length === 1 && component.id === first.id,
@@ -1457,18 +1457,31 @@ function buildScenarios(snapDir) {
       // A designer moves the Button and renames it: the next push finds it by
       // its id, restyles it there, and moves nothing.
       const [set] = nodes;
+      const parts = [];
+      const counted = async () => {
+        for (const p of pushes) parts.push(...await pushSet(build, doc, { page: "Forms", part: 25, ...p }));
+      };
+      await counted();
+      assert(parts.every((r) => r.overlaps === 0), `parts on a laid-out page returned overlaps ${parts.map((r) => r.overlaps).join(", ")}`);
       Object.assign(set, { x: 600, y: -400, name: "Buttons" });
       const where = () => JSON.stringify(placed(doc).map((n) => [n.id, n.x, n.y]));
       const before = where();
       await pushAll();
       assert(where() === before && placed(doc).length === 3, `a second push moved or added a set: ${where()}`);
       assert(set.name === "Buttons", `the push renamed the set "${set.name}"`);
-      // A set an earlier push left with no id on it gets one.
+      // A set an earlier push left with no id on it gets one; and where that
+      // push left two at 0,0, one on the other, each part counts the other in
+      // overlaps and moves neither.
       const old = figmaDocument();
       const left = await leftSet(build, old, measured, { page: "Forms", set: "Button" });
-      await pushSet(build, old, { page: "Forms", part: 25, ...pushes[0] });
+      const frozenLeft = await besideSet(build, old, "Forms", "Frozen", frozenVariants);
+      const [stacked] = await pushSet(build, old, { page: "Forms", part: 25, ...pushes[0] });
+      const [under] = await pushSet(build, old, { page: "Forms", part: 25, ...pushes[1] });
       assert(left.getSharedPluginData("storysync", "id") === button.id, "a set an earlier push left was given no id");
-      return "Button, Frozen and Badge 100 apart, each with its id and title; a moved, renamed set found by its id and left where it was";
+      assert(stacked.overlaps === 1 && under.overlaps === 1, `two sets at 0,0 returned overlaps ${stacked.overlaps} and ${under.overlaps}`);
+      assert([left, frozenLeft].every((n) => n.x === 0 && n.y === 0), "a part moved a set an earlier push left at 0,0");
+      return "Button, Frozen and Badge 100 apart, each with its id and title and no overlaps; a moved, renamed set found by its id and left where it was; " +
+        "two sets an earlier push stacked at 0,0 each counted in the other's overlaps, unmoved";
     },
 
     async found(build) {
@@ -3199,6 +3212,7 @@ async function main() {
       found: "const sets = named.length ? named : all.filter((n) => ID && idOf(n) === ID);",
       own: "(n.type === want || n.type === 'COMPONENT_SET' || idOf(n))",
       other: "componentSet && idOf(componentSet) && idOf(componentSet) !== ID ?",
+      overlaps: "const overlaps = (node) => node.parent.children.filter(",
       restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));\n",
       effect: "!p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]",
       families: "for (const f of [family, /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : 'Inter', 'Inter']) {",
@@ -3217,6 +3231,7 @@ async function main() {
         "const sets = all.filter((n) => n.name === SET_NAME || (ID && idOf(n) === ID));"),
       "takes a designer's own plain component of the name for one a push built": (code) => code.replace(T.own, "(true)"),
       "overwrites another component's id on a set of its name": (code) => code.replace(T.other, "false ?"),
+      "counts no overlaps": (code) => code.replace(T.overlaps, "const overlaps = (node) => [].filter("),
       "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
       "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p"),
       "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),

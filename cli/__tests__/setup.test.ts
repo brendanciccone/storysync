@@ -767,6 +767,10 @@ test("every push instruction places a new set below the page's others and keeps 
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /100 below (?:the lowest thing there|everything on its page)/, `${path} never says where a new set goes`);
       assert.match(text, /[sg]etSharedPluginData\('storysync', 'id'/, `${path} never keeps the Storybook id on a set`);
+      // Sets a push before 0.4.0 left stacked at 0,0 are counted, never moved
+      // unasked.
+      assert.match(text, /`overlaps`[^\n]*never move one on your own/, `${path} never reports sets an earlier push stacked`);
+      assert.match(text, /^\d+\. Summarize[^\n]*`overlaps`/m, `${path}'s summary leaves out stacked sets`);
       // A copy of a set keeps its id, so the id is a fallback for a renamed set.
       assert.match(text, /by its name, (?:and |or )?where (?:none|nothing) has the name,? by (?:that id|the Storybook id it carries)/,
         `${path} never finds a set by its name before its id`);
