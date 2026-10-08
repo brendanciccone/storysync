@@ -354,6 +354,20 @@ test("captureStory: an if on a mapped arg is judged as Storybook judges it, so a
   assert.deepEqual([result.args?.rejected, result.args?.appliedVia, fake.events], [[], undefined, []]);
 });
 
+test("captureStory: a number-like value is set through the preview as the story's options type it", async () => {
+  // The URL gives cols the number 2, which options of strings don't list.
+  const strings = fakePreview({ argTypes: { cols: { options: ["1", "2"], type: { name: "enum" } } }, initial: { cols: "1" }, url: { cols: 2 } });
+  const result = await captureStory(previewPage(strings.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ cols: "2" }));
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.args?.appliedVia, result.args?.rejected.map((r) => r.reasons)], ["preview", [["number-in-url"]]]);
+  assert.equal(strings.stored.cols, "2");
+  // A value numeric options leave out goes as a number, as the component takes it.
+  const numbers = fakePreview({ argTypes: { size: { options: [1, 2, 3], type: { name: "enum" } } }, initial: { size: 1 }, url: { size: 4 } });
+  const four = await captureStory(previewPage(numbers.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ size: "4" }));
+  assert.equal(four.status, "ok", four.error ?? "");
+  assert.equal(numbers.stored.size, 4);
+});
+
 test("captureStory: a value the preview won't apply either is arg_rejected, not the default measured as it", async () => {
   const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, silent: true });
   const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", { ...STORY_OPTS({ variant: "ghost" }), timeoutMs: 50 });

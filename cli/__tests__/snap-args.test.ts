@@ -108,6 +108,25 @@ test("findRejectedArgs: an arg the story's argTypes don't declare is rejected as
   assert.deepEqual(rejected, [{ name: "orientation", value: "vertical", reasons: ["not-in-argtypes"] }]);
 });
 
+test("findRejectedArgs: a number-like value the options list as a string is one the URL can't carry", () => {
+  // Storybook's URL reads cols:2 as the number 2, which ["1", "2"] doesn't
+  // list, and drops it: no argTypes change lets the URL give the string.
+  const grid: StoryArgsSnapshot = {
+    fileName: "./grid.stories.tsx",
+    argTypes: { cols: { type: "enum", control: "radio", options: ["1", "2"] } },
+    stored: { cols: "1" },
+    rendered: { cols: "1" },
+    globals: {},
+  };
+  assert.deepEqual(findRejectedArgs({ cols: "2" }, grid), [{ name: "cols", value: "2", reasons: ["number-in-url"], options: ["1", "2"] }]);
+  assert.deepEqual(previewArgUpdate(findRejectedArgs({ cols: "2" }, grid), grid), { updates: { cols: "2" }, lift: [] });
+  // An argType of type string turns the number back, so the URL can.
+  const typed = { ...grid, argTypes: { cols: { ...grid.argTypes.cols, type: "string" } } };
+  assert.deepEqual(findRejectedArgs({ cols: "2" }, typed).map((r) => r.reasons), [["not-applied"]]);
+  // Nor is a value the options leave out one: that's not-in-options.
+  assert.deepEqual(findRejectedArgs({ cols: "3" }, grid).map((r) => r.reasons), [["not-in-options"]]);
+});
+
 test("findRejectedArgs: booleans and numbers compare as Storybook holds them", () => {
   assert.deepEqual(findRejectedArgs({ disabled: "false" }, BUTTON, [BOOL]), []);
   const snapshot: StoryArgsSnapshot = { ...BUTTON, argTypes: { count: { type: "number" } }, stored: { count: 3 }, rendered: { count: 3 } };
@@ -189,6 +208,13 @@ test("typedArgValue: a boolean prop or argType is a boolean, a number argType a 
   assert.equal(typedArgValue("2", { type: "number" }), 2);
   assert.equal(typedArgValue("sm", { type: "number" }), "sm");
   assert.equal(typedArgValue("sm", { type: "enum" }), "sm");
+  // As the story's options type it: Storybook infers them from the docs'
+  // literals, `"2"` a string and `2` a number.
+  assert.equal(typedArgValue("2", { type: "enum", options: ["1", "2"] }), "2");
+  assert.equal(typedArgValue("2", { type: "enum", options: [1, 2] }), 2);
+  // One the options leave out, a number when they are all numbers.
+  assert.equal(typedArgValue("4", { type: "enum", options: [1, 2, 3] }), 4);
+  assert.equal(typedArgValue("4", { type: "enum", options: ["1", 2] }), "4");
 });
 
 test("compactArgTypes keeps what's there, sorted by name", () => {
@@ -240,6 +266,20 @@ test("describeArgRejections: values not measured say so, how to measure them, an
   assert.match(warning, /remove `if: \{"arg":"variant","neq":"link"\}` from argTypes\.size in \.\/registry\/ui\/button-story\/button-base\.stories\.tsx, then measure it again with --components ui-base-button --merge\.$/);
   // Nothing to say about a component whose story took every value.
   assert.deepEqual(describeArgRejections("ui/base/Card", [{ combination: {}, status: "ok" }]), []);
+});
+
+test("describeArgRejections: a value no story change lets the URL carry is set without a warning, or said to be beyond one", () => {
+  const cols = (value: string) => [{ name: "cols", value, reasons: ["number-in-url" as const], options: ["1", "2"] }];
+  // Measured through the preview, with nothing the user can change: no warning.
+  assert.deepEqual(describeArgRejections("Grid", [
+    { combination: { cols: "1" }, status: "ok" },
+    { combination: { cols: "2" }, status: "ok", appliedVia: "preview" as const, rejectedArgs: cols("2") },
+  ]), []);
+  // Not measured: said, without a story change that wouldn't help.
+  const [refused, ...rest] = describeArgRejections("Grid", [{ combination: { cols: "2" }, status: "arg_rejected", rejectedArgs: cols("2") }], { id: "grid" });
+  assert.deepEqual(rest, []);
+  assert.match(refused, /`cols` 2: Storybook's URL reads it as a number, and the story's options list it only as a string, so no argTypes change lets the URL carry it\./);
+  assert.match(refused, /No change to the story lets its URL carry it, and the variant's error says why the preview didn't take it either\.$/);
 });
 
 test("describeUncheckedArgs: says when the preview couldn't be read, naming the variants", () => {

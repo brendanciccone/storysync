@@ -26,11 +26,23 @@ export type ArgRejectionReason =
   | "not-in-argtypes"
   /** The arg's argTypes `if` is false for the combination, so the story isn't given it. */
   | "hidden-by-if"
+  /**
+   * The value looks like a number, which Storybook's URL parser reads as
+   * one, and the story's options list it only as a string, so no argTypes
+   * change lets the URL carry it: cols "2", say.
+   */
+  | "number-in-url"
   /** None of the above explains it: the arg's type, say, which the value doesn't fit. */
   | "not-applied";
 
 /** The order a rejection lists its reasons in. */
-const REASON_ORDER: ArgRejectionReason[] = ["not-in-options", "not-in-argtypes", "hidden-by-if", "not-applied"];
+const REASON_ORDER: ArgRejectionReason[] = ["not-in-options", "not-in-argtypes", "number-in-url", "hidden-by-if", "not-applied"];
+
+/** Reasons no change to the story fixes: the URL can't carry the value, and only the preview can set it. */
+const NO_STORY_FIX: ReadonlySet<ArgRejectionReason> = new Set(["number-in-url"]);
+
+/** What Storybook's URL parser reads as a number rather than a string. */
+const URL_NUMBER = /^-?[0-9]+(\.[0-9]+)?$/;
 
 export interface ArgRejection {
   name: string;
@@ -104,12 +116,19 @@ export function argMatches(value: unknown, requested: string): boolean {
 }
 
 /**
- * A requested value as Storybook holds it: a boolean for a boolean prop or
- * argType, a number for a number argType, else the string.
+ * A requested value as the story's Controls would give it: a boolean for a
+ * boolean prop or argType; the story's own option, as typed, when its
+ * options list the value, since Storybook types the options it infers from
+ * the docs' literals, `2` a number and `"2"` a string; a number for a number
+ * argType, or one whose options are all numbers; else the string.
  */
 export function typedArgValue(value: string, argType: StoryArgType | undefined, property?: FigmaVariantProperty): unknown {
   if (property?.type === "BOOLEAN" || argType?.type === "boolean") return value === "true";
-  if (argType?.type === "number" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  const options = argType?.options ?? [];
+  const option = options.find((o) => argMatches(o, value));
+  if (option !== undefined) return option;
+  const numeric = value.trim() !== "" && Number.isFinite(Number(value));
+  if (numeric && (argType?.type === "number" || (options.length > 0 && options.every((o) => typeof o === "number")))) return Number(value);
   return value;
 }
 
@@ -189,6 +208,14 @@ export function findRejectedArgs(
       rejection.reasons.push("not-in-argtypes");
     } else if (Array.isArray(argType.options) && !argType.options.some((option) => argMatches(option, value))) {
       rejection.reasons.push("not-in-options");
+      rejection.options = argType.options;
+    } else if (
+      Array.isArray(argType.options) && URL_NUMBER.test(value) && !argType.mapping && argType.type !== "string" &&
+      argType.options.includes(value) && !argType.options.includes(Number(value))
+    ) {
+      // Storybook's URL gave the number, which the options don't list, and
+      // dropped it; an argType of type string would have turned it back.
+      rejection.reasons.push("number-in-url");
       rejection.options = argType.options;
     }
     const stored = Object.hasOwn(snapshot.stored, name) && argMatches(snapshot.stored[name], value);
@@ -311,9 +338,10 @@ const quoteList = (values: readonly unknown[]) => values.map((v) => (typeof v ==
 
 /**
  * The one-line story change that lets Storybook take every value of one arg
- * that it rejected for one reason, in `file` when it is known.
+ * that it rejected for one reason, in `file` when it is known; null for a
+ * reason no story change fixes.
  */
-function storyFix(name: string, reason: ArgRejectionReason, values: string[], group: ArgRejection, file: string): string {
+function storyFix(name: string, reason: ArgRejectionReason, values: string[], group: ArgRejection, file: string): string | null {
   switch (reason) {
     case "not-in-options":
       return `add ${quoteList(values)} to argTypes.${name}.options${file}`;
@@ -323,6 +351,8 @@ function storyFix(name: string, reason: ArgRejectionReason, values: string[], gr
       return `remove \`if: ${JSON.stringify(group.condition)}\` from argTypes.${name}${file}`;
     case "not-applied":
       return `check that argTypes.${name} takes ${quoteList(values)}${file}`;
+    case "number-in-url":
+      return null;
   }
 }
 
@@ -336,15 +366,18 @@ function reasonText(reason: ArgRejectionReason, group: ArgRejection): string {
       return `its argTypes \`if: ${JSON.stringify(group.condition)}\` hides it for these combinations`;
     case "not-applied":
       return "Storybook didn't give it to the story, for no reason snap could read";
+    case "number-in-url":
+      return "Storybook's URL reads it as a number, and the story's options list it only as a string, so no argTypes change lets the URL carry it";
   }
 }
 
 /**
  * Warnings for a component some of whose requested values Storybook didn't
- * apply from the story URL: one for the values snap then applied through
- * Storybook's preview and measured, and one for those it couldn't, each
- * naming the values, why, and the story change that would let the URL take
- * them. Null entries are left out.
+ * apply from the story URL: one for the values snap then set through
+ * Storybook's preview, and one for those it couldn't, each naming the
+ * values, why, and the story change that would let the URL take them. A
+ * value no story change would let the URL carry, and that the preview set,
+ * is left out: there is nothing to tell the user to do.
  */
 export function describeArgRejections(
   label: string,
@@ -352,14 +385,15 @@ export function describeArgRejections(
   options: { storyFile?: string | null; id?: string } = {},
 ): string[] {
   const file = options.storyFile ? ` in ${options.storyFile}` : "";
-  const describe = (picked: readonly VariantArgs[]) => {
+  const fixable = (reason: ArgRejectionReason) => !NO_STORY_FIX.has(reason);
+  const describe = (picked: readonly VariantArgs[], reasons: (reason: ArgRejectionReason) => boolean) => {
     // By arg and reason, in the order first met: name -> reason -> values.
     const groups = new Map<string, Map<ArgRejectionReason, { values: string[]; first: ArgRejection }>>();
     for (const variant of picked) {
       for (const rejection of variant.rejectedArgs ?? []) {
-        const byReason = groups.get(rejection.name) ?? new Map();
-        groups.set(rejection.name, byReason);
-        for (const reason of rejection.reasons) {
+        for (const reason of rejection.reasons.filter(reasons)) {
+          const byReason = groups.get(rejection.name) ?? new Map();
+          groups.set(rejection.name, byReason);
           const group = byReason.get(reason) ?? { values: [], first: rejection };
           if (!group.values.includes(rejection.value)) group.values.push(rejection.value);
           byReason.set(reason, group);
@@ -371,30 +405,37 @@ export function describeArgRejections(
     for (const [name, byReason] of groups) {
       for (const [reason, { values, first }] of byReason) {
         causes.push(`\`${name}\` ${values.join(", ")}: ${reasonText(reason, first)}`);
-        fixes.push(storyFix(name, reason, values, first, file));
+        const fix = storyFix(name, reason, values, first, file);
+        if (fix) fixes.push(fix);
       }
     }
     return { causes, fixes };
   };
 
   const warnings: string[] = [];
-  const applied = variants.filter((v) => v.status === "ok" && v.appliedVia === "preview" && v.rejectedArgs?.length);
-  if (applied.length) {
-    const { causes, fixes } = describe(applied);
+  const viaPreview = variants.filter((v) =>
+    v.appliedVia === "preview" && v.status === "ok" && v.rejectedArgs?.some((r) => r.reasons.some(fixable)));
+  if (viaPreview.length) {
+    const { causes, fixes } = describe(viaPreview, fixable);
+    const one = viaPreview.length === 1;
+    const outcome = "measured what the component renders with them, so the measurements are right";
     warnings.push(
-      `Storybook wouldn't take some of ${label}'s values from the story URL, and would have rendered ${applied.length === 1 ? "that variant" : `those ${applied.length} variants`} without them, as its default: ` +
-        `${causes.join("; ")}. snap set them through Storybook's preview instead and measured what the component renders with them, ` +
-        `so the measurements are right. To let the story take them as well, ${fixes.join("; and ")}.`,
+      `Storybook wouldn't take some of ${label}'s values from the story URL, and would have rendered ${one ? "that variant" : `those ${viaPreview.length} variants`} without them, as its default: ` +
+        `${causes.join("; ")}. snap set them through Storybook's preview instead and ${outcome}. ` +
+        `To let the story take them as well, ${fixes.join("; and ")}.`,
     );
   }
   const refused = variants.filter((v) => v.status === "arg_rejected");
   if (refused.length) {
-    const { causes, fixes } = describe(refused);
+    const { causes, fixes } = describe(refused, () => true);
+    const one = refused.length === 1;
     const again = options.id ? `--components ${options.id} --merge` : "--components and --merge";
+    const how = fixes.length
+      ? `To measure ${one ? "it" : "them"}, ${fixes.join("; and ")}, then measure it again with ${again}.`
+      : `No change to the story lets its URL carry ${one ? "it" : "them"}, and ${one ? "the variant's error says" : "each variant's error says"} why the preview didn't take ${one ? "it" : "them"} either.`;
     warnings.push(
       `Storybook wouldn't render ${refused.length} of ${label}'s variants with the values asked for, and snap couldn't set them through its preview either, ` +
-        `so ${refused.length === 1 ? "it was" : "they were"} not measured (status arg_rejected): ${causes.join("; ")}. ` +
-        `To measure ${refused.length === 1 ? "it" : "them"}, ${fixes.join("; and ")}, then measure it again with ${again}.`,
+        `so ${one ? "it was" : "they were"} not measured (status arg_rejected): ${causes.join("; ")}. ${how}`,
     );
   }
   return warnings;
