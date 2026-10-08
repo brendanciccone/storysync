@@ -284,7 +284,7 @@ export interface VerifyResult {
    * What snap warned about a scored component's measurement that a score
    * can't show: snap measured a closed trigger or what may be a layout
    * wrapper rather than the component, its variants all measured the same,
-   * or a property's default is assumed. Figma can match such a measurement
+   * or a VARIANT property's default is assumed. Figma can match such a measurement
    * exactly, so 100% on a dialog's trigger is not a faithful dialog.
    * Reported beside the score; not a --strict failure.
    */
@@ -958,7 +958,10 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     caveats.push({ component: key, kind: note.kind, element: note.element });
   }
   if (detectIdenticalVariants(component.variants ?? [])) caveats.push({ component: key, kind: "identical-variants" });
-  const assumed = (component.variantProperties ?? []).filter((p) => p.defaultAssumed).map((p) => p.name);
+  // A VARIANT's only: a boolean's Figma default is false whatever its
+  // default, as React's is for a boolean left out, so one assumed there
+  // changes nothing in Figma, and every optional boolean has one.
+  const assumed = (component.variantProperties ?? []).filter((p) => p.defaultAssumed && p.type === "VARIANT").map((p) => p.name);
   if (assumed.length) caveats.push({ component: key, kind: "default-assumed", properties: assumed });
   return caveats;
 }

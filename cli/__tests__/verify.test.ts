@@ -1295,6 +1295,9 @@ test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants
     variantProperties: [
       { name: "size", type: "VARIANT", values: ["md", "sm"], defaultValue: "md", defaultAssumed: true },
       { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+      // An optional boolean has no default in the docs either, but Figma's
+      // default for it is false all the same: nothing to say.
+      { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true },
     ],
   } as never;
   assert.deepEqual(scoreCaveats(component), [
