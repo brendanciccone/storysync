@@ -220,20 +220,27 @@ function readCss(file: string): string {
  */
 interface Extraction extends TokenExtractionResult {
   vars?: Map<string, string>;
+  /**
+   * The same variables as written, before a var() in them was resolved, to
+   * say why one didn't: in `vars`, a loop of two reads as each set to itself.
+   */
+  written?: Map<string, string>;
+  /** Where `vars` are read from, for that warning: `:root` unless said. */
+  varsFrom?: string;
 }
 
 /** The categories whose tokens are lengths, and get a `px`. */
 const LENGTH_CATEGORIES: ReadonlySet<TokenCategory> = new Set(["radius", "spacing", "typography"]);
 
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
-  const { vars, ...result } = extractFromSource(projectPath, sourceType);
+  const { vars, written, varsFrom, ...result } = extractFromSource(projectPath, sourceType);
   for (const collection of result.collections) {
     collection.tokens = collection.tokens.map((token) => {
       // `value` stays as the source writes it, for --check. CSS custom
       // properties resolve a var() only when it is the whole value, so
       // `calc(var(--radius) - 4px)` is resolved here, for hex and px alone.
       const resolved = vars ? resolveTailwindCssRefs(token.value, vars) : token.value;
-      const unresolved = unresolvedRefs(resolved, vars);
+      const unresolved = unresolvedRefs(resolved, written ?? vars, varsFrom ?? ":root");
       if (unresolved) result.warnings.push(`Unresolved: ${collection.category} ${token.name} = ${token.value} (${unresolved})`);
       if (collection.category === "colors") {
         const hex = tokenColorToHex(resolved);
@@ -256,14 +263,40 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
  * as text. A variable set nowhere storysync reads may be set at runtime, as
  * next/font sets `--font-geist-mono`; one set only in terms of itself, as
  * shadcn/ui's `@theme inline { --font-sans: var(--font-sans) }`, can't
- * resolve from a stylesheet either.
+ * resolve from a stylesheet either. `written` holds the variables as
+ * written, and `where` says where they were read from.
  */
-function unresolvedRefs(value: string, vars: Map<string, string> | undefined): string | null {
-  const names = [...new Set([...value.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]))];
+function unresolvedRefs(value: string, written: Map<string, string> | undefined, where: string): string | null {
+  const names = [...new Set(varRefs(value))];
   if (!names.length) return null;
-  return names
-    .map((name) => (vars?.has(name) ? `${name} is set only in terms of itself` : `${name} isn't set in any stylesheet storysync reads`))
-    .join("; ");
+  return names.map((name) => whyUnresolved(name, written, where)).join("; ");
+}
+
+/** The custom properties a value's var()s name, a fallback's included. */
+function varRefs(value: string): string[] {
+  return [...value.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]);
+}
+
+/**
+ * Why a variable left in a resolved value didn't resolve. Resolution goes
+ * as deep as it can, so one that is set is in a loop, or past what it
+ * follows: eight var()s deep, or a var() in a var()'s fallback.
+ */
+function whyUnresolved(name: string, written: Map<string, string> | undefined, where: string): string {
+  const value = written?.get(name);
+  if (value === undefined) return `${name} isn't set in ${where}`;
+  if (value.trim() === `var(${name})`) return `${name} is set only in terms of itself`;
+  if (varRefs(value).includes(name)) return `${name} is set in terms of itself`;
+  const seen = new Set<string>();
+  const next = varRefs(value);
+  while (next.length) {
+    const ref = next.pop()!;
+    if (ref === name) return `${name} is in a loop of var() references`;
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    next.push(...varRefs(written?.get(ref) ?? ""));
+  }
+  return `${name} is set through var()s nested deeper than storysync follows`;
 }
 
 function extractFromSource(projectPath: string, sourceType?: TokenSourceType): Extraction {
@@ -342,8 +375,10 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
   const root = projectRoot ?? join(configPath, "..");
   const cssFiles = findCSSWithCustomProperties(root);
   let vars: Map<string, string> | undefined;
+  let written: Map<string, string> | undefined;
   if (cssFiles.length && collectionsHaveCssVarRefs(collections)) {
-    const cssVars = readCssVars(cssFiles);
+    const declared = readRootDeclarations(cssFiles);
+    const cssVars = resolveRootVars(declared);
     if (cssVars.size) {
       for (const coll of collections) {
         for (const token of coll.tokens) {
@@ -352,10 +387,11 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
       }
       warnings.push(`Resolved CSS variable references from ${cssFiles[0]}`);
       vars = cssVars;
+      written = declared;
     }
   }
 
-  return { source: "tailwind", sourcePath: configPath, collections, warnings, vars };
+  return { source: "tailwind", sourcePath: configPath, collections, warnings, vars, written };
 }
 
 function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
@@ -367,9 +403,13 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
   return false;
 }
 
-// Read CSS variables from :root blocks (with chained var() resolution).
-function readCssVars(files: string[]): Map<string, string> {
-  const allVars = new Map<string, string>();
+/**
+ * The custom properties of the stylesheets' `:root` blocks, as written, a
+ * later declaration winning. A file that can't be read is skipped, and
+ * named in `warnings` when there are any.
+ */
+function readRootDeclarations(files: string[], warnings?: string[]): Map<string, string> {
+  const declared = new Map<string, string>();
   for (const file of files) {
     try {
       const content = readCss(file);
@@ -377,11 +417,23 @@ function readCssVars(files: string[]): Map<string, string> {
       for (const block of rootBlocks) {
         const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
         for (const decl of declarations) {
-          allVars.set(decl[1].trim(), decl[2].trim());
+          declared.set(decl[1].trim(), decl[2].trim());
         }
       }
-    } catch { /* skip unreadable */ }
+    } catch {
+      warnings?.push(`Could not read ${file}`);
+    }
   }
+  return declared;
+}
+
+/**
+ * `:root`'s variables with each one that is a var() resolved, chains and
+ * fallbacks included. Resolved in place, in order, so a later variable sees
+ * an earlier one resolved; a copy, so the declarations stay as written.
+ */
+function resolveRootVars(declared: Map<string, string>): Map<string, string> {
+  const allVars = new Map(declared);
   for (const [name, value] of allVars) {
     allVars.set(name, resolveCssVar(value, allVars, 0));
   }
@@ -733,7 +785,11 @@ function isThemeTokenName(varName: string): boolean {
 function extractFromTailwindTheme(files: string[], projectPath: string): Extraction {
   const warnings: string[] = [];
   const declared = readThemeDeclarations(files, warnings);
-  const vars = themeVars(projectPath, readCssVars(findCSSWithCustomProperties(projectPath)), declared);
+  const root = readRootDeclarations(findCSSWithCustomProperties(projectPath));
+  const vars = themeVars(projectPath, resolveRootVars(root), declared);
+  // The same, with :root's as written, to say why a var() didn't resolve.
+  const written = new Map(vars);
+  for (const [name, value] of root) if (!declared.has(name)) written.set(name, value);
 
   const categorized: Record<TokenCategory, TokenValue[]> = {
     colors: [], spacing: [], typography: [], radius: [], shadows: [],
@@ -752,7 +808,7 @@ function extractFromTailwindTheme(files: string[], projectPath: string): Extract
   for (const [category, tokens] of Object.entries(categorized) as [TokenCategory, TokenValue[]][]) {
     if (tokens.length) collections.push({ category, tokens });
   }
-  return { source: "tailwind", sourcePath: files[0], collections, warnings, vars };
+  return { source: "tailwind", sourcePath: files[0], collections, warnings, vars, written, varsFrom: ":root or @theme" };
 }
 
 /**
@@ -781,9 +837,10 @@ function refersToRoot(value: string, root: Map<string, string>, declared: Map<st
  * them, which leaves every `:root` token's name and value as it was.
  * Colours aren't: `:root` already holds what `@theme`'s point at. A variable
  * `:root` declares itself is read from `:root`, and resolved to its `:root`
- * value, as it wins in the browser.
- * The rest of `@theme`'s tokens are named in a warning, since `--source
- * tailwind` would read them.
+ * value, as it wins in the browser. The rest of `@theme`'s tokens are named
+ * in a warning: those `--source tailwind` would read, and apart, those whose
+ * var() it couldn't resolve either. `root` is `:root`'s variables as
+ * written.
  */
 function addRootDerivedTheme(
   projectPath: string,
@@ -801,22 +858,36 @@ function addRootDerivedTheme(
   // worked out from @theme's.
   const vars = themeVars(projectPath, root, declared);
   for (const [name, value] of root) vars.set(name, value);
+  // What isn't read, by category: what --source tailwind would read, and
+  // what it would find unresolved too, as shadcn/ui's fonts, which next/font
+  // sets at runtime. Told to pass --source tailwind for those, the user got
+  // the same fonts back with an Unresolved warning.
   const left = new Map<TokenCategory, string[]>();
+  const unresolved = new Map<TokenCategory, string[]>();
+  const add = (to: Map<TokenCategory, string[]>, category: TokenCategory, entry: string) => to.set(category, [...(to.get(category) ?? []), entry]);
   for (const [varName, value] of declared) {
     if (!isThemeTokenName(varName) || root.has(varName)) continue;
     const token = themeToken(varName);
     if (!token) continue;
-    const derived = refersToRoot(value, root, declared);
-    if (!derived) left.set(token.category, [...(left.get(token.category) ?? []), token.name]);
-    if (!derived || token.category === "colors") continue;
+    const resolved = resolveTailwindCssRefs(value, vars);
+    if (!refersToRoot(value, root, declared)) {
+      const why = unresolvedRefs(resolved, vars, ":root or @theme");
+      if (why) add(unresolved, token.category, `${token.name} (${why})`);
+      else add(left, token.category, token.name);
+      continue;
+    }
+    if (token.category === "colors") continue;
     if (categorized[token.category].some((t) => t.name === token.name)) continue;
-    categorized[token.category].push({ name: token.name, value: resolveTailwindCssRefs(value, vars) });
+    categorized[token.category].push({ name: token.name, value: resolved });
   }
+  // A palette in @theme runs to hundreds, so each category names a few.
+  const few = (names: string[]) => names.length > 8 ? `${names.slice(0, 6).join(", ")} and ${names.length - 6} more` : names.join(", ");
+  const named = (by: Map<TokenCategory, string[]>) => [...by].map(([category, names]) => `${category} ${few(names)}`).join("; ");
   if (left.size) {
-    // A palette in @theme runs to hundreds, so each category names a few.
-    const few = (names: string[]) => names.length > 8 ? `${names.slice(0, 6).join(", ")} and ${names.length - 6} more` : names.join(", ");
-    const named = [...left].map(([category, names]) => `${category} ${few(names)}`).join("; ");
-    warnings.push(`Not read from @theme, since they aren't built from :root's variables: ${named}. Pass --source tailwind to read @theme instead`);
+    warnings.push(`Not read from @theme, since they aren't built from :root's variables: ${named(left)}. Pass --source tailwind to read @theme instead`);
+  }
+  if (unresolved.size) {
+    warnings.push(`Not read from @theme, since a var() in them doesn't resolve: ${named(unresolved)}`);
   }
 }
 
@@ -843,32 +914,14 @@ const BARE_SCALES = new Map<string, TokenCategory>([
  */
 function extractFromCSS(files: string[], projectPath: string): Extraction {
   const warnings: string[] = [];
-  const allVars = new Map<string, string>();
+  const declared = readRootDeclarations(files, warnings);
 
-  for (const file of files) {
-    try {
-      const content = readCss(file);
-      const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
-
-      for (const block of rootBlocks) {
-        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
-        for (const decl of declarations) {
-          allVars.set(decl[1].trim(), decl[2].trim());
-        }
-      }
-    } catch {
-      warnings.push(`Could not read ${file}`);
-    }
-  }
-
-  if (!allVars.size) {
+  if (!declared.size) {
     return { source: "css", sourcePath: files[0] ?? "", collections: [], warnings: [...warnings, "No custom properties found"] };
   }
 
   // Resolve var() references — handles chains and var(--x, fallback)
-  for (const [name, value] of allVars) {
-    allVars.set(name, resolveCssVar(value, allVars, 0));
-  }
+  const allVars = resolveRootVars(declared);
 
   // Categorize by prefix
   const categorized: Record<TokenCategory, TokenValue[]> = {
@@ -924,14 +977,14 @@ function extractFromCSS(files: string[], projectPath: string): Extraction {
     }
   }
 
-  addRootDerivedTheme(projectPath, allVars, categorized, warnings);
+  addRootDerivedTheme(projectPath, declared, categorized, warnings);
 
   const collections: TokenCollection[] = [];
   for (const [category, tokens] of Object.entries(categorized) as [TokenCategory, TokenValue[]][]) {
     if (tokens.length) collections.push({ category, tokens });
   }
 
-  return { source: "css", sourcePath: files[0], collections, warnings, vars: allVars };
+  return { source: "css", sourcePath: files[0], collections, warnings, vars: allVars, written: declared };
 }
 
 // Recursively resolve var(--name) and var(--name, fallback). Cycle/depth-guarded.
@@ -1101,7 +1154,7 @@ function extractFromTheme(filePath: string): Extraction {
     }
   }
 
-  return { source: "theme", sourcePath: filePath, collections, warnings };
+  return { source: "theme", sourcePath: filePath, collections, warnings, varsFrom: "the theme file" };
 }
 
 function mapNameToCategory(name: string): TokenCategory | null {

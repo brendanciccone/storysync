@@ -790,7 +790,7 @@ test("CSS: shadcn/ui v4 gives :root's colours and radius, and the radius scale @
   // Read through :root alone, there was no radius at all, and the bare
   // --radius alone would leave the push one radius to bind sm, md, lg and
   // xl to. @theme's colours point at :root's and aren't read twice; its
-  // fonts aren't built from :root, so a warning names them.
+  // fonts don't resolve from any stylesheet, so a warning names them.
   const dir = makeProject({ "app/globals.css": SHADCN_V4_GLOBALS });
   try {
     assert.equal(detectTokenSource(dir)?.type, "css");
@@ -807,8 +807,9 @@ test("CSS: shadcn/ui v4 gives :root's colours and radius, and the radius scale @
         ["xl", "calc(0.625rem + 4px)", 14],
       ]],
     ]);
+    // --source tailwind would find them unresolved too, so it isn't offered.
     assert.deepEqual(auto.warnings, [
-      "Not read from @theme, since they aren't built from :root's variables: typography font/sans, font/mono. Pass --source tailwind to read @theme instead",
+      "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
     ]);
 
     // A baseline from before lists the colours alone, so it sees the radius
@@ -1027,8 +1028,8 @@ test("unresolved: a token whose var() didn't resolve is named in a warning, sayi
     const result = extractTokens(theme);
     assert.deepEqual(result.warnings, [
       "Unresolved: typography font/sans = var(--font-sans) (--font-sans is set only in terms of itself)",
-      "Unresolved: typography font/mono = var(--font-geist-mono) (--font-geist-mono isn't set in any stylesheet storysync reads)",
-      "Unresolved: radius card = calc(var(--radius) + 2px) (--radius isn't set in any stylesheet storysync reads)",
+      "Unresolved: typography font/mono = var(--font-geist-mono) (--font-geist-mono isn't set in :root or @theme)",
+      "Unresolved: radius card = calc(var(--radius) + 2px) (--radius isn't set in :root or @theme)",
     ]);
     // Kept as written, with no px to guess at.
     assert.deepEqual(result.collections.find((c) => c.category === "radius")?.tokens, [{ name: "card", value: "calc(var(--radius) + 2px)" }]);
@@ -1037,9 +1038,39 @@ test("unresolved: a token whose var() didn't resolve is named in a warning, sayi
   const config = makeProject({ "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "hsl(var(--brand))", plain: "#ffffff" } } } }` });
   try {
     assert.deepEqual(extractTokens(config).warnings, [
-      "Unresolved: colors brand = hsl(var(--brand)) (--brand isn't set in any stylesheet storysync reads)",
+      "Unresolved: colors brand = hsl(var(--brand)) (--brand isn't set in :root)",
     ]);
   } finally { cleanup(config); }
+});
+
+test("unresolved: the warning tells a loop from a variable set only in terms of itself, and says where it looked", () => {
+  // Read after resolution, a loop of two looked like each set to itself.
+  const css = makeProject({
+    "styles.css": `:root {
+  --font-a: var(--font-b);
+  --font-b: var(--font-a);
+  --font-c: var(--font-c);
+  --font-d: calc(var(--font-d) + 1px);
+  --font-e: var(--font-runtime);
+}`,
+  });
+  try {
+    assert.deepEqual(extractTokens(css, "css").warnings, [
+      "Unresolved: typography font/a = var(--font-a) (--font-a is in a loop of var() references)",
+      "Unresolved: typography font/b = var(--font-a) (--font-a is in a loop of var() references)",
+      "Unresolved: typography font/c = var(--font-c) (--font-c is set only in terms of itself)",
+      "Unresolved: typography font/d = calc(var(--font-d) + 1px) (--font-d is set in terms of itself)",
+      "Unresolved: typography font/e = var(--font-runtime) (--font-runtime isn't set in :root)",
+    ]);
+  } finally { cleanup(css); }
+
+  // A theme file's tokens aren't resolved against any stylesheet.
+  const theme = makeProject({ "src/theme.ts": `export const colors = { brand: "var(--brand)" };` });
+  try {
+    assert.deepEqual(extractTokens(theme, "theme").warnings, [
+      "Unresolved: colors brand = var(--brand) (--brand isn't set in the theme file)",
+    ]);
+  } finally { cleanup(theme); }
 });
 
 // --- Drift detection ---
