@@ -252,8 +252,12 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
     if (!appeared) {
-      const expected = opts.selector ?? ROOT_CONTAINERS.map((container) => `${container} > *`).join(" or ");
-      return { status: "element_not_found", error: `no element matched ${expected}`, ...empty };
+      // What was waited for: storyReadySelector passes over a <noscript> or
+      // <style> in the root, so `#storybook-root > *` may well match one.
+      const error = opts.selector
+        ? `no element matched ${opts.selector}`
+        : `nothing that draws rendered under ${ROOT_CONTAINERS.join(" or ")}`;
+      return { status: "element_not_found", error, ...empty };
     }
 
     await settle(page, images, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));

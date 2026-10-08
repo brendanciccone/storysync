@@ -145,8 +145,11 @@ test("captureStory: a story that never renders costs one --timeout, not one per 
   const { page, waits } = storyPage({ appears: false });
   const result = await captureStory(page, "http://localhost:6006/iframe.html?id=x--default", OPTS);
   assert.equal(result.status, "element_not_found");
-  assert.equal(result.error, "no element matched #storybook-root > * or #root > *");
+  // What was waited for, which a root holding only a <noscript> doesn't have.
+  assert.equal(result.error, "nothing that draws rendered under #storybook-root or #root");
   assert.deepEqual(waits.map((w) => w.timeout), [OPTS.timeoutMs]);
+  const selected = await captureStory(storyPage({ appears: false }).page, "http://localhost:6006/iframe.html?id=x--default", { ...OPTS, selector: ".card" });
+  assert.equal(selected.error, "no element matched .card");
 });
 
 test("storyReadySelector: waits for an element that can draw, the component's slots, or an error, in one selector", () => {
