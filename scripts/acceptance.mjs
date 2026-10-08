@@ -3372,6 +3372,9 @@ async function main() {
         ["lists the components before it maps a scope", /first run `npx storysync list/],
         ["maps only the scope's names that list has", /only the (?:scope's names|names in the scope) that list has/],
         ["skips map when list has none of the scope", /If list has none of them, skip map/],
+        // Base UI's Button paired by ID left Radix's alone in the name, and
+        // paired with any set of it, a designer's on another page included.
+        ["still pairs a shared name's copies by page when IDs paired some", /counting those an ID paired/],
         // An icon library's components aren't drift.
         ["counts components outside any set not from the push, without listing them", /don't list it as Figma only, but count it/],
         ["lets those components leave the audit in sync", /components outside any set not from the push don't count against it/],
