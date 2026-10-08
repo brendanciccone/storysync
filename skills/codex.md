@@ -208,9 +208,9 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Update in place rather than duplicating.** Before creating a component set, look for one with the same name anywhere on the target page, inside a section or frame a designer moved it into too, and update it if found. Running a push twice must not produce two `Button`s. The same applies to variable collections — reuse a collection of the same name instead of creating a second.
 
-   **A component with no variant properties is one plain component, not a set.** Its snap combination is empty, so its one variant is named `''`: give the part `PROPERTIES` of `[]` and that one variant, and the template builds a plain component, named and placed as the set would be, and restyles it in place on the next push. A push before 0.4.0 built one as a set of one variant named `''`, which Figma renames `=` and marks as broken (`Component set has existing errors`), so reading its properties throws. The template will not build beside one: it throws `The page has a COMPONENT_SET "…" (…) where this part builds a COMPONENT …` before changing anything, as it does `… a COMPONENT … where this part builds a COMPONENT_SET …` for a plain component whose code has since gained variant properties. Ask the user whether to convert it or to skip the component, saying so in the summary; do neither on your own. To convert the old set, in a call of its own, move its one variant onto the page and give it the set's name (`page.appendChild(variant); variant.name = SET_NAME`), which keeps every instance of it linked, and remove the set if Figma left it behind; to convert a plain component, combine it into a set of its own (`figma.combineAsVariants([component], component.parent)`), name the set as the component was and the variant from snap's default combination. Then re-run the part.
+   **A component with no variant properties is one plain component, not a set.** Its snap combination is empty, so its one variant is named `''`: give the part `PROPERTIES` of `[]` and that one variant, and the template builds a plain component, named and placed as the set would be, and restyles it in place on the next push. A push before 0.4.0 built one as a set of one variant named `''`, which Figma renames `=` and marks as broken (`Component set has existing errors`), so reading its properties throws. The template will not build beside one: it throws `The page has COMPONENT_SET "…" (…): this part builds a COMPONENT …` before changing anything, as it does `The page has COMPONENT "…" (…): this part builds a COMPONENT_SET …` for a plain component an earlier push built, which carries the component's id, whose code has since gained variant properties. A designer's own plain component of the name, with no id, is left alone. Ask the user whether to convert it or to skip the component, saying so in the summary; do neither on your own. To convert the old set, in a call of its own, move its one variant onto the page and give it the set's name (`page.appendChild(variant); variant.name = SET_NAME`), which keeps every instance of it linked, and remove the set if Figma left it behind; to convert a plain component, combine it into a set of its own (`figma.combineAsVariants([component], component.parent)`), name the set as the component was and the variant from snap's default combination. Then re-run the part.
 
-   **A new set or component goes below everything on its page**, 100 below the lowest thing there, at the page's left edge, rather than at `0,0` on top of another; one already on the page stays where it is, wherever a designer moved it. **Each carries its Storybook `id` and `title`** as shared plugin data, `node.getSharedPluginData('storysync', 'id')` and `'title'`: give the part the component's `id` as `ID` and its `title` as `TITLE`, `null` where it has none. The first part finds an earlier set by its name or by that id, so a set a designer renamed is still updated in place, and the audit can pair a set with its component by it.
+   **A new set or component goes below everything on its page**, 100 below the lowest thing there, at the page's left edge, rather than at `0,0` on top of another; one already on the page stays where it is, wherever a designer moved it. **Each carries its Storybook `id` and `title`** as shared plugin data, `node.getSharedPluginData('storysync', 'id')` and `'title'`: give the part the component's `id` as `ID` and its `title` as `TITLE`, `null` where it has none. The first part finds an earlier set by its name, and where none has the name, by that id, so a set a designer renamed is still updated in place, while a copy of a set, which keeps its id, is not taken for it; and the audit can pair a set with its component by it. A set of its name that carries another component's id is refused, `… it is another component: ask the user whether it is …`: if the user says it is this component's, clear its id (`node.setSharedPluginData('storysync', 'id', '')`) in a call of its own and re-run the part; otherwise skip the component.
 
    **Set colors with `setPaints`, and fonts with `loadFont`.** Set every fill, stroke and effect with the template's `setPaints(node, 'fills' | 'strokes' | 'effects', items)`, never by assigning it: each item is a paint or effect in its measured color, with `variable` set to the color variable to bind, if any. Figma gives a paint assigned freshly bound to a variable an opacity of 1, so a translucent color bound that way loses its alpha (a live push read Attachment's error border, `#df22254d` bound to `destructive`, back as `#df2225`): `setPaints` puts each paint's opacity back once the binding is stored. An effect bound to a color variable takes that variable's alpha, so `setPaints` leaves a shadow unbound, in its measured color, where binding changed its alpha. Load every text layer's font with `loadFont(family, weight)`, as step 3 says, and before changing the text of a label an earlier push made, load the font it has (`figma.loadFontAsync(text.fontName)`), or make a new label where that font won't load. If `applyStyles` throws part way, the part removes the variants it created before it fails, so none is left loose on the page, and a retry makes them again.
 
@@ -321,25 +321,29 @@ use_figma({
     if (!PROPERTIES.length && names.join() !== '') {
       throw new Error('With no properties, name the one variant ""');
     }
-    // The set: by id after the first part; on the first, by name or ID
-    // anywhere on the page, in a section or frame a designer moved it into too.
+    // The set: by id after the first part; on the first, by name anywhere on
+    // the page, in a section or frame a designer moved it into too, else by
+    // ID, so a renamed set is found and a copy of one is not. A plain
+    // component without an ID, where a set is built, is a designer's own.
+    const idOf = (n) => n.getSharedPluginData('storysync', 'id');
     let componentSet = null;
     if (SET_ID) {
       componentSet = await figma.getNodeByIdAsync(SET_ID);
       if (!componentSet || componentSet.type !== want) {
-        throw new Error('No component set with id ' + SET_ID);
+        throw new Error('No ' + want + ' with id ' + SET_ID + (componentSet ? ': it is a ' + componentSet.type : ''));
       }
     } else {
-      const sets = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
-        .filter((n) => n.parent.type !== 'COMPONENT_SET' && (n.name === SET_NAME || (ID && n.getSharedPluginData('storysync', 'id') === ID)));
-      const other = sets.find((n) => n.type !== want);
-      if (other) {
-        throw new Error('The page has a ' + other.type + ' "' + other.name + '" (' + other.id + ') where this part builds a ' + want + ': ask the user whether to convert it or skip it');
-      }
-      if (sets.length > 1) {
-        throw new Error('The page has ' + sets.length + ' component sets named "' + SET_NAME + '" (' + sets.map((n) => n.id).join(', ') + '): ask the user which to update');
-      }
+      const all = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
+        .filter((n) => n.parent.type !== 'COMPONENT_SET' && (n.type === want || n.type === 'COMPONENT_SET' || idOf(n)));
+      const named = all.filter((n) => n.name === SET_NAME);
+      const sets = named.length ? named : all.filter((n) => ID && idOf(n) === ID);
       componentSet = sets[0] || null;
+      const why = sets.length > 1 ? 'ask the user which to update'
+        : componentSet && componentSet.type !== want ? 'this part builds a ' + want + ': ask the user whether to convert it or skip it'
+        : componentSet && idOf(componentSet) && idOf(componentSet) !== ID ? 'it is another component: ask the user whether it is ' + ID : '';
+      if (why) {
+        throw new Error('The page has ' + sets.map((n) => n.type + ' "' + n.name + '" (' + n.id + ', id "' + idOf(n) + '")').join(', ') + ': ' + why);
+      }
     }
     // Auto layout would place the variants itself: refuse it, changing nothing.
     if (componentSet && PROPERTIES.length && componentSet.layoutMode !== 'NONE') {

@@ -1004,6 +1004,20 @@ async function leftSet(build, doc, variants, { page = "Forms", set = "Button" } 
   return made;
 }
 
+/** A set an earlier push left beside the others on `page`, at 0,0: `variants` in that order. */
+async function besideSet(build, doc, page, set, variants) {
+  const call = doc.call();
+  const onto = call.root.children.find((p) => p.name === page);
+  await call.setCurrentPageAsync(onto);
+  const made = call.combineAsVariants(variants.map(({ name, styles }) => {
+    const node = call.createComponent();
+    Object.assign(node, build.look(name, styles), { name });
+    return node;
+  }), onto);
+  made.name = set;
+  return made;
+}
+
 /**
  * Throws unless `set` is laid out as `rows`, each a list of variant names with
  * null for a gap, and `extra` in a row of its own below: neighboring columns
@@ -1393,6 +1407,10 @@ function buildScenarios(snapDir) {
       assert(again.default.backgroundColor === "#0f766e", `the second push left the fill ${again.default.backgroundColor}`);
 
       // Named other than '', or pushed as a set onto the plain one: refused.
+      const typed = await refused(() => build.run(doc.call(), [{ name: "", styles }],
+        { PAGE_NAME: "Data", SET_NAME: "Badge", ID: "data-badge", TITLE: "Data/Badge", SET_ID: component.id, PART: 25 },
+        [{ name: "variant", type: "VARIANT", values: ["solid"], defaultValue: "solid" }]));
+      assert(typed && typed.includes("COMPONENT_SET") && typed.includes("it is a COMPONENT"), `a later part given the plain Badge's id for a set ${typed ? `failed with: ${typed}` : "was built"}`);
       const misnamed = await refused(() => push(styles, [], "default"));
       assert(misnamed && /name the one variant ""/.test(misnamed), `a part naming its one variant "default" ${misnamed ? `failed with: ${misnamed}` : "was built"}`);
       const variant = [{ name: "variant", type: "VARIANT", values: ["solid"], defaultValue: "solid" }];
@@ -1451,6 +1469,51 @@ function buildScenarios(snapDir) {
       await pushSet(build, old, { page: "Forms", part: 25, ...pushes[0] });
       assert(left.getSharedPluginData("storysync", "id") === button.id, "a set an earlier push left was given no id");
       return "Button, Frozen and Badge 100 apart, each with its id and title; a moved, renamed set found by its id and left where it was";
+    },
+
+    async found(build) {
+      // The first part matched a set by its name or its id at once, so a
+      // copy of a set (Ctrl+D), which keeps its plugin data, made two and the
+      // part refused; it took a designer's own plain component of the name
+      // for one an earlier push built; and it overwrote another component's
+      // id on a set of its name. It finds a set by name, by id only where
+      // nothing has the name, and refuses a set of the name with another id.
+      const { button, measured } = data();
+      const push = (doc, extra = {}) => pushSet(build, doc, {
+        page: "Forms", set: "Button", part: 25, variants: measured, properties: button.variantProperties, storyId: button.id, title: button.title, ...extra,
+      });
+      const doc = figmaDocument();
+      const [first] = await push(doc);
+      const original = await doc.call().getNodeByIdAsync(first.id);
+      const copy = await besideSet(build, doc, "Forms", "Button copy", measured.slice(0, 2));
+      copy.setSharedPluginData("storysync", "id", button.id);
+      const [again] = await push(doc);
+      assert(again.id === first.id && again.added === 0 && copy.children.length === 2, `a push beside a copy of the set returned ${JSON.stringify(again)}`);
+      // Renamed, beside its copy: nothing has the name, and two have the id.
+      original.name = "Buttons";
+      const two = await refused(() => push(doc));
+      assert(two && two.includes(`"Buttons" (${original.id}`) && two.includes(`"Button copy" (${copy.id}`) && /ask the user which/.test(two),
+        `a push with two sets of its id and none of its name ${two ? `failed with: ${two}` : "was built"}`);
+
+      const own = figmaDocument();
+      const call = own.call();
+      const page = call.createPage();
+      page.name = "Forms";
+      await call.setCurrentPageAsync(page);
+      const designed = call.createComponent();
+      designed.name = "Button";
+      const [beside] = await push(own);
+      assert(beside.added === measured.length && own.nodes("COMPONENT_SET").length === 1 && designed.parent === page && designed.name === "Button",
+        `a push beside a designer's own Button component returned ${JSON.stringify(beside)}`);
+
+      const other = figmaDocument();
+      const taken = await leftSet(build, other, measured, { page: "Forms", set: "Button" });
+      taken.setSharedPluginData("storysync", "id", "forms-iconbutton");
+      const kept = await refused(() => push(other));
+      assert(kept && kept.includes(taken.id) && kept.includes("forms-iconbutton") && /another component/.test(kept)
+        && taken.getSharedPluginData("storysync", "id") === "forms-iconbutton",
+        `a push onto a Button carrying another component's id ${kept ? `failed with: ${kept}` : "was built"}`);
+      return "a copy left alone, a renamed set beside its copy refused, a designer's own Button left alone, another component's set refused";
     },
 
     async painted(build) {
@@ -3123,14 +3186,19 @@ async function main() {
   await check("a font Figma can't load gets a stand-in the part names, and a part that fails part way leaves nothing loose", async () =>
     builds.fonts(loadSkillBuild()));
 
-  await check("a build that makes a set of no properties, stacks sets, drops an alpha or fails over a font fails these checks", async () => {
+  await check("a new set or component is found by name, then by id, and refuses another component's", async () =>
+    builds.found(loadSkillBuild()));
+
+  await check("a build that makes a set of no properties, stacks sets, takes the wrong set, drops an alpha or fails over a font fails these checks", async () => {
     // Each mutant rewrites the shipped build template, or the readback, and
     // has to fail one of the checks above, which the shipped ones pass.
     const T = {
       plain: "if (!PROPERTIES.length) {",
       place: "if (fresh) Object.assign(node, { name: SET_NAME, x: 0, y: below });",
       id: "node.setSharedPluginData('storysync', 'id', ID || '');",
-      found: "(n.name === SET_NAME || (ID && n.getSharedPluginData('storysync', 'id') === ID))",
+      found: "const sets = named.length ? named : all.filter((n) => ID && idOf(n) === ID);",
+      own: "(n.type === want || n.type === 'COMPONENT_SET' || idOf(n))",
+      other: "componentSet && idOf(componentSet) && idOf(componentSet) !== ID ?",
       restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));\n",
       effect: "!p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]",
       families: "for (const f of [family, /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : 'Inter', 'Inter']) {",
@@ -3144,7 +3212,11 @@ async function main() {
       "puts a new set at 0,0, on top of the page's others": (code) => code.replace(T.place, "if (fresh) node.name = SET_NAME;"),
       "moves and renames a set already on the page": (code) => code.replace(T.place, "Object.assign(node, { name: SET_NAME, x: 0, y: below });"),
       "keeps no Storybook id on what it builds": (code) => code.replace(T.id, ""),
-      "finds an earlier set by its name alone": (code) => code.replace(T.found, "n.name === SET_NAME"),
+      "finds an earlier set by its name alone": (code) => code.replace(T.found, "const sets = named;"),
+      "matches a set by its name or its id at once, so a copy of one makes two": (code) => code.replace(T.found,
+        "const sets = all.filter((n) => n.name === SET_NAME || (ID && idOf(n) === ID));"),
+      "takes a designer's own plain component of the name for one a push built": (code) => code.replace(T.own, "(true)"),
+      "overwrites another component's id on a set of its name": (code) => code.replace(T.other, "false ?"),
       "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
       "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p"),
       "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),

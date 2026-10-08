@@ -767,6 +767,13 @@ test("every push instruction places a new set below the page's others and keeps 
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /100 below (?:the lowest thing there|everything on its page)/, `${path} never says where a new set goes`);
       assert.match(text, /[sg]etSharedPluginData\('storysync', 'id'/, `${path} never keeps the Storybook id on a set`);
+      // A copy of a set keeps its id, so the id is a fallback for a renamed set.
+      assert.match(text, /by its name, (?:and |or )?where (?:none|nothing) has the name,? by (?:that id|the Storybook id it carries)/,
+        `${path} never finds a set by its name before its id`);
+      assert.match(text, /findAllWithCriteria\(\{ types: \['COMPONENT_SET', 'COMPONENT'\] \}\)/, `${path} never looks for a plain component`);
+      assert.match(text, /designer's own/, `${path} takes a designer's own plain component for one a push built`);
+      assert.doesNotMatch(text, /Look for it anywhere on its page with `page\.findAllWithCriteria\(\{ types: \['COMPONENT_SET'\] \}\)`|\(`page\.findAllWithCriteria\(\{ types: \['COMPONENT_SET'\] \}\)`, since a designer/,
+        `${path} still looks for a set by name among sets alone`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
