@@ -297,10 +297,13 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
 | `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
+| `aria-*` / `data-*` attributes | Skipped |
 
 Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
 
-A union prop's values start with its default, so Figma's default variant is the code's. A boolean's Figma default is always `false`. Where the docs give no usable default, a value named `default` is assumed, or else the first value, or `false`, and map and snap mark the property `defaultAssumed: true`. Any other boolean prop becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `map` and `snap` leave out the props `--exclude-props` names. `inspect` shows why a prop was skipped, and which defaults were assumed.
+A boolean prop the table doesn't skip becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map` and `snap` leaves out the props it names.
+
+A union prop's values start with its default, so Figma's default variant is the code's, while a boolean's Figma default is always `false`. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
 ## CLI reference
 
