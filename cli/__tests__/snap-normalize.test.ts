@@ -855,7 +855,7 @@ function node(tag: string, attrs: Partial<Omit<StoryNode, "tag" | "children" | "
   const { styles, ...rest } = attrs;
   return {
     tag, slot: null, role: null, hasPopup: null, expanded: null, controls: null, state: null, open: false,
-    position: "static", rendered: true, ...rest, styles: { ...DRAWS_NOTHING, ...styles }, children,
+    dir: null, orientation: null, label: null, position: "static", rendered: true, ...rest, styles: { ...DRAWS_NOTHING, ...styles }, children,
   };
 }
 
@@ -933,6 +933,28 @@ test("chooseMeasuredElement: finds the component's slot after a sibling, in a st
     [], ["switch"],
   );
   assert.deepEqual(behind.kind === "tree" && behind.path, [2, 0]);
+});
+
+test("chooseMeasuredElement: a component root without data-slot is not taken for a layout wrapper", () => {
+  // A RadioGroup, Tabs or Accordion root in a project without data-slot
+  // (Tailwind v3 shadcn, a custom Radix wrapper) draws nothing and holds
+  // several elements, as a story's layout row does, but bears a role, a
+  // direction, an orientation, a label or a list's tag.
+  const parts = () => [node("button", { styles: FILLED }), node("button", { styles: FILLED })];
+  for (const marked of [
+    node("div", { role: "radiogroup", styles: { display: "grid" } }, parts()),
+    node("div", { dir: "ltr", styles: { display: "flex" } }, parts()),
+    node("div", { orientation: "horizontal", styles: { display: "flex" } }, parts()),
+    node("div", { label: "Text alignment", styles: { display: "flex" } }, parts()),
+    node("ol", { styles: { display: "flex" } }, parts()),
+    node("nav", { styles: { display: "flex" } }, parts()),
+  ]) {
+    const choice = chooseMeasuredElement(root(marked), [], ["radio-group"]);
+    assert.deepEqual(choice.kind === "tree" && choice.notes, [], JSON.stringify({ ...marked, children: [] }));
+  }
+  // A role that says it means nothing is no mark.
+  const presentational = chooseMeasuredElement(root(node("div", { role: "presentation", styles: { display: "flex" } }, parts())), [], []);
+  assert.equal(presentational.kind === "tree" && presentational.notes[0]?.kind, "layout-wrapper");
 });
 
 test("chooseMeasuredElement: a container that draws is not taken for a layout wrapper", () => {

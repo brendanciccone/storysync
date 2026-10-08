@@ -548,6 +548,10 @@ export interface StoryNode {
   state: string | null;
   /** Whether it carries `data-popup-open` or `data-open`, Base UI's mark of an open trigger. */
   open: boolean;
+  /** `dir`, `data-orientation` (else `aria-orientation`) and `aria-label` (else `aria-labelledby`), as written. */
+  dir: string | null;
+  orientation: string | null;
+  label: string | null;
   /** The computed `position`. */
   position: string;
   /** Whether it has a layout box: false for `display: none` and `display: contents`. */
@@ -711,6 +715,25 @@ function findOwnSlotInStory(container: StoryNode, slots: readonly string[]): { p
   return null;
 }
 
+/** Tags whose children are its own parts, as a list's items or a form's fields are, never a story's layout. */
+const COMPONENT_ROOT_TAGS: readonly string[] = ["nav", "ol", "ul", "menu", "dl", "form", "fieldset", "table"];
+
+/**
+ * Whether an element bears a mark of a component's root, which a story's
+ * layout `<div>` doesn't: a role, a direction or orientation, an accessible
+ * label, or a tag that means a list, form or table. A RadioGroup, Tabs or
+ * Accordion root draws nothing and holds several elements, as a layout row
+ * does, and in a project without `data-slot` this is what tells them apart.
+ */
+export function hasComponentRootMarks(node: StoryNode): boolean {
+  const role = (node.role ?? "").trim().toLowerCase();
+  return (role !== "" && role !== "presentation" && role !== "none") ||
+    Boolean(node.dir?.trim()) ||
+    Boolean(node.orientation?.trim()) ||
+    Boolean(node.label?.trim()) ||
+    COMPONENT_ROOT_TAGS.includes(node.tag);
+}
+
 function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
   return (node.slot != null && slots.includes(node.slot)) || node.children.some((child) => hasOwnSlot(child, slots));
 }
@@ -735,8 +758,9 @@ function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
  *      names an element in a portal, that element is measured instead.
  *
  * What 3 settles on is flagged when it is a closed trigger, or holds several
- * elements while drawing nothing itself, which is how a story's layout
- * wrapper looks. Neither is certain, so each is a note for a warning.
+ * elements while drawing nothing itself and bearing no mark of a component's
+ * root, which is how a story's layout wrapper looks. Neither is certain, so
+ * each is a note for a warning.
  */
 export function chooseMeasuredElement(
   container: StoryNode | null,
@@ -779,7 +803,7 @@ export function chooseMeasuredElement(
     notes.push({ kind: "closed-trigger", element });
   } else {
     const children = drawnChildren(node).length;
-    if (children >= 2 && drawsNothing(node.styles) && !hasOwnSlot(node, slots)) {
+    if (children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots)) {
       notes.push({ kind: "layout-wrapper", element, children });
     }
   }
