@@ -52,17 +52,28 @@ function httpStatus(err: unknown): number | null {
 /**
  * An error's message without the transport's own prefixes, and with its
  * cause, which is where fetch keeps the reason: "fetch failed: connect
- * ECONNREFUSED 127.0.0.1:6006". A cause with no message, as when localhost
- * refused on both its addresses, gives its code.
+ * ECONNREFUSED 127.0.0.1:6006". When localhost is refused on both its
+ * addresses, ::1 and 127.0.0.1, the cause is an AggregateError with no
+ * message of its own, so its errors are said in turn, as the SSE transport
+ * says them. Its code alone, "fetch failed: ECONNREFUSED", read differently
+ * from the SSE fallback's, which was then said as well.
  */
 function reason(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   let message = err.message.replace(/^(Streamable HTTP error|SSE error): /, "").replace(/^(\w*Error: )+/, "");
-  const cause = err.cause as { message?: unknown; code?: unknown } | undefined;
-  const said = (typeof cause?.message === "string" && cause.message) || (typeof cause?.code === "string" && cause.code) || "";
+  const cause = err.cause as { message?: unknown; code?: unknown; errors?: unknown } | undefined;
+  const each = Array.isArray(cause?.errors)
+    ? cause.errors.map((e) => (e instanceof Error ? e.message : "")).filter(Boolean).join(", ")
+    : "";
+  const said = (typeof cause?.message === "string" && cause.message) || each || (typeof cause?.code === "string" && cause.code) || "";
   if (said && !message.includes(said)) message += `: ${said}`;
   // Said inside a sentence of its own, which supplies the full stop.
   return message.replace(/\.$/, "");
+}
+
+/** The system error a reason names, such as ECONNREFUSED or ENOTFOUND. */
+function errno(text: string): string | null {
+  return text.match(/\bE[A-Z]{3,}\b/)?.[0] ?? null;
 }
 
 /**
@@ -95,12 +106,15 @@ function statusHint(server: McpServer, status: number): string | null {
 /**
  * Why neither transport could connect, led by the Streamable HTTP attempt:
  * its HTTP status and what to do about it, or the reason it got no answer.
- * The SSE fallback's own failure follows, where it says something else.
+ * The SSE fallback's own failure follows, where it says something else: a
+ * different status, as Figma's 405 to a GET, or a different reason. Both
+ * refused, or both answered 404, is said once.
  */
 export function connectFailure(server: McpServer, url: URL, streamable: unknown, sse: unknown): Error {
   const status = httpStatus(streamable);
   const fallback = reason(sse);
   let message: string;
+  let same: boolean;
   if (status !== null) {
     const name = STATUS_CODES[status];
     // Not when it only repeats the status, as Figma's "Unauthorized" does.
@@ -108,13 +122,15 @@ export function connectFailure(server: McpServer, url: URL, streamable: unknown,
     const said = text && text.toLowerCase() !== name?.toLowerCase() ? text : null;
     const hint = statusHint(server, status);
     message = `${url} answered HTTP ${status}${name ? ` ${name}` : ""}${said ? ` (${said})` : ""}.${hint ? ` ${hint}` : ""}`;
+    same = httpStatus(sse) === status;
   } else {
     const primary = reason(streamable);
     const refused = /ECONNREFUSED/.test(primary) && server === "Storybook" ? " Is Storybook running there?" : "";
     message = `Couldn't connect to ${url}: ${primary}.${refused}`;
-    if (fallback === primary) return new Error(message);
+    const code = errno(primary);
+    same = fallback === primary || (code !== null && httpStatus(sse) === null && errno(fallback) === code);
   }
-  return new Error(`${message} (The SSE fallback failed too: ${fallback}.)`);
+  return new Error(same ? message : `${message} (The SSE fallback failed too: ${fallback}.)`);
 }
 
 /** Whether a request failed because its answer didn't come within the limit. */

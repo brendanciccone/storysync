@@ -98,7 +98,8 @@ test("list and map CLI: a Storybook with no /mcp endpoint reports the 404 and sa
   const list = await run("list", "--storybook", url);
   assert.equal(list.status, 1, list.out);
   assert.match(list.out, new RegExp(`${url.replace(/[.]/g, "\\.")}/mcp answered HTTP 404 Not Found\\. There's no MCP endpoint there\\. Is @storybook/addon-mcp installed and registered\\? Run \`storysync init\`, then restart Storybook\\.`));
-  assert.doesNotMatch(list.out, /^Error: SSE error/m);
+  // The SSE fallback's GET got the same 404, which says nothing more.
+  assert.doesNotMatch(list.out, /SSE/);
 
   const map = await run("map", "--storybook", url, "--json");
   assert.equal(map.status, 1, map.out);
@@ -119,6 +120,47 @@ test("list CLI: a Storybook that isn't running is said to be refused, asking whe
   assert.doesNotMatch(r.out, /SSE/);
 });
 
+test("list CLI: localhost refused on both its addresses is said once, with the hint at the end", async () => {
+  // localhost is ::1 and 127.0.0.1, and Node's fetch, refused on both, gives
+  // a cause with no message, only a code. The reason read "fetch failed:
+  // ECONNREFUSED", which didn't match the SSE fallback's list of addresses,
+  // so the refusal was said twice with the hint between. localhost is the
+  // --storybook the README uses throughout.
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+
+  const r = await run("list", "--storybook", `http://localhost:${port}`);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, new RegExp(`Couldn't connect to http://localhost:${port}/mcp: fetch failed: (connect ECONNREFUSED \\S+:${port}(, )?)+\\. Is Storybook running there\\?\\n`));
+  assert.doesNotMatch(r.out, /SSE/);
+
+  const json = await run("map", "--storybook", `http://localhost:${port}`, "--json");
+  assert.equal(json.status, 1, json.out);
+  assert.match((JSON.parse(json.stdout) as { error: string }).error, /ECONNREFUSED .*\. Is Storybook running there\?$/);
+});
+
+test("connectFailure: a refusal on each of several addresses is said once, naming them", () => {
+  const url = new URL("http://localhost:6006/mcp");
+  const refused = (address: string) => Object.assign(new Error(`connect ECONNREFUSED ${address}`), { code: "ECONNREFUSED" });
+  const both = Object.assign(new AggregateError([refused("::1:6006"), refused("127.0.0.1:6006")], ""), { code: "ECONNREFUSED" });
+  const streamable = new TypeError("fetch failed", { cause: both });
+  const sse = new Error("SSE error: TypeError: fetch failed: connect ECONNREFUSED ::1:6006, connect ECONNREFUSED 127.0.0.1:6006");
+  assert.equal(
+    connectFailure("Storybook", url, streamable, sse).message,
+    "Couldn't connect to http://localhost:6006/mcp: fetch failed: connect ECONNREFUSED ::1:6006, connect ECONNREFUSED 127.0.0.1:6006. Is Storybook running there?",
+  );
+  // Said differently by the fallback, the same refusal is still said once.
+  assert.doesNotMatch(connectFailure("Storybook", url, streamable, new Error("SSE error: connect ECONNREFUSED 127.0.0.1:6006")).message, /SSE/);
+  // A different reason is worth saying.
+  assert.match(connectFailure("Storybook", url, streamable, new Error("SSE error: getaddrinfo ENOTFOUND localhost")).message, /\(The SSE fallback failed too: getaddrinfo ENOTFOUND localhost\.\)$/);
+  // With only a code to go on, the code is said, and the fallback's
+  // refusal is the same one.
+  const bare = new TypeError("fetch failed", { cause: Object.assign(new AggregateError([], ""), { code: "ECONNREFUSED" }) });
+  assert.equal(connectFailure("Figma", url, bare, sse).message, "Couldn't connect to http://localhost:6006/mcp: fetch failed: ECONNREFUSED.");
+});
+
 test("connectFailure: leads with the Streamable HTTP status, with a hint for each server", () => {
   const url = new URL("http://localhost:6006/mcp");
   const status = (code: number, body: string) => Object.assign(new Error(`Streamable HTTP error: Error POSTing to endpoint: ${body}`), { code });
@@ -133,6 +175,11 @@ test("connectFailure: leads with the Streamable HTTP status, with a hint for eac
   assert.equal(
     connectFailure("Storybook", url, status(502, "<!doctype html><html>Bad gateway</html>"), sse).message,
     "http://localhost:6006/mcp answered HTTP 502 Bad Gateway. (The SSE fallback failed too: Non-200 status code (405).)",
+  );
+  // The fallback's GET answered with the same status: said once.
+  assert.equal(
+    connectFailure("Figma", url, status(404, ""), Object.assign(new Error("SSE error: Non-200 status code (404)"), { code: 404 })).message,
+    "http://localhost:6006/mcp answered HTTP 404 Not Found. There's no MCP endpoint at that URL. Check --figma.",
   );
   // A JSON-RPC error has a code too, but it isn't an HTTP status.
   assert.match(connectFailure("Storybook", url, Object.assign(new Error("MCP error -32603: boom."), { code: -32603 }), sse).message, /^Couldn't connect to http:\/\/localhost:6006\/mcp: MCP error -32603: boom\. \(The SSE fallback failed too/);
