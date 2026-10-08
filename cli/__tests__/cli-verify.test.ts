@@ -405,8 +405,8 @@ test("verify CLI: a field bound to no variable though one has its value is named
   // A token detached in Figma keeps its value, so the values alone scored a
   // detached radius 100%.
   const file = readbackOf({
-    a: { ...MATCHING, bound: { backgroundColor: "primary", borderRadiusUniform: "radius/sm" }, unbound: [] },
-    b: { ...MATCHING, bound: { backgroundColor: "primary" }, unbound: ["borderRadiusUniform"] },
+    a: { ...MATCHING, textLayout: null, bound: { backgroundColor: "primary", borderRadiusUniform: "radius/sm" }, unbound: [] },
+    b: { ...MATCHING, textLayout: null, bound: { backgroundColor: "primary" }, unbound: ["borderRadiusUniform"] },
   });
   const r = verify(snapOfTwo(), file, "--strict");
   assert.equal(r.status, 0, r.out);
@@ -416,4 +416,32 @@ test("verify CLI: a field bound to no variable though one has its value is named
   const older = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }), "--strict");
   assert.equal(older.status, 0, older.out);
   assert.match(older.out, /Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen/);
+});
+
+test("verify CLI: a text layout snap measured, against a readback without textLayout, is said beside the score and fails --strict", () => {
+  // A readback from a template before textLayout, or an older skill beside
+  // a newer CLI, scored a title that runs past its card 100%, said Figma
+  // matched, and passed --strict.
+  const text = { color: "#ffffff", fontFamily: "Inter", fontSize: 12, fontWeight: 600, layout: { width: 40, lines: 1, truncation: "ellipsis" } };
+  const cut = snapOfTwo();
+  cut.components[0].base = { combination: {}, slug: "a", styles: { ...STYLES, text } as never };
+  const older = readbackOf({ a: MATCHING, b: MATCHING });
+  const strict = verify(cut, older, "--strict");
+  assert.equal(strict.status, 1, strict.out);
+  assert.match(strict.out, /Fidelity: 100\.0%/);
+  assert.match(strict.out, /\n {2}! Not compared, since the readback has no textLayout[^\n]*\n {6}Forms\/Button, 2 variants\n/);
+  assert.doesNotMatch(strict.out, /Figma matches/);
+  assert.equal(verify(cut, older).status, 0, "a score, not a failure, without --strict");
+
+  // Read with the template as it is, it is compared, and passes.
+  const current = readbackOf({ a: { ...MATCHING, textLayout: { width: 40, maxLines: 1 }, bound: {}, unbound: [] }, b: { ...MATCHING, textLayout: { width: 40, maxLines: 1 }, bound: {}, unbound: [] } });
+  const passed = verify(cut, current, "--strict");
+  assert.equal(passed.status, 0, passed.out);
+  assert.doesNotMatch(passed.out, /Not compared/);
+  assert.match(passed.out, /Figma matches the measured styles for Forms\/Button\./);
+
+  // Where snap measured no layout, an older readback is compared on all it has.
+  const plain = verify(snapOfTwo(), older, "--strict");
+  assert.equal(plain.status, 0, plain.out);
+  assert.doesNotMatch(plain.out, /Not compared/);
 });

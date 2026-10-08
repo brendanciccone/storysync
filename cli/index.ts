@@ -421,7 +421,7 @@ program
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out of the score, such as ones not pushed; the output names them")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or if the snap recorded a component failure or lacks a component the readback has")
+  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or has no textLayout where snap measured a text's layout, or if the snap recorded a component failure or lacks a component the readback has")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
   .action(async (opts) => {
@@ -479,6 +479,16 @@ program
           console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(result.caveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
           for (const caveat of result.caveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
         }
+        // Beside the score too: a property snap measured and the readback
+        // has no field for was never compared, and a title that runs past
+        // its card scored 100% that way.
+        if (result.uncompared.length > 0) {
+          console.log(chalk.red("  ! Not compared, since the readback has no textLayout, as one read with a template from before it: how Figma fits the text snap measured the browser wrapped or cut off, on"));
+          for (const u of result.uncompared) {
+            console.log(chalk.red(`      ${u.component}, ${u.variants} ${u.variants === 1 ? "variant" : "variants"}`));
+          }
+          console.log(chalk.dim("      Read them back with the skill's readback template as it is now, which returns textLayout. A skill installed before it has none: `storysync setup --client <claude|cursor|codex> --force` installs the current one."));
+        }
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
         const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
         console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}, across ${summary.variants} variants\n`);
@@ -528,10 +538,12 @@ program
           && result.componentsNotInSnap.length === 0
           && readbackIssues.length === 0
           && result.summary.propertiesCompared > 0;
-        if (cleanRun) {
+        // Not of a component with something measured left uncompared.
+        const uncomparedComponents = new Set(result.uncompared.map((u) => u.component));
+        const names = [...new Set(result.variants.map((v) => v.component))].filter((name) => !uncomparedComponents.has(name));
+        if (cleanRun && names.length > 0) {
           // Name what was checked. On a clean run this is otherwise the only
           // output, and "it matches" is not much use without saying what did.
-          const names = [...new Set(result.variants.map((v) => v.component))];
           // Only claim "measured" when everything actually was. Saying it of a
           // partly-inferred run is the conflation the provenance line exists
           // to prevent.
@@ -539,7 +551,7 @@ program
             && result.summary.unrecorded === 0
             && result.summary.unmeasured === 0;
           const kind = allMeasured ? "measured" : "expected";
-          console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ") || "no components"}.`));
+          console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ")}.`));
         }
 
         // Provenance before age: a component styled by guesswork matters more
@@ -604,12 +616,15 @@ program
       // that does not match; nor is one cut down, or read before the snap, a
       // measurement of all of it now: absent is not a pass, as everywhere
       // above. Its own term, since the variants left can still have scored.
+      // And a measured text layout the readback has no field for, which
+      // was never compared: absent again.
       const hasDrift = result.summary.drifted > 0
         || result.summary.missingFromFigma > 0
         || scoredNothing
         || (result.snapIssues?.length ?? 0) > 0
         || result.componentsNotInSnap.length > 0
-        || (result.readbackIssues?.length ?? 0) > 0;
+        || (result.readbackIssues?.length ?? 0) > 0
+        || result.uncompared.length > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one.
       const notMeasured = result.summary.inferred > 0

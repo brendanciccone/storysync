@@ -531,7 +531,7 @@ The comparison is numeric, not visual, so it's deterministic and free. Only prop
 **Readback checks.** `verify` never contacts Figma, so before scoring it checks that the readback file is what Figma returned:
 
 - Each entry carries a checksum computed inside Figma over exactly what it returned, so an entry that was edited, made up, or copied from another variant fails.
-- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties. Three later fields, `textLayout`, `bound`, and `unbound`, aren't required, so a readback from before them still verifies.
+- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties. Three later fields, `textLayout`, `bound`, and `unbound`, aren't required, so a readback from before them still verifies. An entry with some of them must have all three. Where snap recorded a `text.layout` and the entry has no `textLayout`, `verify` says the text's fit wasn't compared, doesn't say Figma matches that component, and fails `--strict`.
 - Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
 - No two components can share a `nodeId`.
 

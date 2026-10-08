@@ -242,6 +242,13 @@ export interface VariantVerdict {
   matched: number;
   mismatched: number;
   differences: PropertyDiff[];
+  /**
+   * Properties snap measured on this variant that the entry, read with an
+   * earlier template, has no field for, so they weren't compared: only
+   * `textLayout`, where snap measured how the browser fitted the text. Left
+   * out where there are none. See VerifyResult.uncompared.
+   */
+  uncompared?: string[];
 }
 
 export interface SnapAgeKnown {
@@ -345,6 +352,14 @@ export interface VerifyResult {
   unmeasuredInFigma: { component: string; slug: string }[];
   /** What the readback says of variable bindings: see bindingReport. */
   bindings: BindingReport;
+  /**
+   * Per component and property, how many scored variants snap measured it
+   * on that their entry has no field for: a text the browser wrapped or cut
+   * off, and an entry an earlier template read, without `textLayout`. Not
+   * drift, since nothing was compared, but not a match either: a title
+   * that runs past its card scored 100% that way. A --strict failure.
+   */
+  uncompared: { component: string; property: string; variants: number }[];
   /**
    * Readback entries verify cannot score as what Figma returned, measured or
    * not: see ReadbackIssue.
@@ -590,8 +605,16 @@ export function verifyVariant(
   // variant has none.
   const measuredText = measured.text as Record<string, unknown> | null | undefined;
 
+  const uncompared: string[] = [];
+
   for (const property of COMPARABLE_PROPERTIES) {
-    if (!(property in figma)) continue;
+    if (!(property in figma)) {
+      // An entry an earlier template read has no textLayout. Where snap
+      // measured one, that is a property it can't compare, not one that
+      // matched, so it is said beside the score.
+      if (property === "textLayout" && (measuredText as { layout?: TextLayout } | null | undefined)?.layout) uncompared.push(property);
+      continue;
+    }
     // A block element's measured size is its container's, not its own.
     if ((property === "width" || property === "height") && !geometryMeaningful) continue;
     // Only where the browser wrapped or cut the text off: a label on one
@@ -639,6 +662,7 @@ export function verifyVariant(
     component, slug,
     status: mismatched > 0 ? "drifted" : matched === 0 ? "unscored" : "verified",
     source, matched, mismatched, differences,
+    ...(uncompared.length > 0 ? { uncompared } : {}),
   };
 }
 
@@ -764,23 +788,31 @@ export const READBACK_FIELDS = [
 ] as const;
 
 /**
- * The fields the readback template returns that verify doesn't require:
- * `textLayout`, `bound` and `unbound`, added after READBACK_FIELDS, so a
- * readback an earlier template read, which has none of them, still
- * verifies. Each is sealed under the checksum like any other where an
- * entry has it. An entry without them isn't compared on how Figma fits its
- * text, and says nothing of bindings, and verify says so beside the score.
+ * The fields the readback template returns that verify doesn't require of
+ * every entry: `textLayout`, `bound` and `unbound`, added after
+ * READBACK_FIELDS, so a readback an earlier template read, which has none
+ * of them, still verifies. Each is sealed under the checksum like any
+ * other where an entry has it. An entry without them says nothing of
+ * bindings, and where snap measured how the browser fitted its text, isn't
+ * compared on how Figma fits it: verify says both beside the score, and
+ * --strict fails on the second (see VerifyResult.uncompared). The template
+ * that returns one returns all three, so an entry with some but not all
+ * was read with the template cut down, and is incomplete: a template cut
+ * down to leave out `textLayout` alone would otherwise score a title that
+ * runs past its card as one never compared.
  */
 export const READBACK_LATER_FIELDS = ["textLayout", "bound", "unbound"] as const;
 
 /**
- * The fields of READBACK_FIELDS an entry lacks. Present as `null` is
+ * The fields of READBACK_FIELDS an entry lacks, and, where it has any of
+ * READBACK_LATER_FIELDS, those of them it lacks. Present as `null` is
  * present; absent, or undefined as JSON leaves it, is not.
  */
 export function missingReadbackFields(entry: object): string[] {
   const record = entry as Record<string, unknown>;
   const has = (key: string) => Object.prototype.hasOwnProperty.call(record, key) && record[key] !== undefined;
-  return READBACK_FIELDS.filter((key) => !has(key));
+  const later = READBACK_LATER_FIELDS.some(has) ? READBACK_LATER_FIELDS.filter((key) => !has(key)) : [];
+  return [...READBACK_FIELDS.filter((key) => !has(key)), ...later];
 }
 
 /**
@@ -1013,6 +1045,15 @@ export function verify(
     .filter((component) => readbackComponents[componentKey(component)] != null)
     .flatMap(scoreCaveats);
   const bindings = bindingReport(readbackComponents, unverified);
+  const uncompared = new Map<string, { component: string; property: string; variants: number }>();
+  for (const verdict of verdicts) {
+    for (const property of verdict.uncompared ?? []) {
+      const key = JSON.stringify([verdict.component, property]);
+      const seen = uncompared.get(key) ?? { component: verdict.component, property, variants: 0 };
+      seen.variants++;
+      uncompared.set(key, seen);
+    }
+  }
 
   return {
     version: READBACK_SCHEMA_VERSION,
@@ -1037,6 +1078,7 @@ export function verify(
     snapWarnings,
     caveats,
     bindings,
+    uncompared: [...uncompared.values()],
     componentsNotInSnap,
     skipped,
     unmeasuredInFigma,

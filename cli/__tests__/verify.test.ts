@@ -1016,6 +1016,12 @@ test("missingReadbackFields: null is present, absent is not, and every field the
   }
   // Not boxShadow or flexDirection, which the template does not read.
   assert.deepEqual(missingReadbackFields(complete({ boxShadow: undefined, flexDirection: undefined })), []);
+  // The later fields: none, from an earlier template, or all three, from
+  // the template as it is. Some but not all is a template cut down.
+  const later = { textLayout: null, bound: {}, unbound: [] };
+  assert.deepEqual(missingReadbackFields(complete(later)), []);
+  assert.deepEqual(missingReadbackFields(complete({ ...later, textLayout: undefined })), ["textLayout"]);
+  assert.deepEqual(missingReadbackFields(complete({ textLayout: null })), ["bound", "unbound"]);
 });
 
 test("verify: an entry that leaves out the text child's fields and gap is incomplete, and nothing in it is scored", () => {
@@ -1366,12 +1372,37 @@ test("verifyVariant: where the browser cut a label off or wrapped it, Figma's te
   assert.equal(drift(wrapped, { width: 102, maxLines: 3 }), "textLayout", "cut off where the browser drew every line");
 
   // Where the browser drew the label on one line at its own width, how
-  // Figma fits it isn't scored, however it is built; nor is a readback from
-  // a template that didn't read it.
+  // Figma fits it isn't scored, however it is built.
   const plain = { ...BASE, text: cut.text && { ...cut.text, layout: undefined } };
-  const matched = (measured: NormalizedStyles, entry: Record<string, unknown>) => verifyVariant("C", "s", measured, complete(entry) as never, 0.5).matched;
-  assert.equal(matched(plain, { textLayout: { width: 10, maxLines: 1 } }), matched(plain, {}));
-  assert.equal(matched(cut, { textLayout: undefined }) + 1, matched(cut, { textLayout: { width: 94, maxLines: 1 } }));
+  const verdict = (measured: NormalizedStyles, entry: Record<string, unknown>) => verifyVariant("C", "s", measured, complete(entry) as never, 0.5);
+  assert.equal(verdict(plain, { textLayout: { width: 10, maxLines: 1 } }).matched, verdict(plain, {}).matched);
+  assert.equal("uncompared" in verdict(plain, {}), false, "nothing measured is left uncompared");
+  // A readback from a template that didn't read it isn't compared on it,
+  // and says so, rather than count it a match.
+  const older = verdict(cut, { textLayout: undefined });
+  assert.equal(older.matched + 1, verdict(cut, { textLayout: { width: 94, maxLines: 1 } }).matched);
+  assert.deepEqual(older.uncompared, ["textLayout"]);
+  assert.equal(older.status, "verified");
+});
+
+test("verify: a text layout snap measured, against a readback from a template without textLayout, is reported as not compared", () => {
+  // A cut-down template, or an older skill beside a newer CLI, scored a
+  // title that runs past its card 100%, and said Figma matched.
+  const layout = { width: 94, lines: 1, truncation: "ellipsis" as const };
+  const snap = snapWithText({ color: "#ffffff", fontFamily: "Helvetica", fontSize: 12, fontWeight: 600, layout });
+  const older = verify(snap, readbackWith({ a: {} }), 0.5);
+  assert.deepEqual(older.readbackIssues, []);
+  assert.equal(older.fidelity, 1);
+  assert.deepEqual(older.uncompared, [{ component: "Forms/Button", property: "textLayout", variants: 1 }]);
+  // Read with the template as it is, it is compared, and nothing is left.
+  const current = verify(snap, readbackWith({ a: { textLayout: { width: 94, maxLines: 1 }, bound: {}, unbound: [] } }), 0.5);
+  assert.deepEqual(current.uncompared, []);
+  assert.equal(current.variants[0].status, "verified");
+  // Read with the template cut down to leave textLayout out alone, it is
+  // incomplete: the template that returns bindings returns textLayout.
+  const cut = verify(snap, readbackWith({ a: { bound: {}, unbound: [] } }), 0.5);
+  assert.deepEqual(cut.readbackIssues.map((i) => [i.problem, i.missing]), [["incomplete", ["textLayout"]]]);
+  assert.deepEqual(cut.uncompared, []);
 });
 
 // --- Variable bindings ---
@@ -1405,7 +1436,7 @@ test("bindingReport: counts the fields bound, and names by component and field t
 
 test("verify: bindings are reported beside the score and fail nothing, and a readback without them still scores", () => {
   const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
-  const result = verify(snap, readbackWith({ a: { bound: { backgroundColor: "primary" }, unbound: [] }, b: { bound: {}, unbound: ["backgroundColor"] } }), 0.5);
+  const result = verify(snap, readbackWith({ a: { textLayout: null, bound: { backgroundColor: "primary" }, unbound: [] }, b: { textLayout: null, bound: {}, unbound: ["backgroundColor"] } }), 0.5);
   assert.equal(result.fidelity, 1);
   assert.deepEqual(result.bindings, { read: 2, bound: 1, unbound: [{ component: "Forms/Button", field: "backgroundColor", variants: 1 }] });
   assert.equal(result.readbackIssues.length, 0, "the later fields are sealed like any other, and none is required");
