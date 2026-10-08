@@ -748,7 +748,7 @@ Compare the current Figma file against code to find drift in either direction. U
 
 If the `use_figma` tool doesn't return the plugin code's return value in a usable form, fall back to the read-only tools the Figma MCP server gives you, knowing what each covers: `get_metadata` outlines one node's layers (with no node, it lists the pages), and `get_variable_defs` returns only the variables and styles the selected node uses (on the remote server, the node a Figma link points at), so a variable no layer uses never appears. For a complete list, ask the user to export Figma's variables and components to JSON and diff against that.
 
-`use_figma` takes at most 50,000 characters of code and returns at most 20kb per call. The code below is small, but a full palette or library passes 20kb on the way back, so both reads return a slice per call. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices. Each throws if a slice comes too close to 20kb; lower `BATCH` and read that slice again.
+`use_figma` takes at most 50,000 characters of code and returns at most 20kb per call. The code below is small, but a full palette or library passes 20kb on the way back, so both reads return a slice per call. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices. The variables read throws if a slice comes too close to 20kb; lower `BATCH` and read that slice again. The components read takes as many as fit under that limit in each call.
 
 1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
 
@@ -793,14 +793,13 @@ use_figma({
 })
 ```
 
-2. **Read Figma components** — read the component sets and their variant properties, and the components outside any set, a page at a time. The push makes a component with no variant properties a plain component rather than a set, so those are components too. `use_figma` loads pages as it switches to them, starting each call on the first, and does not support `figma.loadAllPagesAsync()`, so a search from `figma.root` sees only the pages already loaded and misses the sets on every other — and the push puts each category on its own page. List the pages with a call that returns `JSON.stringify(figma.root.children.map(p => ({ id: p.id, name: p.name })))`, then make the call below once per page, as separate calls issued together, each switching to its page once. Each entry has the node's `id`, its `type`, and the `storybookId` the push stored on it, or `null` where none did. Figma refuses to read the properties of a set it flags as errored, saying `Component set has existing errors`: that set comes back with that `error`, and the rest of its page is still read.
+2. **Read Figma components** — read the component sets and their variant properties, and the components outside any set, a page at a time. The push makes a component with no variant properties a plain component rather than a set, so those are components too. `use_figma` loads pages as it switches to them, starting each call on the first, and does not support `figma.loadAllPagesAsync()`, so a search from `figma.root` sees only the pages already loaded and misses the sets on every other — and the push puts each category on its own page. List the pages with a call that returns `JSON.stringify(figma.root.children.map(p => ({ id: p.id, name: p.name })))`, then make the call below once per page, as separate calls issued together, each switching to its page once. Each entry has the node's `nodeId`, its `type`, and the `storybookId` the push stored on it, or `null` where none did. Each call returns as many as fit under 20kb, so a page of a few hundred icons takes a few calls, not one per 25. Figma refuses to read the properties of a set it flags as errored, saying `Component set has existing errors`: that set comes back with that `error`, and the rest of its page is still read.
 
 ```js
 use_figma({
   code: `
     const PAGE_ID = '0:1'; // one of the pages the first call listed
     const START = 0;
-    const BATCH = 25;
     const page = await figma.getNodeByIdAsync(PAGE_ID);
     if (!page || page.type !== 'PAGE') {
       throw new Error('No page with id ' + PAGE_ID);
@@ -809,12 +808,11 @@ use_figma({
     // The component sets, and the components outside any set, not a set's variants.
     const nodes = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
       .filter(n => n.type === 'COMPONENT_SET' || (n.parent && n.parent.type !== 'COMPONENT_SET'));
-    const results = [];
-    for (const node of nodes.slice(START, START + BATCH)) {
+    function describe(node) {
       const entry = {
         name: node.name,
         type: node.type,
-        id: node.id,
+        nodeId: node.id,
         // The Storybook ID the push stored on it, or null where none did.
         storybookId: node.getSharedPluginData('storysync', 'id') || null,
         variantProperties: [],
@@ -836,16 +834,24 @@ use_figma({
           }
         }
       }
+      return entry;
+    }
+    const slice = (components, next) => JSON.stringify({ page: page.name, total: nodes.length, next, components });
+    // Take entries while the slice stays under 17000 characters as use_figma
+    // JSON-encodes what this returns, short of its 20kb limit.
+    const results = [];
+    let end = START;
+    while (end < nodes.length) {
+      const entry = describe(nodes[end]);
+      const next = end + 1 < nodes.length ? end + 1 : null;
+      if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;
       results.push(entry);
+      end++;
     }
-    const next = START + BATCH < nodes.length ? START + BATCH : null;
-    const result = JSON.stringify({ page: page.name, total: nodes.length, next, components: results });
-    // use_figma JSON-encodes what this returns: measure the encoded string.
-    const size = JSON.stringify(result).length;
-    if (size > 17000) {
-      throw new Error('This slice is ' + size + ' characters encoded, too close to 20kb: lower BATCH and read it again');
+    if (end === START && START < nodes.length) {
+      throw new Error('"' + nodes[START].name + '" alone comes to more than 17000 characters encoded, more than one call can return: report it as not read, and read on from START + 1');
     }
-    return result;
+    return slice(results, end < nodes.length ? end : null);
   `,
   description: "Read the component sets, their variant properties and the components outside any set on one page of the Figma file",
   fileKey: "<file-key>",
@@ -877,7 +883,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - **By ID first.** A Figma component whose `storybookId` is a code component's `id` is that component's, whatever its name or page, since a designer may have moved or renamed it. If two carry the ID, as a copy of a set does, tell them apart by page as below. One whose `storybookId` no code component has is Figma only, pushed from a component code no longer has under that ID (removed, or its story moved): never pair it with another component by name.
    - **Then by name**, for the code components no ID paired and the sets with no `storybookId`: pair each code component with a set of its set name, case-insensitively: the last segment of its `title`, or its `name` when it has no title, as Components step 4 names sets, or its `name` where no set has that and it is no other component's set name, as an earlier push named them. A name only one code component and one set have is a pair, whatever page the set is on. If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), counting those an ID paired, tell the rest apart by page, even when one is left on each side: Radix's `Button` is still one of two when Base UI's paired by ID, and a `Button` set left on another page may be a designer's own. A code component and a set of its name on its category's page (`Components` when it has none), each the only one of that name on that page on its side, are a pair, comparing page names ignoring case, spaces, `/`, `-` and `_`. Of the copies left, code components alone are code only, and sets alone Figma only. Copies left on both sides, even one of each, can't be told apart (a set on another page may be the component's, moved, or an archived copy beside a component not pushed yet): report the name as ambiguous, and only as ambiguous: compare none of the copies left, and don't also count them as matched, mismatched or missing. Name a component that shares its name by its `title`, and a set by its page and name.
    - **A component outside any set with no `storybookId`** may be a designer's own, such as an icon named `Calendar`. It pairs only with a code component the sets left code only, of its set name and on its category's page, each the only one there. It never makes a name ambiguous, and one left unpaired is Figma only.
-   - **A set with an `error`** is one Figma flags as errored, such as a set of one variant named `=`, which an earlier push made of a component with no variant properties. Pair it as any set, but report it as **errored in Figma (can't read its properties)**, by name, page and id, and compare nothing in it. Don't delete it unless the user asks.
+   - **A set with an `error`** is one Figma flags as errored, such as a set of one variant named `=`, which an earlier push made of a component with no variant properties. Pair it as any set, but report it as **errored in Figma (can't read its properties)**, by name, page and `nodeId`, and compare nothing in it. Don't delete it unless the user asks.
    - **When the audit is scoped**, pair as above with every component `list` gave, as components with no variant properties, so each Figma component pairs as it would in a whole audit. Compare and report only the components in scope, and a Figma component paired with none only if the scope names it, by name, page and name, or `storybookId`.
 
    For each component:

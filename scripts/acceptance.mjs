@@ -2942,18 +2942,17 @@ async function main() {
     // a page only when a call switches to it, so a search from figma.root
     // would see the first page's sets, and only the first page's, from every
     // call. Each page's call has to return that page's sets and no other's.
-    // Forms holds exactly two slices of sets, so a call past the last slice
-    // would be one too many.
+    // Forms holds more sets than one call returns, so the read goes on from
+    // each slice's next.
     const code = useFigmaBlock(/^Read the component sets/);
-    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
-    assert(batch > 0, "the component read defines no BATCH");
-    const forms = Array.from({ length: 2 * batch }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
+    const forms = Array.from({ length: 120 }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
     const pages = [
       { id: "0:1", name: "Forms", sets: forms },
       { id: "0:2", name: "Navigation", sets: [auditSet("Tabs", { variant: ["line", "pill"] }), auditSet("Breadcrumb", { size: ["sm", "md"] })] },
       { id: "0:3", name: "Archive", sets: [] },
     ];
     const found = [];
+    const calls = [];
     for (const page of pagesFigma(pages).root.children) {
       const read = await readAllSlices(code, () => {
         const switches = [];
@@ -2966,22 +2965,70 @@ async function main() {
         };
         return figma;
       }, { PAGE_ID: page.id });
-      const sets = pages.find((p) => p.id === page.id).sets.length;
-      const calls = Math.max(1, Math.ceil(sets / batch));
-      assert(read.length === calls, `read the ${sets} sets on ${page.name} in ${read.length} calls, not ${calls}, with BATCH ${batch}`);
+      assert(read.every((slice) => slice.page === page.name), `a call for ${page.name} read ${read.map((slice) => slice.page).join(", ")}`);
       for (const slice of read) found.push(...slice.components.map((s) => `${page.name}/${s.name}`));
+      calls.push(`${page.name} in ${read.length}`);
     }
+    assert(/^Forms in [2-9]/.test(calls[0]), `read Forms' ${forms.length} sets in one call: the check never reads on from next`);
     const expected = pages.flatMap((p) => p.sets.map((s) => `${p.name}/${s.name}`));
     assert(found.join() === expected.join(), `read ${found.length} sets (${found.slice(0, 3).join(", ")}...), expected ${expected.length} across ${pages.length} pages`);
+    return `${found.length} sets across ${pages.length} pages, ${calls.join(", ")} calls`;
+  });
 
+  await check("the audit reads as many components a call as fit under 20kb, and refuses one too big alone", async () => {
+    // At 25 a call, an icon library's page of a few hundred plain components
+    // took a call per 25, each counting toward Figma's MCP rate limits,
+    // though one entry is a hundred or so characters. Each call takes what
+    // fits under the guard, as use_figma encodes it, and no less.
+    const code = useFigmaBlock(/^Read the component sets/);
     const options = Array.from({ length: 12 }, (_, i) => `option-with-a-long-descriptive-name-${i}`);
-    const wide = Array.from({ length: 120 }, (_, i) => auditSet(`Wide${i}`, { appearance: options, emphasis: options.slice(0, 6), disabled: "BOOLEAN" }));
-    const widePages = [{ id: "1:1", name: "Wide", sets: wide }];
-    const refused = await assertGuardRefuses((n, guarded) => {
-      const body = withConstants(guarded ? code : liftGuard(code), { PAGE_ID: "1:1", START: 0, BATCH: n });
-      return new AsyncFunction("figma", body)(pagesFigma(widePages));
-    }, wide.length);
-    return `${found.length} sets across ${pages.length} pages; ${refused}`;
+    const page = () => [
+      ...Array.from({ length: 400 }, (_, i) => auditComponent(`Icon/"quoted"/arrow-${i}`)),
+      ...Array.from({ length: 40 }, (_, i) => auditSet(`Wide${i}`, { appearance: options, emphasis: options.slice(0, 6), disabled: "BOOLEAN" })),
+    ];
+    const read = async (mutate = null) => {
+      const run = mutate ? mutate(code) : code;
+      assert(run !== code || !mutate, "a mutant of the component read changed nothing in it");
+      const pages = [{ id: "0:1", name: "Icons", sets: page() }];
+      return readAllSlices(run, () => pagesFigma(pages), { PAGE_ID: "0:1" });
+    };
+    const encoded = (slice) => JSON.stringify(JSON.stringify(slice)).length;
+    const assertSlices = (slices) => {
+      const names = slices.flatMap((slice) => slice.components.map((c) => c.name));
+      assert(names.length === 440 && new Set(names).size === 440, `read ${names.length} components (${new Set(names).size} distinct) of 440`);
+      for (const [i, slice] of slices.entries()) {
+        assert(encoded(slice) <= GUARD, `slice ${i + 1} is ${encoded(slice)} characters encoded, over the ${GUARD} guard`);
+        const after = slices[i + 1];
+        if (!after) continue;
+        // One more entry would have passed the guard, or the call stopped short.
+        const more = { ...slice, next: after.components.length > 1 || after.next !== null ? slice.next + 1 : null, components: [...slice.components, after.components[0]] };
+        assert(encoded(more) > GUARD, `slice ${i + 1} stopped at ${slice.components.length} entries, ${encoded(slice)} characters encoded, with room for the next`);
+      }
+    };
+    const slices = await read();
+    assertSlices(slices);
+    assert(slices.length <= 8, `read 440 components in ${slices.length} calls`);
+
+    // One set too big for any call alone is refused, by name, not returned
+    // past 20kb, and not skipped without a word.
+    const huge = auditSet("Glyph", { glyph: Array.from({ length: 2000 }, (_, i) => `glyph-${i}`) });
+    const hugePages = [{ id: "0:1", name: "Icons", sets: [auditComponent("Before"), huge, auditComponent("After")] }];
+    const first = JSON.parse(await new AsyncFunction("figma", withConstants(code, { PAGE_ID: "0:1", START: 0 }))(pagesFigma(hugePages)));
+    assert(first.components.map((c) => c.name).join() === "Before" && first.next === 1, `the slice before the huge set came back as ${JSON.stringify(first).slice(0, 200)}`);
+    let refused = null;
+    try {
+      await new AsyncFunction("figma", withConstants(code, { PAGE_ID: "0:1", START: 1 }))(pagesFigma(hugePages));
+    } catch (err) {
+      refused = err.message;
+    }
+    assert(refused && /"Glyph" alone/.test(refused) && /START \+ 1/.test(refused), `the huge set ${refused ? `failed with: ${refused}` : "was returned"}`);
+
+    const count = await assertMutantsFail({
+      "measures the slice before use_figma encodes it": (c) => c.replace("if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;", "if (slice([...results, entry], next).length > 17000) break;"),
+      "takes 25 a call, as it did": (c) => c.replace("if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;", "if (JSON.stringify(slice([...results, entry], next)).length > 17000 || end - START >= 25) break;"),
+      "takes one entry past the guard": (c) => c.replace("if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;", "if (JSON.stringify(slice(results, next)).length > 17000) break;"),
+    }, read, assertSlices);
+    return `440 components in ${slices.length} calls, each under ${GUARD} encoded and full; a set too big alone refused; ${count} mutants fail`;
   });
 
   /**
@@ -3033,7 +3080,7 @@ async function main() {
         ["Calendar", "COMPONENT", null, 1, ""],
       ];
       assert(JSON.stringify(got) === JSON.stringify(want), `read ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
-      assert(entries.every((e) => /^9:\d+$/.test(e.id) && e.error === undefined), `read ${JSON.stringify(entries)}`);
+      assert(entries.every((e) => /^9:\d+$/.test(e.nodeId) && e.error === undefined), `read ${JSON.stringify(entries)}`);
     };
     assertRead(await auditPage(sets()));
     const mutants = {
@@ -3060,7 +3107,7 @@ async function main() {
       assert(JSON.stringify(entries.map((e) => e.name)) === JSON.stringify(["Avatar", "Button", "Card", "Separator"]), `read ${entries.map((e) => e.name).join(", ")}`);
       const errored = entries[1];
       assert(/Component set has existing errors/.test(errored.error ?? ""), `the errored set came back as ${JSON.stringify(errored)}`);
-      assert(errored.variantProperties.length === 0 && /^9:\d+$/.test(errored.id), `the errored set came back as ${JSON.stringify(errored)}`);
+      assert(errored.variantProperties.length === 0 && /^9:\d+$/.test(errored.nodeId), `the errored set came back as ${JSON.stringify(errored)}`);
       assert(entries[0].variantProperties.length === 1 && entries[2].variantProperties.length === 1 && entries.filter((e) => e.error !== undefined).length === 1,
         `the sets beside it came back as ${JSON.stringify(entries)}`);
     };
@@ -3319,6 +3366,7 @@ async function main() {
         ["lists every component to pair a scope with", /npx storysync list --storybook \S+ --json/],
         ["pairs by the Storybook ID the push stored", /getSharedPluginData\('storysync', 'id'\)|storybookId/],
         ["reports a set Figma flags as errored", /errored in Figma \(can't read its properties\)/],
+        ["finds an errored set by its node id", /`nodeId`/],
       ]) assert(pattern.test(audit), `${file}: the audit never ${what}`);
     }
     return `${files.length} files`;
