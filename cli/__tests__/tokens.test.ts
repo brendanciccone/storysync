@@ -1110,6 +1110,8 @@ test("unresolved: the warning tells a loop from a variable set only in terms of 
   --font-c: var(--font-c);
   --font-d: calc(var(--font-d) + 1px);
   --font-e: var(--font-runtime);
+  --font-f: var(--font-unset, var(--font-runtime));
+  --font-g: var(--font-unset, Inter);
 }`,
   });
   try {
@@ -1119,6 +1121,8 @@ test("unresolved: the warning tells a loop from a variable set only in terms of 
       "Unresolved: typography font/c = var(--font-c) (--font-c is set only in terms of itself)",
       "Unresolved: typography font/d = calc(var(--font-d) + 1px) (--font-d is set in terms of itself)",
       "Unresolved: typography font/e = var(--font-runtime) (--font-runtime isn't set in :root)",
+      // A fallback that doesn't resolve either: both are named.
+      "Unresolved: typography font/f = var(--font-unset, var(--font-runtime)) (--font-unset isn't set in :root; --font-runtime isn't set in :root)",
     ]);
   } finally { cleanup(css); }
 

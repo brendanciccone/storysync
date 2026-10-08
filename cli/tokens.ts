@@ -240,7 +240,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
       // properties resolve a var() only when it is the whole value, so
       // `calc(var(--radius) - 4px)` is resolved here, for hex and px alone.
       const resolved = vars ? resolveTailwindCssRefs(token.value, vars) : token.value;
-      const unresolved = unresolvedRefs(resolved, written ?? vars, varsFrom ?? ":root");
+      const unresolved = unresolvedRefs(resolved, written ?? vars, varsFrom ?? ":root", token.value);
       if (unresolved) result.warnings.push(`Unresolved: ${collection.category} ${token.name} = ${token.value} (${unresolved})`);
       if (collection.category === "colors") {
         const hex = tokenColorToHex(resolved);
@@ -264,12 +264,16 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
  * next/font sets `--font-geist-mono`; one set only in terms of itself, as
  * shadcn/ui's `@theme inline { --font-sans: var(--font-sans) }`, can't
  * resolve from a stylesheet either. `written` holds the variables as
- * written, and `where` says where they were read from.
+ * written, `where` says where they were read from, and `original` is the
+ * value before resolution: when a var()'s fallback is a var() that didn't
+ * resolve either, only the fallback's is left, so those it names that
+ * aren't set are named too.
  */
-function unresolvedRefs(value: string, written: Map<string, string> | undefined, where: string): string | null {
-  const names = [...new Set(varRefs(value))];
-  if (!names.length) return null;
-  return names.map((name) => whyUnresolved(name, written, where)).join("; ");
+function unresolvedRefs(value: string, written: Map<string, string> | undefined, where: string, original = value): string | null {
+  const left = varRefs(value);
+  if (!left.length) return null;
+  const unset = varRefs(original).filter((name) => !written?.has(name));
+  return [...new Set([...unset, ...left])].map((name) => whyUnresolved(name, written, where)).join("; ");
 }
 
 /** The custom properties a value's var()s name, a fallback's included. */
