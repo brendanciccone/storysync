@@ -16,7 +16,7 @@ import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
 import { VERSION } from "./version.js";
-import { Progress } from "./progress.js";
+import { Progress, widenZeroWidthTerminal } from "./progress.js";
 import type { TokenBaseline, TokenExtractionResult, TokenSourceType } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
@@ -98,6 +98,9 @@ function parseConnectTimeout(value: unknown): number {
   }
   return ms;
 }
+
+// Before any spinner starts: ora loops forever on a terminal reporting 0 columns.
+widenZeroWidthTerminal();
 
 const program = new Command();
 program.name("storysync").description("Sync design tokens and Storybook components to Figma").version(VERSION);
@@ -870,9 +873,9 @@ program
 
           const codeComponents: FigmaComponentDefinition[] = [];
           mappingFailures = [];
-          // Which component the run is on: in the spinner, or under --json
-          // on a terminal's stderr, as map says it.
-          const progress = json ? new Progress("diff") : null;
+          // Which component the run is on: in the spinner, or where there
+          // is none spinning (--json, or not a terminal) as map says it.
+          const progress = mapSpinner?.isSpinning ? null : new Progress("diff");
           for (const entry of entries) {
             const position = codeComponents.length + mappingFailures.length + 1;
             if (mapSpinner) mapSpinner.text = `Mapping Storybook components ${position}/${entries.length} ${entry.title ?? entry.name}`;
