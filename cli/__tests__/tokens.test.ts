@@ -1266,6 +1266,57 @@ html { --color-rule: #222222; }
   } finally { cleanup(mixed); }
 });
 
+test("CSS: Tailwind v4's compiled :root, :host theme in a build is not the project's :root", () => {
+  // A Storybook build, or Tailwind CLI output, holds Tailwind's default
+  // theme in `@layer theme { :root, :host { } }`, in a folder storysync
+  // walks: read as :root, Tailwind's red-500 and font-sans became tokens.
+  const globals = `@import "tailwindcss";
+:root { --radius: 0.625rem; --background: oklch(1 0 0); }
+@theme inline { --color-background: var(--background); --radius-sm: calc(var(--radius) - 4px); }`;
+  const compiled = `@layer properties;
+@layer theme, base, components, utilities;
+@layer theme {
+  :root, :host {
+    --font-sans: ui-sans-serif, system-ui, sans-serif;
+    --color-red-500: oklch(63.7% 0.237 25.331);
+    --spacing: 0.25rem;
+    --text-sm: 0.875rem;
+  }
+}
+@layer base {
+  html, :host { line-height: 1.5; }
+}
+:root { --radius: 0.625rem; --background: oklch(1 0 0); }
+@layer properties {
+  @supports (-webkit-hyphens: none) {
+    :root, :host { --glow: #ff00ff; }
+    *, ::before, ::after { --tw-border-style: solid; }
+  }
+}`;
+  const minified = compiled.replace(/\s*\n\s*/g, "").replace(/, /g, ",").replace(/ \{/g, "{");
+  const plain = makeProject({ "app/globals.css": globals });
+  try {
+    const expected = extractTokens(plain);
+    assert.deepEqual(tokenTable(expected), [
+      ["colors", [["background", "oklch(1 0 0)"]]],
+      ["radius", [["DEFAULT", "0.625rem"], ["sm", "calc(0.625rem - 4px)"]]],
+    ]);
+    for (const [path, css] of [["storybook-static/assets/iframe-abc.css", compiled], ["src/output.css", minified]]) {
+      const built = makeProject({ "app/globals.css": globals, [path]: css });
+      try {
+        assert.deepEqual(tokenTable(extractTokens(built)), tokenTable(expected), path);
+        assert.deepEqual(tokenTable(extractTokens(built, "css")), tokenTable(expected), path);
+      } finally { cleanup(built); }
+    }
+  } finally { cleanup(plain); }
+
+  // A :root, :host list a project writes itself, outside those layers, is read.
+  const own = makeProject({ "src/app.css": `:root, :host { --color-ink: #111111; }\n@layer theme { :root { --color-paper: #ffffff; } }` });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(own)), [["colors", [["color/ink", "#111111"], ["color/paper", "#ffffff"]]]]);
+  } finally { cleanup(own); }
+});
+
 test("detectTokenSource: a stylesheet whose :root is only in a selector list is CSS, after @theme and a theme file", () => {
   // `.light, :root {` was read already, as it ends in `:root {`.
   const listed = `:root, .light { --color-brand: #ff0000; }`;

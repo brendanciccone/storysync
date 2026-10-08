@@ -862,7 +862,24 @@ const ROOT_SELECTOR = /^(?:html|\*)?(?::root)+$/i;
 function setsDefaultTheme(rule: StyleRule): boolean {
   return !rule.nested &&
     !rule.atRules.some(isDarkScheme) &&
+    !isCompiledTailwindTheme(rule) &&
     splitTopLevel(rule.selector, ",").some((selector) => ROOT_SELECTOR.test(selector.trim()));
+}
+
+/**
+ * Whether a rule is Tailwind v4's compiled output of its own theme: the
+ * `:root, :host` it writes in `@layer theme`, holding Tailwind's default
+ * palette, fonts and scales, and in `@layer properties`, holding
+ * `@property` fallbacks. A Storybook build in storybook-static/, or the
+ * src/output.css of Tailwind's CLI docs, has one, and storysync walks
+ * those folders: read as the default theme, Tailwind's red-500, font-sans
+ * and text-sm became the project's tokens. No earlier version read a list
+ * that doesn't end in `:root`, so leaving this one out keeps what they
+ * read.
+ */
+function isCompiledTailwindTheme(rule: StyleRule): boolean {
+  return /^:root\s*,\s*:host$/i.test(rule.selector) &&
+    rule.atRules.some((atRule) => /^@layer\s+(?:theme|properties)$/i.test(atRule));
 }
 
 /**
