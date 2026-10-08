@@ -217,7 +217,9 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
 
    Ask it in the same message as any cap question, and do not choose for them. Never style such a component from source instead: it would be scored against a measurement it does not match.
 
-   **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set and plain component this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger.
+   **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set and plain component this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger. Figma returns a description HTML-escaped, `"` as `&quot;` and `&` as `&amp;`, so one written back as it was read gains another escape on every push (a live push left `button[data-slot=&quot;dialog-trigger&quot;]` on Dialog): the template reads it unescaped, edits a designer's formatted description through `descriptionMarkdown` so their formatting stays, and writes only a description it changed, so a second run changes nothing.
+
+   The same call removes Figma's default page, `Page 1`, once the push has put every set on a page of its category, but only while it is as Figma made it: still named `Page 1`, empty, and not the file's only page. It returns `pageOne`: `removed`, `kept: it holds layers`, `kept: it is the only page`, `kept: Figma refused to remove it` with Figma's reason, or `none` where the file has no page of that name. Say in the summary which it was; a page a designer renamed or used is left alone.
 
 ```js
 use_figma({
@@ -231,24 +233,55 @@ use_figma({
       '12:56': '',
       // ... one entry per set or plain component this push built, by the id step 5 returned
     };
-    const NL = String.fromCharCode(10);
+    const NL = String.fromCharCode(10), BS = String.fromCharCode(92);
+    // Figma returns a description HTML-escaped, " as &quot; and & as &amp;,
+    // so one written back as read gains an escape on every push: read it
+    // unescaped, once. A designer's formatted description is markdown in
+    // descriptionMarkdown: edit that where there is one, so the formatting
+    // stays, with the note's markdown characters escaped, and the plain
+    // description otherwise. Write only a description this changes.
+    const ENTITY = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'" };
+    const unescape = (s) => (s || '').replace(/&(amp|lt|gt|quot|apos|#39);/g, (m, e) => ENTITY[e]);
+    const SPECIAL = '*_[]<>' + String.fromCharCode(96) + BS;
+    const markdown = (s) => [...s].map((c) => (SPECIAL.includes(c) ? BS + c : c)).join('');
     const changed = [];
     for (const [id, note] of Object.entries(NOTES)) {
       const node = await figma.getNodeByIdAsync(id);
       if (!node || (node.type !== 'COMPONENT_SET' && node.type !== 'COMPONENT')) {
         throw new Error('No component set or component has the id ' + id);
       }
-      const lines = node.description ? node.description.split(NL).filter((line) => !line.startsWith(MARK)) : [];
-      if (note) lines.push(MARK + ' ' + note);
-      const description = lines.join(NL);
-      if (description !== node.description) {
-        node.description = description;
+      const rich = Boolean(node.descriptionMarkdown);
+      const key = rich ? 'descriptionMarkdown' : 'description';
+      const before = unescape(node[key]);
+      const lines = before ? before.split(NL).filter((line) => !line.startsWith(MARK)) : [];
+      if (note) lines.push(MARK + ' ' + (rich ? markdown(note) : note));
+      const after = lines.join(NL);
+      if (after !== before) {
+        node[key] = after;
         changed.push(id);
       }
     }
-    return JSON.stringify({ changed });
+    // Figma's default page, left empty once every set is on its category's
+    // page: removed only as Figma made it, named Page 1 and empty, while
+    // another page remains. Switching to it loads it, so its layers count.
+    let pageOne = 'none';
+    const blank = figma.root.children.find((p) => p.name === 'Page 1');
+    if (blank) {
+      await figma.setCurrentPageAsync(blank);
+      const other = figma.root.children.find((p) => p !== blank);
+      pageOne = blank.children.length ? 'kept: it holds layers' : !other ? 'kept: it is the only page' : 'removed';
+      if (pageOne === 'removed') {
+        await figma.setCurrentPageAsync(other);
+        try {
+          blank.remove();
+        } catch (e) {
+          pageOne = 'kept: Figma refused to remove it (' + String((e && e.message) || e) + ')';
+        }
+      }
+    }
+    return JSON.stringify({ changed, pageOne });
   `,
-  description: "Label the sets measured from a closed trigger or a layout wrapper in their descriptions",
+  description: "Label the sets measured from a closed trigger or a layout wrapper in their descriptions, and remove Figma's empty default page",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
@@ -860,7 +893,7 @@ npx storysync verify --strict-age
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, not Figma: where it names a component's error, measure that component again (step 3, with `--merge`), and where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, components grouped by page, variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
+7. Summarize what was synced: token collections created, components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
 
 ## Variable binding
 

@@ -1392,3 +1392,17 @@ test("every push summary says how many entries verify left unverified when its s
       `${path} reports the score without the entries verify left out of it`);
   }
 });
+
+test("every push instruction labels a set without escaping its description again, and removes only an untouched Page 1", () => {
+  // Figma returns a description HTML-escaped, and a label call that wrote
+  // back what it read turned Dialog's note into
+  // button[data-slot=&quot;dialog-trigger&quot;], once more on every push. And
+  // the push left Figma's empty Page 1 beside the pages it made.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /Figma returns (?:it|a description) HTML-escaped/, `${path} writes a description back as it read it`);
+    assert.match(text, /descriptionMarkdown/, `${path} drops a designer's formatting`);
+    assert.match(text, /removes Figma's default page, `Page 1`,[^\n]*(?:still named `Page 1`, empty[^\n]*not the file's only page|still named so, empty and not the only page)/,
+      `${path} doesn't remove Page 1 only while Figma's own`);
+    assert.match(text, /whether the label call removed Figma's default page `Page 1` or why it kept it/, `${path}'s summary doesn't say what became of Page 1`);
+  }
+});

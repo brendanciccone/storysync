@@ -298,6 +298,89 @@ function figmaVariantName(combination) {
   return Object.entries(combination ?? {}).map(([k, v]) => `${k}=${v}`).join(", ");
 }
 
+/** Text HTML-escaped, as Figma returns a component's description. */
+function htmlEscaped(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/**
+ * A component set or component whose description behaves as a live push
+ * found Figma's: `description` returns its text HTML-escaped, `"` as
+ * `&quot;` and `&` as `&amp;`, and setting it stores the text as given and
+ * empties `descriptionMarkdown`, as it read back after a push set it.
+ * `descriptionMarkdown` holds a designer's formatted description as
+ * markdown; setting it stores that, with the text shown as the markdown less
+ * its emphasis and escapes. Whether Figma returns the markdown escaped too no
+ * run has shown, so `escapeMarkdown` returns it both ways. `stored` is what
+ * Figma keeps, for the checks to read.
+ */
+function describedNode(id, type, { text = "", markdown = "", escapeMarkdown = false } = {}) {
+  const stored = { text: markdown ? shownText(markdown) : text, markdown };
+  const node = { id, type, stored };
+  Object.defineProperty(node, "description", {
+    enumerable: true,
+    get: () => htmlEscaped(stored.text),
+    set: (value) => Object.assign(stored, { text: String(value), markdown: "" }),
+  });
+  Object.defineProperty(node, "descriptionMarkdown", {
+    enumerable: true,
+    get: () => (escapeMarkdown ? htmlEscaped(stored.markdown) : stored.markdown),
+    set: (value) => Object.assign(stored, { markdown: String(value), text: shownText(String(value)) }),
+  });
+  return node;
+}
+
+/** The text markdown shows: without its `**`, `__` and single `*` or `_` emphasis, and its backslash escapes undone. */
+function shownText(markdown) {
+  const kept = [];
+  const out = markdown.replace(/\\(.)/g, (_, c) => `\u0000${kept.push(c) - 1}\u0000`)
+    .replace(/\*\*|__|[*_]/g, "");
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+}
+
+/**
+ * The pages for the label call, each `[name, layers]`: as use_figma loads
+ * them, only the first is loaded when the call starts, and another lists no
+ * layers until the call switches to it. Figma refuses to remove the page it
+ * is on, or the last one. `figma` serves them; `pages` is what is left.
+ */
+function labelPages(spec) {
+  const pages = [];
+  const loaded = new Set();
+  for (const [name, layers] of spec) {
+    const page = { type: "PAGE", name, layers: Array.from({ length: layers }, (_, i) => ({ id: `${name}:${i}` })) };
+    Object.defineProperty(page, "children", { get: () => (loaded.has(page) ? page.layers : []) });
+    page.remove = () => {
+      if (figma.currentPage === page) throw new Error("Cannot remove the current page");
+      if (pages.length === 1) throw new Error("Cannot remove the last page");
+      pages.splice(pages.indexOf(page), 1);
+    };
+    pages.push(page);
+  }
+  loaded.add(pages[0]);
+  const figma = {
+    root: { children: pages },
+    currentPage: pages[0],
+    setCurrentPageAsync: async (page) => {
+      loaded.add(page);
+      figma.currentPage = page;
+    },
+  };
+  return { figma, pages };
+}
+
+/**
+ * Runs the skill's label call over `nodes`, by id, in a file of `pages`, a
+ * labelPages figma, a page of components alone unless one is given, with
+ * the NOTES table set to each run's notes.
+ */
+function labelCall(code, nodes, pages = labelPages([["ui/base", 1]]).figma) {
+  const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
+  const figma = { ...pages, getNodeByIdAsync: async (id) => nodes[id] ?? null };
+  Object.defineProperty(figma, "currentPage", { get: () => pages.currentPage });
+  return async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
+}
+
 const AsyncFunction = (async () => {}).constructor;
 
 // use_figma's limits: its input schema caps `code` at 50,000 characters, and
@@ -3432,19 +3515,17 @@ async function main() {
     // A plain assignment replaced whatever a designer had written on a set,
     // and nothing took the label off once the component was measured open.
     const code = useFigmaBlock(/^Label the sets measured from/);
-    assert(code.length < 2000, `the label template is ${code.length} characters`);
+    assert(code.length < 4000, `the label template is ${code.length} characters`);
     const NL = "\n";
     const nodes = {
-      "1:1": { id: "1:1", type: "COMPONENT_SET", description: "Use for the main action." },
-      "1:2": { id: "1:2", type: "COMPONENT_SET", description: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` },
-      "1:3": { id: "1:3", type: "COMPONENT", description: "" },
-      "1:4": { id: "1:4", type: "COMPONENT_SET", description: "storysync: measured from its closed trigger, button, not the open dialog" },
-      "1:5": { id: "1:5", type: "COMPONENT_SET", description: "" },
-      "1:6": { id: "1:6", type: "FRAME", description: "" },
+      "1:1": describedNode("1:1", "COMPONENT_SET", { text: "Use for the main action." }),
+      "1:2": describedNode("1:2", "COMPONENT_SET", { text: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` }),
+      "1:3": describedNode("1:3", "COMPONENT"),
+      "1:4": describedNode("1:4", "COMPONENT_SET", { text: "storysync: measured from its closed trigger, button, not the open dialog" }),
+      "1:5": describedNode("1:5", "COMPONENT_SET"),
+      "1:6": describedNode("1:6", "FRAME"),
     };
-    const figma = { getNodeByIdAsync: async (id) => nodes[id] ?? null };
-    const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
-    const run = async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
+    const run = labelCall(code, nodes);
     const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
     const wrapper = "measured from what may be its story's layout wrapper, div, not Switch";
     const notes = { "1:1": trigger, "1:2": trigger, "1:3": wrapper, "1:4": "", "1:5": "" };
@@ -3457,8 +3538,8 @@ async function main() {
       "1:4": "",
       "1:5": "",
     };
-    for (const [id, description] of Object.entries(expected)) {
-      assert(nodes[id].description === description, `${id} has ${JSON.stringify(nodes[id].description)}, expected ${JSON.stringify(description)}`);
+    for (const [id, text] of Object.entries(expected)) {
+      assert(nodes[id].stored.text === text, `${id} has ${JSON.stringify(nodes[id].stored.text)}, expected ${JSON.stringify(text)}`);
     }
     assert(first.changed.join() === "1:1,1:2,1:3,1:4", `changed ${first.changed.join()}`);
     // Run again, it changes nothing, and adds no second line.
@@ -3466,7 +3547,7 @@ async function main() {
     assert(again.changed.length === 0, `a second run changed ${again.changed.join()}`);
     // Measured open, the set loses the line and keeps the designer's.
     await run({ "1:1": "" });
-    assert(nodes["1:1"].description === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].description)}`);
+    assert(nodes["1:1"].stored.text === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].stored.text)}`);
     // Anything but a component set or component is refused.
     for (const id of ["1:6", "9:9"]) {
       let refused = false;
@@ -3474,6 +3555,77 @@ async function main() {
       assert(refused, `labeled ${id}, which is no component set`);
     }
     return `${code.length} characters`;
+  });
+
+  await check("the label call reads Figma's escaped description once, keeps a designer's formatting, and changes nothing a second time", async () => {
+    // Figma returns a description HTML-escaped. Read and written back as it
+    // came, a live push turned Dialog's note into
+    // button[data-slot=&quot;dialog-trigger&quot;], escaped once more on
+    // every push, and a second run reported it changed again.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    const NL = "\n";
+    const designer = `Use "primary" & <b>bold</b> for the main action.`;
+    const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
+    // The stand-in escapes as Figma does: a template that writes back what it
+    // read gains an escape on every run here.
+    const naive = describedNode("0:1", "COMPONENT_SET", { text: designer });
+    for (let i = 0; i < 2; i++) naive.description = naive.description;
+    assert(naive.stored.text.includes("&amp;quot;"), `the stand-in doesn't escape as Figma does: ${naive.stored.text}`);
+
+    const results = [];
+    for (const escapeMarkdown of [false, true]) {
+      const nodes = {
+        "2:1": describedNode("2:1", "COMPONENT_SET", { text: designer }),
+        "2:2": describedNode("2:2", "COMPONENT_SET", { markdown: `**Use** "primary" & keep _this_ for the main action.`, escapeMarkdown }),
+        "2:3": describedNode("2:3", "COMPONENT", { text: `${designer}${NL}storysync: ${trigger}` }),
+      };
+      const run = labelCall(code, nodes);
+      const notes = { "2:1": trigger, "2:2": trigger, "2:3": "" };
+      const first = await run(notes);
+      assert(first.changed.join() === "2:1,2:2,2:3", `changed ${first.changed.join()}`);
+      for (let i = 0; i < 3; i++) {
+        const again = await run(notes);
+        assert(again.changed.length === 0, `run ${i + 2} changed ${again.changed.join()} again`);
+      }
+      assert(nodes["2:1"].stored.text === `${designer}${NL}storysync: ${trigger}`, `2:1 holds ${JSON.stringify(nodes["2:1"].stored.text)}`);
+      assert(nodes["2:3"].stored.text === designer, `2:3 holds ${JSON.stringify(nodes["2:3"].stored.text)}`);
+      // The designer's bold and italic stay, and the note shows as written.
+      const bs = "\\";
+      assert(nodes["2:2"].stored.markdown === `**Use** "primary" & keep _this_ for the main action.${NL}storysync: measured from its closed trigger, button${bs}[data-slot="dialog-trigger"${bs}], not the open dialog`,
+        `2:2's markdown is ${JSON.stringify(nodes["2:2"].stored.markdown)}`);
+      assert(nodes["2:2"].stored.text.endsWith(`storysync: ${trigger}`), `2:2 shows ${JSON.stringify(nodes["2:2"].stored.text)}`);
+      results.push(escapeMarkdown ? "escaped markdown" : "plain markdown");
+    }
+    return `no escape added over four runs, with Figma's markdown read as ${results.join(" and as ")}`;
+  });
+
+  await check("the label call removes Figma's empty Page 1, and keeps one a designer used, or the only page", async () => {
+    // A live push left Page 1 empty beside the pages it made, and didn't say.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    const set = describedNode("3:1", "COMPONENT_SET");
+    const outcome = async (pages) => {
+      const doc = labelPages(pages);
+      const result = await labelCall(code, { "3:1": set }, doc.figma)({ "3:1": "" });
+      return { pageOne: result.pageOne, left: doc.pages.map((p) => p.name).join() };
+    };
+    const cases = [
+      [[["Page 1", 0], ["ui/base", 1]], "removed", "ui/base"],
+      // Not loaded yet, it lists no layers: the call has to load it to see them.
+      [[["ui/base", 1], ["Page 1", 2]], "kept: it holds layers", "ui/base,Page 1"],
+      [[["Page 1", 0]], "kept: it is the only page", "Page 1"],
+      [[["Cover", 0], ["ui/base", 1]], "none", "Cover,ui/base"],
+    ];
+    for (const [pages, pageOne, left] of cases) {
+      const got = await outcome(pages);
+      assert(got.pageOne === pageOne && got.left === left,
+        `pages ${JSON.stringify(pages)}: pageOne ${JSON.stringify(got.pageOne)}, leaving ${got.left}; expected ${JSON.stringify(pageOne)}, leaving ${left}`);
+    }
+    // A removal Figma refuses is said, after the labels, rather than lost in a throw.
+    const refusing = labelPages([["Page 1", 0], ["ui/base", 1]]);
+    refusing.pages[0].remove = () => { throw new Error("Cannot remove this page"); };
+    const refused = await labelCall(code, { "3:1": set }, refusing.figma)({ "3:1": "" });
+    assert(refused.pageOne === "kept: Figma refused to remove it (Cannot remove this page)", `a refused removal returned ${JSON.stringify(refused.pageOne)}`);
+    return cases.map(([, pageOne]) => pageOne).join("; ") + "; " + refused.pageOne;
   });
 
   heading("Readback checksums");
