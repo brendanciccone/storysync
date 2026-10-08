@@ -77,19 +77,20 @@ interface DetectedSource {
   path: string;
 }
 
-/**
- * Every name Tailwind v3 finds a config by. The four storysync always read
- * keep their order, which decides between two; `.mts` and `.cts` were
- * missed, so edu-design-system's config was passed over for a stylesheet of
- * dark-theme variables.
- */
-const TAILWIND_CONFIGS = [
-  "tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs",
-  "tailwind.config.mts", "tailwind.config.cts",
-];
+/** The names of a Tailwind config storysync has always read, in the order that decides between two. */
+const TAILWIND_CONFIGS = ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"];
 
-function findTailwindConfig(projectPath: string): string | null {
-  for (const name of TAILWIND_CONFIGS) {
+/**
+ * The names Tailwind v3 also finds a config by, which storysync missed, so
+ * edu-design-system's tailwind.config.mts was never read. `--source
+ * tailwind` reads one; detection comes to one only after every source an
+ * earlier version found, so a project that has one keeps the source, and
+ * the baseline, it had.
+ */
+const LATE_TAILWIND_CONFIGS = ["tailwind.config.mts", "tailwind.config.cts"];
+
+function findTailwindConfig(projectPath: string, names = [...TAILWIND_CONFIGS, ...LATE_TAILWIND_CONFIGS]): string | null {
+  for (const name of names) {
     const p = join(projectPath, name);
     if (existsSync(p)) return p;
   }
@@ -103,13 +104,13 @@ function findTailwindConfig(projectPath: string): string | null {
  * and baselines it had before `@theme` was read; `@theme` is for a CSS-first
  * project that declares its palette nowhere else.
  *
- * A stylesheet that sets its variables only in a selector list, as
- * `:root, .light { }`, with no `:root {` of its own, comes after `@theme`
- * and a theme file: storysync read no such list before, so a project that
- * has either keeps the source, and the baseline, it had.
+ * What earlier versions didn't find comes after all of these, so a project
+ * keeps the source, and the baseline, it had: a `tailwind.config.mts` or
+ * `.cts`, then a stylesheet that sets its variables only in a selector list,
+ * as `:root, .light { }`, with no `:root {` of its own.
  */
 export function detectTokenSource(projectPath: string): DetectedSource | null {
-  const config = findTailwindConfig(projectPath);
+  const config = findTailwindConfig(projectPath, TAILWIND_CONFIGS);
   if (config) return { type: "tailwind", path: config };
 
   const cssFiles = findCSSWithCustomProperties(projectPath);
@@ -123,6 +124,9 @@ export function detectTokenSource(projectPath: string): DetectedSource | null {
 
   const themeFile = findThemeFile(projectPath);
   if (themeFile) return { type: "theme", path: themeFile };
+
+  const lateConfig = findTailwindConfig(projectPath, LATE_TAILWIND_CONFIGS);
+  if (lateConfig) return { type: "tailwind", path: lateConfig };
 
   if (cssFiles.length) return { type: "css", path: cssFiles[0] };
 
@@ -356,6 +360,17 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): E
     return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No token source detected"] };
   }
 
+  const extraction = extractDetected(detected, projectPath);
+  // A tailwind.config.mts or .cts that detection passed over is named, so
+  // the user can choose it.
+  const passedOver = findTailwindConfig(projectPath, LATE_TAILWIND_CONFIGS);
+  if (passedOver && passedOver !== detected.path) {
+    extraction.warnings.push(`Read ${detected.path}, as earlier versions of storysync did, rather than ${passedOver}, which they didn't find. Pass --source tailwind to read the config`);
+  }
+  return extraction;
+}
+
+function extractDetected(detected: DetectedSource, projectPath: string): Extraction {
   switch (detected.type) {
     case "tailwind":
       return detected.path.endsWith(".css")

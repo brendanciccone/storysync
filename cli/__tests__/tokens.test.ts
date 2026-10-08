@@ -1426,26 +1426,50 @@ export default {
 
 // --- Tailwind config file names ---
 
-test("detectTokenSource: finds tailwind.config.mts and .cts, after the names it always read", () => {
-  // edu-design-system's config is tailwind.config.mts, so a stylesheet of
-  // dark-theme variables was read in its place.
+test("detectTokenSource: finds tailwind.config.mts and .cts after every source earlier versions found, and names one passed over", () => {
+  // edu-design-system's config is tailwind.config.mts, which wasn't found.
+  const config = `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`;
   for (const name of ["tailwind.config.mts", "tailwind.config.cts"]) {
-    const dir = makeProject({
-      [name]: `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
-      "src/dark.css": `:root { --color-brand: #000000; }`,
-    });
+    const alone = makeProject({ [name]: config });
     try {
-      assert.deepEqual(detectTokenSource(dir), { type: "tailwind", path: join(dir, name) });
-      assert.deepEqual(tokenTable(extractTokens(dir)), [["colors", [["brand", "#ff0000"]]]]);
-      assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")), [["colors", [["brand", "#ff0000"]]]]);
-    } finally { cleanup(dir); }
+      assert.deepEqual(detectTokenSource(alone), { type: "tailwind", path: join(alone, name) });
+      const result = extractTokens(alone);
+      assert.deepEqual(tokenTable(result), [["colors", [["brand", "#ff0000"]]]]);
+      assert.deepEqual(result.warnings, []);
+    } finally { cleanup(alone); }
+
+    // A project that has a source an earlier version read keeps it, and
+    // its baseline, and is told of the config. --source tailwind reads it.
+    const earlier: [Record<string, string>, string, string][] = [
+      [{ "src/app.css": `:root { --color-brand: #000000; }` }, "css", "src/app.css"],
+      [{ "src/app.css": `@theme { --color-brand: #0000ff; }` }, "tailwind", "src/app.css"],
+      [{ "src/tokens.ts": `export const colors = { brand: "#00ff00" };` }, "theme", "src/tokens.ts"],
+    ];
+    for (const [files, type, path] of earlier) {
+      const dir = makeProject({ [name]: config, ...files });
+      try {
+        assert.deepEqual(detectTokenSource(dir), { type, path: join(dir, path) });
+        assert.ok(extractTokens(dir).warnings.includes(
+          `Read ${join(dir, path)}, as earlier versions of storysync did, rather than ${join(dir, name)}, which they didn't find. Pass --source tailwind to read the config`,
+        ));
+        assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")), [["colors", [["brand", "#ff0000"]]]]);
+      } finally { cleanup(dir); }
+    }
+
+    // One ahead of a stylesheet no earlier version read.
+    const listed = makeProject({ [name]: config, "src/app.css": `:root, .light { --color-brand: #000000; }` });
+    try {
+      assert.deepEqual(detectTokenSource(listed), { type: "tailwind", path: join(listed, name) });
+    } finally { cleanup(listed); }
   }
+
   const both = makeProject({
     "tailwind.config.mts": `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
     "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "#00ff00" } } } }`,
   });
   try {
     assert.equal(detectTokenSource(both)?.path, join(both, "tailwind.config.ts"));
+    assert.equal(extractTokens(both, "tailwind").sourcePath, join(both, "tailwind.config.ts"));
   } finally { cleanup(both); }
 });
 
