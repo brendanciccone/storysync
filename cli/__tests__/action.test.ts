@@ -291,6 +291,26 @@ test("action Detect drift: with IDs on both sides, a title is compared as its le
   assert.doesNotMatch(renamed.report ?? "", /### Changed/);
 });
 
+test("action Detect drift: a change the counts don't show says what it was", () => {
+  // A 0.3.0 baseline lists values as the type declares them, where map now
+  // puts the default first: "1 → 1 props, 3 → 3 combinations" said nothing.
+  const size = (values: string[], defaultValue: string, extra: object = {}) =>
+    withId({ ...component("ui/Button", 0), variantProperties: [{ name: "size", type: "VARIANT", values, defaultValue, ...extra }], combinations: values.length });
+  const reordered = detectDrift(mapJson([size(["sm", "md", "lg"], "md")]), [size(["md", "sm", "lg"], "md")]);
+  assert.equal(reordered.outputs.result, "true", reordered.stdout);
+  assert.match(reordered.report ?? "", /### Changed\n- \*\*ui\/Button\*\*: 1 → 1 props, 3 → 3 combinations \(size's values reordered\)\n\n/);
+
+  const defaulted = detectDrift(mapJson([size(["md", "sm", "lg"], "md")]), [size(["sm", "md", "lg"], "sm", { defaultAssumed: true })]);
+  assert.match(defaulted.report ?? "", /3 → 3 combinations \(size's values reordered; size's default md → sm; size's default is now assumed, since the docs give none\)\n/);
+
+  const swapped = detectDrift(mapJson([size(["sm", "md"], "sm")]), [size(["sm", "xl"], "sm")]);
+  assert.match(swapped.report ?? "", /2 → 2 combinations \(size adds xl; size drops md\)\n/);
+
+  // Where the counts differ they say it, as before.
+  const grown = detectDrift(mapJson([size(["sm", "md"], "sm")]), [size(["sm", "md", "lg"], "sm")]);
+  assert.match(grown.report ?? "", /: 1 → 1 props, 2 → 3 combinations\n/);
+});
+
 test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
   // A baseline with IDs that repeats one, as only a hand edit could.
   const button = withId(component("Forms/Button", 1));
