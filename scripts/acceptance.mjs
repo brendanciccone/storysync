@@ -896,11 +896,13 @@ function figmaDocument() {
 
 /**
  * The fonts the simulated plugin context can load, with Figma's own style
- * names: Inter's spaced, Roboto Mono's not.
+ * names: Inter's spaced, Roboto Mono's and Noto Serif's not. Roboto Mono
+ * stops at Bold.
  */
 const FONTS = {
   Inter: ["Thin", "Extra Light", "Light", "Regular", "Medium", "Semi Bold", "Bold", "Extra Bold", "Black"],
   "Roboto Mono": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold"],
+  "Noto Serif": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black"],
 };
 
 /**
@@ -1587,19 +1589,25 @@ function buildScenarios(snapDir) {
       const fonted = (fontFamily, fontWeight) => ({
         ...plain, fontFamily, fontWeight, text: { color: plain.text?.color ?? plain.color, fontSize: plain.fontSize, fontFamily, fontWeight },
       });
-      const faces = { keyword: ["system-ui", 600], mono: ["Menlo", 400], named: ["Inter", 500], monoBold: ["ui-monospace", 600] };
+      const faces = {
+        keyword: ["system-ui", 600], mono: ["Menlo", 400], named: ["Inter", 500], monoBold: ["ui-monospace", 600],
+        spelled: ["Roboto Mono", 600], heavy: ["Roboto Mono", 800], serif: ["Georgia", 400], heaviest: ["Inter", 950],
+      };
       const properties = [{ name: "font", type: "VARIANT", values: Object.keys(faces), defaultValue: "keyword" }];
       const variants = Object.entries(faces).map(([face, [family, weight]]) => ({ name: `font=${face}`, styles: fonted(family, weight) }));
       const styler = "Object.assign(variant, look(variant.name, styles));\n      variant.findOne((n) => n.type === 'TEXT').fontName = await loadFont(styles.text.fontFamily, styles.text.fontWeight);";
       const doc = figmaDocument();
       const [result] = await pushSet(build, doc, { page: "Forms", set: "Fonts", part: 25, properties, variants, styler });
-      const want = { "system-ui 600": "Inter Semi Bold", "Menlo 400": "Roboto Mono Regular", "ui-monospace 600": "Roboto Mono SemiBold" };
+      const want = {
+        "system-ui 600": "Inter Semi Bold", "Menlo 400": "Roboto Mono Regular", "ui-monospace 600": "Roboto Mono SemiBold",
+        "Roboto Mono 800": "Roboto Mono Bold", "Georgia 400": "Noto Serif Regular",
+      };
       assert(JSON.stringify(result.fonts) === JSON.stringify(want), `the part named the stand-ins ${JSON.stringify(result.fonts)}`);
       const set = await doc.call().getNodeByIdAsync(result.id);
       const names = Object.fromEntries(variants.map((v) => [v.name, v.name]));
       const slice = await loadSkillReadback().read(set, names, Object.fromEntries(variants.map((v) => [v.name, "measured"])));
       const read = Object.values(slice.readback).map((e) => `${e.fontFamily} ${e.fontWeight}`).join(", ");
-      assert(read === "Inter 600, Roboto Mono 400, Inter 500, Roboto Mono 600", `read back ${read}`);
+      assert(read === "Inter 600, Roboto Mono 400, Inter 500, Roboto Mono 600, Roboto Mono 600, Roboto Mono 700, Noto Serif 400, Inter 900", `read back ${read}`);
 
       // The agent's own code throws on one variant, after the part made it.
       const throwing = (on) => `if (variant.name === '${on}') throw new Error('applyStyles failed');\n      Object.assign(variant, look(variant.name, styles));`;
@@ -1607,12 +1615,12 @@ function buildScenarios(snapDir) {
       const first = await refused(() => pushSet(build, fresh, { page: "Forms", set: "Fonts", part: 25, properties, variants, styler: throwing("font=named") }));
       assert(first === "applyStyles failed" && fresh.nodes("COMPONENT").length === 0 && fresh.nodes("COMPONENT_SET").length === 0,
         `a first part that failed ${first ? `with "${first}"` : "did not fail, and"} left ${fresh.nodes("COMPONENT").length} components`);
-      const extra = { name: "font=serif", styles: fonted("Georgia", 400) };
-      const wider = [{ ...properties[0], values: [...properties[0].values, "serif"] }];
+      const extra = { name: "font=late", styles: fonted("Georgia", 400) };
+      const wider = [{ ...properties[0], values: [...properties[0].values, "late"] }];
       const later = await refused(() => pushSet(build, doc, { page: "Forms", set: "Fonts", part: 25, properties: wider, variants: [...variants, extra], styler: throwing(extra.name) }));
-      assert(later === "applyStyles failed" && doc.nodes("COMPONENT").length === 4 && set.children.length === 4,
+      assert(later === "applyStyles failed" && doc.nodes("COMPONENT").length === variants.length && set.children.length === variants.length,
         `a part that failed on a variant it added left ${doc.nodes("COMPONENT").length} components, ${set.children.length} in the set`);
-      return `stand-ins ${Object.values(want).join(", ")}, named in the part's result; a part that failed left nothing loose`;
+      return `stand-ins ${Object.values(want).join(", ")}, named in the part's result, none for Roboto Mono's own SemiBold; a part that failed left nothing loose`;
     },
   };
 }
@@ -3215,9 +3223,12 @@ async function main() {
       overlaps: "const overlaps = (node) => node.parent.children.filter(",
       restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));\n",
       effect: "!p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]",
-      families: "for (const f of [family, /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : 'Inter', 'Inter']) {",
-      spelling: "style.replace(' ', ''), ",
-      named: "if (f !== family || s !== style) FONTS[family + ' ' + weight] = f + ' ' + s;",
+      families: "for (const f of new Set([family, alt, 'Inter'])) {",
+      serif: "? 'Noto Serif' :",
+      ladder: "[i, i + d, i + 2 * d, 3]",
+      clamp: "Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1))",
+      spelling: "new Set([STYLES[j], STYLES[j].replace(' ', '')])",
+      named: "if (f !== family || j !== i) FONTS[family + ' ' + weight] = f + ' ' + s;",
       cleanup: "      for (const variant of created) variant.remove();\n",
       readPlain: "componentSet.type === 'COMPONENT' ? [componentSet] : componentSet.children",
     };
@@ -3235,8 +3246,13 @@ async function main() {
       "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
       "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p"),
       "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),
-      "tries a style in Inter's spelling alone": (code) => code.replace(T.spelling, ""),
+      "sets a serif face in Inter": (code) => code.replace(T.serif, "? 'Inter' :"),
+      "falls to Regular for a weight the family lacks": (code) => code.replace(T.ladder, "[i, 3]"),
+      "indexes past Black for a weight over 900": (code) => code.replace(T.clamp, "Math.max(0, Math.round((weight || 400) / 100) - 1)"),
+      "tries a style in Inter's spelling alone": (code) => code.replace(T.spelling, "[STYLES[j]]"),
       "names no stand-in": (code) => code.replace(T.named, ";"),
+      "names a stand-in where only the spelling differs": (code) => code.replace(T.named,
+        "if (f !== family || s !== STYLES[i]) FONTS[family + ' ' + weight] = f + ' ' + s;"),
       "leaves a failed part's new variants loose on the page": (code) => code.replace(T.cleanup, ""),
     };
     const readbacks = {

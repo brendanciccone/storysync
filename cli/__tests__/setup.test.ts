@@ -804,6 +804,8 @@ test("every push instruction keeps a bound color's alpha and never fails over a 
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /opacity (?:of )?1/, `${path} never says Figma resets a bound paint's opacity`);
       assert.match(text, /Roboto Mono[^\n]*Inter|Inter[^\n]*Roboto Mono/, `${path} names no stand-in for a font Figma can't load`);
+      assert.match(text, /Noto Serif for a serif/, `${path} sets a serif face in Inter`);
+      assert.match(text, /next one toward `?Regular`?/, `${path} never says which weight a family that lacks one loads`);
       assert.match(text, /never (?:let a font fail the push|fails the part over a font)/i, `${path} lets a font fail the push`);
       assert.match(text, /^\d+\. Summarize[^\n]*every font stand-in the build parts returned in `fonts`/m, `${path}'s summary leaves out the font stand-ins`);
       assert.doesNotMatch(text, /the Google font used for a `fontFamily` that is a CSS keyword/, `${path} still names only a keyword's stand-in`);
