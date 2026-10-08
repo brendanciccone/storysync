@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
+  describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning,
 } from "../snap.js";
 import { VERSION } from "../version.js";
@@ -754,6 +755,46 @@ test("detectNoOpProperties: a property is judged only on values measured side by
     measuredVariant({ asChild: "false", size: "sm" }, { width: 24 }),
     measuredVariant({ asChild: "true", size: "sm" }, { width: 30 }),
   ]), []);
+});
+
+test("describeIdenticalVariants: blames the story only where the markup didn't change either", () => {
+  // InputOTP's story passes its args through, but textAlign and
+  // pushPasswordManagerStrategy change only input-otp's hidden input, so
+  // every variant measured the same, and snap's warning, and the push's
+  // summary after it, said the story wasn't passing its args through.
+  const OTP_PROPS = [
+    { name: "textAlign", type: "VARIANT", values: ["center", "left", "right"], defaultValue: "center", defaultAssumed: true },
+    { name: "pushPasswordManagerStrategy", type: "VARIANT", values: ["none", "increase-width"], defaultValue: "none", defaultAssumed: true },
+  ] as never[];
+  const variants = [
+    measuredVariant({ textAlign: "center", pushPasswordManagerStrategy: "none" }, {}),
+    measuredVariant({ textAlign: "left", pushPasswordManagerStrategy: "none" }, {}),
+    measuredVariant({ textAlign: "right", pushPasswordManagerStrategy: "none" }, {}),
+    measuredVariant({ textAlign: "center", pushPasswordManagerStrategy: "increase-width" }, {}, "timeout"),
+  ];
+
+  // The markup changed with the args: they reach the component.
+  const behavior = describeIdenticalVariants(variants, OTP_PROPS, ["a", "b", "c"])!;
+  assert.doesNotMatch(behavior, /story may not pass/);
+  assert.match(behavior, /^all 3 rendered variants measured identically, though their markup changed with the args, so the story passes them through: `textAlign`, `pushPasswordManagerStrategy` change nothing snap measures, likely only behavior/);
+  assert.match(behavior, /leave them out of every component with `--exclude-props textAlign,pushPasswordManagerStrategy`/);
+  assert.deepEqual(parseBehaviorOnlyWarning(behavior), ["textAlign", "pushPasswordManagerStrategy"]);
+
+  // The same markup on every variant: nothing the args set reached the page.
+  const frozen = describeIdenticalVariants(variants, OTP_PROPS, ["a", "a", "a"])!;
+  assert.match(frozen, /^all 3 rendered variants measured identically and rendered the same markup — the story may not pass args through to the component/);
+  assert.equal(parseBehaviorOnlyWarning(frozen), null);
+
+  // A markup not read, or one that changed while it was measured: either.
+  for (const markups of [["a", null, "b"], ["a", "b"]]) {
+    const either = describeIdenticalVariants(variants, OTP_PROPS, markups)!;
+    assert.match(either, /the story may not pass args through[\s\S]* Or `textAlign`, `pushPasswordManagerStrategy` change only behavior, which snap doesn't measure: if so, leave them out of every component with `--exclude-props textAlign,pushPasswordManagerStrategy`\.$/);
+    assert.equal(parseBehaviorOnlyWarning(either), null);
+  }
+
+  // Variants that differ: nothing to say, as before.
+  assert.equal(describeIdenticalVariants([variants[0], measuredVariant({ textAlign: "left", pushPasswordManagerStrategy: "none" }, { width: 30 })], OTP_PROPS, ["a", "b"]), null);
+  assert.equal(detectIdenticalVariants(variants) !== null, true);
 });
 
 test("describeNoOpProperties: names each property and what to do about it", () => {

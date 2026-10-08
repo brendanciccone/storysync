@@ -366,6 +366,18 @@ test("verify CLI: what snap warned about a scored component is said beside the s
   ]);
 });
 
+test("verify CLI: props that reach the component and change nothing measured are said as such, not as the story's fault", () => {
+  const warning = "all 2 rendered variants measured identically, though their markup changed with the args, so the story passes them through: " +
+    "`textAlign` changes nothing snap measures, likely only behavior, or something it doesn't measure, such as a child element. " +
+    "If it doesn't change how it looks, leave it out of every component with `--exclude-props textAlign`, and build it as one variant.";
+  const r = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }));
+  const withWarning = verify({ ...snapOfTwo(), components: [{ ...snapOfTwo().components[0], warnings: [warning] }] }, readbackOf({ a: MATCHING, b: MATCHING }));
+  assert.match(r.out, /Forms\/Button: every variant measured the same, so the story may not pass its args through/);
+  assert.equal(withWarning.status, 0, withWarning.out);
+  assert.match(withWarning.out, /\n {6}Forms\/Button: every variant measured the same though the args reached it: `textAlign` changes nothing snap measures, so its variants in Figma look alike; `--exclude-props textAlign` leaves it out\n/);
+  assert.doesNotMatch(withWarning.out, /story may not pass/);
+});
+
 test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
   try {

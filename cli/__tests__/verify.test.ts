@@ -4,7 +4,7 @@ import {
   verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize,
   canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS, scoreCaveats,
 } from "../verify.js";
-import { describeMeasurementNotes } from "../snap.js";
+import { describeMeasurementNotes, describeIdenticalVariants } from "../snap.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
@@ -1308,6 +1308,19 @@ test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants
   ]);
   // Variants that differ, and no warnings: nothing to say.
   assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]).components[0]), []);
+});
+
+test("scoreCaveats: props that reach the component and change nothing measured are a caveat of their own, not the story's", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  const props = [{ name: "textAlign", type: "VARIANT", values: ["center", "left"], defaultValue: "center" }] as never[];
+  const variants = snap.components[0].variants;
+  const component = (markups: string[]) => ({
+    ...snap.components[0],
+    variantProperties: props,
+    warnings: [describeIdenticalVariants(variants, props, markups)!],
+  }) as never;
+  assert.deepEqual(scoreCaveats(component(["a", "b"])), [{ component: "Forms/Button", kind: "behavior-only", properties: ["textAlign"] }]);
+  assert.deepEqual(scoreCaveats(component(["a", "a"])), [{ component: "Forms/Button", kind: "identical-variants" }]);
 });
 
 test("verify: caveats are given for the components the readback scored, and fail nothing", () => {

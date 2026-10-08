@@ -1492,3 +1492,15 @@ test("every audit says what its token counts don't cover: other modes, the dark 
     rmSync(project, { recursive: true, force: true });
   }
 });
+
+test("every push instruction tells a story that drops its args from props that change only behavior", () => {
+  // InputOTP's story passed its args through, but snap's warning, and the
+  // push's summary after it, said it didn't: textAlign and
+  // pushPasswordManagerStrategy change only input-otp's hidden input.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /`rendered the same markup`[^\n]*the story may not pass its args through/, `${path} doesn't say when the story is to blame`);
+    assert.match(text, /`their markup changed with the args`, the story passes them[^\n]*never (?:say the story drops its args|blame the story)/, `${path} blames the story for props that change only behavior`);
+    assert.match(text, /whether to leave (?:those props|them) out[^\n]*`--exclude-props`/, `${path} doesn't offer to leave behavior-only props out`);
+    assert.match(text, /any props snap found reach a component but change nothing it measures, and what the user chose for them/, `${path}'s summary leaves out the behavior-only props`);
+  }
+});

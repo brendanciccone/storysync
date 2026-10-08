@@ -2667,6 +2667,32 @@ async function main() {
     return "the OTP boxes, the switch, the open dialog; the row and the trigger flagged";
   });
 
+  await check("a story's markup checksum changes with what its args set, leaves out Storybook's own nodes, and is null while it changes", async () => {
+    // InputOTP's textAlign sets only the style of input-otp's hidden input,
+    // so every variant measured the same though the args reached it: the
+    // markup is what tells that from a story that drops its args.
+    const input = (align) => `<div id="storybook-root"><div data-slot="input-otp" style="display: flex; width: 120px; height: 36px; background: #e5e5e5"><input style="text-align: ${align}; opacity: 0"></div></div>`;
+    const docs = (text) => `<div id="storybook-docs">${text}</div><div class="sb-errordisplay">${text}</div><script>window.x = "${text}";</script>`;
+    const m = await captureStories({
+      left: { component: "InputOTP", html: input("left") + docs("one") },
+      leftAgain: { component: "InputOTP", html: input("left") + docs("two") },
+      right: { component: "InputOTP", html: input("right") + docs("one") },
+      // A portal, as Radix renders an open popover's content into the body.
+      portal: { component: "InputOTP", html: `${input("left")}<div data-radix-portal><div role="dialog">Hello</div></div>` },
+      // Markup that changes as the story is measured, as an animation's
+      // would: no evidence either way. Changed on each style read, so it
+      // changes between the two reads of the markup every time.
+      ticking: { component: "InputOTP", html: `${input("left")}<script>const read = window.getComputedStyle; let n = 0; window.getComputedStyle = function (...args) { document.querySelector("input")?.setAttribute("data-n", String(n++)); return read.apply(this, args); };</script>` },
+    });
+    const markup = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.markup : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(markup);
+    assert(typeof markup.left === "string" && markup.left === markup.leftAgain, `the same story with Storybook's own nodes changed: ${say}`);
+    assert(markup.right !== markup.left, `text-align left and right: ${say}`);
+    assert(typeof markup.portal === "string" && markup.portal !== markup.left, `a portal beside the root: ${say}`);
+    assert(markup.ticking === null, `markup that changed while it was measured: ${say}`);
+    return "the same for the same story, apart for a style or a portal, null while ticking";
+  });
+
   await check("a story that throws after load is a render error, found without waiting out --timeout", async () => {
     // As ResizablePanelGroup does: Storybook paints the error after the load
     // event, and snap reported no root element, twice --timeout later.
@@ -2755,7 +2781,12 @@ async function main() {
     const button = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", join(WORK, "button"), "--strict-warnings"]);
     assert(frozen.status === 1, `Frozen exited ${frozen.status}, expected 1`);
     assert(button.status === 0, `Button exited ${button.status}, expected 0`);
-    return "Frozen fails, Button passes";
+    // Its markup is the same on every variant too, so the story is to blame,
+    // not props that change only what snap doesn't measure.
+    const warnings = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").warnings;
+    assert(warnings.some((w) => /^all 3 rendered variants measured identically and rendered the same markup — the story may not pass args through/.test(w)),
+      `Frozen warned ${JSON.stringify(warnings)}`);
+    return "Frozen fails, blaming its story, Button passes";
   });
 
   heading("Snap guards");

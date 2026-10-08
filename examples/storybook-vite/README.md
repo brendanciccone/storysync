@@ -17,15 +17,15 @@ npx storysync snap --storybook http://localhost:6006 --screenshots
 
 ```text
 ✓ Forms/Button 5/5 variants measured
-! Forms/Frozen: all 3 rendered variants measured identically — the story may not
-  pass args through to the component ...
+! Forms/Frozen: all 3 rendered variants measured identically and rendered the same
+  markup — the story may not pass args through to the component ...
 ```
 
 Both lines matter.
 
 **Button** is a normal args-driven story. Five variants get measured rather than five guessed — `--variants representative` measures each declared value once against the others' defaults, so it renders 5 times instead of the full product of 12.
 
-**Frozen is broken on purpose.** Its story uses a custom `render` that ignores incoming args, so every variant produces an identical render. This is the one failure mode measurement cannot catch on its own: the values look real, they just all describe the default state. `snap` notices every variant measured identically and says so. Delete the `render` line in `src/Frozen.stories.tsx` and the warning goes away.
+**Frozen is broken on purpose.** Its story uses a custom `render` that ignores incoming args, so every variant produces an identical render. This is the one failure mode measurement cannot catch on its own: the values look real, they just all describe the default state. `snap` notices every variant measured identically, and that their markup was the same too, so the args never reached the component, and says so. Delete the `render` line in `src/Frozen.stories.tsx` and the warning goes away.
 
 ## Checking the measurements are real
 

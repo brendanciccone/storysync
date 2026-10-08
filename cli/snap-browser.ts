@@ -198,6 +198,13 @@ export interface CaptureResult {
   fontAvailable: boolean | null;
   /** What the page probed of the root's and the text's font stacks, for normalizeStyles. */
   fonts: { root: FontProbe | null; text: FontProbe | null };
+  /**
+   * A checksum of the story's markup, as readMarkup reads it, or null when
+   * it changed while the variant was measured, or couldn't be read. snap
+   * compares it across a component's variants and doesn't record it: see
+   * describeIdenticalVariants.
+   */
+  markup: string | null;
 }
 
 export interface CaptureOptions {
@@ -230,7 +237,7 @@ const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
 export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
     retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
-    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null },
+    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, markup: null,
   };
   const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
   let images: ImageRequests | null = null;
@@ -266,6 +273,9 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
     const { target, element, notes, matchedSelector } = located;
 
+    // Read before the styles and again after the picture: markup that
+    // changes in between, a story that animates, is no evidence either way.
+    const markupBefore = await readMarkup(page);
     const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
     const holder = await findTextHolder(target);
     const textRaw = holder ? await readTextStyles(page, holder, target, TEXT_PROPERTIES) : null;
@@ -285,7 +295,9 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // picture otherwise waits no longer than --timeout.
     const drawable = boundingBox.width > 0 && boundingBox.height > 0;
     const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
-    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts };
+    const markupAfter = await readMarkup(page);
+    const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
+    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, markup };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
@@ -603,6 +615,35 @@ async function readComputedStyles(
   );
 }
 
+
+/**
+ * A checksum of the story's markup: its root container's, and that of what
+ * it renders into the body beside it, as a portal does, leaving out
+ * Storybook's own nodes, scripts and styles. Null when it can't be read.
+ *
+ * Every variant of a component can measure the same for two reasons a
+ * score can't tell apart: the story drops its args, so nothing they set
+ * reaches the page, or they reach the component and change only what snap
+ * doesn't measure, as input-otp's `textAlign` sets the alignment of an
+ * input that draws no text. The markup tells them apart: a dropped arg
+ * changes none of it.
+ */
+async function readMarkup(page: Page): Promise<string | null> {
+  return page.evaluate((containers) => {
+    const root = containers.map((selector) => document.querySelector(selector)).find((el) => el != null) ?? null;
+    const parts = [root ? root.outerHTML : ""];
+    for (const el of Array.from(document.body.children)) {
+      if (el === root || el.tagName === "SCRIPT" || el.tagName === "STYLE" || el.tagName === "NOSCRIPT") continue;
+      if (/^storybook-/.test(el.id) || /(?:^|\s)sb-/.test(el.getAttribute("class") ?? "")) continue;
+      parts.push(el.outerHTML);
+    }
+    const text = parts.join("\n");
+    // 32-bit FNV-1a, with the length: a checksum to compare, not to keep.
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    return `${hash.toString(16).padStart(8, "0")}:${text.length}`;
+  }, [...ROOT_CONTAINERS]).catch(() => null);
+}
 
 /** The nearest element at or under `root` holding text of its own, or null when there is none. */
 async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHandle<Element> | null> {

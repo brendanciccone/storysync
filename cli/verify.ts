@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
-import { SNAP_META_FILENAME, detectIdenticalVariants, parseMeasurementWarning } from "./snap.js";
+import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import type { SnapComponent, SnapResult } from "./snap.js";
@@ -325,10 +325,16 @@ export interface VerifyResult {
 
 export interface ScoreCaveat {
   component: string;
-  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed";
+  /**
+   * `behavior-only`: every variant measured the same though the markup
+   * changed with the args, so they reach the component and its properties
+   * change nothing snap measures, rather than the story dropping them, as
+   * `identical-variants` has it.
+   */
+  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
-  /** The properties whose default is assumed, for `default-assumed`. */
+  /** The properties whose default is assumed, for `default-assumed`, or that change nothing measured, for `behavior-only`. */
   properties?: string[];
 }
 
@@ -957,7 +963,12 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     seen.add(note.kind + note.element);
     caveats.push({ component: key, kind: note.kind, element: note.element });
   }
-  if (detectIdenticalVariants(component.variants ?? [])) caveats.push({ component: key, kind: "identical-variants" });
+  // Which of the two snap said, where it said: an older snap's warning
+  // blames the story whatever the markup did.
+  const behaviorOnly = (component.warnings ?? []).map(parseBehaviorOnlyWarning).find((names) => names != null);
+  if (detectIdenticalVariants(component.variants ?? [])) {
+    caveats.push(behaviorOnly ? { component: key, kind: "behavior-only", properties: behaviorOnly } : { component: key, kind: "identical-variants" });
+  }
   // A VARIANT's only: a boolean with no default is assumed false, as React
   // treats a boolean left out, and the push lays it out default first, so
   // Figma's default is the code's; and every optional boolean has one.

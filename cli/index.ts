@@ -144,6 +144,11 @@ function describeCaveat(caveat: ScoreCaveat): string {
       return `snap measured ${caveat.element}, which may be the story's layout wrapper rather than the component`;
     case "identical-variants":
       return "every variant measured the same, so the story may not pass its args through and this scores its default state";
+    case "behavior-only": {
+      const names = (caveat.properties ?? []).map((name) => `\`${name}\``).join(", ");
+      const one = (caveat.properties ?? []).length === 1;
+      return `every variant measured the same though the args reached it: ${names} ${one ? "changes" : "change"} nothing snap measures, so its variants in Figma look alike; \`--exclude-props ${(caveat.properties ?? []).join(",")}\` leaves ${one ? "it" : "them"} out`;
+    }
     case "default-assumed": {
       const names = (caveat.properties ?? []).map((name) => `\`${name}\``).join(", ");
       return `Storybook's docs give no default for ${names}, so the default variant in Figma is a guess`;

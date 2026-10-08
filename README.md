@@ -472,7 +472,7 @@ Use the version the error prints. Other Playwright versions install a browser th
 - **Fonts** as the family the browser drew with. A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `system-ui`, since Chrome skips `-apple-system`, and its mono stack as the platform's font, such as `Menlo` on macOS. snap warns when a named font your code asks for didn't load and the browser used a fallback, but not about another platform's font listed after a system keyword, like `SFMono-Regular`. Figma also needs the font installed, which Storysync can't do for you.
 - **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
 
-**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. Plain CSF3 args-driven stories are the reliable shape.
+**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. When every variant measures the same, snap also compares the markup each one rendered. The same markup means the story likely drops its args. Markup that changed with them means the args reach the component and its props change only what snap doesn't measure, such as behavior, so the warning names them for `--exclude-props` instead of blaming the story. Plain CSF3 args-driven stories are the reliable shape.
 
 Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so a value like `Nav/Primary` can't be measured and is marked `args_unsupported`.
 
@@ -514,7 +514,7 @@ Fidelity: 95.0% (38/40 properties)
       borderRadiusUniform: measured 3, Figma 8
 ```
 
-**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`.
+**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, saying whether its args reached it, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`.
 
 ```text
 Fidelity: 100.0% (12/12 properties)
