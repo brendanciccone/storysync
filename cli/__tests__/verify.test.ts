@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize,
-  canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS,
+  canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS, scoreCaveats,
 } from "../verify.js";
+import { describeMeasurementNotes } from "../snap.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
@@ -1171,4 +1172,99 @@ test("verifyVariant: a font family measured as a CSS keyword is not scored", () 
   // A font's name is still compared.
   const named = verifyVariant("Forms/Button", "a", { ...BASE, text: { color: "#ffffff", fontFamily: "Roboto", fontSize: 12, fontWeight: 600 } }, figma as never, 0.5);
   assert.deepEqual(named.differences.map((d) => d.property), ["fontFamily"]);
+});
+
+// --- a merged snap, and what snap warned about ---
+
+test("verify: a merged snap holds each component's readback to the time it was measured", () => {
+  // A component measured again by snap --merge, and its readback from
+  // before that, was scored against the new measurement.
+  const snap = snapWith([{ slug: "a" }]);
+  const card = { ...snap.components[0], name: "Card", title: "Forms/Card" };
+  const both = { ...snap, components: [snap.components[0], card] } as SnapResult;
+  const entry = complete({ readAt: "2026-10-01T12:30:00.000Z" });
+  const readback: ReadbackFile = {
+    version: 1,
+    components: {
+      "Forms/Button": { nodeId: "1:2", variants: { a: { ...entry, checksum: readbackChecksum("1:2", "a", entry) } } as never },
+      "Forms/Card": { nodeId: "3:4", variants: { a: { ...entry, checksum: readbackChecksum("3:4", "a", entry) } } as never },
+    },
+  };
+  const result = verify(both, readback, 0.5, {
+    measuredAt: "2026-10-01T12:00:00.000Z",
+    componentsMeasuredAt: { "Forms/Button": "2026-10-01T12:00:00.000Z", "Forms/Card": "2026-10-01T13:00:00.000Z" },
+  });
+  assert.deepEqual(result.readbackIssues, [
+    { component: "Forms/Card", slug: "a", problem: "stale", readAt: "2026-10-01T12:30:00.000Z", measuredAt: "2026-10-01T13:00:00.000Z" },
+  ]);
+  assert.deepEqual(result.variants.map((v) => [v.component, v.status]), [["Forms/Button", "verified"], ["Forms/Card", "unverified_readback"]]);
+});
+
+test("verify: a readback component the snap has no record of is named, so a partial snap can't score a whole push", () => {
+  // A snap re-run for Card alone wrote a styles.json of Card alone; the
+  // drifted Button beside it in the readback was never scored, and --strict passed.
+  const snap = snapWith([{ slug: "a" }]);
+  const entry = complete({});
+  const readback: ReadbackFile = {
+    version: 1,
+    components: {
+      "Forms/Button": { nodeId: "1:2", variants: { a: { ...entry, checksum: readbackChecksum("1:2", "a", entry) } } as never },
+      "Forms/Card": { nodeId: "3:4", variants: { a: { ...entry, checksum: readbackChecksum("3:4", "a", entry) } } as never },
+    },
+  };
+  const result = verify(snap, readback, 0.5);
+  assert.deepEqual(result.componentsNotInSnap, ["Forms/Card"]);
+  assert.equal(result.fidelity, 1);
+  assert.deepEqual(verify(snap, readbackWith({ a: {} }), 0.5).componentsNotInSnap, []);
+});
+
+test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants and an assumed default, each once", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  const warnings = [
+    ...describeMeasurementNotes("Dialog", [
+      { slug: "a", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+      { slug: "b", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+    ], 2),
+    ...describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "layout-wrapper", element: "div", children: 2 } }], 2),
+    "the browser could not render \"Inter\"",
+  ];
+  const component = {
+    ...snap.components[0],
+    warnings,
+    variantProperties: [
+      { name: "size", type: "VARIANT", values: ["md", "sm"], defaultValue: "md", defaultAssumed: true },
+      { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+    ],
+  } as never;
+  assert.deepEqual(scoreCaveats(component), [
+    { component: "Forms/Button", kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' },
+    { component: "Forms/Button", kind: "layout-wrapper", element: "div" },
+    { component: "Forms/Button", kind: "identical-variants" },
+    { component: "Forms/Button", kind: "default-assumed", properties: ["size"] },
+  ]);
+  // Variants that differ, and no warnings: nothing to say.
+  assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]).components[0]), []);
+});
+
+test("verify: caveats are given for the components the readback scored, and fail nothing", () => {
+  const snap = snapWith([{ slug: "a" }]);
+  const trigger = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);
+  const withTrigger = { ...snap, components: [{ ...snap.components[0], warnings: trigger }, { ...snap.components[0], title: "Forms/Other", warnings: trigger }] } as SnapResult;
+  const result = verify(withTrigger, readbackWith({ a: {} }), 0.5);
+  assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }]);
+  assert.equal(result.fidelity, 1);
+});
+
+test("readSnapAge: carries a merged snap's time for each component, leaving out any that isn't a time", () => {
+  const dir = snapDir({ measuredAt: "2026-03-04T11:00:00.000Z", componentsMeasuredAt: { "Forms/A": "2026-03-04T11:00:00.000Z", "Forms/B": "2026-03-04T11:30:00.000Z", "Forms/C": "soon" } });
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.deepEqual(age.known && age.componentsMeasuredAt, { "Forms/A": "2026-03-04T11:00:00.000Z", "Forms/B": "2026-03-04T11:30:00.000Z" });
+    assert.equal(age.known && age.ageMs, 3_600_000);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  const plain = snapDir({ measuredAt: "2026-03-04T11:00:00.000Z" });
+  try {
+    const age = readSnapAge(join(plain, "styles.json"), null, NOW);
+    assert.equal(age.known && "componentsMeasuredAt" in age, false);
+  } finally { rmSync(plain, { recursive: true, force: true }); }
 });

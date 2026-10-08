@@ -12,7 +12,7 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { runSnap } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
-import type { ReadbackFile, ReadbackIssue, SnapAgeInfo } from "./verify.js";
+import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
 import { runSetup, type Client } from "./setup.js";
@@ -131,7 +131,23 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
     case "stale":
       if (issue.readAt == null) return "is stale: it has no readAt, so when Figma read it is unknown";
       if (!Number.isFinite(Date.parse(issue.readAt))) return `is stale: its readAt (${issue.readAt}) is not a time, so when Figma read it is unknown`;
-      return `is stale: Figma read it at ${issue.readAt}, before the snap was measured${snapAge.known ? ` at ${snapAge.measuredAt}` : ""}, so it is from an earlier run`;
+      return `is stale: Figma read it at ${issue.readAt}, before the snap was measured${issue.measuredAt ? ` at ${issue.measuredAt}` : snapAge.known ? ` at ${snapAge.measuredAt}` : ""}, so it is from an earlier run`;
+  }
+}
+
+/** What a caveat beside verify's score says about its component, as the rest of a line naming it. */
+function describeCaveat(caveat: ScoreCaveat): string {
+  switch (caveat.kind) {
+    case "closed-trigger":
+      return `snap measured ${caveat.element}, a closed trigger, so this scores the trigger, not what it opens`;
+    case "layout-wrapper":
+      return `snap measured ${caveat.element}, which may be the story's layout wrapper rather than the component`;
+    case "identical-variants":
+      return "every variant measured the same, so the story may not pass its args through and this scores its default state";
+    case "default-assumed": {
+      const names = (caveat.properties ?? []).map((name) => `\`${name}\``).join(", ");
+      return `Storybook's docs give no default for ${names}, so the default variant in Figma is a guess`;
+    }
   }
 }
 
@@ -398,7 +414,7 @@ program
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or if the snap recorded a component failure")
+  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or if the snap recorded a component failure or lacks a component the readback has")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
   .action(async (opts) => {
@@ -429,7 +445,7 @@ program
       const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
       // The snap's time first: an entry Figma read before it is stale.
       const snapAge = readSnapAge(snapPath, maxAgeMs);
-      const result = verify(snap, readback, tolerance, { measuredAt: snapAge.known ? snapAge.measuredAt : undefined });
+      const result = verify(snap, readback, tolerance, snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {});
       result.snapAge = snapAge;
 
       if (json) {
@@ -443,12 +459,21 @@ program
           ? chalk.red(` — ${excluded} unverified readback ${excluded === 1 ? "entry" : "entries"} excluded`)
           : "";
         console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        // Beside the score: Figma can match a measurement of the wrong
+        // element exactly, so the score alone would read as a faithful one.
+        if (result.caveats.length > 0) {
+          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(result.caveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
+          for (const caveat of result.caveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        }
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
         const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
         console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}, across ${summary.variants} variants\n`);
 
         for (const issue of result.snapIssues ?? []) {
           console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
+        }
+        for (const component of result.componentsNotInSnap) {
+          console.log(`  ${chalk.red("!")} ${component} is in the readback but not in the snap, so none of it was scored: another snap run measured it, or none did. Measure it into this snap with \`snap --components "${component}" --merge\`, or run the whole snap again.`);
         }
         for (const warning of result.snapWarnings ?? []) {
           console.log(`  ${chalk.yellow("!")} ${warning}`);
@@ -486,6 +511,7 @@ program
         // a run that compared nothing must not end on a green "matches".
         const cleanRun = !result.variants.some((v) => v.status !== "verified")
           && (result.snapIssues?.length ?? 0) === 0
+          && result.componentsNotInSnap.length === 0
           && readbackIssues.length === 0
           && result.summary.propertiesCompared > 0;
         if (cleanRun) {
@@ -551,6 +577,7 @@ program
         || result.summary.missingFromFigma > 0
         || scoredNothing
         || (result.snapIssues?.length ?? 0) > 0
+        || result.componentsNotInSnap.length > 0
         || (result.readbackIssues?.length ?? 0) > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one.
