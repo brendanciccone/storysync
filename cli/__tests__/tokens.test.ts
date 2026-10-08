@@ -811,7 +811,7 @@ test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @t
     assert.deepEqual(auto.warnings, [
       "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
       // The .dark block's variables, which no token holds.
-      "Only the light theme is read: app/globals.css sets 1 for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
+      "Only the light theme is read: app/globals.css sets 1 variable for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
     ]);
 
     // A baseline from before lists the colors alone, so it sees the radius
@@ -923,7 +923,7 @@ test("CSS: a :root for the dark color scheme doesn't override the light one", ()
     assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")).slice(0, 1), light);
     assert.deepEqual(extractTokens(dir).warnings, [
       "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
-      "Only the light theme is read: app/globals.css sets 2 for @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
+      "Only the light theme is read: app/globals.css sets 2 variables for @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
     ]);
   } finally { cleanup(dir); }
 
@@ -1343,7 +1343,7 @@ test("CSS: a dark theme's variables are named as not read, by selector, and a li
   try {
     const dark = extractTokens(dir).warnings.filter((w) => w.startsWith("Only the light theme is read:"));
     assert.deepEqual(dark, [
-      "Only the light theme is read: app/globals.css sets 3 for .dark, [data-theme=\"dark\"], @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
+      "Only the light theme is read: app/globals.css sets 3 variables for .dark, [data-theme=\"dark\"], @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
     ]);
   } finally { cleanup(dir); }
 
@@ -1351,4 +1351,25 @@ test("CSS: a dark theme's variables are named as not read, by selector, and a li
   try {
     assert.equal(extractTokens(light).warnings.some((w) => w.startsWith("Only the light theme")), false);
   } finally { cleanup(light); }
+});
+
+test("CSS: a built Storybook's stylesheet, and Tailwind's own --tw- variables, are no dark theme", () => {
+  // storybook build writes the stories' compiled CSS to storybook-static,
+  // where a dark: utility sets --tw- variables under .dark, and the warning
+  // counted them as dark tokens, naming the bundle.
+  const dir = makeProject({
+    "src/globals.css": `:root { --background: #ffffff; }\n.dark { --background: #0a0a0a; }\n`,
+    "storybook-static/assets/iframe-abc123.css": `:root { --background: #ffffff; }\n.dark { --background: #0a0a0a; --ring: #333333; }\n.dark\\:shadow-xs:is(.dark *) { --tw-shadow: 0 1px 2px #0000000d; }\n`,
+    "src/compiled.css": `:root { --tw-ring-offset-width: 0px; }\n.dark\\:ring:is(.dark *) { --tw-ring-color: #333333; --tw-ring-shadow: 0 0 0 1px; }\n`,
+    "out/_next/static/css/app.css": `.dark { --background: #0a0a0a; }\n`,
+    "coverage/lcov-report/base.css": `.dark { --background: #0a0a0a; }\n`,
+  });
+  try {
+    const result = extractTokens(dir);
+    const dark = result.warnings.filter((w) => w.startsWith("Only the light theme is read:"));
+    assert.deepEqual(dark, [
+      "Only the light theme is read: src/globals.css sets 1 variable for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
+    ]);
+    assert.equal(JSON.stringify(result).includes("storybook-static"), false, "the built bundle is read as a source");
+  } finally { cleanup(dir); }
 });

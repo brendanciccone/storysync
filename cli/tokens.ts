@@ -133,13 +133,21 @@ function findCSS(projectPath: string, test: (css: string) => boolean): string[] 
   return results;
 }
 
+/**
+ * Directories of installed or built files, not the project's own
+ * stylesheets: `storybook build` writes its compiled CSS, every Tailwind
+ * utility of the stories included, to storybook-static, Next's static export
+ * to out, and a coverage report its own CSS to coverage.
+ */
+const SKIPPED_DIRS = new Set(["node_modules", "dist", ".next", "build", "storybook-static", "out", "coverage"]);
+
 function walkCSS(dir: string, results: string[], test: (css: string) => boolean, depth: number): void {
   if (depth > 5) return;
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
 
   for (const entry of entries) {
-    if (entry === "node_modules" || entry === "dist" || entry === ".next" || entry === "build") continue;
+    if (SKIPPED_DIRS.has(entry)) continue;
     const full = join(dir, entry);
     let stat;
     try { stat = statSync(full); } catch { continue; }
@@ -447,7 +455,9 @@ const DARK_SELECTOR = /\.(?:dark|dark-mode|dark-theme|theme-dark)(?![\w-])|\[dat
  * selector, or a `:root` in `@media (prefers-color-scheme: dark)`. Null
  * when they set none. tokens extracts the light theme's alone, and said
  * nothing of it, so an audit of shadcn/ui's 31 colors reported them
- * matched with no word of the 31 dark values never compared.
+ * matched with no word of the 31 dark values never compared. Tailwind's
+ * own `--tw-` variables, which a compiled `dark:` utility sets, are no
+ * theme's, and left out.
  */
 function darkThemeWarning(projectPath: string): string | null {
   const found: string[] = [];
@@ -466,12 +476,12 @@ function darkThemeWarning(projectPath: string): string | null {
       const selector = rule[1].trim().replace(/\s+/g, " ");
       const inMedia = media.some(([from, to]) => rule.index >= from && rule.index < to) && /:root/.test(selector);
       if (!inMedia && !DARK_SELECTOR.test(selector)) continue;
-      const declared = [...rule[2].matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]);
+      const declared = [...rule[2].matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]).filter((name) => !name.startsWith("--tw-"));
       if (!declared.length) continue;
       for (const name of declared) names.add(name);
       where.add(inMedia ? "@media (prefers-color-scheme: dark)" : selector);
     }
-    if (names.size) found.push(`${relative(resolve(projectPath), file) || file} sets ${names.size} for ${[...where].join(", ")}`);
+    if (names.size) found.push(`${relative(resolve(projectPath), file) || file} sets ${names.size} ${names.size === 1 ? "variable" : "variables"} for ${[...where].join(", ")}`);
   }
   if (!found.length) return null;
   return `Only the light theme is read: ${found.join("; ")}, which no token here holds, so a comparison of these tokens covers the light theme alone`;
