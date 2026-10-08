@@ -243,7 +243,7 @@ The push sets Figma variables from `hex`, since Figma's colour helpers only acce
 
 A value in em or %, or with no unit, like a font weight, has no `px`. `tokens --check` compares only `value`, so baselines written before `hex` and `px` existed still pass.
 
-A `var()` that doesn't resolve stays as written, and a warning names the token, for example a font that next/font sets at runtime.
+A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
@@ -283,7 +283,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead o
 }
 ```
 
-With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, and a baseline from an earlier version lists them as added. `@theme` colours aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead.
+With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, so a category can hold `:root`'s `radius/md` next to `@theme`'s `sm`, and a baseline from an earlier version lists them as added. `@theme` colours aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead.
 
 | Namespace | Category | Token name |
 |---|---|---|

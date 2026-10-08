@@ -706,7 +706,9 @@ test("every push summary says a transparent border shows as an unfilled ring", (
 test("every push instruction sets FLOAT variables from px, and leaves out a token whose var() didn't resolve", () => {
   // Told only to convert rem, the agent did shadcn/ui's calc() radii by
   // hand, or passed the string to a FLOAT variable, and took
-  // `var(--font-sans)` for a font family.
+  // `var(--font-sans)` for a font family. Told to leave out any value with
+  // a var(), it dropped :root's `calc(var(--radius) - 4px)`, which has its
+  // px; and with no px from an older storysync, every length.
   const project = tempProject();
   try {
     setupOutput(project, false, "claude");
@@ -722,7 +724,9 @@ test("every push instruction sets FLOAT variables from px, and leaves out a toke
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /setting each `FLOAT` variable from its token's `px`|Set each `FLOAT` variable from its token's `px`/, `${path} never sets FLOAT variables from px`);
       assert.match(text, /`calc\(0\.625rem - 4px\)` is 6/, `${path} never says px works out calc()`);
-      assert.match(text, /leave out, and (?:say which|name),[^\n]*`value` still holds a `var\(\)`/i, `${path} sets a token whose var() didn't resolve`);
+      assert.match(text, /leave out[^\n]*any token a `tokens` warning starting `Unresolved:` names/i, `${path} sets a token whose var() didn't resolve`);
+      assert.doesNotMatch(text, /any token whose `value` still holds a `var\(\)`/, `${path} leaves out tokens whose var() resolved`);
+      assert.match(text, /If no token (?:in the output )?has a `px` at all, an older storysync ran: use a plain rem `value` times 16/, `${path} drops every length when an older storysync gives no px`);
       assert.doesNotMatch(text, /Convert rem values to px/, `${path} still has the agent convert rem itself`);
     }
   } finally {
