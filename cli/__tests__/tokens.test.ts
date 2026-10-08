@@ -1332,6 +1332,31 @@ export default {
   } finally { cleanup(dir); }
 });
 
+// --- Tailwind config file names ---
+
+test("detectTokenSource: finds tailwind.config.mts and .cts, after the names it always read", () => {
+  // edu-design-system's config is tailwind.config.mts, so a stylesheet of
+  // dark-theme variables was read in its place.
+  for (const name of ["tailwind.config.mts", "tailwind.config.cts"]) {
+    const dir = makeProject({
+      [name]: `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+      "src/dark.css": `:root { --color-brand: #000000; }`,
+    });
+    try {
+      assert.deepEqual(detectTokenSource(dir), { type: "tailwind", path: join(dir, name) });
+      assert.deepEqual(tokenTable(extractTokens(dir)), [["colors", [["brand", "#ff0000"]]]]);
+      assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")), [["colors", [["brand", "#ff0000"]]]]);
+    } finally { cleanup(dir); }
+  }
+  const both = makeProject({
+    "tailwind.config.mts": `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "#00ff00" } } } }`,
+  });
+  try {
+    assert.equal(detectTokenSource(both)?.path, join(both, "tailwind.config.ts"));
+  } finally { cleanup(both); }
+});
+
 // --- Presets, re-exports and wrappers ---
 
 test("Tailwind: a preset in a relative file is read as the config is, and the config wins a name they share", () => {

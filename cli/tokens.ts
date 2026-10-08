@@ -77,7 +77,16 @@ interface DetectedSource {
   path: string;
 }
 
-const TAILWIND_CONFIGS = ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"];
+/**
+ * Every name Tailwind v3 finds a config by. The four storysync always read
+ * keep their order, which decides between two; `.mts` and `.cts` were
+ * missed, so edu-design-system's config was passed over for a stylesheet of
+ * dark-theme variables.
+ */
+const TAILWIND_CONFIGS = [
+  "tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs",
+  "tailwind.config.mts", "tailwind.config.cts",
+];
 
 function findTailwindConfig(projectPath: string): string | null {
   for (const name of TAILWIND_CONFIGS) {
