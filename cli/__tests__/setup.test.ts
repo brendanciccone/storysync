@@ -639,7 +639,10 @@ async function runReadback(text: string, path: string, children: Record<string, 
   ].reduce((src, fill) => fill(src), code);
   const set = { id: "12:34", type: "COMPONENT_SET", name: "Dropzone", children };
   // A file with no local variables, so nothing is bound or matches one.
-  const figma = { getNodeByIdAsync: async () => set, variables: { getLocalVariablesAsync: async () => [], getVariableByIdAsync: async () => null } };
+  const figma = {
+    getNodeByIdAsync: async () => set,
+    variables: { getLocalVariablesAsync: async () => [], getLocalVariableCollectionsAsync: async () => [], getVariableByIdAsync: async () => null },
+  };
   const run = new Function("figma", `return (async () => {${body}})();`) as (f: unknown) => Promise<string>;
   return JSON.parse(await run(figma));
 }

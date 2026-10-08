@@ -547,12 +547,16 @@ function loadSkillReadback(mutate = null) {
   // at another time: the template's own Date is shadowed with one fixed there.
   const run = async (componentSet, slugByName, sourceBySlug, opts) => {
     // The file's local variables, opts.variables, none unless given: each
-    // { id, name, valuesByMode }, as Figma gives one.
-    const variables = opts?.variables ?? [];
+    // { id, name, resolvedType, valuesByMode, variableCollectionId, scopes },
+    // as Figma gives one, and their collections, opts.collections, each
+    // { id, name }. A variable given no scopes has ALL_SCOPES, Figma's default.
+    const variables = (opts?.variables ?? []).map((v) => ({ scopes: ["ALL_SCOPES"], ...v }));
+    const collections = opts?.collections ?? [];
     const figma = {
       getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null),
       variables: {
         getLocalVariablesAsync: async () => variables,
+        getLocalVariableCollectionsAsync: async () => collections,
         getVariableByIdAsync: async (id) => variables.find((v) => v.id === id) ?? null,
       },
     };
@@ -3058,10 +3062,12 @@ async function main() {
     const variants = expandVariants(button);
     const base = variants[0].styles;
     const color = (hex) => ({ ...rgb01(hex), a: 1 });
+    // As Tokens step 3 makes them: each kind in a collection of its own.
+    const collections = [{ id: "VariableCollectionId:1:0", name: "Colors" }, { id: "VariableCollectionId:2:0", name: "Radius" }];
     const variables = [
-      { id: "VariableID:1:1", name: "primary", resolvedType: "COLOR", valuesByMode: { "1:0": color(base.backgroundColor) } },
-      { id: "VariableID:1:2", name: "radius/md", resolvedType: "FLOAT", valuesByMode: { "1:0": base.borderRadiusUniform } },
-      { id: "VariableID:1:3", name: "radius/alias", resolvedType: "FLOAT", valuesByMode: { "1:0": { type: "VARIABLE_ALIAS", id: "VariableID:1:2" } } },
+      { id: "VariableID:1:1", name: "primary", resolvedType: "COLOR", valuesByMode: { "1:0": color(base.backgroundColor) }, variableCollectionId: "VariableCollectionId:1:0" },
+      { id: "VariableID:1:2", name: "md", resolvedType: "FLOAT", valuesByMode: { "2:0": base.borderRadiusUniform }, variableCollectionId: "VariableCollectionId:2:0" },
+      { id: "VariableID:1:3", name: "alias", resolvedType: "FLOAT", valuesByMode: { "2:0": { type: "VARIABLE_ALIAS", id: "VariableID:1:2" } }, variableCollectionId: "VariableCollectionId:2:0" },
     ];
     const alias = (id) => ({ type: "VARIABLE_ALIAS", id });
     const detached = variants[1].slug;
@@ -3074,14 +3080,14 @@ async function main() {
       },
     });
     const template = loadSkillReadback();
-    const withVariables = { ...template, read: (set, slugs, sources, opts) => template.read(set, slugs, sources, { ...opts, variables }) };
+    const withVariables = { ...template, read: (set, slugs, sources, opts) => template.read(set, slugs, sources, { ...opts, variables, collections }) };
     const components = {};
     for (const set of sets) {
       const { variants: read } = await readSet(withVariables, set, READ_BATCH);
       components[set.component.title ?? set.component.name] = { nodeId: set.componentSet.id, variants: read };
     }
     const entry = components["Forms/Button"].variants;
-    assert(entry[variants[0].slug].bound.backgroundColor === "primary" && entry[variants[0].slug].bound.borderRadiusUniform === "radius/md",
+    assert(entry[variants[0].slug].bound.backgroundColor === "primary" && entry[variants[0].slug].bound.borderRadiusUniform === "md",
       `the first variant read back bound ${JSON.stringify(entry[variants[0].slug].bound)}`);
     assert(JSON.stringify(entry[detached].unbound) === JSON.stringify(["borderRadiusUniform"]) && !("borderRadiusUniform" in entry[detached].bound),
       `the detached variant read back ${JSON.stringify({ bound: entry[detached].bound, unbound: entry[detached].unbound })}`);
@@ -3092,7 +3098,7 @@ async function main() {
     assert(JSON.stringify(v.json.bindings.unbound) === JSON.stringify([{ component: "Forms/Button", field: "borderRadiusUniform", variants: 1 }]),
       `verify reported unbound ${JSON.stringify(v.json.bindings)}`);
     const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path, "--strict"]);
-    assert(text.status === 0 && /Bound to no variable, though a variable has the value[^\n]*\n\s+Forms\/Button borderRadiusUniform, on 1 variant/.test(text.out),
+    assert(text.status === 0 && /Bound to no variable, though a variable of its kind has the value[^\n]*\n\s+Forms\/Button borderRadiusUniform, on 1 variant/.test(text.out),
       `verify --strict exited ${text.status}:\n${text.out}`);
     // A readback from before, without bindings, still scores, and says it can't see them.
     const older = JSON.parse(JSON.stringify({ version: 1, fileKey: "acceptance", components }));
@@ -3104,6 +3110,52 @@ async function main() {
     const old = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", olderPath, "--strict"]);
     assert(old.status === 0 && /this readback doesn't say what is bound/.test(old.out), `an older readback: exit ${old.status}\n${old.out}`);
     return `${v.json.bindings.bound} fields bound across ${v.json.bindings.read} variants; the detached radius named; an older readback scored, saying it can't see bindings`;
+  });
+
+  await check("the readback matches a field only with variables of its kind: a padding at a radius's value is no detached radius", async () => {
+    // The readback matched a field with every local variable. shadcn/ui's
+    // only number tokens are its radii (sm 6, md 8, xl 14), so a Button
+    // built and bound faithfully read back its py-2 padding, gap-2 and
+    // text-sm as detached tokens, on nearly every variant.
+    const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+    const variant = expandVariants(button)[0];
+    const st = variant.styles;
+    const name = figmaVariantName(variant.combination);
+    const lengths = [st.padding.top, st.padding.right, st.gap?.column, (st.text ?? st).fontSize];
+    assert(new Set([...lengths, st.borderRadiusUniform]).size === 5 && lengths.every((n) => n > 0),
+      `the example Button's padding, gap, font size and radius are no longer five lengths apart: ${lengths}, ${st.borderRadiusUniform}`);
+    const [top, side, gap, size] = lengths;
+    const unbound = async (variables, collections) => (await loadSkillReadback().read(
+      { id: "set:Kinds", type: "COMPONENT_SET", name: "Kinds", children: [figmaNode(name, st)] },
+      { [name]: variant.slug }, { [variant.slug]: "measured" }, { variables, collections },
+    )).readback[variant.slug].unbound.join();
+    const COLLECTIONS = ["Radius", "Spacing", "Typography", "Primitives"].map((n) => ({ id: `VariableCollectionId:${n}`, name: n }));
+    const float = (name, value, collection, scopes) => ({
+      id: `VariableID:${collection}/${name}`, name, resolvedType: "FLOAT", valuesByMode: { "1:0": value },
+      variableCollectionId: `VariableCollectionId:${collection}`, ...(scopes ? { scopes } : {}),
+    });
+    // A file whose only number variables are radii, at every length the
+    // variant shows but its radius: nothing on it is a detached radius.
+    const radii = lengths.map((n) => float(`r${n}`, n, "Radius"));
+    const got = {
+      radii: await unbound(radii, COLLECTIONS),
+      // A spacing variable at the top padding, and a font size, are the
+      // fields' own kind, so named; a line height at the font size is not.
+      ownKind: await unbound([...radii, float("4", top, "Spacing"), float("leading/x", size, "Typography"), float("text/xs", size, "Typography")], COLLECTIONS),
+      noLineHeight: await unbound([float("leading/x", size, "Typography"), float("font/weight/x", size, "Typography")], COLLECTIONS),
+      // Scopes, where they name some, say the kind over the collection's
+      // name, and a number in a collection named for no kind is never
+      // matched.
+      scoped: await unbound([float("a", side, "Radius", ["GAP"]), float("b", gap, "Primitives", ["CORNER_RADIUS"]), float("c", top, "Primitives")], COLLECTIONS),
+    };
+    const want = {
+      radii: "",
+      ownKind: "paddingTop,paddingBottom,fontSize",
+      noLineHeight: "",
+      scoped: "paddingRight,paddingLeft",
+    };
+    assert(JSON.stringify(got) === JSON.stringify(want), `read back unbound ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    return `radii at the padding (${top}, ${side}), gap (${gap}) and font size (${size}) named none of them; a spacing variable and a font size were named; scopes over the collection`;
   });
 
   await check("a readback that reads render bounds, or gets a stroke or a color wrong, fails these checks", async () => {

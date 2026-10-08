@@ -87,9 +87,12 @@ export interface ReadbackStyles {
    */
   bound?: Record<string, string>;
   /**
-   * The fields of those bound to no variable, though a local variable has
-   * the value they show, in one of its modes: a token detached in Figma at
-   * the same value, or one the push never bound.
+   * The fields of those bound to no variable, though a local variable of
+   * the field's kind has the value they show, in one of its modes: a token
+   * detached in Figma at the same value, or one the push never bound. The
+   * template matches a field only with variables of its kind, by their
+   * scopes or else their collection, so a padding of 8 isn't taken for a
+   * radius of 8.
    */
   unbound?: string[];
   /**
@@ -364,9 +367,10 @@ export interface BindingReport {
   bound: number;
   /**
    * Per component and field, how many variants have it bound to no
-   * variable though a local variable has its value: a token detached in
-   * Figma at the same value, or one the push left unbound, as it does where
-   * several variables share a value and the source names none.
+   * variable though a local variable of its kind has its value: a token
+   * detached in Figma at the same value, or one the push left unbound, as
+   * it does where several variables share a value and the source names
+   * none.
    */
   unbound: { component: string; field: string; variants: number }[];
 }
@@ -1049,11 +1053,12 @@ export function verify(
  * Reported, not scored. Values are compared already, a bound field's at the
  * variable's value, so a binding changed to a variable of another value is
  * drift there. What a value can't show is a field bound to no variable at a
- * value a variable has: a token detached in Figma keeps its value, and
- * scored 100% while the library had lost the link that keeps it in step
- * with the code. The readback template finds those in Figma, where the
- * variables are, so verify needs neither the tokens nor what the push
- * meant to bind. Which of several variables of one value a field should be
+ * value a variable of its kind has: a token detached in Figma keeps its
+ * value, and scored 100% while the library had lost the link that keeps it
+ * in step with the code. The readback template finds those in Figma, where
+ * the variables are, so verify needs neither the tokens nor what the push
+ * meant to bind. Only variables of the field's kind count, so a padding of
+ * 8 on shadcn/ui, where the radius md is 8, is no detached radius. Which of several variables of one value a field should be
  * bound to only the component's source says, so a binding moved to
  * another of the same value is not reported.
  */

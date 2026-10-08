@@ -666,11 +666,33 @@ use_figma({
     // Variable bindings, which no value shows: a token detached in Figma
     // keeps its value. bound names the variable each field is bound to;
     // unbound lists the fields bound to none whose value a local variable
-    // has, in any of its modes, a color by its #rrggbb, as a translucent
-    // one is bound at an opacity. Lengths of 0 are left out.
+    // of the field's own kind has, in any of its modes, a color by its
+    // #rrggbb, as a translucent one is bound at an opacity. Lengths of 0
+    // are left out. A variable's kinds are the ones its scopes name, where
+    // they name some; else a color variable's are the three colors, and a
+    // number's the one its collection is named for, as Tokens step 3 names
+    // them. So a padding of 8 is no detached radius, though shadcn/ui's
+    // radius md is 8, and a number in a collection named for none of them
+    // is never matched.
     const VARIABLES = await figma.variables.getLocalVariablesAsync();
+    const COLLECTIONS = {};
+    for (const c of await figma.variables.getLocalVariableCollectionsAsync()) COLLECTIONS[c.id] = c.name;
+    const SCOPE_KINDS = {
+      ALL_FILLS: ['fill', 'text'], FRAME_FILL: ['fill'], SHAPE_FILL: ['fill'], TEXT_FILL: ['text'],
+      STROKE_COLOR: ['stroke'], CORNER_RADIUS: ['radius'], GAP: ['spacing'], FONT_SIZE: ['fontSize'],
+    };
+    const kindsOf = (v) => {
+      if (Array.isArray(v.scopes) && !v.scopes.includes('ALL_SCOPES')) return v.scopes.flatMap((s) => SCOPE_KINDS[s] || []);
+      if (v.resolvedType === 'COLOR') return ['fill', 'text', 'stroke'];
+      const collection = COLLECTIONS[v.variableCollectionId] || '';
+      if (/radi|rounded|corner/i.test(collection)) return ['radius'];
+      if (/spac|gap/i.test(collection)) return ['spacing'];
+      // A typography collection holds weights and line heights too.
+      if (/typo|font|text/i.test(collection) && !/weight|leading|line.?height|tracking|letter/i.test(v.name)) return ['fontSize'];
+      return [];
+    };
     const hex6 = (c) => '#' + [c.r, c.g, c.b].map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
-    const hasValue = (value) => VARIABLES.some((v) => Object.values(v.valuesByMode).some((x) => (typeof value === 'number'
+    const hasValue = (kind, value) => VARIABLES.some((v) => kindsOf(v).includes(kind) && Object.values(v.valuesByMode).some((x) => (typeof value === 'number'
       ? typeof x === 'number' && Math.abs(x - value) < 0.01 : x !== null && typeof x === 'object' && 'r' in x && hex6(x) === value)));
     const NAMES = {};
     const variableName = async (alias) => {
@@ -683,25 +705,25 @@ use_figma({
       const paint = (p) => (p && p.type === 'SOLID' && p.visible !== false && p.opacity !== 0 ? hex6(p.color) : null);
       const textFill = text && Array.isArray(text.fills) ? text.fills[0] : null;
       const auto = child.layoutMode && child.layoutMode !== 'NONE';
-      // Each field, with its binding and the value it shows.
+      // Each field, with its kind, its binding and the value it shows.
       const FIELDS = [
-        ['backgroundColor', fill && fill.boundVariables && fill.boundVariables.color, paint(fill)],
-        ['color', textFill && textFill.boundVariables && textFill.boundVariables.color, paint(textFill)],
-        ['borderColor', stroke && stroke.boundVariables && stroke.boundVariables.color, paint(stroke)],
-        ['borderRadiusUniform', own.topLeftRadius, typeof child.cornerRadius === 'number' ? child.cornerRadius : null],
-        ['paddingTop', own.paddingTop, child.paddingTop],
-        ['paddingRight', own.paddingRight, child.paddingRight],
-        ['paddingBottom', own.paddingBottom, child.paddingBottom],
-        ['paddingLeft', own.paddingLeft, child.paddingLeft],
-        ['gap', own.itemSpacing, auto ? child.itemSpacing : null],
-        ['fontSize', text && text.boundVariables && text.boundVariables.fontSize, text && typeof text.fontSize === 'number' ? text.fontSize : null],
+        ['backgroundColor', 'fill', fill && fill.boundVariables && fill.boundVariables.color, paint(fill)],
+        ['color', 'text', textFill && textFill.boundVariables && textFill.boundVariables.color, paint(textFill)],
+        ['borderColor', 'stroke', stroke && stroke.boundVariables && stroke.boundVariables.color, paint(stroke)],
+        ['borderRadiusUniform', 'radius', own.topLeftRadius, typeof child.cornerRadius === 'number' ? child.cornerRadius : null],
+        ['paddingTop', 'spacing', own.paddingTop, child.paddingTop],
+        ['paddingRight', 'spacing', own.paddingRight, child.paddingRight],
+        ['paddingBottom', 'spacing', own.paddingBottom, child.paddingBottom],
+        ['paddingLeft', 'spacing', own.paddingLeft, child.paddingLeft],
+        ['gap', 'spacing', own.itemSpacing, auto ? child.itemSpacing : null],
+        ['fontSize', 'fontSize', text && text.boundVariables && text.boundVariables.fontSize, text && typeof text.fontSize === 'number' ? text.fontSize : null],
       ];
       const bound = {};
       const unbound = [];
-      for (const [field, alias, value] of FIELDS) {
+      for (const [field, kind, alias, value] of FIELDS) {
         const name = alias ? await variableName(alias) : null;
         if (name) bound[field] = name;
-        else if (value !== null && value !== undefined && value !== 0 && hasValue(value)) unbound.push(field);
+        else if (value !== null && value !== undefined && value !== 0 && hasValue(kind, value)) unbound.push(field);
       }
       return { bound, unbound };
     };
@@ -925,7 +947,7 @@ use_figma({
 }
 ```
 
-   **`textLayout`, `bound` and `unbound` come back on every variant too.** `textLayout` is how Figma fits the text, compared where snap measured that the browser wrapped it or cut it off (step 3's table): a title the browser cut off at its card's width with an ellipsis, built as a text that hugs and runs past the card, drifts. `bound` names the variable each field is bound to, and `unbound` the fields bound to none though a variable in the file has their value, as the status dot's fill above is. `verify` doesn't score bindings, since the values are compared already, but names every field `unbound` lists beside the score: a token detached in Figma keeps its value, so no value shows it. Where the push left a value unbound on purpose, because several variables share it (Variable binding, below), the summary says so. A readback read before these three were added has none of them, and still scores; `verify` says it can't see bindings.
+   **`textLayout`, `bound` and `unbound` come back on every variant too.** `textLayout` is how Figma fits the text, compared where snap measured that the browser wrapped it or cut it off (step 3's table): a title the browser cut off at its card's width with an ellipsis, built as a text that hugs and runs past the card, drifts. `bound` names the variable each field is bound to, and `unbound` the fields bound to none though a variable of their kind in the file has their value, as the status dot's fill above is: a color variable for a color, and for a number the kind the variable's scopes name, or else its collection's (Tokens step 3), so a padding of 8 is not taken for a detached radius `md` of 8. `verify` doesn't score bindings, since the values are compared already, but names every field `unbound` lists beside the score: a token detached in Figma keeps its value, so no value shows it. Where the push left a value unbound on purpose, because several variables share it (Variable binding, below), the summary says so. A readback read before these three were added has none of them, and still scores; `verify` says it can't see bindings.
 
    **`source` is required on every variant**, and the template sets it from `SOURCE_BY_SLUG`: `"measured"` when the values came from `snap`, `"inferred"` when you fell back to reading source in step 3. Omitting it is not neutral: `verify` reports the entry as incomplete, since the template always returns it, and its provenance as `unrecorded`, and `--strict` and `--strict-measured` both fail on it, because a run that cannot distinguish measured from guessed is decorative. To correct one, correct the table and read the slice again: the checksum covers `source` too, so an entry whose `source` was changed in the file is an unverified readback.
 

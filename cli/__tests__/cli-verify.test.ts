@@ -410,7 +410,7 @@ test("verify CLI: a field bound to no variable though one has its value is named
   });
   const r = verify(snapOfTwo(), file, "--strict");
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /\n {2}Variables: 3 fields bound across 2 variants\n {2}! Bound to no variable, though a variable has the value: a token detached in Figma, or one the push left unbound \(its summary says which\):\n {6}Forms\/Button borderRadiusUniform, on 1 variant\n/);
+  assert.match(r.out, /\n {2}Variables: 3 fields bound across 2 variants\n {2}! Bound to no variable, though a variable of its kind has the value: a token detached in Figma, or one the push left unbound \(its summary says which\):\n {6}Forms\/Button borderRadiusUniform, on 1 variant\n/);
 
   // A readback from an earlier template says nothing of bindings, and still scores.
   const older = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }), "--strict");

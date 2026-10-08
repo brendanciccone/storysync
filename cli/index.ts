@@ -569,7 +569,7 @@ program
         if (bindings.read > 0) {
           console.log(chalk.dim(`  Variables: ${bindings.bound} ${bindings.bound === 1 ? "field" : "fields"} bound across ${bindings.read} ${bindings.read === 1 ? "variant" : "variants"}`));
           if (bindings.unbound.length > 0) {
-            console.log(chalk.yellow("  ! Bound to no variable, though a variable has the value: a token detached in Figma, or one the push left unbound (its summary says which):"));
+            console.log(chalk.yellow("  ! Bound to no variable, though a variable of its kind has the value: a token detached in Figma, or one the push left unbound (its summary says which):"));
             for (const u of bindings.unbound) {
               console.log(chalk.yellow(`      ${u.component} ${u.field}, on ${u.variants} ${u.variants === 1 ? "variant" : "variants"}`));
             }
