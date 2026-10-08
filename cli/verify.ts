@@ -911,7 +911,8 @@ export function verify(
   }
   // A single unmeasured variant is reported but does not fail --strict on its
   // own. Some are expected — args_unsupported, for a value Storybook cannot
-  // pass in a URL, or arg_rejected, for one the story's argTypes refuse,
+  // pass in a URL or take through its preview, or arg_rejected, for one the
+  // story's argTypes refuse,
   // which the caveats name too — and the skill has the agent build those
   // from source and label them inferred, which provenance already fails
   // under --strict-measured. `snap --strict` is the gate for measurement

@@ -368,6 +368,20 @@ test("captureStory: a number-like value is set through the preview as the story'
   assert.equal(numbers.stored.size, 4);
 });
 
+test("captureStory: a value left out of the URL is set through the preview, or rejected unread without a preview", async () => {
+  const argTypes: Record<string, FakeArgType> = { tone: { options: ["plain", "Nav/Primary"], type: { name: "enum" } } };
+  const opts = { ...SHOT, story: { id: "ui-base-badge--default", args: { tone: "Nav/Primary" }, notInUrl: ["tone"] } };
+  const fake = fakePreview({ argTypes, initial: { tone: "plain" }, url: {} });
+  const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", opts);
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.args?.appliedVia, result.args?.rejected.map((r) => r.reasons)], ["preview", [["url-unsafe"]]]);
+  assert.equal(fake.stored.tone, "Nav/Primary");
+  // With no preview to read, it is known not to have been given.
+  const unread = await captureStory(previewPage(undefined), "http://localhost:6006/iframe.html?id=x", opts);
+  assert.equal(unread.status, "arg_rejected");
+  assert.deepEqual(unread.args?.unapplied.map((r) => [r.name, r.reasons]), [["tone", ["url-unsafe"]]]);
+});
+
 test("captureStory: a value the preview won't apply either is arg_rejected, not the default measured as it", async () => {
   const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, silent: true });
   const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", { ...STORY_OPTS({ variant: "ghost" }), timeoutMs: 50 });

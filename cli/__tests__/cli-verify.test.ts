@@ -168,10 +168,10 @@ test("verify CLI: a --snap that is not a snap fails saying so, not with a TypeEr
 });
 
 test("verify CLI: a single unmeasurable variant is reported but does not fail --strict alone", () => {
-  // args_unsupported is expected for values Storybook cannot pass in a URL; the
-  // skill builds those from source and labels them inferred, which
-  // --strict-measured already fails. Failing --strict too would make a correct
-  // run impossible to pass.
+  // args_unsupported is expected for values Storybook cannot pass in a URL or
+  // take through its preview; the skill builds those from source and labels
+  // them inferred, which --strict-measured already fails. Failing --strict
+  // too would make a correct run impossible to pass.
   const r = verify(
     snap({ summary: { components: 1, variants: 2, rendered: 1, failed: 1, componentsFailed: 0, componentsWithWarnings: 0 } }, {
       variants: [

@@ -103,6 +103,31 @@ test("findRejectedArgs: an if is judged on the values the story is given, after 
   assert.deepEqual(mapArgs({ tone: "a", size: "lg", on: true }, { tone: { a: "loud" }, on: { true: 1 } }), { tone: "loud", size: "lg", on: 1 });
 });
 
+test("findRejectedArgs: a value left out of the URL is rejected as one it can't carry, unless the story has it anyway", () => {
+  const tone: StoryArgsSnapshot = {
+    fileName: null,
+    argTypes: {
+      tone: { type: "enum", options: ["plain"] },
+      size: { type: "enum", options: ["sm", "lg"], if: { arg: "tone", neq: "Nav/Primary" } },
+    },
+    stored: { tone: "plain", size: "sm" },
+    rendered: { tone: "plain", size: "sm" },
+    globals: {},
+  };
+  // Not in the options either, but the URL never had the chance to drop it.
+  assert.deepEqual(findRejectedArgs({ tone: "Nav/Primary" }, tone, [], ["tone"]), [{ name: "tone", value: "Nav/Primary", reasons: ["url-unsafe"] }]);
+  // Its value hides size: both said, so the preview lifts the if.
+  assert.deepEqual(findRejectedArgs({ tone: "Nav/Primary", size: "sm" }, tone, [], ["tone"]).map((r) => [r.name, r.reasons]),
+    [["tone", ["url-unsafe"]], ["size", ["hidden-by-if"]]]);
+  // A value the story renders by default was given, URL or not.
+  const byDefault = { ...tone, stored: { tone: "Nav/Primary" }, rendered: { tone: "Nav/Primary" } };
+  assert.deepEqual(findRejectedArgs({ tone: "Nav/Primary" }, byDefault, [], ["tone"]), []);
+  // Set through the preview, with nothing in the story to change: no warning.
+  assert.deepEqual(describeArgRejections("Nav", [
+    { combination: { tone: "Nav/Primary" }, status: "ok", appliedVia: "preview" as const, rejectedArgs: findRejectedArgs({ tone: "Nav/Primary" }, tone, [], ["tone"]) },
+  ]), []);
+});
+
 test("findRejectedArgs: an arg the story's argTypes don't declare is rejected as such", () => {
   const rejected = findRejectedArgs({ orientation: "vertical" }, { ...BADGE, stored: {}, rendered: {} });
   assert.deepEqual(rejected, [{ name: "orientation", value: "vertical", reasons: ["not-in-argtypes"] }]);

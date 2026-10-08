@@ -1332,7 +1332,7 @@ test("runSnap --merge: two components sharing a key are warned about across the 
  * element's fill is the variant the story was given.
  */
 function badgeBrowser(configure: (args: Record<string, unknown>) => Omit<Parameters<typeof fakePreview>[0], "url" | "storyId">) {
-  const fill: Record<string, string> = { default: "rgb(23, 23, 23)", secondary: "rgb(245, 245, 245)", ghost: "rgba(0, 0, 0, 0)" };
+  const fill: Record<string, string> = { default: "rgb(23, 23, 23)", secondary: "rgb(245, 245, 245)", ghost: "rgba(0, 0, 0, 0)", "Nav/Primary": "rgb(37, 99, 235)" };
   let fake = fakePreview({ argTypes: {}, initial: {}, url: {} });
   // The element's description, then its font stack, which the stand-in can't probe.
   let described = false;
@@ -1434,6 +1434,44 @@ test("runSnap: a value the story rejects is measured through the preview, or mar
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("runSnap: a value the URL can't carry is set through the preview and measured, or args_unsupported if that fails too", async () => {
+  // Nav/Primary is outside the URL's [a-zA-Z0-9 _-], so it is left out of
+  // the URL, and the story renders its default until the preview sets it.
+  const tone = { name: "variant", type: { name: "union" }, defaultValue: "default", control: { type: "select", options: ["default", "Nav/Primary"] } };
+  const run = async (silent: boolean) => {
+    const dir = tempDir();
+    try {
+      const launch = badgeBrowser(() => ({
+        argTypes: { variant: { options: ["default", "Nav/Primary"], type: { name: "enum" } } },
+        initial: { variant: "default" },
+        silent,
+      }));
+      const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200 }), {
+        storybook: badgeDocs([tone]),
+        launch,
+      });
+      return result.components[0];
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const measured = await run(false);
+  const nav = measured.variants.find((v) => v.combination.variant === "Nav/Primary")!;
+  assert.equal(nav.status, "ok", nav.error ?? "");
+  assert.equal(nav.delta?.backgroundColor, "#2563eb");
+  assert.equal(nav.appliedVia, "preview");
+  assert.deepEqual(nav.rejectedArgs, [{ name: "variant", value: "Nav/Primary", reasons: ["url-unsafe"] }]);
+  // Nothing in the story to change, so nothing to warn about.
+  assert.deepEqual(measured.warnings, []);
+
+  const refused = await run(true);
+  const unsupported = refused.variants.find((v) => v.combination.variant === "Nav/Primary")!;
+  assert.equal(unsupported.status, "args_unsupported");
+  assert.equal(unsupported.delta, undefined);
+  assert.equal(unsupported.error,
+    "Storybook cannot receive variant=Nav/Primary through the args URL (outside its allowed character set), and snap couldn't set it through Storybook's preview either (Storybook didn't confirm the args), so this variant was not measured");
 });
 
 test("runSnap: an arg_rejected variant records only the values the story still wasn't given", async () => {

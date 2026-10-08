@@ -598,7 +598,8 @@ test("encodeStoryArgs: values with spaces are encodable", () => {
 });
 
 // Storybook drops out-of-charset values without a word, then renders the story
-// with its defaults — so these must be reported, never measured.
+// with its defaults — so these must be set another way or reported, never
+// measured as they render from the URL.
 test("encodeStoryArgs: reports values Storybook would silently drop", () => {
   const tone: FigmaVariantProperty = {
     name: "tone", type: "VARIANT", values: ["plain", "Nav/Primary"], defaultValue: "plain",
@@ -612,16 +613,18 @@ test("encodeStoryArgs: keeps encodable pairs and reports only the bad one", () =
   const tone: FigmaVariantProperty = {
     name: "tone", type: "VARIANT", values: ["Nav/Primary"], defaultValue: "Nav/Primary",
   };
-  const { param, unsupported } = encodeStoryArgs(
-    { variant: "danger", tone: "Nav/Primary" },
+  const { param, unsupported, unsupportedNames } = encodeStoryArgs(
+    { variant: "danger", tone: "Nav/Primary", "data.kind": "x" },
     [VARIANT, tone],
   );
   assert.equal(param, "variant:danger");
-  assert.deepEqual(unsupported, ["tone=Nav/Primary"]);
+  assert.deepEqual(unsupported, ["tone=Nav/Primary", "data.kind=x"]);
+  // By name too, for setting them another way: an unsafe name included.
+  assert.deepEqual(unsupportedNames, ["tone", "data.kind"]);
 });
 
 test("encodeStoryArgs: an empty combination encodes to nothing", () => {
-  assert.deepEqual(encodeStoryArgs({}, []), { param: null, unsupported: [] });
+  assert.deepEqual(encodeStoryArgs({}, []), { param: null, unsupported: [], unsupportedNames: [] });
 });
 
 test("buildStoryUrl: builds an iframe URL and encodes the query", () => {

@@ -6,7 +6,9 @@
 //   - one the story's argTypes `options` don't list, with a console warning
 //     ("Received illegal value for 'variant'");
 //   - one for an arg the story's argTypes don't declare at all, silently;
-//   - one an argTypes `if` hides for the combination, at render, silently.
+//   - one an argTypes `if` hides for the combination, at render, silently;
+//   - and the URL can't carry a value outside [a-zA-Z0-9 _-] at all, so
+//     snap leaves it out of the URL.
 //
 // The story then renders its default, which snap would measure under the
 // variant's name, Figma would copy, and verify would score as faithful. So
@@ -20,6 +22,11 @@ import type { FigmaVariantProperty } from "./mapper.js";
 
 /** Why Storybook didn't apply a value the story URL asked for. */
 export type ArgRejectionReason =
+  /**
+   * The value, or the arg's name, has characters outside the URL's
+   * [a-zA-Z0-9 _-], so snap left it out of the URL: `Nav/Primary`, say.
+   */
+  | "url-unsafe"
   /** The story's argTypes give `options` for the arg that don't list the value. */
   | "not-in-options"
   /** The story's argTypes have no entry for the arg, so the URL's value is dropped. */
@@ -36,10 +43,10 @@ export type ArgRejectionReason =
   | "not-applied";
 
 /** The order a rejection lists its reasons in. */
-const REASON_ORDER: ArgRejectionReason[] = ["not-in-options", "not-in-argtypes", "number-in-url", "hidden-by-if", "not-applied"];
+const REASON_ORDER: ArgRejectionReason[] = ["url-unsafe", "not-in-options", "not-in-argtypes", "number-in-url", "hidden-by-if", "not-applied"];
 
 /** Reasons no change to the story fixes: the URL can't carry the value, and only the preview can set it. */
-const NO_STORY_FIX: ReadonlySet<ArgRejectionReason> = new Set(["number-in-url"]);
+const NO_STORY_FIX: ReadonlySet<ArgRejectionReason> = new Set(["url-unsafe", "number-in-url"]);
 
 /** What Storybook's URL parser reads as a number rather than a string. */
 const URL_NUMBER = /^-?[0-9]+(\.[0-9]+)?$/;
@@ -180,12 +187,14 @@ export function conditionHolds(
 /**
  * The requested values the story wasn't given, each with every reason that
  * explains it. `requested` is snap's combination; `properties` give each
- * prop's type, so a boolean is compared as one.
+ * prop's type, so a boolean is compared as one; `notInUrl` names the args
+ * snap left out of the URL, as it can't carry their values.
  */
 export function findRejectedArgs(
   requested: Record<string, string>,
   snapshot: StoryArgsSnapshot,
   properties: readonly FigmaVariantProperty[] = [],
+  notInUrl: readonly string[] = [],
 ): ArgRejection[] {
   const byName = new Map(properties.map((p) => [p.name, p]));
   // The combination as Storybook would hold it, over what it holds now, for
@@ -204,7 +213,10 @@ export function findRejectedArgs(
     const hidden = !!argType?.if && conditionHolds(argType.if, mapped, snapshot.globals) === false;
     if (!hidden && Object.hasOwn(snapshot.rendered, name) && argMatches(snapshot.rendered[name], value)) continue;
     const rejection: ArgRejection = { name, value, reasons: [] };
-    if (!argType) {
+    if (notInUrl.includes(name)) {
+      // Never sent, so nothing the URL would have done to it applies.
+      rejection.reasons.push("url-unsafe");
+    } else if (!argType) {
       rejection.reasons.push("not-in-argtypes");
     } else if (Array.isArray(argType.options) && !argType.options.some((option) => argMatches(option, value))) {
       rejection.reasons.push("not-in-options");
@@ -351,6 +363,7 @@ function storyFix(name: string, reason: ArgRejectionReason, values: string[], gr
       return `remove \`if: ${JSON.stringify(group.condition)}\` from argTypes.${name}${file}`;
     case "not-applied":
       return `check that argTypes.${name} takes ${quoteList(values)}${file}`;
+    case "url-unsafe":
     case "number-in-url":
       return null;
   }
@@ -368,6 +381,8 @@ function reasonText(reason: ArgRejectionReason, group: ArgRejection): string {
       return "Storybook didn't give it to the story, for no reason snap could read";
     case "number-in-url":
       return "Storybook's URL reads it as a number, and the story's options list it only as a string, so no argTypes change lets the URL carry it";
+    case "url-unsafe":
+      return "Storybook's URL can't carry it, as it has characters outside [a-zA-Z0-9 _-]";
   }
 }
 

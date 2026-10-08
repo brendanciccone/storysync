@@ -942,8 +942,9 @@ function normalizeText(textRaw: RawComputedStyles, font?: FontProbe | null): Tex
  * Storybook's own allowed charset for URL arg keys and values, from its
  * router: `VALIDATION_REGEXP = /^[a-zA-Z0-9 _-]*$/`. Anything outside it is
  * dropped *silently*, and the story then renders with its default args — so a
- * value we can't encode must be reported rather than measured, or we'd record
- * the default render as though it were that variant.
+ * value we can't encode must be set another way (snap sets it through
+ * Storybook's preview: see snap-args.ts) or reported rather than measured, or
+ * we'd record the default render as though it were that variant.
  *
  * Verified empirically against Storybook 10.5: `Data Display` round-trips,
  * `Nav/Primary` is discarded.
@@ -959,6 +960,8 @@ export interface EncodedArgs {
   param: string | null;
   /** `name=value` pairs Storybook would reject. */
   unsupported: string[];
+  /** The names of those pairs, left out of `param`. */
+  unsupportedNames: string[];
 }
 
 /**
@@ -975,10 +978,12 @@ export function encodeStoryArgs(
   const byName = new Map(props.map((p) => [p.name, p]));
   const pairs: string[] = [];
   const unsupported: string[] = [];
+  const unsupportedNames: string[] = [];
 
   for (const [name, value] of Object.entries(combo)) {
     if (!isEncodableArgValue(name)) {
       unsupported.push(`${name}=${value}`);
+      unsupportedNames.push(name);
       continue;
     }
 
@@ -989,12 +994,13 @@ export function encodeStoryArgs(
 
     if (!isEncodableArgValue(value)) {
       unsupported.push(`${name}=${value}`);
+      unsupportedNames.push(name);
       continue;
     }
     pairs.push(`${name}:${value}`);
   }
 
-  return { param: pairs.length ? pairs.join(";") : null, unsupported };
+  return { param: pairs.length ? pairs.join(";") : null, unsupported, unsupportedNames };
 }
 
 /**

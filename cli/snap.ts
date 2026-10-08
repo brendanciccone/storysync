@@ -49,7 +49,11 @@ export interface SnapOptions {
   merge?: boolean;
 }
 
-/** `args_unsupported`: a value the args URL can't carry. `arg_rejected` (a CaptureStatus): one Storybook wouldn't apply. */
+/**
+ * `args_unsupported`: a value the args URL can't carry, which Storybook's
+ * preview didn't take either. `arg_rejected` (a CaptureStatus): one
+ * Storybook wouldn't apply.
+ */
 export type SnapVariantStatus = CaptureStatus | "args_unsupported";
 
 export interface SnapVariant {
@@ -867,17 +871,9 @@ async function snapComponent(
     for (const [index, combination] of combinations.entries()) {
       const slug = slugs[index];
       deps.onVariantStart?.(index + 1, combinations.length);
-      const { param, unsupported } = encodeStoryArgs(combination, definition.variantProperties);
-
-      if (unsupported.length) {
-        shell.variants.push({
-          combination, slug, status: "args_unsupported",
-          error:
-            `Storybook cannot receive ${unsupported.join(", ")} through the args URL ` +
-            `(outside its allowed character set), so this variant was not measured`,
-        });
-        continue;
-      }
+      // A value the URL can't carry is left out of it and set through
+      // Storybook's preview once the story loads, as one it refused is.
+      const { param, unsupported, unsupportedNames } = encodeStoryArgs(combination, definition.variantProperties);
 
       const capture = (): Promise<CaptureResult> => {
         checkpoint();
@@ -886,7 +882,7 @@ async function snapComponent(
           selector: opts.selector,
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title },
-          story: { id: storyId, args: combination, properties: definition.variantProperties },
+          story: { id: storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
         });
       };
       // Once more on a timeout loading the story: a busy Storybook times out
@@ -921,6 +917,19 @@ async function snapComponent(
       if (captured.status !== "ok" || !captured.raw || !captured.boundingBox) {
         // A failure because the browser went is not this variant's.
         checkpoint();
+        // Values the URL can't carry, which the preview didn't take either,
+        // are args_unsupported, as before snap tried the preview.
+        if (captured.status === "arg_rejected" && args?.unapplied.every((r) => r.reasons.includes("url-unsafe"))) {
+          shell.variants.push({
+            combination, slug, status: "args_unsupported",
+            error:
+              `Storybook cannot receive ${unsupported.join(", ")} through the args URL (outside its allowed character set), ` +
+              `and snap couldn't set ${unsupported.length === 1 ? "it" : "them"} through Storybook's preview either` +
+              `${args.error ? ` (${args.error})` : ""}, so this variant was not measured`,
+            ...argsRecord,
+          });
+          continue;
+        }
         shell.variants.push({ combination, slug, status: captured.status, error: captured.error, ...argsRecord });
         continue;
       }

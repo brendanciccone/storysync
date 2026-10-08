@@ -16,7 +16,7 @@ import type { RawComputedStyles, FontProbe, MeasurementNote, PortalNode, StoryNo
 import {
   compactArgTypes, findRejectedArgs, previewArgUpdate, rejectionsFromWarnings, stillRejected,
 } from "./snap-args.js";
-import type { StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
+import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
 import type { FigmaVariantProperty } from "./mapper.js";
 
 // --- Browser resolution -----------------------------------------------------
@@ -230,7 +230,13 @@ export interface CaptureOptions {
    * each of them, applies any it didn't through Storybook's preview, and
    * fails the capture as `arg_rejected` if that doesn't take either.
    */
-  story?: { id: string; args: Record<string, string>; properties?: readonly FigmaVariantProperty[] };
+  story?: {
+    id: string;
+    args: Record<string, string>;
+    properties?: readonly FigmaVariantProperty[];
+    /** Args left out of the URL, which can't carry their values: each is set through the preview. */
+    notInUrl?: readonly string[];
+  };
 }
 
 /** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
@@ -1030,15 +1036,20 @@ export async function checkStoryArgs(
   warnings: readonly string[],
 ): Promise<StoryArgsCheck> {
   const read = async () => asSnapshot(await page.evaluate(storyArgsInPage, { storyId: story.id, waitMs: Math.min(timeoutMs, ARGS_WAIT_MS) }));
+  const notInUrl = story.notInUrl ?? [];
   const first = await read();
   if ("error" in first) {
-    // Storybook's console warning still names a value outside the options.
-    const rejected = rejectionsFromWarnings(story.args, warnings);
+    // A value left out of the URL wasn't given. Storybook's console warning
+    // still names one outside the options.
+    const rejected: ArgRejection[] = [
+      ...notInUrl.map((name): ArgRejection => ({ name, value: story.args[name], reasons: ["url-unsafe"] })),
+      ...rejectionsFromWarnings(story.args, warnings).filter((r) => !notInUrl.includes(r.name)),
+    ];
     return { checked: false, rejected, unapplied: rejected, error: first.error };
   }
 
   const known = { argTypes: compactArgTypes(first.argTypes), ...(first.fileName ? { storyFile: first.fileName } : {}) };
-  const rejected = findRejectedArgs(story.args, first, story.properties);
+  const rejected = findRejectedArgs(story.args, first, story.properties, notInUrl);
   if (!rejected.length) return { checked: true, rejected, unapplied: [], ...known };
 
   const { updates, lift } = previewArgUpdate(rejected, first, story.properties);
