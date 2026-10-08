@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
 import type { Client } from "../setup.js";
@@ -1082,7 +1083,7 @@ test("every audit summary counts code-only, Figma-only, ambiguous and errored co
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
-      const audit = text.slice(text.search(/^(?:## Audit|Workflow:)$/m));
+      const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
       assert.match(audit, /N components matched,? \/? ?(?:N )?mismatched,? \/? ?(?:N )?code-only,? \/? ?(?:N )?Figma-only,? \/? ?(?:N )?ambiguous,? \/? ?(?:N )?errored in Figma, and N components outside any set not from the push, not compared\./, `${path}'s summary leaves out code-only, Figma-only, ambiguous or errored components, or those not from the push`);
       assert.match(audit, /`\?` (?:for )?ambiguous/, `${path} gives an ambiguous name no label`);
       assert.match(audit, /`!` (?:for )?errored in Figma/, `${path} gives a set Figma flags as errored no label`);
@@ -1415,4 +1416,48 @@ test("every push instruction names the @theme tokens an Unresolved: warning says
     assert.match(text, /any token a `tokens` warning starting `Unresolved:` names/, `${path} doesn't leave out unresolved tokens`);
     assert.match(text, /not read from `@theme`[^\n]*out of the output already/, `${path} doesn't name the @theme tokens tokens left out`);
   }
+});
+
+test("every step a command names is the step it means, in the command or the skill", () => {
+  // The push command's step 4 sent skipped IDs to "step 7's verify" and the
+  // build to "the skill's step 5 template", where the skill runs verify in
+  // its step 6: the command's steps run one ahead of the skill's from
+  // measuring on, so a reference read in the other file pointed elsewhere.
+  // A reference to the skill's steps names its section, and each names a
+  // step that does what the reference says.
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const skill = readFileSync(join(root, "skills", "claude-code.md"), "utf8");
+  const section = (name: string) => {
+    const at = skill.indexOf(`\n## ${name}\n`);
+    const end = skill.indexOf("\n## ", at + 1);
+    return skill.slice(at, end < 0 ? undefined : end);
+  };
+  // A section's step N, from its "N. " line to the next step's.
+  const stepOf = (text: string, n: number) => {
+    const at = text.search(new RegExp(`^${n}\\. `, "m"));
+    if (at < 0) return null;
+    const next = text.slice(at + 1).search(/^\d+\. /m);
+    return text.slice(at, next < 0 ? undefined : at + 1 + next);
+  };
+  const means: Record<string, RegExp> = {
+    "Components 5": /combineAsVariants/,
+    "Components 6": /npx storysync verify/,
+  };
+  for (const file of ["storysync-push.md", "storysync-diff.md"]) {
+    const text = readFileSync(join(root, "commands", file), "utf8");
+    assert.match(text, /^Workflow\. The step numbers here are this command's own/m, `${file} doesn't say whose step numbers it uses`);
+    assert.doesNotMatch(text, /the skill's step \d/, `${file} names a step of the skill without its section`);
+    for (const [, name, n] of text.matchAll(/the skill's (Tokens|Components|Audit) steps? (\d)/g)) {
+      const step = stepOf(section(name), Number(n));
+      assert.ok(step, `${file} names the skill's ${name} step ${n}, which it doesn't have`);
+      const meant = means[`${name} ${n}`];
+      if (meant) assert.match(step, meant, `${file}'s "the skill's ${name} step ${n}" isn't the step it means`);
+    }
+  }
+  // The push command's own steps: 4 measures, 6 builds, 7 verifies.
+  const push = readFileSync(join(root, "commands", "storysync-push.md"), "utf8");
+  for (const [n, meant] of [[4, /npx storysync snap/], [6, /Call `use_figma` per component/], [7, /npx storysync verify/]] as const) {
+    assert.match(stepOf(push, n) ?? "", meant, `the push command's step ${n} isn't the step its references mean`);
+  }
+  assert.match(push, /to step 7's `verify`/, "the push command no longer sends skipped components to its own step 7's verify");
 });
