@@ -49,6 +49,26 @@ export interface FigmaComponentInfo {
    * share, `ui/base`'s Button and `ui/radix`'s.
    */
   page?: string;
+  /**
+   * A component set, or a component outside any set: the push makes a
+   * component with no variant properties a plain component, since a set of
+   * one unnamed variant is one Figma flags as errored. Left out, a set.
+   */
+  type?: "COMPONENT_SET" | "COMPONENT";
+  /** The node's id in the Figma file. */
+  nodeId?: string;
+  /**
+   * The Storybook ID the push stored on the node, with
+   * `setSharedPluginData('storysync', 'id', ...)`, when it did. It names the
+   * component the node was pushed from wherever a designer moves or renames
+   * it.
+   */
+  storybookId?: string;
+  /**
+   * Why Figma would not give the set's properties, when it would not: it
+   * throws "Component set has existing errors" on a set it flags as broken.
+   */
+  error?: string;
   variantProperties: { name: string; type: string; values: string[] }[];
   variantCount: number;
 }
@@ -125,10 +145,20 @@ async function slice(items, describe, wrap, label) {
  */
 const COMPONENTS_PLUGIN_CODE = `
 function describeComponent(node) {
+  const entry = { name: node.name, type: node.type, nodeId: node.id };
+  const storybookId = node.getSharedPluginData('storysync', 'id');
+  if (storybookId) entry.storybookId = storybookId;
   if (node.type !== 'COMPONENT_SET') {
-    return { name: node.name, variantProperties: [], variantCount: 1 };
+    return { ...entry, variantProperties: [], variantCount: 1 };
   }
-  const defs = node.componentPropertyDefinitions || {};
+  // Figma throws on a set it flags as errored, "Component set has existing
+  // errors": that set is reported as such, rather than failing its page.
+  let defs;
+  try {
+    defs = node.componentPropertyDefinitions || {};
+  } catch (err) {
+    return { ...entry, error: String(err && err.message || err), variantProperties: [], variantCount: node.children.length };
+  }
   const props = [];
   for (const [key, def] of Object.entries(defs)) {
     if (def.type === 'VARIANT') {
@@ -137,7 +167,7 @@ function describeComponent(node) {
       props.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
     }
   }
-  return { name: node.name, variantProperties: props, variantCount: node.children.length };
+  return { ...entry, variantProperties: props, variantCount: node.children.length };
 }
 
 async function readComponents(page, around) {

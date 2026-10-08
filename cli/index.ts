@@ -1009,6 +1009,10 @@ program
               for (const d of c.details) console.log(`      ${chalk.dim(d)}`);
             } else if (c.status === "ambiguous") {
               console.log(`  ${chalk.red("?")} ${chalk.bold(c.name)} ${chalk.red("ambiguous")} ${chalk.dim(c.details.join(", "))}`);
+            } else if (c.status === "errored") {
+              const where = [c.page != null ? `page ${c.page}` : null, c.nodeId != null ? `node ${c.nodeId}` : null].filter(Boolean).join(", ");
+              const [errored, ...rest] = c.details;
+              console.log(`  ${chalk.red("!")} ${chalk.bold(c.name)}${where ? chalk.dim(` (${where})`) : ""} ${chalk.red(errored)}${rest.length ? chalk.dim(`, ${rest.join(", ")}`) : ""}`);
             }
           }
         } else if (storybook && !figmaReadFailed && !storybookReadFailed && !mappingFailures.length) {
@@ -1031,6 +1035,7 @@ program
           if (summary.componentsCodeOnly) cParts.push(chalk.yellow(`${summary.componentsCodeOnly} code-only`));
           if (summary.componentsFigmaOnly) cParts.push(chalk.cyan(`${summary.componentsFigmaOnly} Figma-only`));
           if (summary.componentsAmbiguous) cParts.push(chalk.red(`${summary.componentsAmbiguous} ambiguous`));
+          if (summary.componentsErrored) cParts.push(chalk.red(`${summary.componentsErrored} errored in Figma`));
           if (cParts.length) console.log(`Components: ${cParts.join(", ")}`);
         }
 

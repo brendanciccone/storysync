@@ -49,13 +49,14 @@ const LIBRARY: FileSpec = {
 };
 
 // Each with the page it is on, which tells apart the sets of a name two
-// categories share.
+// categories share, whether it is a set or a component outside one, and its
+// node id. The stand-in numbers nodes in file order, variants included.
 const LIBRARY_COMPONENTS: FigmaComponentInfo[] = [
-  { name: "Button", page: "Forms", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "md", "lg"] }, { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }], variantCount: 6 },
-  { name: "Input", page: "Forms", variantProperties: [{ name: "state", type: "VARIANT", values: ["default", "error"] }], variantCount: 2 },
-  { name: "Tabs", page: "Navigation", variantProperties: [{ name: "variant", type: "VARIANT", values: ["line", "pill"] }], variantCount: 2 },
-  { name: "Link", page: "Navigation", variantProperties: [], variantCount: 1 },
-  { name: "Badge", page: "Feedback", variantProperties: [], variantCount: 1 },
+  { name: "Button", page: "Forms", type: "COMPONENT_SET", nodeId: "1:1", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "md", "lg"] }, { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }], variantCount: 6 },
+  { name: "Input", page: "Forms", type: "COMPONENT_SET", nodeId: "1:9", variantProperties: [{ name: "state", type: "VARIANT", values: ["default", "error"] }], variantCount: 2 },
+  { name: "Tabs", page: "Navigation", type: "COMPONENT_SET", nodeId: "1:12", variantProperties: [{ name: "variant", type: "VARIANT", values: ["line", "pill"] }], variantCount: 2 },
+  { name: "Link", page: "Navigation", type: "COMPONENT", nodeId: "1:15", variantProperties: [], variantCount: 1 },
+  { name: "Badge", page: "Feedback", type: "COMPONENT", nodeId: "1:17", variantProperties: [], variantCount: 1 },
 ];
 
 test("getComponents: finds the components on every page, a page a call, switching once in each", async () => {
@@ -252,6 +253,43 @@ test("getComponents: skips page dividers, which hold nothing and can't be switch
   assert.ok(calls.every((c) => !c.error && !c.switches.some((id) => dividers.includes(id))), calls.map((c) => c.error).join(", "));
   const listed = await read(file, (client) => client.getPages("file-key"));
   assert.deepEqual(listed.result?.map((p) => p.id), [0, 2, 3, 5].map(pageId));
+});
+
+test("getComponents: a set Figma flags as errored is read as errored, and the rest of its page still read", async () => {
+  // A set of one variant named "", as 0.3.0 pushed a component with no
+  // variant properties: Figma renames the variant "=" and throws on reading
+  // the set's componentPropertyDefinitions. That threw out of the page's
+  // read, so diff failed on the whole file over one set.
+  const file: FileSpec = {
+    pages: [
+      { name: "UI Base", nodes: [set("Button", { "": [""] }, { errored: true }), set("Avatar", { size: ["sm", "lg"] })] },
+      { name: "Components", nodes: [set("Tooltip", { "": [""] }, { errored: true, storybookId: "ui-base-tooltip" }), component("Card")] },
+    ],
+  };
+  const { result, error, calls } = await read(file, components);
+  assert.equal(error, null);
+  const error_ = "in get_componentPropertyDefinitions: Component set has existing errors";
+  assert.deepEqual(result, [
+    { name: "Button", page: "UI Base", type: "COMPONENT_SET", nodeId: "1:1", error: error_, variantProperties: [], variantCount: 1 },
+    { name: "Avatar", page: "UI Base", type: "COMPONENT_SET", nodeId: "1:3", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }], variantCount: 2 },
+    { name: "Tooltip", page: "Components", type: "COMPONENT_SET", nodeId: "1:6", storybookId: "ui-base-tooltip", error: error_, variantProperties: [], variantCount: 1 },
+    { name: "Card", page: "Components", type: "COMPONENT", nodeId: "1:8", variantProperties: [], variantCount: 1 },
+  ]);
+  assert.ok(calls.every((c) => !c.error), calls.map((c) => c.error).join(", "));
+});
+
+test("getComponents: reads the Storybook ID the push stored on a set or a component, and none where it stored none", async () => {
+  const file: FileSpec = {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm"] }, { storybookId: "forms-button" }), frame("Section", [component("Badge", { storybookId: "forms-badge" })]), component("Logo")] }],
+  };
+  const { result, error } = await read(file, components);
+  assert.equal(error, null);
+  assert.deepEqual(result?.map((c) => [c.name, c.type, c.storybookId]), [
+    ["Button", "COMPONENT_SET", "forms-button"],
+    ["Badge", "COMPONENT", "forms-badge"],
+    ["Logo", "COMPONENT", undefined],
+  ]);
+  assert.ok(result?.every((c) => c.name === "Logo" ? !("storybookId" in c) : true));
 });
 
 test("getPages: lists a file of more pages than one response holds, in slices", async () => {

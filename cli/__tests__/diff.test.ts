@@ -759,3 +759,140 @@ test("narrowFigmaComponents: no names leaves Figma whole", () => {
   assert.equal(narrowFigmaComponents(FIGMA, ["", " "]), FIGMA);
   assert.equal(narrowFigmaComponents(FIGMA, undefined), FIGMA);
 });
+
+// --- Pairing by the Storybook ID the push stored ---
+
+/** A Figma node the push stored a Storybook ID on, or none. */
+function pushed(page: string, name: string, storybookId?: string, values: string[] = ["sm"], extra: Partial<FigmaComponentInfo> = {}): FigmaComponentInfo {
+  return { ...onPage(page, name, values), type: "COMPONENT_SET", ...(storybookId ? { storybookId } : {}), ...extra };
+}
+
+test("diffComponents: a set carrying a Storybook ID pairs with that component, wherever a designer moved or renamed it", () => {
+  // Both Buttons moved to a page of the designer's own. By name and page,
+  // nothing told them apart; their IDs do.
+  const code = [titled("ui/base/Button", "ui-base-button"), titled("ui/radix/Button", "ui-radix-button", ["sm", "lg"])];
+  const moved = diffComponents(code, [pushed("Buttons", "Button", "ui-radix-button"), pushed("Buttons", "Button", "ui-base-button")]);
+  assert.deepEqual(moved.map((e) => [e.name, e.status, e.page, e.details]), [
+    ["ui/base/Button", "match", "Buttons", []],
+    ["ui/radix/Button", "variant_mismatch", "Buttons", ["size: values [lg] missing from Figma"]],
+  ]);
+  // Renamed: still the component's set.
+  const renamed = diffComponents([code[0]], [pushed("ui/base", "Primary button", "ui-base-button")]);
+  assert.deepEqual(renamed.map((e) => [e.name, e.status]), [["Button", "match"]]);
+
+  // Without IDs, the same file is a name nothing tells apart, as before.
+  const bare = diffComponents(code, [pushed("Buttons", "Button"), pushed("Buttons", "Button")]);
+  assert.deepEqual(bare.map((e) => e.status), ["ambiguous"]);
+});
+
+test("diffComponents: a set whose Storybook ID code doesn't have is not in code, and never another component's by name", () => {
+  // Radix's Button not pushed yet, and Base UI's set the only Button in
+  // Figma: by name alone, one of each is a pair, and Radix's code was
+  // compared with Base UI's set.
+  const radix = titled("ui/radix/Button", "ui-radix-button");
+  const entries = diffComponents([radix], [pushed("ui/base", "Button", "ui-base-button")]);
+  assert.deepEqual(entries.map((e) => [e.name, e.status, e.details]), [
+    ["Button", "code_only", ["1 variant prop in code"]],
+    ["Button", "figma_only", ["1 variant prop in Figma", "pushed from ui-base-button, which code no longer has"]],
+  ]);
+  // Left out of a selection, the other component claims it, and nothing is said of it.
+  const selected = diffComponents([radix], [pushed("ui/base", "Button", "ui-base-button")], [{ id: "ui-base-button", name: "Button", title: "ui/base/Button", category: "ui/base" }]);
+  assert.deepEqual(selected.map((e) => [e.name, e.status]), [["ui/radix/Button", "code_only"]]);
+  // A set with no ID beside it still pairs by name, as before.
+  const mixed = diffComponents([radix], [pushed("ui/base", "Button", "ui-base-button"), pushed("ui/radix", "Button")]);
+  assert.deepEqual(mixed.map((e) => [e.name, e.status, e.page]), [
+    ["ui/radix/Button", "match", "ui/radix"],
+    ["ui/base/Button", "figma_only", "ui/base"],
+  ]);
+});
+
+test("diffComponents: two sets of one Storybook ID, as a duplicated set has, are told apart by page", () => {
+  const code = [titled("ui/base/Button", "ui-base-button")];
+  const copy = diffComponents(code, [pushed("ui/base", "Button", "ui-base-button"), pushed("Scratch", "Button copy", "ui-base-button")]);
+  assert.deepEqual(copy.map((e) => [e.name, e.status, e.page, e.details]), [
+    ["Button", "match", "ui/base", []],
+    ["Button copy", "figma_only", "Scratch", ["1 variant prop in Figma", "carries the Storybook ID ui-base-button of a component paired with another"]],
+  ]);
+
+  const neither = diffComponents(code, [pushed("Scratch", "Button", "ui-base-button"), pushed("Archive", "Button", "ui-base-button")]);
+  assert.deepEqual(neither.map((e) => [e.name, e.status, e.details]), [["Button", "ambiguous", [
+    "2 Figma components carry the Storybook ID ui-base-button; none was compared",
+    "in code for ui/base; in Figma on Scratch, Archive",
+  ]]]);
+});
+
+test("selectDiffComponents: a Storybook ID picks the Figma node that carries it", () => {
+  const figma = [pushed("Archive", "Old button", "forms-old-button")];
+  const { figmaReported } = selectDiffComponents(STORYBOOK, figma, ["forms-old-button"]);
+  assert.deepEqual(figmaReported, figma);
+  assert.deepEqual(narrowFigmaComponents(figma, ["FORMS-OLD-BUTTON"]), figma);
+});
+
+// --- Components outside any set ---
+
+/** A component outside any set, as the push makes one with no variant properties. */
+function plain(page: string, name: string, storybookId?: string): FigmaComponentInfo {
+  return { name, page, type: "COMPONENT", variantProperties: [], variantCount: 1, ...(storybookId ? { storybookId } : {}) };
+}
+
+/** A code component with no variant properties. */
+function bare(title: string, id: string): CodeComponent {
+  return { ...titled(title, id), variantProperties: [] };
+}
+
+test("diffComponents: a component with no variant properties pairs with the plain component the push made for it", () => {
+  const code = [bare("ui/base/Badge", "ui-base-badge"), bare("ui/radix/Badge", "ui-radix-badge")];
+  // By the ID the push stored, wherever it is.
+  const byId = diffComponents(code, [plain("Moved", "Badge", "ui-base-badge"), plain("ui/radix", "Badge", "ui-radix-badge")]);
+  assert.deepEqual(byId.map((e) => [e.name, e.status, e.page]), [["ui/base/Badge", "match", "Moved"], ["ui/radix/Badge", "match", "ui/radix"]]);
+  // With no ID, on its component's page.
+  const byPage = diffComponents(code, [plain("ui/base", "Badge"), plain("ui/radix", "Badge")]);
+  assert.deepEqual(byPage.map((e) => [e.name, e.status]), [["ui/base/Badge", "match"], ["ui/radix/Badge", "match"]]);
+
+  // A component that has variant properties now, pushed plain when it had
+  // none, is a mismatch to push again, not a pair of strangers.
+  const grown = diffComponents([titled("ui/base/Badge", "ui-base-badge")], [plain("ui/base", "Badge", "ui-base-badge")]);
+  assert.deepEqual(grown.map((e) => [e.status, e.details]), [["variant_mismatch", ['prop "size" missing from Figma']]]);
+});
+
+test("diffComponents: a plain component with no ID pairs only on its component's page, and never makes a name ambiguous", () => {
+  // An icon library's Calendar is not shadcn's Calendar.
+  const calendar = bare("ui/base/Calendar", "ui-base-calendar");
+  const icon = diffComponents([calendar], [plain("Icons", "Calendar")]);
+  assert.deepEqual(icon.map((e) => [e.name, e.status, e.page]), [["Calendar", "code_only", undefined], ["Calendar", "figma_only", "Icons"]]);
+
+  // Beside the component's set, a plain component of its name elsewhere
+  // leaves the set its pair, where a second set would be ambiguous.
+  const button = titled("Forms/Button", "forms-button");
+  const beside = diffComponents([button], [pushed("Library", "Button"), plain("Icons", "Button")]);
+  assert.deepEqual(beside.map((e) => [e.name, e.status, e.page]), [["Forms/Button", "match", "Library"], ["Icons/Button", "figma_only", "Icons"]]);
+  const twoSets = diffComponents([button], [pushed("Library", "Button"), pushed("Icons", "Button")]);
+  assert.deepEqual(twoSets.map((e) => e.status), ["ambiguous"]);
+
+  // Two plain components of the name on the component's page: neither is chosen.
+  const twice = diffComponents([calendar], [plain("ui/base", "Calendar"), plain("ui/base", "Calendar")]);
+  assert.deepEqual(twice.map((e) => [e.name, e.status]), [["ui/base/Calendar", "code_only"], ["ui/base/Calendar", "figma_only"], ["ui/base/Calendar", "figma_only"]]);
+});
+
+// --- Sets Figma flags as errored ---
+
+test("diffComponents: a set Figma flags as errored is reported as errored, with its page and node, and compared with nothing", () => {
+  // A set of one variant named "", as the push made for a component with no
+  // variant properties, which Figma renames "=" and refuses to read.
+  const error = "in get_componentPropertyDefinitions: Component set has existing errors";
+  const errored = (page: string, name: string, nodeId: string, storybookId?: string) =>
+    pushed(page, name, storybookId, [], { nodeId, error, variantProperties: [], variantCount: 1 });
+  const code = [bare("ui/base/Button", "ui-base-button"), titled("ui/base/Card", "ui-base-card")];
+  const figma = [errored("ui/base", "Button", "2:5"), pushed("ui/base", "Card"), errored("ui/base", "Dialog", "7:4", "ui-base-dialog")];
+  const entries = diffComponents(code, figma);
+  assert.deepEqual(entries.map((e) => [e.name, e.status, e.page, e.nodeId, e.details]), [
+    ["Button", "errored", "ui/base", "2:5", [`errored in Figma (can't read its properties): ${error}`]],
+    ["Card", "match", "ui/base", undefined, []],
+    ["Dialog", "errored", "ui/base", "7:4", [`errored in Figma (can't read its properties): ${error}`, "pushed from ui-base-dialog, which code no longer has"]],
+  ]);
+  const summary = computeDiffSummary([], entries);
+  assert.deepEqual([summary.componentsErrored, summary.componentsMatched, summary.componentsFigmaOnly], [2, 1, 0]);
+  assert.equal(hasDifferences(summary), true);
+  // Errored alone is still not in sync.
+  assert.equal(hasDifferences(computeDiffSummary([], entries.slice(0, 1))), true);
+});
