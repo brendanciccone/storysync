@@ -58,15 +58,15 @@ function declaredPackageManager(dir: string): { pm: PackageManager; declared: st
 }
 
 /**
- * The package manager to install with, and why. package.json's
- * `packageManager` field names it, as it does for corepack and the action:
- * a stale lockfile from another package manager is often left beside the
- * real one. Otherwise the nearest lockfile's. Looks upward, as the action
+ * The package manager to install with, and why. Looks upward, as the action
  * does, since a package in a workspace has none of its own: npm run there
  * can't install a `workspace:` dependency, and otherwise writes a second
- * lockfile and node_modules beside the workspace's. Stops at the repository
- * root, so a stray lockfile above it is not taken for the project's. npm
- * when there is neither.
+ * lockfile and node_modules beside the workspace's. The nearest directory
+ * with either decides. In it, package.json's `packageManager` field wins, as
+ * it does for corepack and the action: a stale lockfile from another
+ * package manager is often left beside the real one. Stops at the
+ * repository root, so a stray lockfile above it is not taken for the
+ * project's. npm when there is neither.
  */
 export function choosePackageManager(projectPath: string): PackageManagerChoice {
   const start = resolve(projectPath);
@@ -379,6 +379,18 @@ function inProject(command: string, projectPath: string): string {
 }
 
 /**
+ * How a command execSync ran ended, from its error: the exit code, or the
+ * signal that stopped it, when it was killed and has no code. Said as
+ * "exited with Error: Command failed: ..." before.
+ */
+export function howItEnded(err: unknown): string {
+  const { status, signal } = (err ?? {}) as { status?: unknown; signal?: unknown };
+  if (typeof status === "number") return `exited with code ${status}`;
+  if (typeof signal === "string") return `was stopped by ${signal}`;
+  return `couldn't run: ${err instanceof Error ? err.message : String(err)}`;
+}
+
+/**
  * Asks before installing `spec`. A failed install exits 1 in the end, and
  * says how to finish by hand: the command, and, when the package manager
  * isn't installed at all, which one that is and why init chose it. Only the
@@ -397,13 +409,12 @@ async function offerInstall(choice: PackageManagerChoice, spec: string, projectP
     execSync(command, { cwd: projectPath, stdio: "inherit" });
     return "installed";
   } catch (err) {
-    const status = (err as { status?: unknown }).status;
     if (!isOnPath(pm)) {
       console.log(chalk.red(`Install failed: ${pm} isn't installed, or isn't on PATH. init chose ${pm} because ${choice.reason}.`));
       console.log(chalk.dim(`  Install ${pm}, or if the project uses another package manager, name it in package.json's packageManager field and run init again.`));
     } else {
       // The package manager's own output, above, says why.
-      console.log(chalk.red(`Install failed: ${pm} exited with ${typeof status === "number" ? `code ${status}` : String(err)}.`));
+      console.log(chalk.red(`Install failed: ${pm} ${howItEnded(err)}.`));
     }
     console.log(chalk.dim(`  Run manually: ${inProject(command, projectPath)}`));
     process.exitCode = 1;

@@ -8,6 +8,7 @@ import {
   detectPackageManager,
   choosePackageManager,
   isOnPath,
+  howItEnded,
   findStorybookConfig,
   getStorybookVersion,
   isStorybookVersionOk,
@@ -170,6 +171,29 @@ test("choosePackageManager: says which lockfile it went by, or that there was no
   } finally {
     cleanup(dir);
   }
+});
+
+test("choosePackageManager: the nearest directory with either decides, so a project's own lockfile beats a packageManager above it", () => {
+  // A project with its own lockfile installs there, even inside a repo
+  // whose root declares another package manager.
+  const dir = makeProject({
+    "package.json": JSON.stringify({ private: true, packageManager: "yarn@4.5.0" }),
+    "apps/docs/package.json": JSON.stringify({ name: "docs" }),
+    "apps/docs/pnpm-lock.yaml": "",
+  });
+  try {
+    assert.deepEqual(choosePackageManager(join(dir, "apps", "docs")), { pm: "pnpm", reason: "the project has pnpm-lock.yaml" });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("howItEnded: an exit code, or the signal that stopped an install that has none", () => {
+  assert.equal(howItEnded(Object.assign(new Error("Command failed: pnpm add -D x"), { status: 1, signal: null })), "exited with code 1");
+  // Killed, execSync's error has no status: it was "exited with Error:
+  // Command failed: ...".
+  assert.equal(howItEnded(Object.assign(new Error("Command failed: pnpm add -D x"), { status: null, signal: "SIGINT" })), "was stopped by SIGINT");
+  assert.equal(howItEnded(new Error("spawnSync /bin/sh ENOENT")), "couldn't run: spawnSync /bin/sh ENOENT");
 });
 
 test("isOnPath: finds a command in a directory on PATH, and only there", { skip: process.platform === "win32" }, () => {
