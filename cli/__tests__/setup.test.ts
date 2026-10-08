@@ -817,7 +817,14 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       assert.match(text, /Never re-measure some components with `--components` alone/, `${path} doesn't warn against --components alone`);
       assert.doesNotMatch(text, /re-run `?snap`? for those components with `--components` and a longer/, `${path} still re-runs timeouts with --components alone`);
       assert.match(text, /closed trigger[^\n]*ask the user once/, `${path} builds a closed trigger without asking`);
-      assert.match(text, /\.description = 'Measured from its closed trigger/, `${path} doesn't label a trigger built as measured in Figma`);
+      assert.match(text, /on a line of each such set's description that starts `storysync:`/, `${path} doesn't label a trigger built as measured in Figma`);
+      // A plain assignment replaced a designer's description, and nothing
+      // took the label off a set rebuilt from a story that renders it open.
+      assert.doesNotMatch(text, /\.description = '/, `${path} overwrites a set's description`);
+      assert.match(text, /on every push/, `${path} labels only this push's triggers, never clearing an earlier push's label`);
+      assert.match(text, /a designer's own included/, `${path} drops a designer's description`);
+      // Skipped, they stayed in styles.json, and verify failed on them as missing.
+      assert.match(text, /`--skip`[^\n]*leaves them out of the score/, `${path} lets verify fail a push on the components the user skipped`);
       assert.match(text, /`bg-primary`[^\n]*`primary`[^\n]*leave it unbound and list it in the summary|`bg-primary` is `primary`[^\n]*leave the value unbound and list it in the summary/, `${path} picks among variables that share a value`);
     }
   } finally {

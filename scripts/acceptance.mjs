@@ -2791,6 +2791,54 @@ async function main() {
       `all ${all} in one would be ${JSON.stringify(one).length}; ${refused}`;
   });
 
+  await check("the label call keeps a designer's description and changes only its own line", async () => {
+    // A plain assignment replaced whatever a designer had written on a set,
+    // and nothing took the label off once the component was measured open.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    assert(code.length < 2000, `the label template is ${code.length} characters`);
+    const NL = "\n";
+    const nodes = {
+      "1:1": { id: "1:1", type: "COMPONENT_SET", description: "Use for the main action." },
+      "1:2": { id: "1:2", type: "COMPONENT_SET", description: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` },
+      "1:3": { id: "1:3", type: "COMPONENT", description: "" },
+      "1:4": { id: "1:4", type: "COMPONENT_SET", description: "storysync: measured from its closed trigger, button, not the open dialog" },
+      "1:5": { id: "1:5", type: "COMPONENT_SET", description: "" },
+      "1:6": { id: "1:6", type: "FRAME", description: "" },
+    };
+    const figma = { getNodeByIdAsync: async (id) => nodes[id] ?? null };
+    const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
+    const run = async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
+    const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
+    const wrapper = "measured from what may be its story's layout wrapper, div, not Switch";
+    const notes = { "1:1": trigger, "1:2": trigger, "1:3": wrapper, "1:4": "", "1:5": "" };
+
+    const first = await run(notes);
+    const expected = {
+      "1:1": `Use for the main action.${NL}storysync: ${trigger}`,
+      "1:2": `Use for the main action.${NL}storysync: ${trigger}`,
+      "1:3": `storysync: ${wrapper}`,
+      "1:4": "",
+      "1:5": "",
+    };
+    for (const [id, description] of Object.entries(expected)) {
+      assert(nodes[id].description === description, `${id} has ${JSON.stringify(nodes[id].description)}, expected ${JSON.stringify(description)}`);
+    }
+    assert(first.changed.join() === "1:1,1:2,1:3,1:4", `changed ${first.changed.join()}`);
+    // Run again, it changes nothing, and adds no second line.
+    const again = await run(notes);
+    assert(again.changed.length === 0, `a second run changed ${again.changed.join()}`);
+    // Measured open, the set loses the line and keeps the designer's.
+    await run({ "1:1": "" });
+    assert(nodes["1:1"].description === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].description)}`);
+    // Anything but a component set or component is refused.
+    for (const id of ["1:6", "9:9"]) {
+      let refused = false;
+      try { await run({ [id]: trigger }); } catch { refused = true; }
+      assert(refused, `labeled ${id}, which is no component set`);
+    }
+    return `${code.length} characters`;
+  });
+
   heading("Readback checksums");
 
   await check("the template's checksums survive any layout of the file, and cover what each call returns", () => assertSealed(snapDir));

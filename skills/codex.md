@@ -208,11 +208,49 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
 
    **Stop and ask about every component snap measured as something else.** When snap warns that it measured a closed trigger (a dialog, popover, sheet, menu or tooltip whose content renders only while open) or a layout wrapper rather than the component, the Figma component would be that trigger or wrapper, and `verify` would score it as faithful. Before building any of them, ask the user once, listing each such component with the element snap measured, which they want:
 
-   - **Build what was measured**, and say so: in the summary, and in Figma, in each such set's description, set after the build in one `use_figma` call by the ids the build returned (`(await figma.getNodeByIdAsync(id)).description = 'Measured from its closed trigger, button[data-slot="dialog-trigger"], not the open dialog'`).
-   - **Skip them**, naming them in the summary as not pushed.
+   - **Build what was measured**, and say so: in the summary, and in Figma, on a line of each such set's description that starts `storysync:`, which the template below sets after the build.
+   - **Skip them**, naming them in the summary as not pushed. They stay in `styles.json`, so give their IDs to step 6's `verify` as `--skip`, which leaves them out of the score and names them under it. Without it, `verify` lists each of their variants as missing from Figma, which is no reason to build them.
    - **Stop**, so they can give each a story that renders it open (with `defaultOpen`, say) or on its own, as the warning says. Then measure those again with `--components <their IDs> --merge`, as above.
 
    Ask it in the same message as any cap question, and do not choose for them. Never style such a component from source instead: it would be scored against a measurement it does not match.
+
+   **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger.
+
+```js
+use_figma({
+  code: `
+    // Says on each set what snap measured, on the line of its description
+    // that starts with MARK, and keeps every other line, a designer's own
+    // included. An empty note removes the line an earlier push left.
+    const MARK = 'storysync:';
+    const NOTES = {
+      '12:34': 'measured from its closed trigger, button[data-slot="dialog-trigger"], not the open dialog',
+      '12:56': '',
+      // ... one entry per set this push built, by the id step 5 returned
+    };
+    const NL = String.fromCharCode(10);
+    const changed = [];
+    for (const [id, note] of Object.entries(NOTES)) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node || (node.type !== 'COMPONENT_SET' && node.type !== 'COMPONENT')) {
+        throw new Error('No component set or component has the id ' + id);
+      }
+      const lines = node.description ? node.description.split(NL).filter((line) => !line.startsWith(MARK)) : [];
+      if (note) lines.push(MARK + ' ' + note);
+      const description = lines.join(NL);
+      if (description !== node.description) {
+        node.description = description;
+        changed.push(id);
+      }
+    }
+    return JSON.stringify({ changed });
+  `,
+  description: "Label the sets measured from a closed trigger or a layout wrapper in their descriptions",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
 4. **Organize the Figma file by Storybook hierarchy.** Create one Figma page per `category`, the whole of it (e.g. `Forms`, `Data Display`, `ui/base`). Components without a category go on a `Components` page. Place each component set on its category's page, named by the last segment of its `title`, the name Storybook's sidebar shows (`Button` for `Forms/Button`, and `Tooltip` for `ui/base/Tooltip` though its `name` is `TooltipContent`), or by its `name` when it has no title. This mirrors the Storybook sidebar so designers can find things where they expect them, and keeps apart components that share a name: `ui/base/Button` and `ui/radix/Button` go to the pages `ui/base` and `ui/radix`. Step 5's template finds a category's page ignoring case, spaces, `/`, `-` and `_`, so a page an earlier push named `UI Base` is still the page for `ui/base`. A set an earlier push named by a component's `name`, where that differs, is left as it is: name it in the summary.
 
 5. Write to Figma with `use_figma`. The instruction MUST embed the measured values from step 3 — every variant needs a concrete fill, text color, padding, radius, border, font size, and shadow. A call that only references variant names is a bug; refuse it and re-read the snap output.
@@ -735,7 +773,7 @@ use_figma({
 npx storysync verify --strict-age
 ```
 
-   This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement.
+   This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement. Add `--skip` with the IDs of any component the user chose not to push (step 3), or whose set you skipped for its auto layout (step 5), as in `--skip ui-base-dialog,ui-base-sheet`: `verify` leaves them out of the score and names them under it, where otherwise it lists each of their variants as missing from Figma.
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so measure those components again (step 3, with `--merge`) rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
