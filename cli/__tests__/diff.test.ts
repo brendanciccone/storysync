@@ -913,3 +913,62 @@ test("diffComponents: a set Figma flags as errored is reported as errored, with 
   // Errored alone is still not in sync.
   assert.equal(hasDifferences(computeDiffSummary([], entries.slice(0, 1))), true);
 });
+
+test("diffComponents: a copy of a shared name that no ID paired still pairs only by page", () => {
+  // Base UI's Button paired by its ID, and Radix's not pushed. Left alone in
+  // the name's group, Radix's Button was the one code Button beside one set
+  // of the name, so it paired with whatever set that was.
+  const code = [titled("ui/base/Button", "ui-base-button"), titled("ui/radix/Button", "ui-radix-button")];
+
+  // A designer's own Button on a page of theirs is not Radix's.
+  const marketing = diffComponents(code, [pushed("ui/base", "Button", "ui-base-button"), pushed("Marketing", "Button")]);
+  assert.deepEqual(marketing.map((e) => [e.name, e.status, e.page, e.details]), [
+    ["Button", "ambiguous", undefined, [
+      "one copy in code and one in Figma are on different pages, besides 1 paired by Storybook ID; neither of these was compared",
+      "in code for ui/radix; in Figma on Marketing",
+    ]],
+    ["ui/base/Button", "match", "ui/base", []],
+  ]);
+  // As in a file without IDs, where pages paired Base UI's.
+  const bare = diffComponents(code, [pushed("ui/base", "Button"), pushed("Marketing", "Button")]);
+  assert.deepEqual(bare.map((e) => [e.name, e.status]), [["Button", "ambiguous"], ["ui/base/Button", "match"]]);
+
+  // Nor is an earlier push's errored Base UI set, left beside the new one.
+  const error = "in get_componentPropertyDefinitions: Component set has existing errors";
+  const leftover = diffComponents(code, [
+    pushed("UI Base", "Button", "ui-base-button"),
+    pushed("UI Base", "Button", undefined, [], { nodeId: "2:5", error, variantProperties: [] }),
+  ]);
+  assert.deepEqual(leftover.map((e) => [e.name, e.status, e.details[1]]), [
+    ["Button", "ambiguous", "in code for ui/radix; in Figma on UI Base"],
+    ["ui/base/Button", "match", undefined],
+  ]);
+
+  // A set of the name on Radix's own page is still its pair.
+  const own = diffComponents(code, [pushed("ui/base", "Button", "ui-base-button"), pushed("ui/radix", "Button"), pushed("Marketing", "Button")]);
+  assert.deepEqual(own.map((e) => [e.name, e.status, e.page]), [
+    ["ui/base/Button", "match", "ui/base"],
+    ["ui/radix/Button", "match", "ui/radix"],
+    ["Marketing/Button", "figma_only", "Marketing"],
+  ]);
+
+  // An unshared name still pairs whatever page its set is on.
+  const card = diffComponents([...code, titled("ui/base/Card", "ui-base-card")], [pushed("ui/base", "Button", "ui-base-button"), pushed("ui/radix", "Button"), pushed("Moved", "Card")]);
+  assert.deepEqual(card.map((e) => [e.name, e.status, e.page]), [
+    ["ui/base/Button", "match", "ui/base"],
+    ["ui/radix/Button", "match", "ui/radix"],
+    ["Card", "match", "Moved"],
+  ]);
+});
+
+test("diffComponents: a component paired by ID is named as the push names its set, not by an earlier name", () => {
+  // ui/base/Tooltip documents TooltipContent, the name an earlier push gave
+  // its set. Paired by ID with the set the push now names Tooltip, it is
+  // Tooltip, whatever old set of the earlier name is left.
+  const tooltip = titled("ui/base/Tooltip", "ui-base-tooltip", ["sm"], "TooltipContent");
+  const entries = diffComponents([tooltip], [pushed("ui/base", "Tooltip", "ui-base-tooltip"), pushed("UI Base", "TooltipContent")]);
+  assert.deepEqual(entries.map((e) => [e.name, e.status, e.page]), [
+    ["Tooltip", "match", "ui/base"],
+    ["TooltipContent", "figma_only", "UI Base"],
+  ]);
+});

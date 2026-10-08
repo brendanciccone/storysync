@@ -328,7 +328,11 @@ export function narrowFigmaComponents(
  * and none of the title's, as a push before titles named them, unless another
  * code component's set goes by that name: that set is the other component's,
  * and the two would be one name nothing tells apart. A name one code
- * component and one set have is a pair, whatever page the set is on.
+ * component and one set have is a pair, whatever page the set is on, unless
+ * another of that name was paired by ID. Radix's Button, left behind when
+ * Base UI's paired by ID, is still one of two Buttons: it pairs by page as
+ * below, not with whatever set of the name is left, such as a designer's own
+ * on another page.
  *
  * Two distinct components can share a name. `Forms/Button` and `Nav/Button`
  * are ordinary in a real design system, and a library with Base UI and Radix
@@ -392,35 +396,44 @@ export function diffComponents(
 
   const figmaNamed = new Set(figmaComponents.filter((_, j) => byName(j)).map((f) => f.name.toLowerCase()));
   const ownSets = new Set(code.map((c) => pushSetName(c).toLowerCase()));
-  const setName = code.map((c) => {
+  const byId = code.map((c) => c.id != null && idGroups.has(ID + c.id));
+  // A component paired by ID goes by the name the push gives its set: an
+  // earlier name is only for finding a set an earlier push named so.
+  const setName = code.map((c, i) => {
     const name = pushSetName(c);
     const earlier = c.name.toLowerCase();
-    return figmaNamed.has(name.toLowerCase()) || !figmaNamed.has(earlier) || ownSets.has(earlier) ? name : c.name;
+    return byId[i] || figmaNamed.has(name.toLowerCase()) || !figmaNamed.has(earlier) || ownSets.has(earlier) ? name : c.name;
   });
 
   const groups = new Map<string, { code: number[]; figma: number[] }>();
   const group = (key: string) => groups.get(key) ?? groups.set(key, { code: [], figma: [] }).get(key)!;
-  code.forEach((c, i) => {
-    const byId = c.id != null && idGroups.has(ID + c.id);
-    group(byId ? ID + c.id : setName[i].toLowerCase()).code.push(i);
-  });
+  code.forEach((_, i) => group(byId[i] ? ID + code[i].id : setName[i].toLowerCase()).code.push(i));
   figmaComponents.forEach((_, j) => {
     if (figmaKey[j] !== null) group(figmaKey[j]!).figma.push(j);
   });
 
+  // How many components go by each name on each side, counted before IDs
+  // take any out of their name's group: a copy left alone in its group is
+  // still one of a shared name, which only a page tells apart. Strays never
+  // make a name shared.
+  const codeNameCount = count(setName.map((n) => n.toLowerCase()));
+  const figmaSetNameCount = count(figmaComponents.filter((f) => !isStray(f)).map((f) => f.name.toLowerCase()));
+
   const pairedWith = new Map<number, number>();
   const codeOnly = new Set<number>();
   const entries: ComponentDiffEntry[] = [];
+  const undecided: { codeLeft: number[]; figmaLeft: number[]; byPage: number; key: string }[] = [];
 
   for (const [key, { code: codeCopies, figma: figmaCopies }] of groups) {
-    if (codeCopies.length === 1 && figmaCopies.length === 1) {
+    const nameShared = !key.startsWith(ID) && ((codeNameCount.get(key) ?? 0) > 1 || (figmaSetNameCount.get(key) ?? 0) > 1);
+    if (codeCopies.length === 1 && figmaCopies.length === 1 && !nameShared) {
       pairedWith.set(codeCopies[0], figmaCopies[0]);
       continue;
     }
     let codeLeft = codeCopies;
     let figmaLeft = figmaCopies;
     let byPage = 0;
-    if (codeCopies.length > 1 || figmaCopies.length > 1) {
+    if (codeCopies.length > 1 || figmaCopies.length > 1 || nameShared) {
       byPage = pairByPage(codeCopies, figmaCopies, code, figmaComponents, pairedWith);
       const paired = new Set(pairedWith.values());
       codeLeft = codeCopies.filter((i) => !pairedWith.has(i));
@@ -430,8 +443,14 @@ export function diffComponents(
     if (!figmaLeft.length) codeLeft.forEach((i) => codeOnly.add(i));
     else if (!codeLeft.length) figmaLeft.forEach((j) => figmaOnly.add(j));
     else if (codeLeft.some((i) => !code[i].notCompared) || figmaLeft.some((j) => reported.has(figmaComponents[j]))) {
-      entries.push(ambiguousEntry(codeLeft.map((i) => code[i]), figmaLeft.map((j) => figmaComponents[j]), byPage, setName[codeLeft[0]], key.startsWith(ID)));
+      undecided.push({ codeLeft, figmaLeft, byPage, key });
     }
+  }
+  // An ambiguous name says how many of its copies IDs paired, once all have.
+  const pairedById = count(code.flatMap((_, i) => (byId[i] && pairedWith.has(i) ? [setName[i].toLowerCase()] : [])));
+  for (const { codeLeft, figmaLeft, byPage, key } of undecided) {
+    const idKey = key.startsWith(ID);
+    entries.push(ambiguousEntry(codeLeft.map((i) => code[i]), figmaLeft.map((j) => figmaComponents[j]), byPage, setName[codeLeft[0]], idKey, idKey ? 0 : pairedById.get(key) ?? 0));
   }
 
   // A component outside any set, with no ID on it, pairs only on the page of
@@ -443,7 +462,6 @@ export function diffComponents(
   for (const j of strays) if (!strayPaired.has(j)) figmaOnly.add(j);
 
   // A shared name is said with what tells its copies apart.
-  const codeNameCount = count(setName.map((n) => n.toLowerCase()));
   const figmaNameCount = count(figmaComponents.map((f) => f.name.toLowerCase()));
   const shared = (name: string) => (codeNameCount.get(name) ?? 0) > 1 || (figmaNameCount.get(name) ?? 0) > 1;
   const codeLabel = (i: number) => {
@@ -547,8 +565,9 @@ function erroredDetail(f: FigmaComponentInfo): string {
  * pages told any apart when none were, and with the pages each side's copies
  * are on when Figma's are known, since a page is what would tell them apart.
  * `byId`: the Figma copies all carry the component's Storybook ID.
+ * `pairedById`: how many other copies of the name their IDs paired.
  */
-function ambiguousEntry(code: CodeComponent[], figma: FigmaComponentInfo[], byPage: number, name: string, byId = false): ComponentDiffEntry {
+function ambiguousEntry(code: CodeComponent[], figma: FigmaComponentInfo[], byPage: number, name: string, byId = false, pairedById = 0): ComponentDiffEntry {
   const shared = byId
     ? `${figma.length} Figma components carry the Storybook ID ${code[0].id}`
     : code.length > 1
@@ -559,8 +578,12 @@ function ambiguousEntry(code: CodeComponent[], figma: FigmaComponentInfo[], byPa
         // that don't pair them.
         : "one copy in code and one in Figma are on different pages";
   const none = code.length + figma.length > 2 ? "none" : "neither";
-  const details = [byPage
-    ? `${shared}, besides ${byPage} paired by page; ${none} of these was compared`
+  const besides = [
+    ...(byPage ? [`${byPage} paired by page`] : []),
+    ...(pairedById ? [`${pairedById} paired by Storybook ID`] : []),
+  ];
+  const details = [besides.length
+    ? `${shared}, besides ${besides.join(" and ")}; ${none} of these was compared`
     : `${shared}; none was compared`];
   if (figma.some((f) => f.page != null)) {
     const pages = (list: (string | undefined)[]) => [...new Set(list.map((p) => p ?? "an unknown page"))].join(", ");
