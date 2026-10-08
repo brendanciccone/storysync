@@ -1502,6 +1502,30 @@ export const theme = { extend: { colors: { brand: "#0f62fe" } } };`,
   } finally { cleanup(spread); }
 });
 
+// --- Config warnings ---
+
+test("Tailwind: a plugin's require() doesn't warn that values may be missing, and one elsewhere does", () => {
+  // Every shadcn/ui v3 config, and coder's, requires its plugins, so the
+  // warning was on nearly every config, where it pointed at nothing missing.
+  const plugins = makeProject({
+    "tailwind.config.js": `module.exports = {
+  theme: { extend: { colors: { brand: "#123456" } } },
+  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
+};`,
+  });
+  try {
+    assert.deepEqual(extractTokens(plugins).warnings, []);
+  } finally { cleanup(plugins); }
+
+  const palette = makeProject({
+    "tailwind.config.js": `const palette = require("./palette");
+module.exports = { theme: { extend: { colors: { brand: "#123456" } } } };`,
+  });
+  try {
+    assert.deepEqual(extractTokens(palette).warnings, ["Config uses require() - some values may not be extracted"]);
+  } finally { cleanup(palette); }
+});
+
 // --- Drift detection ---
 
 const FIXED_TIMESTAMP = "2026-01-01T00:00:00.000Z";

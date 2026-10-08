@@ -367,7 +367,10 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
   const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
 
-  if (/require\s*\(/.test(content)) {
+  // A preset's require() is named on its own below, and a plugin's, as
+  // every shadcn/ui v3 config's `require("tailwindcss-animate")`, is no
+  // value storysync misses: the warning was on nearly every config.
+  if (/require\s*\(/.test(withoutArrays(content, ["plugins", "presets"]))) {
     warnings.push("Config uses require() - some values may not be extracted");
   }
   if (/\.\.\./.test(content)) {
@@ -437,6 +440,14 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
     }
   }
   return false;
+}
+
+/** `content` without the `key: [...]` array of each key, the first of each. */
+function withoutArrays(content: string, keys: string[]): string {
+  return keys.reduce((text, key) => {
+    const m = new RegExp(`\\b${key}\\s*:\\s*\\[`).exec(text);
+    return m ? text.slice(0, m.index) + text.slice(closingIndex(text, m.index + m[0].length - 1)) : text;
+  }, content);
 }
 
 /** A theme's tokens, by category, in the order a Tailwind config's are listed. */
