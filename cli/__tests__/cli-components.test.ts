@@ -516,6 +516,11 @@ test("map CLI: every component carries its ID and Storybook's title, and --compo
     ["ui-radix-sonner", "Toaster", "ui/radix/Sonner", "ui/radix"],
   ]);
 
+  // Said by title, and a component with no variants as one combination.
+  const text = await run("map", "--storybook", standIn.url);
+  assert.match(text.out, /✓ ui\/radix\/Sonner no variants -> 1 combination\n/);
+  assert.match(text.out, /✓ ui\/radix\/Button size\(3\) -> 3 combinations\n/);
+
   const picked = await run("map", "--storybook", standIn.url, "--components", "ui/radix/Sonner,Button", "--json");
   assert.equal(picked.status, 0, picked.out);
   assert.deepEqual((JSON.parse(picked.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["ui-base-button", "ui-radix-button", "ui-radix-sonner"]);

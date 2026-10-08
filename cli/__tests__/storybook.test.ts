@@ -651,7 +651,12 @@ test("selectComponents: also matches a title, as map prints it, and its last seg
   assert.deepEqual(ids(["UI/RADIX/TOOLTIP"]), ["ui-radix-tooltip"]);
   assert.deepEqual(ids(["Tooltip"]), ["ui-base-tooltip", "ui-radix-tooltip"]);
   assert.deepEqual(ids(["TooltipContent"]), ["ui-base-tooltip", "ui-radix-tooltip"]);
-  assert.throws(() => ids(["Tooltp"]), { message: '--components matched no component named "Tooltp". Available: Button, Tooltip, TooltipContent' });
+  // A name several components go by is listed with their IDs, which pick one.
+  assert.throws(() => ids(["Tooltp"]), {
+    message: '--components matched no component named "Tooltp". Available: Button (ui-base-button, ui-radix-button), ' +
+      "Tooltip (ui-base-tooltip, ui-radix-tooltip), TooltipContent (ui-base-tooltip, ui-radix-tooltip)",
+  });
+  assert.throws(() => findComponent(REGISTRY, "Tooltp"), /^Error: No component named "Tooltp"\. Available: Button \(ui-base-button, ui-radix-button\), Tooltip/);
 });
 
 test("findComponent: a name several components share is an error naming each one's title and ID", () => {

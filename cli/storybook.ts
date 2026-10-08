@@ -87,7 +87,7 @@ export function selectComponents(
   if (unmatched.length) {
     throw new Error(
       `--components matched no component named ${unmatched.map(({ name }) => `"${name}"`).join(", ")}. ` +
-      `Available: ${available([...entries.flatMap(shownNames), ...alsoKnown])}`,
+      `Available: ${available(entries, alsoKnown)}`,
     );
   }
 
@@ -110,7 +110,7 @@ export function findComponent(entries: ComponentEntry[], name: string): Componen
   const key = name.trim().toLowerCase();
   const matched = entries.filter((e) => isNamed(e, key));
   if (!matched.length) {
-    throw new Error(`No component named "${name.trim()}". Available: ${available(entries.flatMap(shownNames))}`);
+    throw new Error(`No component named "${name.trim()}". Available: ${available(entries)}`);
   }
   const exact = [
     matched,
@@ -130,8 +130,19 @@ function shownNames(e: ComponentEntry): string[] {
   return leaf && leaf !== e.name ? [e.name, leaf] : [e.name];
 }
 
-function available(names: string[]): string {
-  return [...new Set(names)].sort().join(", ") || "none";
+/**
+ * The names an "Available" list gives, sorted, each name several components
+ * go by with their IDs, `Button (ui-base-button, ui-radix-button)`: the name
+ * selects every one of them, and an ID picks one. `alsoKnown` are Figma's.
+ */
+function available(entries: ComponentEntry[], alsoKnown: readonly string[] = []): string {
+  const ids = new Map<string, string[]>();
+  for (const e of entries) for (const name of shownNames(e)) ids.set(name, [...(ids.get(name) ?? []), e.id]);
+  for (const name of alsoKnown) if (!ids.has(name)) ids.set(name, []);
+  return [...ids.keys()].sort().map((name) => {
+    const of = ids.get(name)!;
+    return of.length > 1 ? `${name} (${of.join(", ")})` : name;
+  }).join(", ") || "none";
 }
 
 // Derives a Figma-friendly category label from a Storybook ID by stripping

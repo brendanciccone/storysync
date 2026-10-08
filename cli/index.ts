@@ -188,7 +188,7 @@ program
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
             const tag = def.cap ? chalk.yellow(` [CAPPED ${def.cap.generated}/${def.cap.totalPossible}]`) : "";
             const label = entry.title ?? entry.name;
-            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combination${def.variantCombinations.length === 1 ? "" : "s"}${tag}`);
             if (def.cap) {
               const example = def.cap.droppedSample[0];
               const suffix = example ? `, e.g. ${JSON.stringify(example)}` : "";
