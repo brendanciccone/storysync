@@ -96,11 +96,11 @@ function detectDrift(baseline: string, current: Component[]): Run {
   });
 }
 
-const formsButton = component("Forms/Button", 3);
-const frozen = component("Forms/Frozen", 1);
-const navButton = component("Nav/Button", 1);
+const formsButton = withId(component("Forms/Button", 3));
+const frozen = withId(component("Forms/Frozen", 1));
+const navButton = withId(component("Nav/Button", 1));
 
-test("action Detect drift: two components named Button are told apart by their titles", () => {
+test("action Detect drift: two components named Button are told apart", () => {
   // Keyed on the name, the last Button stood for both: an unchanged library
   // was drift on every run, which no new baseline could fix.
   const both = mapJson([formsButton, frozen, navButton]);
@@ -108,6 +108,7 @@ test("action Detect drift: two components named Button are told apart by their t
   assert.equal(unchanged.status, 0, unchanged.stderr);
   assert.equal(unchanged.outputs.result, "false", unchanged.stdout);
   assert.match(unchanged.stdout, /No drift detected/);
+  assert.doesNotMatch(unchanged.stdout, /::warning::/);
 
   // Storybook can list them in another order.
   const reordered = detectDrift(both, [navButton, frozen, formsButton]);
@@ -127,17 +128,22 @@ test("action Detect drift: two components named Button are told apart by their t
   assert.doesNotMatch(added.report ?? "", /### Changed|### Removed/);
 });
 
-test("action Detect drift: a changed component is reported under its title, and one with no title under its name", () => {
-  const changed = detectDrift(mapJson([formsButton, navButton]), [formsButton, component("Nav/Button", 2)]);
+test("action Detect drift: a changed component is reported under its title, one with no title under its ID, and one from an old baseline under its name", () => {
+  const changed = detectDrift(mapJson([formsButton, navButton]), [formsButton, withId(component("Nav/Button", 2))]);
   assert.equal(changed.outputs.result, "true", changed.stdout);
   assert.match(changed.report ?? "", /### Changed\n- \*\*Nav\/Button\*\*: 1 → 2 props, 2 → 4 combinations\n\n/);
 
   const { title: _title, category: _category, ...untitled } = component("Button", 1);
   const grown = { ...untitled, variantProperties: component("Button", 2).variantProperties, combinations: 4 };
-  const r = detectDrift(mapJson([untitled]), [grown]);
+  const r = detectDrift(mapJson([withId(untitled, "button")]), [withId(grown, "button")]);
   assert.equal(r.outputs.result, "true", r.stdout);
-  assert.match(r.report ?? "", /### Changed\n- \*\*Button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
+  assert.match(r.report ?? "", /### Changed\n- \*\*button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
   assert.doesNotMatch(r.report ?? "", /### Added|### Removed/);
+
+  // A baseline from before IDs: its untitled component matched by name.
+  const old = detectDrift(mapJson([untitled]), [grown]);
+  assert.match(old.report ?? "", /### Changed\n- \*\*Button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
+  assert.doesNotMatch(old.report ?? "", /### Added|### Removed/);
 });
 
 test("action Detect drift: a baseline that is not map --json output fails with the command to recreate it", () => {
@@ -172,24 +178,111 @@ test("action Detect drift: a baseline that is not map --json output fails with t
   assert.match(r.stdout, /is not map --json output \(it holds an error: Failed to connect to Storybook MCP at http:\/\/localhost:6006: fetch failed\)\. Recreate/);
 });
 
-test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
-  const { title: _t1, category: _c1, ...button } = component("Button", 1);
-  const { title: _t2, category: _c2, ...otherButton } = component("Button", 2);
+/** `c` as map --json writes it now: with its Storybook ID, from the title as Storybook makes one. */
+function withId(c: Component, id = (c.title ?? c.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")): Component & { id: string } {
+  return { id, ...c };
+}
 
-  // A baseline written without titles, holding two Buttons.
-  const old = detectDrift(mapJson([button, otherButton]), [formsButton, navButton]);
+test("action Detect drift: two components of one name and no title are told apart by their IDs", () => {
+  // A shadcn registry's Sonner stories document Toaster, under both
+  // ui/base/Sonner and ui/radix/Sonner. Keyed by title, then name, both were
+  // "Toaster": the check failed on every baseline map --json wrote, and its
+  // advice, to write the baseline again, wrote the same one.
+  const { title: _t1, category: _c1, ...toaster } = component("Toaster", 1);
+  const base = withId(toaster, "ui-base-sonner");
+  const radix = withId(toaster, "ui-radix-sonner");
+  const both = mapJson([base, radix]);
+  const unchanged = detectDrift(both, [base, radix]);
+  assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
+  assert.equal(unchanged.outputs.result, "false", unchanged.stdout);
+  assert.doesNotMatch(unchanged.stdout, /::warning::|::error::/);
+
+  const grown = { ...radix, variantProperties: component("x", 2).variantProperties, combinations: 4 };
+  const changed = detectDrift(both, [base, grown]);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed\n- \*\*ui-radix-sonner\*\*: 1 → 2 props, 2 → 4 combinations\n\n/);
+  assert.doesNotMatch(changed.report ?? "", /### Added|### Removed|ui-base-sonner/);
+});
+
+test("action Detect drift: a baseline from before IDs is matched by title, with a warning to recreate it", () => {
+  // storysync 0.3.0 wrote no IDs, and titles rebuilt from them: "UI Base/
+  // Button" for Storybook's ui/base/Button. Matched by title as written,
+  // every component was removed and added again.
+  const old = [component("UI Base/Button", 2), component("UI Radix/Button", 1), component("Forms/Frozen", 1)];
+  const now = [
+    withId(component("ui/base/Button", 2)),
+    withId(component("ui/radix/Button", 1)),
+    withId(component("Forms/Frozen", 1)),
+  ];
+  const r = detectDrift(mapJson(old), now);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.outputs.result, "false", r.stdout);
+  const warnings = r.stdout.split("\n").filter((line) => line.startsWith("::warning::"));
+  assert.equal(warnings.length, 1, r.stdout);
+  assert.match(warnings[0], /^::warning::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) was written before map --json recorded each component's Storybook ID, so its components were matched by title\. Recreate it by running this in the repository root/);
+
+  // A real change still shows, under the new title.
+  const changed = detectDrift(mapJson(old), [withId(component("ui/base/Button", 3)), now[1], now[2]]);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed\n- \*\*ui\/base\/Button\*\*: 2 → 3 props, 4 → 8 combinations\n\n/);
+  assert.doesNotMatch(changed.report ?? "", /### Added|### Removed/);
+
+  // The untitled components of one name such a baseline holds can't be
+  // matched: they are reported as removed and added, never paired by guess.
+  const { title: _t, category: _c, ...toaster } = component("Toaster", 1);
+  const untitled = detectDrift(mapJson([toaster, toaster]), [withId(component("ui/base/Sonner", 1), "ui-base-sonner"), withId(component("ui/radix/Sonner", 1), "ui-radix-sonner")]);
+  assert.equal(untitled.status, 0, untitled.stdout + untitled.stderr);
+  assert.equal(untitled.outputs.result, "true", untitled.stdout);
+  assert.match(untitled.report ?? "", /### Added\n- \*\*ui\/base\/Sonner\*\* \(2 combinations\)\n- \*\*ui\/radix\/Sonner\*\* \(2 combinations\)\n\n### Removed\n- \*\*Toaster\*\*\n- \*\*Toaster\*\*\n/);
+  assert.match(untitled.stdout, /::warning::The baseline at .* was written before map --json recorded/);
+});
+
+test("action Detect drift: with IDs on both sides, a title is compared as its letters and digits", () => {
+  const button = withId(component("ui/base/Button", 1));
+  // Storybook's index unread, so the title was rebuilt: the same component.
+  const rebuilt = detectDrift(mapJson([button]), [{ ...button, title: "UI Base/Button", category: "UI Base" }]);
+  assert.equal(rebuilt.outputs.result, "false", rebuilt.stdout);
+
+  // Moved to another folder under the same ID: a change, said as one.
+  const moved = detectDrift(mapJson([button]), [{ ...button, title: "ui/legacy/Button", category: "ui/legacy" }]);
+  assert.equal(moved.outputs.result, "true", moved.stdout);
+  assert.match(moved.report ?? "", /### Changed\n- \*\*ui\/legacy\/Button\*\*: 1 → 1 props, 2 → 2 combinations, was ui\/base\/Button\n/);
+
+  // A new ID is another component, whatever its name: not paired by guess.
+  const renamed = detectDrift(mapJson([button]), [withId(component("ui/core/Button", 1))]);
+  assert.match(renamed.report ?? "", /### Added\n- \*\*ui\/core\/Button\*\* \(2 combinations\)\n\n### Removed\n- \*\*ui\/base\/Button\*\*\n/);
+  assert.doesNotMatch(renamed.report ?? "", /### Changed/);
+});
+
+test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
+  // A baseline with IDs that repeats one, as only a hand edit could.
+  const button = withId(component("Forms/Button", 1));
+  const old = detectDrift(mapJson([button, { ...button, title: "Nav/Button" }]), [button]);
   assert.equal(old.status, 1, old.stdout + old.stderr);
   const oldErrors = old.stdout.split("\n").filter((line) => line.startsWith("::error::"));
   assert.equal(oldErrors.length, 1, old.stdout);
-  assert.match(oldErrors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) has more than one component keyed "Button", so they can't be told apart\. Recreate it by /);
+  assert.match(oldErrors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) has more than one component keyed "forms-button", so they can't be told apart\. Recreate it by /);
   assert.equal(old.outputs.result, undefined);
 
-  // Current map output with two untitled Buttons.
-  const cur = detectDrift(mapJson([button]), [button, otherButton]);
+  // Current map output with two untitled Buttons and no IDs, as no map
+  // --json writes any more.
+  const { title: _t1, category: _c1, ...untitled } = component("Button", 1);
+  const cur = detectDrift(mapJson([untitled]), [untitled, untitled]);
   assert.equal(cur.status, 1, cur.stdout + cur.stderr);
-  assert.match(cur.stdout, /::error::storysync map returned more than one component keyed "Button" with no Storybook title to tell them apart/);
+  assert.match(cur.stdout, /::error::storysync map returned more than one component keyed "Button", so their drift can't be checked\./);
   assert.equal(cur.outputs.result, undefined);
   assert.equal(cur.report, null);
+});
+
+test("action: an issue is still filed for drift found before a step that failed", () => {
+  // Detect drift fails on a baseline that isn't map --json output. Without a
+  // status function, the issue step was skipped with it, and the token drift
+  // found before never reached an issue.
+  const yml = readFileSync(ACTION, "utf8");
+  const step = yml.slice(yml.indexOf("    - name: Create or update issue\n"));
+  const condition = step.match(/^ {6}if: (.+)$/m)?.[1] ?? "";
+  assert.match(condition, /!cancelled\(\)|always\(\)/, condition);
+  assert.match(condition, /steps\.token-drift\.outputs\.result == 'true'/);
 });
 
 // --- Detect token drift ---

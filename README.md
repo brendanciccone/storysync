@@ -160,12 +160,12 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 | `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens, and baseline paths all use it. |
 | `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
 | `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
-| `components` | all | Comma-separated component names or IDs. A name that matches nothing fails the job. |
+| `components` | all | Comma-separated component names, titles or IDs. A name that matches nothing fails the job. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
-| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by Storybook title, so `Forms/Button` and `Nav/Button` are compared separately. |
+| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A baseline from Storysync 0.3.0 has no IDs, so it's matched by title, with a warning to recreate it. |
 | `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
 | `fail_on_drift` | `false` | Fail the job on drift, or when a baseline is missing. |
-| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found. Needs `issues: write`. |
+| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found, even if a later step fails. Needs `issues: write`. |
 | `node_version` | `22` | Node.js version. |
 
 **Outputs:** `drift` and `token_drift` are `true`, `false`, or `new` (no baseline). `token_drift` can also be `none` (no baseline and no tokens) or `skipped` (`token_baseline: ''`). `json` and `tokens_json` hold the `map --json` and `tokens --json` output the action compared.

@@ -12,7 +12,7 @@ inputs:
     required: false
     default: "http://localhost:6006"
   components:
-    description: "Comma-separated list of component names or IDs to validate (default: all). A name that matches no component fails the Map components step, which lists the names available"
+    description: "Comma-separated list of component names, titles or IDs to validate (default: all). A name that matches no component fails the Map components step, which lists the names available"
     required: false
   node_version:
     description: "Node.js version to use"
@@ -589,32 +589,80 @@ runs:
           process.exit(1);
         }
 
-        // Components are told apart by their Storybook title, which is unique
-        // where the name needn't be: Forms/Button and Nav/Button are both
-        // Button, and keyed on the name the last of them stood for both.
-        const key = (c) => c.title ?? c.name;
-        // A key on two components, as in a baseline written before map --json
-        // gave titles, or two untitled components of one name, would let one
-        // replace the other in the maps below and hide its drift.
+        // Components are matched by their Storybook ID, which map --json records
+        // for each one and no two components share. Matched by title, two with no
+        // title, Toaster under both ui/base/Sonner and ui/radix/Sonner, had one
+        // key, and the check could never pass. Each is reported by its title.
+        const label = (c) => c.title ?? c.id ?? c.name;
+        const key = (c) => c.id ?? c.title ?? c.name;
+        // Letters and digits, lowercased: what Storybook keeps of a title in the
+        // ID it makes from it. A title storysync 0.3.0 rebuilt from an ID, "UI
+        // Base/Button", comes out the same as Storybook's own, "ui/base/Button".
+        const loose = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+        // A key on two components would let one stand for the other and hide its
+        // drift.
         const repeated = (list) => [...new Set(list.map(key).filter((k, i, all) => all.indexOf(k) !== i))];
-        const baseRepeats = repeated(baseline.components);
+        const baseRepeats = repeated(baseline.components.filter((c) => c.id != null));
         if (baseRepeats.length) {
           console.log(escape("::error::The baseline at " + baselinePath + " (relative to " + where + ") has more than one component keyed " + baseRepeats.map(k => JSON.stringify(k)).join(", ") + ", so they can't be told apart. Recreate it by " + create));
           process.exit(1);
         }
         const currRepeats = repeated(current.components);
         if (currRepeats.length) {
-          console.log(escape("::error::storysync map returned more than one component keyed " + currRepeats.map(k => JSON.stringify(k)).join(", ") + " with no Storybook title to tell them apart, so their drift can't be checked."));
+          console.log(escape("::error::storysync map returned more than one component keyed " + currRepeats.map(k => JSON.stringify(k)).join(", ") + ", so their drift can't be checked."));
           process.exit(1);
         }
-        const baseMap = Object.fromEntries(baseline.components.map(c => [key(c), c]));
-        const currMap = Object.fromEntries(current.components.map(c => [key(c), c]));
 
-        const added = current.components.filter(c => !baseMap[key(c)]);
-        const removed = baseline.components.filter(c => !currMap[key(c)]);
+        // Each baseline component with the current one of its ID. A baseline
+        // written before map --json recorded IDs has none, and titles rebuilt
+        // from the IDs, so its components are matched by title, then by title as
+        // Storybook makes an ID of it, then, with no title, by name: each time
+        // only where one component on each side has the key, so nothing is guessed.
+        const baseOf = new Map();
+        const currById = new Map(current.components.filter((c) => c.id != null).map((c) => [c.id, c]));
+        for (const b of baseline.components) {
+          if (b.id != null && currById.has(b.id)) baseOf.set(currById.get(b.id), b);
+        }
+        const legacy = baseline.components.filter((b) => b.id == null);
+        const ways = [
+          [(b) => b.title, (c) => [c.title]],
+          [(b) => b.title != null ? loose(b.title) : null, (c) => [c.title != null ? loose(c.title) : null, c.id != null ? loose(c.id) : null]],
+          [(b) => b.title == null ? b.name : null, (c) => [c.name]],
+        ];
+        for (const [baseKey, currKeys] of ways) {
+          const matched = new Set(baseOf.values());
+          const bases = new Map();
+          for (const b of legacy) {
+            const k = matched.has(b) ? null : baseKey(b);
+            if (k) bases.set(k, [...(bases.get(k) ?? []), b]);
+          }
+          const currs = new Map();
+          for (const c of current.components) {
+            if (baseOf.has(c)) continue;
+            for (const k of new Set(currKeys(c).filter(Boolean))) currs.set(k, [...(currs.get(k) ?? []), c]);
+          }
+          for (const [k, sharing] of bases) {
+            const found = currs.get(k) ?? [];
+            if (sharing.length === 1 && found.length === 1 && !baseOf.has(found[0])) baseOf.set(found[0], sharing[0]);
+          }
+        }
+        if (legacy.length) {
+          console.log(escape("::warning::The baseline at " + baselinePath + " (relative to " + where + ") was written before map --json recorded each component's Storybook ID, so its components were matched by title. Recreate it by " + create));
+        }
+
+        // The mapping is what is compared. A component's ID, title and category
+        // say which component it is, and a title rebuilt from an ID, in an old
+        // baseline or without Storybook's index, differs from Storybook's own as
+        // letters and digits never do. So a title counts only if those changed,
+        // as when a story moves to another folder under an ID of its own.
+        const mapping = ({ id, title, category, ...rest }) => JSON.stringify(rest);
+        const retitled = (b, c) => b.title != null && c.title != null && loose(b.title) !== loose(c.title);
+        const matched = new Set(baseOf.values());
+        const added = current.components.filter(c => !baseOf.has(c));
+        const removed = baseline.components.filter(b => !matched.has(b));
         const changed = current.components.filter(c => {
-          const b = baseMap[key(c)];
-          return b && JSON.stringify(b) !== JSON.stringify(c);
+          const b = baseOf.get(c);
+          return b && (mapping(b) !== mapping(c) || retitled(b, c));
         });
 
         if (!added.length && !removed.length && !changed.length) {
@@ -631,20 +679,20 @@ runs:
 
         if (added.length) {
           body += "### Added\n";
-          for (const c of added) body += "- **" + key(c) + "** (" + c.combinations + " combinations)\n";
+          for (const c of added) body += "- **" + label(c) + "** (" + c.combinations + " combinations)\n";
           body += "\n";
         }
         if (removed.length) {
           body += "### Removed\n";
-          for (const c of removed) body += "- **" + key(c) + "**\n";
+          for (const c of removed) body += "- **" + label(c) + "**\n";
           body += "\n";
         }
         if (changed.length) {
           body += "### Changed\n";
           for (const c of changed) {
-            const b = baseMap[key(c)];
-            body += "- **" + key(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
-            body += b.combinations + " → " + c.combinations + " combinations\n";
+            const b = baseOf.get(c);
+            body += "- **" + label(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
+            body += b.combinations + " → " + c.combinations + " combinations" + (retitled(b, c) ? ", was " + label(b) : "") + "\n";
           }
           body += "\n";
         }
@@ -659,8 +707,10 @@ runs:
         console.log(body);
         SCRIPT
 
+    # Also after a step that failed, such as Detect drift on a baseline that
+    # isn't map --json output: token drift found before it is still filed.
     - name: Create or update issue
-      if: inputs.create_issue == 'true' && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
+      if: inputs.create_issue == 'true' && !cancelled() && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
