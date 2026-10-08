@@ -761,6 +761,29 @@ test("every audit instruction compares a length by its px and a colour by its he
   }
 });
 
+test("every push instruction offers --exclude-props for a capped component", () => {
+  // Told to "narrow which props are variants", the agent had no way to: the
+  // CLI took every boolean, behavioural ones like vaul's Drawer's included.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /narrow which props are variants: re-run snap with `--exclude-props` naming the props that don't change how it looks/, `${path} offers no way to narrow a capped component's props`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push instruction makes a page per whole category and names a set by its title's last segment", () => {
   // With Storybook's own titles, ui/base/Button's top-level category is "ui",
   // as is ui/radix/Button's: one page a top-level category put them on one
