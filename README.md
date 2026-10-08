@@ -314,7 +314,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
 
-A boolean prop the table doesn't skip becomes a variant property, behavioral ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map` and `snap` leaves out the props it names.
+A boolean prop the table doesn't skip becomes a variant property, behavioral ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map`, `snap` and `diff` leaves out the props it names.
 
 A union prop's values start with its default, so Figma's default variant is the code's, while a boolean's Figma default is always `false`. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
@@ -446,7 +446,7 @@ Each measured variant records the element as `element`, like `span[data-slot="sw
 
 **Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
-**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. snap records them as `excludeProps` in `styles.json`, and the audit passes the same list to `map` so it doesn't report them as missing from Figma. `diff` takes the same option.
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. snap records them as `excludeProps` in `styles.json`, and the audit passes the same list to `map` so it doesn't report them as missing from Figma. The skill has the agent pass the same list to every snap of a push, since a run without it drops the record, and name the props in its summary. `diff` takes the same option.
 
 **Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 
@@ -552,7 +552,8 @@ Options:
   --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
-  --exclude-props <names> Comma-separated prop names the push left out with --exclude-props;
+  --exclude-props <names>
+                         Comma-separated prop names the push left out with --exclude-props,
                          left out here too, so they aren't reported missing from Figma
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails

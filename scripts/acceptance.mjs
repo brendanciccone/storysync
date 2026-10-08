@@ -3377,7 +3377,16 @@ async function main() {
         ["lets those components leave the audit in sync", /components outside any set not from the push don't count against it/],
       ]) assert(pattern.test(audit), `${file}: the audit never ${what}`);
     }
-    return `${files.length} files`;
+    // The audit finds the props a push left out in styles.json, which a snap
+    // run without --exclude-props, a re-run included, rewrites without them.
+    const push = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"];
+    for (const file of push) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const steps = file.startsWith("skills/") ? text.slice(0, text.indexOf("## Audit")) : text;
+      assert(/pass the same list to every `snap` you run for this push, re-runs included, and name those props in the summary/.test(steps),
+        `${file}: the push never keeps the props --exclude-props left out across snap runs`);
+    }
+    return `${files.length} audit texts, ${push.length} push texts`;
   });
 
   await check("every use_figma code example in the skill parses", () => {
