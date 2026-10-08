@@ -11,7 +11,7 @@ import { VERSION } from "./version.js";
 import { mapComponent, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
-import { selectComponents } from "./storybook.js";
+import { selectComponents, componentKey } from "./storybook.js";
 import type { ComponentEntry, StorybookClient } from "./storybook.js";
 import {
   normalizeStyles, encodeStoryArgs, buildStoryUrl,
@@ -52,6 +52,8 @@ export interface SnapVariant {
 }
 
 export interface SnapComponent {
+  /** The component's Storybook ID; absent from a snap written before it was recorded. */
+  id?: string;
   name: string;
   title?: string;
   category?: string;
@@ -290,26 +292,34 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   }
 
   // Deterministic ordering so repeated runs produce identical output.
-  components.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name));
+  components.sort((a, b) => componentKey(a).localeCompare(componentKey(b)));
 
-  // Components are keyed by `title ?? name` everywhere downstream — the
+  // Components are keyed by `title ?? id` everywhere downstream — the
   // readback, verify's expansion, the skills' file organisation. Two
   // components sharing that key would silently collapse into one during
   // verification, so the collision has to be said out loud here, where the
-  // data is produced. (Storybook rejects duplicate titles, so this arises
-  // mainly with untitled components sharing a name.)
+  // data is produced. A title from Storybook's index is one component's, and
+  // an ID always is, so two share a key only when Storybook gave them one
+  // title, or when their titles were rebuilt from IDs, without the index,
+  // and came out the same. The advice is for whichever it was: telling the
+  // user to retitle components whose titles already differ in Storybook, as
+  // this did, left nothing they could do.
+  const derived = new Set(entries.filter((e) => e.titleDerived).map((e) => e.id));
   const byKey = new Map<string, SnapComponent[]>();
   for (const component of components) {
-    const key = component.title ?? component.name;
+    const key = componentKey(component);
     byKey.set(key, [...(byKey.get(key) ?? []), component]);
   }
   for (const [key, sharing] of byKey) {
     if (sharing.length < 2) continue;
+    const fix = sharing.some((c) => c.id != null && derived.has(c.id))
+      ? `Their titles were rebuilt from their Storybook IDs, since ${opts.storybookUrl.replace(/\/+$/, "")}/index.json couldn't be read or doesn't list them: make it reachable, so Storybook's own titles are used.`
+      : "Give them distinct Storybook titles.";
     for (const component of sharing) {
       component.warnings.push(
         `${sharing.length} components share the key "${key}", which identifies a component in ` +
           `the readback and during verification — their variants will collide and only one will ` +
-          `be scored. Give them distinct Storybook titles.`,
+          `be scored. ${fix}`,
       );
     }
   }
@@ -345,6 +355,7 @@ async function snapComponent(
   progress: (m: string) => void,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
+    id: entry.id,
     name: entry.name,
     title: entry.title,
     category: entry.category,
@@ -474,7 +485,9 @@ export function writeScreenshot(
   slug: string,
   png: Buffer,
 ): string {
-  const path = join(outDir, componentSlug(entry.name, entry.title), `${slug}.png`);
+  // By title, or by ID without one: by name, two untitled components of one
+  // name wrote over each other's screenshots.
+  const path = join(outDir, componentSlug(entry.name, entry.title ?? entry.id), `${slug}.png`);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, png);
   // Recorded relative to the directory holding styles.json, with posix

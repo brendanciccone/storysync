@@ -48,12 +48,14 @@ const LIBRARY: FileSpec = {
   ],
 };
 
+// Each with the page it is on, which tells apart the sets of a name two
+// categories share.
 const LIBRARY_COMPONENTS: FigmaComponentInfo[] = [
-  { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "md", "lg"] }, { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }], variantCount: 6 },
-  { name: "Input", variantProperties: [{ name: "state", type: "VARIANT", values: ["default", "error"] }], variantCount: 2 },
-  { name: "Tabs", variantProperties: [{ name: "variant", type: "VARIANT", values: ["line", "pill"] }], variantCount: 2 },
-  { name: "Link", variantProperties: [], variantCount: 1 },
-  { name: "Badge", variantProperties: [], variantCount: 1 },
+  { name: "Button", page: "Forms", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "md", "lg"] }, { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }], variantCount: 6 },
+  { name: "Input", page: "Forms", variantProperties: [{ name: "state", type: "VARIANT", values: ["default", "error"] }], variantCount: 2 },
+  { name: "Tabs", page: "Navigation", variantProperties: [{ name: "variant", type: "VARIANT", values: ["line", "pill"] }], variantCount: 2 },
+  { name: "Link", page: "Navigation", variantProperties: [], variantCount: 1 },
+  { name: "Badge", page: "Feedback", variantProperties: [], variantCount: 1 },
 ];
 
 test("getComponents: finds the components on every page, a page a call, switching once in each", async () => {

@@ -106,6 +106,7 @@ This outputs:
 {
   "components": [
     {
+      "id": "forms-button",
       "name": "Button",
       "title": "Forms/Button",
       "category": "Forms",
@@ -122,7 +123,7 @@ This outputs:
 }
 ```
 
-The `category` field reflects the component's place in Storybook's sidebar (the part of `Forms/Button` before the last `/`). Use it to organize the Figma file — see step 4 below.
+The `title` is the component's Storybook title, and `category` its place in Storybook's sidebar (the part of `Forms/Button` before the last `/`). Use them to organize the Figma file — see step 4 below. `id` is Storybook's ID for the component, which no other component shares, where a `name` can be: `--components` and `inspect` take a title or an ID as well as a name.
 
 2. **Inspect individual components** — for detailed prop-to-variant mapping of a specific component:
 
@@ -143,6 +144,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 ```json
 {
   "components": [{
+    "id": "forms-button",
     "title": "Forms/Button",
     "variantProperties": [
       { "name": "variant", "type": "VARIANT", "values": ["primary", "danger", "outline"], "defaultValue": "primary" },
@@ -198,7 +200,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    **Every fallback must be recorded, not just mentioned.** In step 6 you will write a `source` of `"measured"` or `"inferred"` for each variant. A run inspected later must be able to tell the difference without reading this conversation.
 
    **Checkpoint before step 5**: every variant has either measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` will have warned that the story is not passing its args through — still write the measured values and label them `measured` — they are what the story actually renders — and say so in the summary. Do not substitute values from source: the fix belongs in the story, and a variant styled from source would be scored against a measurement it does not match.
-4. **Organize the Figma file by Storybook hierarchy.** Group all unique top-level categories from the `category` field of each component, then create one Figma page per top-level category (e.g. `Forms`, `Data Display`, `Navigation`). Components without a category go on a `Components` page. Place each component set on the page that matches its top-level category. This mirrors the Storybook sidebar so designers can find things where they expect them. If multiple components share the same leaf name (e.g. two `Button`s under different categories), the per-page organization keeps them distinct.
+4. **Organize the Figma file by Storybook hierarchy.** Create one Figma page per `category`, the whole of it (e.g. `Forms`, `Data Display`, `ui/base`). Components without a category go on a `Components` page. Place each component set on its category's page, named by the last segment of its `title`, the name Storybook's sidebar shows (`Button` for `Forms/Button`, and `Tooltip` for `ui/base/Tooltip` though its `name` is `TooltipContent`), or by its `name` when it has no title. This mirrors the Storybook sidebar so designers can find things where they expect them, and keeps apart components that share a name: `ui/base/Button` and `ui/radix/Button` go to the pages `ui/base` and `ui/radix`. Step 5's template finds a category's page ignoring case, spaces, `/`, `-` and `_`, so a page an earlier push named `UI Base` is still the page for `ui/base`. A set an earlier push named by a component's `name`, where that differs, is left as it is: name it in the summary.
 
 5. Write to Figma with `use_figma`. The instruction MUST embed the measured values from step 3 — every variant needs a concrete fill, text colour, padding, radius, border, font size, and shadow. A call that only references variant names is a bug; refuse it and re-read the snap output.
 
@@ -230,8 +232,9 @@ use_figma({
     const SET_ID = null;
     const PART = 25;
     //
-    // Find or create the 'Forms' page; place the component set there.
-    let page = figma.root.children.find(p => p.name === PAGE_NAME);
+    // Find or create the 'Forms' page, ignoring case, ' ', '/', '-' and '_'.
+    const pageKey = (name) => name.toLowerCase().replace(/[ /_-]+/g, '');
+    let page = figma.root.children.find(p => pageKey(p.name) === pageKey(PAGE_NAME));
     if (!page) {
       page = figma.createPage();
       page.name = PAGE_NAME;
@@ -672,7 +675,7 @@ use_figma({
 })
 ```
 
-   Write every slice's `readback` entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by the component title and the snap variant slug, with the set's id, the `id` the calls returned, as `nodeId`, since each entry's checksum is sealed under it, so each component has the id of its own set. Copy each entry whole, its `readAt` and `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null` (a variant with no text child, like the status dot below, returns `null` for the text's four fields, and one without auto layout for `gap`), and no field added that the entry lacks or dropped that it has. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned, nor one from an earlier run. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. The file's layout is yours, since indentation and key order do not change a checksum, but its values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match, whose component has the `nodeId` of another, that lacks a field the template always returns, or whose `readAt` is before the snap, as an unverified readback, scores nothing in it, and fails `--strict`.
+   Write every slice's `readback` entries into `.storysync/figma-readback.json` exactly as the calls returned them, merging the slices: keyed by the component's `title` (its `id` when it has none) and the snap variant slug, with the set's id, the `id` the calls returned, as `nodeId`, since each entry's checksum is sealed under it, so each component has the id of its own set. Copy each entry whole, its `readAt` and `checksum` included, with every value as it came back: numbers digit for digit (`0.4000000059604645`, not `0.4`), colours as written, a `null` as `null` (a variant with no text child, like the status dot below, returns `null` for the text's four fields, and one without auto layout for `gap`), and no field added that the entry lacks or dropped that it has. Never fill in or recompute a value, from snap, from what you sent in step 5 or from anywhere else, and never write an entry for a variant no call returned, nor one from an earlier run. If a response is too long to copy whole, read fewer variants per call, splitting the slice, rather than summarising it. The file's layout is yours, since indentation and key order do not change a checksum, but its values are not: `verify` recomputes each entry's checksum, and reports any entry whose checksum is missing or does not match, whose component has the `nodeId` of another, that lacks a field the template always returns, or whose `readAt` is before the snap, as an unverified readback, scores nothing in it, and fails `--strict`.
 
 ```json
 {
@@ -845,7 +848,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
    - Normalize before comparing: lowercase hex colors, convert rem→px (1rem=16px), strip units for numeric comparison.
 
-6. **Compare components** — match by name (case-insensitive). If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing. For each component:
+6. **Compare components** — pair each code component with a Figma component set of its set name, case-insensitively: the last segment of its `title`, or its `name` when it has no title, as Components step 4 names sets, or its `name` where no set has that, as an earlier push named them. A name one code component and one set have is a pair, whatever page the set is on. If two code components share a name (e.g. `Forms/Button` and `Nav/Button`), or two Figma component sets do (on different pages: an archived copy, say, or each category's own `Button`), tell them apart by page: a code component and a set of its name on its category's page (`Components` when it has none), each the only one of that name on that page on its side, are a pair, comparing page names ignoring case, spaces, `/`, `-` and `_`. Of the copies left, one code component and one set are a pair, code components alone are code only, and sets alone Figma only. Any other copies left can't be told apart: report the name as ambiguous, and only as ambiguous: compare none of the copies left, and don't also count them as matched, mismatched or missing. Name a component that shares its name by its `title`, and a set by its page and name. For each component:
    - In code/Storybook but not in Figma → **code only** (not yet synced)
    - In Figma but not in code/Storybook → **Figma only** (orphaned or renamed)
    - Both exist → compare variant properties: missing props, extra props, missing/extra values per prop.

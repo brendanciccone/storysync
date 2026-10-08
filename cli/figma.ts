@@ -44,6 +44,12 @@ export interface FigmaVariable {
 
 export interface FigmaComponentInfo {
   name: string;
+  /**
+   * The page the set is on. The push puts each Storybook category on a page
+   * of its own, so this is what tells apart the sets of a name two categories
+   * share, `ui/base`'s Button and `ui/radix`'s.
+   */
+  page?: string;
   variantProperties: { name: string; type: string; values: string[] }[];
   variantCount: number;
 }
@@ -360,10 +366,11 @@ export class FigmaClient {
     const components: FigmaComponentInfo[] = [];
     for (const page of pages) {
       try {
-        components.push(...await this.readAll<FigmaComponentInfo>(fileKey, `components on page "${page.name}"`,
+        const read = await this.readAll<FigmaComponentInfo>(fileKey, `components on page "${page.name}"`,
           `Read the component sets and variant properties on page "${page.name}", a slice at a time`,
           (start) => pluginCode({ PAGE_ID: page.id, START: start }, READ_COMPONENTS_PLUGIN_CODE),
-          first?.id === page.id ? first : undefined));
+          first?.id === page.id ? first : undefined);
+        components.push(...read.map((c) => ({ ...c, page: page.name })));
       } catch (err) {
         if (err instanceof FigmaRateLimitError) throw err;
         throw new Error(`Failed to read page "${page.name}" of the Figma file: ${err instanceof Error ? err.message : String(err)}`);

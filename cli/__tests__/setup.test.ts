@@ -703,6 +703,38 @@ test("every push summary says a transparent border shows as an unfilled ring", (
   }
 });
 
+test("every push instruction makes a page per whole category and names a set by its title's last segment", () => {
+  // With Storybook's own titles, ui/base/Button's top-level category is "ui",
+  // as is ui/radix/Button's: one page a top-level category put them on one
+  // page as one set. And named by the component, the DatePicker stories'
+  // Calendar was Calendar's set.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /top-level categor/, `${path} still makes a page per top-level category`);
+      assert.match(text, /page per `?category`?, the whole of it/, `${path} never makes a page per whole category`);
+      assert.match(text, /named by the last segment of its `title`/, `${path} never names a set by its title's last segment`);
+      assert.match(text, /ignoring case, spaces, `\/`, `-` and `_`/, `${path} never finds a page an earlier push named another way`);
+    }
+    for (const path of files.slice(0, 2)) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /const pageKey = \(name\) => name\.toLowerCase\(\)\.replace\(\/\[ \/_-\]\+\/g, ''\);/, `${path}'s template finds a page only by its exact name`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every audit instruction reports a name repeated in code or in Figma as ambiguous", () => {
   // diff reads every page now, so Figma can repeat a name too, an archived
   // copy or each category's Button, and reports it as ambiguous. Comparing
@@ -722,7 +754,12 @@ test("every audit instruction reports a name repeated in code or in Figma as amb
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /two code components share a name[^\n]*or two Figma component sets do[^\n]*ambiguous/, `${path} reports only a name code repeats as ambiguous`);
-      assert.match(text, /share a name[^\n]*report the name as ambiguous, and only as ambiguous: compare none of its copies, and don't also count it as matched, mismatched or missing/, `${path} has a repeated name compared as well as reported ambiguous`);
+      assert.match(text, /share a name[^\n]*report the name as ambiguous, and only as ambiguous: compare none of the copies left, and don't also count them as matched, mismatched or missing/, `${path} has a repeated name compared as well as reported ambiguous`);
+      // Told apart by page first, as the push lays a category out on a page
+      // of its own: by name alone, a library with Base UI and Radix copies of
+      // every component compared none of them.
+      assert.match(text, /share a name[^\n]*tell them apart by page|share a name[^\n]*on its category's page/, `${path} never tells a repeated name's copies apart by page`);
+      assert.match(text, /ignoring case, spaces, `\/`, `-` and `_`/, `${path} compares page names as written, not as diff does`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });

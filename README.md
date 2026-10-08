@@ -363,13 +363,13 @@ A missing baseline is always an error, so a wrong `--baseline` path can't pass b
 
 ### `storysync map`
 
-Maps every component to Figma variant definitions.
+Maps every component to Figma variant definitions. Each one has its Storybook `id` and `title`. Titles come from Storybook's `index.json`. If Storysync can't read it, it rebuilds them from the IDs, which loses case and folders (`UI Base/Button` for `ui/base/Button`), and `list` says so.
 
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
-  --components <names>   Comma-separated component names or IDs (default: all);
+  --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
   --json                 Output JSON instead of formatted text
@@ -384,7 +384,7 @@ Renders each component variant in a headless browser and records its computed st
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
-  --components <names>   Comma-separated component names or IDs (default: all);
+  --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
   --variants <mode>      representative (default) or all
@@ -481,12 +481,13 @@ Entries that fail aren't scored and fail `--strict`. The checksum isn't a signat
 
 ### `storysync list`
 
-Lists the components in Storybook. MDX docs pages, like an introduction, are left out here and in every other command that reads components.
+Lists the components in Storybook, each by its title and ID, either of which `--components` and `inspect` take. MDX docs pages, like an introduction, are left out here and in every other command that reads components.
 
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --json                 Output JSON instead of formatted text
 ```
 
 ### `storysync diff`
@@ -506,7 +507,7 @@ Options:
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
   --mode <name>          Figma variable mode to read (default: each collection's first mode)
-  --components <names>   Comma-separated component names or IDs to diff, with --storybook
+  --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
   --json                 Output JSON instead of formatted text
@@ -525,7 +526,7 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybo
 - If Storybook can't be listed or a component can't be mapped, the run is reported as partial (`storybookReadFailed` or `mappingFailures` in `--json`) and fails `--strict`. A partial run never ends with "No differences found".
 - `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later.
 - A component too big for one call, such as a thousand icons as the options of one property, fails the read and is named.
-- A name on more than one Figma page, like an archived copy, is reported as `ambiguous` and fails `--strict`.
+- A name two components share, like `ui/base/Button` and `ui/radix/Button`, is compared page by page, as the push lays it out. Copies the pages don't tell apart, like an archived copy on a page of its own, are reported as `ambiguous` and fail `--strict`.
 
 ### `storysync inspect`
 
@@ -534,8 +535,8 @@ Shows one component's props and how each maps to Figma.
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --component <name>     Component name or ID to inspect (required);
-                         a name that matches nothing is an error
+  --component <name>     Component name, title or ID to inspect (required);
+                         a name that matches nothing, or several, is an error
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
 ```
 
@@ -548,7 +549,7 @@ Options:
 - **Variable modes:** only each collection's first mode is read. Use `--mode <name>`, or ask the agent, for another mode like "Dark".
 - **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
-- **Component names:** matched by lowercased name, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is reported as `ambiguous` instead of being guessed.
+- **Component names:** a component set is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page. Copies no page tells apart are reported as `ambiguous` instead of being guessed.
 - **Wide-gamut colour tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
 - **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }` aren't followed, for the push or for `diff`.
 

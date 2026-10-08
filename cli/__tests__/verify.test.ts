@@ -651,6 +651,38 @@ test("verify: surfaces failures the snap recorded about itself", () => {
   assert.match(result.snapWarnings[0], /2 variant\(s\) could not be measured/);
 });
 
+test("verify: an untitled component is keyed by its ID, so two of one name are both scored", () => {
+  // Keyed by name, Toaster under ui/base/Sonner and under ui/radix/Sonner
+  // collapsed into one, the last standing for both, and the run read 100%
+  // having scored only one of them.
+  const one = snapWith([{ slug: "a" }]).components[0];
+  const snap = snapWith([{ slug: "a" }]);
+  snap.components = [
+    { ...one, id: "ui-base-sonner", name: "Toaster", title: undefined },
+    { ...one, id: "ui-radix-sonner", name: "Toaster", title: undefined },
+  ];
+  const entry = { a: complete({ source: "measured" }) };
+  const readback: ReadbackFile = {
+    version: 1,
+    components: {
+      "ui-base-sonner": { nodeId: "1:2", variants: sealed(entry, "1:2") as never },
+      "ui-radix-sonner": { nodeId: "3:4", variants: sealed({ a: complete({ source: "measured", fontSize: 14 }) }, "3:4") as never },
+    },
+  };
+  const result = verify(snap, readback, 0.5);
+  assert.deepEqual(result.variants.map((v) => [v.component, v.status]), [["ui-base-sonner", "verified"], ["ui-radix-sonner", "drifted"]]);
+  assert.deepEqual(result.snapIssues, []);
+});
+
+test("verify: components that share a key are a snap issue, since only one was scored", () => {
+  // A snap from before IDs were recorded, with two untitled Toasters.
+  const one = snapWith([{ slug: "a" }]).components[0];
+  const snap = snapWith([{ slug: "a" }]);
+  snap.components = [{ ...one, name: "Toaster", title: undefined }, { ...one, name: "Toaster", title: undefined }];
+  const result = verify(snap, { version: 1, components: { Toaster: { nodeId: "1:2", variants: sealed({ a: complete({ source: "measured" }) }) as never } } }, 0.5);
+  assert.deepEqual(result.snapIssues, ['2 components share the key "Toaster", so only one of them was scored']);
+});
+
 test("verify: a snap with no components at all is reported as an issue", () => {
   const empty = { ...snapWith([{ slug: "a" }]), components: [] } as unknown as SnapResult;
   const result = verify(empty, readbackWith({}), 0.5);
