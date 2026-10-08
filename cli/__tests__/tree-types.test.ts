@@ -48,6 +48,8 @@ test("constants: the limits, record arities and root fields the design fixes", (
   assert.deepEqual(RECORD, { F: 15, T: 23, V: 10 });
   // Paint, size and type stay in the root's styles, so the root node never carries them.
   for (const paint of ["bg", "bd", "r", "sh", "op", "tx", "S", "abs"]) assert.ok(!(ROOT_FIELDS as readonly string[]).includes(paint), paint);
+  // What no style holds does go on it, so a root that is an <svg> or an <img> can be written down.
+  for (const fact of ["L", "clip", "tf", "cp", "svg", "shapes", "img", "raster", "approx"]) assert.ok((ROOT_FIELDS as readonly string[]).includes(fact), fact);
 });
 
 // --- parentKey ------------------------------------------------------------------

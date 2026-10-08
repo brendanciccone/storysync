@@ -194,8 +194,18 @@ export interface Flow {
  * NormalizedStyles has no field for. Everything else about the root, its
  * paint, size and type, is the root's styles, as it was before trees, so it
  * is never stored twice.
+ *
+ * Section 7.2 of the design lists the first thirteen, with frame roots in
+ * mind. The rest are there because a root can be an `<svg>` (shadcn's
+ * Spinner) or an `<img>`, whose markup, shapes and image no style holds, and
+ * can carry a clip-path or an approximation like any node. A root never
+ * collapses into a text leaf: a component's root is a frame in Figma, so its
+ * text is a `#text` child, and `tx` stays off this list.
  */
-export const ROOT_FIELDS = ["k", "t", "el", "box", "L", "clip", "bm", "tf", "fl", "bf", "ol", "cls", "vis"] as const;
+export const ROOT_FIELDS = [
+  "k", "t", "el", "box", "L", "clip", "bm", "tf", "fl", "bf", "ol", "cls", "vis",
+  "cp", "svg", "shapes", "img", "raster", "approx",
+] as const;
 
 /** Readback record lengths by Figma node kind (section 9.2 of the design); an image is an F record. */
 export const RECORD = { F: 15, T: 23, V: 10 } as const;                        // readback arities (section 9.2)
