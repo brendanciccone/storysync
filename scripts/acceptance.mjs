@@ -228,10 +228,13 @@ function renderBounds(node) {
  * absoluteRenderBounds is what Figma's would be. A translucent color's alpha
  * is its paint's opacity. `strokeAlign` builds the stroke another way: INSIDE,
  * at the measured size, as the skill says to for a frame given a fixed size,
- * or CENTER. `strokeHidden` builds a transparent border's stroke as a designer
- * might, a paint of full opacity hidden with the eye icon, `visible: false`.
+ * and for a hugging one whose fill runs under a transparent border, with
+ * `strokesIncludedInLayout`, or CENTER. `strokeHidden` builds a transparent
+ * border's stroke as a designer might, a paint of full opacity hidden with the
+ * eye icon, `visible: false`. A width or height of 0, a closed Collapsible's,
+ * is built at 0.01, the least Figma takes, as the skill says.
  */
-function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } = {}) {
+function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
   const textNode = {
     type: "TEXT",
@@ -253,6 +256,7 @@ function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } =
     strokeWeight: new Set(Object.values(weight)).size === 1 ? weight.Top : MIXED,
     ...Object.fromEntries(SIDES.map((side) => [`stroke${side}Weight`, weight[side]])),
     strokeAlign,
+    strokesIncludedInLayout,
     effects: (st.boxShadow ?? []).map((shadow) => ({
       type: shadow.inset ? "INNER_SHADOW" : "DROP_SHADOW",
       color: { ...rgb01(shadow.color ?? "#000000"), a: shadow.color ? alpha01(shadow.color) : 0 },
@@ -271,8 +275,8 @@ function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } =
     itemSpacing: st.gap?.column ?? 0,
     opacity: st.opacity,
     // Figma rounds text to whole pixels, so the border box lands near, not on, CSS.
-    width: Math.round(st.width) - share * (weight.Left + weight.Right),
-    height: Math.round(st.height) - share * (weight.Top + weight.Bottom),
+    width: Math.max(0.01, Math.round(st.width) - share * (weight.Left + weight.Right)),
+    height: Math.max(0.01, Math.round(st.height) - share * (weight.Top + weight.Bottom)),
     findOne: (predicate) => (predicate(textNode) ? textNode : null),
   };
   Object.defineProperty(node, "absoluteRenderBounds", { enumerable: true, get: () => renderBounds(node) });
@@ -285,9 +289,9 @@ function expandVariants(component) {
     .map((v) => ({ ...v, styles: { ...component.base.styles, ...(v.delta ?? {}) } }));
 }
 
+/** A variant's name as the skill gives it: '' for a component with no variant properties. */
 function figmaVariantName(combination) {
-  const entries = Object.entries(combination ?? {});
-  return entries.length ? entries.map(([k, v]) => `${k}=${v}`).join(", ") : "default";
+  return Object.entries(combination ?? {}).map(([k, v]) => `${k}=${v}`).join(", ");
 }
 
 const AsyncFunction = (async () => {}).constructor;
@@ -507,8 +511,9 @@ async function readSet(readback, { componentSet, slugByName, sourceBySlug }, bat
     const read = Object.keys(slice.readback);
     assert(read.join() === slugs.join(), `a call naming ${slugs.join(", ")} read back ${read.join(", ") || "nothing"}`);
     for (const slug of read) assert(!(slug in variants), `${slug} was read back in two slices`);
-    assert(slice.total === componentSet.children.length,
-      `the slice reports a total of ${slice.total}, but the set holds ${componentSet.children.length} variants`);
+    // A plain component is its own one variant.
+    const size = componentSet.type === "COMPONENT" ? 1 : componentSet.children.length;
+    assert(slice.total === size, `the slice reports a total of ${slice.total}, but the set holds ${size} variants`);
     Object.assign(variants, slice.readback);
     total = slice.total;
   }
@@ -697,6 +702,15 @@ const KIDS = Symbol("children");
  * x or y does nothing, as in Figma. `ignorePositions(true)` makes every x and
  * y written from then on do nothing too, for a write Figma ignores that
  * nothing else would catch.
+ *
+ * Nodes keep shared plugin data and can be removed. `variable(name, hex)`
+ * adds a color variable, and a paint or effect bound to one with
+ * figma.variables takes its color as Figma does when assigned: a paint bound
+ * afresh, to a variable its node's paint at that place was not bound to,
+ * gets the variable's alpha as its opacity, as a live push found it set to 1,
+ * and one bound as before keeps the opacity it is given; an effect takes the
+ * variable's color, alpha and all. loadFontAsync loads only `FONTS`, as the
+ * plugin context has only the fonts Figma can load: no system-ui, no Menlo.
  */
 function figmaDocument() {
   let count = 0;
@@ -704,6 +718,7 @@ function figmaDocument() {
   let ignored = false;
   const byId = new Map();
   const pages = [];
+  const variables = new Map();
   // Where auto layout puts a node, or null when its parent has none.
   const flowed = (node, axis) => {
     const parent = node.parent;
@@ -717,8 +732,19 @@ function figmaDocument() {
     }
     return at;
   };
+  const boundTo = (paint) => paint?.boundVariables?.color?.id ?? null;
+  // What Figma stores when a node's fills, strokes or effects are assigned.
+  const stored = (key, before, list) => list.map((paint, i) => {
+    const id = boundTo(paint);
+    if (!id) return { ...paint };
+    const { r, g, b, a } = variables.get(id).value;
+    if (key === "effects") return { ...paint, color: { r, g, b, a } };
+    return { ...paint, color: { r, g, b }, opacity: boundTo(before[i]) === id ? paint.opacity : a };
+  });
   const create = (type, name) => {
     const node = { id: `${count++}:1`, type, name, parent: null, width: 100, height: 100 };
+    // A component's own layers, which the checks keep out of the document.
+    if (type === "COMPONENT") node.children = [];
     const at = { x: 0, y: 0 };
     for (const axis of ["x", "y"]) {
       Object.defineProperty(node, axis, {
@@ -729,6 +755,27 @@ function figmaDocument() {
         },
       });
     }
+    const paints = { fills: [], strokes: [], effects: [] };
+    for (const key of Object.keys(paints)) {
+      Object.defineProperty(node, key, {
+        enumerable: true,
+        get: () => paints[key],
+        set: (list) => {
+          paints[key] = stored(key, paints[key], list);
+        },
+      });
+    }
+    const data = new Map();
+    node.setSharedPluginData = (namespace, key, value) => {
+      if (typeof value !== "string") throw new Error(`setSharedPluginData takes a string, not ${String(value)}`);
+      data.set(`${namespace} ${key}`, value);
+    };
+    node.getSharedPluginData = (namespace, key) => data.get(`${namespace} ${key}`) ?? "";
+    node.remove = () => {
+      if (node.parent) node.parent[KIDS].splice(node.parent[KIDS].indexOf(node), 1);
+      node.parent = null;
+      byId.delete(node.id);
+    };
     byId.set(node.id, node);
     return node;
   };
@@ -752,7 +799,7 @@ function figmaDocument() {
       adopt(node, child);
     };
     node.resizeWithoutConstraints = (width, height) => {
-      if (!(width > 0 && height > 0)) throw new Error(`cannot resize a ${type} to ${width} by ${height}`);
+      if (!(width >= 0.01 && height >= 0.01)) throw new Error(`cannot resize a ${type} to ${width} by ${height}`);
       Object.assign(node, { width, height });
     };
     node.findAllWithCriteria = ({ types }) => node.children.flatMap((child) => [
@@ -767,6 +814,10 @@ function figmaDocument() {
     return node;
   };
   page("Page 1");
+  const bind = (item, field, variable) => {
+    const { [field]: _, ...rest } = item.boundVariables ?? {};
+    return { ...item, boundVariables: variable ? { ...rest, [field]: { type: "VARIABLE_ALIAS", id: variable.id } } : rest };
+  };
   const call = () => {
     loaded = new Set([pages[0].id]);
     const figma = {
@@ -795,6 +846,13 @@ function figmaDocument() {
         set.height = Math.max(...components.map((c) => c.y + c.height));
         return set;
       },
+      variables: {
+        setBoundVariableForPaint: (paint, field, variable) => bind(paint, field, variable),
+        setBoundVariableForEffect: (effect, field, variable) => bind(effect, field, variable),
+      },
+      loadFontAsync: async ({ family, style }) => {
+        if (!FONTS[family]?.includes(style)) throw new Error(`The font "${family} ${style}" could not be loaded`);
+      },
     };
     return figma;
   };
@@ -807,23 +865,39 @@ function figmaDocument() {
   const ignorePositions = (on) => {
     ignored = on;
   };
-  return { call, nodes, container: inside, ignorePositions };
+  const variable = (name, hex) => {
+    const made = { id: `VariableID:${variables.size + 1}`, name, resolvedType: "COLOR", value: { ...rgb01(hex), a: alpha01(hex) } };
+    variables.set(made.id, made);
+    return made;
+  };
+  return { call, nodes, container: inside, ignorePositions, variable };
 }
+
+/**
+ * The fonts the simulated plugin context can load, with Figma's own style
+ * names: Inter's spaced, Roboto Mono's not.
+ */
+const FONTS = {
+  Inter: ["Thin", "Extra Light", "Light", "Regular", "Medium", "Semi Bold", "Bold", "Extra Bold", "Black"],
+  "Roboto Mono": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold"],
+};
 
 /**
  * The build template from the shipped skill: one part of a set.
  *
  * Its VARIANTS table is replaced with the part's own variants, and its
  * PROPERTIES table with the component's variantProperties from snap, each
- * written an entry a line, and PAGE_NAME, SET_NAME, SET_ID and PART with the
- * call's own. applyStyles is where the agent writes the Plugin API code that
- * styles a variant; `run()` gives it the simulated node of figmaNode() for
- * those styles, sized as Figma sizes it, so the readback template reads back
- * exactly what the part sent. Everything else, finding
- * the set and its variants, creating what is missing, and laying the set out,
- * runs verbatim. `code(..., { styled: false })` leaves applyStyles as the
- * skill ships it, for pricing what an agent would send. `mutate` rewrites the
- * shipped code, to show a check fails a template that gets something wrong.
+ * written an entry a line, and PAGE_NAME, SET_NAME, ID, TITLE, SET_ID and
+ * PART with the call's own. applyStyles is where the agent writes the Plugin
+ * API code that styles a variant; `run()` gives it the simulated node of
+ * figmaNode() for those styles, sized as Figma sizes it, so the readback
+ * template reads back exactly what the part sent, or, given `styler`, that
+ * code instead, run beside the template's own helpers with `scope`'s names
+ * in reach. Everything else, finding the set and its variants, creating what
+ * is missing, and laying the set out, runs verbatim. `code(..., { styled:
+ * false })` leaves applyStyles as the skill ships it, for pricing what an
+ * agent would send. `mutate` rewrites the shipped code, to show a check fails
+ * a template that gets something wrong.
  */
 function loadSkillBuild(mutate = null) {
   const block = useFigmaBlock(/^Create or update/);
@@ -833,42 +907,47 @@ function loadSkillBuild(mutate = null) {
   assert(list.test(block), "the build template has no VARIANTS table to loop over");
   assert(table.test(block), "the build template has no PROPERTIES table to lay the set out by");
   assert(styler.test(block), "the build template has no applyStyles for the agent's styling code");
-  for (const name of ["PAGE_NAME", "SET_NAME", "SET_ID", "PART"]) {
+  for (const name of ["PAGE_NAME", "SET_NAME", "ID", "TITLE", "SET_ID", "PART"]) {
     assert(constant(name).test(block), `the build template defines no ${name}`);
   }
   const part = Number(/const PART = (\d+);/.exec(block)?.[1]);
   assert(part > 0, "the build template's PART is not a number");
   const shipped = mutate ? mutate(block) : block;
   assert(!mutate || shipped !== block, "the mutation no longer matches the build template");
-  const code = (variants, constants, properties, { styled = true } = {}) => {
+  const code = (variants, constants, properties, { styled = true, styler: own = null } = {}) => {
     assert(Array.isArray(properties), "a build part needs the component's variantProperties");
     const body = withConstants(shipped, constants)
       .replace(table, () => `const PROPERTIES = [\n${properties.map((p) => `      ${JSON.stringify(p)},`).join("\n")}\n    ];`)
       .replace(list, () => `const VARIANTS = [\n${variants.map(({ name, styles }) => `      ${JSON.stringify({ name, styles })},`).join("\n")}\n    ];`);
-    return styled
-      ? body.replace(styler, () => "const applyStyles = async (variant, styles) => {\n      Object.assign(variant, look(variant.name, styles));\n    };")
-      : body;
+    const styling = own ?? "Object.assign(variant, look(variant.name, styles));";
+    return styled ? body.replace(styler, () => `const applyStyles = async (variant, styles) => {\n      ${styling}\n    };`) : body;
   };
   const look = (name, styles) => {
     const { name: _, ...node } = figmaNode(name, styles);
     return node;
   };
-  const run = async (figma, variants, constants, properties) =>
-    JSON.parse(await new AsyncFunction("figma", "look", code(variants, constants, properties))(figma, look));
+  const run = async (figma, variants, constants, properties, { styler: own = null, scope = {} } = {}) =>
+    JSON.parse(await new AsyncFunction("figma", "look", ...Object.keys(scope), code(variants, constants, properties, { styler: own }))(
+      figma, look, ...Object.values(scope)));
   return { part, code, run, look };
 }
 
 /**
  * Pushes one set the way the skill says to: `variants` in snap's order, in
  * parts of `part`, the first part finding the set by name and every later one
- * by the id the first returned, each carrying the component's `properties`.
- * Returns what each part returned, calling `after` with each as it does.
+ * by the id the first returned, each carrying the component's `properties`
+ * and its Storybook `storyId` and `title`, by default `forms-<set>` and
+ * `Forms/<set>`. `styler` and `scope` style the variants another way, as
+ * `run()` takes them. Returns what each part returned, calling `after` with
+ * each as it does.
  */
-async function pushSet(build, doc, { page, set, variants, part, properties, after = null }) {
+async function pushSet(build, doc, { page, set, variants, part, properties, after = null, storyId = null, title = null, styler = null, scope = {} }) {
   const parts = [];
   let id = null;
-  for (const named of slices(variants, part)) {
-    const result = await build.run(doc.call(), named, { PAGE_NAME: page, SET_NAME: set, SET_ID: id, PART: part }, properties);
+  const named = { ID: storyId ?? `forms-${set.toLowerCase()}`, TITLE: title ?? `Forms/${set}` };
+  for (const slice of slices(variants, part)) {
+    const constants = { PAGE_NAME: page, SET_NAME: set, ...named, SET_ID: id, PART: part };
+    const result = await build.run(doc.call(), slice, constants, properties, { styler, scope });
     assert(id === null || result.id === id, `a part returned the set ${result.id}, not ${id}`);
     id = result.id;
     parts.push(result);
@@ -910,9 +989,11 @@ async function leftSet(build, doc, variants, { page = "Forms", set = "Button" } 
  * and rows exactly `gap` apart, each column as wide as its widest variant and
  * each row as tall as its tallest, the set reaching `gap` past the last of
  * them, nothing overlapping, and the layers panel reading the same way, row by
- * row. Returns the grid's nodes, null for a gap.
+ * row. Returns the grid's nodes, null for a gap. Lengths agree to within a
+ * millionth of a pixel, as a 0.01-high variant's row adds up in floats.
  */
 function assertGridOf(set, rows, extra, gap) {
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
   const panel = [...set.children].reverse();
   const reading = [...rows.flat().filter(Boolean), ...extra];
   assert(panel.map((n) => n.name).join("; ") === reading.join("; "), `the layers panel reads ${panel.map((n) => n.name).join("; ")}`);
@@ -938,26 +1019,26 @@ function assertGridOf(set, rows, extra, gap) {
   assert(xs[0] === gap && ys[0] === gap, `the first column and row are at ${xs[0]},${ys[0]}, not ${gap},${gap}`);
   xs.slice(1).forEach((x, c) => {
     const space = x - (xs[c] + widths[c]);
-    assert(space === gap, `column ${c + 2} starts ${space} past column ${c + 1}'s widest variant, not ${gap}`);
+    assert(near(space, gap), `column ${c + 2} starts ${space} past column ${c + 1}'s widest variant, not ${gap}`);
   });
   ys.slice(1).forEach((y, r) => {
     const space = y - (ys[r] + heights[r]);
-    assert(space === gap, `row ${r + 2} starts ${space} below row ${r + 1}'s tallest variant, not ${gap}`);
+    assert(near(space, gap), `row ${r + 2} starts ${space} below row ${r + 1}'s tallest variant, not ${gap}`);
   });
   let right = xs[xs.length - 1] + widths[widths.length - 1];
   let bottom = ys[ys.length - 1] + heights[heights.length - 1];
   if (below.length) {
     const space = below[0].y - bottom;
-    assert(space === gap && below.every((n) => n.y === below[0].y), `the extra row starts ${space} below the grid, not ${gap}`);
+    assert(near(space, gap) && below.every((n) => n.y === below[0].y), `the extra row starts ${space} below the grid, not ${gap}`);
     assert(below[0].x === gap, `the extra row starts at ${below[0].x} across, not ${gap}`);
     below.slice(1).forEach((n, k) => {
       const after = n.x - (below[k].x + below[k].width);
-      assert(after === gap, `"${n.name}" starts ${after} past "${below[k].name}", not ${gap}`);
+      assert(near(after, gap), `"${n.name}" starts ${after} past "${below[k].name}", not ${gap}`);
     });
     right = Math.max(right, below[below.length - 1].x + below[below.length - 1].width);
     bottom = below[0].y + Math.max(...below.map((n) => n.height));
   }
-  assert(set.width === right + gap && set.height === bottom + gap,
+  assert(near(set.width, right + gap) && near(set.height, bottom + gap),
     `the set is ${set.width} by ${set.height}, not ${right + gap} by ${bottom + gap}`);
   assertLaidOut(set);
   return grid;
@@ -1051,6 +1132,50 @@ function layoutScenarios(snapDir) {
       const columns = [1, 0, 3, 2].map((c) => COLUMNS[c]);
       assertGridOf(set, ROWS.map((row) => columns.map((column) => named(row, column))), [], gap);
       return "disabled first where it defaults to true; outline and lg, called the defaults, where PROPERTIES lists them";
+    },
+
+    async sizes(build) {
+      // snap measures a closed Collapsible's content 0 high, and a Drawer's
+      // closed trigger, 39.34 by 24, in the set of its open panel, 1280 by
+      // 197 or 320 by 800. A zero side is built at 0.01, the least Figma
+      // takes; each column is as wide as its widest variant and each row as
+      // tall as its tallest, so none overlaps or hides another, and the
+      // 0.01-high variant keeps a row of its own.
+      const { gap, measured } = data();
+      const inline = measured[0].styles;
+      const panel = (width, height) => ({ ...inline, display: "block", width, height, border: null, borderUniform: null });
+      const trigger = { ...inline, width: 39.34, height: 24 };
+      const drawer = (direction, open) => `direction=${direction}, open=${open}`;
+      const sets = [
+        {
+          set: "Drawer",
+          properties: [
+            { name: "direction", type: "VARIANT", values: ["bottom", "right"], defaultValue: "bottom" },
+            { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+          ],
+          variants: [
+            { name: drawer("bottom", true), styles: panel(1280, 197) }, { name: drawer("bottom", false), styles: trigger },
+            { name: drawer("right", true), styles: panel(320, 800) }, { name: drawer("right", false), styles: trigger },
+          ],
+          grid: ["bottom", "right"].map((d) => [drawer(d, false), drawer(d, true)]),
+        },
+        {
+          set: "Collapsible",
+          properties: [{ name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" }],
+          variants: [{ name: "open=true", styles: panel(1248, 120) }, { name: "open=false", styles: panel(1248, 0) }],
+          grid: [["open=false"], ["open=true"]],
+        },
+      ];
+      const doc = figmaDocument();
+      for (const { set, properties, variants, grid } of sets) {
+        await pushSet(build, doc, { page: "Overlays", set, variants, part: PART, properties });
+        const built = doc.nodes("COMPONENT_SET").find((n) => n.name === set);
+        assertGridOf(built, grid, [], gap);
+        for (const n of built.children) assert(n.width >= 0.01 && n.height >= 0.01, `"${n.name}" is ${n.width} by ${n.height}`);
+      }
+      const [closed] = doc.nodes("COMPONENT").filter((n) => n.name === "open=false");
+      assert(closed.height === 0.01, `the closed Collapsible is ${closed.height} high, not 0.01`);
+      return "a Drawer's 39 by 24 trigger beside its 1280 by 197 and 320 by 800 panels, and a 0.01-high Collapsible, laid out apart";
     },
 
     async frozen(build) {
@@ -1177,6 +1302,220 @@ function layoutScenarios(snapDir) {
       assertGridOf(doc.nodes("COMPONENT_SET")[0], ["a", "c"].map((v) => [null, "flag19", "flag0"].map((on) => name(v, on))), [], gap);
       assert(ms < 1000, `a part of 6 variants took ${Math.round(ms)} ms`);
       return `2 rows of 3 in ${Math.round(ms)} ms`;
+    },
+  };
+}
+
+/**
+ * The checks on what the build template does besides the layout, each
+ * `(build) => detail`, throwing when `build` gets it wrong, so a mutant of
+ * the template can be run through every one, as the layout's are. Each
+ * reproduces what a live push of shadcn/ui's components ran into.
+ */
+function buildScenarios(snapDir) {
+  let cached = null;
+  const data = () => {
+    if (cached) return cached;
+    const sets = simulatedSets(snapDir);
+    const variantsOf = (component) => expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
+    const button = sets.find((s) => s.component.name === "Button").component;
+    const frozen = sets.find((s) => s.component.name === "Frozen").component;
+    cached = { button, frozen, measured: variantsOf(button), frozenVariants: variantsOf(frozen) };
+    return cached;
+  };
+  const refused = async (attempt) => {
+    try {
+      await attempt();
+    } catch (err) {
+      return err.message;
+    }
+    return null;
+  };
+  // The top-level sets and plain components a document's pages hold.
+  const placed = (doc) => ["COMPONENT_SET", "COMPONENT"].flatMap((type) => doc.nodes(type)).filter((n) => n.parent?.type === "PAGE");
+
+  return {
+    async plain(build, readback = loadSkillReadback()) {
+      // map gave Button, Badge, Dialog and Tooltip no variant properties, and
+      // the build made each a set of one variant named '', which Figma
+      // renamed "=" and marked as broken: the readback found no variant
+      // named '', and componentPropertyDefinitions threw on every one. Such
+      // a component is one plain component on its page, restyled in place by
+      // the next push, read back as its own one variant, named '', and
+      // scored by verify under the slug default. A set an earlier push left
+      // of that name is refused, as is a plain one where a set is built.
+      const { measured } = data();
+      const { dir } = await proplessReadback(snapDir);
+      const styles = expandVariants(readJson(join(dir, "styles.json")).components.find((c) => c.name === "Badge"))[0].styles;
+      const doc = figmaDocument();
+      const push = (st, properties = [], name = "") => pushSet(build, doc, {
+        page: "Data", set: "Badge", storyId: "data-badge", title: "Data/Badge", part: 25, properties, variants: [{ name, styles: st }],
+      });
+      const [first] = await push(styles);
+      assert(JSON.stringify({ ...first, id: 0, name: 0 }) === JSON.stringify({ id: 0, name: 0, variants: 1, added: 1, updated: 0, rows: 1, columns: 1, extra: 0, fonts: {} }),
+        `the part returned ${JSON.stringify(first)}`);
+      const [component] = doc.nodes("COMPONENT");
+      assert(doc.nodes("COMPONENT_SET").length === 0 && doc.nodes("COMPONENT").length === 1 && component.id === first.id,
+        `a component with no variant properties was built as ${doc.nodes("COMPONENT_SET").length} sets and ${doc.nodes("COMPONENT").length} components`);
+      assert(component.name === "Badge" && component.parent.type === "PAGE" && component.parent.name === "Data",
+        `the component is "${component.name}" on ${component.parent?.type} "${component.parent?.name}"`);
+      const read = async () => (await readSet(readback, { componentSet: component, slugByName: { "": "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH)).variants;
+      const file = join(WORK, "readback-plain.json");
+      writeJson(file, { version: 1, fileKey: "acceptance", components: { "Data/Badge": { nodeId: component.id, variants: await read() } } });
+      const verdict = verifyJson(dir, file).json?.variants?.find((v) => v.component === "Data/Badge");
+      assert(verdict?.slug === "default" && verdict.status === "verified", `verify scored the plain Badge ${JSON.stringify(verdict)}`);
+
+      const [second] = await push({ ...styles, backgroundColor: "#0f766e" });
+      assert(second.id === first.id && second.added === 0 && second.updated === 1 && doc.nodes("COMPONENT").length === 1,
+        `the second push returned ${JSON.stringify(second)}, leaving ${doc.nodes("COMPONENT").length} components`);
+      const again = await read();
+      assert(again.default.backgroundColor === "#0f766e", `the second push left the fill ${again.default.backgroundColor}`);
+
+      // Named other than '', or pushed as a set onto the plain one: refused.
+      const misnamed = await refused(() => push(styles, [], "default"));
+      assert(misnamed && /name the one variant ""/.test(misnamed), `a part naming its one variant "default" ${misnamed ? `failed with: ${misnamed}` : "was built"}`);
+      const variant = [{ name: "variant", type: "VARIANT", values: ["solid"], defaultValue: "solid" }];
+      const grown = await refused(() => push(styles, variant, "variant=solid"));
+      assert(grown && grown.includes(component.id) && /ask the user/.test(grown) && doc.nodes("COMPONENT_SET").length === 0,
+        `a set pushed where the plain Badge is ${grown ? `failed with: ${grown}` : "was built"}`);
+
+      // A set a push before 0.4.0 left, its one variant named "=" by Figma.
+      const old = figmaDocument();
+      const broken = await leftSet(build, old, [{ name: "=", styles: measured[0].styles }], { page: "Data", set: "Badge" });
+      const before = old.nodes("COMPONENT").length;
+      const left = await refused(() => pushSet(build, old, { page: "Data", set: "Badge", part: 25, properties: [], variants: [{ name: "", styles }] }));
+      assert(left && left.includes(broken.id) && /ask the user/.test(left) && old.nodes("COMPONENT").length === before,
+        `a plain Badge pushed beside the broken set ${left ? `failed with: ${left}` : "was built"}, leaving ${old.nodes("COMPONENT").length - before} more components`);
+      return "built, read back and verified as one component, restyled in place; a misnamed variant, a set pushed onto it and the broken set refused";
+    },
+
+    async placed(build) {
+      // Every set the build created landed at 0,0, on top of the page's
+      // others. A new set or component goes 100 below everything on its
+      // page, one already there stays where it is, and each carries its
+      // Storybook id and title, so a set a designer renames is still found.
+      const { button, frozen, measured, frozenVariants } = data();
+      const doc = figmaDocument();
+      const pushes = [
+        { set: "Button", variants: measured, properties: button.variantProperties, storyId: button.id, title: button.title },
+        { set: "Frozen", variants: frozenVariants, properties: frozen.variantProperties, storyId: frozen.id, title: frozen.title },
+        { set: "Badge", variants: [{ name: "", styles: measured[0].styles }], properties: [], storyId: "forms-badge", title: "Forms/Badge" },
+      ];
+      const pushAll = async () => {
+        for (const p of pushes) await pushSet(build, doc, { page: "Forms", part: 25, ...p });
+      };
+      await pushAll();
+      const nodes = placed(doc);
+      assert(nodes.map((n) => n.name).join() === "Button,Frozen,Badge", `the page holds ${nodes.map((n) => n.name).join(", ")}`);
+      nodes.forEach((n, i) => {
+        const above = nodes[i - 1];
+        const y = above ? above.y + above.height + 100 : 0;
+        assert(n.x === 0 && n.y === y, `"${n.name}" is at ${n.x},${n.y}, not 0,${y}`);
+        const p = pushes[i];
+        const kept = [n.getSharedPluginData("storysync", "id"), n.getSharedPluginData("storysync", "title")];
+        assert(kept.join() === [p.storyId, p.title].join(), `"${n.name}" keeps the id and title ${kept.join(", ")}`);
+      });
+      // A designer moves the Button and renames it: the next push finds it by
+      // its id, restyles it there, and moves nothing.
+      const [set] = nodes;
+      Object.assign(set, { x: 600, y: -400, name: "Buttons" });
+      const where = () => JSON.stringify(placed(doc).map((n) => [n.id, n.x, n.y]));
+      const before = where();
+      await pushAll();
+      assert(where() === before && placed(doc).length === 3, `a second push moved or added a set: ${where()}`);
+      assert(set.name === "Buttons", `the push renamed the set "${set.name}"`);
+      // A set an earlier push left with no id on it gets one.
+      const old = figmaDocument();
+      const left = await leftSet(build, old, measured, { page: "Forms", set: "Button" });
+      await pushSet(build, old, { page: "Forms", part: 25, ...pushes[0] });
+      assert(left.getSharedPluginData("storysync", "id") === button.id, "a set an earlier push left was given no id");
+      return "Button, Frozen and Badge 100 apart, each with its id and title; a moved, renamed set found by its id and left where it was";
+    },
+
+    async painted(build) {
+      // A live push bound Attachment's error border, #df22254d, to the
+      // destructive variable, and it read back #df2225: Figma sets a paint
+      // freshly bound to opacity 1 when it is assigned. setPaints puts each
+      // paint's opacity back, and leaves a shadow unbound where binding gave
+      // it its variable's alpha, keeping one whose variable has its alpha.
+      const { measured } = data();
+      const doc = figmaDocument();
+      const vars = {
+        muted: doc.variable("muted", "#4b5563"), destructive: doc.variable("destructive", "#df2225"),
+        black: doc.variable("black", "#000000"), shadow: doc.variable("shadow/sm", "#0000001a"),
+      };
+      const plain = measured[0].styles;
+      const border = { width: 1, style: "solid", color: "#df22254d" };
+      const layer = (offsetY) => ({ offsetX: 0, offsetY, blur: 2 * offsetY, spread: 0, color: "#0000001a", inset: false });
+      const styles = {
+        ...plain, backgroundColor: "#4b556322", width: plain.width + 2, height: plain.height + 2,
+        border: { top: border, right: border, bottom: border, left: border }, borderUniform: border, boxShadow: [layer(1), layer(4)],
+      };
+      const styler = [
+        "Object.assign(variant, look(variant.name, styles));",
+        "setPaints(variant, 'fills', [{ ...variant.fills[0], variable: vars.muted }]);",
+        "setPaints(variant, 'strokes', [{ ...variant.strokes[0], variable: vars.destructive }]);",
+        "setPaints(variant, 'effects', [{ ...variant.effects[0], variable: vars.black }, { ...variant.effects[1], variable: vars.shadow }]);",
+      ].join("\n      ");
+      const properties = [{ name: "state", type: "VARIANT", values: ["error"], defaultValue: "error" }];
+      const [result] = await pushSet(build, doc, {
+        page: "Forms", set: "Attachment", part: 25, properties, variants: [{ name: "state=error", styles }], styler, scope: { vars },
+      });
+      const set = await doc.call().getNodeByIdAsync(result.id);
+      const [variant] = set.children;
+      const bound = (paint) => paint.boundVariables?.color?.id ?? null;
+      assert(bound(variant.fills[0]) === vars.muted.id && bound(variant.strokes[0]) === vars.destructive.id,
+        "setPaints left the fill or the stroke unbound");
+      const slice = await loadSkillReadback().read(set, { "state=error": "state-error" }, { "state-error": "measured" });
+      const read = slice.readback["state-error"];
+      const got = `${read.backgroundColor} ${read.borderUniform?.color}`;
+      assert(got === "#4b556322 #df22254d", `the bound fill and stroke read back ${got}, not #4b556322 #df22254d`);
+      const [unbound, kept] = variant.effects;
+      const alpha = (effect) => Math.round(effect.color.a * 255);
+      assert(bound(unbound) === null && alpha(unbound) === 0x1a, `a shadow bound to an opaque black kept ${bound(unbound)} at alpha ${alpha(unbound)}`);
+      assert(bound(kept) === vars.shadow.id && alpha(kept) === 0x1a, `a shadow bound to shadow/sm kept ${bound(kept)} at alpha ${alpha(kept)}`);
+      return `fill ${read.backgroundColor} and stroke ${read.borderUniform.color} bound; a shadow left unbound where binding took its alpha, one kept bound`;
+    },
+
+    async fonts(build) {
+      // snap records a CSS keyword such as system-ui, and Menlo for a
+      // monospace stack on macOS, and Figma's plugin context loads neither.
+      // loadFont loads the measured family where Figma has it, and otherwise
+      // Inter, or Roboto Mono for a monospace face, at the measured weight in
+      // whichever spelling the family uses, and the part names each stand-in.
+      // A part whose own code throws part way leaves no variant it made loose
+      // on the page, and the set as it was.
+      const { measured } = data();
+      const plain = measured[0].styles;
+      const fonted = (fontFamily, fontWeight) => ({
+        ...plain, fontFamily, fontWeight, text: { color: plain.text?.color ?? plain.color, fontSize: plain.fontSize, fontFamily, fontWeight },
+      });
+      const faces = { keyword: ["system-ui", 600], mono: ["Menlo", 400], named: ["Inter", 500], monoBold: ["ui-monospace", 600] };
+      const properties = [{ name: "font", type: "VARIANT", values: Object.keys(faces), defaultValue: "keyword" }];
+      const variants = Object.entries(faces).map(([face, [family, weight]]) => ({ name: `font=${face}`, styles: fonted(family, weight) }));
+      const styler = "Object.assign(variant, look(variant.name, styles));\n      variant.findOne((n) => n.type === 'TEXT').fontName = await loadFont(styles.text.fontFamily, styles.text.fontWeight);";
+      const doc = figmaDocument();
+      const [result] = await pushSet(build, doc, { page: "Forms", set: "Fonts", part: 25, properties, variants, styler });
+      const want = { "system-ui 600": "Inter Semi Bold", "Menlo 400": "Roboto Mono Regular", "ui-monospace 600": "Roboto Mono SemiBold" };
+      assert(JSON.stringify(result.fonts) === JSON.stringify(want), `the part named the stand-ins ${JSON.stringify(result.fonts)}`);
+      const set = await doc.call().getNodeByIdAsync(result.id);
+      const names = Object.fromEntries(variants.map((v) => [v.name, v.name]));
+      const slice = await loadSkillReadback().read(set, names, Object.fromEntries(variants.map((v) => [v.name, "measured"])));
+      const read = Object.values(slice.readback).map((e) => `${e.fontFamily} ${e.fontWeight}`).join(", ");
+      assert(read === "Inter 600, Roboto Mono 400, Inter 500, Roboto Mono 600", `read back ${read}`);
+
+      // The agent's own code throws on one variant, after the part made it.
+      const throwing = (on) => `if (variant.name === '${on}') throw new Error('applyStyles failed');\n      Object.assign(variant, look(variant.name, styles));`;
+      const fresh = figmaDocument();
+      const first = await refused(() => pushSet(build, fresh, { page: "Forms", set: "Fonts", part: 25, properties, variants, styler: throwing("font=named") }));
+      assert(first === "applyStyles failed" && fresh.nodes("COMPONENT").length === 0 && fresh.nodes("COMPONENT_SET").length === 0,
+        `a first part that failed ${first ? `with "${first}"` : "did not fail, and"} left ${fresh.nodes("COMPONENT").length} components`);
+      const extra = { name: "font=serif", styles: fonted("Georgia", 400) };
+      const wider = [{ ...properties[0], values: [...properties[0].values, "serif"] }];
+      const later = await refused(() => pushSet(build, doc, { page: "Forms", set: "Fonts", part: 25, properties: wider, variants: [...variants, extra], styler: throwing(extra.name) }));
+      assert(later === "applyStyles failed" && doc.nodes("COMPONENT").length === 4 && set.children.length === 4,
+        `a part that failed on a variant it added left ${doc.nodes("COMPONENT").length} components, ${set.children.length} in the set`);
+      return `stand-ins ${Object.values(want).join(", ")}, named in the part's result; a part that failed left nothing loose`;
     },
   };
 }
@@ -1545,10 +1884,10 @@ async function proplessReadback(snapDir, { bin } = {}) {
   const template = loadSkillReadback();
   const components = {};
   for (const name of ["Badge", "Tag"]) {
-    const node = figmaNode(figmaVariantName({}), styles);
-    if (name === "Tag") node.fills = [solidPaint("#ff00ff")];
-    const componentSet = { id: `set:${name}`, type: "COMPONENT_SET", name, children: [node] };
-    const { variants } = await readSet(template, { componentSet, slugByName: { default: "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH);
+    // Built as one plain component, its own one variant, named ''.
+    const componentSet = { ...figmaNode(figmaVariantName({}), styles), id: `component:${name}`, type: "COMPONENT", name };
+    if (name === "Tag") componentSet.fills = [solidPaint("#ff00ff")];
+    const { variants } = await readSet(template, { componentSet, slugByName: { "": "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH);
     components[`Data/${name}`] = { nodeId: componentSet.id, variants };
   }
   const file = { version: 1, fileKey: "acceptance", components };
@@ -2487,7 +2826,9 @@ async function main() {
     // template with its table filled in with that many variants' names and
     // full measured styles, each as large as the example's largest, and its
     // properties table with the set's: the agent's own Plugin API code has to
-    // fit in what is left, at least 15,000 characters. Every part carries the
+    // fit in what is left, at least 12,000 characters. A live push's own code,
+    // its applyStyles and helpers, came to 7,038, some 6,100 once the template
+    // gave it setPaints and loadFont, so that leaves twice it. Every part carries the
     // layout, which lays out and checks the whole set, so push all 256
     // variants through the simulated document too: each part has to return
     // counts small enough for one response, and leave every variant in the
@@ -2502,7 +2843,7 @@ async function main() {
     const variants = Object.keys(set.slugByName).map((name) => ({ name, styles: largest }));
     const constants = { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: "12:34", PART: part };
     const code = build.code(variants.slice(0, part), constants, set.properties, { styled: false }).length;
-    assert(code <= CODE_LIMIT - 15000, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
+    assert(code <= CODE_LIMIT - 12000, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
     const whole = build.code(variants, constants, set.properties, { styled: false }).length;
 
     const doc = figmaDocument();
@@ -2659,6 +3000,9 @@ async function main() {
   await check("a set of 20 BOOLEAN properties lays out from its variants, not every combination", async () =>
     layout.booleans(loadSkillBuild()));
 
+  await check("a set of very mixed sizes, and a variant 0 high, lays out with nothing overlapping or lost", async () =>
+    layout.sizes(loadSkillBuild()));
+
   await check("a layout that gets the order, the spacing or a check wrong fails these checks", async () => {
     // Each mutant rewrites the shipped template, and has to fail a layout
     // check the template passes.
@@ -2693,7 +3037,7 @@ async function main() {
       "lays a BOOLEAN out false, true whatever its default": (code) => code.replace(T.values, "p.type === 'BOOLEAN' ? ['false', 'true'] : p.values"),
       "keeps whichever copy of a name comes first among the children in the grid": (code) => code
         .replace(T.sort, T.sort.replace(" || byId(a, b)", "")),
-      "lays out a set with auto layout": (code) => between(code, "if (componentSet && componentSet.layoutMode !== 'NONE') {", "\n    }\n"),
+      "lays out a set with auto layout": (code) => between(code, "if (componentSet && PROPERTIES.length && componentSet.layoutMode !== 'NONE') {", "\n    }\n"),
       "never checks each variant is where the layout put it": (code) => between(code, "for (const c of order) {\n      if (Math.abs(", "\n    }\n"),
     };
     const failed = [];
@@ -2710,6 +3054,82 @@ async function main() {
         }
       }
       assert(failure, `a template that ${mutant} passed every layout check`);
+      failed.push(mutant);
+    }
+    return `${failed.length} mutants fail`;
+  });
+
+  // What the build does besides the layout, each check run on the shipped
+  // template and then on every mutant of it below.
+  const builds = buildScenarios(snapDir);
+
+  await check("a component with no variant properties is built as one plain component, read back and verified as its one variant", async () =>
+    builds.plain(loadSkillBuild()));
+
+  await check("a new set or component goes below what its page holds, one already placed stays, and each keeps its Storybook id and title", async () =>
+    builds.placed(loadSkillBuild()));
+
+  await check("a translucent color bound to a variable keeps its alpha in a fill, a stroke and a shadow", async () =>
+    builds.painted(loadSkillBuild()));
+
+  await check("a font Figma can't load gets a stand-in the part names, and a part that fails part way leaves nothing loose", async () =>
+    builds.fonts(loadSkillBuild()));
+
+  await check("a build that makes a set of no properties, stacks sets, drops an alpha or fails over a font fails these checks", async () => {
+    // Each mutant rewrites the shipped build template, or the readback, and
+    // has to fail one of the checks above, which the shipped ones pass.
+    const T = {
+      plain: "if (!PROPERTIES.length) {",
+      place: "if (fresh) Object.assign(node, { name: SET_NAME, x: 0, y: below });",
+      id: "node.setSharedPluginData('storysync', 'id', ID || '');",
+      found: "(n.name === SET_NAME || (ID && n.getSharedPluginData('storysync', 'id') === ID))",
+      restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));\n",
+      effect: "!p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]",
+      families: "for (const f of [family, /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : 'Inter', 'Inter']) {",
+      spelling: "style.replace(' ', ''), ",
+      named: "if (f !== family || s !== style) FONTS[family + ' ' + weight] = f + ' ' + s;",
+      cleanup: "      for (const variant of created) variant.remove();\n",
+      readPlain: "componentSet.type === 'COMPONENT' ? [componentSet] : componentSet.children",
+    };
+    const builds_ = {
+      "builds a component with no variant properties as a set of one, as the live push did": (code) => code.replace(T.plain, "if (false) {"),
+      "puts a new set at 0,0, on top of the page's others": (code) => code.replace(T.place, "if (fresh) node.name = SET_NAME;"),
+      "moves and renames a set already on the page": (code) => code.replace(T.place, "Object.assign(node, { name: SET_NAME, x: 0, y: below });"),
+      "keeps no Storybook id on what it builds": (code) => code.replace(T.id, ""),
+      "finds an earlier set by its name alone": (code) => code.replace(T.found, "n.name === SET_NAME"),
+      "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
+      "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p"),
+      "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),
+      "tries a style in Inter's spelling alone": (code) => code.replace(T.spelling, ""),
+      "names no stand-in": (code) => code.replace(T.named, ";"),
+      "leaves a failed part's new variants loose on the page": (code) => code.replace(T.cleanup, ""),
+    };
+    const readbacks = {
+      "reads a plain component's layers as its variants": (code) => code.replace(T.readPlain, "componentSet.children"),
+    };
+    const failed = [];
+    for (const [mutant, mutate] of Object.entries(builds_)) {
+      const build = loadSkillBuild(mutate);
+      let failure = null;
+      for (const scenario of Object.values(builds)) {
+        try {
+          await scenario(build);
+        } catch (err) {
+          failure = err.message;
+          break;
+        }
+      }
+      assert(failure, `a build template that ${mutant} passed every check`);
+      failed.push(mutant);
+    }
+    for (const [mutant, mutate] of Object.entries(readbacks)) {
+      let failure = null;
+      try {
+        await builds.plain(loadSkillBuild(), loadSkillReadback(mutate));
+      } catch (err) {
+        failure = err.message;
+      }
+      assert(failure, `a readback that ${mutant} passed`);
       failed.push(mutant);
     }
     return `${failed.length} mutants fail`;

@@ -165,6 +165,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | Measured | Figma |
    |---|---|
    | `backgroundColor` | fill (`null` means no fill, not black) |
+   | `backgroundClip` | where that fill stops: absent, CSS's `border-box`, it runs under a transparent or translucent border, and `padding-box` stops it at the border (see below) |
    | `color` / `text.color` | text fill |
    | `padding` | auto-layout padding |
    | `gap.column`, or `gap.row` when `flexDirection` is `column` or `column-reverse` | `itemSpacing`, the gap along the layout's direction (`verify` compares a flex element's gap on that axis alone) |
@@ -173,17 +174,17 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    | a color written `#rrggbbaa` | a translucent color: `#rrggbb` with the paint's `opacity` at `aa` / 255, so `#4b556322` is `#4b5563` at an opacity of 34 / 255, about 0.133; for a shadow, the effect color's `a` |
    | `boxShadow[]` | one effect per layer: `INNER_SHADOW` where `inset` is true, a ring like `ring-inset` included, else `DROP_SHADOW`, with `offset` from `offsetX`/`offsetY`, `radius` from `blur`, and `spread` (`verify` does not read effects back, so it will not flag a shadow built wrong) |
    | `display: flex` + `flexDirection` | auto-layout direction |
-   | `fontSize` / `fontWeight` / `fontFamily` | text style |
-   | `borderUniform` on a hugging frame | `strokeAlign = 'OUTSIDE'` (see below) |
+   | `fontSize` / `fontWeight` / `fontFamily` | text style, its font loaded with the build template's `loadFont` (see below) |
+   | `borderUniform` on a hugging frame | `strokeAlign = 'OUTSIDE'`, or `INSIDE` with `strokesIncludedInLayout = true` for a transparent or translucent border the fill runs under (see below) |
+   | `width` or `height` of 0 | 0.01, the least Figma's `resize` takes: a closed collapsible's content renders nothing, and is built as next to nothing |
 
    Five things that go wrong by default, in ways `verify` either will not catch or will not explain:
 
-   - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's outer size, its own size plus the stroke outside it, must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`. **A transparent border still takes its space.** A `borderUniform` whose `color` is `null`, such as CSS `border: 1px solid transparent`, is in snap's `width`/`height` like any other, so give it a stroke of that weight, aligned the same way, with a paint that draws nothing (`{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 0 }`), never no stroke: without one the variant is short by twice the border. Step 6 reads the size from the geometry, which counts a stroke whether its paint shows or not, and reads that stroke's color back as `null`, as snap measured it. In the browser the background runs under a transparent border, where Figma's fill stops at the stroke, so that ring shows no fill; painting the stroke to fill it would be scored as a border color the code does not have.
+   - **Stroke alignment: `OUTSIDE` on a hugging frame.** snap's `width`/`height` are the element's outer size, border included, and the Figma frame's outer size, its own size plus the stroke outside it, must match them. On an element sized by its content — every inline or inline-flex component, and any auto-layout frame you let hug — a CSS border always adds to the outer size, whatever `boxSizing` says; `box-sizing` only changes how an *explicit* width or height is read. So a hugging frame needs `strokeAlign = 'OUTSIDE'`. Figma's default, `INSIDE`, eats into the padding and leaves the variant short by twice the border width. Use `INSIDE` only when you give the frame a fixed size, and then set that size to the measured `width`/`height`. **A transparent border still takes its space.** A `borderUniform` whose `color` is `null`, such as CSS `border: 1px solid transparent`, is in snap's `width`/`height` like any other, so give it a stroke of that weight, aligned the same way, with a paint that draws nothing (`{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 0 }`), never no stroke: without one the variant is short by twice the border. Step 6 reads the size from the geometry, which counts a stroke whether its paint shows or not, and reads that stroke's color back as `null`, as snap measured it. **Where the fill stops is `backgroundClip`.** The browser paints the background under a transparent or translucent border unless it is clipped to the padding box. With `backgroundClip: padding-box`, as shadcn/ui's Button has (`bg-clip-padding`), the fill stops at the border, as Figma's does at an `OUTSIDE` stroke, so build that border `OUTSIDE`, on a fixed-size frame sized to the measured size less the border. Without it, CSS's `border-box`, as on shadcn/ui's Badge, the fill runs under the border, as Figma's does under an `INSIDE` stroke, so build it `INSIDE`, with `strokesIncludedInLayout = true` on a hugging frame so the stroke still adds to its size. Either way the size and the stroke's color read back as measured; never paint the stroke to look filled, which `verify` scores as a border color the code does not have.
    - **Lay the variants out.** A component set is a frame containing its variants, each needing its own x/y, and the frame must be grown to fit them. Created without positions they all land at `0,0`, stacked and clipped by a frame still sized for one. Position each variant in a grid — one row per value of the first variant property, the remaining combinations across — with spacing, and size the set to contain them. With every combination built, a single row of dozens of variants is unreadable. **Order the grid by snap's `variantProperties`, never by the set's children**: their order is whatever an earlier push or a designer left, and a set laid out in it gets rows whose columns disagree. Take the properties, and each one's values, in the order snap records them: a `VARIANT`'s default value first, then the rest in the order of the component's prop type as Storybook's docs list it (a story's `argTypes` options are not read); a `BOOLEAN`'s default comes first, `false` before `true` unless it defaults to `true`. Each column is then one combination of the other properties in every row, and the layers panel lists the variants in the same order. Figma makes the top-left variant the set's default variant, so that is the variant of each property's first value: the component's own default. Step 5's build template does all of this; give it the properties and leave its layout as it is.
    - **Assert the layout before returning.** After positioning, check that no two variants' bounding boxes intersect and that the set's bounds contain every child. Geometry comparison catches variants clipped by an undersized frame, but two same-sized variants stacked inside an adequately sized one measure correctly and stay invisible — so the check has to happen here, at write time.
-   - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no Times. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them. If the measured `fontFamily` is not a Google font, say so and name the substitute you used rather than letting Figma pick one silently: the substitution usually cascades, since e.g. Arimo (Figma's suggestion for Arial) has no SemiBold, so a 600 weight lands as 700 and drifts twice.
+   - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no SF Pro, no Segoe UI, no Menlo. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them, and `figma.loadFontAsync` throws on one. So load every text layer's font with the build template's `loadFont(family, weight)`, which never fails the part over a font: it loads the measured family where Figma has it, and otherwise a stand-in at the measured weight, Roboto Mono for a monospace face (Menlo, Monaco, Consolas, `ui-monospace`, `monospace`) and Inter for any other, and the part returns each stand-in it used in `fonts`, such as `{ "system-ui 600": "Inter Semi Bold", "Menlo 400": "Roboto Mono Regular" }`. Name every one in the summary. A CSS keyword, such as `system-ui`, `sans-serif` or `ui-sans-serif`, is the platform's own font, which no Figma font is named after (a system stack like Tailwind's default `-apple-system, BlinkMacSystemFont, ...` measures as `system-ui`), and `verify` does not score it, so its stand-in is not drift. A platform face such as Menlo or SF Pro is scored, so its stand-in shows as `fontFamily` drift no edit in Figma can fix: report it as the substitution it is; the real face is the user's to install or map in the desktop app.
    - **`fontAvailable: false` means the measurement describes a substituted typeface.** `fontFamily` is the family the browser drew with, except a named font it could not load that the stack lists before any system keyword (such as `-apple-system` or `ui-monospace`), which is recorded as the code *asked for* it, with `fontAvailable: false`: the geometry and text you measured are not the intended font's. Say so in the summary. If Figma also lacks the font, name it explicitly — "Figma has no *Inter*; install it or map it" — rather than letting it surface as unexplained text drift. storysync cannot install fonts into Figma; that is a manual step in the desktop app.
-   - **A `fontFamily` that is a CSS keyword, such as `system-ui`, `sans-serif` or `monospace`, is the platform's own font**, which no Figma font is named after: a system stack like Tailwind's default `-apple-system, BlinkMacSystemFont, ...` measures as `system-ui`. Use a Google font close to it (Inter for a sans-serif UI font) and name it in the summary. `verify` does not score a keyword family, so it is not drift to fix.
 
    **Variants where `status` is not `"ok"` were not measured.** A `timeout` loading the story was already tried twice; a busy Storybook times out stories that render, so first re-run `snap` for those components with `--components` and a longer `--timeout`, such as 30000. Only for what still fails, fall back to reading the component's source (`.tsx`/`.jsx`, CSS modules, styled-components, inline styles, `cva`/`clsx`/`cn` calls) and resolve any design tokens through `npx storysync tokens --json` or the project's own config — never from a memorized class-to-value table, which is wrong for any project with a custom palette.
 
@@ -196,6 +197,12 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Update in place rather than duplicating.** Before creating a component set, look for one with the same name anywhere on the target page, inside a section or frame a designer moved it into too, and update it if found. Running a push twice must not produce two `Button`s. The same applies to variable collections — reuse a collection of the same name instead of creating a second.
 
+   **A component with no variant properties is one plain component, not a set.** Its snap combination is empty, so its one variant is named `''`: give the part `PROPERTIES` of `[]` and that one variant, and the template builds a plain component, named and placed as the set would be, and restyles it in place on the next push. A push before 0.4.0 built one as a set of one variant named `''`, which Figma renames `=` and marks as broken (`Component set has existing errors`), so reading its properties throws. The template will not build beside one: it throws `The page has a COMPONENT_SET "…" (…) where this part builds a COMPONENT …` before changing anything, as it does `… a COMPONENT … where this part builds a COMPONENT_SET …` for a plain component whose code has since gained variant properties. Ask the user whether to convert it or to skip the component, saying so in the summary; do neither on your own. To convert the old set, in a call of its own, move its one variant onto the page and give it the set's name (`page.appendChild(variant); variant.name = SET_NAME`), which keeps every instance of it linked, and remove the set if Figma left it behind; to convert a plain component, combine it into a set of its own (`figma.combineAsVariants([component], component.parent)`), name the set as the component was and the variant from snap's default combination. Then re-run the part.
+
+   **A new set or component goes below everything on its page**, 100 below the lowest thing there, at the page's left edge, rather than at `0,0` on top of another; one already on the page stays where it is, wherever a designer moved it. **Each carries its Storybook `id` and `title`** as shared plugin data, `node.getSharedPluginData('storysync', 'id')` and `'title'`: give the part the component's `id` as `ID` and its `title` as `TITLE`, `null` where it has none. The first part finds an earlier set by its name or by that id, so a set a designer renamed is still updated in place, and the audit can pair a set with its component by it.
+
+   **Set colors with `setPaints`, and fonts with `loadFont`.** Set every fill, stroke and effect with the template's `setPaints(node, 'fills' | 'strokes' | 'effects', items)`, never by assigning it: each item is a paint or effect in its measured color, with `variable` set to the color variable to bind, if any. Figma gives a paint assigned freshly bound to a variable an opacity of 1, so a translucent color bound that way loses its alpha (a live push read Attachment's error border, `#df22254d` bound to `destructive`, back as `#df2225`): `setPaints` puts each paint's opacity back once the binding is stored. An effect bound to a color variable takes that variable's alpha, so `setPaints` leaves a shadow unbound, in its measured color, where binding changed its alpha. Load every text layer's font with `loadFont(family, weight)`, as step 3 says, and before changing the text of a label an earlier push made, load the font it has (`figma.loadFontAsync(text.fontName)`), or make a new label where that font won't load. If `applyStyles` throws part way, the part removes the variants it created before it fails, so none is left loose on the page, and a retry makes them again.
+
    **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
 
    **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set by name anywhere on its page, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and every part lays out and checks the whole set as it then stands, so the last leaves it laid out in full. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
@@ -206,11 +213,11 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    - Each property's values run in the order snap records them: a `VARIANT`'s default value first, then the rest in the order of the component's prop type as Storybook's docs list it (a story's `argTypes` options are not read). A `BOOLEAN` property runs its default first, `false, true`, or `true, false` when it defaults to `true`, whatever order snap lists its values in.
    - **Figma makes the top-left variant the set's default variant**, so the default is the variant of each property's first value: the component's own default for a `VARIANT`, since snap records it first, and for a `BOOLEAN`, since the template lays its default out first: `open=true` where the component defaults to `open=true`. When that differs from the component's defaults, snap's `defaultValue`s, as where a snap from before 0.4.0 lists a `VARIANT`'s values as Storybook's docs do, say in the summary which variant Figma will treat as the default. A property marked `defaultAssumed: true` has no default in Storybook's docs, so its `defaultValue` is a guess: name those in the summary too.
-   - The first property's values are the rows, top to bottom; the combinations of the other properties, in their order with the last varying fastest, are the columns, left to right. With one property, each value is a row of one. Each variant's cell comes from its own name, so a combination the set lacks leaves a gap and the columns still line up, a row or column no variant fills at all is left out, and the work grows with the set's variants, not with every combination `PROPERTIES` allows. Each column is as wide as its widest variant and each row as tall as its tallest, 20 apart. The Button in step 3's snap output — `variant` primary, danger, outline; `size` sm, lg; `disabled` — is three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled.
+   - The first property's values are the rows, top to bottom; the combinations of the other properties, in their order with the last varying fastest, are the columns, left to right. With one property, each value is a row of one. Each variant's cell comes from its own name, so a combination the set lacks leaves a gap and the columns still line up, a row or column no variant fills at all is left out, and the work grows with the set's variants, not with every combination `PROPERTIES` allows. Each column is as wide as its widest variant and each row as tall as its tallest, 20 apart, so a Drawer's 39 by 24 closed trigger and its 1280 by 197 open panel sit apart, and a variant built 0.01 high keeps a row of its own. The Button in step 3's snap output — `variant` primary, danger, outline; `size` sm, lg; `disabled` — is three rows, primary, danger and outline, of four columns: sm, sm disabled, lg, lg disabled.
    - A variant whose name is no combination of `PROPERTIES`, one snap does not have, goes in a row of its own below the others, in name order, and is counted in the `extra` the part returns; so does a second variant of a name. Of two variants of a name, the one whose node id sorts first as text stays in the grid, so every part keeps the same one there.
    - **It refuses a set with auto layout.** On a set whose `layoutMode` is not `'NONE'`, auto layout positions the variants itself: setting their x and y does nothing, and the layout's layer order would flow the last variant into the top-left, Figma's default. So the part throws `The set "…" has auto layout …` before changing anything. Ask the user whether to turn auto layout off on the set (`componentSet.layoutMode = 'NONE'`, in a call of its own) and re-run the part, or to leave its layout alone and skip the set, saying in the summary that it was not pushed. Do neither on your own.
    - Figma's layers panel shows a set's last child at the top, so the layout puts the variants last to first, moving only the ones out of place: the panel then reads top-down in the grid's order, row by row, with that extra row last.
-   - It grows the set to fit, then checks that the layers are in that order, that every variant is where the layout put it, so a move Figma ignored fails, that no two variants' boxes intersect, and that the set contains every one, and throws if not. It returns counts, not names: the set's `rows`, `columns` and `extra`.
+   - It grows the set to fit, then checks that the layers are in that order, that every variant is where the layout put it, so a move Figma ignored fails, that no two variants' boxes intersect, and that the set contains every one, and throws if not. It returns counts, not names: the set's `rows`, `columns` and `extra`, and `fonts`, the stand-ins `loadFont` used. A plain component returns 1 variant in 1 row and 1 column.
 
 ```js
 use_figma({
@@ -218,6 +225,9 @@ use_figma({
     // Component: Button (title: Forms/Button, category: Forms)
     const PAGE_NAME = 'Forms';
     const SET_NAME = 'Button';
+    // Its id and title from snap, kept on the set as shared plugin data.
+    const ID = 'forms-button';
+    const TITLE = 'Forms/Button';
     // null on the first part; the id the first part returned on every later one.
     const SET_ID = null;
     const PART = 25;
@@ -239,33 +249,49 @@ use_figma({
       { name: 'size', type: 'VARIANT', values: ['md', 'sm', 'lg'], defaultValue: 'md' },
       { name: 'disabled', type: 'BOOLEAN', values: ['true', 'false'], defaultValue: 'false' },
     ];
-    //
-    // Visual spec (from step 3's snap output — each variant's base styles with its delta applied):
-    //   All variants: rounded corners (6px radius), horizontal auto-layout, centered text
-    //   variant=default: background #1EA7FD, white text, no border
-    //   variant=destructive: background #EF4444, white text
-    //   variant=outline: transparent background, #333 text, 1px solid #ccc border
-    //   size=sm: 12px font, 8px/4px padding
-    //   size=md: 14px font, 16px/8px padding
-    //   size=lg: 16px font, 24px/12px padding
 
-    // This part's variants and their measured values: at most PART, since
-    // use_figma takes at most 50,000 characters of code per call, in snap's
-    // variant order. Name every variant from its snap combination: each key is
-    // a variant property, BOOLEAN ones included, written key=value and joined
-    // with ", " in the combination's key order. styles is the variant's full
-    // measured styles, the base with its delta applied.
+    // At most PART variants, in snap's variant order: use_figma takes at most
+    // 50,000 characters of code. Name each from its snap combination, every
+    // key, BOOLEANs too, as key=value joined with ", " in the combination's
+    // order ('' with no properties); styles is its full measured styles, the
+    // base with its delta applied.
     const VARIANTS = [
       { name: 'variant=default, size=sm, disabled=false', styles: { backgroundColor: '#1ea7fd', color: '#ffffff', padding: { top: 4, right: 8, bottom: 4, left: 8 }, borderRadiusUniform: 6, fontSize: 12, fontWeight: 600 } },
       // ... one entry per variant in this part
     ];
 
-    // Style one variant from its measured values: fill, text, padding, radius,
-    // border, font and shadow, as step 3's table maps them. It runs on the
-    // variants this part creates and on ones an earlier push made, so set
-    // every property, not only those a new node lacks, and reuse the children
-    // an earlier push made rather than adding another: the label is
-    // variant.findOne((n) => n.type === 'TEXT'), created only if that is null.
+    // Set fills, strokes and effects with this, never directly: each item is
+    // a paint or effect in its measured color, with variable, the color
+    // variable to bind, if any. Figma gives a paint freshly bound opacity 1
+    // and an effect its variable's alpha: this puts the opacity back, and
+    // leaves an effect unbound where its alpha changed.
+    const setPaints = (node, key, list) => {
+      const fx = key === 'effects';
+      const raw = list.map(({ variable, ...p }) => (fx ? p : { opacity: 1, ...p }));
+      node[key] = list.map((p, i) => (p.variable ? figma.variables[fx ? 'setBoundVariableForEffect' : 'setBoundVariableForPaint'](raw[i], 'color', p.variable) : raw[i]));
+      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));
+    };
+    // A text layer's font, loaded: the measured family, else Roboto Mono for
+    // a monospace one and Inter for any other, CSS keywords like system-ui
+    // too. It never throws, and FONTS, returned below, names each stand-in.
+    const FONTS = {}, fonts = {};
+    const loadFont = (family, weight) => fonts[family + weight] = fonts[family + weight] || (async () => {
+      const style = ['Thin', 'Extra Light', 'Light', 'Regular', 'Medium', 'Semi Bold', 'Bold', 'Extra Bold', 'Black'][Math.round(weight / 100) - 1] || 'Regular';
+      for (const f of [family, /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : 'Inter', 'Inter']) {
+        for (const s of [style, style.replace(' ', ''), 'Regular']) {
+          try {
+            await figma.loadFontAsync({ family: f, style: s });
+            if (f !== family || s !== style) FONTS[family + ' ' + weight] = f + ' ' + s;
+            return { family: f, style: s };
+          } catch (e) {}
+        }
+      }
+    })();
+
+    // Style one variant from its measured values as step 3's table maps them,
+    // with setPaints and loadFont. It restyles variants an earlier push made
+    // too: set every property, and reuse the children it made, such as the
+    // label, variant.findOne((n) => n.type === 'TEXT'), created only if null.
     const applyStyles = async (variant, styles) => {
       // ... Figma Plugin API code
     };
@@ -277,25 +303,55 @@ use_figma({
     if (new Set(names).size !== names.length) {
       throw new Error('This part names a variant twice: name each once');
     }
-    // The set: by id after the first part; on the first, the one an earlier
-    // push left anywhere on this page, if there is one, at its top level or
-    // in a section or frame a designer moved it into.
+    // A component with no variant properties is one plain component, not a
+    // set: Figma renames a set's one unnamed variant "=" and marks it broken.
+    const want = PROPERTIES.length ? 'COMPONENT_SET' : 'COMPONENT';
+    if (!PROPERTIES.length && names.join() !== '') {
+      throw new Error('With no properties, name the one variant ""');
+    }
+    // The set: by id after the first part; on the first, by name or ID
+    // anywhere on the page, in a section or frame a designer moved it into too.
     let componentSet = null;
     if (SET_ID) {
       componentSet = await figma.getNodeByIdAsync(SET_ID);
-      if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
+      if (!componentSet || componentSet.type !== want) {
         throw new Error('No component set with id ' + SET_ID);
       }
     } else {
-      const sets = page.findAllWithCriteria({ types: ['COMPONENT_SET'] }).filter((n) => n.name === SET_NAME);
+      const sets = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
+        .filter((n) => n.parent.type !== 'COMPONENT_SET' && (n.name === SET_NAME || (ID && n.getSharedPluginData('storysync', 'id') === ID)));
+      const other = sets.find((n) => n.type !== want);
+      if (other) {
+        throw new Error('The page has a ' + other.type + ' "' + other.name + '" (' + other.id + ') where this part builds a ' + want + ': ask the user whether to convert it or skip it');
+      }
       if (sets.length > 1) {
         throw new Error('The page has ' + sets.length + ' component sets named "' + SET_NAME + '" (' + sets.map((n) => n.id).join(', ') + '): ask the user which to update');
       }
       componentSet = sets[0] || null;
     }
     // Auto layout would place the variants itself: refuse it, changing nothing.
-    if (componentSet && componentSet.layoutMode !== 'NONE') {
+    if (componentSet && PROPERTIES.length && componentSet.layoutMode !== 'NONE') {
       throw new Error('The set "' + SET_NAME + '" has auto layout (' + componentSet.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set');
+    }
+    // A new set or component goes below everything on the page, not at 0,0
+    // on top of another; each keeps its ID and title for the audit to pair on.
+    const fresh = !componentSet;
+    const below = page.children.reduce((y, n) => Math.max(y, n.y + n.height + 100), 0);
+    const keep = (node) => {
+      node.setSharedPluginData('storysync', 'id', ID || '');
+      node.setSharedPluginData('storysync', 'title', TITLE || '');
+      if (fresh) Object.assign(node, { name: SET_NAME, x: 0, y: below });
+    };
+    if (!PROPERTIES.length) {
+      const node = componentSet || figma.createComponent();
+      try {
+        await applyStyles(node, VARIANTS[0].styles);
+      } catch (e) {
+        if (fresh) node.remove();
+        throw e;
+      }
+      keep(node);
+      return JSON.stringify({ id: node.id, name: node.name, variants: 1, added: +fresh, updated: +!fresh, rows: 1, columns: 1, extra: 0, fonts: FONTS });
     }
     // Each named variant the set already has, found by name. Check them all
     // before changing anything: a part that fails here leaves the set as it was.
@@ -308,23 +364,29 @@ use_figma({
       existing.set(name, found[0] || null);
     }
 
-    // Update the variants the set has; create only the ones it lacks.
+    // Update the variants the set has; create only the ones it lacks. One that
+    // fails part way removes those it made, leaving none loose on the page.
     const created = [];
-    for (const { name, styles } of VARIANTS) {
-      let variant = existing.get(name);
-      if (!variant) {
-        variant = figma.createComponent();
-        variant.name = name;
-        created.push(variant);
+    try {
+      for (const { name, styles } of VARIANTS) {
+        let variant = existing.get(name);
+        if (!variant) {
+          variant = figma.createComponent();
+          variant.name = name;
+          created.push(variant);
+        }
+        await applyStyles(variant, styles);
       }
-      await applyStyles(variant, styles);
+    } catch (e) {
+      for (const variant of created) variant.remove();
+      throw e;
     }
     if (!componentSet) {
       componentSet = figma.combineAsVariants(created, page);
-      componentSet.name = SET_NAME;
     } else {
       for (const variant of created) componentSet.appendChild(variant);
     }
+    keep(componentSet);
 
     // Lay the whole set out by PROPERTIES on every part, as described above,
     // never by child order: leave this as it is. Cells come from names, so the
@@ -400,14 +462,13 @@ use_figma({
       }
     });
 
-    // The set's id, for the next part and for step 6 to read the variants
-    // back from. Not the readback itself: use_figma returns at most 20kb per
-    // call. variants counts the whole set, added and updated this part; extra
-    // counts the variants no combination names, in the row below the grid.
+    // Counts, not the readback, which can pass use_figma's 20kb: the set's id
+    // for later parts and step 6, its variants, those added and updated this
+    // part, the extra ones in the row below the grid, and loadFont's stand-ins.
     return JSON.stringify({
       id: componentSet.id, name: componentSet.name, variants: kids.length,
       added: created.length, updated: names.length - created.length,
-      rows: rows.length, columns: columns.length, extra: extra.length,
+      rows: rows.length, columns: columns.length, extra: extra.length, fonts: FONTS,
     });
   `,
   description: "Create or update variants 1-25 of the Button component set on 'Forms' page, styled from measured values",
@@ -417,6 +478,8 @@ use_figma({
 ```
 
 6. **Read the result back and score it.** Read each component set's variants back with `use_figma`, off the nodes themselves rather than from the values you sent — echoing proves nothing. `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call: a set's readback passes 20kb at a few dozen variants, and the table of its names and slugs can pass 50,000 characters at under two hundred. So the template below reads a set a slice at a time, and each call names the variants it reads — at most `BATCH`, 20, in snap's variant order: the first 20, then the next 20, until you have read every variant snap measured. It reads exactly the variants you name, finding each by name, and throws if the set has no variant of a name you gave, or two. It also throws if a slice comes too close to 20kb. A call that throws returns nothing; below the template is what to do about each error. Each entry it returns carries `readAt`, the time Figma read it, and a `checksum` it computed in Figma over that entry, the set's id and the slug, so write the entries into the readback file exactly as returned: see below the templates.
+
+   A plain component, which step 5 builds for a component with no variant properties, reads the same way, in one call: give `SET_ID` its id and `SLUG_BY_NAME` its one variant, `''`, with the slug snap gives it, `default`. The template reads the component itself as that variant, and returns a `total` of 1.
 
    Each call returns `total`, the number of variants in the set. If the slices add up to fewer, the set holds variants snap never measured — one an earlier push built for a value the code has since dropped, say. `verify` cannot see those, so list the set's names as the second template below does, find them, and report them.
 
@@ -441,8 +504,8 @@ use_figma({
       // ... one entry per variant in this slice
     };
     const slugFor = (child) => {
-      const slug = SLUG_BY_NAME[child.name];
-      if (!slug) throw new Error('No snap slug recorded for Figma variant "' + child.name + '"');
+      const slug = SLUG_BY_NAME[nameOf(child)];
+      if (!slug) throw new Error('No snap slug recorded for Figma variant "' + nameOf(child) + '"');
       return slug;
     };
 
@@ -485,13 +548,17 @@ use_figma({
       throw new Error('This call names ' + names.length + ' variants: name between 1 and BATCH (' + BATCH + ')');
     }
     const componentSet = await figma.getNodeByIdAsync(SET_ID);
-    if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
+    if (!componentSet || (componentSet.type !== 'COMPONENT_SET' && componentSet.type !== 'COMPONENT')) {
       throw new Error('No component set with id ' + SET_ID);
     }
+    // A plain component, as step 5 builds one with no variant properties, is
+    // its own one variant, named '' (slug default): name it so above.
+    const variants = componentSet.type === 'COMPONENT' ? [componentSet] : componentSet.children;
+    const nameOf = (child) => (child === componentSet ? '' : child.name);
     // Exactly the variants named above. One the set lacks, or holds twice,
     // fails here rather than leaving a gap or a guess in the readback.
     const children = names.map((name) => {
-      const found = componentSet.children.filter((child) => child.name === name);
+      const found = variants.filter((child) => nameOf(child) === name);
       if (found.length !== 1) {
         throw new Error('The set has ' + found.length + ' variants named "' + name + '", not one');
       }
@@ -606,7 +673,7 @@ use_figma({
     }
     // total counts every variant in the set, read or not: if the slices add up
     // to fewer, the set holds variants snap never measured.
-    const total = componentSet.children.length;
+    const total = variants.length;
     const result = JSON.stringify({ id: componentSet.id, name: componentSet.name, total, readback });
     // use_figma JSON-encodes what this returns, escaping every quote, so
     // measure the encoded string. Fail rather than return a slice the 20kb
@@ -714,9 +781,9 @@ npx storysync verify --strict-age
 
    This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement.
 
-   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE` or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
+   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, components grouped by page, variant counts, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, any component snap warned it measured as a closed trigger or a layout wrapper, the Google font used for a `fontFamily` that is a CSS keyword, which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any border built solid for a style Figma's strokes lack, the variants with a transparent border, and any failures or caps. For each variant whose transparent border was built as an `OUTSIDE` stroke (a `CENTER` one leaves half the ring unfilled, an `INSIDE` one on a fixed-size frame none), say that Figma shows that transparent border as an unfilled ring: the browser draws the background under a transparent border, but Figma's fill stops where the `OUTSIDE` stroke begins, and that stroke's paint draws nothing. If the user would rather it look filled, they can choose a stroke tinted the background's color instead, which `verify` will then score as a border color the code does not have.
+7. Summarize what was synced: token collections created, components grouped by page, variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, any component snap warned it measured as a closed trigger or a layout wrapper, every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any border built solid for a style Figma's strokes lack, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
 
 ## Variable binding
 
@@ -727,7 +794,7 @@ When token variable collections exist, bind component properties to variables in
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
-A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a color, its `px` for a length. When several variables share the value, as shadcn/ui's `primary` and `sidebar/primary` do, bind the one the component's source names (`bg-primary`, `rounded-md`); if it names none, leave the value unbound and list it in the summary rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
+A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a color, its `px` for a length. When several variables share the value, as shadcn/ui's `primary` and `sidebar/primary` do, bind the one the component's source names (`bg-primary`, `rounded-md`); if it names none, leave the value unbound and list it in the summary rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured. A translucent color, `#rrggbbaa`, matches a variable of its `#rrggbb` too, as Tailwind's `border-destructive/30` is the `destructive` token at 30%: bind it with the paint's opacity at its alpha, through the build template's `setPaints`, which keeps that opacity where assigning the bound paint would reset it to 1. A shadow's color has no opacity of its own, so `setPaints` binds it only to a variable of its alpha.
 
 This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 
