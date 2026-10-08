@@ -302,6 +302,43 @@ test("action Detect drift: two components with one key, on either side, fail rat
   assert.equal(cur.report, null);
 });
 
+/** The run: block of a step that runs a shell script, as its runner gets it. */
+function shellStep(step: string): string {
+  const yml = readFileSync(ACTION, "utf8");
+  const at = yml.indexOf(`    - name: ${step}\n`);
+  assert.notEqual(at, -1, `action.yml has no step named ${step}`);
+  const open = "      run: |\n";
+  const lines = yml.slice(yml.indexOf(open, at) + open.length).split("\n");
+  const end = lines.findIndex((line) => line.trim() && !line.startsWith("        "));
+  return lines.slice(0, end).map((line) => line.replace(/^ {8}/, "")).join("\n");
+}
+
+test("action Create or update issue: files only the reports this run's drift steps wrote", () => {
+  // With the issue step run after a failed step, Detect drift can have been
+  // skipped, after Map components failed, and a report an earlier run of the
+  // action in this job left would be filed as this run's.
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin", "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(join(dir, "storysync-token-drift.md"), "## Token drift\n");
+    writeFileSync(join(dir, "storysync-drift.md"), "## Stale component drift\n");
+    const file = (componentDrift: string) => {
+      const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", shellStep("Create or update issue")], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, TOKEN_DRIFT: "true", COMPONENT_DRIFT: componentDrift },
+      });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      return readFileSync(join(dir, "storysync-combined-drift.md"), "utf8");
+    };
+    assert.equal(file(""), "## Token drift\n\n");
+    assert.equal(file("true"), "## Token drift\n## Stale component drift\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("action: an issue is still filed for drift found before a step that failed", () => {
   // Detect drift fails on a baseline that isn't map --json output. Without a
   // status function, the issue step was skipped with it, and the token drift

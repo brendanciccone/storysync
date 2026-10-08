@@ -720,15 +720,20 @@ runs:
       working-directory: ${{ inputs.working_directory }}
       env:
         GH_TOKEN: ${{ github.token }}
+        COMPONENT_DRIFT: ${{ steps.drift.outputs.result }}
+        TOKEN_DRIFT: ${{ steps.token-drift.outputs.result }}
       run: |
         gh label create storysync-drift --description "Storybook-to-Figma mapping drift" --color "d93f0b" 2>/dev/null || true
-        # Combine token drift and component drift into one issue body
+        # Combine token drift and component drift into one issue body. Each
+        # report only if its step ran and found drift this time: one that was
+        # skipped, after Map components failed, didn't remove a report an
+        # earlier run of this action in the job left.
         BODY=""
-        if [ -f storysync-token-drift.md ]; then
+        if [ "$TOKEN_DRIFT" = true ] && [ -f storysync-token-drift.md ]; then
           BODY=$(cat storysync-token-drift.md)
           BODY="$BODY"$'\n'
         fi
-        if [ -f storysync-drift.md ]; then
+        if [ "$COMPONENT_DRIFT" = true ] && [ -f storysync-drift.md ]; then
           BODY="$BODY$(cat storysync-drift.md)"
         fi
         echo "$BODY" > storysync-combined-drift.md
