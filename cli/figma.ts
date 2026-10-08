@@ -229,10 +229,12 @@ function rgbToHex(c) {
   const r = Math.round((c.r || 0) * 255);
   const g = Math.round((c.g || 0) * 255);
   const b = Math.round((c.b || 0) * 255);
-  const a = c.a == null ? 1 : c.a;
+  // The alpha as two more digits when it rounds to less than ff, as tokens
+  // and the audit write a translucent color: 0.999 is ff, so opaque.
+  const a = Math.round((c.a == null ? 1 : c.a) * 255);
   const hex = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
-  if (a >= 1) return hex;
-  return hex + Math.round(a * 255).toString(16).padStart(2, '0');
+  if (a >= 255) return hex;
+  return hex + a.toString(16).padStart(2, '0');
 }
 
 // Every variable in a collection that has the mode asked for, in order, so

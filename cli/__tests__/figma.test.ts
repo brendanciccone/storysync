@@ -342,6 +342,16 @@ test("getVariables: --mode reads that mode, from the collections that have it", 
   assert.equal(result?.find((v) => v.name === "color/overlay")?.value, "#ffffff80");
 });
 
+test("getVariables: writes a color's alpha as tokens and the audit do, leaving out one that rounds to ff", async () => {
+  // An alpha of 0.999 is ff in two hex digits: written out, it never matched
+  // the token's #000000, which the audit's read matched.
+  const alphas = [1, 0.999, 0.998, 0.5, 0.1, 0];
+  const variables = alphas.map((a, i) => ({ name: `color/${i}`, type: "COLOR" as const, values: [{ r: 0, g: 0, b: 0, a }] }));
+  const { result, error } = await read({ pages: [{ name: "Cover", nodes: [] }], collections: [{ name: "Colors", modes: ["Light"], variables }] }, (client) => client.getVariables("file-key"));
+  assert.equal(error, null);
+  assert.deepEqual(result?.map((v) => v.value), ["#000000", "#000000", "#000000fe", "#00000080", "#0000001a", "#00000000"]);
+});
+
 test("getVariables: leaves out ids that read as null, wherever the slices fall, and reads every variable once", async () => {
   // getVariableByIdAsync returns null for an id a collection lists with no
   // variable behind it. Nine ids in ten here are one, through several slices:
