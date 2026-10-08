@@ -420,6 +420,10 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
     const layer = readConfigRef(ref, configPath, content, `${configPath} takes the preset ${ref.label}`, warnings);
     if (layer) layers.push(layer);
   }
+  for (const ref of spreadRefs(exported, imports)) {
+    const layer = readConfigRef(ref, configPath, content, `${configPath} spreads in ${ref.label}`, warnings);
+    if (layer) layers.push(layer);
+  }
   const wrapper = reexport ? null : wrapperCall(content, imports);
   if (wrapper) {
     warnings.push(`${configPath} builds its config with ${wrapper}, which storysync can't read statically, so the tokens it adds are missing`);
@@ -611,6 +615,27 @@ function presetRefs(content: string, imports: Map<string, ConfigImport>): Config
   const open = m.index + m[0].length - 1;
   const list = content.slice(open + 1, closingIndex(content, open) - 1);
   return splitTopLevel(list, ",").map((entry) => entry.trim()).filter(Boolean).map((entry) => configRef(entry, imports));
+}
+
+/**
+ * The configs spread in at the top of the object a config exports, as a
+ * monorepo's `module.exports = { ...require("./base"), content }` or
+ * `export default { ...base, content }` does, as ConfigRefs. These were
+ * neither read nor named: the config read as empty, with a warning that
+ * blamed Tailwind's default theme. One that a `theme` key after it
+ * replaces is left out, as JavaScript leaves out its theme.
+ */
+function spreadRefs(exported: string | null, imports: Map<string, ConfigImport>): ConfigRef[] {
+  if (!exported) return [];
+  const entries = splitTopLevel(exported.slice(1, -1), ",");
+  const refs: ConfigRef[] = [];
+  entries.forEach((entry, i) => {
+    const spread = /^\s*\.\.\.\s*([\s\S]+?)\s*$/.exec(entry);
+    if (!spread) return;
+    if (entries.slice(i + 1).some((later) => /^\s*(['"]?)theme\1\s*(?::|$)/.test(later))) return;
+    refs.push(configRef(spread[1], imports));
+  });
+  return refs;
 }
 
 /** The expression a config exports, `module.exports = ...` or `export default ...`. */

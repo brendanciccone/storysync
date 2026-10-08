@@ -1623,6 +1623,54 @@ test("Tailwind: a config that re-exports another is read through it when it is r
   }
 });
 
+test("Tailwind: a config spread in at the top of the exported one is read when relative, and named when not", () => {
+  // A monorepo app's config is often its shared config spread in, with
+  // its own content globs: that read as empty, and the warning blamed
+  // Tailwind's default theme.
+  const base = `module.exports = { theme: { extend: { colors: { brand: "#123456" } } } };`;
+  const required = makeProject({
+    "apps/web/tailwind.config.js": `module.exports = { ...require("../../packages/ui/tailwind.base.js"), content: ["./src/**/*.tsx"] };`,
+    "packages/ui/tailwind.base.js": base,
+  });
+  try {
+    const result = extractTokens(join(required, "apps", "web"));
+    assert.deepEqual(tokenTable(result), [["colors", [["brand", "#123456"]]]]);
+    assert.ok(!result.warnings.some((w) => w.startsWith("Read no colors")), result.warnings.join("\n"));
+  } finally { cleanup(required); }
+
+  const imported = makeProject({
+    "tailwind.config.ts": `import base from "./tailwind.base";
+export default { ...base, content: [] };`,
+    "tailwind.base.ts": `export default { theme: { extend: { colors: { brand: "#123456" } } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(imported)), [["colors", [["brand", "#123456"]]]]);
+  } finally { cleanup(imported); }
+
+  // A theme after the spread replaces the spread's, as in JavaScript.
+  const replaced = makeProject({
+    "tailwind.config.js": `const base = require("./tailwind.base.js");
+module.exports = { ...base, theme: { extend: { colors: { ink: "#111111" } } } };`,
+    "tailwind.base.js": base,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(replaced)), [["colors", [["ink", "#111111"]]]]);
+  } finally { cleanup(replaced); }
+
+  const packaged = makeProject({
+    "tailwind.config.js": `const shared = require("@acme/tailwind-config");
+module.exports = { ...shared, content: [] };`,
+  });
+  const config = join(packaged, "tailwind.config.js");
+  try {
+    const result = extractTokens(packaged);
+    assert.ok(result.warnings.includes(
+      `${config} spreads in shared, from the package @acme/tailwind-config, which storysync can't read statically, so the tokens it declares are missing`,
+    ), result.warnings.join("\n"));
+    assert.ok(!result.warnings.some((w) => w.startsWith("Read no colors")), result.warnings.join("\n"));
+  } finally { cleanup(packaged); }
+});
+
 test("Tailwind: a config with no theme storysync reads says so, and a theme exported on its own is read", () => {
   const empty = makeProject({ "tailwind.config.js": `module.exports = { content: [], plugins: [require("some-palette-plugin")] };` });
   try {
