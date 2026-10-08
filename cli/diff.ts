@@ -249,12 +249,12 @@ export interface DiffSelection {
  *
  * The selected components are paired with every Figma set, beside every other
  * code component, so each is paired as the whole diff pairs it. Narrowed to
- * the sets named like the selection, a set a designer moved off Radix's page
- * was the only Button left for `ui-radix-button`, and so its pair, though the
- * whole diff reports it ambiguous; and a set Base UI's Button had on its page
- * made Radix's ambiguous. Of the sets no code component pairs with, only those
- * the names name are reported: every other one is not in code only as far as
- * this diff, which left the rest of code out, can tell.
+ * the sets named like the selection, a component could pair otherwise: with
+ * Radix's Button moved off its page, `ui-radix-button` was weighed against
+ * Base UI's set too, which the whole diff pairs with Base UI's Button. Of the
+ * sets no code component pairs with, only those the names name are reported:
+ * the rest weren't asked about, and would fail `--strict` on any file that
+ * holds more than the selection.
  */
 export function selectDiffComponents(
   entries: ComponentEntry[],
