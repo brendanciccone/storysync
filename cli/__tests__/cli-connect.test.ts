@@ -8,11 +8,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { connectFailure } from "../mcp-connect.js";
@@ -198,10 +199,16 @@ type Rpc = { id?: number; method: string; params?: { protocolVersion?: string; n
  * `delays[tool]` milliseconds, or never when that is Infinity. Records each
  * call by name in `calls`.
  */
-async function slowStandIn(delays: Record<string, number>): Promise<{ url: string; calls: string[] }> {
+async function slowStandIn(delays: Record<string, number>, { list = LIST, story = false } = {}): Promise<{ url: string; calls: string[] }> {
   const calls: string[] = [];
   const tools = ["docs-list", "docs-show", "use_figma"];
   const url = await listen((req, res) => {
+    // With `story`, every story renders a button snap can measure.
+    if (story && req.method === "GET" && req.url?.startsWith("/iframe.html")) {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<!doctype html><html><body><div id="storybook-root"><button data-slot="button" style="background:#f00;padding:4px 8px;border:0">Hi</button></div></body></html>');
+      return;
+    }
     if (req.method !== "POST") {
       res.writeHead(405).end();
       return;
@@ -225,7 +232,7 @@ async function slowStandIn(delays: Record<string, number>): Promise<{ url: strin
       } else if (message.method === "tools/call") {
         const name = message.params?.name ?? "";
         calls.push(name);
-        const text = name === "docs-list" ? LIST : name === "docs-show" ? DOCS : "{}";
+        const text = name === "docs-list" ? list : name === "docs-show" ? DOCS : "{}";
         const delay = delays[name] ?? 0;
         if (delay !== Infinity) setTimeout(() => answer({ content: [{ type: "text", text }] }), delay);
       } else {
@@ -335,6 +342,116 @@ for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129], ["SIGINT", 130]
     }
   });
 }
+
+/** Spawns the CLI with a preload, collecting what it prints and how it ends. */
+function spawnCli(preload: string[], args: string[], env: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, [...preload, CLI, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const output = { stdout: "", stderr: "" };
+  child.stdout.on("data", (d) => { output.stdout += d; });
+  child.stderr.on("data", (d) => { output.stderr += d; });
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  /** Resolves once stderr has printed `line`, or the run has ended. */
+  const printed = async (line: string) => {
+    const deadline = Date.now() + 20_000;
+    while (!output.stderr.includes(line) && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return output.stderr.includes(line);
+  };
+  return { child, output, exited, printed };
+}
+
+test("snap CLI: --merge without --components fails before connecting, saying what it needs", async () => {
+  const r = await run("snap", "--storybook", "http://127.0.0.1:9", "--merge");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component/);
+  assert.doesNotMatch(r.out, /Connecting|refused/);
+});
+
+test("snap CLI: a signal once the run has written everything doesn't say it stopped before it finished", { timeout: 30_000, skip: process.platform === "win32" }, async () => {
+  // The handlers stayed on past the run, so SIGTERM during the disconnect
+  // after it said nothing was written, exiting 143, while the new
+  // styles.json and meta.json were on disk and the JSON on stdout.
+  // A Storybook with only a docs page: no component, so no browser, and the
+  // run finishes at once.
+  const { url } = await slowStandIn({}, { list: "# Docs\n- Introduction (introduction--docs)" });
+  const out = mkdtempSync(join(tmpdir(), "storysync-finished-"));
+  try {
+    const preload = join(out, "slow-disconnect.mjs");
+    writeFileSync(preload, [
+      "const { Client } = await import(process.env.SDK_CLIENT_URL);",
+      "const close = Client.prototype.close;",
+      "Client.prototype.close = async function (...args) {",
+      "  process.stderr.write('TEST: disconnecting\\n');",
+      "  await new Promise((resolve) => setTimeout(resolve, 5000));",
+      "  return close.apply(this, args);",
+      "};",
+    ].join("\n"));
+    const env: NodeJS.ProcessEnv = { ...process.env, SDK_CLIENT_URL: import.meta.resolve("@modelcontextprotocol/sdk/client/index.js") };
+    delete env.STORYSYNC_PROGRESS;
+    const run = spawnCli(["--import", pathToFileURL(preload).href], ["snap", "--storybook", url, "--out", join(out, "snaps"), "--json"], env);
+    assert.ok(await run.printed("TEST: disconnecting"), JSON.stringify(run.output));
+    run.child.kill("SIGTERM");
+    const exit = await run.exited;
+    assert.ok(exit.signal === "SIGTERM" || exit.code === 143, JSON.stringify(exit));
+    assert.doesNotMatch(run.output.stderr, /stopped by SIGTERM before it finished/);
+    assert.equal(JSON.parse(run.output.stdout).summary.components, 0);
+    assert.ok(existsSync(join(out, "snaps", "styles.json")));
+    assert.ok(existsSync(join(out, "snaps", "meta.json")));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("snap CLI --screenshots: a signal while the browser closes leaves the last run's screenshots and styles.json", { timeout: 60_000, skip: process.platform === "win32" }, async (t) => {
+  // The screenshots were moved in before the browser closed, so SIGTERM
+  // while it closed replaced them beside the last run's styles.json, and
+  // the notice said they were left as they were.
+  const { url } = await slowStandIn({}, { story: true });
+  const out = mkdtempSync(join(tmpdir(), "storysync-closing-"));
+  try {
+    writeFileSync(join(out, "styles.json"), "last good snap\n");
+    mkdirSync(join(out, "forms-button"));
+    writeFileSync(join(out, "forms-button", "size-sm.png"), "last png");
+    const preload = join(out, "slow-close.cjs");
+    writeFileSync(preload, [
+      "const { chromium } = require(process.env.PLAYWRIGHT_CORE);",
+      "const launch = chromium.launch.bind(chromium);",
+      "chromium.launch = async (...args) => {",
+      "  const browser = await launch(...args);",
+      "  const close = browser.close.bind(browser);",
+      "  browser.close = async (...a) => {",
+      "    process.stderr.write('TEST: closing the browser\\n');",
+      "    await new Promise((resolve) => setTimeout(resolve, 5000));",
+      "    return close(...a);",
+      "  };",
+      "  return browser;",
+      "};",
+    ].join("\n"));
+    const env: NodeJS.ProcessEnv = { ...process.env, PLAYWRIGHT_CORE: createRequire(CLI).resolve("playwright-core") };
+    delete env.STORYSYNC_PROGRESS;
+    const run = spawnCli(["--require", preload], ["snap", "--storybook", url, "--out", out, "--screenshots", "--json"], env);
+    if (!(await run.printed("TEST: closing the browser"))) {
+      run.child.kill("SIGKILL");
+      await run.exited;
+      if (/Could not find a Chromium-based browser|needs Node 20 or newer/.test(run.output.stdout + run.output.stderr)) {
+        t.skip("no browser for snap here");
+        return;
+      }
+      assert.fail(`snap never closed its browser: ${JSON.stringify(run.output)}`);
+    }
+    run.child.kill("SIGTERM");
+    const exit = await run.exited;
+    assert.equal(exit.code, 143, JSON.stringify(run.output));
+    assert.match(run.output.stderr, /snap was stopped by SIGTERM before it finished, so styles\.json, meta\.json and the screenshots in .* were left as they were\./);
+    assert.equal(readFileSync(join(out, "styles.json"), "utf8"), "last good snap\n");
+    assert.equal(existsSync(join(out, "meta.json")), false);
+    assert.deepEqual(readdirSync(join(out, "forms-button")), ["size-sm.png"]);
+    assert.equal(readFileSync(join(out, "forms-button", "size-sm.png"), "utf8"), "last png");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
 
 test("runSnap: a browser that goes partway through twice stops the run, leaving the last styles.json as it was", async () => {
   // Chrome crashing, or killed from outside, failed every component left as

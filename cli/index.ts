@@ -252,6 +252,7 @@ program
   .option("--screenshots", "Also save a PNG per variant (off by default)")
   .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
+  .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
@@ -270,8 +271,13 @@ program
     }
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
     const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
+    // Without --components there is nothing to merge: the run measures
+    // every component, which is the whole snap.
+    if (opts.merge && !opts.components) {
+      console.error(chalk.red("--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component"));
+      process.exit(1);
+    }
 
-    const storybook = await connectStorybook(opts.storybook, json, connectTimeoutMs);
     // Where the run is, on a terminal: a component with many variants can
     // take minutes, and under --json nothing else is printed until the end.
     const progress = new Progress("snap");
@@ -298,9 +304,15 @@ program
       process.exit(code);
     };
     // 128 plus the signal's number, as a shell reports a process it killed.
-    process.on("SIGINT", stop(130));
-    process.on("SIGTERM", stop(143));
-    process.on("SIGHUP", stop(129));
+    // Before connecting, so a run stopped while Storybook answers says so
+    // too, and only until runSnap ends: by then it has written everything,
+    // or stopped writing nothing, and a signal during the disconnect after
+    // said it stopped before it finished.
+    const handlers = [["SIGINT", stop(130)], ["SIGTERM", stop(143)], ["SIGHUP", stop(129)]] as const;
+    for (const [signal, handler] of handlers) process.on(signal, handler);
+    const unlisten = () => { for (const [signal, handler] of handlers) process.off(signal, handler); };
+
+    const storybook = await connectStorybook(opts.storybook, json, connectTimeoutMs);
     try {
       const result = await runSnap(
         {
@@ -313,6 +325,7 @@ program
           variants,
           maxCombinations,
           excludeProps: parsePropNames(opts.excludeProps),
+          merge: !!opts.merge,
         },
         {
           storybook,
@@ -321,7 +334,7 @@ program
           onComponentStart: (position, total, label) => progress.component(position, total, label),
           onVariantStart: (position, total) => progress.variant(position, total),
         },
-      );
+      ).finally(unlisten);
       progress.done();
 
       if (json) {

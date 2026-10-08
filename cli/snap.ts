@@ -6,7 +6,7 @@
 // results out on disk.
 
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
@@ -39,6 +39,12 @@ export interface SnapOptions {
   maxCombinations?: number;
   /** Props never to make variant properties of, in any component (`--exclude-props`). */
   excludeProps?: string[];
+  /**
+   * Measure only the components `components` names and merge them into the
+   * styles.json already in `outDir`, replacing those and keeping the rest
+   * (`--merge`). Without it, a run writes only what it measured.
+   */
+  merge?: boolean;
 }
 
 export type SnapVariantStatus = CaptureStatus | "args_unsupported";
@@ -143,6 +149,14 @@ export interface SnapMeta {
   variantSelection: VariantSelection;
   components: number;
   variants: number;
+  /**
+   * When each component was measured, by its key (`componentKey`), written
+   * by a merge (`--merge`), which keeps components an earlier run measured.
+   * `measuredAt` is then the oldest of these, so the snap's age is that of
+   * its oldest part, and verify holds each component's readback to its own
+   * time. Absent when one run measured every component at `measuredAt`.
+   */
+  componentsMeasuredAt?: Record<string, string>;
 }
 
 export const SNAP_META_FILENAME = "meta.json";
@@ -213,7 +227,7 @@ export function describeCap(name: string, cap: CapInfo & { uncovered?: string[] 
  * that drops them) renders identically for every combination, so the measured
  * values would silently describe the default state for all of them.
  */
-function detectIdenticalVariants(variants: SnapVariant[]): string | null {
+export function detectIdenticalVariants(variants: SnapVariant[]): string | null {
   const measured = variants.filter((v) => v.status === "ok");
   if (measured.length < 2) return null;
   const allEmpty = measured.every((v) => !v.delta || Object.keys(v.delta).length === 0);
@@ -312,6 +326,19 @@ export function describeMeasurementNotes(
 }
 
 /**
+ * What a warning from describeMeasurementNotes says snap measured, so verify
+ * can say it beside a score of that element: a closed trigger, or a possible
+ * layout wrapper. Null for any other warning.
+ */
+export function parseMeasurementWarning(warning: string): MeasurementNote | null {
+  const trigger = /^snap measured (.+?), a closed trigger, rather than /.exec(warning);
+  if (trigger) return { kind: "closed-trigger", element: trigger[1] };
+  const wrapper = /^snap measured (.+?), which holds (\d+) elements and draws nothing itself/.exec(warning);
+  if (wrapper) return { kind: "layout-wrapper", element: wrapper[1], children: Number(wrapper[2]) };
+  return null;
+}
+
+/**
  * Thrown when the browser goes away part-way through a run. runSnap launches
  * it once more on the first; on a second, the run stops with this before
  * anything is written, so an earlier styles.json, meta.json and screenshots
@@ -329,7 +356,8 @@ export class BrowserLostError extends Error {}
  */
 export class ScreenshotStage {
   private dir: string | null = null;
-  private readonly files = new Set<string>();
+  /** Each staged PNG's recorded path, with the ID of the component it shows. */
+  private readonly files = new Map<string, string>();
 
   constructor(private readonly outDir: string) {}
 
@@ -350,13 +378,26 @@ export class ScreenshotStage {
       process.on("exit", this.onExit);
     }
     const recorded = writeScreenshot(this.dir, entry, slug, png);
-    this.files.add(recorded);
+    this.files.set(recorded, entry.id);
     return recorded;
+  }
+
+  /**
+   * Removes what is staged for one component, before it is measured again:
+   * a variant that then fails, or measures no box, takes no screenshot, and
+   * its first attempt's would otherwise replace the last run's file.
+   */
+  drop(entry: ComponentEntry): void {
+    for (const [recorded, id] of this.files) {
+      if (id !== entry.id) continue;
+      rmSync(join(this.dir!, recorded), { force: true });
+      this.files.delete(recorded);
+    }
   }
 
   /** Moves every staged PNG into the output directory. */
   commit(): void {
-    for (const recorded of this.files) {
+    for (const recorded of this.files.keys()) {
       const from = join(this.dir!, recorded);
       const to = join(this.outDir, recorded);
       mkdirSync(dirname(to), { recursive: true });
@@ -448,77 +489,169 @@ export function detectFontSubstitution(component: SnapComponent): string | null 
   );
 }
 
+/** An earlier snap a merge adds to: what is in `outDir` before the run. */
+interface MergeBase {
+  result: SnapResult;
+  meta: SnapMeta;
+}
+
+/**
+ * Reads the snap `--merge` adds to, refusing one it can't add to honestly:
+ * none at all, one with no time to keep its components' age by, or one
+ * measured another way, from another Storybook or by another storysync,
+ * whose components and the new ones would not describe the same thing.
+ * Read before anything is measured, so a long run doesn't end on it.
+ */
+export function readMergeBase(opts: SnapOptions): MergeBase {
+  const stylesPath = join(opts.outDir, SNAP_STYLES_FILENAME);
+  const metaPath = join(opts.outDir, SNAP_META_FILENAME);
+  const rerun = "Run snap without --merge to measure every component again.";
+  const read = (path: string, lead: string, after: string): unknown => {
+    try {
+      return JSON.parse(readFileSync(path, "utf8"));
+    } catch (err) {
+      const why = (err as NodeJS.ErrnoException).code === "ENOENT" ? "doesn't exist" : "can't be read as JSON";
+      throw new Error(`${lead}, but ${path} ${why}${after}. ${rerun}`);
+    }
+  };
+  const result = read(stylesPath, `--merge adds to the snap in ${opts.outDir}`, "") as SnapResult;
+  if (!Array.isArray(result?.components)) {
+    throw new Error(`--merge adds to the snap in ${opts.outDir}, but ${stylesPath} has no "components" list, so snap didn't write it. ${rerun}`);
+  }
+  const unknownAge = ", so how old they are is unknown";
+  const meta = read(metaPath, `--merge keeps the components ${stylesPath} holds`, unknownAge) as SnapMeta;
+  if (typeof meta?.measuredAt !== "string" || !Number.isFinite(Date.parse(meta.measuredAt))) {
+    throw new Error(`--merge keeps the components ${stylesPath} holds, but ${metaPath} has no measuredAt${unknownAge}. ${rerun}`);
+  }
+  if (result.version !== SNAP_SCHEMA_VERSION || result.storysyncVersion !== VERSION) {
+    throw new Error(`--merge keeps the components ${stylesPath} holds, but storysync ${result.storysyncVersion ?? "(unknown)"} measured them, not ${VERSION}. ${rerun}`);
+  }
+  if (result.variantSelection !== opts.variants) {
+    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with --variants ${result.variantSelection}: pass the same, or run snap without --merge.`);
+  }
+  const url = (u: string) => String(u).replace(/\/+$/, "");
+  if (url(result.storybookUrl) !== url(opts.storybookUrl)) {
+    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured from ${result.storybookUrl}, not ${opts.storybookUrl}: pass the same --storybook, or run snap without --merge.`);
+  }
+  return { result, meta };
+}
+
+/** The warning runSnap gives each of two components that share a key. */
+const SHARED_KEY_WARNING = /^\d+ components share the key "/;
+
 export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapResult> {
   const progress = deps.onProgress ?? (() => {});
   // A typo'd name throws here rather than filtering to nothing, which would
   // still stamp a fresh `measuredAt` over an empty snap.
-  const entries = selectComponents(await deps.storybook.listComponents(), opts.components);
+  const listed = await deps.storybook.listComponents();
+  const entries = selectComponents(listed, opts.components);
+  const earlier = opts.merge ? readMergeBase(opts) : null;
 
   const components: SnapComponent[] = [];
+  const stage = new ScreenshotStage(opts.outDir);
+  try {
+    // Launching only when there is something to render keeps a typo in
+    // `--components` from surfacing as a browser-resolution failure on a
+    // machine that has no browser at all.
+    if (entries.length) {
+      let { browser, via } = await deps.launch({ headless: true });
+      progress(`Browser: ${via}`);
+      // A browser that goes before the run ends, crashed or killed from
+      // outside, failed every component left as a broken session, and the
+      // run then wrote that over the last styles.json and exited 0. It is
+      // launched once more instead, and the component it was on measured
+      // again from the start: the run, however long it had been going, is
+      // otherwise lost whole, as snap has no resume. If it goes a second
+      // time the run stops, writing nothing. Signals are the CLI's to
+      // handle: the snap command exits on SIGINT, SIGTERM and SIGHUP at
+      // once, writing nothing either.
+      let lost = false;
+      const watch = (watched: typeof browser) => {
+        lost = false;
+        // Only the browser in use: the one it replaced can report its loss late.
+        watched.on?.("disconnected", () => { if (watched === browser) lost = true; });
+      };
+      watch(browser);
+      // Called between steps, so a run that can't finish stops before
+      // anything is written. The disconnected event and the failures it
+      // causes can arrive in either order, so the browser is asked too. `on`
+      // and `isConnected` are absent only from test stand-ins.
+      const checkpoint = () => {
+        if (!lost && browser.isConnected?.() !== false) return;
+        const kept = opts.screenshots
+          ? `${SNAP_STYLES_FILENAME}, ${SNAP_META_FILENAME} and the screenshots were`
+          : `${SNAP_STYLES_FILENAME} and ${SNAP_META_FILENAME} were`;
+        throw new BrowserLostError(
+          `The browser closed before snap finished (it crashed, or something stopped it), with ${components.length} of ${entries.length} components read. ` +
+            `${kept} left as they were. Run snap again.`,
+        );
+      };
 
-  // Launching only when there is something to render keeps a typo in
-  // `--components` from surfacing as a browser-resolution failure on a machine
-  // that has no browser at all.
-  if (entries.length) {
-    let { browser, via } = await deps.launch({ headless: true });
-    progress(`Browser: ${via}`);
-    // A browser that goes before the run ends, crashed or killed from
-    // outside, failed every component left as a broken session, and the run
-    // then wrote that over the last styles.json and exited 0. It is launched
-    // once more instead, and the component it was on measured again from the
-    // start: the run, however long it had been going, is otherwise lost
-    // whole, as snap has no resume. If it goes a second time the run stops,
-    // writing nothing. Signals are the CLI's to handle: the snap command
-    // exits on SIGINT, SIGTERM and SIGHUP at once, writing nothing either.
-    let lost = false;
-    const watch = (watched: typeof browser) => {
-      lost = false;
-      // Only the browser in use: the one it replaced can report its loss late.
-      watched.on?.("disconnected", () => { if (watched === browser) lost = true; });
-    };
-    watch(browser);
-    // Called between steps, so a run that can't finish stops before anything
-    // is written. The disconnected event and the failures it causes can
-    // arrive in either order, so the browser is asked too. `on` and
-    // `isConnected` are absent only from test stand-ins.
-    const checkpoint = () => {
-      if (!lost && browser.isConnected?.() !== false) return;
-      const kept = opts.screenshots
-        ? `${SNAP_STYLES_FILENAME}, ${SNAP_META_FILENAME} and the screenshots were`
-        : `${SNAP_STYLES_FILENAME} and ${SNAP_META_FILENAME} were`;
-      throw new BrowserLostError(
-        `The browser closed before snap finished (it crashed, or something stopped it), with ${components.length} of ${entries.length} components read. ` +
-          `${kept} left as they were. Run snap again.`,
-      );
-    };
-
-    const stage = new ScreenshotStage(opts.outDir);
-    let relaunched = false;
-    try {
-      for (let index = 0; index < entries.length;) {
-        const entry = entries[index];
-        deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
-        try {
-          checkpoint();
-          const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage);
-          // Its failures may have been the browser going.
-          checkpoint();
-          components.push(measured);
-          index++;
-        } catch (err) {
-          if (!(err instanceof BrowserLostError) || relaunched) throw err;
-          relaunched = true;
-          progress(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
-          await browser.close().catch(() => { /* already gone */ });
-          ({ browser } = await deps.launch({ headless: true }));
-          watch(browser);
+      let relaunched = false;
+      try {
+        for (let index = 0; index < entries.length;) {
+          const entry = entries[index];
+          deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
+          try {
+            checkpoint();
+            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage);
+            // Its failures may have been the browser going.
+            checkpoint();
+            components.push(measured);
+            index++;
+          } catch (err) {
+            if (!(err instanceof BrowserLostError) || relaunched) throw err;
+            relaunched = true;
+            progress(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
+            // Measured again from the start, so its first attempt's
+            // screenshots go: one the second attempt doesn't take would
+            // still replace the last run's.
+            stage.drop(entry);
+            await browser.close().catch(() => { /* already gone */ });
+            ({ browser } = await deps.launch({ headless: true }));
+            watch(browser);
+          }
         }
+      } finally {
+        // Closed before anything is written: a signal while it closes stops
+        // the run with nothing written, screenshots included.
+        await browser.close().catch(() => { /* already gone */ });
       }
-      stage.commit();
-    } finally {
-      stage.discard();
-      await browser.close().catch(() => { /* already gone */ });
     }
+
+    // From here to the last file nothing awaits, so a signal, which the
+    // snap command handles between tasks, comes before any of it is written
+    // or after all of it is.
+    stage.commit();
+    return writeSnap(opts, deps, listed, components, earlier, progress);
+  } finally {
+    stage.discard();
+  }
+}
+
+/**
+ * Puts the run's components, and under --merge the earlier snap's others,
+ * in order, and writes styles.json and meta.json. Synchronous, so the two
+ * files are written together or not at all.
+ */
+function writeSnap(
+  opts: SnapOptions,
+  deps: SnapDeps,
+  listed: ComponentEntry[],
+  measured: SnapComponent[],
+  earlier: MergeBase | null,
+  progress: (m: string) => void,
+): SnapResult {
+  const measuredAt = new Date(deps.now?.() ?? Date.now()).toISOString();
+  // Under --merge, every component the earlier snap has that this run didn't
+  // measure again: matched by ID, which no two components share, and by key
+  // only for one recorded without an ID.
+  const ids = new Set(measured.map((c) => c.id));
+  const keys = new Set(measured.map((c) => componentKey(c)));
+  const kept = (earlier?.result.components ?? []).filter((c) => (c.id != null ? !ids.has(c.id) : !keys.has(componentKey(c))));
+  const components = [...measured, ...kept];
+  if (earlier) {
+    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap`);
   }
 
   // Deterministic ordering so repeated runs produce identical output.
@@ -533,8 +666,10 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   // title, or when their titles were rebuilt from IDs, without the index,
   // and came out the same. The advice is for whichever it was: telling the
   // user to retitle components whose titles already differ in Storybook, as
-  // this did, left nothing they could do.
-  const derived = new Set(entries.filter((e) => e.titleDerived).map((e) => e.id));
+  // this did, left nothing they could do. Under --merge it is worked out
+  // again over the whole snap, for the components kept too.
+  for (const component of kept) component.warnings = component.warnings.filter((w) => !SHARED_KEY_WARNING.test(w));
+  const derived = new Set(listed.filter((e) => e.titleDerived).map((e) => e.id));
   const byKey = new Map<string, SnapComponent[]>();
   for (const component of components) {
     const key = componentKey(component);
@@ -572,8 +707,22 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     },
   };
 
+  // A merged snap is only as fresh as its oldest component: its measuredAt
+  // is that one's, and each component keeps its own time, so verify holds
+  // a readback to when its component was measured.
+  let times: Record<string, string> | undefined;
+  if (earlier) {
+    times = {};
+    for (const component of kept) {
+      const key = componentKey(component);
+      times[key] = earlier.meta.componentsMeasuredAt?.[key] ?? earlier.meta.measuredAt;
+    }
+    for (const component of measured) times[componentKey(component)] = measuredAt;
+  }
+  const oldest = Object.values(times ?? {}).reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min), measuredAt);
+
   writeStylesJson(opts.outDir, result);
-  writeMetaJson(opts.outDir, result, new Date(deps.now?.() ?? Date.now()).toISOString());
+  writeMetaJson(opts.outDir, result, oldest, times);
   return result;
 }
 
@@ -783,7 +932,7 @@ function writeStylesJson(outDir: string, result: SnapResult): string {
   return path;
 }
 
-function writeMetaJson(outDir: string, result: SnapResult, measuredAt: string): string {
+function writeMetaJson(outDir: string, result: SnapResult, measuredAt: string, componentsMeasuredAt?: Record<string, string>): string {
   const meta: SnapMeta = {
     version: SNAP_SCHEMA_VERSION,
     measuredAt,
@@ -792,6 +941,7 @@ function writeMetaJson(outDir: string, result: SnapResult, measuredAt: string): 
     variantSelection: result.variantSelection,
     components: result.summary.components,
     variants: result.summary.variants,
+    ...(componentsMeasuredAt ? { componentsMeasuredAt } : {}),
   };
   const path = join(outDir, SNAP_META_FILENAME);
   mkdirSync(outDir, { recursive: true });
