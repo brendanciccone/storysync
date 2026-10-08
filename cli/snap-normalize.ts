@@ -71,6 +71,18 @@ export interface NormalizedStyles {
    * variant whose base has one and it doesn't records null in its delta.
    */
   backgroundImage?: string | null;
+  /**
+   * The computed `background-clip` of the bottom background layer, which
+   * clips `backgroundColor`: `padding-box` stops the fill at the border,
+   * so a transparent or translucent border shows what is behind the element,
+   * where `border-box`, CSS's initial value, paints the fill under it.
+   *
+   * Written only when it is not `border-box`, so a styles.json from before
+   * it was measured, and every element that leaves it as it is, reads and
+   * diffs as it did. A variant whose base has one and it doesn't records
+   * null in its delta, which means `border-box`.
+   */
+  backgroundClip?: string | null;
   color: string | null;
   border: { top: BorderSide | null; right: BorderSide | null; bottom: BorderSide | null; left: BorderSide | null } | null;
   /** Set when all four sides are identical — the common case for Figma strokes. */
@@ -120,7 +132,7 @@ export interface NormalizedStyles {
 export const CAPTURED_PROPERTIES: readonly string[] = [
   "display", "flex-direction", "align-items", "justify-content",
   "row-gap", "column-gap",
-  "background-color", "background-image", "color", "opacity",
+  "background-color", "background-image", "background-clip", "color", "opacity",
   "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
   "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
   "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
@@ -339,6 +351,16 @@ const COLOR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]
  * oklch(...) 100%)`, Chromium dropping its default `in oklab`. A `url()`
  * layer is kept as written.
  */
+/**
+ * The clip of the bottom layer, the one that clips the background color,
+ * or null for `border-box`: a value per background layer is listed top
+ * first, so it is the last.
+ */
+function normalizeBackgroundClip(value: string | undefined): string | null {
+  const clip = splitTopLevel((value ?? "").trim()).pop()?.trim() ?? "";
+  return clip && clip !== "border-box" ? clip : null;
+}
+
 function normalizeBackgroundImage(value: string | undefined): string | null {
   const raw = (value ?? "").trim();
   if (!raw || raw === "none") return null;
@@ -863,6 +885,7 @@ export function normalizeStyles(
 
   const opacity = Number(raw["opacity"]);
   const backgroundImage = normalizeBackgroundImage(raw["background-image"]);
+  const backgroundClip = normalizeBackgroundClip(raw["background-clip"]);
   const rootFont = fonts?.root ? resolveFontFamily(fonts.root) : null;
 
   return {
@@ -875,6 +898,7 @@ export function normalizeStyles(
     height: round2(box.height),
     backgroundColor: normalizeColor(raw["background-color"]),
     ...(backgroundImage != null ? { backgroundImage } : {}),
+    ...(backgroundClip != null ? { backgroundClip } : {}),
     color: normalizeColor(raw["color"]),
     border: anyBorder ? border : null,
     borderUniform: anyBorder && allSame ? border.top : null,
@@ -1065,7 +1089,7 @@ export type StyleDelta = Partial<NormalizedStyles>;
 
 const STYLE_KEYS = [
   "display", "flexDirection", "alignItems", "justifyContent", "gap",
-  "width", "height", "backgroundColor", "backgroundImage", "color", "border", "borderUniform",
+  "width", "height", "backgroundColor", "backgroundImage", "backgroundClip", "color", "border", "borderUniform",
   "borderRadius", "borderRadiusUniform", "padding", "fontFamily", "fontSize",
   "fontWeight", "lineHeight", "letterSpacing", "boxShadow", "opacity", "text",
   "boxSizing", "fontAvailable",

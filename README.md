@@ -460,6 +460,7 @@ Use the version the error prints. Other Playwright versions install a browser th
 
 - **Colors** as sRGB hex (`#rrggbbaa` when translucent), whatever space Chromium reports them in (`oklch`, `oklab`, `lab`, `color()`, and so on). Colors outside sRGB are clipped (see [Limitations](#limitations)).
 - **Gradients and background images** as `backgroundImage`, with colors as hex.
+- **Background clip** as `backgroundClip` when it isn't `border-box`, such as `padding-box` for Tailwind's `bg-clip-padding`. The push uses it to decide whether the fill shows under a transparent border.
 - **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
 - **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
 - **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its color.
