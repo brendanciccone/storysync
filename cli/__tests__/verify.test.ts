@@ -1345,3 +1345,31 @@ test("readSnapAge: carries a merged snap's time for each component, leaving out 
     assert.equal(age.known && "componentsMeasuredAt" in age, false);
   } finally { rmSync(plain, { recursive: true, force: true }); }
 });
+
+// --- How Figma fits the text ---
+
+test("verifyVariant: where the browser cut a label off or wrapped it, Figma's text is scored on its width and where it ends", () => {
+  // Attachment's vertical title: Tailwind's truncate cut it off at 94px.
+  const cut = { ...BASE, text: { color: "#ffffff", fontFamily: "Helvetica", fontSize: 12, fontWeight: 600, layout: { width: 94, lines: 1, truncation: "ellipsis" as const } } };
+  const wrapped = { ...BASE, text: { ...cut.text, layout: { width: 102, lines: 3 } } };
+  const score = (measured: NormalizedStyles, textLayout: unknown) => verifyVariant("C", "s", measured, complete({ textLayout }) as never, 0.5);
+  const drift = (measured: NormalizedStyles, textLayout: unknown) => score(measured, textLayout).differences.map((d) => d.property).join();
+
+  assert.equal(score(cut, { width: 94, maxLines: 1 }).status, "verified");
+  assert.equal(score(cut, { width: 94.4, maxLines: 1 }).status, "verified", "within the geometry allowance");
+  // A text that hugs, as the live push built it, reads as null.
+  assert.equal(drift(cut, null), "textLayout");
+  assert.equal(drift(cut, { width: 140, maxLines: 1 }), "textLayout");
+  assert.equal(drift(cut, { width: 94, maxLines: null }), "textLayout", "fixed at the width but never cut off");
+  assert.equal(drift(cut, { width: 94, maxLines: 0 }), "textLayout", "cut off at its height, not after a line");
+  assert.equal(score(wrapped, { width: 102, maxLines: null }).status, "verified");
+  assert.equal(drift(wrapped, { width: 102, maxLines: 3 }), "textLayout", "cut off where the browser drew every line");
+
+  // Where the browser drew the label on one line at its own width, how
+  // Figma fits it isn't scored, however it is built; nor is a readback from
+  // a template that didn't read it.
+  const plain = { ...BASE, text: cut.text && { ...cut.text, layout: undefined } };
+  const matched = (measured: NormalizedStyles, entry: Record<string, unknown>) => verifyVariant("C", "s", measured, complete(entry) as never, 0.5).matched;
+  assert.equal(matched(plain, { textLayout: { width: 10, maxLines: 1 } }), matched(plain, {}));
+  assert.equal(matched(cut, { textLayout: undefined }) + 1, matched(cut, { textLayout: { width: 94, maxLines: 1 } }));
+});

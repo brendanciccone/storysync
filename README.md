@@ -531,7 +531,7 @@ The comparison is numeric, not visual, so it's deterministic and free. Only prop
 **Readback checks.** `verify` never contacts Figma, so before scoring it checks that the readback file is what Figma returned:
 
 - Each entry carries a checksum computed inside Figma over exactly what it returned, so an entry that was edited, made up, or copied from another variant fails.
-- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties.
+- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties. A later field, `textLayout`, isn't required, so a readback from before it still verifies.
 - Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
 - No two components can share a `nodeId`.
 
@@ -543,7 +543,7 @@ Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not
 
 The checksum isn't a signature, though (see [Limitations](#limitations)).
 
-**Comparison details.** Text color, size, weight, and family are compared against the element that holds the text. Colors are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, color, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
+**Comparison details.** Text color, size, weight, and family are compared against the element that holds the text. Where snap recorded a `text.layout`, the text's width and where it ends in an ellipsis are compared too, so a cut-off title built to hug its content shows as drift. Colors are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, color, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
 
 **Staleness.** `snap` writes a `meta.json` next to `styles.json` recording when and against which Storybook it measured. It's a separate file so `styles.json` stays stable to diff. `verify` uses it to catch a snap taken before the code changed, which would otherwise score 100%. `--strict-age` fails when `meta.json` is missing or invalid, since it's often gitignored. After `snap --merge`, each component's readback is checked against the time that component was measured.
 

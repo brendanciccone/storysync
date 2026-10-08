@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
 import type { Client } from "../setup.js";
-import { COMPARABLE_PROPERTIES, READBACK_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
+import { COMPARABLE_PROPERTIES, READBACK_FIELDS, READBACK_LATER_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 
 function tempProject(): string {
@@ -205,7 +205,7 @@ test("the Cursor rule asks for every readback property the Claude template retur
     const readbackStep = /properties back([\s\S]*?)figma-readback\.json/.exec(cursor);
     assert.ok(readbackStep, "Cursor rule never describes the readback");
     for (const key of keys) {
-      assert.ok(key === "source" || (COMPARABLE_PROPERTIES as readonly string[]).includes(key), `${key} is not compared`);
+      assert.ok(key === "source" || (COMPARABLE_PROPERTIES as readonly string[]).includes(key) || (READBACK_LATER_FIELDS as readonly string[]).includes(key), `${key} is not compared`);
       assert.ok(readbackStep[1].includes(`\`${key}\``), `Cursor rule's readback never asks for ${key}`);
     }
     // And the checksum the template seals each entry with.
@@ -1349,7 +1349,9 @@ test("verify requires exactly the fields the Claude template returns on every va
     const fields = [...body.matchAll(new RegExp(`^${indent}(\\w+):([\\s\\S]*?)(?=^${indent}\\w+:|$(?![\\s\\S]))`, "gm"))]
       .map(([, key, value]) => ({ key, value }));
     assert.ok(fields.length > 10, `read ${fields.length} fields from the template`);
-    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS].sort(), "verify's required fields are not the ones the template returns");
+    // Less the fields added since, which verify can't require of a readback
+    // an earlier template read.
+    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS, ...READBACK_LATER_FIELDS].sort(), "verify's required fields are not the ones the template returns");
     // None of them is left out where Figma has nothing to report: a field
     // that can be undefined drops out of what the call returns.
     for (const { key, value } of fields) {
@@ -1502,5 +1504,14 @@ test("every push instruction tells a story that drops its args from props that c
     assert.match(text, /`their markup changed with the args`, the story passes them[^\n]*never (?:say the story drops its args|blame the story)/, `${path} blames the story for props that change only behavior`);
     assert.match(text, /whether to leave (?:those props|them) out[^\n]*`--exclude-props`/, `${path} doesn't offer to leave behavior-only props out`);
     assert.match(text, /any props snap found reach a component but change nothing it measures, and what the user chose for them/, `${path}'s summary leaves out the behavior-only props`);
+  }
+});
+
+test("every push instruction sizes a label as snap measured it fits, and reads back how Figma fits it", () => {
+  // A live push built Attachment's vertical title, which the browser cut off
+  // at its card's width, as a text that hugged and ran past the card.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /`text\.layout`[^\n]*`textAutoResize = 'HEIGHT'`[^\n]*`textTruncation = 'ENDING'` and `maxLines = layout\.lines`/, `${path} doesn't size a label as the browser fitted it`);
+    assert.ok(text.includes("`textLayout`"), `${path} doesn't read back textLayout`);
   }
 });

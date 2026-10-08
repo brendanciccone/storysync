@@ -235,16 +235,26 @@ function renderBounds(node) {
  * the frame is the measured size less the stroke. `strokeHidden` builds a transparent
  * border's stroke as a designer might, a paint of full opacity hidden with the
  * eye icon, `visible: false`. A width or height of 0, a closed Collapsible's,
- * is built at 0.01, the least Figma takes, as the skill says.
+ * is built at 0.01, the least Figma takes, as the skill says. A label is built
+ * as the skill says too: see textNode below.
  */
-function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false, hugging = false } = {}) {
+function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false, hugging = false, textHugs = false } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
+  // As the skill builds a label: hugging its content, or, where snap
+  // measured how the browser fitted it, fixed at that width and cut off
+  // after as many lines as the browser drew; with `textHugs`, hugging all
+  // the same, as a push before snap measured it built Attachment's title.
+  const layout = textHugs ? null : text.layout ?? null;
   const textNode = {
     type: "TEXT",
     fills: text.color ? [solidPaint(text.color)] : [],
     fontSize: text.fontSize,
     // What Figma actually reports: a style *name*, e.g. Inter 600 is "Semi Bold".
     fontName: { family: text.fontFamily, style: STYLE_NAME[text.fontWeight] ?? "Regular" },
+    textAutoResize: layout ? "HEIGHT" : "WIDTH_AND_HEIGHT",
+    textTruncation: layout?.truncation ? "ENDING" : "DISABLED",
+    maxLines: layout?.truncation ? layout.lines : null,
+    width: layout ? layout.width : Math.max(1, Math.round(st.width - st.padding.left - st.padding.right)),
   };
   const border = Object.fromEntries(SIDES.map((side) => [side, st.borderUniform ?? st.border?.[side.toLowerCase()] ?? null]));
   const drawn = SIDES.map((side) => border[side]).find(Boolean) ?? null;
@@ -3005,6 +3015,29 @@ async function main() {
     assert(decimalRead === "#000000b3", `a fill whose opacity was set to 0.7 read back as ${decimalRead}, not #000000b3`);
     return `fill ${got.backgroundColor}, stroke ${got.border}, text ${got.color}; opacity 0.7 as b3; a hidden 1px stroke null; ` +
       `${verdicts.translucent.status} and ${verdicts["hidden-stroke"].status}`;
+  });
+
+  await check("text the browser cut off is scored on how Figma fits it: a title that hugs and runs past its card drifts", async () => {
+    // A live push built Attachment's vertical title, which Tailwind's
+    // truncate cuts off at 94px with an ellipsis, as a text that hugged its
+    // 140px and ran 28px past a 120px card, and verify scored it 100%.
+    const plain = edgeVariants(snapDir)[0].styles;
+    assert(plain.text, "the example Button's edge variant has no measured text");
+    const cut = { ...plain, text: { ...plain.text, layout: { width: 40, lines: 1, truncation: "ellipsis" } } };
+    const wrapped = { ...plain, text: { ...plain.text, layout: { width: 40, lines: 3 } } };
+    const verdicts = await scoreEdges(snapDir, loadSkillReadback(), [
+      { edge: "plain", styles: { ...plain, borderUniform: null, border: null } },
+      { edge: "cut", styles: cut },
+      { edge: "cut-hugging", styles: cut, textHugs: true },
+      { edge: "wrapped", styles: wrapped },
+      { edge: "wrapped-hugging", styles: wrapped, textHugs: true },
+    ]);
+    const say = JSON.stringify(Object.fromEntries(Object.entries(verdicts).map(([edge, v]) => [edge, `${v.status} ${v.differences.map((d) => d.property).join(",")}`])));
+    for (const edge of ["plain", "cut", "wrapped"]) assert(verdicts[edge].status === "verified", `${edge}: ${say}`);
+    for (const edge of ["cut-hugging", "wrapped-hugging"]) {
+      assert(verdicts[edge].status === "drifted" && verdicts[edge].differences.map((d) => d.property).join() === "textLayout", `${edge}: ${say}`);
+    }
+    return say;
   });
 
   await check("a readback that reads render bounds, or gets a stroke or a color wrong, fails these checks", async () => {

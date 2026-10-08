@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
-import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
+import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
 import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
@@ -71,6 +71,15 @@ export interface ReadbackStyles {
   width?: number;
   height?: number;
   /**
+   * The text child's width and the line Figma ends it in an ellipsis after,
+   * its `maxLines`, null where it isn't cut off, where the text has a fixed
+   * width or is cut off; null where it hugs its content, or there is none.
+   * Compared where snap measured how the browser fitted the text, its
+   * `text.layout`, and only there: see sameTextLayout. A readback from an
+   * earlier template has none, and isn't compared on it.
+   */
+  textLayout?: ReadbackTextLayout | null;
+  /**
    * When the readback template read this entry, as an ISO 8601 time from
    * Figma's clock, sealed under the checksum: see READ_AT_SKEW_MS. Not a
    * style property.
@@ -81,6 +90,12 @@ export interface ReadbackStyles {
    * `fnv1a:` and 8 hex digits: see readbackChecksum. Not a style property.
    */
   checksum?: string;
+}
+
+/** See ReadbackStyles.textLayout. */
+export interface ReadbackTextLayout {
+  width: number;
+  maxLines: number | null;
 }
 
 export interface ReadbackFile {
@@ -98,7 +113,7 @@ export interface ReadbackFile {
 export const COMPARABLE_PROPERTIES = [
   "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
   "boxShadow", "fontSize", "fontWeight", "fontFamily", "gap", "flexDirection", "opacity",
-  "width", "height",
+  "width", "height", "textLayout",
 ] as const;
 
 /**
@@ -408,6 +423,23 @@ function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {
   });
 }
 
+/**
+ * Whether Figma fits the text as the browser did: at the width it was laid
+ * out in, and, where the browser cut it off, ending in an ellipsis after as
+ * many lines as it drew, or, where it wrapped, not cut off at all. Figma has
+ * no flat cut, so text the browser clipped is built ending in an ellipsis,
+ * and matches one. A text that hugs its content reads as null, and matches
+ * none: a live push built Attachment's truncated title that way, and it ran
+ * past its card.
+ */
+function sameTextLayout(measured: unknown, figma: unknown, tolerance: number): boolean {
+  const want = measured as TextLayout;
+  const got = figma as ReadbackTextLayout | null;
+  if (got == null || typeof got !== "object") return false;
+  const width = closeEnough(want.width, Number(got.width), geometryTolerance(tolerance, want.width, got.width));
+  return width && (want.truncation ? got.maxLines === want.lines : got.maxLines == null);
+}
+
 /** Absent, or present with every component at zero — the same rendering either way. */
 function isAbsentOrZeroRecord(value: unknown): boolean {
   if (value == null) return true;
@@ -476,6 +508,8 @@ export function propertyMatches(
       return sameShadows(measured, figma, tolerance);
     case "flexDirection":
       return String(measured ?? "").toLowerCase() === String(figma ?? "").toLowerCase();
+    case "textLayout":
+      return sameTextLayout(measured, figma, tolerance);
   }
 }
 
@@ -523,6 +557,20 @@ export function verifyVariant(
     if (!(property in figma)) continue;
     // A block element's measured size is its container's, not its own.
     if ((property === "width" || property === "height") && !geometryMeaningful) continue;
+    // Only where the browser wrapped or cut the text off: a label on one
+    // line at its own width is one Figma's own metrics set a pixel apart,
+    // however it is built.
+    if (property === "textLayout") {
+      const layout = (measuredText as { layout?: TextLayout } | null | undefined)?.layout;
+      if (!layout) continue;
+      if (sameTextLayout(layout, figma.textLayout, tolerance)) {
+        matched++;
+      } else {
+        mismatched++;
+        differences.push({ property, status: "mismatch", measured: layout, figma: figma.textLayout });
+      }
+      continue;
+    }
     const figmaValue = (figma as Record<string, unknown>)[property];
     // Compare like with like: the readback reads these off Figma's text child,
     // so score them against the text styles snap measured on the corresponding
@@ -677,6 +725,15 @@ export const READBACK_FIELDS = [
   "source", "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
   "fontSize", "fontWeight", "fontFamily", "gap", "opacity", "width", "height",
 ] as const;
+
+/**
+ * The fields the readback template returns that verify doesn't require:
+ * `textLayout`, added after READBACK_FIELDS, so a readback an earlier
+ * template read, which has none, still verifies. It is sealed under the
+ * checksum like any other where an entry has it. An entry without it
+ * isn't compared on how Figma fits its text.
+ */
+export const READBACK_LATER_FIELDS = ["textLayout"] as const;
 
 /**
  * The fields of READBACK_FIELDS an entry lacks. Present as `null` is
