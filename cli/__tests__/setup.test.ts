@@ -784,6 +784,44 @@ test("every push instruction offers --exclude-props for a capped component", () 
   }
 });
 
+test("every push instruction re-measures with --merge, runs snap in the background, and asks about what snap measured instead", () => {
+  // Told to re-run timed-out components with --components alone, the agent
+  // wrote a styles.json of those, and the push's verify scored part of the
+  // push. A foreground snap outlasted the agent's shell and wrote nothing,
+  // and a dialog's closed trigger was built and labeled measured.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /npx storysync list --storybook http:\/\/localhost:6006 --json/, `${path} doesn't count the components first`);
+      assert.match(text, /more than about 20 components, stop and ask the user what to push/, `${path} doesn't ask what to push`);
+      assert.doesNotMatch(text, /^\d\. [^\n]*Run `npx storysync map/m, `${path} still maps every component before snap`);
+      assert.match(text, /STORYSYNC_PROGRESS=1 npx storysync snap [^\n]*2> \.storysync\/snap-progress\.log; echo "exit \$\?" >> \.storysync\/snap-progress\.log/, `${path} doesn't log snap's progress and exit code`);
+      assert.match(text, /in the background/, `${path} runs snap in the foreground`);
+      assert.match(text, /`exit 130`, `143` or `129`/, `${path} doesn't say what a stopped snap's exit codes mean`);
+      assert.match(text, /`measuredAt` is after you started it/, `${path} doesn't check the snap is this run's`);
+      assert.match(text, /read the measurements from `\.storysync\/snaps\/styles\.json` on disk/i, `${path} reads snap's one-line stdout`);
+      assert.match(text, /adding `--components <their IDs> --merge` and a longer `--timeout`/, `${path} re-measures timeouts without --merge`);
+      assert.match(text, /Never re-measure some components with `--components` alone/, `${path} doesn't warn against --components alone`);
+      assert.doesNotMatch(text, /re-run `?snap`? for those components with `--components` and a longer/, `${path} still re-runs timeouts with --components alone`);
+      assert.match(text, /closed trigger[^\n]*ask the user once/, `${path} builds a closed trigger without asking`);
+      assert.match(text, /\.description = 'Measured from its closed trigger/, `${path} doesn't label a trigger built as measured in Figma`);
+      assert.match(text, /`bg-primary`[^\n]*`primary`[^\n]*leave it unbound and list it in the summary|`bg-primary` is `primary`[^\n]*leave the value unbound and list it in the summary/, `${path} picks among variables that share a value`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push instruction makes a page per whole category and names a set by its title's last segment", () => {
   // With Storybook's own titles, ui/base/Button's top-level category is "ui",
   // as is ui/radix/Button's: one page a top-level category put them on one

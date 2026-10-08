@@ -17,7 +17,7 @@ Component styling is **measured, not guessed**. `storysync snap` renders each va
 
 | Method | What it does |
 |---|---|
-| **Claude Code skill** | Runs `storysync tokens`, `map`, and `snap` to extract structured data and measured styles from your codebase, then writes Figma variables and styled components via `use_figma`. Can also audit Figma against code. |
+| **Claude Code skill** | Runs `storysync tokens`, `list`, and `snap` to extract structured data and measured styles from your codebase, then writes Figma variables and styled components via `use_figma`. Can also audit Figma against code. |
 | **Cursor rules** | Same as above, from Cursor |
 | **Codex** | Same as above, from Codex |
 | **CLI** | Extract tokens, map components, measure rendered styles, score a push, or diff Figma against code |
@@ -69,7 +69,7 @@ You can also just ask in plain English (see [What to say](#what-to-say)).
 
 In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma. Then start Storybook and ask the agent to push or diff.
 
-Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync map`, `inspect`, and `snap` outside it. Approve them, since they need to reach Storybook.
+Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync list`, `map`, `inspect`, and `snap` outside it. Approve them, since they need to reach Storybook.
 
 ### Codex
 
@@ -183,10 +183,10 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 
   tailwind.config.ts / @theme          Storybook MCP
   globals.css (:root)                        ↓
-  theme.ts                   storysync tokens --json     storysync map --json
+  theme.ts                   storysync tokens --json     storysync list --json
          ↓                          ↓                           ↓
-  storysync extracts         Structured token JSON       Variant definitions JSON
-  colors, spacing,           (deterministic output)      (props, combinations)
+  storysync extracts         Structured token JSON       components to push,
+  colors, spacing,           (deterministic output)      chosen with the user
   typography, radius,              ↓                           ↓
   shadows                   AI client reads JSON,        storysync snap --json
          ↓                  creates Figma variables            ↓
@@ -613,7 +613,7 @@ Options:
 ### Code → Figma: `snap`, the push, and `verify`
 
 - **Stories must use their args.** See [`storysync snap`](#storysync-snap).
-- **Overlays are measured closed** unless their story renders them open, so a Dialog's Figma component is its trigger. snap warns when it measures a closed trigger.
+- **Overlays are measured closed** unless their story renders them open, so a Dialog's Figma component would be its trigger. snap warns when it measures a closed trigger, and the push then asks whether to build the trigger, skip it, or stop so you can add a story that renders it open. `verify` names it under the score.
 - **Variant values must be URL-safe.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported`.
 - **Props need literal types.** Only a boolean or a union of string literals becomes a variant property. A `string` or `number` prop doesn't, even with `options` in its argType, since argTypes aren't read.
 - **Text can be a pixel off.** Figma lays out text with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than in the browser. `verify` allows 3% or 1px, whichever is larger. The skill reports this as a font-rendering difference instead of forcing the width, unless a stroke was built wrong.
