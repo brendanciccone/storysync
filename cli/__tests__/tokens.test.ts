@@ -1644,7 +1644,10 @@ test("Tailwind: a config that re-exports another is read through it when it is r
     // snowball-tech's config is this one line.
     [{ "tailwind.config.ts": `export { default } from "@acme/design-tokens/tailwind";` },
       (config) => `${config} re-exports its config from @acme/design-tokens/tailwind, a package, which storysync can't read statically, so the tokens it declares are missing`],
+    // The theme passed to a wrapper is read; what the wrapper adds isn't.
     [{ "tailwind.config.js": `module.exports = withBrand({ content: [], theme: { extend: { colors: { brand: "#123456" } } } });` },
+      (config) => `${config} passes its config through withBrand(), which storysync can't read statically: the theme passed to it is read, but any tokens the function adds are missing`],
+    [{ "tailwind.config.js": `const config = withBrand(base);\nmodule.exports = config;` },
       (config) => `${config} builds its config with withBrand(), which storysync can't read statically, so the tokens it adds are missing`],
     [{ "tailwind.config.js": `const config = require("@acme/ui/tailwind")("docs");\nconfig.content = [];\nmodule.exports = config;` },
       (config) => `${config} builds its config with require("@acme/ui/tailwind")(), which storysync can't read statically, so the tokens it adds are missing`],
@@ -1705,6 +1708,33 @@ module.exports = { ...shared, content: [] };`,
     ), result.warnings.join("\n"));
     assert.ok(!result.warnings.some((w) => w.startsWith("Read no colors")), result.warnings.join("\n"));
   } finally { cleanup(packaged); }
+});
+
+test("Tailwind: a preset built by a call, or required from a path worked out at run time, is named as such", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `const path = require("path");
+function makePreset() { return { theme: {} }; }
+module.exports = {
+  presets: [makePreset(), require(path.join(__dirname, "preset")), require(\`./\${"preset"}\`)],
+  content: [],
+};`,
+  });
+  const config = join(dir, "tailwind.config.js");
+  try {
+    assert.deepEqual(extractTokens(dir).warnings.filter((w) => w.startsWith(config)), [
+      `${config} takes the preset makePreset(), built by a function call, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset require(path.join(__dirname, "preset")), whose path is worked out when the config runs, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset require(\`./\${"preset"}\`), whose path is worked out when the config runs, which storysync can't read statically, so the tokens it declares are missing`,
+    ]);
+  } finally { cleanup(dir); }
+
+  // The theme passed to a wrapper such as defineConfig() is read.
+  const wrapped = makeProject({
+    "tailwind.config.ts": `export default defineConfig({ theme: { extend: { colors: { brand: "#123456" } } } });`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(wrapped)), [["colors", [["brand", "#123456"]]]]);
+  } finally { cleanup(wrapped); }
 });
 
 test("Tailwind: a config with no theme storysync reads says so, and a theme exported on its own is read", () => {
