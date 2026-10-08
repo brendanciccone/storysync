@@ -937,22 +937,22 @@ export async function applyStoryArgsInPage(args: {
       }
       return false;
     };
-    const once = (event: string, matches: (payload: unknown) => boolean) => new Promise<boolean>((resolve) => {
-      const stop = () => (channel.off ?? channel.removeListener)?.call(channel, event, listener);
-      const timer = setTimeout(() => {
-        stop();
-        resolve(false);
-      }, Math.max(0, deadline - Date.now()));
-      const listener = (payload: unknown) => {
-        if (!matches(payload)) return;
+    // The first of `wanted`'s events whose payload matches, or false at the deadline.
+    const once = (wanted: Record<string, (payload: unknown) => boolean>) => new Promise<boolean>((resolve) => {
+      const listeners = Object.entries(wanted).map(([event, matches]) => [event, (payload: unknown) => {
+        if (matches(payload)) done(true);
+      }] as const);
+      const done = (value: boolean) => {
         clearTimeout(timer);
-        stop();
-        resolve(true);
+        for (const [event, listener] of listeners) (channel.off ?? channel.removeListener)?.call(channel, event, listener);
+        resolve(value);
       };
-      channel.on(event, listener);
+      const timer = setTimeout(() => done(false), Math.max(0, deadline - Date.now()));
+      for (const [event, listener] of listeners) channel.on(event, listener);
     });
     const forStory = (payload: unknown) =>
       payload === args.storyId || (typeof payload === "object" && payload !== null && (payload as { storyId?: unknown }).storyId === args.storyId);
+    const any = () => true;
 
     if (!(await settled())) return { error: "the story was still rendering" };
     const argTypes = render.story.argTypes ?? {};
@@ -961,10 +961,13 @@ export async function applyStoryArgsInPage(args: {
       if (argType?.if) argTypes[name] = { ...argType, if: undefined };
       if (argTypes[name]?.if) return { error: `argTypes.${name}.if couldn't be lifted` };
     }
-    const updated = once("storyArgsUpdated", forStory);
+    const updated = once({ storyArgsUpdated: forStory });
     channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
     if (!(await updated)) return { error: "Storybook didn't confirm the args" };
-    const rendered = once("storyRendered", forStory);
+    // Rendered, or threw: a story that can't render the values never says
+    // storyRendered, but shows Storybook's error display, which the capture
+    // reads next, so it is a render error rather than a refusal.
+    const rendered = once({ storyRendered: forStory, storyThrewException: any, storyErrored: any });
     channel.emit("forceRemount", { storyId: args.storyId });
     if (!(await rendered)) return { error: "the story didn't render again with them" };
     if (!(await settled())) return { error: "the story was still rendering with them" };

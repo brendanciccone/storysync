@@ -2,12 +2,22 @@
 // story was given the args its URL asked for. Put on the global `window`, as
 // the page functions find it, it treats args as Storybook 10 does: its store
 // takes from the URL only values the argTypes options allow; the story is
-// given only the args whose argTypes `if` holds, judged when its context is
-// read, so lifting one counts; `updateStoryArgs` writes the store unchecked
-// and answers `storyArgsUpdated` once the rerender is done; `forceRemount`
-// renders again and says `storyRendered`.
+// given the args aimed at no other target, each through its argType's
+// `mapping`, and of those only the ones whose argTypes `if` holds on the
+// mapped values, judged when its context is read, so lifting one counts;
+// `updateStoryArgs` writes the store unchecked and answers
+// `storyArgsUpdated` once the rerender is done; `forceRemount` renders
+// again and says `storyRendered`, or, for a story that throws, says
+// `storyThrewException` and shows Storybook's error display.
 
-export interface FakeArgType { options?: string[]; if?: { arg: string; neq: string }; type?: { name: string }; control?: { type: string } }
+export interface FakeArgType {
+  options?: unknown[];
+  if?: { arg: string; neq?: unknown; eq?: unknown };
+  type?: { name: string };
+  control?: { type: string };
+  mapping?: Record<string, unknown>;
+  target?: string;
+}
 
 export function fakePreview(opts: {
   argTypes: Record<string, FakeArgType>;
@@ -19,6 +29,12 @@ export function fakePreview(opts: {
   silent?: boolean;
   /** Keep hiding args by their argTypes `if` as first declared, as though lifting one did nothing. */
   ignoreLift?: boolean;
+  /** Storybook 7's last phase: a render ends at "completed", or "played" after a play function, never "finished". */
+  sb7?: "completed" | "played";
+  /** How long a remount stays in its afterEach before it finishes, in ms; Infinity never does. */
+  afterEachMs?: number;
+  /** A remount throws, as a story given a value it can't render does. */
+  remountThrows?: boolean;
   storyId?: string;
 }) {
   const storyId = opts.storyId ?? "ui-base-badge--default";
@@ -27,10 +43,12 @@ export function fakePreview(opts: {
   const stored: Record<string, unknown> = { ...opts.initial };
   for (const [name, value] of Object.entries(opts.url)) {
     const options = story.argTypes[name]?.options;
-    if (story.argTypes[name] && (!options || options.includes(String(value)))) stored[name] = value;
+    if (story.argTypes[name] && (!options || options.includes(value))) stored[name] = value;
   }
-  const render = { id: storyId, phase: opts.phase ?? "finished", story };
+  const render = { id: storyId, phase: opts.phase ?? opts.sb7 ?? "finished", story };
   const events: string[] = [];
+  /** Whether Storybook's error display shows, as it does once a remount throws. */
+  const shown = { error: null as string | null };
   const listeners = new Map<string, Set<(payload: unknown) => void>>();
   const channel = {
     on: (event: string, listener: (payload: unknown) => void) => listeners.set(event, (listeners.get(event) ?? new Set()).add(listener)),
@@ -45,9 +63,23 @@ export function fakePreview(opts: {
       if (event === "forceRemount") {
         render.phase = "rendering";
         setTimeout(() => {
+          if (opts.remountThrows) {
+            render.phase = "errored";
+            shown.error = "TypeError: Cannot read properties of undefined";
+            channel.emit("storyThrewException", { name: "TypeError", message: "Cannot read properties of undefined" });
+            render.phase = "finished";
+            return;
+          }
           render.phase = "completed";
           channel.emit("storyRendered", storyId);
-          render.phase = "finished";
+          if (opts.sb7) {
+            render.phase = opts.sb7;
+          } else if (opts.afterEachMs) {
+            render.phase = "afterEach";
+            if (Number.isFinite(opts.afterEachMs)) setTimeout(() => { render.phase = "finished"; }, opts.afterEachMs);
+          } else {
+            render.phase = "finished";
+          }
         }, 5);
       }
     },
@@ -58,16 +90,32 @@ export function fakePreview(opts: {
     storyStoreValue: {
       args: { get: () => stored },
       getStoryContext: () => {
-        const args: Record<string, unknown> = {};
+        // As Storybook's prepareContext: by target, then mapped, then by `if`.
+        const argTypes = opts.ignoreLift ? declared : story.argTypes;
+        const untargeted: Record<string, unknown> = {};
+        const argsByTarget: Record<string, Record<string, unknown>> = {};
         for (const [name, value] of Object.entries(stored)) {
-          const condition = (opts.ignoreLift ? declared : story.argTypes)[name]?.if;
-          if (!condition || stored[condition.arg] !== condition.neq) args[name] = value;
+          const target = story.argTypes[name]?.target;
+          if (target) (argsByTarget[target] ??= {})[name] = value;
+          else untargeted[name] = value;
         }
-        return { args, unmappedArgs: { ...stored }, globals: { theme: "light" } };
+        const mapped: Record<string, unknown> = {};
+        for (const [name, value] of Object.entries(untargeted)) {
+          const mapping = story.argTypes[name]?.mapping;
+          mapped[name] = mapping && String(value) in mapping ? mapping[String(value)] : value;
+        }
+        const args: Record<string, unknown> = {};
+        for (const [name, value] of Object.entries(mapped)) {
+          const condition = argTypes[name]?.if;
+          const shows = !condition || ("eq" in condition ? mapped[condition.arg] === condition.eq : mapped[condition.arg] !== condition.neq);
+          if (shows) args[name] = value;
+        }
+        const targeted = Object.keys(argsByTarget).length ? { argsByTarget: { UNTARGETED: untargeted, ...argsByTarget } } : {};
+        return { args, unmappedArgs: { ...stored }, ...targeted, globals: { theme: "light" } };
       },
     },
   };
-  return { storyId, preview, render, story, stored, events };
+  return { storyId, preview, render, story, stored, events, shown };
 }
 
 /** Runs `fn` with `preview` as the page's Storybook preview, as the page functions find it. */
@@ -81,13 +129,13 @@ export async function inPage<T>(preview: unknown, fn: () => Promise<T>): Promise
   }
 }
 
-/** The args a story URL asks for, as Storybook parses them: `variant:ghost;disabled:!true`. */
+/** The args a story URL asks for, as Storybook parses them: `variant:ghost;disabled:!true`, a number as one. */
 export function urlArgs(url: string): Record<string, unknown> {
   const param = new URL(url).searchParams.get("args");
   const args: Record<string, unknown> = {};
   for (const pair of (param ?? "").split(";").filter(Boolean)) {
     const [name, value] = pair.split(":");
-    args[name] = value === "!true" ? true : value === "!false" ? false : value;
+    args[name] = value === "!true" ? true : value === "!false" ? false : /^-?[0-9]+(\.[0-9]+)?$/.test(value) ? Number(value) : value;
   }
   return args;
 }
