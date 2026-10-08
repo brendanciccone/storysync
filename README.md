@@ -391,8 +391,8 @@ Options:
   --max-combinations <n> With --variants all, most combinations per component before
                          capping (default: 256)
   --screenshots          Also save a PNG per variant (off by default)
-  --timeout <ms>         Per-story timeout (default: 10000)
-  --selector <css>       Override the component root selector
+  --timeout <ms>         Per-story timeout (default: 10000); a story that times out is tried once more
+  --selector <css>       Measure the element this matches instead of choosing one
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant or component could not be measured, none were,
                          or a component was capped
@@ -400,6 +400,13 @@ Options:
 ```
 
 snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`.
+
+**Which element is measured.** In each story, snap measures the first element carrying the component's own `data-slot` (`switch` for `Switch`, `input-otp` for `InputOTP`), as shadcn/ui puts on every component's root. Any project can point snap at a component's root the same way. Without one, it measures the story's first element that draws, past wrappers that draw nothing and hold one element. snap warns when that element is likely not the component:
+
+- **A layout wrapper:** an element holding several others and drawing nothing itself, such as a story's `<div className="flex gap-2"><Switch /><Label /></div>`.
+- **A closed trigger:** a dialog, popover, menu or tooltip renders its content only while open, usually in a portal. snap measures the open content when the story renders it open and the content carries the `-content` slot (`dialog-content`) or the trigger's `aria-controls` names it.
+
+Each measured variant records the element as `element`, like `span[data-slot="switch"]`.
 
 **Strict modes.** `--strict` fails on anything that couldn't be measured, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI.
 
@@ -422,9 +429,10 @@ Use the version the error prints. Other Playwright versions install a browser th
 - **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
 - **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
 - **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its colour.
-- **Font substitution.** snap warns when the font your code asks for didn't load and the browser used a fallback. Figma also needs the font installed, which Storysync can't do for you.
+- **Fonts** as the family the browser drew with. A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `system-ui`, since Chrome skips `-apple-system`. snap warns when a named font your code asks for didn't load and the browser used a fallback. Figma also needs the font installed, which Storysync can't do for you.
+- **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
 
-**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same. Plain CSF3 args-driven stories are the reliable shape.
+**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. Plain CSF3 args-driven stories are the reliable shape.
 
 Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so a value like `Nav/Primary` can't be measured and is marked `args_unsupported`.
 
@@ -464,7 +472,7 @@ Fidelity: 95.0% (38/40 properties)
       borderRadiusUniform: measured 3, Figma 8
 ```
 
-The comparison is numeric, not visual, so it's deterministic and free. Only properties Figma can report are scored; Figma has nothing to compare `lineHeight: "normal"` to, for example. Variants missing from Figma are reported separately instead of lowering the score.
+The comparison is numeric, not visual, so it's deterministic and free. Only properties Figma can report are scored; Figma has nothing to compare `lineHeight: "normal"` to, for example, or a `fontFamily` that is a CSS keyword like `system-ui` or `sans-serif`. Variants missing from Figma are reported separately instead of lowering the score.
 
 **Readback checks.** `verify` never contacts Figma, so before scoring it checks that the readback file is what Figma returned:
 
@@ -555,6 +563,7 @@ Options:
 ### Code → Figma: `snap`, the push, and `verify`
 
 - **Stories must use their args.** See [`storysync snap`](#storysync-snap).
+- **Overlays are measured closed** unless their story renders them open, so a Dialog's Figma component is its trigger. snap warns when it measures a closed trigger.
 - **Variant values must be URL-safe.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported`.
 - **Props need declared options.** A bare `string` or `number` prop with no `options` in its argType doesn't become a variant, and Storybook's docs don't always include argType options.
 - **Text can be a pixel off.** Figma lays out text with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than in the browser. `verify` allows 3% or 1px, whichever is larger. The skill reports this as a font-rendering difference instead of forcing the width, unless a stroke was built wrong.

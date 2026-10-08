@@ -6,8 +6,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues } from "../snap.js";
-import type { SnapOptions } from "../snap.js";
+import {
+  runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
+  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, screenshotName,
+} from "../snap.js";
+import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
 function tempDir(): string {
@@ -487,6 +490,27 @@ test("writeScreenshot: records the PNG path relative to styles.json, never absol
   }
 });
 
+test("writeScreenshot: a slug too long for a file name is shortened, distinctly and the same every run", () => {
+  // Every combination of vaul's Drawer is a slug of some 330 characters, past
+  // the 255 a file name can have: writing it failed the whole component.
+  const long = Array.from({ length: 16 }, (_, i) => `prop${i}-false`).join("--") + "--direction-bottom";
+  // Differing only past the part of it kept whole.
+  const other = long.replace("direction-bottom", "direction-top");
+  const dir = tempDir();
+  try {
+    const recorded = writeScreenshot(dir, { id: "ui-drawer", name: "Drawer", title: "UI/Drawer" } as never, long, Buffer.from("png"));
+    assert.ok(existsSync(join(dir, recorded)));
+    const name = recorded.split("/").pop()!;
+    assert.ok(name.length <= 124, name);
+    assert.equal(name, screenshotName(long));
+    assert.notEqual(screenshotName(other), name);
+    // A slug that fits is the file name, as before.
+    assert.equal(screenshotName("variant-primary"), "variant-primary.png");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- every combination, and the cap ---
 
 const SIZE_PROPS = [
@@ -602,4 +626,110 @@ test("describeCap: never claims coverage the subset does not have", () => {
   assert.match(short, /which leave out disabled=true entirely/);
   assert.doesNotMatch(short, /cover every value/);
   assert.match(describeCap("Forms/Button", { ...cap, uncovered: [] }), /cover every value/);
+});
+
+// --- properties that change nothing ---
+
+const SWITCH_PROPS = [
+  { name: "asChild", type: "BOOLEAN", values: ["false", "true"], defaultValue: "false" },
+  { name: "size", type: "VARIANT", values: ["default", "sm"], defaultValue: "default" },
+] as never[];
+
+function measuredVariant(combination: Record<string, string>, delta: Record<string, unknown>, status: SnapVariant["status"] = "ok"): SnapVariant {
+  return { combination, slug: JSON.stringify(combination), status, error: null, delta: delta as never };
+}
+
+test("detectNoOpProperties: names a property whose values measure the same wherever the others hold still", () => {
+  // Radix Switch, every combination: asChild changed nothing, size did, so
+  // the all-identical warning never fired and asChild became a Figma axis.
+  const small = { width: 24, height: 14 };
+  const variants = [
+    measuredVariant({ asChild: "false", size: "default" }, {}),
+    measuredVariant({ asChild: "true", size: "default" }, {}),
+    measuredVariant({ asChild: "false", size: "sm" }, small),
+    measuredVariant({ asChild: "true", size: "sm" }, small),
+  ];
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, variants), ["asChild"]);
+  // Representative mode measures each value against the others' defaults.
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, [variants[0], variants[1], variants[2]]), ["asChild"]);
+});
+
+test("detectNoOpProperties: a property is judged only on values measured side by side", () => {
+  const variants = [
+    measuredVariant({ asChild: "false", size: "default" }, {}),
+    measuredVariant({ asChild: "true", size: "default" }, {}, "element_not_found"),
+    measuredVariant({ asChild: "false", size: "sm" }, { width: 24 }),
+  ];
+  // asChild=true never rendered, so nothing says asChild changes nothing.
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, variants), []);
+  // One that differs anywhere is live.
+  assert.deepEqual(detectNoOpProperties(SWITCH_PROPS, [
+    measuredVariant({ asChild: "false", size: "default" }, {}),
+    measuredVariant({ asChild: "true", size: "default" }, {}),
+    measuredVariant({ asChild: "false", size: "sm" }, { width: 24 }),
+    measuredVariant({ asChild: "true", size: "sm" }, { width: 30 }),
+  ]), []);
+});
+
+test("describeNoOpProperties: names each property and what to do about it", () => {
+  assert.equal(describeNoOpProperties([]), null);
+  const one = describeNoOpProperties(["asChild"])!;
+  assert.match(one, /^`asChild`: every value measured the same, so it changes nothing snap records/);
+  assert.match(one, /may not belong as Figma variant properties/);
+  assert.match(describeNoOpProperties(["asChild", "side"])!, /^`asChild`, `side`: .* they change nothing/);
+});
+
+// --- elements that may not be the component ---
+
+test("describeMeasurementNotes: a closed trigger says what to change so the content is measured", () => {
+  const [warning] = describeMeasurementNotes("Dialog", [
+    { slug: "default", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+  ], 1);
+  assert.match(warning, /^snap measured button\[data-slot="dialog-trigger"\], a closed trigger, rather than Dialog\./);
+  assert.match(warning, /render Dialog open, with defaultOpen/);
+  assert.match(warning, /data-slot="dialog-content"/);
+});
+
+test("describeMeasurementNotes: a layout wrapper says how to point snap at the component", () => {
+  const notes = [
+    { slug: "size-default", note: { kind: "layout-wrapper" as const, element: "div", children: 2 } },
+    { slug: "size-sm", note: { kind: "layout-wrapper" as const, element: "div", children: 2 } },
+  ];
+  const warnings = describeMeasurementNotes("Switch", notes, 3);
+  // One warning for the same element across variants, saying how many.
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^snap measured div, which holds 2 elements and draws nothing itself/);
+  assert.match(warnings[0], /rather than Switch in 2 of 3 measured variants\./);
+  assert.match(warnings[0], /data-slot="switch"/);
+  assert.deepEqual(describeMeasurementNotes("Switch", [], 3), []);
+});
+
+test("runSnap: a story that times out is tried once more before it is recorded", async () => {
+  // A busy Storybook times out stories that render a moment later, and the
+  // push builds an unmeasured variant from source.
+  const dir = tempDir();
+  try {
+    let navigations = 0;
+    const timeout = Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+    const result = await runSnap(options(dir), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-button", name: "Button" }],
+        getComponent: async () => ({ name: "Button", props: [], stories: [{ id: "forms-button--default", name: "Default" }] }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({
+            newPage: async () => ({ on: () => {}, off: () => {}, goto: async () => { navigations++; throw timeout; } }),
+            close: async () => {},
+          }),
+          close: async () => {},
+        },
+      }) as never,
+    });
+    assert.equal(navigations, 2);
+    assert.equal(result.components[0].variants[0].status, "timeout");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

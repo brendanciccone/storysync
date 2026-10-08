@@ -1123,3 +1123,20 @@ test("verify: an entry can be both incomplete and stale, and is reported as both
   ]);
   assert.equal(result.summary.unverifiedReadback, 1, "one variant, however many issues");
 });
+
+test("verifyVariant: a font family measured as a CSS keyword is not scored", () => {
+  // Tailwind v4's default stack draws the platform's UI font, which snap
+  // records as system-ui. No Figma font has that name, so whatever the push
+  // set drifted on every text variant, capping fidelity with nothing to fix.
+  const figma = { ...FAITHFUL, fontFamily: "Inter" };
+  for (const family of ["system-ui", "sans-serif", "-apple-system"]) {
+    const measured = { ...BASE, text: { color: "#ffffff", fontFamily: family, fontSize: 12, fontWeight: 600 } };
+    const verdict = verifyVariant("Forms/Button", "a", measured, figma as never, 0.5);
+    assert.equal(verdict.status, "verified", `${family}: ${JSON.stringify(verdict.differences)}`);
+    const faithful = verifyVariant("Forms/Button", "a", { ...measured, text: { ...measured.text, fontFamily: "Helvetica" } }, FAITHFUL as never, 0.5);
+    assert.equal(verdict.matched, faithful.matched - 1, "the family is left out, not counted as a match");
+  }
+  // A font's name is still compared.
+  const named = verifyVariant("Forms/Button", "a", { ...BASE, text: { color: "#ffffff", fontFamily: "Roboto", fontSize: 12, fontWeight: 600 } }, figma as never, 0.5);
+  assert.deepEqual(named.differences.map((d) => d.property), ["fontFamily"]);
+});
