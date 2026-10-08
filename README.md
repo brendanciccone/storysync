@@ -290,14 +290,17 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 | Storybook prop type | Figma output |
 |---|---|
 | `boolean` | Boolean variant property |
-| `enum` / `union` of string literals | Variant property with matching values |
+| `enum` / `union` of string literals (a `null` or `undefined` member is ignored) | Variant property with matching values |
 | `string` (free text) | Skipped |
 | `number` (free value) | Skipped |
 | `function` / `callback` | Skipped |
 | `ReactNode` / `children` | Skipped |
 | `ref` / `className` / `style` | Skipped |
+| `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
 
-Props come from the Props section of the component's Storybook docs. Subcomponents' props and attached MDX pages don't become variant properties.
+Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
+
+Every boolean prop becomes a variant property, behavioural ones like `modal` or `loop` included, so a component with many can reach the combination cap.
 
 ## CLI reference
 
@@ -556,7 +559,7 @@ Options:
 
 - **Stories must use their args.** See [`storysync snap`](#storysync-snap).
 - **Variant values must be URL-safe.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported`.
-- **Props need declared options.** A bare `string` or `number` prop with no `options` in its argType doesn't become a variant, and Storybook's docs don't always include argType options.
+- **Props need literal types.** Only a boolean or a union of string literals becomes a variant property. A `string` or `number` prop doesn't, even with `options` in its argType, since argTypes aren't read.
 - **Text can be a pixel off.** Figma lays out text with its own metrics, so a frame that hugs its text can come out a pixel or two wider or narrower than in the browser. `verify` allows 3% or 1px, whichever is larger. The skill reports this as a font-rendering difference instead of forcing the width, unless a stroke was built wrong.
 - **Transparent borders show as an empty ring.** Browsers paint the background under a transparent border, but Figma's fill stops where an `OUTSIDE` stroke begins. The push keeps the size right and names those variants in its summary.
 - **Some properties aren't scored.** Shadows, gradients and image fills, text transform, and letter-spacing are recorded by snap but not compared by `verify`.
@@ -571,7 +574,7 @@ Storysync splits deterministic extraction (the CLI) from Figma writes (the AI cl
 | Step | How it's produced |
 |---|---|
 | Design tokens | **Measured:** parsed from your Tailwind config, CSS custom properties, or theme file |
-| Component variant structure | **Measured:** derived from Storybook prop types and argType options |
+| Component variant structure | **Measured:** derived from the prop types in Storybook's docs, not story argTypes |
 | Component styling | **Measured:** `getComputedStyle` on the real render, via `storysync snap` |
 | Drift reports | **Measured:** deterministic comparison, normalized on both sides |
 | Figma writes | **Agent-driven:** the client writes Plugin API code; Storysync never writes to Figma |

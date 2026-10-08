@@ -32,6 +32,15 @@ test("shouldSkip: skips structural and style props", () => {
   }
 });
 
+// Radix's asChild hands the component's look to its child, and with the
+// text child most stories pass it renders nothing; Base UI's render swaps
+// the element. Neither is a design choice a Figma variant can show.
+test("shouldSkip: skips composition props that swap the rendered element", () => {
+  assert.equal(shouldSkip(prop({ name: "asChild", type: { name: "boolean" }, defaultValue: "false" })), true);
+  assert.equal(shouldSkip(prop({ name: "render", type: { name: "union", raw: "ReactElement | ComponentRenderFn<HTMLProps, ButtonState>" } })), true);
+  assert.equal(mapProp(prop({ name: "asChild", type: { name: "boolean" } })), null);
+});
+
 test("shouldSkip: skips event handlers", () => {
   assert.equal(shouldSkip(prop({ name: "onClick" })), true);
   assert.equal(shouldSkip(prop({ name: "onMouseEnter" })), true);
@@ -110,6 +119,20 @@ test("extractEnumValues: rejects a raw union with non-literal members", () => {
   assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `"sm" | number` } })), null);
 });
 
+// react-docgen-typescript prints cva's VariantProps as `"a" | "b" | null`,
+// so every variant of a shadcn component carries a `| null`. It means the
+// prop can be left unset, not that null is a value.
+test("extractEnumValues: leaves null and undefined out of a raw union", () => {
+  assert.deepEqual(extractEnumValues(prop({ name: "variant", type: { name: "union", raw: `"a" | "b" | null` } })), ["a", "b"]);
+  assert.deepEqual(extractEnumValues(prop({ name: "variant", type: { name: "union", raw: `"a" | undefined` } })), ["a"]);
+  assert.deepEqual(extractEnumValues(prop({ name: "variant", type: { name: "union", raw: `null | "a" | undefined | "b"` } })), ["a", "b"]);
+});
+
+test("extractEnumValues: still rejects a union with other non-literal members, or none at all", () => {
+  assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `"sm" | number | null` } })), null);
+  assert.equal(extractEnumValues(prop({ name: "size", type: { name: "union", raw: `null | undefined` } })), null);
+});
+
 test("extractEnumValues: returns null when there is nothing to extract", () => {
   assert.equal(extractEnumValues(prop({ name: "label", type: { name: "string" } })), null);
 });
@@ -140,6 +163,18 @@ test("mapProp: maps booleans, honouring the declared default", () => {
   assert.deepEqual(mapProp(prop({ name: "open", type: { name: "any" }, control: { type: "boolean" } })), {
     name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
   });
+});
+
+test("mapProp: a boolean that may be null or undefined is still a BOOLEAN", () => {
+  // cva's boolean variants print as `boolean | null`.
+  assert.deepEqual(mapProp(prop({ name: "inset", type: { name: "union", raw: "boolean | null" }, defaultValue: "true" })), {
+    name: "inset", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true",
+  });
+  assert.deepEqual(mapProp(prop({ name: "dot", type: { name: "union", raw: "true | false | undefined" } })), {
+    name: "dot", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false",
+  });
+  // A boolean with another value besides is neither a BOOLEAN nor a set of literals.
+  assert.equal(mapProp(prop({ name: "checked", type: { name: "union", raw: `boolean | "indeterminate"` } })), null);
 });
 
 // Pins an ordering subtlety rather than leaving it accidental: `shouldSkip`

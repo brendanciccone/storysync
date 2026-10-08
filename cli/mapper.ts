@@ -66,8 +66,17 @@ export const DEFAULT_MAX_COMBINATIONS = 256;
 const DROPPED_SAMPLE_SIZE = 20;
 
 const SKIP_PROPS = new Set([
-  "children", "className", "class", "style", "ref", "key", "as",
+  "children", "className", "class", "style", "ref", "key",
 ]);
+
+// Props that choose which element renders, not how it looks: `as`, Radix's
+// (and Ark UI's) `asChild`, and Base UI's `render`. asChild hands the
+// component's props and styles to its child instead of rendering its own
+// element, so `asChild=true` looks like whatever the story passes as the
+// child, and with the text child most stories pass, Radix's Slot throws and
+// nothing renders at all. `render`'s type, an element or a render function,
+// already kept it out.
+const COMPOSITION_PROPS = new Set(["as", "asChild", "render"]);
 
 const CALLBACK_TYPES = [
   /^func(tion)?$/i, /^\(.*\)\s*=>/, /Event/,
@@ -101,6 +110,7 @@ export function resolveDefault(raw: unknown): string | null {
 
 export function shouldSkip(prop: StorybookProp): boolean {
   if (SKIP_PROPS.has(prop.name)) return true;
+  if (COMPOSITION_PROPS.has(prop.name)) return true;
   if (/^on[A-Z]/.test(prop.name)) return true;
   if (prop.name.startsWith("aria-") || prop.name.startsWith("data-")) return true;
 
@@ -117,8 +127,38 @@ export function shouldSkip(prop: StorybookProp): boolean {
 
 function isLiteral(member: PropType): boolean {
   if (member.name === "literal") return true;
-  if (member.raw && /^["'`].*["'`]$/.test(member.raw.trim())) return true;
+  if (member.raw && isQuotedLiteral(member.raw)) return true;
   return false;
+}
+
+function isQuotedLiteral(text: string): boolean {
+  return /^["'`].*["'`]$/.test(text.trim());
+}
+
+/**
+ * The members of a raw union type string, without `null` and `undefined`.
+ *
+ * Those two mean the prop can be left unset, not that it has another value.
+ * cva's `VariantProps` types every variant that way, `"default" | "outline" |
+ * null`, as react-docgen-typescript prints it, so counting them as members
+ * rejected every variant of every cva component (all of shadcn/ui's).
+ */
+export function definedMembers(raw: string): string[] {
+  return raw
+    .split("|")
+    .map((p) => p.trim())
+    .filter((p) => p && p !== "null" && p !== "undefined");
+}
+
+// A boolean, or a boolean that may be left unset: cva's boolean variants
+// print as `boolean | null`, and TypeScript can spell boolean `true | false`.
+function isBoolean(prop: StorybookProp): boolean {
+  const { name, raw } = prop.type;
+  if (name === "bool" || name === "boolean" || prop.control?.type === "boolean") return true;
+  if (!raw) return false;
+  const members = definedMembers(raw);
+  if (members.length === 1) return members[0] === "boolean";
+  return members.length === 2 && members.includes("true") && members.includes("false");
 }
 
 export function extractEnumValues(prop: StorybookProp): string[] | null {
@@ -158,10 +198,12 @@ export function extractEnumValues(prop: StorybookProp): string[] | null {
     if (vals.length) return vals;
   }
 
-  // raw type string: "sm" | "md" | "lg"
+  // raw type string: "sm" | "md" | "lg", with any `| null` or `| undefined`
+  // left out. A union with any other non-literal member, `"sm" | number`, is
+  // not a fixed set of values and is rejected whole.
   if (raw) {
-    const parts = raw.trim().split("|").map((p) => p.trim());
-    if (parts.length > 0 && parts.every((p) => /^["'`].*["'`]$/.test(p))) {
+    const parts = definedMembers(raw);
+    if (parts.length > 0 && parts.every(isQuotedLiteral)) {
       return parts.map(stripQuotes).filter(Boolean);
     }
   }
@@ -172,7 +214,7 @@ export function extractEnumValues(prop: StorybookProp): string[] | null {
 export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
   if (shouldSkip(prop)) return null;
 
-  if (prop.type.name === "bool" || prop.type.name === "boolean" || prop.control?.type === "boolean") {
+  if (isBoolean(prop)) {
     const d = resolveDefault(prop.defaultValue);
     return { name: prop.name, type: "BOOLEAN", values: ["true", "false"], defaultValue: d === "true" ? "true" : "false" };
   }

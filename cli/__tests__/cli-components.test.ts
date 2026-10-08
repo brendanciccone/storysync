@@ -30,7 +30,7 @@ const LIST = [
 ].join("\n");
 
 const DOCS: Record<string, string> = {
-  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n}\n```",
+  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n  asChild?: boolean = false;\n}\n```",
   "data-display-card": "A card with no props.",
 };
 
