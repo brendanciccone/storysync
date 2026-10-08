@@ -618,6 +618,11 @@ runs:
         // from the IDs, so its components are matched by title, then by title as
         // Storybook makes an ID of it, then, with no title, by name: each time
         // only where one component on each side has the key, so nothing is guessed.
+        // By name, only with a component 0.3.0 would have left untitled too: it
+        // rebuilt a title for any whose ID ends in its name, so a component like
+        // that is not the untitled one, whatever its name.
+        const kebab = (name) => [name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/\s+/g, "-").toLowerCase(), name.replace(/\s+/g, "").toLowerCase()];
+        const untitledIn030 = (c) => c.id == null || !kebab(c.name).some((k) => c.id.split("--")[0].endsWith("-" + k));
         const baseOf = new Map();
         const currById = new Map(current.components.filter((c) => c.id != null).map((c) => [c.id, c]));
         for (const b of baseline.components) {
@@ -627,7 +632,7 @@ runs:
         const ways = [
           [(b) => b.title, (c) => [c.title]],
           [(b) => b.title != null ? loose(b.title) : null, (c) => [c.title != null ? loose(c.title) : null, c.id != null ? loose(c.id) : null]],
-          [(b) => b.title == null ? b.name : null, (c) => [c.name]],
+          [(b) => b.title == null ? b.name : null, (c) => [untitledIn030(c) ? c.name : null]],
         ];
         for (const [baseKey, currKeys] of ways) {
           const matched = new Set(baseOf.values());

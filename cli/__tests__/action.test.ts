@@ -229,12 +229,40 @@ test("action Detect drift: a baseline from before IDs is matched by title, with 
 
   // The untitled components of one name such a baseline holds can't be
   // matched: they are reported as removed and added, never paired by guess.
+  // map --json now gives them Storybook's titles, but the name is still
+  // Toaster, the story's component, on both.
   const { title: _t, category: _c, ...toaster } = component("Toaster", 1);
-  const untitled = detectDrift(mapJson([toaster, toaster]), [withId(component("ui/base/Sonner", 1), "ui-base-sonner"), withId(component("ui/radix/Sonner", 1), "ui-radix-sonner")]);
+  const sonners = ["ui/base/Sonner", "ui/radix/Sonner"].map((title) => ({ ...withId(component(title, 1)), name: "Toaster" }));
+  const untitled = detectDrift(mapJson([toaster, toaster]), sonners);
   assert.equal(untitled.status, 0, untitled.stdout + untitled.stderr);
   assert.equal(untitled.outputs.result, "true", untitled.stdout);
-  assert.match(untitled.report ?? "", /### Added\n- \*\*ui\/base\/Sonner\*\* \(2 combinations\)\n- \*\*ui\/radix\/Sonner\*\* \(2 combinations\)\n\n### Removed\n- \*\*Toaster\*\*\n- \*\*Toaster\*\*\n/);
+  assert.equal(untitled.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **ui/base/Sonner** (2 combinations)\n- **ui/radix/Sonner** (2 combinations)\n");
+  assert.equal(untitled.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Toaster**\n- **Toaster**\n");
+  assert.doesNotMatch(untitled.report ?? "", /### Changed/);
   assert.match(untitled.stdout, /::warning::The baseline at .* was written before map --json recorded/);
+
+  // Nor is one untitled Toaster paired with either of two.
+  const one = detectDrift(mapJson([toaster]), sonners);
+  assert.equal(one.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **ui/base/Sonner** (2 combinations)\n- **ui/radix/Sonner** (2 combinations)\n");
+  assert.equal(one.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Toaster**\n");
+  assert.doesNotMatch(one.report ?? "", /### Changed/);
+
+  // Nor either of two with the one left.
+  const left = detectDrift(mapJson([toaster, toaster]), sonners.slice(0, 1));
+  assert.equal(left.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **ui/base/Sonner** (2 combinations)\n");
+  assert.equal(left.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Toaster**\n- **Toaster**\n");
+
+  // But the one untitled Toaster is the one Toaster now.
+  const single = detectDrift(mapJson([toaster]), sonners.slice(0, 1));
+  assert.equal(single.outputs.result, "false", single.stdout);
+
+  // A component 0.3.0 would have titled, its ID ending in its name, is not
+  // the untitled one of its name: that one's gone, and Forms/Button is new.
+  const { title: _t2, category: _c2, ...loose } = component("Button", 1);
+  const misattributed = detectDrift(mapJson([loose, component("Nav/Button", 1)]), [withId(component("Forms/Button", 3)), navButton]);
+  assert.equal(misattributed.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **Forms/Button** (8 combinations)\n");
+  assert.equal(misattributed.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Button**\n");
+  assert.doesNotMatch(misattributed.report ?? "", /### Changed/);
 });
 
 test("action Detect drift: with IDs on both sides, a title is compared as its letters and digits", () => {
