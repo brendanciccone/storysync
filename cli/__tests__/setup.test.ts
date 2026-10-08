@@ -807,6 +807,36 @@ test("every push instruction keeps a bound color's alpha and never fails over a 
   }
 });
 
+test("every push instruction prices a part at real entries, and builds a long one in smaller parts", () => {
+  // A live shadcn/ui snap's entries come to about a thousand characters, and
+  // 25 of Command's with the template and a push's own code came to some
+  // 48,000, near use_figma's 50,000. The skill said a few hundred, and never
+  // said to shrink a part.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /measured values run to a few hundred characters/, `${path} still prices an entry at a few hundred characters`);
+      assert.match(text, /passes 45,000 characters, build that set in parts of 15 instead/, `${path} never says to build a long part smaller`);
+      assert.match(text, /`border`[^\n]*`borderUniform`[^\n]*`borderRadius`[^\n]*`borderRadiusUniform`[^\n]*repeat/, `${path} never leaves the repeated border fields out`);
+    }
+    for (const path of files.slice(0, 3)) {
+      assert.match(readFileSync(join(project, path), "utf8"), /about a thousand characters/, `${path} never says how long an entry runs`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every push instruction sets FLOAT variables from px, and leaves out a token whose var() didn't resolve", () => {
   // Told only to convert rem, the agent did shadcn/ui's calc() radii by
   // hand, or passed the string to a FLOAT variable, and took

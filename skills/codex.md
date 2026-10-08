@@ -216,7 +216,7 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
 
    **Return the set's id.** End the plugin code by returning the component set's id — step 6 reads the variants back from it, and fixes target it. Leave the readback itself to step 6: `use_figma` returns at most 20kb per call, and a whole set's readback passes that at a few dozen variants.
 
-   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to a few hundred characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, and create the variants in a loop over it rather than writing out each one's code. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set by name anywhere on its page, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and every part lays out and checks the whole set as it then stands, so the last leaves it laid out in full. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
+   **Build a set in parts of at most 25 variants.** `use_figma` takes at most 50,000 characters of code per call, and a variant's measured values run to about a thousand characters, so a large set's code does not fit in one call; a call that runs too long also fails, with `Script exceeded time limit`. Write the values as a table, one entry per variant, leaving out `border` where `borderUniform` is set and `borderRadius` where `borderRadiusUniform` is, which only repeat them, and create the variants in a loop over it rather than writing out each one's code. Measure each part's code before sending it: if it passes 45,000 characters, build that set in parts of 15 instead, `PART = 15` on every part. Build a set of more than 25 variants across calls, in snap's variant order: the first finds the set by name anywhere on its page, or creates it, with the first 25; each later call finds it by id and does the same with the next 25; and every part lays out and checks the whole set as it then stands, so the last leaves it laid out in full. If a call fails with `Script exceeded time limit`, check what it left on the canvas before retrying, and build in smaller parts.
 
    **A part updates the variants it names and adds only the ones the set lacks.** On a set an earlier push built, or one a failed call left half done, each part finds each of its variants among the set's children by name, restyles it if it is there and creates it if it is not. It never creates a second variant of a name the set already has: it refuses, before changing anything, a part that names a variant twice, and a part whose set already holds two of a name it carries — with the error step 6's readback gives for that, and the same remedy. So a part can be retried, and a push repeated, without duplicating anything; and every part lays the whole set out again and checks it, so a part re-run on its own leaves the set laid out. A variant in Figma that snap no longer has — one for a value the code has since dropped — is named by no part, so the build leaves it alone, laid out in a row of its own below the others: step 6 finds it, and you report it. Delete it only if the user asks; a designer may have built on it.
 
@@ -242,7 +242,7 @@ use_figma({
     // null on the first part; the id the first part returned on every later one.
     const SET_ID = null;
     const PART = 25;
-    //
+
     // Find or create the 'Forms' page, ignoring case, ' ', '/', '-' and '_'.
     const pageKey = (name) => name.toLowerCase().replace(/[ /_-]+/g, '');
     let page = figma.root.children.find(p => pageKey(p.name) === pageKey(PAGE_NAME));
@@ -265,7 +265,8 @@ use_figma({
     // 50,000 characters of code. Name each from its snap combination, every
     // key, BOOLEANs too, as key=value joined with ", " in the combination's
     // order ('' with no properties); styles is its full measured styles, the
-    // base with its delta applied.
+    // base with its delta applied, less border where borderUniform is set and
+    // borderRadius where borderRadiusUniform is, which repeat them.
     const VARIANTS = [
       { name: 'variant=default, size=sm, disabled=false', styles: { backgroundColor: '#1ea7fd', color: '#ffffff', padding: { top: 4, right: 8, bottom: 4, left: 8 }, borderRadiusUniform: 6, fontSize: 12, fontWeight: 600 } },
       // ... one entry per variant in this part
@@ -344,8 +345,8 @@ use_figma({
     if (componentSet && PROPERTIES.length && componentSet.layoutMode !== 'NONE') {
       throw new Error('The set "' + SET_NAME + '" has auto layout (' + componentSet.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set');
     }
-    // A new set or component goes below everything on the page, not at 0,0
-    // on top of another; each keeps its ID and title for the audit to pair on.
+    // A new set or component goes 100 below everything on the page; each
+    // keeps its ID and title for the audit to pair on.
     const fresh = !componentSet;
     const below = page.children.reduce((y, n) => Math.max(y, n.y + n.height + 100), 0);
     const keep = (node) => {

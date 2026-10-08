@@ -303,6 +303,27 @@ const CODE_LIMIT = 50000;
 const RESPONSE_LIMIT = 20000;
 const GUARD = 17000;
 
+/**
+ * The largest variant snap measured live on shadcn/ui's registry, Command's,
+ * 1,019 characters: a real entry to price a build part at, where the
+ * example's are smaller. A live push's own code, its applyStyles and helpers,
+ * came to AGENT_CODE.
+ */
+const SHADCN_COMMAND = {
+  display: "flex", flexDirection: "column", alignItems: "normal", justifyContent: "normal", gap: null, width: 384, height: 311,
+  backgroundColor: "#ffffff", color: "#0a0a0a",
+  border: Object.fromEntries(["top", "right", "bottom", "left"].map((side) => [side, { width: 1, style: "solid", color: "#e5e5e5" }])),
+  borderUniform: { width: 1, style: "solid", color: "#e5e5e5" },
+  borderRadius: { topLeft: 14, topRight: 14, bottomRight: 14, bottomLeft: 14 }, borderRadiusUniform: 14,
+  padding: { top: 4, right: 4, bottom: 4, left: 4 }, fontFamily: "system-ui", fontSize: 16, fontWeight: 400, lineHeight: 24, letterSpacing: 0,
+  boxShadow: [
+    { offsetX: 0, offsetY: 4, blur: 6, spread: -1, color: "#0000001a", inset: false },
+    { offsetX: 0, offsetY: 2, blur: 4, spread: -2, color: "#0000001a", inset: false },
+  ],
+  opacity: 1, boxSizing: "border-box", fontAvailable: null, text: { color: "#737373", fontFamily: "system-ui", fontSize: 12, fontWeight: 500 },
+};
+const AGENT_CODE = 7038;
+
 /** Every use_figma code block in the skill, with the description it is sent with. */
 function useFigmaBlocks() {
   const md = readFileSync(SKILL, "utf8");
@@ -2831,27 +2852,46 @@ async function main() {
   await check("a part of a set built the way the skill says fits use_figma's code limit", async () => {
     // The skill builds a large set in parts. Price one part at the build
     // template with its table filled in with that many variants' names and
-    // full measured styles, each as large as the example's largest, and its
+    // measured styles, written as the skill says, without the border and
+    // borderRadius that borderUniform and borderRadiusUniform repeat, and its
     // properties table with the set's: the agent's own Plugin API code has to
-    // fit in what is left, at least 12,000 characters. A live push's own code,
-    // its applyStyles and helpers, came to 7,038, some 6,100 once the template
-    // gave it setPaints and loadFont, so that leaves twice it. Every part carries the
-    // layout, which lays out and checks the whole set, so push all 256
-    // variants through the simulated document too: each part has to return
-    // counts small enough for one response, and leave every variant in the
-    // grid of 4 rows of 64.
+    // fit in what is left, at least 15,000 characters, twice what a live
+    // push's own came to. Priced at shadcn/ui's largest measured variant, the
+    // part has to fit with that code under the length the skill says to
+    // measure a part against, and where an agent keeps the repeats and passes
+    // it, the smaller parts the skill then says to build in have to fit too.
+    // Every part carries the layout, which lays out and checks the whole set,
+    // so push all 256 variants through the simulated document too: each part
+    // has to return counts small enough for one response, and leave every
+    // variant in the grid of 4 rows of 64.
     const md = readFileSync(SKILL, "utf8");
     const part = Number(/in parts of at most (\d+) variants/.exec(md)?.[1]);
     assert(part > 0, "the skill gives no number of variants to build a set in parts of");
+    const smaller = /if it passes ([\d,]+) characters, build that set in parts of (\d+) instead/.exec(md);
+    assert(smaller, "the skill never says to build a set in smaller parts when a part's code is too long");
+    const [threshold, fewer] = [Number(smaller[1].replace(/,/g, "")), Number(smaller[2])];
+    assert(threshold < CODE_LIMIT && fewer < part, `the skill measures a part against ${threshold} and builds a long one in parts of ${fewer}`);
     const build = loadSkillBuild();
     assert(build.part === part, `the build template's PART is ${build.part}, but the skill says to build in parts of ${part}`);
     const set = await realisticSet(snapDir);
     const largest = set.styles.reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
-    const variants = Object.keys(set.slugByName).map((name) => ({ name, styles: largest }));
+    const written = ({ border, borderRadius, ...rest }) => ({
+      ...rest,
+      ...(rest.borderUniform || border === undefined ? {} : { border }),
+      ...(rest.borderRadiusUniform != null || borderRadius === undefined ? {} : { borderRadius }),
+    });
     const constants = { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: "12:34", PART: part };
-    const code = build.code(variants.slice(0, part), constants, set.properties, { styled: false }).length;
-    assert(code <= CODE_LIMIT - 12000, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
-    const whole = build.code(variants, constants, set.properties, { styled: false }).length;
+    const names = Object.keys(set.slugByName);
+    const price = (styles, n) => build.code(names.slice(0, n).map((name) => ({ name, styles })), constants, set.properties, { styled: false }).length;
+    const code = price(written(largest), part);
+    assert(code <= CODE_LIMIT - 15000, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
+    const slim = price(written(SHADCN_COMMAND), part);
+    assert(slim + AGENT_CODE <= threshold, `${part} of shadcn/ui's largest variants come to ${slim} characters, ${slim + AGENT_CODE} with a live push's own code, over ${threshold}`);
+    const full = price(SHADCN_COMMAND, part);
+    const lowered = price(SHADCN_COMMAND, fewer);
+    assert(full + AGENT_CODE <= threshold || lowered + AGENT_CODE <= threshold,
+      `${fewer} of shadcn/ui's largest variants, border and borderRadius kept, come to ${lowered + AGENT_CODE} characters with a live push's own code, over ${threshold}`);
+    const whole = build.code(names.map((name) => ({ name, styles: largest })), constants, set.properties, { styled: false }).length;
 
     const doc = figmaDocument();
     const named = Object.keys(set.slugByName).map((name, i) => ({ name, styles: set.styles[i % set.styles.length] }));
@@ -2865,7 +2905,8 @@ async function main() {
     const panel = [...built.children].reverse().map((n) => n.name);
     assert(panel.join("\n") === named.map((v) => v.name).join("\n"), "the layers panel does not read in snap's order");
     assertLaidOut(built);
-    return `${part} variants a call: ${code} characters before the agent's own code; all 256 would be ${whole}; ` +
+    return `${part} variants a call: ${code} characters before the agent's own code; ${slim} at shadcn/ui's largest, ${full} with its repeats ` +
+      `(${lowered} in parts of ${fewer}); all 256 would be ${whole}; ` +
       `256 pushed in ${parts.length} parts returning up to ${response} encoded, laid out in 4 rows of 64`;
   });
 
