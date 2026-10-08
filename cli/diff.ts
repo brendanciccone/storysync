@@ -4,7 +4,7 @@ import type { TokenCollection, TokenCategory, TokenValue } from "./tokens.js";
 import { tokenColorToHex, lengthToPx } from "./tokens.js";
 import type { FigmaComponentDefinition } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
-import { componentNames, selectComponents } from "./storybook.js";
+import { componentNames, selectComponents, titleLeaf } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { colorToHex } from "./color.js";
 
@@ -21,9 +21,17 @@ export interface TokenDiffEntry {
 // --- Component diff ---
 
 export interface ComponentDiffEntry {
+  /**
+   * The component's set name, or, where another component shares it, its
+   * Storybook title or its Figma page and set name: `ui/base/Button`.
+   */
   name: string;
   status: "match" | "variant_mismatch" | "code_only" | "figma_only" | "ambiguous";
   details: string[];
+  /** The Storybook ID of the code component, when there is one and diff knows it. */
+  id?: string;
+  /** The Figma page of the component set, when there is one. */
+  page?: string;
 }
 
 // --- Combined result ---
@@ -43,7 +51,7 @@ export interface DiffSummary {
   componentsMismatched: number;
   componentsCodeOnly: number;
   componentsFigmaOnly: number;
-  /** Code components sharing a bare name, so only one could be compared. */
+  /** Names whose copies no page told apart, so none of them was compared. */
   componentsAmbiguous: number;
 }
 
@@ -197,35 +205,93 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
 
 // --- Component diffing ---
 
+/** A component mapped from Storybook, with its Storybook ID where diff knows it. */
+export type CodeComponent = FigmaComponentDefinition & { id?: string };
+
 /**
- * Narrows both sides of a component diff to the names given with `--components`.
+ * The page the push puts a component's set on, as the skill's Components step
+ * 4 says: its whole category, `ui/base` for `ui/base/Button`, or `Components`
+ * when it has none.
+ */
+export function pushPage(component: { category?: string }): string {
+  return component.category || "Components";
+}
+
+/**
+ * The name the push gives a component's set: its title's last segment, the
+ * name Storybook's sidebar shows (`Tooltip` for `ui/base/Tooltip`, whose
+ * `component` may be `TooltipContent`), or its name when it has no title.
+ */
+export function pushSetName(component: { name: string; title?: string }): string {
+  return titleLeaf(component.title) ?? component.name;
+}
+
+/**
+ * A page name as pages are compared: lowercased, without spaces, `/`, `-` or
+ * `_`. A page an earlier push named `UI Base`, from a title rebuilt from its
+ * ID, is still the page of the category `ui/base`, as the push finds it.
+ */
+export function pageKey(page: string): string {
+  return page.toLowerCase().replace(/[\s/_-]+/g, "");
+}
+
+/** The names a Figma set goes by in `--components`: its name, and its page and name, `ui/base/Button`. */
+function figmaNames(component: FigmaComponentInfo): string[] {
+  return component.page ? [component.name, `${component.page}/${component.name}`] : [component.name];
+}
+
+/** What `--components` selects for a component diff. */
+export interface DiffSelection {
+  /** The code components it selects: the ones to map, compare and report. */
+  entries: ComponentEntry[];
+  /**
+   * Code's other components. diffComponents pairs them as it pairs the rest,
+   * with those code couldn't map, and reports nothing of them: left out of
+   * the pairing, they would change what a selected component pairs with.
+   */
+  others: ComponentEntry[];
+  /** The Figma sets that may be reported as not in code: those it names. */
+  figmaReported: FigmaComponentInfo[];
+}
+
+/**
+ * Narrows a component diff to the names given with `--components`.
  *
  * Storybook components are selected exactly as snap and map select them. A
  * name found only in Figma is not a typo, though: it asks whether that
  * component exists in code yet, and the answer is a `figma_only` entry, which
  * fails `--strict`. So only a name neither side has is an error.
  *
- * Figma is narrowed to the same components, by name — including those picked
- * by Storybook ID. Left whole, every Figma component outside the selection
- * would be reported as missing from code when it was only left out of the diff.
+ * The selected components are paired with every Figma set, beside every other
+ * code component, so each is paired as the whole diff pairs it. Narrowed to
+ * the sets named like the selection, a component could pair otherwise: with
+ * Radix's Button moved off its page, `ui-radix-button` was weighed against
+ * Base UI's set too, which the whole diff pairs with Base UI's Button. Of the
+ * sets no code component pairs with, only those the names name are reported:
+ * the rest weren't asked about, and would fail `--strict` on any file that
+ * holds more than the selection.
  */
 export function selectDiffComponents(
   entries: ComponentEntry[],
   figmaComponents: FigmaComponentInfo[],
   names: readonly string[] | undefined,
-): { entries: ComponentEntry[]; figmaComponents: FigmaComponentInfo[] } {
-  const selected = selectComponents(entries, names, figmaComponents.map((c) => c.name));
-  const wanted = componentNames(names);
-  if (!wanted.length) return { entries, figmaComponents };
-  return { entries: selected, figmaComponents: narrowFigmaComponents(figmaComponents, [...wanted, ...selected.map((e) => e.name)]) };
+): DiffSelection {
+  const selected = selectComponents(entries, names, figmaComponents.flatMap(figmaNames));
+  if (!componentNames(names).length) return { entries, others: [], figmaReported: figmaComponents };
+  const chosen = new Set(selected);
+  return {
+    entries: selected,
+    others: entries.filter((e) => !chosen.has(e)),
+    figmaReported: narrowFigmaComponents(figmaComponents, names),
+  };
 }
 
 /**
- * Narrows Figma's components to the names given with `--components`, by name,
- * ignoring case, and without checking any name for a typo. On its own, it is
- * for a diff whose Storybook listing failed: with the code side unknown, a
- * name can't be told from a typo, but the components left out must still not
- * all be reported as missing from code.
+ * Narrows Figma's components to the names given with `--components`, by name
+ * or page and name, ignoring case, and without checking any name for a typo.
+ * On its own, it is for a diff whose Storybook listing failed: with the code
+ * side unknown, a name can't be told from a typo, but the components left out
+ * must still not all be reported as missing from code.
  */
 export function narrowFigmaComponents(
   figmaComponents: FigmaComponentInfo[],
@@ -234,135 +300,211 @@ export function narrowFigmaComponents(
   const wanted = componentNames(names);
   if (!wanted.length) return figmaComponents;
   const keep = new Set(wanted.map((n) => n.toLowerCase()));
-  return figmaComponents.filter((c) => keep.has(c.name.toLowerCase()));
+  return figmaComponents.filter((c) => figmaNames(c).some((n) => keep.has(n.toLowerCase())));
 }
 
+/**
+ * Compares code's components with Figma's component sets, pairing each code
+ * component with the set the push would have made for it.
+ *
+ * A code component's set is named by its title's last segment (pushSetName),
+ * or by its display name where Figma has a set of that and none of the
+ * title's, as a push before titles named them, unless another code
+ * component's set goes by that name: that set is the other component's, and
+ * the two would be one name nothing tells apart. A name one code component
+ * and one set have is a pair, whatever page the set is on.
+ *
+ * Two distinct components can share a name. `Forms/Button` and `Nav/Button`
+ * are ordinary in a real design system, and a library with Base UI and Radix
+ * copies shares every name. Paired on the name alone, one would be dropped
+ * before any comparison and `diff --strict` would report "no differences" for
+ * a library it never fully read; reported as ambiguous, all of them were, and
+ * on such a library nothing was ever compared. The push puts each category on
+ * a page of its own, so a shared name is told apart by page: a code component
+ * and a set of its name on the page the push gives it, each the only one of
+ * the name on that page on its side, are a pair. Of the copies left, code
+ * components alone are not in Figma, and sets alone not in code. Copies left
+ * on both sides are a name nothing can tell apart, even one of each: the set
+ * may be the component's, moved to another page, or an archived copy beside
+ * a component not pushed yet, and compared, either would be vouched for as a
+ * pair nothing chose. They are reported as ambiguous, and nothing else.
+ *
+ * `notCompared` are the components code has that were not compared: those it
+ * could not map, and those `--components` left out. They are paired like the
+ * rest, so a selection pairs as the whole diff does, but report nothing, and
+ * neither does a set paired with one: never compared, it is not "not in
+ * code". Of the sets paired with none, only those in `figmaReported` are
+ * reported, and an ambiguous name only with a compared component or such a
+ * set among its copies.
+ */
 export function diffComponents(
-  codeComponents: FigmaComponentDefinition[],
+  codeComponents: CodeComponent[],
   figmaComponents: FigmaComponentInfo[],
+  notCompared: { name: string; title?: string; category?: string; id?: string }[] = [],
+  figmaReported: readonly FigmaComponentInfo[] = figmaComponents,
 ): ComponentDiffEntry[] {
+  const code: (CodeComponent & { notCompared?: true })[] = [
+    ...codeComponents,
+    ...notCompared.map((c) => ({ ...c, variantProperties: [], variantCombinations: [], wasCapped: false, notCompared: true as const })),
+  ];
+  const reported = new Set(figmaReported);
+  const figmaNamed = new Set(figmaComponents.map((f) => f.name.toLowerCase()));
+  const ownSets = new Set(code.map((c) => pushSetName(c).toLowerCase()));
+  const setName = code.map((c) => {
+    const name = pushSetName(c);
+    const earlier = c.name.toLowerCase();
+    return figmaNamed.has(name.toLowerCase()) || !figmaNamed.has(earlier) || ownSets.has(earlier) ? name : c.name;
+  });
+
+  const groups = new Map<string, { code: number[]; figma: number[] }>();
+  const group = (key: string) => groups.get(key) ?? groups.set(key, { code: [], figma: [] }).get(key)!;
+  code.forEach((_, i) => group(setName[i].toLowerCase()).code.push(i));
+  figmaComponents.forEach((f, j) => group(f.name.toLowerCase()).figma.push(j));
+
+  const pairedWith = new Map<number, number>();
+  const codeOnly = new Set<number>();
+  const figmaOnly = new Set<number>();
+  const shared = new Set<string>();
   const entries: ComponentDiffEntry[] = [];
 
-  // Components are paired on their bare name, which two distinct components can
-  // share — `Forms/Button` and `Nav/Button` are ordinary in a real design
-  // system. Building the map alone would let the second silently overwrite the
-  // first, so one component would be dropped before any comparison and `diff
-  // --strict` would report "no differences" for a library it never fully read.
-  const codeMap = new Map<string, FigmaComponentDefinition>();
-  const ambiguous = new Map<string, string[]>();
-  for (const component of codeComponents) {
-    const key = component.name.toLowerCase();
-    const existing = codeMap.get(key);
-    if (existing) {
-      const seen = ambiguous.get(key) ?? [existing.name];
-      seen.push(component.name);
-      ambiguous.set(key, seen);
+  for (const [key, { code: codeCopies, figma: figmaCopies }] of groups) {
+    if (codeCopies.length === 1 && figmaCopies.length === 1) {
+      pairedWith.set(codeCopies[0], figmaCopies[0]);
       continue;
     }
-    codeMap.set(key, component);
-  }
-  // Figma can repeat a name too, now that every page is read: an archive page
-  // keeping an old Button, or Forms/Button and Nav/Button pushed to their
-  // categories' pages. Keyed on the name alone, the last page read would
-  // silently be the one compared.
-  const figmaMap = new Map<string, FigmaComponentInfo>();
-  const figmaRepeats = new Map<string, number>();
-  for (const component of figmaComponents) {
-    const key = component.name.toLowerCase();
-    if (figmaMap.has(key)) {
-      figmaRepeats.set(key, (figmaRepeats.get(key) ?? 1) + 1);
-      continue;
+    let codeLeft = codeCopies;
+    let figmaLeft = figmaCopies;
+    let byPage = 0;
+    if (codeCopies.length > 1 || figmaCopies.length > 1) {
+      shared.add(key);
+      const pages = new Map<string, { code: number[]; figma: number[] }>();
+      const page = (name: string) => pages.get(pageKey(name)) ?? pages.set(pageKey(name), { code: [], figma: [] }).get(pageKey(name))!;
+      for (const i of codeCopies) page(pushPage(code[i])).code.push(i);
+      for (const j of figmaCopies) {
+        const name = figmaComponents[j].page;
+        if (name != null) page(name).figma.push(j);
+      }
+      for (const { code: [i, ...moreCode], figma: [j, ...moreFigma] } of pages.values()) {
+        if (i === undefined || j === undefined || moreCode.length || moreFigma.length) continue;
+        pairedWith.set(i, j);
+        byPage++;
+      }
+      const paired = new Set(pairedWith.values());
+      codeLeft = codeCopies.filter((i) => !pairedWith.has(i));
+      figmaLeft = figmaCopies.filter((j) => !paired.has(j));
     }
-    figmaMap.set(key, component);
+
+    if (!figmaLeft.length) codeLeft.forEach((i) => codeOnly.add(i));
+    else if (!codeLeft.length) figmaLeft.forEach((j) => figmaOnly.add(j));
+    else if (codeLeft.some((i) => !code[i].notCompared) || figmaLeft.some((j) => reported.has(figmaComponents[j]))) {
+      entries.push(ambiguousEntry(codeLeft.map((i) => code[i]), figmaLeft.map((j) => figmaComponents[j]), byPage, setName[codeLeft[0]]));
+    }
   }
 
-  // A repeated name is reported as ambiguous and nothing else. Comparing its
-  // first copies too would count the one name twice, as ambiguous and as
-  // matched, say, and the match would vouch for a pairing nothing chose.
-  for (const [key, names] of ambiguous) {
-    const repeats = figmaRepeats.get(key);
-    entries.push({
-      name: names[0],
-      status: "ambiguous",
-      details: [repeats
-        ? `${names.length} components share this name in code, and ${repeats} in Figma; none was compared`
-        : `${names.length} components share this name in code, and Figma has ${figmaMap.has(key) ? "one" : "none"}; none was compared`],
-    });
-  }
-  for (const [key, repeats] of figmaRepeats) {
-    if (ambiguous.has(key)) continue;
-    entries.push({
-      name: figmaMap.get(key)!.name,
-      status: "ambiguous",
-      details: [`${repeats} Figma components share this name, and code has ${codeMap.has(key) ? "one" : "none"}; none was compared`],
-    });
-  }
-  const isAmbiguous = (key: string) => ambiguous.has(key) || figmaRepeats.has(key);
+  // A shared name is said with what tells its copies apart.
+  const codeLabel = (i: number) => {
+    const c = code[i];
+    return shared.has(setName[i].toLowerCase()) ? c.title ?? c.id ?? `${pushPage(c)}/${setName[i]}` : setName[i];
+  };
+  const figmaLabel = (f: FigmaComponentInfo) =>
+    shared.has(f.name.toLowerCase()) && f.page != null ? `${f.page}/${f.name}` : f.name;
+  const where = (c: CodeComponent, f?: FigmaComponentInfo) => ({
+    ...(c.id != null ? { id: c.id } : {}),
+    ...(f?.page != null ? { page: f.page } : {}),
+  });
 
-  for (const [key, code] of codeMap) {
-    if (isAmbiguous(key)) continue;
-    const figma = figmaMap.get(key);
-    if (!figma) {
-      const propCount = code.variantProperties.length;
+  code.forEach((c, i) => {
+    if (c.notCompared) return;
+    if (codeOnly.has(i)) {
+      const propCount = c.variantProperties.length;
       const detail = propCount === 0
         ? "no variants in code"
         : `${propCount} variant prop${propCount === 1 ? "" : "s"} in code`;
-      entries.push({ name: code.name, status: "code_only", details: [detail] });
-      continue;
+      entries.push({ name: codeLabel(i), status: "code_only", details: [detail], ...where(c) });
+      return;
     }
-
-    const details: string[] = [];
-    const codePropMap = new Map(code.variantProperties.map((p) => [p.name.toLowerCase(), p]));
-    const figmaPropMap = new Map(figma.variantProperties.map((p) => [p.name.toLowerCase(), p]));
-
-    // Props in code but not in Figma
-    for (const [pName, codeProp] of codePropMap) {
-      if (!figmaPropMap.has(pName)) {
-        details.push(`prop "${codeProp.name}" missing from Figma`);
-      }
-    }
-
-    // Props in Figma but not in code
-    for (const [pName, figmaProp] of figmaPropMap) {
-      if (!codePropMap.has(pName)) {
-        details.push(`prop "${figmaProp.name}" in Figma but not in code`);
-      }
-    }
-
-    // Value mismatches for shared props
-    for (const [pName, codeProp] of codePropMap) {
-      const figmaProp = figmaPropMap.get(pName);
-      if (!figmaProp) continue;
-
-      const codeVals = new Set(codeProp.values.map((v) => v.toLowerCase()));
-      const figmaVals = new Set(figmaProp.values.map((v) => v.toLowerCase()));
-
-      const missingFromFigma = codeProp.values.filter((v) => !figmaVals.has(v.toLowerCase()));
-      const extraInFigma = figmaProp.values.filter((v) => !codeVals.has(v.toLowerCase()));
-
-      if (missingFromFigma.length) {
-        details.push(`${codeProp.name}: values [${missingFromFigma.join(", ")}] missing from Figma`);
-      }
-      if (extraInFigma.length) {
-        details.push(`${codeProp.name}: values [${extraInFigma.join(", ")}] in Figma but not in code`);
-      }
-    }
-
-    entries.push({ name: code.name, status: details.length ? "variant_mismatch" : "match", details });
-  }
+    const j = pairedWith.get(i);
+    if (j === undefined) return;
+    const details = compareVariants(c, figmaComponents[j]);
+    entries.push({ name: codeLabel(i), status: details.length ? "variant_mismatch" : "match", details, ...where(c, figmaComponents[j]) });
+  });
 
   // Figma components not in code
-  for (const [key, figma] of figmaMap) {
-    if (!codeMap.has(key) && !isAmbiguous(key)) {
-      const propCount = figma.variantProperties.length;
-      const detail = propCount === 0
-        ? "no variants in Figma"
-        : `${propCount} variant prop${propCount === 1 ? "" : "s"} in Figma`;
-      entries.push({ name: figma.name, status: "figma_only", details: [detail] });
+  figmaComponents.forEach((f, j) => {
+    if (!figmaOnly.has(j) || !reported.has(f)) return;
+    const propCount = f.variantProperties.length;
+    const detail = propCount === 0
+      ? "no variants in Figma"
+      : `${propCount} variant prop${propCount === 1 ? "" : "s"} in Figma`;
+    entries.push({ name: figmaLabel(f), status: "figma_only", details: [detail], ...(f.page != null ? { page: f.page } : {}) });
+  });
+
+  return entries;
+}
+
+/**
+ * The entry for the copies of a name nothing could tell apart. Said as before
+ * pages told any apart when none were, and with the pages each side's copies
+ * are on when Figma's are known, since a page is what would tell them apart.
+ */
+function ambiguousEntry(code: CodeComponent[], figma: FigmaComponentInfo[], byPage: number, name: string): ComponentDiffEntry {
+  const shared = code.length > 1
+    ? `${code.length} components share this name in code, and ${figma.length > 1 ? `${figma.length} in Figma` : "Figma has one"}`
+    : figma.length > 1
+      ? `${figma.length} Figma components share this name, and code has one`
+      // One of each is left only beside copies pages paired, and on pages
+      // that don't pair them.
+      : "one copy in code and one in Figma are on different pages";
+  const none = code.length + figma.length > 2 ? "none" : "neither";
+  const details = [byPage
+    ? `${shared}, besides ${byPage} paired by page; ${none} of these was compared`
+    : `${shared}; none was compared`];
+  if (figma.some((f) => f.page != null)) {
+    const pages = (list: (string | undefined)[]) => [...new Set(list.map((p) => p ?? "an unknown page"))].join(", ");
+    details.push(`in code for ${pages(code.map(pushPage))}; in Figma on ${pages(figma.map((f) => f.page))}`);
+  }
+  return { name, status: "ambiguous", details };
+}
+
+/** What differs between a code component's variant properties and its Figma set's. */
+function compareVariants(code: FigmaComponentDefinition, figma: FigmaComponentInfo): string[] {
+  const details: string[] = [];
+  const codePropMap = new Map(code.variantProperties.map((p) => [p.name.toLowerCase(), p]));
+  const figmaPropMap = new Map(figma.variantProperties.map((p) => [p.name.toLowerCase(), p]));
+
+  // Props in code but not in Figma
+  for (const [pName, codeProp] of codePropMap) {
+    if (!figmaPropMap.has(pName)) {
+      details.push(`prop "${codeProp.name}" missing from Figma`);
     }
   }
 
-  return entries;
+  // Props in Figma but not in code
+  for (const [pName, figmaProp] of figmaPropMap) {
+    if (!codePropMap.has(pName)) {
+      details.push(`prop "${figmaProp.name}" in Figma but not in code`);
+    }
+  }
+
+  // Value mismatches for shared props
+  for (const [pName, codeProp] of codePropMap) {
+    const figmaProp = figmaPropMap.get(pName);
+    if (!figmaProp) continue;
+
+    const codeVals = new Set(codeProp.values.map((v) => v.toLowerCase()));
+    const figmaVals = new Set(figmaProp.values.map((v) => v.toLowerCase()));
+
+    const missingFromFigma = codeProp.values.filter((v) => !figmaVals.has(v.toLowerCase()));
+    const extraInFigma = figmaProp.values.filter((v) => !codeVals.has(v.toLowerCase()));
+
+    if (missingFromFigma.length) {
+      details.push(`${codeProp.name}: values [${missingFromFigma.join(", ")}] missing from Figma`);
+    }
+    if (extraInFigma.length) {
+      details.push(`${codeProp.name}: values [${extraInFigma.join(", ")}] in Figma but not in code`);
+    }
+  }
+  return details;
 }
 
 // --- Summary ---

@@ -364,37 +364,68 @@ test("describeSlugCollisions: counts and pluralizes", () => {
   assert.match(two!, /^2 variant names collide/);
 });
 
-// Components are keyed by `title ?? name` in the readback and during
+/** Snaps `entries`, each with one story and no props, with a browser that renders nothing. */
+async function snapEntries(dir: string, entries: object[]) {
+  return runSnap(options(dir), {
+    storybook: {
+      listComponents: async () => entries,
+      getComponent: async (id: string) => ({
+        name: "Button", props: [], stories: [{ id: `${id}--default`, name: "Default" }],
+      }),
+    } as never,
+    launch: async () => ({
+      via: "stub",
+      browser: {
+        newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
+        close: async () => {},
+      },
+    }) as never,
+  });
+}
+
+// Components are keyed by `title ?? id` in the readback and during
 // verification, so two components sharing that key silently collapse into one
 // downstream — a measured component vanishing from the score with no signal.
 test("runSnap: warns when two components share an identity key", async () => {
   const dir = tempDir();
   try {
-    const result = await runSnap(options(dir), {
-      storybook: {
-        // Untitled components sharing a name — the realistic collision, since
-        // Storybook itself rejects duplicate titles.
-        listComponents: async () => [
-          { id: "a-button", name: "Button" },
-          { id: "b-button", name: "Button" },
-        ],
-        getComponent: async (id: string) => ({
-          name: "Button", props: [], stories: [{ id: `${id}--default`, name: "Default" }],
-        }),
-      } as never,
-      launch: async () => ({
-        via: "stub",
-        browser: {
-          newContext: async () => ({ newPage: async () => ({}), close: async () => {} }),
-          close: async () => {},
-        },
-      }) as never,
-    });
-
-    assert.equal(result.summary.componentsWithWarnings, 2);
-    for (const component of result.components) {
-      assert.ok(component.warnings.some((w) => /share the key "Button"/.test(w)), "collision warning missing");
+    // Titles rebuilt from IDs, without Storybook's index, that came out the
+    // same: the fix is to let storysync read the index, not to retitle.
+    const derived = await snapEntries(dir, [
+      { id: "a-button", name: "Button", title: "Forms/Button", titleDerived: true },
+      { id: "b-button", name: "Button", title: "Forms/Button", titleDerived: true },
+    ]);
+    assert.equal(derived.summary.componentsWithWarnings, 2);
+    for (const component of derived.components) {
+      const warning = component.warnings.find((w) => /share the key "Forms\/Button"/.test(w));
+      assert.ok(warning, "collision warning missing");
+      assert.match(warning, /rebuilt from their Storybook IDs, since http:\/\/localhost:6006\/index\.json couldn't be read/);
+      assert.doesNotMatch(warning, /distinct Storybook titles/);
     }
+
+    // Storybook's own title on both.
+    const titled = await snapEntries(dir, [
+      { id: "a-button", name: "Button", title: "Forms/Button" },
+      { id: "b-button", name: "Button", title: "Forms/Button" },
+    ]);
+    assert.ok(titled.components.every((c) => c.warnings.some((w) => /share the key "Forms\/Button"[\s\S]*Give them distinct Storybook titles\./.test(w))));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: untitled components of one name are told apart by their IDs", async () => {
+  // Keyed by name, Toaster under ui/base/Sonner and under ui/radix/Sonner
+  // collided, and the warning told the user to give them distinct titles,
+  // which Storybook already had.
+  const dir = tempDir();
+  try {
+    const result = await snapEntries(dir, [
+      { id: "ui-base-sonner", name: "Toaster" },
+      { id: "ui-radix-sonner", name: "Toaster" },
+    ]);
+    assert.equal(result.summary.componentsWithWarnings, 0);
+    assert.deepEqual(result.components.map((c) => [c.id, c.name]), [["ui-base-sonner", "Toaster"], ["ui-radix-sonner", "Toaster"]]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -482,6 +513,19 @@ test("writeScreenshot: records the PNG path relative to styles.json, never absol
       "variant-primary", Buffer.from("png"));
     assert.equal(recorded, "forms-button/variant-primary.png");
     assert.ok(existsSync(join(dir, recorded)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeScreenshot: an untitled component's screenshots go under its ID, not its name", () => {
+  // By name, ui/base/Sonner's and ui/radix/Sonner's Toaster wrote one file.
+  const dir = tempDir();
+  try {
+    const base = writeScreenshot(dir, { id: "ui-base-sonner", name: "Toaster" } as never, "default", Buffer.from("base"));
+    const radix = writeScreenshot(dir, { id: "ui-radix-sonner", name: "Toaster" } as never, "default", Buffer.from("radix"));
+    assert.deepEqual([base, radix], ["ui-base-sonner/default.png", "ui-radix-sonner/default.png"]);
+    assert.equal(readFileSync(join(dir, base), "utf8"), "base");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

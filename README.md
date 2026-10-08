@@ -161,12 +161,12 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 | `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens, and baseline paths all use it. |
 | `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
 | `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
-| `components` | all | Comma-separated component names or IDs. A name that matches nothing fails the job. |
+| `components` | all | Comma-separated component names, titles or IDs. A name that matches nothing fails the job. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
-| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by Storybook title, so `Forms/Button` and `Nav/Button` are compared separately. |
+| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A baseline from Storysync 0.3.0 has no IDs, so it's matched by title, with a warning to recreate it. |
 | `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
 | `fail_on_drift` | `false` | Fail the job on drift, or when a baseline is missing. |
-| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found. Needs `issues: write`. |
+| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found, even if a later step fails. Needs `issues: write`. |
 | `node_version` | `22` | Node.js version. |
 
 **Outputs:** `drift` and `token_drift` are `true`, `false`, or `new` (no baseline). `token_drift` can also be `none` (no baseline and no tokens) or `skipped` (`token_baseline: ''`). `json` and `tokens_json` hold the `map --json` and `tokens --json` output the action compared.
@@ -380,13 +380,13 @@ A missing baseline is always an error, so a wrong `--baseline` path can't pass b
 
 ### `storysync map`
 
-Maps every component to Figma variant definitions.
+Maps every component to Figma variant definitions. Each one has its Storybook `id` and `title`. Titles come from Storybook's `index.json`. If Storysync can't read it, it rebuilds them from the IDs, which loses case and folders (`UI Base/Button` for `ui/base/Button`), and `list` says so.
 
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
-  --components <names>   Comma-separated component names or IDs (default: all);
+  --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
   --exclude-props <names>
@@ -404,7 +404,7 @@ Renders each component variant in a headless browser and records its computed st
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
-  --components <names>   Comma-separated component names or IDs (default: all);
+  --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
   --variants <mode>      representative (default) or all
@@ -504,12 +504,13 @@ Entries that fail aren't scored and fail `--strict`. The checksum isn't a signat
 
 ### `storysync list`
 
-Lists the components in Storybook. MDX docs pages, like an introduction, are left out here and in every other command that reads components.
+Lists the components in Storybook, each by its title and ID, either of which `--components` and `inspect` take. MDX docs pages, like an introduction, are left out here and in every other command that reads components.
 
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --json                 Output JSON instead of formatted text
 ```
 
 ### `storysync diff`
@@ -529,7 +530,7 @@ Options:
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
   --mode <name>          Figma variable mode to read (default: each collection's first mode)
-  --components <names>   Comma-separated component names or IDs to diff, with --storybook
+  --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
   --json                 Output JSON instead of formatted text
@@ -544,11 +545,11 @@ npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
 npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
 ```
 
-- `--components` narrows both sides. A name only Figma has is reported as not in code, and a name neither side has is an error. It needs `--storybook`.
+- `--components` narrows both sides. Each selected component is paired as in a full run, and a set is reported only if it's paired with one or `--components` names it. A name only Figma has is reported as not in code, and a name neither side has is an error. It needs `--storybook`.
 - If Storybook can't be listed or a component can't be mapped, the run is reported as partial (`storybookReadFailed` or `mappingFailures` in `--json`) and fails `--strict`. A partial run never ends with "No differences found".
 - `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later.
 - A component too big for one call, such as a thousand icons as the options of one property, fails the read and is named.
-- A name on more than one Figma page, like an archived copy, is reported as `ambiguous` and fails `--strict`.
+- A name two components share, like `ui/base/Button` and `ui/radix/Button`, is matched by page, as the push lays it out: each is compared with the set of its name on its category's page. Of the copies left, extra sets, like an archived copy, are reported as `figma_only`, and extra components as `code_only`. Copies left on both sides can't be told apart, so they're reported as `ambiguous` and fail `--strict`.
 
 ### `storysync inspect`
 
@@ -557,8 +558,8 @@ Shows one component's props, how each maps to Figma, and why a prop was skipped.
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --component <name>     Component name or ID to inspect (required);
-                         a name that matches nothing is an error
+  --component <name>     Component name, title or ID to inspect (required);
+                         a name that matches nothing, or several, is an error
   --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
 ```
 
@@ -571,7 +572,7 @@ Options:
 - **Variable modes:** only each collection's first mode is read. Use `--mode <name>`, or ask the agent, for another mode like "Dark".
 - **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
-- **Component names:** matched by lowercased name, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is reported as `ambiguous` instead of being guessed.
+- **Component names:** a component set is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
 - **Wide-gamut colour tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
 - **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
 

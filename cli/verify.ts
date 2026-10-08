@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { applyDelta } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
 import { SNAP_META_FILENAME } from "./snap.js";
+import { componentKey } from "./storybook.js";
 import type { SnapResult } from "./snap.js";
 
 export const READBACK_SCHEMA_VERSION = 1;
@@ -507,7 +508,10 @@ export function verifyVariant(
   };
 }
 
-/** Rebuilds each variant's full styles from the base plus its delta. */
+/**
+ * Rebuilds each variant's full styles from the base plus its delta, by
+ * component key: its title, as the readback is keyed, else its ID.
+ */
 export function expandSnap(snap: SnapResult): Map<string, Map<string, NormalizedStyles>> {
   const byComponent = new Map<string, Map<string, NormalizedStyles>>();
   for (const component of snap.components) {
@@ -517,7 +521,7 @@ export function expandSnap(snap: SnapResult): Map<string, Map<string, Normalized
       if (variant.status !== "ok") continue;
       variants.set(variant.slug, applyDelta(component.base.styles, variant.delta ?? {}));
     }
-    byComponent.set(component.title ?? component.name, variants);
+    byComponent.set(componentKey(component), variants);
   }
   return byComponent;
 }
@@ -767,7 +771,18 @@ export function verify(
   const snapWarnings: string[] = [];
   const componentErrors = (snap.components ?? []).filter((c) => c.error);
   for (const component of componentErrors) {
-    snapIssues.push(`${component.title ?? component.name}: ${component.error}`);
+    snapIssues.push(`${componentKey(component)}: ${component.error}`);
+  }
+  // Two components of one key collapse into one above, the last standing for
+  // both, so the other was never scored. snap warns of it; a clean score here
+  // would hide it.
+  const keyed = new Map<string, number>();
+  for (const component of snap.components ?? []) {
+    const key = componentKey(component);
+    keyed.set(key, (keyed.get(key) ?? 0) + 1);
+  }
+  for (const [key, count] of keyed) {
+    if (count > 1) snapIssues.push(`${count} components share the key "${key}", so only one of them was scored`);
   }
   if (!componentErrors.length && snap.summary?.componentsFailed) {
     snapIssues.push(`${snap.summary.componentsFailed} component(s) failed to measure`);

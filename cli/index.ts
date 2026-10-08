@@ -19,7 +19,7 @@ import { VERSION } from "./version.js";
 import type { TokenBaseline, TokenExtractionResult, TokenSourceType } from "./tokens.js";
 import type { FigmaComponentDefinition, CapInfo } from "./mapper.js";
 import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
-import type { TokenDiffEntry, ComponentDiffEntry } from "./diff.js";
+import type { TokenDiffEntry, ComponentDiffEntry, CodeComponent } from "./diff.js";
 import type { ComponentEntry } from "./storybook.js";
 
 /**
@@ -141,7 +141,7 @@ program
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
-  .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
+  .option("--components <names>", "Comma-separated component names, titles or IDs; a name that matches nothing is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--exclude-props <names>", "Comma-separated prop names never to map as variant properties, in any component")
@@ -175,19 +175,22 @@ program
         return;
       }
 
-      const results: { name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
+      // Each result carries the component's Storybook ID: unique where the
+      // name, and a title rebuilt without Storybook's index, needn't be, and
+      // what the Action matches a baseline's components by.
+      const results: { id: string; name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
 
       for (const entry of entries) {
         try {
           const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
           const def = mapComponent(component, maxCombinations);
-          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
+          results.push({ id: entry.id, name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
             const tag = def.cap ? chalk.yellow(` [CAPPED ${def.cap.generated}/${def.cap.totalPossible}]`) : "";
             const label = entry.title ?? entry.name;
-            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combinations${tag}`);
+            console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combination${def.variantCombinations.length === 1 ? "" : "s"}${tag}`);
             if (def.cap) {
               const example = def.cap.droppedSample[0];
               const suffix = example ? `, e.g. ${JSON.stringify(example)}` : "";
@@ -198,7 +201,7 @@ program
           if (def.wasCapped) capped++;
         } catch (err) {
           failed++;
-          results.push({ name: entry.name, title: entry.title, category: entry.category, variantProperties: [], combinations: 0, capped: false, error: String(err) });
+          results.push({ id: entry.id, name: entry.name, title: entry.title, category: entry.category, variantProperties: [], combinations: 0, capped: false, error: String(err) });
           if (!json) console.log(`  ${chalk.red("✗")} ${chalk.bold(entry.title ?? entry.name)} ${chalk.red(String(err))}`);
         }
       }
@@ -226,7 +229,7 @@ program
   .description("Measure each component variant's rendered styles from a running Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
-  .option("--components <names>", "Comma-separated component names or IDs; a name that matches nothing is an error")
+  .option("--components <names>", "Comma-separated component names, titles or IDs; a name that matches nothing is an error")
   .option("--out <dir>", "Output directory", ".storysync/snaps")
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
   .option("--max-combinations <n>", "With --variants all, most combinations to measure per component before capping", String(DEFAULT_MAX_COMBINATIONS))
@@ -513,17 +516,30 @@ program
   .description("List components in Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--json", "Output JSON instead of formatted text")
   .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook, false, parseConnectTimeout(opts.connectTimeout));
+    const json = !!opts.json;
+    const storybook = await connectStorybook(opts.storybook, json, parseConnectTimeout(opts.connectTimeout));
     try {
       const entries = await storybook.listComponents();
+      if (json) {
+        console.log(JSON.stringify({ components: entries.map((e) => ({ id: e.id, name: e.name, title: e.title, category: e.category, ...(e.titleDerived ? { titleDerived: true } : {}), storyIds: e.storyIds ?? [] })) }));
+        return;
+      }
+      // Each by its title and ID, either of which --components and inspect
+      // take: names alone left Base UI's Button and Radix's indistinguishable.
       console.log(`\n${entries.length} components:\n`);
       for (const e of entries) {
-        const stories = e.storyIds?.length ? chalk.dim(` (${e.storyIds.length} stories)`) : "";
-        console.log(`  ${e.name} ${chalk.dim(e.id)}${stories}`);
+        const count = e.storyIds?.length ?? 0;
+        const stories = count ? chalk.dim(` (${count} ${count === 1 ? "story" : "stories"})`) : "";
+        console.log(`  ${e.title ?? e.name} ${chalk.dim(e.id)}${stories}`);
+      }
+      const derived = entries.filter((e) => e.titleDerived).length;
+      if (derived) {
+        console.log(chalk.dim(`\n${derived} ${derived === 1 ? "title was" : "titles were"} rebuilt from IDs, since Storybook's index.json couldn't be read or doesn't list them.`));
       }
     } catch (err) {
-      reportError(err, false);
+      reportError(err, json);
       process.exitCode = 1;
     } finally {
       await storybook.disconnect();
@@ -711,7 +727,7 @@ program
   .command("inspect")
   .description("Show how a component's props map to Figma variants")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .requiredOption("--component <name>", "Component name or ID; a name that matches nothing is an error")
+  .requiredOption("--component <name>", "Component name, title or ID; a name that matches nothing, or several, is an error")
   .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .action(async (opts) => {
     const storybook = await connectStorybook(opts.storybook, false, parseConnectTimeout(opts.connectTimeout));
@@ -719,10 +735,10 @@ program
       // A name that matches nothing fails here, naming what exists, before
       // asking Storybook for the documentation of a component it never listed.
       const entry = findComponent(await storybook.listComponents(), opts.component as string);
-      const component = await storybook.getComponent(entry.id, entry.name);
+      const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
       const def = mapComponent(component);
 
-      console.log(`\n${chalk.bold(component.name)}\n`);
+      console.log(`\n${chalk.bold(entry.title ?? entry.name)} ${chalk.dim(entry.id)}\n`);
       for (const prop of component.props) {
         // Says why a prop was left out, and when a default is a guess, so
         // a missing variant can be traced to its rule rather than to "skipped".
@@ -753,7 +769,7 @@ program
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
-  .option("--components <names>", "Comma-separated component names or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
+  .option("--components <names>", "Comma-separated component names, titles or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any differences found or a Figma or Storybook read fails")
   .action(async (opts) => {
@@ -811,7 +827,7 @@ program
 
       // --- Component diff ---
       let componentDiffs: ComponentDiffEntry[] = [];
-      let mappingFailures: { name: string; error: string }[] = [];
+      let mappingFailures: { name: string; id?: string; title?: string; error: string }[] = [];
       if (storybook) {
         const compSpinner = json ? null : ora("Reading Figma components...").start();
         let figmaComponents: FigmaComponentInfo[] = [];
@@ -829,6 +845,9 @@ program
         if (!componentReadFailed) {
           const mapSpinner = json ? null : ora("Mapping Storybook components...").start();
           let entries: Awaited<ReturnType<StorybookClient["listComponents"]>> = [];
+          // The components and sets --components leaves out of the report.
+          let others: ComponentEntry[] = [];
+          let figmaReported = figmaComponents;
           try {
             entries = await storybook.listComponents();
           } catch (err) {
@@ -846,7 +865,7 @@ program
               figmaComponents = narrowFigmaComponents(figmaComponents, names);
             } else {
               try {
-                ({ entries, figmaComponents } = selectDiffComponents(entries, figmaComponents, names));
+                ({ entries, others, figmaReported } = selectDiffComponents(entries, figmaComponents, names));
               } catch (err) {
                 mapSpinner?.stop();
                 reportError(err, json);
@@ -856,27 +875,28 @@ program
             }
           }
 
-          const codeComponents: FigmaComponentDefinition[] = [];
+          const codeComponents: CodeComponent[] = [];
+          const unmappedEntries: ComponentEntry[] = [];
           mappingFailures = [];
           for (const entry of entries) {
             try {
               const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
-              codeComponents.push(mapComponent(component));
+              codeComponents.push({ ...mapComponent(component), id: entry.id });
             } catch (err) {
-              mappingFailures.push({ name: entry.name, error: String(err) });
+              unmappedEntries.push(entry);
+              mappingFailures.push({ name: entry.name, id: entry.id, ...(entry.title ? { title: entry.title } : {}), error: String(err) });
             }
           }
           if (!storybookReadFailed) mapSpinner?.succeed(`Mapped ${codeComponents.length} Storybook components`);
           if (!json && mappingFailures.length) {
             console.log(chalk.yellow(`Skipped ${mappingFailures.length} component(s) due to mapping errors:`));
-            for (const failure of mappingFailures) console.log(chalk.yellow(`  ${failure.name}: ${failure.error}`));
+            for (const failure of mappingFailures) console.log(chalk.yellow(`  ${failure.title ?? failure.name}: ${failure.error}`));
           }
 
-          // A component code has but could not map was never compared, so
-          // Figma's copy of it is not "not in code".
-          const unmapped = new Set(mappingFailures.map((failure) => failure.name.toLowerCase()));
-          componentDiffs = diffComponents(codeComponents, figmaComponents)
-            .filter((c) => !(c.status === "figma_only" && unmapped.has(c.name.toLowerCase())));
+          // A component code has but could not map, or that --components
+          // left out, was never compared, so Figma's copy of it is not "not
+          // in code". Each is still paired, as in a diff of everything.
+          componentDiffs = diffComponents(codeComponents, figmaComponents, [...unmappedEntries, ...others], figmaReported);
         }
       }
 
@@ -902,7 +922,7 @@ program
           console.log(chalk.yellow("\nStorybook listing failed — component results are partial: nothing in code was read to match Figma against. See errors for details."));
         }
         if (mappingFailures.length) {
-          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
+          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.title ?? f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
         }
 
         const mismatched = tokenDiffs.filter((t) => t.status !== "match");
