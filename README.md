@@ -446,7 +446,7 @@ Each measured variant records the element as `element`, like `span[data-slot="sw
 
 **Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
 
-**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. `diff` has no such option, so it reports a prop left out of a push as missing from Figma.
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. snap records them as `excludeProps` in `styles.json`. `diff` takes the same option, so it doesn't report them as missing from Figma.
 
 **Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 
@@ -552,6 +552,8 @@ Options:
   --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
+  --exclude-props <names> Comma-separated prop names the push left out with --exclude-props;
+                         left out here too, so they aren't reported missing from Figma
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails
 ```

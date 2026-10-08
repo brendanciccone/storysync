@@ -818,10 +818,12 @@ program
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
   .option("--components <names>", "Comma-separated component names, titles or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
+  .option("--exclude-props <names>", "Comma-separated prop names the push left out with --exclude-props, left out of every component here too, so they aren't reported missing from Figma")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any differences found or a Figma or Storybook read fails")
   .action(async (opts) => {
     const json = !!opts.json;
+    const excludeProps = parsePropNames(opts.excludeProps);
 
     // Without --storybook there is no component diff for --components to
     // narrow, so the flag would be ignored and the run pass having diffed none.
@@ -934,7 +936,7 @@ program
             if (mapSpinner) mapSpinner.text = `Mapping Storybook components ${position}/${entries.length} ${entry.title ?? entry.name}`;
             progress?.component(position, entries.length, entry.title ?? entry.name);
             try {
-              const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+              const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
               codeComponents.push({ ...mapComponent(component), id: entry.id });
             } catch (err) {
               unmappedEntries.push(entry);

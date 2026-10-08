@@ -208,6 +208,8 @@ test("runSnap: styles.json carries no timestamp, so runs are reproducible", asyn
 
     assert.equal(first, second);
     assert.doesNotMatch(first, /\d{4}-\d{2}-\d{2}T/, "output must not embed a timestamp");
+    // With no --exclude-props, nothing is recorded of it.
+    assert.equal("excludeProps" in JSON.parse(first), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -670,6 +672,10 @@ test("runSnap: --exclude-props leaves the named props out of every component's v
     const [drawer] = result.components;
     assert.deepEqual(drawer.variantProperties.map((p) => p.name), ["direction"]);
     assert.deepEqual(drawer.variants.map((v) => v.combination), [{ direction: "bottom" }, { direction: "top" }]);
+    // Recorded in styles.json, which the push builds from, so an audit can
+    // leave out the same props rather than report them missing from Figma.
+    assert.deepEqual(result.excludeProps, ["MODAL", "loop"]);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "styles.json"), "utf8")).excludeProps, ["MODAL", "loop"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

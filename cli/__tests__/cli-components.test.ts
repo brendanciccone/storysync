@@ -385,6 +385,23 @@ test("diff CLI: a name on two Figma pages, neither the component's, is counted o
   assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 ambiguous$/m);
 });
 
+test("diff CLI: --exclude-props leaves out the props the push left out, so they aren't reported missing from Figma", async () => {
+  // The push ran snap with --exclude-props shape, so Figma's Button has no
+  // shape. diff mapped every prop, and reported it missing on every run.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm", "lg"] })] }, ...FIGMA_FILE.pages.slice(1)],
+  });
+  standIns.push(standIn);
+  const plain = await diffAgainst(standIn, "--components", "Button", "--json");
+  type Json = Omit<DiffJson, "components"> & { components: { name: string; status: string; details: string[] }[] };
+  assert.deepEqual((JSON.parse(plain.stdout) as Json).components.map((c) => [c.name, c.status, c.details]), [
+    ["Button", "variant_mismatch", ['prop "shape" missing from Figma']],
+  ]);
+  const excluded = await diffAgainst(standIn, "--components", "Button", "--exclude-props", "SHAPE, loop", "--strict");
+  assert.equal(excluded.status, 0, excluded.out);
+  assert.match(excluded.out, /Components in sync/);
+});
+
 test("diff CLI: a set Figma flags as errored is reported by name, page and node, and the rest of its page is still compared", async () => {
   // 0.3.0 pushed a component with no variant properties as a set of one
   // variant named "", which Figma flags as errored. Reading its properties
