@@ -10,6 +10,7 @@ import {
   CODE_LIMIT, FONTS, MockFigma, RESPONSE_LIMIT,
   estimateAdvance, fixtureVariants, imageSize, loadTreeFixture, measureFromTrees, parseSvg, svgShapeBoxes, treeFixtureAsset,
 } from "./mock-figma.js";
+import type { MockRun, NodeView } from "./mock-figma.js";
 
 // The mock is what B's build, C's readback and D's end-to-end tests run
 // plugin code against, so what it gets wrong they would pass on. These pin
@@ -567,4 +568,65 @@ test("templates: the 0.4.0 skill's build and readback run unchanged, and verify 
   assert.deepEqual(verdict.readbackIssues, []);
   assert.equal(verdict.summary.verified, 12, JSON.stringify(verdict.variants.filter((v) => v.status !== "verified").map((v) => [v.slug, v.differences]), null, 1));
   assert.equal(verdict.fidelity, 1);
+});
+
+// --- The spike probe ------------------------------------------------------------
+
+const PROBE = readFileSync(`${ROOT}spikes/figma-probe.js`, "utf8");
+
+const find = (views: NodeView[], test: (n: NodeView) => boolean): NodeView | undefined => {
+  for (const view of views) {
+    if (test(view)) return view;
+    const inner = find(view.children ?? [], test);
+    if (inner) return inner;
+  }
+  return undefined;
+};
+
+/** Every node outside `page`, by id, with its box: what the probe must leave as it was. */
+function outside(figma: MockFigma, page: string): string {
+  return JSON.stringify(figma.pages().filter((p) => p.name !== page));
+}
+
+test("spike: the probe runs as one call, only on its own page, and returns a compact result", async () => {
+  const thumb = Object.values(loadTreeFixture("avatar").components[0].tree.assets.img)[0];
+  const figma = new MockFigma({ pages: ["Design", "Components"] });
+  await ok(figma, "const f = figma.createFrame(); f.name = 'mine';");
+  const before = outside(figma, "storysync spike");
+  const run: MockRun = await figma.run(PROBE);
+  assert.ok(run.ok, run.text);
+  assert.ok(run.bytes < 20_000, `${run.bytes} bytes`);
+  assert.deepEqual(run.switches.length, 1);
+  assert.equal(outside(figma, "storysync spike"), before, "nothing outside the spike page changed");
+  const result = run.value as { mode: string; page: string; imageNode: string; items: Record<string, Record<string, unknown>> };
+  assert.equal(result.mode, "probe");
+  for (const name of ["svg", "shadow", "text", "absolute", "clone", "search", "returned", "time", "blend", "defaults"]) {
+    assert.ok(result.items[name] && !result.items[name].error, `${name}: ${JSON.stringify(result.items[name])}`);
+  }
+  assert.deepEqual(result.items.svg.rescaled, result.items.svg.kids, "the mock's import scales strokes, so both agree");
+  assert.equal((result.items.time as { height: number }).height > 0, true);
+  assert.deepEqual(result.items.clone, { root: "size=a", child: "thumb", parent: "same", variantParent: "PAGE" });
+  assert.deepEqual(result.items.blend, { blend: "DARKEN", dash: [3, 3] });
+  const page = find(figma.pages(), (n) => n.name === "storysync spike")!;
+  assert.equal(page.data["storysync.spike"], "1");
+
+  // Item 10: upload the thumbnail, then read it back in MODE 'image'.
+  const thumbBytes = treeFixtureAsset(thumb.file);
+  const sha1 = createHash("sha1").update(thumbBytes).digest("hex");
+  assert.ok(PROBE.includes(`bytes: ${thumbBytes.length}, fnv: '${thumb.fnv}', sha1: '${sha1}'`), "the probe expects the fixture's thumbnail");
+  figma.uploadAssets([result.imageNode], [thumbBytes]);
+  const image = await figma.run(PROBE.replace("const MODE = 'probe';", "const MODE = 'image';"));
+  assert.ok(image.ok, image.text);
+  assert.deepEqual((image.value as { items: { image: Record<string, unknown> } }).items.image, {
+    hash: sha1, scaleMode: "FILL", length: thumbBytes.length, fnv: thumb.fnv,
+    size: { width: 80, height: 80 }, sameBytes: true, hashIsSha1: true, sameSize: true, reused: true,
+  });
+
+  // A re-run clears only its own page; a page of that name it did not make is refused.
+  const rerun = await figma.run(PROBE);
+  assert.ok(rerun.ok, rerun.text);
+  assert.equal(outside(figma, "storysync spike"), before);
+  const other = new MockFigma({ pages: ["storysync spike"] });
+  assert.match(await fails(other, PROBE), /exists that this probe did not create/);
+  assert.match(await fails(new MockFigma(), PROBE.replace("const MODE = 'probe';", "const MODE = 'image';")), /Run MODE probe first/);
 });
