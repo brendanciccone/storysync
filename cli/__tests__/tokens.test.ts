@@ -809,7 +809,7 @@ test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @t
     ]);
     // --source tailwind would find them unresolved too, so it isn't offered.
     assert.deepEqual(auto.warnings, [
-      "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
+      "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
     ]);
 
     // A baseline from before lists the colors alone, so it sees the radius
@@ -920,7 +920,7 @@ test("CSS: a :root for the dark color scheme doesn't override the light one", ()
     assert.deepEqual(tokenTable(extractTokens(dir)), light);
     assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")).slice(0, 1), light);
     assert.deepEqual(extractTokens(dir).warnings, [
-      "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
+      "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
     ]);
   } finally { cleanup(dir); }
 

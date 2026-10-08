@@ -917,8 +917,11 @@ function addRootDerivedTheme(
   if (left.size) {
     warnings.push(`Not read from @theme, since they aren't built from :root's variables: ${named(left)}. Pass --source tailwind to read @theme instead`);
   }
+  // Starting `Unresolved:`, as a token kept with its var() as written is
+  // named: the skill has the agent name every token such a warning names,
+  // and these never reach Figma either.
   if (unresolved.size) {
-    warnings.push(`Not read from @theme, since a var() in them doesn't resolve: ${named(unresolved)}`);
+    warnings.push(`Unresolved: not read from @theme, since a var() in them doesn't resolve: ${named(unresolved)}`);
   }
 }
 

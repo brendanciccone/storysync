@@ -247,7 +247,7 @@ The push sets Figma variables from `hex`, since Figma's color helpers only accep
 
 A value in em or %, or with no unit, like a font weight, has no `px`. `tokens --check` compares only `value`, so baselines written before `hex` and `px` existed still pass.
 
-A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
+A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. An `@theme` token whose `var()` doesn't resolve is left out, and an `Unresolved:` warning names it too. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 

@@ -1406,3 +1406,13 @@ test("every push instruction labels a set without escaping its description again
     assert.match(text, /whether the label call removed Figma's default page `Page 1` or why it kept it/, `${path}'s summary doesn't say what became of Page 1`);
   }
 });
+
+test("every push instruction names the @theme tokens an Unresolved: warning says weren't read", () => {
+  // tokens warned "Not read from @theme, since a var() in them doesn't
+  // resolve: typography font/sans ...", which no instruction told the agent
+  // to name: they look for a warning starting Unresolved:.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /any token a `tokens` warning starting `Unresolved:` names/, `${path} doesn't leave out unresolved tokens`);
+    assert.match(text, /not read from `@theme`[^\n]*out of the output already/, `${path} doesn't name the @theme tokens tokens left out`);
+  }
+});
