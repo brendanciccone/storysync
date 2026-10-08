@@ -4155,6 +4155,28 @@ async function main() {
     return `${files.length} files`;
   });
 
+  await check("the push instructions say what snap's args records mean, and name them in the summary", () => {
+    // snap records values a story's argTypes refused (arg_rejected, or
+    // appliedVia "preview" when it set them another way), variants whose
+    // args it couldn't check (argsChecked: false), and choices a story
+    // declares that the docs don't (argsNotInDocs). An agent told nothing
+    // of them builds the set as though all were well, and the user never
+    // hears of the story change or the props Figma won't have.
+    const files = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"];
+    for (const file of files) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const steps = file.startsWith("skills/") ? text.slice(0, text.indexOf("## Audit")) : text;
+      for (const [what, pattern] of [
+        ["says what an arg_rejected variant is", /An `arg_rejected` variant is/],
+        ["says a variant set through the preview was measured", /`appliedVia: "preview"`|`appliedVia` is `"preview"`/],
+        ["says to measure a variant marked argsChecked: false again", /marked `argsChecked: false`[^.]*measure those components again with `--components <their IDs> --merge`/],
+        ["says what argsNotInDocs lists", /`argsNotInDocs` lists choices its story declares/],
+        ["names both in the summary", /any variant snap marked `argsChecked: false`, each component's `argsNotInDocs`,/],
+      ]) assert(pattern.test(steps), `${file}: the push never ${what}`);
+    }
+    return `${files.length} files`;
+  });
+
   await check("the audit instructions leave out the push's excluded props, and map only a scope's components", () => {
     // The audit ran a plain map of every component: 11.5 minutes on a
     // shadcn registry for an audit of ten, with every prop the push left out
