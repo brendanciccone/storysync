@@ -295,8 +295,8 @@ test("flowOf: a wider child moves its followers without moving their anchors", (
 
 test("flowOf: centered, end and space-* rows anchor to where the free space puts them", () => {
   const kids: [string, Box][] = [["a", [20, 0, 20, 10]], ["b", [50, 0, 30, 10]]];
-  const center = flowOf(row({ d: "flex", jc: "center" }, kids).parent, row({ d: "flex" }, kids).kids);
-  // The group spans 20..80 of 100: centered, so the first child is 0 from centered.
+  const center = flowOf(row({ d: "flex", jc: "center", gap: [10, 10] }, kids).parent, row({ d: "flex" }, kids).kids);
+  // Sizes of 50 and a gap of 10 leave 40 of 100 free: centered, the first child starts 20 in, 0 from centered.
   assert.deepEqual(center.main, { a: 0, b: 10 });
   const end = flowOf(row({ d: "flex", jc: "flex-end" }, kids).parent, row({ d: "flex" }, kids).kids);
   assert.deepEqual(end.main, { a: 10, b: 20 });
@@ -307,6 +307,35 @@ test("flowOf: centered, end and space-* rows anchor to where the free space puts
   assert.deepEqual(around.main, { a: 0, b: 0 });
   const evenly = flowOf(row({ d: "flex", jc: "space-evenly" }, kids).parent, [frame("a", [16.67, 0, 20, 10]), frame("b", [53.33, 0, 30, 10])]);
   assert.deepEqual(evenly.main, { a: 0, b: 0 });
+});
+
+test("flowOf: centered, the first child is anchored by the sizes and gaps, so a last child out of place moves only its own anchor", () => {
+  const parent = frame("p", [0, 0, 100, 10], { L: { d: "flex", jc: "center", gap: [10, 10] } });
+  const snap = flowOf(parent, [frame("a", [35, 0, 10, 10]), frame("b", [55, 0, 10, 10])]);
+  assert.deepEqual(snap.main, { a: 0, b: 10 });
+  const figma = flowOf(parent, [frame("a", [35, 0, 10, 10]), frame("b", [58, 0, 10, 10])], snap);
+  assert.deepEqual(figma.main, { a: 0, b: 13 }, "b is 3px off; a is where it was");
+  // A label 6px wider in Figma, centered as Figma centers it, leaves every anchor where it was.
+  const wider = flowOf(parent, [frame("a", [32, 0, 16, 10]), frame("b", [58, 0, 10, 10])], snap);
+  assert.deepEqual(wider.main, snap.main);
+  // A margin the CSS gap does not hold sits in both worlds alike.
+  const margin = flowOf(parent, [frame("a", [33, 0, 10, 10]), frame("b", [57, 0, 10, 10])]);
+  assert.deepEqual(margin.main, { a: -2, b: 14 });
+});
+
+test("flowOf: in a reversed flow, flex-start and flex-end follow the flow while start, end, left and right keep their sides", () => {
+  const reversed = (jc: string, kids: [string, Box][]) =>
+    flowOf(frame("p", [0, 0, 100, 10], { L: { d: "flex", dir: "row-reverse", jc } }), kids.map(([k, box]) => frame(k, box)));
+  const atRight: [string, Box][] = [["a", [90, 0, 10, 10]], ["b", [80, 0, 10, 10]]];
+  const atLeft: [string, Box][] = [["a", [10, 0, 10, 10]], ["b", [0, 0, 10, 10]]];
+  // Packed at the right: the flow's start in row-reverse, and the row's end.
+  for (const jc of ["normal", "flex-start", "end", "right"]) assert.deepEqual(reversed(jc, atRight).main, { a: 0, b: 0 }, jc);
+  // Packed at the left: the flow's end, and the row's start.
+  for (const jc of ["flex-end", "start", "left"]) assert.deepEqual(reversed(jc, atLeft).main, { b: 0, a: 0 }, jc);
+  assert.deepEqual(reversed("end", atLeft).main, { a: 80, b: 0 }, "end packed at the left is 80px off");
+  // On a column, left and right act as start.
+  const column = (jc: string) => flowOf(frame("p", [0, 0, 10, 100], { L: { d: "flex", dir: "column-reverse", jc } }), [frame("a", [0, 0, 10, 10])]);
+  assert.deepEqual([column("right").main, column("left").main, column("flex-start").main], [{ a: 0 }, { a: 0 }, { a: 90 }]);
 });
 
 test("flowOf: a reversed row anchors from the content end; a column runs along y", () => {
@@ -339,6 +368,22 @@ test("flowOf: a block of stacked children runs along y; one whose children share
   const inline = flowOf(frame("p", [0, 0, 200, 20], { L: { d: "block" } }), [frame("a", [0, 0, 40, 20]), frame("b", [44, 0, 40, 20])]);
   assert.equal(inline.axis, null);
   assert.deepEqual(inline.main, {});
+  // Block flow is how a box lays out its children: an inline-block's stack; an inline's and a table cell's do not.
+  const one = [frame("a", [0, 3, 10, 14])];
+  assert.deepEqual(["block", "flow-root", "list-item", "inline-block", "inline", "table-cell", "contents"].map((d) => flowOf(frame("p", [0, 0, 100, 20], { L: { d } }), one).axis),
+    ["y", "y", "y", "y", null, null, null]);
+});
+
+test("flowOf: another world takes snap's axis, so a block child 3px into the one above is scored along y", () => {
+  const parent = frame("p", [0, 0, 100, 40], { L: { d: "block" } });
+  const snap = flowOf(parent, [frame("a", [0, 0, 10, 20]), frame("b", [0, 20, 10, 20])]);
+  assert.deepEqual([snap.axis, snap.main], ["y", { a: 0, b: 0 }]);
+  assert.equal(flowOf(parent, [frame("a", [0, 0, 10, 20]), frame("b", [0, 17, 10, 20])]).axis, null, "on its own, it has no flow");
+  const figma = flowOf(parent, [frame("a", [0, 0, 10, 20]), frame("b", [0, 17, 10, 20])], snap);
+  assert.deepEqual([figma.axis, figma.main], ["y", { a: 0, b: -3 }]);
+  // And snap's null: a flow snap could not anchor is not anchored in Figma either.
+  const none = flowOf(parent, [frame("a", [0, 0, 10, 20]), frame("b", [0, 20, 10, 20])], { axis: null, inflow: ["a", "b"] });
+  assert.deepEqual([none.axis, none.main], [null, {}]);
 });
 
 test("flowOf: a single-column grid stacks; several columns, or a wrapping flex, have no flow", () => {
@@ -369,7 +414,7 @@ test("flowOf: siblings stored in paint order flow in the order their boxes sit; 
   assert.deepEqual(flow.main, { media: 0, content: 8 });
   // In Figma the two were swapped: in snap's order, both are off.
   const figma = [frame("content", [0, 0, 100, 40]), frame("media", [108, 0, 40, 40])];
-  const scored = flowOf(parent, figma, flow.inflow);
+  const scored = flowOf(parent, figma, flow);
   assert.deepEqual(scored.inflow, ["media", "content"]);
   assert.notEqual(scored.main.media, flow.main.media);
   assert.notEqual(scored.main.content, flow.main.content);
@@ -595,7 +640,7 @@ test("fixtures: the flow of every parent in every variant is defined, and anchor
         assert.equal(flow.inflow.length, children.filter((c) => !c.abs).length, `${name} ${slug} ${key}`);
         for (const value of [...Object.values(flow.main), ...Object.values(flow.cross)]) assert.ok(Number.isFinite(value), `${name} ${slug} ${key}`);
         // The same world in its own order scores itself identically.
-        assert.deepEqual(flowOf(parent, children, flow.inflow), flow, `${name} ${slug} ${key}`);
+        assert.deepEqual(flowOf(parent, children, flow), flow, `${name} ${slug} ${key}`);
       }
     }
   });

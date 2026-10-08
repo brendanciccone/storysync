@@ -165,20 +165,22 @@ export interface TreeDelta {                                 // against Componen
  * Figma's stand-in font pushes its followers along, and each follower is
  * still in the right place relative to the one before it. So flowOf gives,
  * for each in-flow child, its offset from what places it, and verify compares
- * that offset between the two worlds, in snap's flow order in both (flowOf's
- * `order`): the gap after the previous sibling, or from the content start,
- * for content packed at the start; the group's offset from centered for
- * centered content; the gap before the next sibling, or to the content end,
- * for content packed at the end; the difference from where the free space
- * would put it for `space-*`. Across the flow, `cross` is the offset from the
- * start, center or end its alignment names.
+ * that offset between the two worlds, along snap's axis and in snap's flow
+ * order in both (flowOf's `snap`): the gap after the previous sibling, or
+ * from the content start, for content packed at the start; for centered
+ * content, the first child's offset from where centering the children's
+ * sizes and gaps puts it, then the gap after the previous sibling; the gap
+ * before the next sibling, or to the content end, for content packed at the
+ * end; the difference from where the free space would put it for `space-*`.
+ * Across the flow, `cross` is the offset from the start, center or end its
+ * alignment names.
  *
  * `axis` is null where the parent lays its children out in no single line, a
- * wrapping flex, a grid of several columns, inline content, children that
- * overlap: there only the direct offsets apply, and `main` and `cross` are
- * empty. `content` is the parent's content box, less border and padding, in
- * its children's coordinates; `inflow` the keys of the children in flow, in
- * flow order.
+ * wrapping flex, a grid of several columns, inline content, a table cell,
+ * children that overlap: there only the direct offsets apply, and `main` and
+ * `cross` are empty. `content` is the parent's content box, less border and
+ * padding, in its children's coordinates; `inflow` the keys of the children
+ * in flow, in flow order.
  */
 export interface Flow {
   axis: "x" | "y" | null;
@@ -454,8 +456,51 @@ export function textHugs(n: TreeNode): boolean {
 const sides = <T>(value: Sides<T>): [T, T, T, T] =>
   (Array.isArray(value) ? value : [value, value, value, value]) as [T, T, T, T];
 
-/** Alignments that pack at the end; anything else not centered packs at the start. */
+/** Cross-axis alignments that place an item at the end; anything else not centered places it at the start. */
 const END = new Set(["end", "flex-end", "self-end", "right"]);
+
+/**
+ * Displays whose in-flow children stack down in block flow: the block
+ * containers, `inline-block` among them, since what counts is how a box lays
+ * out its children, not how it sits in its own parent. Not `inline`, whose
+ * children share line boxes, nor a table cell, whose content is placed by its
+ * vertical-align, which snap does not record.
+ */
+const BLOCK_FLOW = new Set(["block", "flow-root", "list-item", "inline-block"]);
+
+/**
+ * Where a flex container's justify-content packs its items, in terms of the
+ * flow, whose start is the content end when the direction is reversed.
+ * `flex-start` and `flex-end` follow the flow, so they reverse with it;
+ * `start` and `end` are the axis's own ends, left and right in a row (left
+ * to right text assumed, as snap records no direction) and top and bottom in
+ * a column, which a reversed flow meets the other way round; `left` and
+ * `right` are physical on a row and act as `start` on a column, as CSS
+ * says. `normal`, `stretch` and anything unknown pack at the flow's start.
+ */
+function packing(justify: string, axis: "x" | "y", reverse: boolean): "start" | "end" | "center" | "space-between" | "space-around" | "space-evenly" {
+  const value = justify.replace(/^(?:safe|unsafe)\s+/, "");
+  const axisEnd = reverse ? "start" : "end";
+  const axisStart = reverse ? "end" : "start";
+  switch (value) {
+    case "center":
+    case "space-between":
+    case "space-around":
+    case "space-evenly":
+      return value;
+    case "flex-end":
+      return "end";
+    case "end":
+      return axisEnd;
+    case "start":
+    case "left":
+      return axisStart;
+    case "right":
+      return axis === "x" ? axisEnd : axisStart;
+    default:
+      return "start";
+  }
+}
 
 /**
  * Where `parent` puts each of its in-flow `children` along and across its
@@ -463,20 +508,24 @@ const END = new Set(["end", "flex-end", "self-end", "right"]);
  * and its `bd` for the border, which for the root comes from its styles
  * (rootWithStyles). `children` are the parent's direct children; those with
  * `abs` are out of flow and left out. The main axis comes from `parent.L`:
- * a flex container's direction, unless it wraps; and y for a block, or a
- * grid of one column, whose in-flow children stack without overlapping by
- * more than 1px, which Chrome's rounding of half-leading can account for.
- * Anything else has no flow to anchor to.
+ * a flex container's direction, unless it wraps; and y for a block container
+ * (BLOCK_FLOW), or a grid of one column, whose in-flow children stack without
+ * overlapping by more than 1px, which Chrome's rounding of half-leading can
+ * account for. Anything else has no flow to anchor to.
  *
- * The flow's order is not the stored order: a tree stores siblings in paint
- * order, where a `relative` child paints after the static ones beside it
- * wherever it sits. In the browser's world the order is where the boxes sit
- * along the main axis, which is the order the flow placed them in. Another
- * world must anchor each node to the same predecessor, or a misplaced node
- * would be compared with a different neighbor in each: so pass `order`, the
- * `inflow` of snap's flow for the same parent, to score Figma's boxes in it.
+ * Pass `snap`, the Flow snap's boxes gave for the same parent, to score
+ * another world's boxes against it. The flow's order is not the stored
+ * order: a tree stores siblings in paint order, where a `relative` child
+ * paints after the static ones beside it wherever it sits, so in the
+ * browser's world the order is where the boxes sit along the main axis,
+ * the order the flow placed them in. Another world must anchor each node to
+ * the same predecessor, or a misplaced node would be compared with a
+ * different neighbor in each, so it takes snap's `inflow` as its order. It
+ * takes snap's `axis` too: whether a block's children stack is read from the
+ * boxes, and a Figma world where one sits 3px into the one above must still
+ * be scored along y, where that 3px shows, rather than with no flow at all.
  */
-export function flowOf(parent: TreeNode, children: TreeNode[], order?: readonly string[]): Flow {
+export function flowOf(parent: TreeNode, children: TreeNode[], snap?: Pick<Flow, "axis" | "inflow">): Flow {
   const L = parent.L;
   const [bt, br, bb, bl] = sides(parent.bd?.w ?? 0);
   const [pt, pr, pb, pl] = L?.pad ?? [0, 0, 0, 0];
@@ -492,8 +541,8 @@ export function flowOf(parent: TreeNode, children: TreeNode[], order?: readonly 
   const backwards = flex && dir.endsWith("-reverse");
   let inflow = children.filter((child) => !child.abs);
   // Sorts are stable: ties keep the stored order.
-  if (order) {
-    const at = new Map(order.map((k, i) => [k, i]));
+  if (snap) {
+    const at = new Map(snap.inflow.map((k, i) => [k, i]));
     inflow = [...inflow].sort((a, b) => (at.get(a.k) ?? Infinity) - (at.get(b.k) ?? Infinity));
   } else {
     const [m, size] = vertical ? [1, 3] : [0, 2];
@@ -502,15 +551,13 @@ export function flowOf(parent: TreeNode, children: TreeNode[], order?: readonly 
   const stacked = inflow.every((child, i) => i === 0 || child.box[1] >= inflow[i - 1].box[1] + inflow[i - 1].box[3] - 1);
 
   let axis: Flow["axis"] = null;
-  let reverse = false;
   if (flex) {
-    if (!L?.wrap) {
-      axis = vertical ? "y" : "x";
-      reverse = backwards;
-    }
-  } else if (L && stacked && (!grid || (L.tracks?.[0] ?? 1) <= 1)) {
+    if (!L?.wrap) axis = vertical ? "y" : "x";
+  } else if (L && stacked && (BLOCK_FLOW.has(display) || (grid && (L.tracks?.[0] ?? 1) <= 1))) {
     axis = "y";
   }
+  if (snap) axis = snap.axis;
+  const reverse = axis !== null && backwards;
   const flow: Flow = { axis, reverse, content, inflow: inflow.map((child) => child.k), main: {}, cross: {} };
   if (!axis || inflow.length === 0) return flow;
 
@@ -526,7 +573,7 @@ export function flowOf(parent: TreeNode, children: TreeNode[], order?: readonly 
   const last = inflow[n - 1];
   const afterPrevious = (i: number) => pos(inflow[i]) - (pos(inflow[i - 1]) + size(inflow[i - 1]));
 
-  const justify = flex ? (L?.jc ?? "normal") : "normal";
+  const pack = flex ? packing(L?.jc ?? "normal", axis, reverse) : "start";
   const gap = flex ? (L?.gap?.[axis === "x" ? 1 : 0] ?? 0) : 0;
   const sum = inflow.reduce((total, child) => total + size(child), 0);
   const free = room - sum - gap * (n - 1);
@@ -537,18 +584,20 @@ export function flowOf(parent: TreeNode, children: TreeNode[], order?: readonly 
       at += size(child) + gap + between;
     });
   };
-  if (justify === "center" || ((justify === "space-around" || justify === "space-evenly") && free < 0)) {
-    const span = pos(last) + size(last) - pos(first);
-    flow.main[first.k] = round2(pos(first) - (room - span) / 2);
+  if (pack === "center" || ((pack === "space-around" || pack === "space-evenly") && free < 0)) {
+    // From the sizes and gaps, as section 10.4 has it, not from where the
+    // group's ends landed: a last child out of place then moves only its
+    // own anchor, not the first child's too.
+    flow.main[first.k] = round2(pos(first) - free / 2);
     for (let i = 1; i < n; i++) flow.main[inflow[i].k] = round2(afterPrevious(i));
-  } else if (END.has(justify)) {
+  } else if (pack === "end") {
     flow.main[last.k] = round2(room - (pos(last) + size(last)));
     for (let i = 0; i < n - 1; i++) flow.main[inflow[i].k] = round2(afterPrevious(i + 1));
-  } else if (justify === "space-between" && n > 1 && free >= 0) {
+  } else if (pack === "space-between" && n > 1 && free >= 0) {
     spread(0, free / (n - 1));
-  } else if (justify === "space-around") {
+  } else if (pack === "space-around") {
     spread(free / n / 2, free / n);
-  } else if (justify === "space-evenly") {
+  } else if (pack === "space-evenly") {
     spread(free / (n + 1), free / (n + 1));
   } else {
     flow.main[first.k] = round2(pos(first));
