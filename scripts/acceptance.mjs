@@ -2359,6 +2359,9 @@ async function main() {
     const button = snap.components.find((c) => c.name === "Button");
     const through = snap.components.flatMap((c) => c.variants.filter((v) => v.rejectedArgs || v.appliedVia).map((v) => `${c.name} ${v.slug}`));
     assert(through.length === 0, `variants the story didn't take: ${through.join(", ")}`);
+    // A real Storybook's preview can be read for every variant.
+    const unchecked = snap.components.flatMap((c) => c.variants.filter((v) => v.argsChecked === false).map((v) => `${c.name} ${v.slug}`));
+    assert(unchecked.length === 0, `variants whose args snap couldn't check: ${unchecked.join(", ")}`);
     assert(!snap.components.some((c) => c.warnings.some((w) => /story URL|Storybook's preview/.test(w))), "an args warning on the example");
     assert(JSON.stringify(button.argTypes?.variant) === JSON.stringify({ type: "enum", control: "select", options: ["primary", "danger", "outline"] }),
       `Button's variant argType: ${JSON.stringify(button.argTypes)}`);
