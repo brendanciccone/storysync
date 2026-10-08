@@ -1374,6 +1374,21 @@ test("resolveTailwindCssRefs: a fallback holding parentheses is read whole, leav
   assert.equal(resolveTailwindCssRefs("var(--missing)", vars), "var(--missing)");
 });
 
+test("Tailwind: a var() with an empty fallback and nothing set stays as written, with its warning", () => {
+  assert.equal(resolveTailwindCssRefs("var(--missing,)", new Map()), "var(--missing,)");
+  assert.equal(resolveTailwindCssRefs("var(--missing, )", new Map()), "var(--missing, )");
+  assert.equal(resolveTailwindCssRefs("var(--set,)", new Map([["--set", "#123456"]])), "#123456");
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { haze: "var(--haze,)", ink: "var(--ink)" } } } }`,
+    "src/app.css": `:root { --ink: #111111; }`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [["colors", [["haze", "var(--haze,)"], ["ink", "#111111"]]]]);
+    assert.ok(result.warnings.includes("Unresolved: colors haze = var(--haze,) (--haze isn't set in :root)"), result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+});
+
 test("Tailwind and CSS: a var() whose fallback holds parentheses resolves, so the color gets its hex", () => {
   const dir = makeProject({
     "tailwind.config.js": `module.exports = { theme: { extend: { colors: { edge: "var(--edge)" } } } }`,

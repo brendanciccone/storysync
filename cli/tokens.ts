@@ -1100,8 +1100,11 @@ export function resolveTailwindCssRefs(value: string, cssVars: Map<string, strin
   let s = value.replace(/\s*\/\s*<alpha-value>\s*/g, "");
 
   // Replace each var(--name) or var(--name, fallback) with its resolved CSS value (depth-guarded).
+  // An empty fallback, as in `var(--unset,)`, leaves the var() as written,
+  // with its Unresolved warning, as earlier versions left it: replaced, it
+  // made a token with no value and no warning.
   for (let depth = 0; depth < 8 && /var\(\s*--/.test(s); depth++) {
-    s = replaceVars(s, (name, fallback) => cssVars.get(name) ?? fallback?.trim());
+    s = replaceVars(s, (name, fallback) => cssVars.get(name) ?? (fallback?.trim() || undefined));
   }
   return s.trim();
 }

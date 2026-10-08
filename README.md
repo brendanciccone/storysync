@@ -271,7 +271,7 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 - Nested variable chains (`--brand: var(--blue-500)`)
 - Fallback values (`var(--missing, 200 50% 50%)`), including ones with parentheses (`var(--missing, var(--border))`, `var(--missing, rgb(0 0 0))`)
 
-A reference with no matching variable and no fallback is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
+A reference with no matching variable and no fallback, or an empty one as in `var(--x,)`, is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
 Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order.
 
