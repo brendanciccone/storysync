@@ -369,7 +369,7 @@ Options:
 mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.json
 ```
 
-A missing baseline is always an error, so a wrong `--baseline` path can't pass by comparing nothing. A file that isn't `tokens --json` output is an error too.
+A missing baseline is always an error, so a wrong `--baseline` path can't pass by comparing nothing. A file that isn't `tokens --json` output is an error too. A newer Storysync can read tokens an older one didn't, which a baseline from the older one lists as added; drift prints the command that writes a new one.
 
 ### `storysync map`
 

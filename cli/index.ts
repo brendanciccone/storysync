@@ -584,6 +584,12 @@ function checkTokens(
     for (const c of drift.changed) {
       console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}: ${c.from} → ${c.to}`);
     }
+    // A newer storysync can read tokens an older one left out, shadcn/ui's
+    // radius scale say, which a baseline the older one wrote lists as added.
+    const why = drift.removed.length || drift.changed.length
+      ? "If the change is intended"
+      : "If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't";
+    console.log(chalk.dim(`\n${why}, update the baseline with \`${create}\`.`));
   }
   if (opts.strict) process.exitCode = 1;
 }
@@ -618,11 +624,13 @@ program
     // still an error, and against one that exists, every token it holds was
     // removed.
     let detected = true;
-    if (!json) {
+    // Detection names the source only when --source leaves it to detection:
+    // with --source tailwind, it said "Detected: css" and then listed @theme.
+    if (!json && !source) {
       const spinner = ora("Detecting token source...").start();
-      const source = detectTokenSource(projectPath);
-      if (source) {
-        spinner.succeed(`Detected: ${source.type} (${source.path})`);
+      const detection = detectTokenSource(projectPath);
+      if (detection) {
+        spinner.succeed(`Detected: ${detection.type} (${detection.path})`);
       } else {
         spinner.fail("No token source found");
         detected = false;
@@ -635,6 +643,7 @@ program
 
     const result = extractTokens(projectPath, source);
     const found = result.collections.length > 0;
+    if (!json && source && result.sourcePath) ora().succeed(`Source: ${source} (${result.sourcePath}), from --source`);
 
     if (!found) {
       if (opts.strict) process.exitCode = 1;
@@ -677,7 +686,9 @@ program
         console.log(`  ${chalk.bold(collection.category)} ${chalk.dim(`(${collection.tokens.length} tokens)`)}`);
         const shown = opts.all ? collection.tokens : collection.tokens.slice(0, 8);
         for (const token of shown) {
-          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value)}`);
+          // The px a FLOAT variable gets, when the value doesn't say it already.
+          const px = token.px === undefined || token.value === `${token.px}px` ? "" : ` = ${token.px}px`;
+          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value + px)}`);
         }
         if (!opts.all && collection.tokens.length > 8) {
           console.log(chalk.dim(`    ... and ${collection.tokens.length - 8} more (use --all to show)`));
