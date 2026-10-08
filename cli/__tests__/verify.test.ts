@@ -1218,6 +1218,67 @@ test("verify: a readback component the snap has no record of is named, so a part
   assert.deepEqual(verify(snap, readbackWith({ a: {} }), 0.5).componentsNotInSnap, []);
 });
 
+test("verify: --skip leaves the components the user chose not to push out of the score, and says which", () => {
+  // The push asks whether to build, skip or stop on a dialog snap measured
+  // closed. Skipped, it stayed in styles.json, so every one of its variants
+  // was missing from Figma and verify --strict failed the push on it.
+  const base = snapWith([{ slug: "a" }]);
+  const dialog = {
+    ...base.components[0], id: "ui-base-dialog", name: "Dialog", title: "ui/base/Dialog",
+    variants: [base.components[0].variants[0], { ...base.components[0].variants[0], slug: "b", status: "timeout" }],
+    error: "could not render",
+  };
+  const snap = {
+    ...base,
+    components: [base.components[0], dialog],
+    summary: { ...base.summary, components: 2, variants: 3, rendered: 2, failed: 1, componentsFailed: 1 },
+  } as SnapResult;
+  const readback = readbackWith({ a: {} });
+
+  const all = verify(snap, readback, 0.5);
+  assert.equal(all.summary.missingFromFigma, 1);
+  assert.equal(all.snapIssues.length, 1);
+  assert.equal(all.snapWarnings.length, 1);
+  assert.deepEqual(all.skipped, []);
+
+  // By ID, title, name or the title's last segment, ignoring case.
+  for (const name of ["ui-base-dialog", "ui/base/Dialog", "dialog", " Dialog "]) {
+    const result = verify(snap, readback, 0.5, { skip: [name] });
+    assert.deepEqual(result.skipped, ["ui/base/Dialog"], name);
+    assert.equal(result.summary.missingFromFigma, 0, name);
+    assert.equal(result.summary.components, 1, name);
+    // Its own failures go with it: they are not this push's.
+    assert.deepEqual(result.snapIssues, [], name);
+    assert.deepEqual(result.snapWarnings, [], name);
+    assert.equal(result.fidelity, 1, name);
+  }
+
+  // A skipped component already in the readback is left out there too.
+  const entry = complete({});
+  const both: ReadbackFile = {
+    version: 1,
+    components: {
+      ...readback.components,
+      "ui/base/Dialog": { nodeId: "3:4", variants: { a: { ...entry, backgroundColor: "#ff00ff", checksum: "fnv1a:00000000" } } as never },
+    },
+  };
+  const skippedBoth = verify(snap, both, 0.5, { skip: ["ui-base-dialog"] });
+  assert.deepEqual(skippedBoth.readbackIssues, []);
+  assert.deepEqual(skippedBoth.variants.map((v) => v.component), ["Forms/Button"]);
+
+  // A readback-only key can be named too, rather than read as a typo.
+  const extra: ReadbackFile = { version: 1, components: { ...readback.components, "Forms/Old": both.components!["ui/base/Dialog"] } };
+  assert.deepEqual(verify(snap, extra, 0.5).componentsNotInSnap, ["Forms/Old"]);
+  const named = verify(snap, extra, 0.5, { skip: ["Forms/Old", "dialog"] });
+  assert.deepEqual(named.skipped, ["Forms/Old", "ui/base/Dialog"]);
+  assert.deepEqual(named.componentsNotInSnap, []);
+
+  // A typo throws rather than leaving a component in, or out, unseen; an
+  // empty list leaves everything in.
+  assert.throws(() => verify(snap, readback, 0.5, { skip: ["Dialgo"] }), /--skip matched no component named "Dialgo"/);
+  assert.equal(verify(snap, readback, 0.5, { skip: ["", " "] }).summary.missingFromFigma, 1);
+});
+
 test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants and an assumed default, each once", () => {
   const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
   const warnings = [

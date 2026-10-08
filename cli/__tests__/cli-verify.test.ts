@@ -314,6 +314,27 @@ test("verify CLI: a push scored on a snap re-run for some components alone fails
   assert.doesNotMatch(r.out, /Figma matches/);
 });
 
+test("verify CLI: --skip leaves a component the user chose not to push out of --strict, and says so under the score", () => {
+  // Skipped at the push's question about a closed trigger, the dialog stayed
+  // in styles.json, and verify --strict failed on its variants as missing.
+  const two = snap();
+  two.components.push({ ...two.components[0], id: "ui-base-dialog", name: "Dialog", title: "ui/base/Dialog" } as never);
+  const without = verify(two, readback(MATCHING), "--strict");
+  assert.equal(without.status, 1, without.out);
+  assert.match(without.out, /ui\/base\/Dialog a not found in Figma/);
+
+  const r = verify(two, readback(MATCHING), "--strict", "--skip", "ui-base-dialog");
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.equal(lines[at + 1], "  Left out of the score, as --skip asked: ui/base/Dialog");
+  assert.doesNotMatch(r.out, /not found in Figma/);
+
+  const typo = verify(two, readback(MATCHING), "--strict", "--skip", "Dialgo");
+  assert.equal(typo.status, 1, typo.out);
+  assert.match(typo.out, /--skip matched no component named "Dialgo"/);
+});
+
 test("verify CLI: what snap warned about a scored component is said beside the score, and fails nothing", () => {
   const warning = "snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, rather than Dialog. What it opens renders only while open.";
   const r = verify(

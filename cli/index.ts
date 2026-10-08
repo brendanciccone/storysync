@@ -413,6 +413,7 @@ program
   .option("--readback <path>", "Path to the properties read back from Figma", ".storysync/figma-readback.json")
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
+  .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out of the score, such as ones not pushed; the output names them")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or if the snap recorded a component failure or lacks a component the readback has")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
@@ -445,7 +446,8 @@ program
       const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
       // The snap's time first: an entry Figma read before it is stale.
       const snapAge = readSnapAge(snapPath, maxAgeMs);
-      const result = verify(snap, readback, tolerance, snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {});
+      const skip = opts.skip ? (opts.skip as string).split(",") : undefined;
+      const result = verify(snap, readback, tolerance, snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt, skip } : { skip });
       result.snapAge = snapAge;
 
       if (json) {
@@ -459,6 +461,9 @@ program
           ? chalk.red(` — ${excluded} unverified readback ${excluded === 1 ? "entry" : "entries"} excluded`)
           : "";
         console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        if (result.skipped.length > 0) {
+          console.log(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
+        }
         // Beside the score: Figma can match a measurement of the wrong
         // element exactly, so the score alone would read as a faithful one.
         if (result.caveats.length > 0) {

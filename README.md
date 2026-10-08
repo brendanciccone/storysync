@@ -487,6 +487,8 @@ Options:
   --readback <path>      Properties read back from Figma (default: ".storysync/figma-readback.json")
   --tolerance <px>       Allowed difference for lengths (default: 0.5)
   --max-age <duration>   Warn when the snap is older than this (default: "2h")
+  --skip <names>         Comma-separated component names, titles or IDs to leave out of the score,
+                         such as ones not pushed; the output names them
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant drifted, is missing from Figma, or reported
                          nothing comparable, if a readback entry is not what Figma returned, is
@@ -520,6 +522,8 @@ Fidelity: 100.0% (12/12 properties)
 ```
 
 A component in the readback that the snap doesn't have at all fails `--strict`. That's what a snap run again with `--components` and without `--merge` leaves out.
+
+**Leaving components out.** A component you chose not to push, such as a Dialog snap measured closed, is still in the snap, so `verify` would count each of its variants as missing from Figma. Pass it to `--skip` by name, title or ID. It's left out of the score, and of `--strict`, and the line under the score names it. A name that matches nothing is an error.
 
 The comparison is numeric, not visual, so it's deterministic and free. Only properties Figma can report are scored; Figma has nothing to compare `lineHeight: "normal"` to, for example, or a `fontFamily` that is a CSS keyword like `system-ui` or `sans-serif`. Variants missing from Figma are reported separately instead of lowering the score.
 

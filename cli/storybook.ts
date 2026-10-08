@@ -71,12 +71,13 @@ function isNamed(e: ComponentEntry, key: string): boolean {
  *
  * `alsoKnown` names count as matched without selecting an entry: diff passes
  * Figma's components, since a name found only there is a difference to report
- * rather than a typo.
+ * rather than a typo. `flag` is the option the names came from, for the error.
  */
 export function selectComponents(
   entries: ComponentEntry[],
   names: readonly string[] | undefined,
   alsoKnown: readonly string[] = [],
+  flag = "--components",
 ): ComponentEntry[] {
   const wanted = componentNames(names).map((name) => ({ name, key: name.toLowerCase() }));
   if (!wanted.length) return entries;
@@ -85,7 +86,7 @@ export function selectComponents(
   const unmatched = wanted.filter(({ key }) => !known.has(key) && !entries.some((e) => isNamed(e, key)));
   if (unmatched.length) {
     throw new Error(
-      `--components matched no component named ${unmatched.map(({ name }) => `"${name}"`).join(", ")}. ` +
+      `${flag} matched no component named ${unmatched.map(({ name }) => `"${name}"`).join(", ")}. ` +
       `Available: ${available(entries, alsoKnown)}`,
     );
   }

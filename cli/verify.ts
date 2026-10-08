@@ -13,7 +13,8 @@ import { dirname, join } from "node:path";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
 import { SNAP_META_FILENAME, detectIdenticalVariants, parseMeasurementWarning } from "./snap.js";
-import { componentKey } from "./storybook.js";
+import { componentKey, componentNames, selectComponents } from "./storybook.js";
+import type { ComponentEntry } from "./storybook.js";
 import type { SnapComponent, SnapResult } from "./snap.js";
 
 export const READBACK_SCHEMA_VERSION = 1;
@@ -296,6 +297,12 @@ export interface VerifyResult {
    * push.
    */
   componentsNotInSnap: string[];
+  /**
+   * Components left out of the score as `--skip` asked, by key: ones the
+   * user chose not to push, which the snap still holds. Said beside the
+   * score, since it is a score of the rest.
+   */
+  skipped: string[];
   /**
    * Readback entries with no corresponding measurement.
    *
@@ -772,12 +779,61 @@ function unverifiedVerdict(component: string, slug: string, figma: unknown): Var
   };
 }
 
-export function verify(
+export interface VerifyOptions extends ReadbackCheckOptions {
+  /** Components to leave out of the score: see withoutComponents. */
+  skip?: readonly string[];
+}
+
+/**
+ * The snap and the readback without the components `names` gives, each
+ * matched by ID, title, name or title's last segment, ignoring case, as
+ * `--components` matches them, or by its key in the readback. These are
+ * components the user chose not to push, such as a dialog snap measured
+ * closed: the snap still holds them, so verify would count each of their
+ * variants as missing from Figma, and --strict fail on them. A name that
+ * matches nothing throws, as a typo would leave a component in to fail.
+ * No names leaves everything in. Returns the keys it left out.
+ */
+export function withoutComponents(
   snap: SnapResult,
   readback: ReadbackFile,
+  names: readonly string[] | undefined,
+): { snap: SnapResult; readback: ReadbackFile; skipped: string[] } {
+  if (!componentNames(names).length) return { snap, readback, skipped: [] };
+  const components = snap.components ?? [];
+  const readbackKeys = Object.keys(readback.components ?? {});
+  const entries = components.map((c): ComponentEntry => ({ id: c.id ?? componentKey(c), name: c.name, title: c.title }));
+  const chosen = new Set(selectComponents(entries, names, readbackKeys, "--skip"));
+  const left = components.filter((_, i) => chosen.has(entries[i]));
+  const wanted = new Set(componentNames(names).map((n) => n.toLowerCase()));
+  const skipped = new Set(left.map((c) => componentKey(c)));
+  for (const key of readbackKeys) if (wanted.has(key.toLowerCase())) skipped.add(key);
+
+  const kept = components.filter((_, i) => !chosen.has(entries[i]));
+  const variants = left.flatMap((c) => c.variants ?? []);
+  const summary = snap.summary && {
+    ...snap.summary,
+    components: snap.summary.components - left.length,
+    variants: snap.summary.variants - variants.length,
+    rendered: snap.summary.rendered - variants.filter((v) => v.status === "ok").length,
+    failed: snap.summary.failed - variants.filter((v) => v.status !== "ok").length,
+    componentsFailed: snap.summary.componentsFailed - left.filter((c) => c.error != null).length,
+  };
+  const readbackComponents = Object.fromEntries(Object.entries(readback.components ?? {}).filter(([key]) => !skipped.has(key)));
+  return {
+    snap: { ...snap, components: kept, summary },
+    readback: { ...readback, components: readbackComponents },
+    skipped: [...skipped].sort(),
+  };
+}
+
+export function verify(
+  snapIn: SnapResult,
+  readbackIn: ReadbackFile,
   tolerance: number,
-  options: ReadbackCheckOptions = {},
+  options: VerifyOptions = {},
 ): VerifyResult {
+  const { snap, readback, skipped } = withoutComponents(snapIn, readbackIn, options.skip);
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
 
@@ -879,6 +935,7 @@ export function verify(
     snapWarnings,
     caveats,
     componentsNotInSnap,
+    skipped,
     unmeasuredInFigma,
     readbackIssues,
     variants: verdicts,
