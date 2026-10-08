@@ -2688,6 +2688,34 @@ async function main() {
     assert(r.status !== 0, "exited 0 with Buton silently dropped");
   });
 
+  await check("snap --merge measures one component again and keeps the other as it was", () => {
+    // Re-run for one component alone, snap wrote a styles.json of that one,
+    // and verify scored a whole push on it.
+    const out = join(WORK, "merge");
+    mkdirSync(out, { recursive: true });
+    for (const file of ["styles.json", "meta.json"]) cpSync(join(snapDir, file), join(out, file));
+    const before = readJson(join(out, "styles.json"));
+    const earlier = readJson(join(out, "meta.json")).measuredAt;
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--variants", "all", "--merge", "--out", out]);
+    assert(r.status === 0, `snap --merge exited ${r.status}\n${r.out.trim()}`);
+    const after = readJson(join(out, "styles.json"));
+    const key = (c) => c.title ?? c.id ?? c.name;
+    assert(after.components.map(key).join(", ") === before.components.map(key).join(", "), `components ${after.components.map(key).join(", ")}`);
+    const button = (snap) => JSON.stringify(snap.components.find((c) => c.name === "Button"));
+    assert(button(after) === button(before), "Button changed, though only Frozen was measured again");
+    const meta = readJson(join(out, "meta.json"));
+    const times = meta.componentsMeasuredAt ?? {};
+    const buttonKey = key(after.components.find((c) => c.name === "Button"));
+    const frozenKey = key(after.components.find((c) => c.name === "Frozen"));
+    assert(times[buttonKey] === earlier && times[frozenKey] > earlier, `componentsMeasuredAt: ${JSON.stringify(times)}`);
+    assert(meta.measuredAt === earlier, `measuredAt ${meta.measuredAt}, not the oldest component's, ${earlier}`);
+
+    // Another --variants would mix two kinds of measurement in one snap.
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out]);
+    assert(refused.status === 1 && /measured with --variants all: pass the same/.test(refused.out), `--variants representative merged: ${refused.out.trim()}`);
+    return "Frozen measured again, Button kept, measuredAt the oldest";
+  });
+
   heading("Map guards");
 
   await check("map rejects a misspelled --components name the same way", () => {
@@ -3400,6 +3428,54 @@ async function main() {
       `all ${all} in one would be ${JSON.stringify(one).length}; ${refused}`;
   });
 
+  await check("the label call keeps a designer's description and changes only its own line", async () => {
+    // A plain assignment replaced whatever a designer had written on a set,
+    // and nothing took the label off once the component was measured open.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    assert(code.length < 2000, `the label template is ${code.length} characters`);
+    const NL = "\n";
+    const nodes = {
+      "1:1": { id: "1:1", type: "COMPONENT_SET", description: "Use for the main action." },
+      "1:2": { id: "1:2", type: "COMPONENT_SET", description: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` },
+      "1:3": { id: "1:3", type: "COMPONENT", description: "" },
+      "1:4": { id: "1:4", type: "COMPONENT_SET", description: "storysync: measured from its closed trigger, button, not the open dialog" },
+      "1:5": { id: "1:5", type: "COMPONENT_SET", description: "" },
+      "1:6": { id: "1:6", type: "FRAME", description: "" },
+    };
+    const figma = { getNodeByIdAsync: async (id) => nodes[id] ?? null };
+    const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
+    const run = async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
+    const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
+    const wrapper = "measured from what may be its story's layout wrapper, div, not Switch";
+    const notes = { "1:1": trigger, "1:2": trigger, "1:3": wrapper, "1:4": "", "1:5": "" };
+
+    const first = await run(notes);
+    const expected = {
+      "1:1": `Use for the main action.${NL}storysync: ${trigger}`,
+      "1:2": `Use for the main action.${NL}storysync: ${trigger}`,
+      "1:3": `storysync: ${wrapper}`,
+      "1:4": "",
+      "1:5": "",
+    };
+    for (const [id, description] of Object.entries(expected)) {
+      assert(nodes[id].description === description, `${id} has ${JSON.stringify(nodes[id].description)}, expected ${JSON.stringify(description)}`);
+    }
+    assert(first.changed.join() === "1:1,1:2,1:3,1:4", `changed ${first.changed.join()}`);
+    // Run again, it changes nothing, and adds no second line.
+    const again = await run(notes);
+    assert(again.changed.length === 0, `a second run changed ${again.changed.join()}`);
+    // Measured open, the set loses the line and keeps the designer's.
+    await run({ "1:1": "" });
+    assert(nodes["1:1"].description === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].description)}`);
+    // Anything but a component set or component is refused.
+    for (const id of ["1:6", "9:9"]) {
+      let refused = false;
+      try { await run({ [id]: trigger }); } catch { refused = true; }
+      assert(refused, `labeled ${id}, which is no component set`);
+    }
+    return `${code.length} characters`;
+  });
+
   heading("Readback checksums");
 
   await check("the template's checksums survive any layout of the file, and cover what each call returns", () => assertSealed(snapDir));
@@ -3826,15 +3902,19 @@ async function main() {
     assert(exitOf(snapDir, path, ["--strict"]) === 1, "--strict passed");
   });
 
-  await check("a component in Figma that snap never measured fails --strict-measured", () => {
+  await check("a component in Figma that snap never measured fails --strict, naming it", () => {
     const ghost = readJson(reference);
     const [entry] = Object.values(Object.values(ghost.components)[0].variants);
     ghost.components["Forms/Phantom"] = { nodeId: "9:9", variants: { default: { ...entry } } };
     const path = join(WORK, "readback-ghost.json");
     writeJson(path, sealed(ghost));
     assert(exitOf(snapDir, path, ["--strict-measured"]) === 1, "--strict-measured passed");
-    // On provenance alone: its entry carries the checksum verify expects.
-    assert(exitOf(snapDir, path, ["--strict"]) === 0, "--strict failed on a sealed entry snap never measured");
+    // Its entry carries the checksum verify expects, but a snap with no
+    // record of the component at all, as one re-run for other components
+    // without --merge leaves, can't score the push it belongs to.
+    assert(exitOf(snapDir, path, ["--strict"]) === 1, "--strict passed with a component the snap has no record of");
+    const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path]).out;
+    assert(/Forms\/Phantom is in the readback but not in the snap.*--merge/.test(text), `not named: ${text.trim()}`);
   });
 
   await check("opacity is not compared with the pixel tolerance", () => {

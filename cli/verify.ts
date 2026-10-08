@@ -12,9 +12,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
-import { SNAP_META_FILENAME } from "./snap.js";
-import { componentKey } from "./storybook.js";
-import type { SnapResult } from "./snap.js";
+import { SNAP_META_FILENAME, detectIdenticalVariants, parseMeasurementWarning } from "./snap.js";
+import { componentKey, componentNames, selectComponents } from "./storybook.js";
+import type { ComponentEntry } from "./storybook.js";
+import type { SnapComponent, SnapResult } from "./snap.js";
 
 export const READBACK_SCHEMA_VERSION = 1;
 
@@ -214,11 +215,14 @@ export interface VariantVerdict {
 
 export interface SnapAgeKnown {
   known: true;
+  /** When the snap was measured; for a merged snap, its oldest component. */
   measuredAt: string;
   ageMs: number;
   storybookUrl?: string;
   /** True once older than the configured limit. */
   stale: boolean;
+  /** When each component was measured, for a snap `snap --merge` wrote: see SnapMeta. */
+  componentsMeasuredAt?: Record<string, string>;
 }
 
 /**
@@ -277,6 +281,29 @@ export interface VerifyResult {
   /** Variants the snap could not measure. Reported, but not a --strict failure on their own. */
   snapWarnings: string[];
   /**
+   * What snap warned about a scored component's measurement that a score
+   * can't show: snap measured a closed trigger or what may be a layout
+   * wrapper rather than the component, its variants all measured the same,
+   * or a VARIANT property's default is assumed. Figma can match such a measurement
+   * exactly, so 100% on a dialog's trigger is not a faithful dialog.
+   * Reported beside the score; not a --strict failure.
+   */
+  caveats: ScoreCaveat[];
+  /**
+   * Readback components the snap has no record of at all: measured by
+   * another snap run, as one re-run with `--components` and without
+   * `--merge` leaves styles.json, or never. Nothing in them is scored, and
+   * they fail --strict, since a score over the rest is not a score of the
+   * push.
+   */
+  componentsNotInSnap: string[];
+  /**
+   * Components left out of the score as `--skip` asked, by key: ones the
+   * user chose not to push, which the snap still holds. Said beside the
+   * score, since it is a score of the rest.
+   */
+  skipped: string[];
+  /**
    * Readback entries with no corresponding measurement.
    *
    * These are written to Figma but unscored, so without listing them a run can
@@ -294,6 +321,15 @@ export interface VerifyResult {
    */
   readbackIssues: ReadbackIssue[];
   variants: VariantVerdict[];
+}
+
+export interface ScoreCaveat {
+  component: string;
+  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed";
+  /** The element snap measured, for a closed trigger or a layout wrapper. */
+  element?: string;
+  /** The properties whose default is assumed, for `default-assumed`. */
+  properties?: string[];
 }
 
 export interface ReadbackIssue {
@@ -325,6 +361,8 @@ export interface ReadbackIssue {
   missing?: string[];
   /** For `stale`: the entry's `readAt`, or null when it has none, or one that is not a string. */
   readAt?: string | null;
+  /** For `stale`: when its component was measured, where a merged snap gives each its own time. */
+  measuredAt?: string;
 }
 
 // --- Comparison --------------------------------------------------------------
@@ -666,6 +704,13 @@ export interface ReadbackCheckOptions {
    * stale; without it, only that each entry has a `readAt` is checked.
    */
   measuredAt?: string;
+  /**
+   * When each component was measured, by key, from a merged snap's
+   * meta.json. An entry is held to its own component's time where this
+   * gives one: a component measured again after the rest, and its readback
+   * from before that, is stale though the rest are not.
+   */
+  componentsMeasuredAt?: Record<string, string>;
 }
 
 /**
@@ -675,9 +720,8 @@ export interface ReadbackCheckOptions {
  * match, means nothing in the entry can be trusted, its fields and `readAt`
  * included, so that is the one issue reported for it, in that order.
  */
-export function checkReadback(readback: ReadbackFile, { measuredAt }: ReadbackCheckOptions = {}): ReadbackIssue[] {
+export function checkReadback(readback: ReadbackFile, { measuredAt, componentsMeasuredAt }: ReadbackCheckOptions = {}): ReadbackIssue[] {
   const issues: ReadbackIssue[] = [];
-  const measured = measuredAt == null ? NaN : Date.parse(measuredAt);
   // The components under each nodeId. An honest readback reads each one from
   // a set of its own, so an id under two means one component's entries were
   // copied onto another, nodeId and all.
@@ -688,6 +732,8 @@ export function checkReadback(readback: ReadbackFile, { measuredAt }: ReadbackCh
   }
   for (const [component, entry] of Object.entries(readback.components ?? {})) {
     const setId = entry?.nodeId;
+    const own = componentsMeasuredAt?.[component];
+    const measured = Date.parse(own ?? measuredAt ?? "");
     for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
       // An entry that is null is a variant Figma never reported, which the
       // scoring reports as missing; there is nothing to check.
@@ -716,7 +762,7 @@ export function checkReadback(readback: ReadbackFile, { measuredAt }: ReadbackCh
       const readAt = typeof fields.readAt === "string" ? fields.readAt : null;
       const read = readAt == null ? NaN : Date.parse(readAt);
       if (!Number.isFinite(read) || read < measured - READ_AT_SKEW_MS) {
-        issues.push({ component, slug, problem: "stale", readAt });
+        issues.push({ component, slug, problem: "stale", readAt, ...(own != null ? { measuredAt: own } : {}) });
       }
     }
   }
@@ -733,12 +779,61 @@ function unverifiedVerdict(component: string, slug: string, figma: unknown): Var
   };
 }
 
-export function verify(
+export interface VerifyOptions extends ReadbackCheckOptions {
+  /** Components to leave out of the score: see withoutComponents. */
+  skip?: readonly string[];
+}
+
+/**
+ * The snap and the readback without the components `names` gives, each
+ * matched by ID, title, name or title's last segment, ignoring case, as
+ * `--components` matches them, or by its key in the readback. These are
+ * components the user chose not to push, such as a dialog snap measured
+ * closed: the snap still holds them, so verify would count each of their
+ * variants as missing from Figma, and --strict fail on them. A name that
+ * matches nothing throws, as a typo would leave a component in to fail.
+ * No names leaves everything in. Returns the keys it left out.
+ */
+export function withoutComponents(
   snap: SnapResult,
   readback: ReadbackFile,
+  names: readonly string[] | undefined,
+): { snap: SnapResult; readback: ReadbackFile; skipped: string[] } {
+  if (!componentNames(names).length) return { snap, readback, skipped: [] };
+  const components = snap.components ?? [];
+  const readbackKeys = Object.keys(readback.components ?? {});
+  const entries = components.map((c): ComponentEntry => ({ id: c.id ?? componentKey(c), name: c.name, title: c.title }));
+  const chosen = new Set(selectComponents(entries, names, readbackKeys, "--skip"));
+  const left = components.filter((_, i) => chosen.has(entries[i]));
+  const wanted = new Set(componentNames(names).map((n) => n.toLowerCase()));
+  const skipped = new Set(left.map((c) => componentKey(c)));
+  for (const key of readbackKeys) if (wanted.has(key.toLowerCase())) skipped.add(key);
+
+  const kept = components.filter((_, i) => !chosen.has(entries[i]));
+  const variants = left.flatMap((c) => c.variants ?? []);
+  const summary = snap.summary && {
+    ...snap.summary,
+    components: snap.summary.components - left.length,
+    variants: snap.summary.variants - variants.length,
+    rendered: snap.summary.rendered - variants.filter((v) => v.status === "ok").length,
+    failed: snap.summary.failed - variants.filter((v) => v.status !== "ok").length,
+    componentsFailed: snap.summary.componentsFailed - left.filter((c) => c.error != null).length,
+  };
+  const readbackComponents = Object.fromEntries(Object.entries(readback.components ?? {}).filter(([key]) => !skipped.has(key)));
+  return {
+    snap: { ...snap, components: kept, summary },
+    readback: { ...readback, components: readbackComponents },
+    skipped: [...skipped].sort(),
+  };
+}
+
+export function verify(
+  snapIn: SnapResult,
+  readbackIn: ReadbackFile,
   tolerance: number,
-  options: ReadbackCheckOptions = {},
+  options: VerifyOptions = {},
 ): VerifyResult {
+  const { snap, readback, skipped } = withoutComponents(snapIn, readbackIn, options.skip);
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
 
@@ -767,6 +862,10 @@ export function verify(
       if (!measured?.has(slug)) unmeasuredInFigma.push({ component, slug });
     }
   }
+  // Of those, whole components the snap never mentions: what a snap re-run
+  // for some components, without --merge, leaves out of a push it scores.
+  const inSnap = new Set((snap.components ?? []).map((c) => componentKey(c)));
+  const componentsNotInSnap = Object.keys(readbackComponents).filter((component) => !inSnap.has(component));
 
   const propertiesMatched = verdicts.reduce((n, v) => n + v.matched, 0);
   const propertiesCompared = propertiesMatched + verdicts.reduce((n, v) => n + v.mismatched, 0);
@@ -809,6 +908,10 @@ export function verify(
     );
   }
 
+  const caveats = (snap.components ?? [])
+    .filter((component) => readbackComponents[componentKey(component)] != null)
+    .flatMap(scoreCaveats);
+
   return {
     version: READBACK_SCHEMA_VERSION,
     fidelity: propertiesCompared > 0 ? propertiesMatched / propertiesCompared : null,
@@ -830,10 +933,37 @@ export function verify(
     },
     snapIssues,
     snapWarnings,
+    caveats,
+    componentsNotInSnap,
+    skipped,
     unmeasuredInFigma,
     readbackIssues,
     variants: verdicts,
   };
+}
+
+/**
+ * What snap warned about one component's measurement that a score of it
+ * can't show: see VerifyResult.caveats. The measured element comes from the
+ * warnings snap wrote, and the rest from the measurements themselves.
+ */
+export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
+  const key = componentKey(component);
+  const caveats: ScoreCaveat[] = [];
+  const seen = new Set<string>();
+  for (const warning of component.warnings ?? []) {
+    const note = parseMeasurementWarning(warning);
+    if (!note || seen.has(note.kind + note.element)) continue;
+    seen.add(note.kind + note.element);
+    caveats.push({ component: key, kind: note.kind, element: note.element });
+  }
+  if (detectIdenticalVariants(component.variants ?? [])) caveats.push({ component: key, kind: "identical-variants" });
+  // A VARIANT's only: a boolean's Figma default is false whatever its
+  // default, as React's is for a boolean left out, so one assumed there
+  // changes nothing in Figma, and every optional boolean has one.
+  const assumed = (component.variantProperties ?? []).filter((p) => p.defaultAssumed && p.type === "VARIANT").map((p) => p.name);
+  if (assumed.length) caveats.push({ component: key, kind: "default-assumed", properties: assumed });
+  return caveats;
 }
 
 // --- Loading -----------------------------------------------------------------
@@ -890,7 +1020,7 @@ export function readSnapAge(
 ): SnapAgeInfo {
   const metaPath = join(dirname(snapPath), SNAP_META_FILENAME);
 
-  let meta: { measuredAt?: unknown; storybookUrl?: unknown };
+  let meta: { measuredAt?: unknown; storybookUrl?: unknown; componentsMeasuredAt?: unknown };
   try {
     meta = JSON.parse(readFileSync(metaPath, "utf8"));
   } catch (err) {
@@ -919,12 +1049,18 @@ export function readSnapAge(
   }
 
   const ageMs = Math.max(0, now - measured);
+  // Only times that are times: a component with none is held to measuredAt.
+  const times = typeof meta.componentsMeasuredAt === "object" && meta.componentsMeasuredAt !== null
+    ? Object.fromEntries(Object.entries(meta.componentsMeasuredAt as Record<string, unknown>)
+      .filter((pair): pair is [string, string] => typeof pair[1] === "string" && Number.isFinite(Date.parse(pair[1]))))
+    : null;
   return {
     known: true,
     measuredAt: meta.measuredAt,
     ageMs,
     storybookUrl: typeof meta.storybookUrl === "string" ? meta.storybookUrl : undefined,
     stale: maxAgeMs != null && ageMs > maxAgeMs,
+    ...(times ? { componentsMeasuredAt: times } : {}),
   };
 }
 

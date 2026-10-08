@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
+  parseMeasurementWarning,
 } from "../snap.js";
+import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
 
@@ -799,7 +801,21 @@ test("describeMeasurementNotes: a layout wrapper says how to point snap at the c
   assert.match(warnings[0], /^snap measured div, which holds 2 elements and draws nothing itself/);
   assert.match(warnings[0], /rather than Switch in 2 of 3 measured variants\./);
   assert.match(warnings[0], /data-slot="switch"/);
+  // Measured again with --components alone, styles.json held Switch alone,
+  // and verify scored a push of one component.
+  assert.match(warnings[0], /measure it by itself into this snap with --components, --selector and --merge \(without --merge, styles\.json would hold Switch alone\)\./);
   assert.deepEqual(describeMeasurementNotes("Switch", [], 3), []);
+});
+
+test("parseMeasurementWarning: reads back the element a measurement warning names, and nothing else", () => {
+  const [trigger] = describeMeasurementNotes("Dialog", [
+    { slug: "default", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+  ], 1, "Overlays/Dialog");
+  assert.deepEqual(parseMeasurementWarning(trigger), { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' });
+  const [wrapper] = describeMeasurementNotes("Switch", [{ slug: "a", note: { kind: "layout-wrapper", element: "div", children: 3 } }], 2);
+  assert.deepEqual(parseMeasurementWarning(wrapper), { kind: "layout-wrapper", element: "div", children: 3 });
+  assert.equal(parseMeasurementWarning(describeNoOpProperties(["asChild"])!), null);
+  assert.equal(parseMeasurementWarning("the browser could not render \"Inter\""), null);
 });
 
 // --- a run that is stopped ---
@@ -1094,5 +1110,186 @@ test("ScreenshotStage: what it staged goes with the process when it exits part-w
   } finally {
     rmSync(out, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ScreenshotStage: drops what it staged for one component, leaving the others", () => {
+  const dir = tempDir();
+  const button = { id: "forms-button", name: "Button", title: "Forms/Button" } as never;
+  const card = { id: "forms-card", name: "Card", title: "Forms/Card" } as never;
+  try {
+    const stage = new ScreenshotStage(dir);
+    stage.write(button, "size-sm", Buffer.from("first try"));
+    stage.write(card, "default", Buffer.from("card"));
+    stage.drop(button);
+    stage.commit();
+    assert.equal(existsSync(join(dir, "forms-button")), false);
+    assert.equal(readFileSync(join(dir, "forms-card", "default.png"), "utf8"), "card");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a component measured again after a relaunch keeps none of its first attempt's screenshots", async () => {
+  // Its first attempt's PNG stayed staged, and was committed over the last
+  // run's although the second attempt took none and styles.json no longer
+  // pointed to it.
+  const dir = tempDir();
+  const earlier = join(dir, "forms-a", "default.png");
+  mkdirSync(dirname(earlier), { recursive: true });
+  writeFileSync(earlier, "earlier png");
+  try {
+    const first = { connected: true };
+    const page = screenshotPage(() => { first.connected = false; });
+    const browsers = [
+      { isConnected: () => first.connected, newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+      stubBrowser(),
+    ];
+    const result = await runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+      storybook: { listComponents: async () => [{ id: "forms-a", name: "A" }], getComponent: THREE_COMPONENTS.getComponent } as never,
+      launch: async () => ({ via: "stub", browser: browsers.shift() }) as never,
+    });
+    assert.notEqual(result.components[0].variants[0].status, "ok");
+    assert.equal(result.components[0].variants[0].screenshot, undefined);
+    assert.equal(readFileSync(earlier, "utf8"), "earlier png");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: the browser is closed before the screenshots and styles.json are written", async () => {
+  // A signal while it closed, after the screenshots were moved in, left them
+  // beside the last run's styles.json.
+  const dir = tempDir();
+  try {
+    const page = screenshotPage();
+    const seen: string[] = [];
+    await runSnap(options(dir, { screenshots: true, selector: "#storybook-root > div" }), {
+      storybook: { listComponents: async () => [{ id: "forms-a", name: "A" }], getComponent: THREE_COMPONENTS.getComponent } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: {
+          newContext: async () => ({ newPage: async () => page, close: async () => {} }),
+          close: async () => { seen.push(readdirSync(dir).join(",")); },
+        },
+      }) as never,
+    });
+    assert.deepEqual(seen, [""]);
+    assert.ok(existsSync(join(dir, "forms-a", "default.png")));
+    assert.ok(existsSync(join(dir, "styles.json")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- --merge ---
+
+/** Three components with no props; each run's stories are named `story`, so a run can be told by them. */
+function mergeStorybook(story: string) {
+  return {
+    listComponents: async () => ["a", "b", "c"].map((x) => ({ id: `forms-${x}`, name: x.toUpperCase(), title: `Forms/${x.toUpperCase()}` })),
+    getComponent: async (id: string) => ({ name: id, props: [], stories: [{ id: `${id}--${story}`, name: story }] }),
+  };
+}
+
+async function snapAt(dir: string, story: string, at: string, overrides: Partial<SnapOptions> = {}) {
+  return runSnap(options(dir, overrides), {
+    storybook: mergeStorybook(story) as never,
+    launch: async () => ({ via: "stub", browser: stubBrowser() }) as never,
+    now: () => Date.parse(at),
+  });
+}
+
+const readJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+
+test("runSnap --merge: measures only the components named and keeps the rest of the snap, with each one's time", async () => {
+  // Re-run for some components alone, snap wrote a styles.json of those
+  // alone, and verify then scored a push of every component on them.
+  const dir = tempDir();
+  try {
+    await snapAt(dir, "first", "2026-10-01T10:00:00.000Z");
+    const merged = await snapAt(dir, "second", "2026-10-01T11:00:00.000Z", { components: ["forms-b"], merge: true });
+    assert.deepEqual(merged.components.map((c) => [c.title, c.storyId]), [
+      ["Forms/A", "forms-a--first"], ["Forms/B", "forms-b--second"], ["Forms/C", "forms-c--first"],
+    ]);
+    assert.equal(merged.summary.components, 3);
+    assert.deepEqual(readJson(join(dir, "styles.json")), JSON.parse(JSON.stringify(merged)));
+    const meta = readJson(join(dir, "meta.json"));
+    // As old as its oldest component.
+    assert.equal(meta.measuredAt, "2026-10-01T10:00:00.000Z");
+    assert.equal(meta.components, 3);
+    assert.deepEqual(meta.componentsMeasuredAt, {
+      "Forms/A": "2026-10-01T10:00:00.000Z", "Forms/B": "2026-10-01T11:00:00.000Z", "Forms/C": "2026-10-01T10:00:00.000Z",
+    });
+
+    // Merged again, each keeps the time it was measured, and the snap is
+    // as old as whichever is now oldest.
+    await snapAt(dir, "third", "2026-10-01T12:00:00.000Z", { components: ["Forms/A", "C"], merge: true });
+    const again = readJson(join(dir, "meta.json"));
+    assert.equal(again.measuredAt, "2026-10-01T11:00:00.000Z");
+    assert.deepEqual(again.componentsMeasuredAt, {
+      "Forms/A": "2026-10-01T12:00:00.000Z", "Forms/B": "2026-10-01T11:00:00.000Z", "Forms/C": "2026-10-01T12:00:00.000Z",
+    });
+
+    // A run of every component, without --merge, is one time again.
+    await snapAt(dir, "fourth", "2026-10-01T13:00:00.000Z");
+    const whole = readJson(join(dir, "meta.json"));
+    assert.equal(whole.measuredAt, "2026-10-01T13:00:00.000Z");
+    assert.equal(whole.componentsMeasuredAt, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap --merge: refuses a snap it can't add to honestly, before measuring anything, and writes nothing", async () => {
+  const dir = tempDir();
+  const refuse = async (pattern: RegExp, overrides: Partial<SnapOptions> = {}) => {
+    const before = existsSync(join(dir, "styles.json")) ? readFileSync(join(dir, "styles.json"), "utf8") : null;
+    await assert.rejects(
+      () => runSnap(options(dir, { components: ["forms-b"], merge: true, ...overrides }), { storybook: mergeStorybook("x") as never, launch: launchShouldNotHappen }),
+      (err: unknown) => pattern.test(String(err)) || assert.fail(String(err)),
+    );
+    assert.equal(existsSync(join(dir, "styles.json")) ? readFileSync(join(dir, "styles.json"), "utf8") : null, before);
+  };
+  try {
+    await refuse(/--merge adds to the snap in .*, but .*styles\.json doesn't exist\. Run snap without --merge/);
+    await snapAt(dir, "first", "2026-10-01T10:00:00.000Z");
+    await refuse(/which were measured with --variants representative: pass the same/, { variants: "all" });
+    await refuse(/which were measured from http:\/\/localhost:6006, not http:\/\/localhost:6007/, { storybookUrl: "http://localhost:6007" });
+    // A trailing slash is the same Storybook.
+    await runSnap(options(dir, { components: ["forms-b"], merge: true, storybookUrl: "http://localhost:6006/" }), {
+      storybook: mergeStorybook("x") as never, launch: async () => ({ via: "stub", browser: stubBrowser() }) as never,
+    });
+
+    const styles = readJson(join(dir, "styles.json"));
+    writeFileSync(join(dir, "styles.json"), JSON.stringify({ ...styles, storysyncVersion: "0.3.0" }));
+    await refuse(new RegExp(`storysync 0\\.3\\.0 measured them, not ${VERSION.replace(/\./g, "\\.")}`));
+    writeFileSync(join(dir, "styles.json"), JSON.stringify(styles));
+
+    rmSync(join(dir, "meta.json"));
+    await refuse(/meta\.json doesn't exist, so how old they are is unknown\. Run snap without --merge/);
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ version: 1 }));
+    await refuse(/meta\.json has no measuredAt, so how old they are is unknown/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap --merge: two components sharing a key are warned about across the whole snap, once", async () => {
+  const dir = tempDir();
+  try {
+    const twice = {
+      listComponents: async () => [
+        { id: "forms-a", name: "A", title: "Forms/A" }, { id: "forms-a2", name: "A", title: "Forms/A" }, { id: "forms-b", name: "B", title: "Forms/B" },
+      ],
+      getComponent: async (id: string) => ({ name: id, props: [], stories: [{ id: `${id}--default`, name: "Default" }] }),
+    };
+    const launch = async () => ({ via: "stub", browser: stubBrowser() }) as never;
+    await runSnap(options(dir), { storybook: twice as never, launch });
+    const merged = await runSnap(options(dir, { components: ["forms-a2"], merge: true }), { storybook: twice as never, launch });
+    const shared = merged.components.map((c) => c.warnings.filter((w) => /share the key/.test(w)).length);
+    assert.deepEqual(shared, [1, 1, 0]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

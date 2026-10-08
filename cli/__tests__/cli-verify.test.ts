@@ -300,3 +300,76 @@ test("verify CLI: a readback read before the snap fails --strict as stale, and o
   assert.equal(none.status, 1, none.out);
   assert.match(none.out, /readback entry is stale: it has no readAt, so when Figma read it is unknown/);
 });
+
+test("verify CLI: a push scored on a snap re-run for some components alone fails --strict, naming the rest", () => {
+  // The push's timeout advice re-ran snap with --components, which wrote a
+  // styles.json of those alone: verify --strict-age then scored the push at
+  // 100% with a drifted Button left out.
+  const card = snap({}, { name: "Card", title: "Forms/Card" });
+  const button = readback({ ...MATCHING, backgroundColor: "#ff00ff" }).components["Forms/Button"];
+  const cardEntry = readback(MATCHING).components["Forms/Button"];
+  const r = verifyMeasuredAt("2026-10-01T11:59:00.000Z", card, { version: 1, components: { "Forms/Card": { ...cardEntry, nodeId: "1:2" }, "Forms/Button": { ...button, nodeId: "3:4", variants: { a: { ...button.variants.a, checksum: readbackChecksum("3:4", "a", { ...MATCHING, backgroundColor: "#ff00ff", readAt: READ_AT }) } } } } }, "--strict-age", "--max-age", "1000d");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /! Forms\/Button is in the readback but not in the snap, so none of it was scored: another snap run measured it, or none did\. Measure it into this snap with `snap --components "Forms\/Button" --merge`, or run the whole snap again\./);
+  assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: --skip leaves a component the user chose not to push out of --strict, and says so under the score", () => {
+  // Skipped at the push's question about a closed trigger, the dialog stayed
+  // in styles.json, and verify --strict failed on its variants as missing.
+  const two = snap();
+  two.components.push({ ...two.components[0], id: "ui-base-dialog", name: "Dialog", title: "ui/base/Dialog" } as never);
+  const without = verify(two, readback(MATCHING), "--strict");
+  assert.equal(without.status, 1, without.out);
+  assert.match(without.out, /ui\/base\/Dialog a not found in Figma/);
+
+  const r = verify(two, readback(MATCHING), "--strict", "--skip", "ui-base-dialog");
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.equal(lines[at + 1], "  Left out of the score, as --skip asked: ui/base/Dialog");
+  assert.doesNotMatch(r.out, /not found in Figma/);
+
+  const typo = verify(two, readback(MATCHING), "--strict", "--skip", "Dialgo");
+  assert.equal(typo.status, 1, typo.out);
+  assert.match(typo.out, /--skip matched no component named "Dialgo"/);
+});
+
+test("verify CLI: what snap warned about a scored component is said beside the score, and fails nothing", () => {
+  const warning = "snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, rather than Dialog. What it opens renders only while open.";
+  const r = verify(
+    snap({}, { warnings: [warning], variantProperties: [{ name: "size", type: "VARIANT", values: ["md"], defaultValue: "md", defaultAssumed: true }] }),
+    readback(MATCHING), "--strict",
+  );
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.deepEqual(lines.slice(at + 1, at + 4), [
+    "  ! The score compares Figma with what snap measured, and snap warned about that for this component:",
+    "      Forms/Button: snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, so this scores the trigger, not what it opens",
+    "      Forms/Button: Storybook's docs give no default for `size`, so the default variant in Figma is a guess",
+  ]);
+});
+
+test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
+  try {
+    const two = snap();
+    two.components.push({ ...two.components[0], name: "Card", title: "Forms/Card" });
+    writeFileSync(join(dir, "styles.json"), JSON.stringify(two));
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({
+      measuredAt: "2026-10-01T11:00:00.000Z",
+      componentsMeasuredAt: { "Forms/Button": "2026-10-01T11:00:00.000Z", "Forms/Card": "2026-10-01T13:00:00.000Z" },
+    }));
+    const button = readback(MATCHING).components["Forms/Button"];
+    const card = { ...button, nodeId: "3:4", variants: { a: { ...MATCHING, readAt: READ_AT, checksum: readbackChecksum("3:4", "a", { ...MATCHING, readAt: READ_AT }) } } };
+    writeFileSync(join(dir, "readback.json"), JSON.stringify({ version: 1, components: { "Forms/Button": button, "Forms/Card": card } }));
+    const r = spawnSync(process.execPath, [CLI, "verify", "--snap", join(dir, "styles.json"), "--readback", join(dir, "readback.json"), "--strict", "--max-age", "1000d"], { encoding: "utf8" });
+    const out = `${r.stdout}${r.stderr}`.replace(/\u001b\[[0-9;]*m/g, "");
+    assert.equal(r.status, 1, out);
+    assert.match(out, /Forms\/Card a readback entry is stale: Figma read it at 2026-10-01T12:00:00\.000Z, before the snap was measured at 2026-10-01T13:00:00\.000Z/);
+    assert.doesNotMatch(out, /Forms\/Button a readback entry/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

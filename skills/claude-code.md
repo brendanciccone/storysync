@@ -8,7 +8,9 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 - Storybook MCP: `claude mcp add --transport http storybook http://localhost:6006/mcp`
 - Figma MCP: `claude plugin install figma@claude-plugins-official` (or `claude mcp add --transport http figma https://mcp.figma.com/mcp`)
 - Figma Full seat (Dev seats are read-only)
-- storysync 0.4.0 or later, run as `npx storysync` — 0.3.0 has no token `px`, component `id` or `--exclude-props`, and 0.2.0 and earlier have no `snap` or `verify`
+- storysync 0.4.0 or later, run as `npx storysync` — 0.3.0 has no token `px`, component `id`, `--exclude-props` or `--merge`, and 0.2.0 and earlier have no `snap` or `verify`
+- If storysync says Storybook has no MCP endpoint (`answered HTTP 404`, with ``Run `storysync init`, then restart Storybook``), ask the user to run `npx storysync init`, which asks before each change it makes, and then to restart Storybook. If its install fails, it prints the command to run by hand after `Run manually:`: pass that line on rather than retrying.
+- The CLI's own `storysync diff` can't sign in to Figma, so against `https://mcp.figma.com/mcp` it fails with HTTP 401 by design. Audit with the Audit section below instead, through your client's `use_figma`, and don't retry it.
 
 ## Tokens
 
@@ -83,10 +85,10 @@ use_figma({
 
 ## Components
 
-1. **List and map components** — run storysync to read Storybook components and compute variant mappings:
+1. **Count the components, and agree on what to push.** List them first. This reads only Storybook's list of components, so it takes seconds:
 
 ```bash
-npx storysync map --storybook http://localhost:6006 --json
+npx storysync list --storybook http://localhost:6006 --json
 ```
 
 This outputs:
@@ -94,25 +96,16 @@ This outputs:
 ```json
 {
   "components": [
-    {
-      "id": "forms-button",
-      "name": "Button",
-      "title": "Forms/Button",
-      "category": "Forms",
-      "variantProperties": [
-        { "name": "variant", "type": "VARIANT", "values": ["default", "destructive", "outline"], "defaultValue": "default" },
-        { "name": "size", "type": "VARIANT", "values": ["md", "sm", "lg"], "defaultValue": "md" },
-        { "name": "disabled", "type": "BOOLEAN", "values": ["true", "false"], "defaultValue": "false" }
-      ],
-      "combinations": 18,
-      "capped": false
-    }
-  ],
-  "summary": { "total": 5, "mapped": 5, "failed": 0, "capped": 0, "totalCombinations": 42 }
+    { "id": "forms-button", "name": "Button", "title": "Forms/Button", "category": "Forms", "storyIds": ["forms-button--default"] }
+  ]
 }
 ```
 
 The `title` is the component's Storybook title, and `category` its place in Storybook's sidebar (the part of `Forms/Button` before the last `/`). Use them to organize the Figma file — see step 4 below. `id` is Storybook's ID for the component, which no other component shares, where a `name` can be: `--components` and `inspect` take a title or an ID as well as a name.
+
+   Step 3 reads each component's docs and renders every variant in a browser, which takes several seconds a component, and more on a busy Storybook: 134 components took about 17 minutes. **If there are more than about 20 components, stop and ask the user what to push before measuring anything:** all of them, some categories (name each with how many components it has), or some components. Pass what they choose to step 3 as `--components`, by ID. With 20 or fewer, push them all.
+
+   If a command fails because Storybook didn't answer in time (an error naming `--connect-timeout`), a busy or shared Storybook is slow rather than down: run it again with `--connect-timeout 180000`.
 
 2. **Inspect individual components** — for detailed prop-to-variant mapping of a specific component:
 
@@ -120,13 +113,24 @@ The `title` is the component's Storybook title, and `category` its place in Stor
 npx storysync inspect --storybook http://localhost:6006 --component Button
 ```
 
+   `npx storysync map --storybook http://localhost:6006 --json` maps every component's variant properties without rendering anything. The push doesn't need it: snap's output carries the same `id`, `title`, `category` and `variantProperties`, and a map first would read every component's docs twice.
+
 3. **REQUIRED — Measure the styling. Do not infer it.** Do not proceed to step 5 without concrete values. A `use_figma` call containing only variant names produces a useless component library.
 
 ```bash
-npx storysync snap --storybook http://localhost:6006 --variants all --json
+mkdir -p .storysync
+STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --variants all --json > .storysync/snap-out.json 2> .storysync/snap-progress.log; echo "exit $?" >> .storysync/snap-progress.log
 ```
 
-   This renders each variant in a real browser and reports what the browser actually computed, so the values are measured rather than guessed. This measures **every combination** of the component's variant props, so every Figma variant you build is measured rather than guessed. **Build one Figma variant per snap variant, whatever its status** — a Figma component set needs every combination to exist, or the variant picker has nothing to switch to. **If a component carries a `cap` field** (its combinations exceed the limit, 256 by default), snap measured only a subset and warned about it; the cap's `uncovered` list names any values that subset left out entirely. **Stop and ask the user before building that component.** Tell them its total and the limit, and offer: build the measured subset; re-run snap with `--max-combinations <total>` to measure all of them (very large component sets get slow in Figma); or narrow which props are variants: re-run snap with `--exclude-props` naming the props that don't change how it looks, such as `modal` or `loop`, which leaves them out of every component. Do not offer to fill the unmeasured combinations in from source: they can be measured by raising the limit, and a value the tool can read must never be guessed. Do not choose for them. Run it *now*, in this session — do not reuse a `styles.json` from an earlier run, which may describe code that has since changed.
+   Add `--components` with the IDs step 1 agreed on, unless the user chose every component. This renders each variant in a real browser and reports what the browser actually computed, so the values are measured rather than guessed. This measures **every combination** of the component's variant props, so every Figma variant you build is measured rather than guessed. **Build one Figma variant per snap variant, whatever its status** — a Figma component set needs every combination to exist, or the variant picker has nothing to switch to. **If a component carries a `cap` field** (its combinations exceed the limit, 256 by default), snap measured only a subset and warned about it; the cap's `uncovered` list names any values that subset left out entirely. **Stop and ask the user before building that component.** Tell them its total and the limit, and offer: build the measured subset; measure it again with `--components <its ID> --merge --max-combinations <total>` to measure all of them (very large component sets get slow in Figma); or narrow which props are variants: re-run snap with `--exclude-props` naming the props that don't change how it looks, such as `modal` or `loop`, which leaves them out of every component. Do not offer to fill the unmeasured combinations in from source: they can be measured by raising the limit, and a value the tool can read must never be guessed. Do not choose for them. Run it *now*, in this session — do not reuse a `styles.json` from an earlier run, which may describe code that has since changed.
+
+   **Run it in the background, and check how it ended before building.** An agent's shell stops a command after a few minutes (Claude Code's Bash tool after 2 by default, and 10 at most), and snap stopped part-way writes nothing. So start the command above in the background (`run_in_background` in Claude Code, or wrapped in `( ... ) &` elsewhere), as any storysync command that may take more than a minute or two. `STORYSYNC_PROGRESS=1` makes it log a line per component and variant, such as `snap 12/134 UI Base/Command, variant 3/32`: check on it with `tail -n 1 .storysync/snap-progress.log` until the last line is its `exit` code. Claude Code also tells you when a background command ends, so there you can wait for that, then read the last line.
+
+   - `exit 0`: it finished, and wrote `.storysync/snaps/styles.json` and `meta.json`.
+   - `exit 1`: it failed, with the reason as `{"error": ...}` in `.storysync/snap-out.json`: Storybook unreachable or too slow (raise `--connect-timeout`, as step 1 says), a `--components` name that matches nothing, a `--merge` it refused (below), or the browser closing twice. An option it can't take, such as a `--timeout` that isn't a number, is said in the progress log instead.
+   - `exit 130`, `143` or `129`: it was stopped, by Ctrl-C, SIGTERM (a command timeout, say) or SIGHUP, and the log says so.
+
+   After any exit but 0, the `styles.json` and `meta.json` in `.storysync/snaps` are an earlier run's: never build from them. Deal with what it said, and run it again in the background. After `exit 0`, check too that `meta.json` is this run's: its `measuredAt` is after you started it, or, after a `--merge`, which keeps `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is. Read the measurements from `.storysync/snaps/styles.json` on disk, a component at a time (with `jq` or `node`, say): `snap-out.json` holds the same JSON on one line, which tools cut short.
 
    The output gives, per component, full styles for a base variant plus only the properties each other variant changes:
 
@@ -186,11 +190,57 @@ npx storysync snap --storybook http://localhost:6006 --variants all --json
    - **Figma's plugin context has only Google Fonts.** `listAvailableFontsAsync` returns Google families and nothing else — no Arial, no Helvetica, no SF Pro, no Segoe UI, no Menlo. A designer sees those in the desktop app's picker because it reads their *local* system fonts, but the environment `use_figma` runs in does not have them, and `figma.loadFontAsync` throws on one. So load every text layer's font with the build template's `loadFont(family, weight)`, which never fails the part over a font: it loads the measured family where Figma has it, and otherwise a stand-in at the measured weight, Roboto Mono for a monospace face (Menlo, Monaco, Consolas, `ui-monospace`, `monospace`), Noto Serif for a serif one (Georgia, `ui-serif`, `serif`) and Inter for any other. A weight the family lacks loads as the next one toward Regular, as Roboto Mono, which stops at Bold, sets 800 in Bold: that is a stand-in too, which `verify` scores as `fontWeight` drift. The part returns each stand-in it used in `fonts`, such as `{ "system-ui 600": "Inter Semi Bold", "Menlo 400": "Roboto Mono Regular" }`. Name every one in the summary. A CSS keyword, such as `system-ui`, `sans-serif` or `ui-sans-serif`, is the platform's own font, which no Figma font is named after (a system stack like Tailwind's default `-apple-system, BlinkMacSystemFont, ...` measures as `system-ui`), and `verify` does not score it, so its stand-in is not drift. A platform face such as Menlo or SF Pro is scored, so its stand-in shows as `fontFamily` drift no edit in Figma can fix: report it as the substitution it is; the real face is the user's to install or map in the desktop app.
    - **`fontAvailable: false` means the measurement describes a substituted typeface.** `fontFamily` is the family the browser drew with, except a named font it could not load that the stack lists before any system keyword (such as `-apple-system` or `ui-monospace`), which is recorded as the code *asked for* it, with `fontAvailable: false`: the geometry and text you measured are not the intended font's. Say so in the summary. If Figma also lacks the font, name it explicitly — "Figma has no *Inter*; install it or map it" — rather than letting it surface as unexplained text drift. storysync cannot install fonts into Figma; that is a manual step in the desktop app.
 
-   **Variants where `status` is not `"ok"` were not measured.** A `timeout` loading the story was already tried twice; a busy Storybook times out stories that render, so first re-run `snap` for those components with `--components` and a longer `--timeout`, such as 30000. Only for what still fails, fall back to reading the component's source (`.tsx`/`.jsx`, CSS modules, styled-components, inline styles, `cva`/`clsx`/`cn` calls) and resolve any design tokens through `npx storysync tokens --json` or the project's own config — never from a memorized class-to-value table, which is wrong for any project with a custom palette.
+   **Variants where `status` is not `"ok"` were not measured.** A `timeout` loading the story was already tried twice; a busy Storybook times out stories that render, so first measure those components again, in the background as above, adding `--components <their IDs> --merge` and a longer `--timeout`, such as 30000, to the same command. `--merge` measures only those and merges them into `.storysync/snaps/styles.json`, keeping every other component as it was measured, and gives `meta.json` each component's own time, in `componentsMeasuredAt`, with `measuredAt` the oldest of them, so `verify --strict-age` judges the snap by its oldest part; it refuses a snap it can't add to, such as one taken with another `--storybook` or `--variants`. Never re-measure some components with `--components` alone: that writes a `styles.json` of those alone, and step 6's `verify` would score only them. Only for what still fails, fall back to reading the component's source (`.tsx`/`.jsx`, CSS modules, styled-components, inline styles, `cva`/`clsx`/`cn` calls) and resolve any design tokens through `npx storysync tokens --json` or the project's own config — never from a memorized class-to-value table, which is wrong for any project with a custom palette.
 
    **Every fallback must be recorded, not just mentioned.** In step 6 you will write a `source` of `"measured"` or `"inferred"` for each variant. A run inspected later must be able to tell the difference without reading this conversation. So must an audit tell which props you left out with `--exclude-props`: pass the same list to every `snap` you run for this push, re-runs included, and name those props in the summary (step 7). snap records them as `excludeProps` in `styles.json`, where an audit reads them, and a run without the flag measures them again and drops that record.
 
-   **Checkpoint before step 5**: every variant has either measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` will have warned that the story is not passing its args through — still write the measured values and label them `measured` — they are what the story actually renders — and say so in the summary. Do not substitute values from source: the fix belongs in the story, and a variant styled from source would be scored against a measurement it does not match. The same goes for a warning that snap measured a closed trigger (a dialog, popover, menu or tooltip whose content renders only while open) or a layout wrapper rather than the component, or that a prop's values all measured the same: build what was measured, and name each in the summary with the fix the warning gives.
+   **Checkpoint before step 5**: every variant has either measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` will have warned that the story is not passing its args through — still write the measured values and label them `measured` — they are what the story actually renders — and say so in the summary. Do not substitute values from source: the fix belongs in the story, and a variant styled from source would be scored against a measurement it does not match. The same goes for a warning that a prop's values all measured the same: build what was measured, and name it in the summary with the fix the warning gives.
+
+   **Stop and ask about every component snap measured as something else.** When snap warns that it measured a closed trigger (a dialog, popover, sheet, menu or tooltip whose content renders only while open) or a layout wrapper rather than the component, the Figma component would be that trigger or wrapper, and `verify` would score it as faithful. Before building any of them, ask the user once, listing each such component with the element snap measured, which they want:
+
+   - **Build what was measured**, and say so: in the summary, and in Figma, on a line of each such set's description that starts `storysync:`, which the template below sets after the build.
+   - **Skip them**, naming them in the summary as not pushed. They stay in `styles.json`, so give their IDs to step 6's `verify` as `--skip`, which leaves them out of the score and names them under it. Without it, `verify` lists each of their variants as missing from Figma, which is no reason to build them.
+   - **Stop**, so they can give each a story that renders it open (with `defaultOpen`, say) or on its own, as the warning says. Then measure those again with `--components <their IDs> --merge`, as above.
+
+   Ask it in the same message as any cap question, and do not choose for them. Never style such a component from source instead: it would be scored against a measurement it does not match.
+
+   **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger.
+
+```js
+use_figma({
+  code: `
+    // Says on each set what snap measured, on the line of its description
+    // that starts with MARK, and keeps every other line, a designer's own
+    // included. An empty note removes the line an earlier push left.
+    const MARK = 'storysync:';
+    const NOTES = {
+      '12:34': 'measured from its closed trigger, button[data-slot="dialog-trigger"], not the open dialog',
+      '12:56': '',
+      // ... one entry per set this push built, by the id step 5 returned
+    };
+    const NL = String.fromCharCode(10);
+    const changed = [];
+    for (const [id, note] of Object.entries(NOTES)) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node || (node.type !== 'COMPONENT_SET' && node.type !== 'COMPONENT')) {
+        throw new Error('No component set or component has the id ' + id);
+      }
+      const lines = node.description ? node.description.split(NL).filter((line) => !line.startsWith(MARK)) : [];
+      if (note) lines.push(MARK + ' ' + note);
+      const description = lines.join(NL);
+      if (description !== node.description) {
+        node.description = description;
+        changed.push(id);
+      }
+    }
+    return JSON.stringify({ changed });
+  `,
+  description: "Label the sets measured from a closed trigger or a layout wrapper in their descriptions",
+  fileKey: "<file-key>",
+  skillNames: "figma-use"
+})
+```
+
 4. **Organize the Figma file by Storybook hierarchy.** Create one Figma page per `category`, the whole of it (e.g. `Forms`, `Data Display`, `ui/base`). Components without a category go on a `Components` page. Place each component set on its category's page, named by the last segment of its `title`, the name Storybook's sidebar shows (`Button` for `Forms/Button`, and `Tooltip` for `ui/base/Tooltip` though its `name` is `TooltipContent`), or by its `name` when it has no title. This mirrors the Storybook sidebar so designers can find things where they expect them, and keeps apart components that share a name: `ui/base/Button` and `ui/radix/Button` go to the pages `ui/base` and `ui/radix`. Step 5's template finds a category's page ignoring case, spaces, `/`, `-` and `_`, so a page an earlier push named `UI Base` is still the page for `ui/base`. A set an earlier push named by a component's `name`, where that differs, is left as it is: name it in the summary.
 
 5. Write to Figma with `use_figma`. The instruction MUST embed the measured values from step 3 — every variant needs a concrete fill, text color, padding, radius, border, font size, and shadow. A call that only references variant names is a bug; refuse it and re-read the snap output.
@@ -793,11 +843,11 @@ use_figma({
 npx storysync verify --strict-age
 ```
 
-   This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement.
+   This reports a fidelity score — the share of properties Figma agrees with — plus anything that drifted, any variant Figma never received, the provenance breakdown, and the age of the measurement. Add `--skip` with the IDs of any component the user chose not to push (step 3), or whose set you skipped for its auto layout (step 5), as in `--skip ui-base-dialog,ui-base-sheet`: `verify` leaves them out of the score and names them under it, where otherwise it lists each of their variants as missing from Figma.
 
-   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, so re-run `snap` rather than changing Figma. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
+   Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, not Figma: where it names a component's error, measure that component again (step 3, with `--merge`), and where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, components grouped by page, variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, any component snap warned it measured as a closed trigger or a layout wrapper, every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
+7. Summarize what was synced: token collections created, components grouped by page, variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
 
 ## Variable binding
 
@@ -808,7 +858,7 @@ When token variable collections exist, bind component properties to variables in
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
-A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a color, its `px` for a length. When several variables share the value, as shadcn/ui's `primary` and `sidebar/primary` do, bind the one the component's source names (`bg-primary`, `rounded-md`); if it names none, leave the value unbound and list it in the summary rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured. A translucent color, `#rrggbbaa`, matches a variable of its `#rrggbb` too, as Tailwind's `border-destructive/30` is the `destructive` token at 30%: bind it with the paint's opacity at its alpha, through the build template's `setPaints`, which keeps that opacity where assigning the bound paint would reset it to 1. A shadow's color has no opacity of its own, so `setPaints` binds it only to a variable of its alpha.
+A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a color, its `px` for a length. A translucent color, `#rrggbbaa`, matches a variable of its `#rrggbb` too, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several variables often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them, and 10px is both the default radius and `lg`. Then bind the one the component's source names for that property. Read the classes the variant renders with (its `cva` variant, or its `className`) and take the token from the utility, named as `tokens` names it, with `/` for each `-`: `bg-primary` is `primary` for the fill, `text-primary-foreground` is `primary/foreground` for the text, `border-input` is `input` for the stroke, and `rounded-lg` is the radius `lg`. The source picks only among the variables of the measured value; the value is still snap's. A class with an opacity modifier, such as `bg-destructive/10` or `border-destructive/30`, names its variable at an opacity: snap measures it translucent, `#df22254d` say, which matches `destructive`'s `#df2225`, so bind it to `destructive` with the paint's opacity at its alpha, through the build template's `setPaints`, which keeps that opacity where assigning the bound paint would reset it to 1. A shadow's color has no opacity of its own, so `setPaints` binds it only to a variable of its alpha. If you can't read the source, or it names no variable of that value (an arbitrary value like `bg-[#171717]`, or a class set elsewhere), leave the value unbound and list it in the summary, with the variables it matches, rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
 
 This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 

@@ -714,12 +714,44 @@ runs:
           for (const c of removed) body += "- **" + label(c) + "**\n";
           body += "\n";
         }
+        // What changed in a component whose counts didn't, which the counts
+        // alone leave unsaid: a baseline from storysync 0.3.0 lists values in
+        // the order the type declares them, where map now puts the default
+        // first, and has no defaultAssumed.
+        const why = (b, c) => {
+          const reasons = [];
+          if (b.name !== c.name) reasons.push("name " + b.name + " → " + c.name);
+          const before = new Map(b.variantProperties.map((p) => [p.name, p]));
+          const after = new Map(c.variantProperties.map((p) => [p.name, p]));
+          for (const p of c.variantProperties) if (!before.has(p.name)) reasons.push("adds " + p.name);
+          for (const p of b.variantProperties) if (!after.has(p.name)) reasons.push("drops " + p.name);
+          const both = (x) => x.variantProperties.map((p) => p.name).filter((n) => before.has(n) && after.has(n)).join("\n");
+          if (both(b) !== both(c)) reasons.push("props reordered");
+          for (const p of c.variantProperties) {
+            const o = before.get(p.name);
+            if (!o) continue;
+            if (o.type !== p.type) reasons.push(p.name + " " + o.type + " → " + p.type);
+            const added = p.values.filter((v) => !o.values.includes(v));
+            const dropped = o.values.filter((v) => !p.values.includes(v));
+            if (added.length) reasons.push(p.name + " adds " + added.join(", "));
+            if (dropped.length) reasons.push(p.name + " drops " + dropped.join(", "));
+            if (!added.length && !dropped.length && o.values.join("\n") !== p.values.join("\n")) reasons.push(p.name + "'s values reordered");
+            if (o.defaultValue !== p.defaultValue) reasons.push(p.name + "'s default " + o.defaultValue + " → " + p.defaultValue);
+            if (!!o.defaultAssumed !== !!p.defaultAssumed) reasons.push(p.name + "'s default " + (p.defaultAssumed ? "is now assumed, since the docs give none" : "is no longer assumed"));
+          }
+          if (!!b.capped !== !!c.capped) reasons.push(c.capped ? "now capped" : "no longer capped");
+          if ((b.error ?? null) !== (c.error ?? null)) reasons.push(c.error ? "fails to map" : "no longer fails to map");
+          return reasons;
+        };
+
         if (changed.length) {
           body += "### Changed\n";
           for (const c of changed) {
             const b = baseOf.get(c);
             body += "- **" + label(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
-            body += b.combinations + " → " + c.combinations + " combinations" + (retitled(b, c) ? ", was " + label(b) : "") + "\n";
+            body += b.combinations + " → " + c.combinations + " combinations" + (retitled(b, c) ? ", was " + label(b) : "");
+            const reasons = b.variantProperties.length === c.variantProperties.length && b.combinations === c.combinations ? why(b, c) : [];
+            body += (reasons.length ? " (" + reasons.join("; ") + ")" : "") + "\n";
           }
           body += "\n";
         }
