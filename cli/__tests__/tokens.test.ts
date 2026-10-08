@@ -865,6 +865,26 @@ test("CSS: only @theme variables built from :root are read through it, and :root
   } finally { cleanup(dir); }
 });
 
+test("CSS: an @theme variable built from one both declare is worked out from :root's value", () => {
+  // Tailwind puts @theme's --radius in its theme layer, which :root's
+  // overrides, so rounded-sm renders 4px. @theme's 1rem gave sm 12px next to
+  // a DEFAULT of 8.
+  const dir = makeProject({
+    "app/globals.css": `@theme {
+  --radius: 1rem;
+  --radius-sm: calc(var(--radius) - 4px);
+}
+:root { --radius: 0.5rem; }`,
+  });
+  try {
+    const result = extractTokens(dir, "css");
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens]), [
+      ["radius", [{ name: "DEFAULT", value: "0.5rem", px: 8 }, { name: "sm", value: "calc(0.5rem - 4px)", px: 4 }]],
+    ]);
+    assert.deepEqual(result.warnings, []);
+  } finally { cleanup(dir); }
+});
+
 test("CSS: the warning naming what @theme declares beyond :root names a few of a palette, not all of it", () => {
   const steps = Array.from({ length: 10 }, (_, i) => (i + 1) * 100);
   const dir = makeProject({

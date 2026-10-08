@@ -780,7 +780,8 @@ function refersToRoot(value: string, root: Map<string, string>, declared: Map<st
  * to a `:root` variable are read too, named as `--source tailwind` names
  * them, which leaves every `:root` token's name and value as it was.
  * Colours aren't: `:root` already holds what `@theme`'s point at. A variable
- * `:root` declares itself is read from `:root`, as it wins in the browser.
+ * `:root` declares itself is read from `:root`, and resolved to its `:root`
+ * value, as it wins in the browser.
  * The rest of `@theme`'s tokens are named in a warning, since `--source
  * tailwind` would read them.
  */
@@ -793,7 +794,13 @@ function addRootDerivedTheme(
   const files = findTailwindThemeCSS(projectPath);
   if (!files.length) return;
   const declared = readThemeDeclarations(files, warnings);
+  // :root wins a variable both declare, for what a var() resolves to as for
+  // which token is read: Tailwind puts @theme's variables in its theme
+  // layer, which a :root unlayered or in the base layer overrides. With
+  // @theme winning, `--radius` in both gave DEFAULT :root's value and sm one
+  // worked out from @theme's.
   const vars = themeVars(projectPath, root, declared);
+  for (const [name, value] of root) vars.set(name, value);
   const left = new Map<TokenCategory, string[]>();
   for (const [varName, value] of declared) {
     if (!isThemeTokenName(varName) || root.has(varName)) continue;
