@@ -274,25 +274,43 @@ export function parentKey(k: string): string | null {
 }
 
 /**
+ * Field names a delta may not set: assigning `__proto__` would change the
+ * node's prototype rather than add a fact, giving it a field that reads as
+ * set and that canonicalJson, and so treeDigest, never sees.
+ */
+const UNSAFE_FIELDS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
  * A variant's nodes: the base's, changed as its delta says, in the delta's
  * order when it gives one. Without a delta, the base variant's own.
  *
  * Throws on a delta that cannot describe a tree, rather than guessing: a key
  * listed twice, a key neither the base has nor the delta gives in full, a
- * change to a key the variant does not have. Each of those is a broken
+ * change to a key the variant does not have, a change that is not an object
+ * of fields, and nodes that are not a tree in preorder, the root `""` first
+ * and every other node after its parent. Each of those is a broken
  * styles.json, and a tree expanded around one would be built and scored as
  * though snap had measured it.
+ *
+ * A field that is null in a base node is absent, as diffTree reads it, so
+ * the round trip holds for a base written either way.
  */
 export function expandTree(tree: ComponentTree, delta: TreeDelta | undefined): TreeNode[] {
   const base = byKey(tree.base, "the base tree");
   const keys = delta?.keys ?? tree.base.map((node) => node.k);
-  const set = (delta?.set ?? {}) as Record<string, Record<string, unknown>>;
+  const set = (delta?.set ?? {}) as Record<string, Record<string, unknown> | null>;
   const seen = new Set<string>();
   const nodes = keys.map((k) => {
     if (seen.has(k)) throw new Error(`the delta lists the key "${k}" twice`);
     seen.add(k);
     const from = base.get(k);
     const change = has(set, k) ? set[k] : undefined;
+    if (change !== undefined && (change === null || typeof change !== "object" || Array.isArray(change))) {
+      throw new Error(`the delta sets "${k}" to ${JSON.stringify(change)}, not a node or the fields that change`);
+    }
+    for (const name of Object.keys(change ?? {})) {
+      if (UNSAFE_FIELDS.has(name)) throw new Error(`the delta sets a field named "${name}" on "${k}"`);
+    }
     if (!from) {
       if (!change) throw new Error(`"${k}" is not in the base tree, and the delta does not give it in full`);
       if (change.k !== undefined && change.k !== k) throw new Error(`the delta gives "${k}" a node keyed "${String(change.k)}"`);
@@ -302,7 +320,7 @@ export function expandTree(tree: ComponentTree, delta: TreeDelta | undefined): T
       }
       return node;
     }
-    const node = copy(from) as unknown as Record<string, unknown>;
+    const node = withoutNulls(from) as unknown as Record<string, unknown>;
     for (const [name, value] of Object.entries(change ?? {})) {
       if (name === "k") {
         if (value !== k) throw new Error(`the delta changes the key of "${k}"`);
@@ -315,6 +333,17 @@ export function expandTree(tree: ComponentTree, delta: TreeDelta | undefined): T
   });
   for (const k of Object.keys(set)) {
     if (!seen.has(k)) throw new Error(`the delta changes "${k}", which the variant does not have`);
+  }
+  if (nodes[0]?.k !== "") {
+    throw new Error(nodes.length ? `the variant's first node is "${nodes[0].k}", not the root ""` : "the variant has no nodes, not even the root");
+  }
+  const before = new Set<string>();
+  for (const node of nodes) {
+    const parent = parentKey(node.k);
+    if (parent !== null && !before.has(parent)) {
+      throw new Error(`"${node.k}" comes before its parent "${parent}", or the variant has no "${parent}"`);
+    }
+    before.add(node.k);
   }
   return nodes;
 }
@@ -387,10 +416,18 @@ export function absoluteBoxes(nodes: TreeNode[]): Map<string, Box> {
  * JSON of its nodes. The build stores it on each Figma variant it converges,
  * and verify compares it with the digest of the facts it scores against, so
  * a variant built from another measurement is told apart. Through JSON first,
- * so a field that is undefined counts as absent, as it would in a file.
+ * so a field that is undefined counts as absent, as it would in a file, and
+ * a top-level null too, as it does in a node.
+ *
+ * The root's paint is in its styles, not its node (ROOT_FIELDS), so the
+ * build and verify digest a variant as
+ * `treeDigest([rootWithStyles(nodes[0], styles), ...nodes.slice(1)])`: a
+ * re-snap that changes only the root's background then changes the digest
+ * too. Both must digest the same way, or every variant reads as built from
+ * another measurement.
  */
 export function treeDigest(nodes: TreeNode[]): string {
-  return fnv1a32(canonicalJson(copy(nodes)));
+  return fnv1a32(canonicalJson(nodes.map(withoutNulls)));
 }
 
 /**

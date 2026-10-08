@@ -6,7 +6,7 @@ import {
   RECORD, ROOT_FIELDS, TREE_LIMITS, TREE_VERSION,
   absoluteBoxes, diffTree, expandTree, flowOf, parentKey, rootWithStyles, textHugs, treeDigest,
 } from "../tree-types.js";
-import type { Box, ComponentTree, TreeNode } from "../tree-types.js";
+import type { Box, ComponentTree, TreeDelta, TreeNode } from "../tree-types.js";
 import { fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames, imageSize } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
 
@@ -107,6 +107,37 @@ test("expandTree: refuses a delta that describes no tree, rather than guess", ()
   assert.throws(() => expandTree(tree, { keys: ["", "x"], set: { x: { k: "x", t: "F", el: "div" } as unknown as TreeNode } }), /without "box"/);
   assert.throws(() => expandTree(tree, { set: { icon: { k: "other" } } }), /changes the key of "icon"/);
   assert.throws(() => expandTree(treeOf([...BASE, BASE[1]]), undefined), /holds the key "icon" twice/);
+});
+
+test("expandTree: refuses key lists that are no tree in preorder, the root first and parents before children", () => {
+  const tree = treeOf([frame("", [0, 0, 100, 40]), frame("a", [0, 0, 10, 10]), frame("a/x", [1, 1, 2, 2]), frame("b", [10, 0, 10, 10])]);
+  assert.throws(() => expandTree(tree, { keys: ["a", "b"] }), /first node is "a", not the root ""/);
+  assert.throws(() => expandTree(tree, { keys: ["a", "", "b"] }), /first node is "a", not the root ""/);
+  assert.throws(() => expandTree(tree, { keys: [] }), /has no nodes, not even the root/);
+  assert.throws(() => expandTree(tree, { keys: ["", "a/x", "a", "b"] }), /"a\/x" comes before its parent "a"/);
+  assert.throws(() => expandTree(tree, { keys: ["", "a/x", "b"] }), /"a\/x" comes before its parent "a", or the variant has no "a"/);
+  // The base is held to the same, delta or none.
+  assert.throws(() => expandTree(treeOf([frame("a", [0, 0, 1, 1])]), undefined), /not the root ""/);
+  assert.deepEqual(expandTree(tree, { keys: ["", "b", "a", "a/x"] }).map((n) => n.k), ["", "b", "a", "a/x"], "siblings in any order");
+});
+
+test("expandTree: refuses a change that is not fields, and fields that would reach the prototype", () => {
+  const tree = treeOf(BASE);
+  assert.throws(() => expandTree(tree, { set: { icon: null } } as unknown as TreeDelta), /sets "icon" to null, not a node or the fields that change/);
+  assert.throws(() => expandTree(tree, { set: { icon: [1] } } as unknown as TreeDelta), /sets "icon" to \[1\]/);
+  const poisoned = JSON.parse('{"set":{"icon":{"__proto__":{"bg":"#ffffff"}}}}') as TreeDelta;
+  assert.throws(() => expandTree(tree, poisoned), /sets a field named "__proto__" on "icon"/);
+  const added = JSON.parse('{"keys":["","badge"],"set":{"badge":{"t":"F","el":"div","box":[0,0,1,1],"constructor":{}}}}') as TreeDelta;
+  assert.throws(() => expandTree(tree, added), /sets a field named "constructor" on "badge"/);
+});
+
+test("expandTree: a null in a base node is absent, as diffTree reads it, so the round trip holds", () => {
+  const base = [frame("", [0, 0, 10, 10]), frame("a", [0, 0, 1, 1], { bg: null })];
+  const variant = [frame("", [0, 0, 10, 10]), frame("a", [0, 0, 1, 1])];
+  assert.deepEqual(diffTree(base, variant), {});
+  assert.deepEqual(expandTree(treeOf(base), diffTree(base, variant)), variant);
+  assert.deepEqual(expandTree(treeOf(base), undefined), variant);
+  assert.equal(treeDigest(base), treeDigest(variant), "and digests the same");
 });
 
 // --- diffTree ---------------------------------------------------------------------
@@ -210,6 +241,15 @@ test("treeDigest: 8 hex digits of the facts, whatever order a file wrote their k
   moved[2].box[0] = 31;
   assert.notEqual(treeDigest(moved), digest);
   assert.notEqual(treeDigest([BASE[0], BASE[2], BASE[1]]), digest, "order is part of the facts");
+});
+
+test("treeDigest: the root's paint counts once the root goes through rootWithStyles, as the build and verify pass it", () => {
+  const component = loadTreeFixture("switch").components[0];
+  const [root, ...rest] = fixtureVariants(loadTreeFixture("switch"))[0].nodes;
+  const styles = component.base!.styles;
+  const digest = (s: typeof styles) => treeDigest([rootWithStyles(root, s), ...rest]);
+  assert.notEqual(digest({ ...styles, backgroundColor: "#000000" }), digest(styles), "a re-snap that changes only the root's background");
+  assert.notEqual(digest(styles), treeDigest([root, ...rest]), "the root as stored holds none of that paint");
 });
 
 // --- textHugs ------------------------------------------------------------------------
