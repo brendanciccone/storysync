@@ -404,17 +404,44 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
 }
 
 /**
+ * Where a stylesheet's `@media (prefers-color-scheme: dark)` blocks start
+ * and end. The `:root` in one holds the dark values, as create-next-app's
+ * globals.css does: read in order with the rest, it overrode the light ones,
+ * so its background was extracted as #0a0a0a. `@media not ...` is light.
+ */
+function darkSchemeRanges(css: string): [number, number][] {
+  const ranges: [number, number][] = [];
+  const start = /@media\b([^{;]*)\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = start.exec(css)) !== null) {
+    if (!/prefers-color-scheme\s*:\s*dark/i.test(m[1]) || /\bnot\b/i.test(m[1])) continue;
+    let depth = 1;
+    let i = start.lastIndex;
+    while (i < css.length && depth > 0) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") depth--;
+      i++;
+    }
+    ranges.push([m.index, i]);
+  }
+  return ranges;
+}
+
+/**
  * The custom properties of the stylesheets' `:root` blocks, as written, a
- * later declaration winning. A file that can't be read is skipped, and
- * named in `warnings` when there are any.
+ * later declaration winning, leaving out a `:root` for the dark colour
+ * scheme. A file that can't be read is skipped, and named in `warnings`
+ * when there are any.
  */
 function readRootDeclarations(files: string[], warnings?: string[]): Map<string, string> {
   const declared = new Map<string, string>();
   for (const file of files) {
     try {
       const content = readCss(file);
+      const dark = darkSchemeRanges(content);
       const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
       for (const block of rootBlocks) {
+        if (dark.some(([from, to]) => block.index >= from && block.index < to)) continue;
         const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
         for (const decl of declarations) {
           declared.set(decl[1].trim(), decl[2].trim());

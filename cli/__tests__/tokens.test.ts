@@ -886,6 +886,57 @@ test("CSS: an @theme variable built from one both declare is worked out from :ro
   } finally { cleanup(dir); }
 });
 
+test("CSS: a :root for the dark colour scheme doesn't override the light one", () => {
+  // create-next-app's globals.css. Read in order with the rest, its dark
+  // :root won, and the light theme's tokens came out #0a0a0a on #ededed.
+  const globals = `@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+@media not all and (prefers-color-scheme: dark) {
+  :root { --foreground: #111111; }
+}
+`;
+  const dir = makeProject({ "app/globals.css": globals });
+  try {
+    const light = [["colors", [["background", "#ffffff"], ["foreground", "#111111"]]]];
+    assert.deepEqual(tokenTable(extractTokens(dir)), light);
+    assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")).slice(0, 1), light);
+    assert.deepEqual(extractTokens(dir).warnings, [
+      "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
+    ]);
+  } finally { cleanup(dir); }
+
+  // A Tailwind config resolves against the light :root too.
+  const v3 = makeProject({
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { background: "hsl(var(--background))" } } } }`,
+    "app/globals.css": `@layer base {
+  :root { --background: 0 0% 100%; }
+  @media screen and (prefers-color-scheme: dark) { :root { --background: 0 0% 4%; } }
+}`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(v3)), [["colors", [["background", "hsl(0 0% 100%)"]]]]);
+  } finally { cleanup(v3); }
+});
+
 test("CSS: the warning naming what @theme declares beyond :root names a few of a palette, not all of it", () => {
   const steps = Array.from({ length: 10 }, (_, i) => (i + 1) * 100);
   const dir = makeProject({

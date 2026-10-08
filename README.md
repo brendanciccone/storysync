@@ -560,7 +560,7 @@ Options:
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
 - **Component names:** matched by lowercased name, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is reported as `ambiguous` instead of being guessed.
 - **Wide-gamut colour tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
-- **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }` aren't followed, for the push or for `diff`.
+- **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
 
 ### Code → Figma: `snap`, the push, and `verify`
 
