@@ -326,9 +326,15 @@ function isNativeControl(el: RawTreeElement): boolean {
 const subtreePaints = (item: Item): boolean => item.kind !== "el" || item.paints || item.kids.some(subtreePaints);
 const sameBox = (a: Box, b: Box) => a.every((v, i) => Math.abs(v - b[i]) <= 0.5);
 
-/** A run's characters as drawn: whitespace collapsed and trimmed, unless `white-space` keeps it. */
+/**
+ * A run's characters as drawn: every space and break as written under
+ * `pre`, `pre-wrap` and `break-spaces`; under `pre-line`, its line breaks,
+ * with spaces and tabs collapsed to one and dropped around a break;
+ * otherwise all whitespace collapsed to one space and trimmed.
+ */
 function runCharacters(text: string, whiteSpace: string): string {
-  if (/^pre/.test(whiteSpace) || whiteSpace === "break-spaces") return text;
+  if (whiteSpace === "pre" || whiteSpace === "pre-wrap" || whiteSpace === "break-spaces") return text;
+  if (whiteSpace === "pre-line") return text.replace(/\r\n?/g, "\n").replace(/[ \t\f]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/^ +| +$/g, "");
   return text.replace(/[ \t\n\r\f]+/g, " ").trim();
 }
 

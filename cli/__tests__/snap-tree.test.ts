@@ -311,6 +311,10 @@ test("buildTree: a text keeps whitespace where white-space says to, and records 
   assert.equal(node.tx!.c, "a  b\n c");
   assert.equal(node.tx!.ws, "pre");
   assert.equal(node.tx!.n, 2);
+  // pre-line keeps the breaks, not the spaces: the browser draws "x\ny z".
+  const preLine = el("p", [0, 0, 100, 40], {}, [run(" x \n  y\t\tz ", [[0, 0, 10, 20], [0, 20, 30, 20]])], { text: { ...TEXT, "white-space": "pre-line" } });
+  const lines = buildTree(tree(el("div", [0, 0, 100, 40], {}, [preLine]))).nodes[1];
+  assert.deepEqual([lines.tx!.c, lines.tx!.ws], ["x\ny z", "pre-line"]);
 
   // A clamp clips, so its text stays a child of the box that clips it.
   const clamped = el("p", [0, 0, 100, 40], { "overflow-x": "hidden", "overflow-y": "hidden" }, [run("long", [[0, 0, 100, 20], [0, 20, 100, 20], [0, 40, 50, 20]])], {
