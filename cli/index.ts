@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { writeSync } from "node:fs";
+import { existsSync, readFileSync, writeSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
@@ -12,7 +13,12 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
-import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures } from "./verify.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
+import { DEFAULT_READ_LIMIT, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
+import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
+import { runFigmaUpload } from "./figma-upload.js";
+import { loadPlanResults } from "./figma-results.js";
+import { fnv1a32Bytes } from "./checksum.js";
 import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
@@ -185,12 +191,72 @@ function describeCaveat(caveat: ScoreCaveat): string {
 
 /** Parses --max-combinations, exiting with a clear message on anything but a positive integer. */
 function parseMaxCombinations(value: unknown): number {
+  return parsePositiveInteger(value, "--max-combinations");
+}
+
+/** Parses a flag that takes a positive whole number, exiting with a clear message on anything else. */
+function parsePositiveInteger(value: unknown, flag: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) {
-    console.error(chalk.red(`--max-combinations must be a positive whole number, received "${value}"`));
+    console.error(chalk.red(`${flag} must be a positive whole number, received "${value}"`));
     process.exit(1);
   }
   return n;
+}
+
+/** Collects a flag given more than once, as `--stories a=x --stories b=y`. */
+const collect = (value: string, previous: string[] = []): string[] => [...previous, value];
+
+/**
+ * Parses --stories: `component=storyId` pairs, comma-separated or given as
+ * the flag more than once. Which component each names, and whether the
+ * story is one of its own, runSnap checks against Storybook's list
+ * (resolveStoryOverrides) before anything is measured; this refuses what
+ * can't be a pair at all, before connecting, rather than measuring the
+ * default story under a typo.
+ */
+function parseStories(values: string[] | undefined): Record<string, string> | undefined {
+  if (!values?.length) return undefined;
+  const out: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const pair of values.flatMap((v) => v.split(",")).map((p) => p.trim()).filter(Boolean)) {
+    const at = pair.indexOf("=");
+    const name = pair.slice(0, at).trim();
+    const story = pair.slice(at + 1).trim();
+    if (at < 0 || !name || !story || story.includes("=")) {
+      throw new Error(`--stories takes component=storyId pairs, such as ui-base-button=ui-base-button--with-icon, received "${pair}"`);
+    }
+    if (seen.has(name.toLowerCase())) throw new Error(`--stories names "${name}" twice: give each component one story`);
+    seen.add(name.toLowerCase());
+    out[name] = story;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Parses --min-fidelity, a percentage from 0 to 100, with or without its
+ * `%`: exits with a clear message on anything else, as a threshold that
+ * can't be read must not pass every run.
+ */
+function parseMinFidelity(value: unknown): number {
+  const text = String(value).trim().replace(/%$/, "");
+  const pct = text === "" ? NaN : Number(text);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+    console.error(chalk.red(`--min-fidelity must be a percentage from 0 to 100, such as 99 or 99.5, received "${value}"`));
+    process.exit(1);
+  }
+  return pct;
+}
+
+/** A path as the user would type it: relative to where they are, unless it is somewhere else entirely. */
+function shownPath(path: string): string {
+  const rel = relative(process.cwd(), path);
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
+}
+
+/** A share as a percentage, with as many decimals as it takes to tell it from a threshold beside it. */
+function exactPercent(share: number): string {
+  return `${Number((share * 100).toFixed(3))}%`;
 }
 
 program
@@ -289,7 +355,7 @@ program
 
 program
   .command("snap")
-  .description("Measure each component variant's rendered styles from a running Storybook")
+  .description("Measure each component variant's rendered styles and element tree from a running Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .option("--components <names>", "Comma-separated component names, titles or IDs; a name that matches nothing is an error")
@@ -302,6 +368,8 @@ program
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
+  .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
+  .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the story to measure the component from, in place of the one snap picks; a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
@@ -325,6 +393,13 @@ program
     // merge refused for its base is, since the push reads the reason there.
     if (opts.merge && !opts.components) {
       reportError(new Error("--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component"), json);
+      process.exit(1);
+    }
+    let stories: Record<string, string> | undefined;
+    try {
+      stories = parseStories(opts.stories as string[] | undefined);
+    } catch (err) {
+      reportError(err, json);
       process.exit(1);
     }
 
@@ -377,6 +452,8 @@ program
           excludeProps: parsePropNames(opts.excludeProps),
           merge: !!opts.merge,
           rootOnly: !!opts.rootOnly,
+          channelArgs: opts.channelArgs !== false,
+          ...(stories ? { stories } : {}),
         },
         {
           storybook,
@@ -442,16 +519,20 @@ program
 program
   .command("verify")
   .description("Compare what was written to Figma against the styles measured by snap")
-  .option("--snap <path>", "Path to snap output", ".storysync/snaps/styles.json")
-  .option("--readback <path>", "Path to the properties read back from Figma", ".storysync/figma-readback.json")
+  .option("--snap <path>", "Path to snap output; with --plan, the snap the plan was made from", ".storysync/snaps/styles.json")
+  .option("--readback <path>", "Path to the properties read back from Figma; with --plan, where to write the readback assembled from its results (without this, figma-readback.json beside the plan's directory)", ".storysync/figma-readback.json")
+  .option("--plan <path>", "Read back from the responses a push saved for the calls in this plan.json (storysync figma code): assemble them into --readback, then score it")
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out of the score, such as ones not pushed; the output names them")
+  .option("--roots-only", "Score each variant by its outer element alone, as 0.4.0 did, for comparison with an element-tree score")
+  .option("--min-fidelity <pct>", "Exit with code 1 when the score is below this percentage: element fidelity where snap measured element trees, else the share of properties; a run that scored nothing fails it too")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or has no textLayout where snap measured a text's layout, or if the snap recorded a component failure or lacks a component the readback has")
+  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
+  .option("--allow-designer-layers", "With --strict, pass the layers a designer added inside variants, which verify still lists")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
-  .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured, or measured without snap checking Storybook gave them their values")
-  .action(async (opts) => {
+  .option("--strict-measured", "Implies --strict, and also fails on anything not measured: variants inferred from source or with no recorded provenance, placeholders for variants snap couldn't measure, variants measured without snap checking Storybook gave them their values, and variants in Figma that snap never measured or no read covered")
+  .action(async (opts, command: Command) => {
     const json = !!opts.json;
     const tolerance = Number(opts.tolerance);
     if (!Number.isFinite(tolerance) || tolerance < 0) {
@@ -464,9 +545,30 @@ program
       console.error(chalk.red(`--max-age must be a duration like 30m, 2h or 7d, received "${opts.maxAge}"`));
       process.exit(1);
     }
+    const minFidelity = opts.minFidelity === undefined ? null : parseMinFidelity(opts.minFidelity);
 
     try {
-      const snapPath = opts.snap as string;
+      let snapPath = opts.snap as string;
+      // With --plan, the readback is the responses the agent saved for its
+      // read calls, assembled here: there is no file for anyone to write by
+      // hand (design D22). It goes where --readback says when that is given,
+      // and otherwise beside the plan's directory, so a plan made with
+      // `figma code --out` elsewhere doesn't overwrite the push's readback.
+      // The snap is the one the plan was made from, unless --snap says.
+      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; snapChanged: boolean; planPath: string } | null = null;
+      if (opts.plan) {
+        const planPath = opts.plan as string;
+        const given = (name: string) => command.getOptionValueSource(name) === "cli";
+        const loaded = loadPlanResults(planPath, given("readback") ? { out: opts.readback as string } : {});
+        const plan = readPlan(planPath);
+        if (!given("snap")) snapPath = resolve(dirname(planPath), plan.snap.path);
+        // A snap taken again since the plan: the calls built and read what
+        // the older one measured, so what it has since added wasn't read.
+        const snapChanged = existsSync(snapPath) && fnv1a32Bytes(readFileSync(snapPath)) !== plan.snap.digest;
+        // What the calls not read whole were to read: their variants are not read, not missing.
+        const notReadSlices = plan.calls.filter((c) => c.kind === "read" && loaded.notRead.includes(c.seq)).flatMap((c) => c.slices ?? []);
+        assembled = { ...loaded, notReadSlices, snapChanged, planPath };
+      }
       const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
       // A readback or meta.json passed as --snap, or a failed `snap --json`
       // captured as one, has no components list, and scoring it ended on a
@@ -476,15 +578,34 @@ program
         const held = typeof error === "string" ? ` It holds an error instead: ${error}` : "";
         throw new Error(`snap output at ${snapPath} has no "components" list, so it is not a styles.json written by \`storysync snap\`: pass that as --snap, and the Figma readback as --readback.${held}`);
       }
-      const readback = loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
+      const readback = assembled ? assembled.readback : loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
       // The snap's time first: an entry Figma read before it is stale.
       const snapAge = readSnapAge(snapPath, maxAgeMs);
       const skip = opts.skip ? (opts.skip as string).split(",") : undefined;
-      const result = verify(snap, readback, tolerance, snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt, skip } : { skip });
+      const result = verify(snap, readback, tolerance, {
+        ...(snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {}),
+        skip,
+        ...(opts.rootsOnly ? { rootsOnly: true } : {}),
+        ...(assembled ? { notRead: assembled.notRead, notReadSlices: assembled.notReadSlices } : {}),
+        allowDesignerLayers: !!opts.allowDesignerLayers,
+      });
       result.snapAge = snapAge;
+      // What --plan found assembling the readback, beside the score: a read
+      // with no result, a set two sets claim, an entry read twice.
+      const plan = assembled && {
+        path: assembled.planPath,
+        readback: assembled.written,
+        problems: assembled.problems,
+        ...(assembled.snapChanged ? { snapChanged: true } : {}),
+      };
+      const headline = headlineFidelity(result);
+      const belowMinimum = minFidelity !== null && (headline === null || headline < minFidelity / 100 - 1e-9);
 
       if (json) {
-        console.log(JSON.stringify(result));
+        // With --min-fidelity, what it was held to, so a CI reading the JSON
+        // can tell that failure from a --strict one: both 0 to 1, as the score.
+        const held = minFidelity === null ? {} : { minFidelity: { min: minFidelity / 100, score: headline, passed: !belowMinimum } };
+        console.log(JSON.stringify({ ...result, ...(plan ? { plan } : {}), ...held }));
       } else {
         const { summary } = result;
         // Said on the score's own line, in so many words: a score over the
@@ -534,7 +655,8 @@ program
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
         const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
         const notMeasuredNote = (summary.notMeasured ?? 0) > 0 ? `, ${summary.notMeasured} not measured` : "";
-        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}${notMeasuredNote}, across ${summary.variants} variants\n`);
+        const notReadNote = (summary.notRead ?? 0) > 0 ? `, ${summary.notRead} not read` : "";
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}${notMeasuredNote}${notReadNote}, across ${summary.variants} variants\n`);
 
         for (const issue of result.snapIssues ?? []) {
           console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
@@ -546,6 +668,20 @@ program
           console.log(`  ${chalk.yellow("!")} ${warning}`);
         }
 
+        // Where the readback came from, under --plan, and what couldn't be
+        // assembled into it: each a --strict failure, as a read with no
+        // result leaves its variants unscored.
+        if (plan) {
+          console.log(chalk.dim(`  Read back from the results saved for ${shownPath(plan.path)}, assembled into ${shownPath(plan.readback)}`));
+          for (const problem of plan.problems) console.log(`  ${chalk.red("!")} ${problem}`);
+          if (plan.problems.length > 0) {
+            console.log(chalk.dim("      Send each read call in plan.json and save its response unchanged to its result path, running `storysync figma next` for a result with `more`, then run verify again."));
+          }
+          if (plan.snapChanged) {
+            console.log(`  ${chalk.yellow("!")} ${shownPath(snapPath)} has changed since \`storysync figma code\` made this plan from it, so the calls built and read what the earlier snap measured: run figma code again and send its calls.`);
+          }
+        }
+
         // Before the drift: an entry that is not what Figma returned, or not
         // all of it, or not now, says nothing about Figma as it is, so none of
         // it was scored, and the fix is to read it again rather than to change
@@ -555,13 +691,16 @@ program
           console.log(`  ${chalk.red("!")} ${issue.component} ${chalk.dim(issue.slug)} readback entry ${readbackIssueReason(issue, snapAge)} — nothing in it was scored`);
         }
         if (readbackIssues.length > 0) {
-          console.log(chalk.dim("      Read these variants back again, after the snap, with the skill's readback template as it is, and write each entry into the readback exactly as returned. Never fill one in from snap."));
+          console.log(chalk.dim(plan
+            ? "      Send their read calls in plan.json again, after the snap, and save each response unchanged to its result path. Never edit a saved response."
+            : "      Read these variants back again, after the snap, with the skill's readback template as it is, and write each entry into the readback exactly as returned. Never fill one in from snap."));
         }
 
         for (const variant of result.variants) {
           // A variant scored element by element is in the element report,
           // and one whose readback has an issue is above, with the issue.
-          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.status === "parts_missing" || variant.elements || variant.status === "not_measured") continue;
+          // One not read is under the plan's problems, by its call.
+          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.status === "parts_missing" || variant.elements || variant.status === "not_measured" || variant.status === "not_read") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
             continue;
@@ -582,6 +721,7 @@ program
           && (result.snapIssues?.length ?? 0) === 0
           && result.componentsNotInSnap.length === 0
           && readbackIssues.length === 0
+          && (plan?.problems.length ?? 0) === 0
           && treeStrictFailures(result, { allowDesignerLayers: true }).length === 0
           && result.summary.propertiesCompared > 0;
         // Not of a component with something measured left uncompared.
@@ -614,7 +754,7 @@ program
           if (unread > 0) parts.push(`${unread} in Figma's sets that no read covered`);
           const line = `  Provenance: ${parts.join(", ")}`;
           console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
-          for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
+          for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma" && x.status !== "not_read")) {
             console.log(chalk.dim(`      ${v.component} ${v.slug} [${v.source}]`));
           }
           for (const u of result.unmeasuredInFigma) {
@@ -665,6 +805,14 @@ program
           const line = `  Snap age unknown: ${age.reason}`;
           console.log(opts.strictAge ? chalk.red(line) : chalk.dim(line));
         }
+
+        // Last, so it is the line a CI log ends on when it is why the run failed.
+        if (belowMinimum) {
+          const scored = result.elementFidelity !== undefined ? "element fidelity" : "the share of properties";
+          console.log(chalk.red(headline === null
+            ? `  ! Nothing was scored, so there is no score to hold to --min-fidelity ${minFidelity}%`
+            : `  ! The score, ${scored}, is ${exactPercent(headline)}: below --min-fidelity ${minFidelity}%`));
+        }
       }
 
       const strict = !!opts.strict || !!opts.strictAge || !!opts.strictMeasured;
@@ -686,6 +834,7 @@ program
         || result.componentsNotInSnap.length > 0
         || (result.readbackIssues?.length ?? 0) > 0
         || result.uncompared.length > 0
+        || (plan?.problems.length ?? 0) > 0
         || treeStrictFailures(result, { allowDesignerLayers: !!opts.allowDesignerLayers }).length > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one. So
@@ -703,9 +852,125 @@ program
       // determinism guarantee is designed to enable.
       const ageFailsStrict = !!opts.strictAge && (!result.snapAge?.known || result.snapAge.stale);
 
-      if ((strict && hasDrift) || ageFailsStrict || (opts.strictMeasured && notMeasured)) {
+      if ((strict && hasDrift) || ageFailsStrict || (opts.strictMeasured && notMeasured) || belowMinimum) {
         process.exitCode = 1;
       }
+    } catch (err) {
+      reportError(err, json);
+      process.exitCode = 1;
+    }
+  });
+
+// `storysync figma`: the push's use_figma calls as files, so the agent
+// writes no styling code (design section 8.1). The CLI never calls Figma's
+// tools itself: the agent sends each file unchanged and saves each response
+// unchanged, and these read what it saved.
+const figma = program
+  .command("figma")
+  .description("Write the use_figma calls that build and read back a snap's components, as files the agent sends unchanged");
+
+figma
+  .command("code")
+  .description("Write plan.json and every use_figma call that builds, fills, labels and reads back the snap's components")
+  .option("--snap <path>", "Path to snap output, with element trees", ".storysync/snaps/styles.json")
+  .option("--tokens <path>", "`storysync tokens --json` output, for binding paints and radii to variables; without it nothing is bound", ".storysync/tokens.json")
+  .option("--components <names>", "Comma-separated component names, titles or IDs to build (default: every component in the snap); a name that matches nothing is an error")
+  .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out")
+  .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan's calls and results there are removed", ".storysync/figma")
+  .option("--max-chars <n>", `Most characters of code in one build call (use_figma takes at most ${USE_FIGMA_CODE_LIMIT})`, String(MAX_CALL_CHARS))
+  .option("--max-nodes <n>", "Most layers one build call creates or restyles; lower it, to 200 say, after `Script exceeded time limit`", String(SPIKE.maxNodes))
+  .option("--read-limit <n>", "Most characters a read call is predicted to return (use_figma returns at most 20kb)", String(DEFAULT_READ_LIMIT))
+  .option("--no-minify", "Send the templates' readable sources instead of their minified build, for debugging")
+  .option("--json", "Output JSON instead of formatted text")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const maxChars = parsePositiveInteger(opts.maxChars, "--max-chars");
+    const maxNodes = parsePositiveInteger(opts.maxNodes, "--max-nodes");
+    const readLimit = parsePositiveInteger(opts.readLimit, "--read-limit");
+    try {
+      const { plan, planPath, warnings } = await runFigmaCode({
+        snap: opts.snap as string,
+        tokens: opts.tokens as string,
+        components: opts.components ? (opts.components as string).split(",") : undefined,
+        skip: opts.skip ? (opts.skip as string).split(",") : undefined,
+        out: opts.out as string,
+        maxChars,
+        maxNodes,
+        readLimit,
+        minify: opts.minify !== false,
+      });
+      if (json) {
+        console.log(JSON.stringify({ planPath, calls: plan.calls, warnings }));
+        return;
+      }
+      const where = shownPath(planPath);
+      const counts = new Map<string, number>();
+      for (const call of plan.calls) counts.set(call.kind, (counts.get(call.kind) ?? 0) + 1);
+      const kinds = [...counts].map(([kind, n]) => `${n} ${kind}`).join(", ");
+      console.log(`\n${plan.calls.length} use_figma ${plan.calls.length === 1 ? "call" : "calls"} (${kinds}), planned in ${where}`);
+      for (const call of plan.calls) {
+        const size = `${call.chars.toLocaleString("en-US")} characters${call.nodes !== undefined ? `, ${call.nodes} nodes` : ""}`;
+        console.log(`  ${String(call.seq).padStart(2, "0")} ${call.kind.padEnd(6)} ${call.description} ${chalk.dim(`(${size})`)}`);
+      }
+      for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
+      console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
+    } catch (err) {
+      reportError(err, json);
+      process.exitCode = 1;
+    }
+  });
+
+figma
+  .command("upload")
+  .description("Post the images a build call listed in its uploads to the URLs upload_assets gave, from the snap's thumbnails")
+  .requiredOption("--plan <path>", "plan.json, as figma code wrote it")
+  .requiredOption("--seq <n>", "The build call's seq, whose result lists the uploads and whose NN.upload.json holds upload_assets' response")
+  .option("--json", "Output JSON instead of formatted text")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const seq = parsePositiveInteger(opts.seq, "--seq");
+    try {
+      const { uploaded } = await runFigmaUpload({ plan: opts.plan as string, seq });
+      if (json) {
+        console.log(JSON.stringify({ uploaded }));
+        return;
+      }
+      if (!uploaded.length) {
+        console.log(`Call ${String(seq).padStart(2, "0")} listed no uploads: nothing to post.`);
+        return;
+      }
+      for (const u of uploaded) console.log(`  ${chalk.green("✓")} ${u.assetId} to node ${u.nodeId} ${chalk.dim(`(${u.bytes.toLocaleString("en-US")} bytes)`)}`);
+      console.log(`${uploaded.length} ${uploaded.length === 1 ? "image" : "images"} uploaded. The images call fills the other layers that show ${uploaded.length === 1 ? "it" : "them"}.`);
+    } catch (err) {
+      reportError(err, json);
+      process.exitCode = 1;
+    }
+  });
+
+figma
+  .command("next")
+  .description("Write the call that continues a read call whose result has `more`, and print where it is and where its result goes")
+  .requiredOption("--plan <path>", "plan.json, as figma code wrote it")
+  .requiredOption("--seq <n>", "The read call's seq")
+  .option("--json", "Output JSON instead of formatted text")
+  .action(async (opts) => {
+    const json = !!opts.json;
+    const seq = parsePositiveInteger(opts.seq, "--seq");
+    try {
+      const next = await runFigmaNext({ plan: opts.plan as string, seq });
+      if (json) {
+        console.log(JSON.stringify({ next }));
+        return;
+      }
+      if (!next) {
+        console.log(`Call ${String(seq).padStart(2, "0")} has read everything it was given: nothing left to continue.`);
+        return;
+      }
+      console.log(`Send ${next.file}`);
+      console.log(`  description: ${next.description}`);
+      // A read call sent again leaves its continuations from the reading before.
+      if (next.again) console.log(`  ${shownPath(next.result)} was read before the result it continues, so it holds Figma as it was: send this again, and save its response over it.`);
+      console.log(`  save its response unchanged to ${next.result}, then run this again: a result with \`more\` continues once more.`);
     } catch (err) {
       reportError(err, json);
       process.exitCode = 1;

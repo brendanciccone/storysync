@@ -2357,6 +2357,127 @@ async function assertStaleFlagged(snapDir, { bin } = {}) {
   return `all ${entries} entries read an hour before the snap flagged stale, nothing scored, --strict failed; read two minutes before it, 100%`;
 }
 
+// --- The element-tree push -------------------------------------------------------
+
+/** use_figma takes at most 50,000 characters a call; figma code packs build calls to this. */
+const MAX_CALL_CHARS = 45000;
+
+/**
+ * The mock Figma the unit tests use (cli/__tests__/mock-figma.ts, built
+ * beside the CLI): the Plugin API's pages, frames, auto layout, text, SVG
+ * import, images and shared plugin data, with use_figma's limits on code,
+ * response and page switches. What the element-tree push sends its calls to.
+ */
+async function mockFigma() {
+  const mod = (path) => import(pathToFileURL(join(ROOT, "dist", "cli", ...path.split("/"))).href);
+  const [M, T] = await Promise.all([mod("__tests__/mock-figma.js"), mod("tree-types.js")]);
+  return { M, expandTree: T.expandTree };
+}
+
+/**
+ * Pushes a tree snap the way the skill has the agent do it, into a mock
+ * Figma: `figma code` writes the calls; each is sent unchanged, in seq
+ * order, and its response saved unchanged where plan.json says; a build
+ * that lists uploads gets an upload_assets response, and `figma upload`
+ * posts the thumbnails to its URLs, served here; and a read whose result has
+ * `more` is continued with `figma next`. Returns the plan and the mock, so a
+ * check can change Figma and send the read calls again.
+ */
+async function treePush(snapPath, out, { tokens = null, mock: given = null } = {}) {
+  const { M, expandTree } = await mockFigma();
+  const r = cli(["figma", "code", "--snap", snapPath, "--out", out, "--json", ...(tokens ? ["--tokens", tokens] : [])]);
+  assert(r.status === 0, `figma code exited ${r.status}\n${r.out.trim()}`);
+  const { planPath, warnings } = JSON.parse(r.out.trim().split("\n").pop());
+  const plan = readJson(planPath);
+  const snap = readJson(snapPath);
+  const trees = snap.components.flatMap((c) => c.variants.filter((v) => v.status === "ok").map((v) => expandTree(c.tree, v.treeDelta)));
+  const mock = given ?? new M.MockFigma({ measure: M.measureFromTrees(trees), moveNeedsFonts: true });
+  const send = async (file, result) => {
+    const code = readFileSync(file, "utf8");
+    assert(code.length <= MAX_CALL_CHARS, `${file} is ${code.length} characters, over ${MAX_CALL_CHARS}`);
+    const run = await mock.run(code);
+    assert(run.ok, `${file} failed in Figma: ${run.text}`);
+    mkdirSync(dirname(result), { recursive: true });
+    writeFileSync(result, run.text);
+    return run;
+  };
+  const runs = [];
+  for (const call of plan.calls) {
+    const run = await send(join(out, call.file), join(out, call.result));
+    runs.push({ call, run });
+    const uploads = call.kind === "build" ? run.value.uploads ?? [] : [];
+    if (uploads.length) await uploadAssets(mock, planPath, call, uploads);
+    if (call.kind === "read") {
+      for (;;) {
+        const next = cli(["figma", "next", "--plan", planPath, "--seq", String(call.seq), "--json"]);
+        assert(next.status === 0, `figma next exited ${next.status}\n${next.out.trim()}`);
+        const more = JSON.parse(next.out.trim().split("\n").pop()).next;
+        if (!more) break;
+        runs.push({ call: { ...call, result: more.result }, run: await send(more.file, more.result) });
+      }
+    }
+  }
+  return { out, planPath, plan, mock, runs, warnings };
+}
+
+/**
+ * upload_assets for a build's uploads, its response saved unchanged, and
+ * `figma upload` run on it: each URL is served here, putting what is
+ * posted to it on its layer in the mock, as Figma's upload does.
+ */
+async function uploadAssets(mock, planPath, call, uploads) {
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      mock.uploadAssets([decodeURIComponent(req.url.slice(1))], [new Uint8Array(Buffer.concat(chunks))]);
+      res.writeHead(200).end();
+    });
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    writeFileSync(join(dirname(planPath), call.result.replace(/\.json$/, ".upload.json")),
+      JSON.stringify({ uploads: uploads.map(([nodeId]) => ({ submitUrl: `${base}/${encodeURIComponent(nodeId)}`, targetNodeId: nodeId })) }));
+    const r = await cliAsync(["figma", "upload", "--plan", planPath, "--seq", String(call.seq)]);
+    assert(r.status === 0, `figma upload exited ${r.status}\n${r.out.trim()}`);
+  } finally {
+    await new Promise((done) => server.close(done));
+  }
+}
+
+/** Sends a push's read calls again, saving each response over the last, as after a change in Figma. */
+async function readTreeAgain(push) {
+  for (const call of push.plan.calls.filter((c) => c.kind === "read")) {
+    const run = await push.mock.run(readFileSync(join(push.out, call.file), "utf8"));
+    assert(run.ok, `${call.file} failed in Figma: ${run.text}`);
+    writeFileSync(join(push.out, call.result), run.text);
+  }
+}
+
+/** verify --plan, as the skill runs it, with --json. */
+function verifyPlan(planPath, flags = []) {
+  const r = cli(["verify", "--plan", planPath, "--json", ...flags]);
+  let json = null;
+  try {
+    json = JSON.parse(r.out.trim().split("\n").pop());
+  } catch {
+    // callers assert on status
+  }
+  return { status: r.status, json, out: r.out };
+}
+
+/** A variant's keyed layer in the mock, by the variant's slug and the layer's key. */
+function treeLayer(mock, slug, key) {
+  const variant = mock.nodes("COMPONENT").find((v) => v.data["storysync.slug"] === slug);
+  assert(variant, `no variant ${slug} in Figma`);
+  const walk = (view) => (view.data["storysync.k"] === key ? view : (view.children ?? []).map(walk).find(Boolean) ?? null);
+  const found = (variant.children ?? []).map(walk).find(Boolean);
+  assert(found, `no layer ${key} in ${slug}`);
+  return found;
+}
+
 let mutantBuilds = 0;
 
 /**
@@ -2575,6 +2696,45 @@ async function main() {
       /remove `if: \{"arg":"variant","neq":"outline"\}` from argTypes\.size in \.\/src\/Button\.stories\.tsx/.test(r.out),
       `no warning with the story change:\n${r.out.trim()}`);
     return "4 outline variants through the preview, all 12 as the unchanged story measures";
+  });
+
+  await check("with --no-channel-args, a value the story's argTypes reject is left unmeasured, as arg_rejected, and fails --strict", async () => {
+    // The same story change as above, with the preview route turned off:
+    // nothing may be measured under a name the render didn't take.
+    const storybook = await rewritingStorybook("/src/Button.stories.tsx", (code) =>
+      code.replace(/options:\s*\[\s*"primary",\s*"danger",\s*"outline"\s*\]/, 'options: ["primary", "danger"]'));
+    const out = join(WORK, "no-channel");
+    let r;
+    try {
+      r = await cliAsync(["snap", "--storybook", storybook.url, "--components", "Button", "--variants", "all", "--out", out, "--strict", "--no-channel-args"]);
+    } finally {
+      await storybook.close();
+    }
+    assert(r.status === 1, `snap --strict --no-channel-args exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    const rejected = button.variants.filter((v) => v.status === "arg_rejected");
+    assert(rejected.length === 4 && rejected.every((v) => v.combination.variant === "outline" && !v.appliedVia && !v.delta && !v.treeDelta),
+      `arg_rejected: ${rejected.map((v) => v.slug).join(", ") || "none"}`);
+    assert(button.variants.filter((v) => v.status === "ok").length === 8, "the other variants weren't measured");
+    return "4 outline variants arg_rejected, 8 measured, --strict failed";
+  });
+
+  await check("--stories measures a component from the story it names, refuses a story that isn't the component's, and leaves out a pair for a component a re-measure doesn't measure", () => {
+    const out = join(WORK, "stories");
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
+    assert(r.status === 0, `snap --stories exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    assert(button.storyId === "forms-button--default", `storyId ${button.storyId}`);
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", join(WORK, "stories-refused"), "--stories", "forms-button=forms-frozen--default"]);
+    assert(refused.status === 1 && /--stories gives forms-button the story "forms-frozen--default", which isn't one of its stories: forms-button--default/.test(refused.out),
+      `a story of another component was taken:\n${refused.out.trim()}`);
+    assert(!existsSync(join(WORK, "stories-refused", "styles.json")), "the refused run wrote a snap");
+    // A re-measure of another component, given the push's same pairs, as the skill says.
+    const merged = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
+    assert(merged.status === 0, `a --merge of Frozen with Button's --stories pair exited ${merged.status}\n${merged.out.trim()}`);
+    const ids = readJson(join(out, "styles.json")).components.map((c) => `${c.id}:${c.storyId}`);
+    assert(ids.join() === "forms-button:forms-button--default,forms-frozen:forms-frozen--default", `after the merge: ${ids.join(", ")}`);
+    return "measured from forms-button--default; Frozen's story refused; Frozen merged in with Button's pair given";
   });
 
   await check("snapshots are stamped with the running version", () => {
@@ -3115,6 +3275,115 @@ async function main() {
     const r = cli(["inspect", "--storybook", STORYBOOK, "--component", "FORMS-BUTTON"]);
     assert(r.status === 0, `inspect exited ${r.status}\n${r.out.trim()}`);
     assert(/variant \(union\) -> VARIANT \[primary, danger, outline\]/.test(r.out), `variant not mapped\n${r.out.trim()}`);
+  });
+
+  heading("Element-tree push through figma code");
+
+  // The push as the skill now runs it (design section 12): the tree snap
+  // taken above, `figma code`, every call sent unchanged to a mock Figma
+  // and its response saved unchanged, then `verify --plan`. No styling code
+  // is written by hand anywhere in it.
+  const treeSnap = join(WORK, "tree", "styles.json");
+  const treeTokens = join(WORK, "tree-tokens.json");
+  let treeRun = null;
+
+  await check("figma code plans the example's push, every call within use_figma's limits, the same twice", () => {
+    const tokens = cli(["tokens", "--json", "--project", join(ROOT, "examples", "storybook-vite")]);
+    writeFileSync(treeTokens, tokens.out.trim().split("\n").pop());
+    const dirs = ["tree-plan-a", "tree-plan-b"].map((name) => join(WORK, name, "figma"));
+    const plans = dirs.map((out) => {
+      const r = cli(["figma", "code", "--snap", treeSnap, "--tokens", treeTokens, "--out", out]);
+      assert(r.status === 0, `figma code exited ${r.status}\n${r.out.trim()}`);
+      assert(/use_figma calls? \(.*\), planned in /.test(r.out), `figma code didn't say what it planned\n${r.out.trim()}`);
+      return readJson(join(out, "plan.json"));
+    });
+    const kinds = plans[0].calls.map((c) => c.kind);
+    assert(kinds.includes("build") && kinds.includes("label") && kinds.includes("read"), `calls: ${kinds.join(", ")}`);
+    for (const call of plans[0].calls) {
+      const code = readFileSync(join(dirs[0], call.file), "utf8");
+      assert(code.length === call.chars && code.length <= MAX_CALL_CHARS, `${call.file}: ${code.length} characters, plan says ${call.chars}`);
+      assert(code === readFileSync(join(dirs[1], call.file), "utf8"), `${call.file} differs between two runs`);
+    }
+    assert(JSON.stringify(plans[0]) === JSON.stringify(plans[1]), "plan.json differs between two runs");
+    const longest = Math.max(...plans[0].calls.map((c) => c.chars));
+    return `${kinds.length} calls (${[...new Set(kinds)].join(", ")}), the longest ${longest} characters`;
+  });
+
+  await check("every call runs unchanged in Figma, and verify --plan scores every element of the example at 100%", async () => {
+    treeRun = await treePush(treeSnap, join(WORK, "tree-push", "figma"), { tokens: treeTokens });
+    const v = verifyPlan(treeRun.planPath, ["--strict-measured", "--strict-age", "--min-fidelity", "100"]);
+    assert(v.status === 0, `verify --plan exited ${v.status}\n${v.out.trim().slice(0, 2000)}`);
+    const e = v.json.summary.elements;
+    assert(v.json.elementFidelity === 1 && v.json.fidelity === 1, `element fidelity ${v.json.elementFidelity}, properties ${v.json.fidelity}`);
+    assert(e.measured > 0 && e.verified === e.measured && !e.drifted && !e.missing && !e.extra && !e.designerLayers, `elements ${JSON.stringify(e)}`);
+    assert(v.json.plan.problems.length === 0 && existsSync(join(WORK, "tree-push", "figma-readback.json")), `plan: ${JSON.stringify(v.json.plan)}`);
+    const text = cli(["verify", "--plan", treeRun.planPath]);
+    assert(/Fidelity: 100\.0% of elements \(\d+ of \d+ verified\), 100\.0% of properties/.test(text.out), `headline:\n${text.out.trim().slice(0, 600)}`);
+    return `${e.verified}/${e.measured} elements, ${v.json.summary.propertiesMatched} properties, ${treeRun.runs.length} calls sent`;
+  });
+
+  await check("sending the build calls again changes nothing in Figma, and reads back the same", async () => {
+    assert(treeRun, "the push above didn't run");
+    const readback = () => readJson(join(WORK, "tree-push", "figma-readback.json"));
+    const before = readback();
+    for (const call of treeRun.plan.calls.filter((c) => c.kind === "build")) {
+      const run = await treeRun.mock.run(readFileSync(join(treeRun.out, call.file), "utf8"));
+      assert(run.ok && run.created === 0 && run.removed === 0, `${call.file} sent again: created ${run.created}, removed ${run.removed}${run.ok ? "" : `, failed: ${run.text}`}`);
+    }
+    await readTreeAgain(treeRun);
+    const v = verifyPlan(treeRun.planPath, ["--strict"]);
+    assert(v.status === 0, `verify --plan exited ${v.status}\n${v.out.trim().slice(0, 1500)}`);
+    const plain = (file) => JSON.stringify(file, (k, value) => (k === "readAt" || k === "checksum" ? undefined : value));
+    assert(plain(readback()) === plain(before), "the second reading differs from the first apart from readAt and checksum");
+    return "0 layers created or removed; the same readback apart from readAt and checksum";
+  });
+
+  await check("a child element changed in Figma is reported as exactly that drift, by its key and node id, and undoing it passes again", async () => {
+    // The falsification test for children: 0.4.0 compared the outer
+    // element alone, so a label changed inside a button scored 100%.
+    assert(treeRun, "the push above didn't run");
+    const button = readJson(treeSnap).components.find((c) => c.name === "Button");
+    const slug = button.variants[0].slug;
+    const label = treeLayer(treeRun.mock, slug, "#text");
+    const recolor = async (hex) => {
+      const rgb = rgb01(hex);
+      const run = await treeRun.mock.run(`const n = await figma.getNodeByIdAsync(${JSON.stringify(label.id)}); n.fills = [{ type: "SOLID", color: ${JSON.stringify(rgb)} }]; return { kind: "edit" };`);
+      assert(run.ok, run.text);
+      await readTreeAgain(treeRun);
+    };
+    await recolor("#ff00ff");
+    const drifted = verifyPlan(treeRun.planPath, ["--strict"]);
+    assert(drifted.status === 1, `verify --strict exited ${drifted.status} after the label was recolored`);
+    const nodes = drifted.json.variants.flatMap((v) => (v.nodes ?? []).map((n) => ({ slug: v.slug, ...n })));
+    assert(nodes.length === 1 && nodes[0].slug === slug && nodes[0].key === "#text" && nodes[0].figmaId === label.id,
+      `drifted: ${JSON.stringify(nodes.map((n) => [n.slug, n.key, n.figmaId, n.differences.map((d) => d.property)]))}`);
+    const props = nodes[0].differences.map((d) => `${d.property} ${JSON.stringify(d.measured)} -> ${JSON.stringify(d.figma)}`);
+    assert(props.length === 1 && /#ff00ff/i.test(props[0]), `differences: ${props.join("; ")}`);
+    const text = cli(["verify", "--plan", treeRun.planPath]);
+    assert(text.out.includes(`› #text: ${nodes[0].differences[0].property} measured`) && text.out.includes(`(node ${label.id})`), `the drift line names no key and node:\n${text.out.trim().slice(0, 1200)}`);
+    const colors = button.tree.base.find((n) => n.k === "#text").tx.col;
+    await recolor(colors);
+    const again = verifyPlan(treeRun.planPath, ["--strict"]);
+    assert(again.status === 0 && again.json.elementFidelity === 1, `after undoing it: exit ${again.status}, ${again.json?.elementFidelity}`);
+    return `${slug} › #text: ${props[0]}, then 100% again`;
+  });
+
+  await check("a saved response edited by hand is flagged on exactly that entry, and fails --strict", () => {
+    assert(treeRun, "the push above didn't run");
+    const out = join(WORK, "tree-edited", "figma");
+    cpSync(treeRun.out, out, { recursive: true });
+    const read = treeRun.plan.calls.find((c) => c.kind === "read");
+    const path = join(out, read.result);
+    const text = readFileSync(path, "utf8");
+    // One color in one entry, as an agent tidying a response would change it.
+    const edited = text.replace(/"#ffffff"/, '"#fefefe"');
+    assert(edited !== text, "the read result holds no #ffffff to edit");
+    writeFileSync(path, edited);
+    const v = verifyPlan(join(out, "plan.json"), ["--strict"]);
+    assert(v.status === 1, `verify --strict exited ${v.status} on an edited response`);
+    const issues = v.json.readbackIssues;
+    assert(issues.length === 1 && issues[0].problem === "checksum_mismatch", `issues: ${JSON.stringify(issues)}`);
+    return `${issues[0].component} ${issues[0].slug}: checksum_mismatch, and no other entry`;
   });
 
   heading("Round trip through the shipped skill template");

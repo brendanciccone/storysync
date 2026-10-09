@@ -94,6 +94,37 @@ export function continuationResult(result: string): string {
   return `${m[1]}${m[2]}${next}.json`;
 }
 
+/**
+ * When a read result's entries were read, from their `readAt`: the first
+ * and the last, as times. Null for a result with no entry that has one.
+ */
+export function readTimes(result: { sets?: unknown }): { first: number; last: number } | null {
+  let first = Infinity;
+  let last = -Infinity;
+  for (const set of Array.isArray(result.sets) ? (result.sets as Partial<ReadSet>[]) : []) {
+    for (const entry of Object.values(set?.entries ?? {})) {
+      const at = typeof entry?.readAt === "string" ? Date.parse(entry.readAt) : NaN;
+      if (!Number.isFinite(at)) continue;
+      first = Math.min(first, at);
+      last = Math.max(last, at);
+    }
+  }
+  return Number.isFinite(first) ? { first, last } : null;
+}
+
+/**
+ * Whether a continuation's result was read before the results it
+ * continues, which were read up to `after`. A read call sent again after a
+ * change in Figma leaves its continuations' results from the reading
+ * before, and they hold Figma as it was: scored, they would pass a change
+ * nobody read. A continuation is always sent after what it continues, so
+ * one read earlier is one of those.
+ */
+export function readBefore(result: { sets?: unknown }, after: number | null): boolean {
+  const times = readTimes(result);
+  return after !== null && times !== null && times.first < after;
+}
+
 function isReadResult(value: unknown): value is ReadResult {
   const v = value as Partial<ReadResult> | null;
   return v != null && typeof v === "object" && v.kind === "read" && Array.isArray(v.sets);
@@ -155,7 +186,11 @@ export function addReadResult(readback: ReadbackFile, result: ReadResult, from =
 
 export interface PlanResults {
   readback: ReadbackFile;
-  /** Planned read calls whose result, or a continuation of it, isn't saved or holds no read result, by seq. */
+  /**
+   * Planned read calls whose result, or a continuation of it, isn't saved,
+   * holds no read result, or was read before the result it continues, by
+   * seq.
+   */
   notRead: number[];
   /** Where the assembled readback was written. */
   written: string;
@@ -187,6 +222,9 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   for (const call of plan.calls) {
     if (call.kind !== "read") continue;
     let result = call.result;
+    let previous = result;
+    // The last time the chain so far was read at.
+    let latest: number | null = null;
     for (;;) {
       const path = join(base, result);
       if (!existsSync(path)) {
@@ -200,8 +238,17 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
         problems.push(`call ${call.seq}: ${result} holds no read result, so the call failed or its response wasn't saved as it came`);
         break;
       }
+      // Left out, and what it reads with it: it is from before the reading it continues.
+      if (result !== call.result && readBefore(parsed, latest)) {
+        notRead.push(call.seq);
+        problems.push(`call ${call.seq}: ${result} was read before ${previous}, which it continues, so it holds Figma as it was: \`storysync figma next\` asks for it again`);
+        break;
+      }
       problems.push(...addReadResult(readback, parsed, result));
+      const times = readTimes(parsed);
+      if (times) latest = Math.max(latest ?? -Infinity, times.last);
       if (!parsed.more) break;
+      previous = result;
       result = continuationResult(result);
     }
   }

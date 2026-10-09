@@ -144,6 +144,9 @@ gives the same output on every run.
       examples/storybook-vite.
     - The fix is in D's file, so it lands with T or with D0, before step 2's
       0.4.1 gate.
+    - **Resolved by 095c5b0**, merged with tree/T-acceptance in ae31808:
+      mutantCli takes the file to mutate, and the canonicalJson mutant
+      rewrites `checksum.js`.
 22. **The spike is bigger than section 14 says** ("one call of about 4k").
     `spikes/figma-probe.js` is about 15k characters:
     - It runs as two calls plus upload_assets; for the second call, its header
@@ -741,3 +744,150 @@ C26. **D wires the flags**: `--plan` (loadPlanResults, then verify with
    and `--min-fidelity` (headlineFidelity). C changed cli/index.ts only in
    small hunks: the new caveat and issue texts, the element report, and what
    `--strict` and `--strict-measured` fail on.
+
+# Package D: where the CLI, the skills and the docs depart from the spec
+
+Package D wires the commands and flags (`cli/index.ts`), rewrites the
+skills, the push and diff commands and the README, and runs the push end
+to end (`cli/__tests__/tree-e2e.test.ts`, `scripts/acceptance.mjs`). Its
+notes are numbered D1 on. Everything ships in one 0.4.0 release, so the
+spec's 0.4.1 items are in it too.
+
+## Names and flags
+
+D1. **The flags take what A and C merged, not section 5.1's names.**
+   `--no-channel-args` sets `channelArgs: false`: a value the story's URL
+   won't carry is `arg_rejected` (`args_unsupported` when no URL can carry
+   it), as A1 has it. There is no `args_hidden` to flag; the skills name
+   `arg_rejected`, `appliedVia: "preview"` and `argsChecked: false`.
+D2. **`--stories` takes comma-separated pairs, or the flag more than once.**
+   The CLI refuses what can't be a `component=storyId` pair, or a component
+   named twice, before connecting. Which component a pair names, and
+   whether the story is its own, runSnap checks (A27).
+D3. **`verify --plan` writes the readback where `--readback` says, only when
+   it is given.** Otherwise loadPlanResults' default, beside the plan's
+   directory, which is `.storysync/figma-readback.json` for the default
+   plan. So an audit's plan under `.storysync/audit/figma` writes
+   `.storysync/audit/figma-readback.json` and leaves the push's alone.
+D4. **`verify --plan` scores the snap the plan was made from** (its
+   `snap.path`) unless `--snap` is given. A snap whose bytes no longer match
+   the plan's digest is named, and in `--json` as `plan.snapChanged`, but
+   not failed: its variants the calls never built fail as missing anyway.
+D5. **Every problem loadPlanResults returns fails `--strict`**, not only a
+   read with no result (C26): a component read from two sets, or an entry
+   read twice, leaves the readback in doubt too. `--json` adds
+   `plan: { path, readback, problems, snapChanged? }` to VerifyResult.
+D6. **`--min-fidelity` fails with or without `--strict`**, takes `99` or
+   `99%`, and fails a run headlineFidelity scores null (C22).
+D7. **`figma code`'s defaults are read from where each lives**:
+   `SPIKE.maxNodes`, `MAX_CALL_CHARS` and `DEFAULT_READ_LIMIT`, so a change
+   after a live push is one edit. `--json` prints
+   `{ planPath, calls, warnings }`; `figma next --json` prints `{ next }`,
+   null when nothing is left; `figma upload --json` prints `{ uploaded }`.
+
+## The skills (section 12)
+
+D8. **The root-only section keeps 0.4.0's text and templates unchanged**,
+   numbered as the steps they replace (3 to 7), because acceptance runs its
+   build, readback and label templates as an agent would paste them. The
+   Variable binding and Visual accuracy guidance for hand-written code moved
+   into it; the main sections describe what `figma code` does instead.
+D9. **`Script exceeded time limit`: send the new plan from its first
+   call.** Section 12 says to re-send the failed call and those after it,
+   but `figma code --max-nodes 200` renumbers the calls and clears the
+   results. Builds already done change nothing the second time.
+D10. **Section 5.5's Page 1 asks before removing.** r3/small's label
+   template, and B's, remove `Page 1` while it is empty, untouched and not
+   the only page, and report `pageOne`; the skills say so rather than ask.
+D11. **`upload_assets` without `batchCommit`.** The tool commits each upload
+   itself unless `batchCommit` is set, which would need a commit URL called
+   once more; `figma upload` posts to each URL and calls nothing else.
+D12. **The audit's element scoring (section 11) is an optional last step.**
+   It snaps into `.storysync/audit`, runs `figma code` there and sends only
+   the plan's read calls. Binding coverage per paint kind is left out: the
+   element-tree readback reads no bindings (C7).
+D13. **The grep test (section 15, D's acceptance) is a unit test** in
+   `setup.test.ts`, beside the other checks of the skills' text, so
+   `pnpm test` runs it. Besides `applyStyles`, `SPEC` and `BIND`, it
+   refuses `setPaints`, `loadFont`, `VARIANTS`, `PROPERTIES`,
+   `SLUG_BY_NAME` and `SOURCE_BY_SLUG` outside the root-only section, and
+   requires each new command and no `use_figma` code in steps 5 to 7.
+   setup.test.ts's checks of 0.4.0's templates now read the skills alone:
+   the push command points to their root-only section.
+
+## End to end
+
+D14. **tree-e2e runs the compiled CLI**, as the agent does, with uploads
+   posted to a stand-in server in the test, and holds every T fixture, and
+   all nine in one push, to 100% of elements and exit 0 under `--strict`.
+   A read continued through `figma next` is forced by lowering LIMIT in the
+   call files, standing in for a prediction that ran low.
+D15. **Acceptance pushes the example's tree snap into the unit tests' mock
+   Figma**, loaded from `dist/cli/__tests__/mock-figma.js`, which
+   `pnpm build` compiles beside the CLI; `--no-channel-args` and
+   `--stories` are checked against the live Storybook.
+
+
+## After review
+
+D16. **A continuation read before what it continues is sent again**
+   (sections 9.4 and 12 say nothing of a read call sent twice). A read call
+   sent again after a change in Figma left the continuations saved the
+   time before, and figma next and verify --plan took them as read. A
+   continuation is always sent after what it continues, so one whose
+   earliest entry `readAt` is before the latest of the results it
+   continues is from an earlier reading: `figma next` writes it again with
+   `again: true`, and loadPlanResults leaves it, and what it reads, out of
+   the readback, as a problem, its call in `notRead`. The entries' `readAt`
+   decide it, not file times, which a checkout resets.
+D17. **Variants a planned read didn't read are `not_read`**, a verdict
+   status section 10.6 lacks, beside `not_measured` and `parts_missing`:
+   plan.json's slices of each call not read whole go to verify as
+   `notReadSlices`, and a variant in one with no entry is neither missing
+   from Figma nor scored (as an unverified entry is left out), counted in
+   `summary.notRead` and said on the score's line. verify says a call
+   "wasn't read whole" rather than "has no result saved", since a failed
+   result or a continuation from before is that too.
+D18. **`--stories` pairs are resolved against every component Storybook
+   lists** (A's snap.ts, small hunks). One for a component a run doesn't
+   measure, under `--components`, is checked and left out, so the push can
+   pass its pairs to every snap, re-measures included, as the skill says;
+   and under `--merge` a component keeps the story the snap measured it
+   from where `--stories` names none. A name no component has, or a story
+   not the component's, is still refused before anything is measured.
+D19. **The audit snaps from the push's stories** (D12): `--stories` with
+   each component's `storyId` from the push's styles.json, which the push's
+   summary now names too.
+D20. **The build imports an icon again when its shapes changed** (B's
+   build.js). Section 12's repair, "resend that component's build calls
+   once", assumes the build restores what it sets, and an icon's shapes it
+   set only by importing them. Each icon, and a root icon, keeps `ink`,
+   its shapes' paints and stroke weights as the build left them; one that
+   no longer matches is imported again, under a new node id. An icon built
+   before has none and is kept. The minified build is 15,694 characters.
+D21. **A child missing or hidden in Figma costs itself alone** (C's
+   verify-tree.ts, two hunks; section 10.4 extended). Figma's auto layout
+   gives either no room, so a container may differ by such an in-flow
+   child's whole size, and along a flex flow its gap, and Figma's flow
+   anchors the next layer past a hidden one as past a missing one. Hidden
+   counts only where snap measured the layer visible.
+D22. **Section 17's "move card-title 6px right" can't be made inside auto
+   layout**: x is ignored there, and made ABSOLUTE the title leaves the
+   flow, so card-header shrinks and card-description moves up, which verify
+   reports, as Figma has them; a record doesn't say a layer is ABSOLUTE.
+   tree-e2e makes the other five edits and pins exactly those findings.
+   Step 4's undo can't be Figma's Ctrl+Z in the mock: what can't be undone
+   by hand (the deleted thumb, the recolor) is undone by sending the build
+   calls again, and the readback then equals the baseline but for `readAt`,
+   checksums and the node ids of the two rebuilt layers. The README's
+   falsification test no longer suggests a move, and says why.
+D23. **`meta.json` records `"channelArgs": false`** for a snap taken with
+   `--no-channel-args` (A's snap.ts), absent otherwise: a condition of the
+   measurement, as `variantSelection` is, and what lets a CLI test see the
+   flag reach the run without a browser.
+D24. **`verify --json` adds `minFidelity: { min, score, passed }`** with
+   `--min-fidelity`, both from 0 to 1, so a CI can tell that failure from
+   a `--strict` one.
+D25. **`figma next` writes a continuation from the template its call was
+   written with**: readable where the call holds the readable template,
+   after `figma code --no-minify`.

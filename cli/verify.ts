@@ -275,8 +275,15 @@ export interface VariantVerdict {
    * it lacks a field the readback template always returns, or it was read
    * before the snap. Nothing in it is scored, matched or mismatched, since
    * none of it can be trusted as a reading of Figma now.
+   *
+   * `not_read` is the variant a planned read call was to read, under
+   * `verify --plan`, that has no entry because the call wasn't read whole:
+   * its result, or a continuation's, isn't saved, holds no read, or is from
+   * before the reading it continues. Not missing from Figma, since nothing
+   * looked; not scored either, its elements left out of the score as an
+   * unverified entry's are.
    */
-  status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback" | "not_measured" | "parts_missing";
+  status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback" | "not_measured" | "parts_missing" | "not_read";
   /** `unrecorded` when the writer did not say — not the same as measured. */
   source: StyleSource | "unrecorded";
   matched: number;
@@ -375,6 +382,8 @@ export interface VerifyResult {
     partsMissing?: number;
     /** Variants in Figma's sets verify couldn't read: see VerifyResult.unreadInFigma. A --strict-measured failure. */
     unread?: number;
+    /** Under --plan: variants a planned read wasn't read whole for, so nothing read them (status `not_read`). */
+    notRead?: number;
     /** Elements across the variants scored: see VariantVerdict.elements. */
     elements?: {
       measured: number;
@@ -403,7 +412,7 @@ export interface VerifyResult {
   unscorable?: (UnscorableProperty & { component: string; variants: number })[];
   /** The properties scored over those plus the ones `unscorable` counts, 0-1. */
   coverage?: number | null;
-  /** Planned read calls with no result saved, by seq: see figma-results.ts. A --strict failure. */
+  /** Planned read calls not read whole, by seq: see figma-results.ts. A --strict failure. */
   notRead?: number[];
   /**
    * Failures the snap file recorded about itself.
@@ -1061,8 +1070,14 @@ export interface VerifyOptions extends ReadbackCheckOptions {
   skip?: readonly string[];
   /** Score every variant by its root alone, as before trees, for comparison (`--roots-only`). */
   rootsOnly?: boolean;
-  /** Planned read calls with no result saved, from loadPlanResults: reported, and a --strict failure. */
+  /** Planned read calls not read whole, from loadPlanResults: reported, and a --strict failure. */
   notRead?: number[];
+  /**
+   * What those calls were to read, as plan.json's slices: [storysync id,
+   * first variant index, last]. A variant in one with no entry is
+   * `not_read` rather than missing from Figma.
+   */
+  notReadSlices?: [componentId: string, firstI: number, lastI: number][];
   /** What Figma does, as the spike saw it: see verify-tree SPIKE. */
   spike?: SpikeAssumptions;
   /**
@@ -1162,7 +1177,9 @@ export function verify(
     const figmaComponent = readbackComponents[component];
     const snapComponent = componentByKey.get(component)!;
     const tree = treeMode ? treeOf(snapComponent) : undefined;
-    for (const variant of snapComponent.variants ?? []) {
+    // The id figma code keys a set's read slices by, and a variant's index.
+    const componentId = snapComponent.id ?? component;
+    for (const [index, variant] of (snapComponent.variants ?? []).entries()) {
       const slug = variant.slug;
       const figma = figmaComponent?.variants?.[slug];
       if (variant.status !== "ok") {
@@ -1189,6 +1206,11 @@ export function verify(
         verdicts.push(issue.problem !== "parts_missing"
           ? unverifiedVerdict(component, slug, figma)
           : { ...unverifiedVerdict(component, slug, parts[0]), status: "parts_missing" });
+        continue;
+      }
+      // Nothing read it, so nothing says whether Figma has it.
+      if (!parts.length && options.notReadSlices?.some(([id, first, last]) => id === componentId && index >= first && index <= last)) {
+        verdicts.push({ component, slug, status: "not_read", source: "unrecorded", matched: 0, mismatched: 0, differences: [] });
         continue;
       }
       if (!extended) {
@@ -1374,7 +1396,7 @@ export function verify(
       inferred: verdicts.filter((v) => v.source === "inferred").length,
       // Only count variants Figma actually has; a missing variant is a
       // different problem and is already reported as one.
-      unrecorded: verdicts.filter((v) => v.source === "unrecorded" && v.status !== "missing_from_figma").length,
+      unrecorded: verdicts.filter((v) => v.source === "unrecorded" && v.status !== "missing_from_figma" && v.status !== "not_read").length,
       unmeasured: unmeasuredInFigma.length,
       unscored: verdicts.filter((v) => v.status === "unscored").length,
       unverifiedReadback: verdicts.filter((v) => v.status === "unverified_readback" || v.status === "parts_missing").length,
@@ -1383,6 +1405,7 @@ export function verify(
         partsMissing: verdicts.filter((v) => v.status === "parts_missing").length,
         unread: unreadInFigma.reduce((n, u) => n + u.unbuilt.length + u.uncovered, 0),
       } : {}),
+      ...(options.notRead ? { notRead: verdicts.filter((v) => v.status === "not_read").length } : {}),
       ...(treeMode ? { elements } : {}),
     },
     snapIssues,
@@ -1558,7 +1581,7 @@ export function treeStrictFailures(result: VerifyResult, { allowDesignerLayers =
     if (e.notReadBack) out.push(`${e.notReadBack} ${e.notReadBack === 1 ? "element" : "elements"} under roots read back without their tree`);
     if (e.designerLayers && !allowDesignerLayers) out.push(`${e.designerLayers} designer ${e.designerLayers === 1 ? "layer" : "layers"} inside variants`);
   }
-  if (result.notRead?.length) out.push(`planned read calls ${result.notRead.join(", ")} have no result saved`);
+  if (result.notRead?.length) out.push(`planned read ${result.notRead.length === 1 ? "call" : "calls"} ${result.notRead.join(", ")} not read whole`);
   return out;
 }
 
@@ -1782,7 +1805,9 @@ export function formatElementReport(result: VerifyResult): string[] {
   const { summary } = result;
   const e = summary.elements ?? { measured: 0, verified: 0, drifted: 0, missing: 0, extra: 0, designerLayers: 0, notReadBack: 0 };
   const excluded = summary.unverifiedReadback;
-  const excludedNote = excluded > 0 ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`) : "";
+  const unread = summary.notRead ?? 0;
+  const excludedNote = (excluded > 0 ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`) : "")
+    + (unread > 0 ? chalk.red(`; ${unread} ${unread === 1 ? "variant" : "variants"} not read, not scored`) : "");
   // The elements' scores summed, so a node right on most of its properties
   // counts for most of one: the count beside it is of the ones right on all.
   lines.push(`\nFidelity: ${chalk.bold(`${percent(result.elementFidelity)} of elements`)} ${chalk.dim(`(${count(e.verified)} of ${count(e.measured + e.extra)} verified)`)}, `
@@ -1804,8 +1829,9 @@ export function formatElementReport(result: VerifyResult): string[] {
     `missing ${e.missing}`, `drifted ${e.drifted}`, `extra ${e.extra}`, `designer layers ${e.designerLayers}`,
     `not measured ${summary.notMeasured ?? 0}`,
     ...(e.notReadBack ? [`not read back ${e.notReadBack}`] : []),
+    ...(unread ? [`not read ${unread}`] : []),
   ];
-  const clean = !e.missing && !e.drifted && !e.extra && !e.notReadBack;
+  const clean = !e.missing && !e.drifted && !e.extra && !e.notReadBack && !unread;
   lines.push(`  ${(clean ? chalk.dim : chalk.red)(counts.join(" · "))}`);
 
   const unscorable = result.unscorable ?? [];
@@ -1844,6 +1870,6 @@ export function formatElementReport(result: VerifyResult): string[] {
     .map(([name, type, id]) => `  ? ${v.component} ${v.name || v.slug}: a layer nothing keyed, "${name}" (${type}, node ${id}): a designer's, not scored`)), chalk.yellow);
   capped(result.variants.filter((v) => v.status === "not_measured")
     .map((v) => `  ? ${v.component} ${v.name || v.slug}: not measured, so Figma holds a placeholder for it; snap's warning names the story change it needs`), chalk.yellow);
-  for (const seq of result.notRead ?? []) lines.push(chalk.red(`  ! planned read call ${seq} has no result saved, so what it reads wasn't scored`));
+  for (const seq of result.notRead ?? []) lines.push(chalk.red(`  ! planned read call ${seq} wasn't read whole, so the variants it didn't read weren't scored`));
   return lines;
 }

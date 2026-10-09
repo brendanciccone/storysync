@@ -95,6 +95,35 @@ test("results: verify --plan reads every saved result, follows continuations, wr
   }
 });
 
+test("results: a continuation read before the result it continues is left out, with what it reads, as not read", async () => {
+  const figma = newFigma();
+  const card = loadTreeFixture("card");
+  const built = await buildFixture(figma, card);
+  const before = await readBack(figma, [[built.component, 0, 1, 0]], { limit: 5000 });
+  assert.equal(before.length, 2);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  // The read call sent again after a change in Figma; its continuation not.
+  const [again] = await readBack(figma, [[built.component, 0, 1, 0]], { limit: 5000 });
+  const { dir, plan } = planDir([call(1, "read", "results/01.json")]);
+  try {
+    const results = join(dir, "figma", "results");
+    writeFileSync(join(results, "01.json"), JSON.stringify(before[0]));
+    writeFileSync(join(results, "01b.json"), JSON.stringify(before[1]));
+    const whole = loadPlanResults(plan);
+    assert.deepEqual([whole.notRead, whole.problems], [[], []], "a chain read in order is read whole");
+    writeFileSync(join(results, "01.json"), JSON.stringify(again));
+    const stale = loadPlanResults(plan);
+    assert.deepEqual(stale.notRead, [1]);
+    assert.deepEqual(stale.problems, ["call 1: results/01b.json was read before results/01.json, which it continues, so it holds Figma as it was: `storysync figma next` asks for it again"]);
+    // Only what the call read this time: nothing from the reading before.
+    const kept = Object.keys(stale.readback.components["ui/base/Card"].variants);
+    assert.deepEqual(kept, Object.keys(again.sets[0].entries).sort());
+    for (const key of kept) assert.deepEqual(stale.readback.components["ui/base/Card"].variants[key], again.sets[0].entries[key]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("results: an entry read twice keeps the first reading, and the file is in key order whatever order the calls came in", async () => {
   const figma = newFigma();
   const switchFixture = loadTreeFixture("switch");

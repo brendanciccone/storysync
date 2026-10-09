@@ -9,7 +9,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -716,6 +716,44 @@ async function unreachable(): Promise<string> {
 }
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("snap CLI: --stories reaches the run, which refuses a name no component has, or a story not the component's, before any browser starts", async () => {
+  // A story override that names the wrong thing would measure the default
+  // story under the component's name, so the run refuses it after listing
+  // the components and before launching anything: no browser is needed here.
+  const out = mkdtempSync(join(tmpdir(), "storysync-stories-"));
+  try {
+    const unknown = await run("snap", "--storybook", storybook, "--out", out, "--stories", "Nope=forms-button--primary", "--json");
+    assert.equal(unknown.status, 1, unknown.out);
+    assert.match((JSON.parse(unknown.stdout) as { error?: string }).error ?? "", /--stories names "Nope", which is none of the components being measured \(forms-button, data-display-card\)/);
+    const other = await run("snap", "--storybook", storybook, "--out", out, "--stories", "forms-button=data-display-card--default");
+    assert.equal(other.status, 1, other.out);
+    assert.match(other.out, /--stories gives forms-button the story "data-display-card--default", which isn't one of its stories: forms-button--primary/);
+    // Given twice, both pairs are read: the second is the one refused.
+    const twice = await run("snap", "--storybook", storybook, "--out", out, "--stories", "Button=forms-button--primary", "--stories", "Card=nope--x");
+    assert.equal(twice.status, 1, twice.out);
+    assert.match(twice.out, /--stories gives data-display-card the story "nope--x"/);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("snap CLI: --no-channel-args reaches the run, which records it in meta.json", async () => {
+  // A Storybook with an MDX page and no components: snap writes its files without a browser.
+  const empty = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { list: "# Docs\n- Introduction (introduction--docs)", docs: {} });
+  standIns.push(empty);
+  const out = mkdtempSync(join(tmpdir(), "storysync-channel-"));
+  try {
+    const meta = () => JSON.parse(readFileSync(join(out, "meta.json"), "utf8")) as { channelArgs?: boolean };
+    const off = await run("snap", "--storybook", empty.url, "--out", out, "--no-channel-args", "--json");
+    assert.ok(existsSync(join(out, "meta.json")), off.out);
+    assert.equal(meta().channelArgs, false);
+    await run("snap", "--storybook", empty.url, "--out", out, "--json");
+    assert.equal(meta().channelArgs, undefined, "a run that sets values through the preview says nothing of it");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
 
 test("map, snap and diff CLI: a Storybook that can't be reached is an error that parses under --json", async () => {
   // The reason went only to stderr, so a script piping the output to jq got

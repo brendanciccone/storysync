@@ -32,8 +32,10 @@
 // Each variant is converged: its layers are matched to records by the key in
 // their shared plugin data `k`, restyled in place (so node ids, and the
 // overrides of instances, survive), created where missing, and removed where
-// snap no longer measures them. Layers without a key are a designer's: left
-// alone and counted. Running a call twice changes nothing the second time.
+// snap no longer measures them. An icon whose shapes differ from how the
+// build left them is imported again. Layers without a key are a designer's:
+// left alone and counted. Running a call twice changes nothing the second
+// time.
 //
 // Branches marked SPIKE(n) guard what spike item n (cli/figma-spike.ts)
 // didn't try: each takes the design's choice, which the spike saw Figma
@@ -200,7 +202,15 @@ const loadFonts = async (texts) => {
   }
 };
 const textsIn = (n) => (n.type === 'TEXT' ? [n] : n.findAllWithCriteria({ types: ['TEXT'] }));
-const fits = (n, kind, st) => (kind === 'T' ? n.type === 'TEXT' : n.type === 'FRAME' && (kind === 'V' ? get(n, 'svg') === st.id : !get(n, 'svg')));
+// An icon's shapes as the build left them: each one's paints and stroke
+// weight, kept on the icon as `ink`. The build sets shapes only by importing
+// them, so an icon a designer recolored, or whose shapes they changed, no
+// longer fits, and is imported again rather than kept as it is.
+const ink = (n) => (n.type === 'FRAME' ? n.findAll((c) => 'fills' in c) : n.children.filter((c) => get(c, 'vs')).flatMap((c) => [c].concat('findAll' in c ? c.findAll(() => true) : [])).filter((c) => 'fills' in c))
+  .map((c) => [c.fills, c.strokes].map((l) => (l === figma.mixed ? '?' : l.map((p) => (p.visible === false ? '-' : '') + (p.color ? hexOf(p.color) + (p.opacity == null ? 1 : p.opacity) : p.type)).join())).join('/') + '/' + String(c.strokeWeight))
+  .join(';');
+const inked = (n) => !get(n, 'ink') || get(n, 'ink') === ink(n);
+const fits = (n, kind, st) => (kind === 'T' ? n.type === 'TEXT' : n.type === 'FRAME' && (kind === 'V' ? get(n, 'svg') === st.id && inked(n) : !get(n, 'svg')));
 const isFrame = (n) => n.type === 'FRAME' || n.type === 'COMPONENT';
 const SIZING = { X: 'FIXED', H: 'HUG', L: 'FILL' };
 
@@ -269,6 +279,7 @@ const style = async (n, rec, parent, root) => {
         }
       }
     }
+    put(n, 'ink', ink(n));
   } else {
     if (st.im) image(n, st.im);
     else {
@@ -348,7 +359,7 @@ const converge = async (root, recs) => {
     // marked so the next icon replaces them and nothing a designer added.
     // It has no keyed layers: any are from when its root was a frame.
     for (const c of root.children) if (get(c, 'k')) c.remove();
-    if (get(root, 'svg') !== S[rootStyle].id) {
+    if (get(root, 'svg') !== S[rootStyle].id || !inked(root)) {
       for (const c of root.children) if (get(c, 'vs')) c.remove();
       const icon = vector(S[rootStyle]);
       for (const c of [...icon.children]) {
