@@ -84,13 +84,13 @@ test("imageCrop: what of an image its box shows, the same at any size", () => {
   assert.equal(fnv1a32(avatar.key).slice(0, 4), "262b");
 });
 
-test("imageAssetId and imageAssetFile: the source's SHA-256 and the crop's FNV, a file name without the colon", () => {
+test("imageAssetId and imageAssetFile: the source's SHA-256 and the crop's FNV; a file name without the colon, and with the thumbnail's FNV", () => {
   const bytes = new Uint8Array([1, 2, 3]);
   const sha = createHash("sha256").update(bytes).digest("hex").slice(0, 12);
   const id = imageAssetId(bytes, "0,0,460,460");
   assert.equal(id, `img:${sha}-262b`);
-  assert.equal(imageAssetFile(id, "image/jpeg"), `assets/${sha}-262b.jpg`);
-  assert.equal(imageAssetFile(id, "image/png"), `assets/${sha}-262b.png`);
+  assert.equal(imageAssetFile(id, "image/jpeg", "dfca076c"), `assets/${sha}-262b-dfca076c.jpg`);
+  assert.equal(imageAssetFile(id, "image/png", "43bb538e"), `assets/${sha}-262b-43bb538e.png`);
 });
 
 test("thumbnailSize: twice the box, at most 1024 on the longer side", () => {

@@ -1606,29 +1606,32 @@ function rawCapture(name: string): RawTreeCapture {
 /**
  * A browser whose one page serves a story through a stand-in preview with
  * `argTypes`, measuring at --selector, its tree as `capture` gives it for the
- * args the story was given, and drawing every thumbnail as `thumbnail`'s
- * bytes, each one asked for recorded in `drawn`.
+ * args the story was given and the story's ID, and drawing every thumbnail
+ * as `thumbnail` gives its bytes ("thumbnail bytes", by default), each one
+ * asked for recorded in `drawn`.
  */
 function treeBrowser(opts: {
   storyId: string;
-  capture: (args: Record<string, unknown>) => RawTreeCapture;
+  capture: (args: Record<string, unknown>, storyId: string) => RawTreeCapture;
   argTypes?: Record<string, FakeArgType>;
   version?: string;
+  thumbnail?: (arg: { size: [number, number] }) => Buffer;
 }) {
   const drawn: unknown[] = [];
-  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId: opts.storyId });
+  let storyId = opts.storyId;
+  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId });
   let described = false;
   const given = () => fake.preview.storyStoreValue.getStoryContext().args;
   const target = {
     evaluate: async (fn: unknown) => {
-      if (fn === captureTreeInPage) return opts.capture(given());
+      if (fn === captureTreeInPage) return opts.capture(given(), storyId);
       if (described) return null;
       described = true;
       return { tag: "span", slot: "switch", role: null };
     },
     evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
     boundingBox: async () => {
-      const root = opts.capture(given()).root.box;
+      const root = opts.capture(given(), storyId).root.box;
       return { x: 0, y: 0, width: root[2], height: root[3] };
     },
   };
@@ -1636,7 +1639,8 @@ function treeBrowser(opts: {
     on: () => {}, off: () => {},
     goto: async (url: string) => {
       described = false;
-      fake = fakePreview({ storyId: opts.storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {} });
+      storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
+      fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {} });
       return null;
     },
     waitForSelector: async () => null,
@@ -1646,7 +1650,8 @@ function treeBrowser(opts: {
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
-        return { mime: "image/jpeg", base64: Buffer.from("thumbnail bytes").toString("base64") };
+        const bytes = opts.thumbnail ? opts.thumbnail(arg as { size: [number, number] }) : Buffer.from("thumbnail bytes");
+        return { mime: "image/jpeg", base64: bytes.toString("base64") };
       }
       if (Array.isArray(arg) && Array.isArray(arg[1])) return { display: "flex", "background-color": "rgb(229, 229, 229)" };
       return arg ? {} : null;
@@ -1767,10 +1772,55 @@ test("runSnap: an image is kept as a thumbnail of what its box shows, named by i
     // Drawn once, at twice the largest box it showed in.
     assert.equal(drawn.length, 1);
     assert.deepEqual((drawn[0] as { size: number[] }).size, [64, 64]);
-    const file = `assets/${id.slice(4)}.jpg`;
-    assert.deepEqual(tree!.assets.img, { [id]: { file, mime: "image/jpeg", size: [64, 64], natural: [2, 2], fnv: fnv1a32Bytes(Buffer.from("thumbnail bytes")) } });
+    const fnv = fnv1a32Bytes(Buffer.from("thumbnail bytes"));
+    const file = `assets/${id.slice(4)}-${fnv}.jpg`;
+    assert.deepEqual(tree!.assets.img, { [id]: { file, mime: "image/jpeg", size: [64, 64], natural: [2, 2], fnv } });
     assert.equal(readFileSync(join(dir, file), "utf8"), "thumbnail bytes");
     assert.equal(result.components[0].variants[1].treeDelta?.set?.["avatar-image"], undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: two components showing one photo at two sizes each keep their own thumbnail, on --merge too", async () => {
+  // shadcn.png is the Avatar's photo at 32px and Empty's at 48px: one id,
+  // as the crop is the same, but two thumbnails. Named by id alone, the
+  // second written replaced the first, whose record then named other bytes.
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000020000000208060000007b", "hex");
+  const photo = (size: number): RawTreeCapture => ({
+    root: {
+      k: "e", tag: "span", box: [0, 0, size, size], cs: { display: "flex" }, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, size, size], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: `data:image/png;base64,${png.toString("base64")}`, natural: [2, 2] } }],
+    },
+    fonts: {},
+  });
+  const docs = {
+    listComponents: async () => [
+      { id: "ui-base-avatar", name: "Avatar", title: "ui/base/Avatar", storyIds: ["ui-base-avatar--default"] },
+      { id: "ui-base-empty", name: "Empty", title: "ui/base/Empty", storyIds: ["ui-base-empty--with-avatar"] },
+    ],
+    getComponent: async (id: string) => ({ name: id === "ui-base-avatar" ? "Avatar" : "Empty", props: [], stories: [] }),
+  } as never;
+  const dir = tempDir();
+  try {
+    const snap = (sizes: Record<string, number>, overrides: Partial<SnapOptions> = {}) => {
+      const { launch } = treeBrowser({
+        storyId: "ui-base-avatar--default",
+        capture: (_args, storyId) => photo(sizes[storyId.split("--")[0]]),
+        thumbnail: ({ size }) => Buffer.from(`thumbnail at ${size.join("x")}`),
+      });
+      return runSnap(options(dir, { selector: "[data-slot=avatar]", ...overrides }), { storybook: docs, launch });
+    };
+    const check = (result: Awaited<ReturnType<typeof snap>>, expected: Record<string, string>) => {
+      const id = imageAssetId(png, "0,0,2,2");
+      const records = result.components.map((c) => c.tree!.assets.img[id]);
+      assert.deepEqual(records.map((r) => r.size), Object.values(expected).map((s) => s.split("x").map(Number)));
+      assert.notEqual(records[0].file, records[1].file);
+      for (const record of records) assert.equal(fnv1a32Bytes(readFileSync(join(dir, record.file))), record.fnv, record.file);
+    };
+    check(await snap({ "ui-base-avatar": 32, "ui-base-empty": 48 }), { avatar: "64x64", empty: "96x96" });
+    // A merge that measures Empty at another size leaves the Avatar's file as it was.
+    check(await snap({ "ui-base-avatar": 32, "ui-base-empty": 40 }, { merge: true, components: ["ui-base-empty"] }), { avatar: "64x64", empty: "80x80" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

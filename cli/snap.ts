@@ -1404,10 +1404,11 @@ async function writeImageAssets(
     const image = images.get(id)!;
     try {
       const thumbnail = await makeThumbnail(page, image);
-      const file = imageAssetFile(id, thumbnail.mime);
+      const fnv = fnv1a32Bytes(thumbnail.bytes);
+      const file = imageAssetFile(id, thumbnail.mime, fnv);
       stage.writeFile(entry, file, thumbnail.bytes);
       assets[id] = {
-        file, mime: thumbnail.mime, size: thumbnail.size, natural: image.natural, fnv: fnv1a32Bytes(thumbnail.bytes),
+        file, mime: thumbnail.mime, size: thumbnail.size, natural: image.natural, fnv,
         ...(image.raster ? { raster: 1 as const } : {}),
       };
     } catch (err) {

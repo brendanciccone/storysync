@@ -275,9 +275,18 @@ export function imageAssetId(source: Uint8Array, cropKey: string): string {
   return `img:${createHash("sha256").update(source).digest("hex").slice(0, 12)}-${fnv1a32(cropKey).slice(0, 4)}`;
 }
 
-/** Where an asset's file goes, relative to the directory holding styles.json: no colon, which Windows can't name a file with. */
-export function imageAssetFile(id: string, mime: "image/jpeg" | "image/png"): string {
-  return `assets/${id.replace(/^img:/, "")}.${mime === "image/png" ? "png" : "jpg"}`;
+/**
+ * Where an asset's thumbnail goes, relative to the directory holding
+ * styles.json: its id without the colon, which Windows can't name a file
+ * with, and the FNV of the thumbnail's own bytes. The id leaves the size
+ * out, so one photo with one crop is one id in every component, but each
+ * component draws its thumbnail at its own largest box: named by id alone,
+ * Empty's 96px thumbnail of shadcn.png replaced the Avatar's 80px one, whose
+ * record then named bytes no longer on disk. A `--merge` run could do the
+ * same to a component it kept.
+ */
+export function imageAssetFile(id: string, mime: "image/jpeg" | "image/png", fnv: string): string {
+  return `assets/${id.replace(/^img:/, "")}-${fnv}.${mime === "image/png" ? "png" : "jpg"}`;
 }
 
 /** The longest side a thumbnail is drawn at, in pixels. */
