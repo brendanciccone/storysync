@@ -10,6 +10,9 @@ import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { headlineFidelity, slugOfKey } from "../verify.js";
+import { buildAndRead } from "./tree-harness.js";
+import { loadTreeFixture } from "./mock-figma.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1477,6 +1480,7 @@ test("verify: bindings are reported beside the score and fail nothing, and a rea
   assert.deepEqual(older.bindings, { read: 0, bound: 0, unbound: [] });
 });
 
+
 // --- Element trees: what changes for snaps and readbacks from before them ------------
 
 const PUSH2 = fileURLToPath(new URL("../../../cli/__tests__/fixtures/push2/", import.meta.url));
@@ -1488,6 +1492,7 @@ test("push2 replay: a root-only snap and readback score as 0.4.0 did, 99.9%, plu
   const result = verify(snap, push2("figma-readback.json") as ReadbackFile, 0.5, { measuredAt: meta.measuredAt });
   assert.equal(result.summary.propertiesMatched, 1653);
   assert.equal(result.summary.propertiesCompared, 1654);
+  assert.equal(result.elementFidelity, undefined, "no element score without trees");
   const rootOnly = result.caveats.filter((c) => c.kind === "root-only");
   assert.equal(rootOnly.length, 14);
   assert.deepEqual(rootOnly[0], { component: "ui/base/Attachment", kind: "root-only" });
@@ -1513,4 +1518,43 @@ test("root-only: the caveat counts the inner elements snap --root-only found, an
   assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), [{ component: "Forms/Button", kind: "root-only", innerElements: 22 }]);
   for (const v of snap.components[0].variants) (v as { innerElements?: number }).innerElements = 0;
   assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), []);
+});
+
+test("roots-only: a tree snap scored by its roots alone scores as 0.4.0 would, and says how much it left out", async () => {
+  const { fixture, readback } = await buildAndRead("card");
+  const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
+  assert.equal(roots.elementFidelity, undefined);
+  assert.equal(roots.summary.elements, undefined);
+  assert.ok(roots.variants.every((v) => v.elements === undefined));
+  assert.deepEqual(roots.caveats.filter((c) => c.kind === "root-only"), [{ component: "ui/base/Card", kind: "root-only", innerElements: 22 }]);
+  const full = verify(fixture, readback, 0.5);
+  assert.equal(headlineFidelity(full), full.elementFidelity);
+  assert.equal(headlineFidelity(roots), roots.fidelity);
+});
+
+test("root-only snap, element readback: roots scored from the root fields, boxShadow among them, the records left alone", async () => {
+  const { fixture, readback } = await buildAndRead("inputotp");
+  const snap = JSON.parse(JSON.stringify(fixture)) as SnapResult & { components: Record<string, unknown>[] };
+  for (const c of snap.components) delete c.tree;
+  const result = verify(snap, readback, 0.5);
+  assert.equal(result.elementFidelity, undefined);
+  assert.deepEqual(result.readbackIssues, []);
+  assert.equal(result.variants[0].status, "verified");
+  assert.equal(result.summary.notMeasured, 0, "an element readback says what it couldn't measure, even here");
+  // A shadow the root fields didn't carry before trees is compared now.
+  const shadowed = JSON.parse(JSON.stringify(snap)) as SnapResult;
+  shadowed.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 1, blur: 2, spread: 0, color: "#0000000d", inset: false }];
+  const drifted = verify(shadowed, readback, 0.5);
+  assert.deepEqual(drifted.variants[0].differences.map((d) => d.property), ["boxShadow"]);
+});
+
+test("element readback: a later part needs only its part's fields, every other entry the tree fields too", () => {
+  const part = { name: "a=b", source: "measured", tpl: 2, built: null, part: [5, 2, 7], tree: [] };
+  assert.deepEqual(missingReadbackFields(part), []);
+  assert.deepEqual(missingReadbackFields({ ...part, part: [0, 5, 7] }), [...READBACK_FIELDS.filter((f) => f !== "source"), "boxShadow", "designerLayers"]);
+  assert.deepEqual(missingReadbackFields({ ...part, tree: [["k", "T", 0, 0, 1, 1]] }), ["tree[0], a T record of 6 fields, not 23"]);
+  assert.deepEqual(missingReadbackFields({ ...part, tree: "nodes" }), ["tree, as a list of records"]);
+  assert.equal(slugOfKey("size-sm#12"), "size-sm");
+  assert.equal(slugOfKey("size-sm"), "size-sm");
+  assert.equal(slugOfKey("#text"), "#text");
 });

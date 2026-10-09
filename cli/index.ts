@@ -133,6 +133,10 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
       if (issue.readAt == null) return "is stale: it has no readAt, so when Figma read it is unknown";
       if (!Number.isFinite(Date.parse(issue.readAt))) return `is stale: its readAt (${issue.readAt}) is not a time, so when Figma read it is unknown`;
       return `is stale: Figma read it at ${issue.readAt}, before the snap was measured${issue.measuredAt ? ` at ${issue.measuredAt}` : snapAge.known ? ` at ${snapAge.measuredAt}` : ""}, so it is from an earlier run`;
+    case "parts_missing":
+      return "is one of the parts a variant was read in, and they don't add up: one is missing, repeated or out of order";
+    case "name_mismatch":
+      return `is sealed under the name "${issue.name}", not "${issue.expected}", the variant snap measured under this slug: a variant was renamed, or its slug moved onto another`;
   }
 }
 
@@ -166,6 +170,12 @@ function describeCaveat(caveat: ScoreCaveat): string {
     case "root-only": {
       const inner = caveat.innerElements;
       return `only the outer element was measured and compared${inner !== undefined ? ` (${inner} inner ${inner === 1 ? "element" : "elements"} not measured)` : ""}`;
+    }
+    case "truncated-tree":
+      return `snap stopped at ${caveat.nodes} elements, leaving out ${caveat.at} and what follows it, so those weren't measured or compared`;
+    case "built-from-other-measurement": {
+      const one = (caveat.variants ?? 0) === 1;
+      return `Figma says ${one ? "variant" : `${caveat.variants} variants,`} ${nameSlugs(caveat.slugs ?? [])}, ${one ? "was" : "were"} built from other measurements than this snap's: the score says what Figma has, and re-sending the build calls brings ${one ? "it" : "them"} up to date`;
     }
   }
 }

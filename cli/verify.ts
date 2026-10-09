@@ -12,8 +12,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonicalJson, fnv1a32 } from "./checksum.js";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
-import { expandTree } from "./tree-types.js";
-import type { ComponentTree, TreeDelta } from "./tree-types.js";
+import { expandTree, rootWithStyles, treeDigest } from "./tree-types.js";
+import type { ComponentTree, TreeDelta, TreeNode } from "./tree-types.js";
+import { SPIKE, recordProblem, scoreTree } from "./verify-tree.js";
+import type { NodeVerdict, ReadRecord, SpikeAssumptions, UnscorableProperty } from "./verify-tree.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
 import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
@@ -47,7 +49,7 @@ export const READBACK_SCHEMA_VERSION = 1;
  * outside. A run inspected later, or by CI, must be able to tell them apart
  * without scrollback — an unrecorded state reads as the good one.
  */
-export type StyleSource = "measured" | "inferred";
+export type StyleSource = "measured" | "inferred" | "unmeasured";
 
 export interface ReadbackStyles {
   /** Omitted by older writers; treated as `unrecorded`, never as measured. */
@@ -108,6 +110,20 @@ export interface ReadbackStyles {
    * radius of 8.
    */
   unbound?: string[];
+  /**
+   * The element-tree readback's (templates/readback.js, `tpl: 2`): the
+   * variant's name in Figma; the digest of the facts the build built it
+   * from, `built`; for a variant read in parts, which records this part
+   * holds, `part: [first, count, total]`; the records, `tree`; and the
+   * layers nothing keyed, `designerLayers`, as `[name, type, id]`. All
+   * sealed under the checksum, so verify can trust each as read.
+   */
+  tpl?: number;
+  name?: string;
+  built?: string | null;
+  part?: [first: number, count: number, total: number];
+  tree?: ReadRecord[];
+  designerLayers?: [name: string, type: string, id: string][];
   /**
    * When the readback template read this entry, as an ISO 8601 time from
    * Figma's clock, sealed under the checksum: see READ_AT_SKEW_MS. Not a
@@ -249,7 +265,7 @@ export interface VariantVerdict {
    * before the snap. Nothing in it is scored, matched or mismatched, since
    * none of it can be trusted as a reading of Figma now.
    */
-  status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback";
+  status: "verified" | "drifted" | "missing_from_figma" | "unscored" | "unverified_readback" | "not_measured" | "parts_missing";
   /** `unrecorded` when the writer did not say — not the same as measured. */
   source: StyleSource | "unrecorded";
   matched: number;
@@ -262,6 +278,24 @@ export interface VariantVerdict {
    * out where there are none. See VerifyResult.uncompared.
    */
   uncompared?: string[];
+  /**
+   * For a variant scored element by element: its elements, snap's nodes
+   * and the keyed layers snap lacks, and how they scored, `fidelity` being
+   * the sum of their scores over their number. Only then.
+   */
+  elements?: { measured: number; verified: number; drifted: number; missing: number; extra: number; fidelity: number | null };
+  /** The elements that are not verified, by key. */
+  nodes?: NodeVerdict[];
+  /** The variant's name in Figma, as the readback sealed it. */
+  name?: string;
+  /** Layers in the variant nothing keyed, a designer's: listed, not scored. */
+  designerLayers?: [name: string, type: string, id: string][];
+  /**
+   * True where snap measured the variant's tree and its readback, from a
+   * template before trees, has none: its root was scored as before, and
+   * nothing under it. A --strict failure.
+   */
+  childrenNotReadBack?: true;
 }
 
 export interface SnapAgeKnown {
@@ -320,7 +354,44 @@ export interface VerifyResult {
     unscored: number;
     /** Measured variants with a readback issue, so nothing in them was scored. */
     unverifiedReadback: number;
+    /**
+     * The rest only where a snap has trees or a readback holds element
+     * records. Variants snap couldn't measure that Figma has a placeholder
+     * for: listed, never scored. A --strict-measured failure.
+     */
+    notMeasured?: number;
+    /** Variants read in parts that don't add up, so nothing in them was scored. */
+    partsMissing?: number;
+    /** Elements across the variants scored: see VariantVerdict.elements. */
+    elements?: {
+      measured: number;
+      verified: number;
+      drifted: number;
+      missing: number;
+      extra: number;
+      /** Layers a designer added inside variants. */
+      designerLayers: number;
+      /** Nodes under roots whose readback has no tree: see VariantVerdict.childrenNotReadBack. */
+      notReadBack: number;
+    };
   };
+  /**
+   * Where a snap has trees: the elements' scores summed over their number,
+   * 0-1, the headline score, beside `fidelity`, the share of properties.
+   * Null when no element was scored. Absent for a snap without trees, which
+   * is scored as before.
+   */
+  elementFidelity?: number | null;
+  /**
+   * What verify can't score, by component, element and property, with the
+   * number of variants each is in: a font named by a CSS keyword, a CSS
+   * feature Figma doesn't draw. Never in a denominator.
+   */
+  unscorable?: (UnscorableProperty & { component: string; variants: number })[];
+  /** The properties scored over those plus the ones `unscorable` counts, 0-1. */
+  coverage?: number | null;
+  /** Planned read calls with no result saved, by seq: see figma-results.ts. A --strict failure. */
+  notRead?: number[];
   /**
    * Failures the snap file recorded about itself.
    *
@@ -412,7 +483,7 @@ export interface ScoreCaveat {
    * `identical-variants` has it.
    */
   kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
-    | "root-only";
+    | "root-only" | "truncated-tree" | "built-from-other-measurement";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
   /** The properties whose default is assumed, for `default-assumed`, or that change nothing measured, for `behavior-only`. */
@@ -426,7 +497,10 @@ export interface ScoreCaveat {
   /**
    * For `args-unchecked`: the variants snap measured without being able to
    * check that Storybook gave the story their values, so any of them may
-   * have scored the story's default. `variants` counts them.
+   * have scored the story's default. `variants` counts them. For
+   * `built-from-other-measurement`: the variants Figma says were built from
+   * other facts than these, a snap taken since the push; the score still
+   * says what Figma has.
    */
   slugs?: string[];
   /**
@@ -435,6 +509,9 @@ export interface ScoreCaveat {
    * where snap counted them.
    */
   innerElements?: number;
+  /** For `truncated-tree`: the nodes snap found, and the key of the first it left out. */
+  nodes?: number;
+  at?: string;
 }
 
 export interface ReadbackIssue {
@@ -459,7 +536,7 @@ export interface ReadbackIssue {
    * or falls before the snap it is scored against by more than
    * READ_AT_SKEW_MS, so it was read in an earlier run. An entry can be both.
    */
-  problem: "no_checksum" | "no_node_id" | "duplicate_node_id" | "checksum_mismatch" | "incomplete" | "stale";
+  problem: "no_checksum" | "no_node_id" | "duplicate_node_id" | "checksum_mismatch" | "incomplete" | "stale" | "parts_missing" | "name_mismatch";
   /** For `duplicate_node_id`: the other components with the same `nodeId`. */
   sharedWith?: string[];
   /** For `incomplete`: the fields the entry lacks. */
@@ -468,6 +545,13 @@ export interface ReadbackIssue {
   readAt?: string | null;
   /** For `stale`: when its component was measured, where a merged snap gives each its own time. */
   measuredAt?: string;
+  /**
+   * For `name_mismatch`: the variant's name in Figma, as the entry sealed
+   * it, and the name snap's combination gives its slug. A variant renamed,
+   * or a slug moved onto another variant, isn't scored.
+   */
+  name?: string;
+  expected?: string;
 }
 
 // --- Comparison --------------------------------------------------------------
@@ -500,7 +584,8 @@ function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {
     return closeEnough(x.offsetX, y.offsetX, tolerance)
       && closeEnough(x.offsetY, y.offsetY, tolerance)
       && closeEnough(x.blur, y.blur, tolerance)
-      && closeEnough(x.spread, y.spread, tolerance)
+      // Unless the spike finds Figma drops a shadow's spread (verify-tree SPIKE).
+      && (!SPIKE.shadowSpreadKept || closeEnough(x.spread, y.spread, tolerance))
       && sameColor(x.color, y.color)
       // An inset ring built as a drop shadow draws outside the element.
       && Boolean(x.inset) === Boolean(y.inset);
@@ -803,13 +888,44 @@ export const READBACK_FIELDS = [
 export const READBACK_LATER_FIELDS = ["textLayout", "bound", "unbound"] as const;
 
 /**
+ * The fields the element-tree template (templates/readback.js) returns on
+ * an entry beside READBACK_FIELDS, `boxShadow` among them, or on a later
+ * part of a variant read in parts, which carries no root fields.
+ */
+export const READBACK_TREE_FIELDS = ["boxShadow", "name", "tpl", "built", "tree", "designerLayers"] as const;
+export const READBACK_PART_FIELDS = ["name", "source", "tpl", "built", "part", "tree"] as const;
+
+/** Fields only the element-tree template returns: an entry with any is one it read. */
+const TREE_MARKS = ["tpl", "tree", "built", "part", "designerLayers"];
+
+/**
  * The fields of READBACK_FIELDS an entry lacks, and, where it has any of
  * READBACK_LATER_FIELDS, those of them it lacks. Present as `null` is
  * present; absent, or undefined as JSON leaves it, is not.
+ *
+ * An entry the element-tree template read must have its fields too
+ * (READBACK_TREE_FIELDS, or READBACK_PART_FIELDS on a later part), and
+ * each record in its tree the length its kind has: one shorter was read
+ * with the template cut down to leave a property out, and would otherwise
+ * score as though that property matched.
  */
 export function missingReadbackFields(entry: object): string[] {
   const record = entry as Record<string, unknown>;
   const has = (key: string) => Object.prototype.hasOwnProperty.call(record, key) && record[key] !== undefined;
+  if (TREE_MARKS.some(has)) {
+    const part = record.part;
+    const later = Array.isArray(part) && Number(part[0]) > 0;
+    const fields = later ? READBACK_PART_FIELDS : [...READBACK_FIELDS, ...READBACK_TREE_FIELDS];
+    const missing: string[] = fields.filter((key) => !has(key));
+    if (has("tree")) {
+      if (!Array.isArray(record.tree)) missing.push("tree, as a list of records");
+      else record.tree.forEach((r, i) => {
+        const problem = recordProblem(r, i);
+        if (problem) missing.push(problem);
+      });
+    }
+    return missing;
+  }
   const later = READBACK_LATER_FIELDS.some(has) ? READBACK_LATER_FIELDS.filter((key) => !has(key)) : [];
   return [...READBACK_FIELDS.filter((key) => !has(key)), ...later];
 }
@@ -903,10 +1019,10 @@ export function checkReadback(readback: ReadbackFile, { measuredAt, componentsMe
 
 /** A variant whose readback entry has an issue: reported, not scored. */
 function unverifiedVerdict(component: string, slug: string, figma: unknown): VariantVerdict {
-  const declared = typeof figma === "object" ? (figma as ReadbackStyles).source : undefined;
+  const declared = figma != null && typeof figma === "object" ? (figma as ReadbackStyles).source : undefined;
   return {
     component, slug, status: "unverified_readback",
-    source: declared === "measured" || declared === "inferred" ? declared : "unrecorded",
+    source: declared === "measured" || declared === "inferred" || declared === "unmeasured" ? declared : "unrecorded",
     matched: 0, mismatched: 0, differences: [],
   };
 }
@@ -914,6 +1030,12 @@ function unverifiedVerdict(component: string, slug: string, figma: unknown): Var
 export interface VerifyOptions extends ReadbackCheckOptions {
   /** Components to leave out of the score: see withoutComponents. */
   skip?: readonly string[];
+  /** Score every variant by its root alone, as before trees, for comparison (`--roots-only`). */
+  rootsOnly?: boolean;
+  /** Planned read calls with no result saved, from loadPlanResults: reported, and a --strict failure. */
+  notRead?: number[];
+  /** What to assume of Figma where the spike hasn't said: see verify-tree SPIKE. */
+  spike?: SpikeAssumptions;
 }
 
 /**
@@ -968,29 +1090,146 @@ export function verify(
   const { snap, readback, skipped } = withoutComponents(snapIn, readbackIn, options.skip);
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
-
-  const readbackIssues = checkReadback(readback, options);
-  const unverified = new Set(readbackIssues.map((issue) => JSON.stringify([issue.component, issue.slug])));
   // A readback with no components, {"version":1} say, has read nothing back
   // from Figma: every variant is missing from it, as from an empty map.
   const readbackComponents = readback.components ?? {};
 
+  // Element by element where snap measured trees, unless asked to score
+  // as before; and the element-tree readback's own checks wherever it read.
+  const treeMode = !options.rootsOnly && (snap.components ?? []).some((c) => treeOf(c) != null);
+  const treeRead = Object.values(readbackComponents).some((c) => Object.values(c?.variants ?? {}).some((e) => isTreeEntry(e)));
+  const extended = treeMode || treeRead;
+
+  const readbackIssues = checkReadback(readback, options);
+  if (treeRead) readbackIssues.push(...checkTreeReadback(snap, readback, readbackIssues));
+  // An issue on any part of a variant read in parts is the variant's.
+  const unverified = new Map<string, ReadbackIssue>();
+  for (const issue of readbackIssues) {
+    const key = JSON.stringify([issue.component, slugOfKey(issue.slug)]);
+    if (!unverified.has(key) || issue.problem === "parts_missing") unverified.set(key, issue);
+  }
+
+  // The component each key scores, the last of two with one key, as
+  // expandSnap keeps it.
+  const componentByKey = new Map<string, SnapComponent>();
+  for (const component of snap.components ?? []) if (component.base) componentByKey.set(componentKey(component), component);
+
+  const elements = { measured: 0, verified: 0, drifted: 0, missing: 0, extra: 0, designerLayers: 0, notReadBack: 0 };
+  let elementScore = 0;
+  const unscorable = new Map<string, UnscorableProperty & { component: string; variants: number }>();
+  const builtElsewhere = new Map<string, string[]>();
+  const notMeasuredSlugs = new Set<string>();
+
   for (const [component, measuredVariants] of measuredByComponent) {
     const figmaComponent = readbackComponents[component];
-    for (const [slug, measured] of measuredVariants) {
+    const snapComponent = componentByKey.get(component)!;
+    const tree = treeMode ? treeOf(snapComponent) : undefined;
+    for (const variant of snapComponent.variants ?? []) {
+      const slug = variant.slug;
       const figma = figmaComponent?.variants?.[slug];
-      verdicts.push(figma != null && unverified.has(JSON.stringify([component, slug]))
-        ? unverifiedVerdict(component, slug, figma)
-        : verifyVariant(component, slug, measured, figma, tolerance));
+      if (variant.status !== "ok") {
+        // A placeholder the element-tree build made for a variant snap
+        // couldn't measure: listed, never scored.
+        if (isTreeEntry(figma)) {
+          notMeasuredSlugs.add(JSON.stringify([component, slug]));
+          verdicts.push({
+            component, slug, status: "not_measured", source: sourceOf(figma), matched: 0, mismatched: 0, differences: [],
+            ...(typeof figma!.name === "string" ? { name: figma!.name } : {}),
+          });
+        }
+        continue;
+      }
+      const measured = measuredVariants.get(slug);
+      if (!measured) continue;
+      const issue = figma != null ? unverified.get(JSON.stringify([component, slug])) : undefined;
+      if (issue) {
+        // Nothing in it scored; parts that don't add up said as such.
+        verdicts.push(issue.problem !== "parts_missing"
+          ? unverifiedVerdict(component, slug, figma)
+          : { ...unverifiedVerdict(component, slug, figma), status: "parts_missing" });
+        continue;
+      }
+      if (!extended) {
+        verdicts.push(verifyVariant(component, slug, measured, figma, tolerance));
+        continue;
+      }
+
+      let nodes: TreeNode[] | null = null;
+      if (tree) {
+        try {
+          nodes = expandTree(tree, (variant as TreeVariant).treeDelta);
+        } catch (err) {
+          throw new Error(`${component} ${slug}: snap's tree can't be expanded, so styles.json is broken: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (nodes && figma != null && isTreeEntry(figma)) {
+        const records = recordsOf(figmaComponent!.variants, slug);
+        const scored = scoreTree({ nodes, styles: measured, assets: tree!.assets, records, tolerance, spike: options.spike });
+        const counted = scored.measured + scored.extra;
+        elements.measured += scored.measured;
+        elements.verified += scored.verified;
+        elements.drifted += scored.drifted;
+        elements.missing += scored.missing;
+        elements.extra += scored.extra;
+        elementScore += scored.score;
+        const designer = Array.isArray(figma.designerLayers) ? figma.designerLayers : [];
+        elements.designerLayers += designer.length;
+        for (const u of scored.unscorable) addUnscorable(unscorable, component, u);
+        if (tree!.truncated) addUnscorable(unscorable, component, { key: tree!.truncated.at, property: "subtree", reason: `snap stopped at ${tree!.truncated.nodes} nodes, so the rest of the tree wasn't measured` });
+        if (figma.built !== treeDigest([rootWithStyles(nodes[0], measured), ...nodes.slice(1)])) {
+          builtElsewhere.set(component, [...(builtElsewhere.get(component) ?? []), slug]);
+        }
+        verdicts.push({
+          component, slug,
+          status: scored.compared === 0 ? "unscored" : scored.nodes.length ? "drifted" : "verified",
+          source: sourceOf(figma), matched: scored.matched, mismatched: scored.compared - scored.matched, differences: [],
+          elements: {
+            measured: scored.measured, verified: scored.verified, drifted: scored.drifted, missing: scored.missing, extra: scored.extra,
+            fidelity: counted ? scored.score / counted : null,
+          },
+          nodes: scored.nodes,
+          ...(typeof figma.name === "string" ? { name: figma.name } : {}),
+          ...(designer.length ? { designerLayers: designer } : {}),
+        });
+        continue;
+      }
+
+      // The root alone: a snap without trees, a component measured
+      // without one, or a readback from a template before trees.
+      const verdict = verifyVariant(component, slug, measured, figma, tolerance);
+      if (figma == null) {
+        // Missing from Figma: every element snap measured is missing, and
+        // where it measured a tree, every property of each.
+        const all = nodes ? scoreTree({ nodes, styles: measured, assets: tree!.assets, records: [], tolerance, spike: options.spike }) : null;
+        elements.measured += nodes ? nodes.length : 1;
+        elements.missing += nodes ? nodes.length : 1;
+        if (all) verdict.mismatched = all.compared;
+        verdicts.push(verdict);
+        continue;
+      }
+      elements.measured += 1;
+      const compared = verdict.matched + verdict.mismatched;
+      elementScore += compared ? verdict.matched / compared : 0;
+      if (verdict.status === "verified") elements.verified += 1;
+      else elements.drifted += 1;
+      if (nodes) {
+        verdict.childrenNotReadBack = true;
+        elements.notReadBack += nodes.length - 1;
+      }
+      verdicts.push(verdict);
     }
   }
 
   // The mirror of missing_from_figma: something Figma has that we never
-  // measured, and therefore never scored.
+  // measured, and therefore never scored. Not a later part of a variant
+  // read in parts, nor a placeholder listed as not measured.
   const unmeasuredInFigma: { component: string; slug: string }[] = [];
   for (const [component, entry] of Object.entries(readbackComponents)) {
     const measured = measuredByComponent.get(component);
     for (const slug of Object.keys(entry?.variants ?? {})) {
+      const own = slugOfKey(slug);
+      if (own !== slug && (measured?.has(own) || notMeasuredSlugs.has(JSON.stringify([component, own])))) continue;
+      if (notMeasuredSlugs.has(JSON.stringify([component, slug]))) continue;
       if (!measured?.has(slug)) unmeasuredInFigma.push({ component, slug });
     }
   }
@@ -1045,8 +1284,11 @@ export function verify(
 
   const caveats = (snap.components ?? [])
     .filter((component) => readbackComponents[componentKey(component)] != null)
-    .flatMap((component) => [...scoreCaveats(component), ...rootOnlyCaveats(component)]);
-  const bindings = bindingReport(readbackComponents, unverified);
+    .flatMap((component) => [
+      ...scoreCaveats(component),
+      ...treeCaveats(component, { treeMode, builtElsewhere: builtElsewhere.get(componentKey(component)) }),
+    ]);
+  const bindings = bindingReport(readbackComponents, new Set(unverified.keys()));
   const uncompared = new Map<string, { component: string; property: string; variants: number }>();
   for (const verdict of verdicts) {
     for (const property of verdict.uncompared ?? []) {
@@ -1057,9 +1299,13 @@ export function verify(
     }
   }
 
+  const unscorableList = [...unscorable.values()];
+  const unscorableCount = unscorableList.reduce((n, u) => n + u.variants, 0);
+  const counted = elements.measured + elements.extra;
   return {
     version: READBACK_SCHEMA_VERSION,
     fidelity: propertiesCompared > 0 ? propertiesMatched / propertiesCompared : null,
+    ...(treeMode ? { elementFidelity: counted > 0 ? elementScore / counted : null } : {}),
     summary: {
       components: measuredByComponent.size,
       variants: verdicts.length,
@@ -1074,7 +1320,12 @@ export function verify(
       unrecorded: verdicts.filter((v) => v.source === "unrecorded" && v.status !== "missing_from_figma").length,
       unmeasured: unmeasuredInFigma.length,
       unscored: verdicts.filter((v) => v.status === "unscored").length,
-      unverifiedReadback: verdicts.filter((v) => v.status === "unverified_readback").length,
+      unverifiedReadback: verdicts.filter((v) => v.status === "unverified_readback" || v.status === "parts_missing").length,
+      ...(extended ? {
+        notMeasured: verdicts.filter((v) => v.status === "not_measured").length,
+        partsMissing: verdicts.filter((v) => v.status === "parts_missing").length,
+      } : {}),
+      ...(treeMode ? { elements } : {}),
     },
     snapIssues,
     snapWarnings,
@@ -1086,7 +1337,169 @@ export function verify(
     unmeasuredInFigma,
     readbackIssues,
     variants: verdicts,
+    ...(treeMode ? {
+      unscorable: unscorableList,
+      coverage: propertiesCompared + unscorableCount > 0 ? propertiesCompared / (propertiesCompared + unscorableCount) : null,
+    } : {}),
+    ...(options.notRead ? { notRead: [...options.notRead] } : {}),
   };
+}
+
+/** Whether an entry was read by the element-tree template, which no earlier template's has a field of. */
+function isTreeEntry(entry: unknown): entry is ReadbackStyles {
+  return entry != null && typeof entry === "object" && TREE_MARKS.some((key) => (entry as Record<string, unknown>)[key] !== undefined);
+}
+
+/** The variant slug an entry's key is for: a later part's key is `slug#<first node>`. */
+export function slugOfKey(key: string): string {
+  const at = key.lastIndexOf("#");
+  return at > 0 && /^#\d+$/.test(key.slice(at)) ? key.slice(0, at) : key;
+}
+
+function sourceOf(entry: ReadbackStyles | undefined): VariantVerdict["source"] {
+  const declared = entry?.source;
+  return declared === "measured" || declared === "inferred" || declared === "unmeasured" ? declared : "unrecorded";
+}
+
+/** A variant's records, its parts' in order of their first node. */
+function recordsOf(entries: Record<string, ReadbackStyles>, slug: string): ReadRecord[] {
+  return Object.entries(entries)
+    .filter(([key]) => key === slug || slugOfKey(key) === slug)
+    .map(([, entry]) => entry)
+    .sort((a, b) => (a.part?.[0] ?? 0) - (b.part?.[0] ?? 0))
+    .flatMap((entry) => entry.tree ?? []);
+}
+
+function addUnscorable(into: Map<string, UnscorableProperty & { component: string; variants: number }>, component: string, u: UnscorableProperty): void {
+  const key = JSON.stringify([component, u.key, u.property, u.reason]);
+  const seen = into.get(key) ?? { component, ...u, variants: 0 };
+  seen.variants++;
+  into.set(key, seen);
+}
+
+/** The name the build gives the variant of `combination`, as 0.4.0's did: `variant=default, size=sm`. */
+export function variantName(combination: Record<string, string>): string {
+  return Object.entries(combination).map(([k, v]) => `${k}=${v}`).join(", ");
+}
+
+/**
+ * The element-tree readback's own problems, on entries whose checksum
+ * matches (an entry with an issue already has nothing to trust):
+ * `parts_missing`, a variant read in parts whose parts don't cover its
+ * records once each, in order; and `name_mismatch`, a variant whose name in
+ * Figma is not the one snap's combination gives its slug.
+ */
+function checkTreeReadback(snap: SnapResult, readback: ReadbackFile, issued: ReadbackIssue[]): ReadbackIssue[] {
+  const issues: ReadbackIssue[] = [];
+  const already = new Set(issued.map((i) => JSON.stringify([i.component, slugOfKey(i.slug)])));
+  const combinations = new Map<string, Map<string, Record<string, string>>>();
+  for (const component of snap.components ?? []) {
+    combinations.set(componentKey(component), new Map((component.variants ?? []).map((v) => [v.slug, v.combination ?? {}])));
+  }
+  for (const [component, entry] of Object.entries(readback.components ?? {})) {
+    const bySlug = new Map<string, [string, ReadbackStyles][]>();
+    for (const [key, variant] of Object.entries(entry?.variants ?? {})) {
+      if (!isTreeEntry(variant)) continue;
+      const slug = slugOfKey(key);
+      bySlug.set(slug, [...(bySlug.get(slug) ?? []), [key, variant]]);
+    }
+    for (const [slug, parts] of bySlug) {
+      if (already.has(JSON.stringify([component, slug]))) continue;
+      const whole = parts.length === 1 && parts[0][0] === slug && parts[0][1].part === undefined;
+      if (!whole && !partsCover(slug, parts)) {
+        issues.push({ component, slug, problem: "parts_missing" });
+        continue;
+      }
+      const combination = combinations.get(component)?.get(slug);
+      if (!combination) continue;
+      const expected = variantName(combination);
+      const wrong = parts.find(([, p]) => p.name !== expected);
+      if (wrong) issues.push({ component, slug: wrong[0], problem: "name_mismatch", name: String(wrong[1].name), expected });
+    }
+  }
+  return issues;
+}
+
+/** Whether a variant's parts hold its records once each, in order, the first under its slug. */
+function partsCover(slug: string, parts: [string, ReadbackStyles][]): boolean {
+  const sorted = parts.map(([key, p]) => ({ key, part: p.part, tree: p.tree }))
+    .sort((a, b) => (a.part?.[0] ?? 0) - (b.part?.[0] ?? 0));
+  let next = 0;
+  let total: number | null = null;
+  for (const { key, part, tree } of sorted) {
+    if (!Array.isArray(part) || part.length !== 3 || !part.every((n) => Number.isInteger(n) && n >= 0)) return false;
+    const [first, count, of] = part;
+    if (first !== next || key !== (first ? `${slug}#${first}` : slug)) return false;
+    if (!Array.isArray(tree) || tree.length !== count || (total !== null && of !== total)) return false;
+    total = of;
+    next = first + count;
+  }
+  return total !== null && next === total;
+}
+
+/**
+ * The caveats about a component that come from what verify compared: only
+ * its outer element (`root-only`), where snap measured no tree or verify
+ * was asked to score roots alone; a tree snap cut short
+ * (`truncated-tree`); and variants Figma says were built from other facts
+ * than the snap's (`built-from-other-measurement`).
+ */
+function treeCaveats(component: SnapComponent, { treeMode, builtElsewhere }: { treeMode: boolean; builtElsewhere?: string[] }): ScoreCaveat[] {
+  const key = componentKey(component);
+  const caveats: ScoreCaveat[] = [];
+  const tree = treeOf(component);
+  if (!treeMode || !tree) {
+    // How many inner elements went unmeasured: snap --root-only counts them,
+    // and a tree snap scored by roots alone has them.
+    const counts = (component.variants ?? []).map((v: TreeVariant) => {
+      if (tree && v.status === "ok") {
+        try {
+          return expandTree(tree, v.treeDelta).length - 1;
+        } catch {
+          return undefined;
+        }
+      }
+      return typeof v.innerElements === "number" ? v.innerElements : undefined;
+    }).filter((n): n is number => n !== undefined);
+    const inner = counts.length ? Math.max(...counts) : undefined;
+    if (inner !== 0) caveats.push({ component: key, kind: "root-only", ...(inner !== undefined ? { innerElements: inner } : {}) });
+  }
+  if (treeMode && tree?.truncated) {
+    caveats.push({ component: key, kind: "truncated-tree", nodes: tree.truncated.nodes, at: tree.truncated.at });
+  }
+  if (builtElsewhere?.length) caveats.push({ component: key, kind: "built-from-other-measurement", slugs: builtElsewhere, variants: builtElsewhere.length });
+  return caveats;
+}
+
+/**
+ * Why `--strict` fails on what element-by-element scoring found, beyond
+ * what it failed on before: elements drifted, missing or extra; roots read
+ * back without their trees; planned reads with no result; and layers a
+ * designer added inside variants, unless `allowDesignerLayers`. Empty when
+ * none. (Drifted variants, readback issues, parts missing and names that
+ * don't match fail through the summary and readbackIssues already.)
+ */
+export function treeStrictFailures(result: VerifyResult, { allowDesignerLayers = false }: { allowDesignerLayers?: boolean } = {}): string[] {
+  const out: string[] = [];
+  const e = result.summary.elements;
+  if (e) {
+    if (e.drifted) out.push(`${e.drifted} ${e.drifted === 1 ? "element" : "elements"} drifted`);
+    if (e.missing) out.push(`${e.missing} ${e.missing === 1 ? "element is" : "elements are"} missing from Figma`);
+    if (e.extra) out.push(`${e.extra} keyed ${e.extra === 1 ? "layer" : "layers"} in Figma snap no longer measures`);
+    if (e.notReadBack) out.push(`${e.notReadBack} ${e.notReadBack === 1 ? "element" : "elements"} under roots read back without their tree`);
+    if (e.designerLayers && !allowDesignerLayers) out.push(`${e.designerLayers} designer ${e.designerLayers === 1 ? "layer" : "layers"} inside variants`);
+  }
+  if (result.notRead?.length) out.push(`planned read calls ${result.notRead.join(", ")} have no result saved`);
+  return out;
+}
+
+/**
+ * The score a run is judged by: element fidelity where verify scored
+ * elements, else the share of properties, as before trees. Null when
+ * nothing was scored. For `--min-fidelity`.
+ */
+export function headlineFidelity(result: VerifyResult): number | null {
+  return result.elementFidelity !== undefined ? result.elementFidelity : result.fidelity;
 }
 
 /**
@@ -1167,30 +1580,6 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
   const unchecked = (component.variants ?? []).filter((v) => v.status === "ok" && v.argsChecked === false).map((v) => v.slug);
   if (unchecked.length) caveats.push({ component: key, kind: "args-unchecked", slugs: unchecked, variants: unchecked.length });
   return caveats;
-}
-
-/**
- * `root-only`: verify compared the component's outer element and nothing
- * under it, which a score of 100% doesn't say. A Switch built as a pill
- * with no thumb scored 100% that way. With the inner elements snap counted,
- * `snap --root-only`'s `innerElements` or its tree's nodes, where it
- * counted any; none where it counted none.
- */
-function rootOnlyCaveats(component: SnapComponent): ScoreCaveat[] {
-  const tree = treeOf(component);
-  const counts = (component.variants ?? []).map((v: TreeVariant) => {
-    if (tree && v.status === "ok") {
-      try {
-        return expandTree(tree, v.treeDelta).length - 1;
-      } catch {
-        return undefined;
-      }
-    }
-    return typeof v.innerElements === "number" ? v.innerElements : undefined;
-  }).filter((n): n is number => n !== undefined);
-  const inner = counts.length ? Math.max(...counts) : undefined;
-  if (inner === 0) return [];
-  return [{ component: componentKey(component), kind: "root-only", ...(inner !== undefined ? { innerElements: inner } : {}) }];
 }
 
 // --- Loading -----------------------------------------------------------------
@@ -1294,3 +1683,4 @@ export function readSnapAge(
 function firstLine(err: unknown): string {
   return String(err instanceof Error ? err.message : err).split("\n")[0].trim();
 }
+
