@@ -165,7 +165,8 @@ test("nodeStyle: a vector carries its markup and asset id, and binds the colors 
   const style = nodeStyle(icon, ctx(new Binder(SHADCN_TOKENS)), MAIL);
   assert.equal(style.markup, MAIL.replace('width="16" height="16"', 'width="24" height="24"'));
   assert.equal(style.id, "svg:75dee6f9");
-  assert.equal(style.n, "svg.lucide-mail");
+  assert.equal(style.n, "lucide-mail", "named by its class");
+  assert.equal(nodeStyle({ ...icon, el: "svg" }, ctx(), MAIL).n, "svg", "or, without one, its element");
   assert.equal(style.rs, 0.666667, "imported at its viewBox and rescaled, by SPIKE's fallback");
   assert.deepEqual(style.vb, undefined, "#0a0a0a is four tokens and text-primary names none of them");
   assert.throws(() => nodeStyle(icon, ctx()), /svg asset svg:75dee6f9 is not in the tree's assets/);

@@ -395,7 +395,8 @@ function markupColors(markup: string): string[] {
 export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omit<FigmaStyle, "L" | "z" | "a" | "m"> & { markup?: string } {
   const style: FigmaStyle & { markup?: string } = {};
   const kind = node.t;
-  if (kind !== "T") style.n = node.el;
+  // A layer is named by its element; an icon by its class, `lucide-bell` (section 8.7).
+  if (kind !== "T") style.n = kind === "V" ? node.el.replace(/^svg\./, "") : node.el;
   if (node.op !== undefined && node.op !== 1) style.o = node.op;
   if (node.vis === 0) style.v = 0;
   if (node.bm && node.bm !== "normal") {
