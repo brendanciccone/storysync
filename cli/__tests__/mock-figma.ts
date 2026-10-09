@@ -32,19 +32,29 @@
 // measure the test gives (measureFromTrees learns them from snap's ink boxes,
 // so a faithful build lands where the browser drew, and `textWidthFactor`
 // widens every line to stand in for a wider font); wrapping is greedy by
-// words; `<g>` in an imported SVG is flattened into its shapes. Behaviors the
-// design's Figma spike measures live (SVG stroke scaling, whether clone()
-// keeps plugin data, a child filling across a hugging parent) are options,
-// defaulting to the expected answer, so a test can run both.
+// words. Where the design's Figma spike measured Figma live (2026-10-08,
+// fixtures/figma-spike.json), the mock does what Figma did there: an
+// imported SVG's strokes scale with it, its frame clips and has a fill, and a
+// `<g>` comes in as a GROUP; clone() keeps plugin data and lands a copy of a
+// page's own node beside it, and a copy of anything nested on the page;
+// strokes included in layout take room only when INSIDE; a child filling or
+// growing along a hugging frame keeps its size, and one filling across it
+// takes the size the others give; FILL on a hugging label turns it to
+// HEIGHT; AUTO line height comes out a whole pixel. The behaviors a build
+// might meet otherwise (strokes that don't scale, plugin data clone() drops,
+// re-encoded uploads, a refused spread, truncation or fill across a hug)
+// stay options, defaulting to what the spike saw, so a test can still run a
+// build's fallbacks. A test in mock-figma.test.ts replays the probe here and
+// holds the result to the live one.
 //
 // What it refuses rather than guess, throwing a "mock-figma:" error from the
 // layout, so the call that set it up fails as a build Figma would collapse
-// should: a wrapping auto layout; a child that fills or grows along a parent
-// that hugs that axis, which the figma-use skill documents Figma collapsing
-// or compressing; and FILL on a text node that sizes itself on that axis
-// (WIDTH_AND_HEIGHT, or HEIGHT for its height), which the skill documents
-// Figma ignoring. A layout the mock refuses stays refused, on every read,
-// until a write fixes it.
+// should: a wrapping auto layout; a group in an auto layout's flow; and FILL
+// on a text node that sizes itself on that axis (WIDTH_AND_HEIGHT, or HEIGHT
+// for its height) other than through layoutSizingHorizontal, which the spike
+// saw switch it to HEIGHT; the figma-use skill documents Figma ignoring the
+// rest. A layout the mock refuses stays refused, on every read, until a
+// write fixes it.
 //
 // Also here, for the tree packages' tests: the T fixtures under
 // fixtures/tree/, and helpers to load and expand them.
@@ -86,33 +96,41 @@ export interface MockFigmaOptions {
   textWidthFactor?: number;
   /** Text widths; default estimateAdvance, which knows no real font. */
   measure?: TextMeasure;
-  /** Whether clone() copies shared plugin data onto the copies. Default true; the spike (item 5) settles it. */
+  /**
+   * Whether clone() copies shared plugin data onto the copies. Default true,
+   * as the spike saw (item 5: on the copy and its children); false runs a
+   * build that must not rely on it.
+   */
   clonePluginData?: boolean;
   /**
    * Whether an imported SVG's stroke widths scale with it from its viewBox to
-   * its width and height, as the browser's do. Default true; the spike (item
-   * 1) settles it, and with false they keep their viewBox width.
+   * its width and height, as the browser's do. Default true, as the spike saw
+   * (item 1: lucide's 2 at 24 came in 1.33 wide at 16); with false they keep
+   * their viewBox width.
    */
   svgStrokeScales?: boolean;
   /** The file's pages by name. Default one, "Page 1". */
   pages?: string[];
-  /** What Figma stores for uploaded bytes, if it re-encodes them; the spike (item 10) settles it. Default: the bytes. */
+  /**
+   * What Figma stores for uploaded bytes, if it re-encodes them. Default:
+   * the bytes, as the spike saw (item 10: the same bytes, hashed by their
+   * SHA-1).
+   */
   reencodeImage?: (bytes: Uint8Array) => Uint8Array;
   /**
    * What a child that fills across its parent (FILL on the cross axis,
    * layoutAlign STRETCH) does when the parent hugs that axis. "stretch", the
-   * default: the parent hugs the children that do not fill, and the filling
-   * ones take that size, as the mock assumes Figma does. "refuse": the
-   * layout throws, for a build that must not rely on it. The spike's
-   * `sizing` item (11) settles it; along the flow, the case is always
-   * refused (see the file's header).
+   * default and what the spike saw (item 11): the parent hugs the children
+   * that do not fill, and the filling ones take that size; one alone keeps
+   * its own. "refuse": the layout throws, for a build that must not rely on
+   * it.
    */
   fillAcrossHug?: "stretch" | "refuse";
   /**
-   * Spike items 2 and 3, for a build's fallbacks: "refuse" throws on a
-   * shadow with a spread on a node that doesn't clip its content, and on
-   * textTruncation ENDING, as Figma would if it doesn't take them. Default
-   * "keep", the expected answer.
+   * For a build's fallbacks: "refuse" throws on a shadow with a spread on a
+   * node that doesn't clip its content, and on textTruncation ENDING. The
+   * default, "keep", is what the spike saw (items 2 and 3: spread kept on a
+   * frame clipped or not, and ENDING with maxLines taken).
    */
   shadowSpread?: "keep" | "refuse";
   textTruncation?: "keep" | "refuse";
@@ -355,7 +373,10 @@ export interface SvgShape {
   strokeWidth: number;
   cap: string;
   join: string;
+  /** Its own opacity, and an `<svg>`'s around it; a `<g>`'s is its group's. */
   opacity: number;
+  /** The `<g>`s it is in, outermost first, as indexes into ParsedSvg.groups. */
+  groups: number[];
 }
 
 export interface ParsedSvg {
@@ -364,6 +385,8 @@ export interface ParsedSvg {
   /** viewBox units to px: the uniform scale and offsets of `xMidYMid meet`. */
   scale: number;
   shapes: SvgShape[];
+  /** Each `<g>`, in document order, with its own opacity: Figma imports one as a GROUP. */
+  groups: { opacity: number }[];
   /** Elements not drawn as shapes, which Figma's import may drop (defs, clipPath, mask, use, text). */
   dropped: string[];
 }
@@ -591,25 +614,33 @@ export function parseSvg(markup: string): ParsedSvg {
   const scale = Math.min(width / vw, height / vh);
   const base: Matrix = [scale, 0, 0, scale, (width - vw * scale) / 2 - vx * scale, (height - vh * scale) / 2 - vy * scale];
   const shapes: SvgShape[] = [];
+  const groups: ParsedSvg["groups"] = [];
   const dropped: string[] = [];
   type Paint = Record<string, string>;
   const PAINT = ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "fill-opacity", "stroke-opacity", "color"];
-  const visit = (el: SvgElement, inherited: Paint, m: Matrix, opacity: number) => {
+  const visit = (el: SvgElement, inherited: Paint, m: Matrix, opacity: number, chain: number[]) => {
     const style = Object.fromEntries((el.attrs.style ?? "").split(";").map((d) => d.split(":").map((s) => s.trim())).filter((d) => d.length === 2 && d[0]));
     const own = { ...inherited };
     for (const key of PAINT) {
       const value = style[key] ?? el.attrs[key];
       if (value !== undefined) own[key] = value;
     }
-    const alpha = opacity * (el.attrs.opacity !== undefined ? Number(el.attrs.opacity) : 1);
+    const ownOpacity = el.attrs.opacity !== undefined ? Number(el.attrs.opacity) : 1;
+    const alpha = opacity * ownOpacity;
     const at = multiply(m, parseTransform(el.attrs.transform));
     const n = (name: string) => Number(el.attrs[name] ?? 0);
     let local: [number, number][] | null = null;
     switch (el.tag) {
       case "svg":
-      case "g":
-        for (const child of el.children) visit(child, own, at, alpha);
+        for (const child of el.children) visit(child, own, at, alpha, chain);
         return;
+      case "g": {
+        // A group of its own, as the spike saw Figma import one (item 1),
+        // its transform applied to its shapes and its opacity kept on it.
+        const group = groups.push({ opacity: ownOpacity }) - 1;
+        for (const child of el.children) visit(child, own, at, opacity, [...chain, group]);
+        return;
+      }
       case "path": local = pathPoints(el.attrs.d ?? ""); break;
       case "circle": local = [[n("cx") - n("r"), n("cy") - n("r")], [n("cx") + n("r"), n("cy") + n("r")]]; break;
       case "ellipse": local = [[n("cx") - n("rx"), n("cy") - n("ry")], [n("cx") + n("rx"), n("cy") + n("ry")]]; break;
@@ -645,10 +676,11 @@ export function parseSvg(markup: string): ParsedSvg {
       cap: own["stroke-linecap"] ?? "butt",
       join: own["stroke-linejoin"] ?? "miter",
       opacity: alpha,
+      groups: chain,
     });
   };
-  visit(svg, {}, base, 1);
-  return { width, height, scale, shapes, dropped };
+  visit(svg, {}, base, 1, []);
+  return { width, height, scale, shapes, groups, dropped };
 }
 
 /** Each painted shape's box relative to the SVG's own box, as snap records `shapes`. */
@@ -681,12 +713,15 @@ export function imageSize(bytes: Uint8Array): { width: number; height: number } 
 
 // --- Nodes ------------------------------------------------------------------
 
-// No GROUP: nothing here makes one, as an imported SVG's <g> is flattened.
-type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON";
+// A GROUP comes only from an imported SVG's <g>. As in Figma, it has no
+// coordinates of its own: its children's x and y, and its own, are in the
+// frame around it, and its box is what its children cover. It has no fills,
+// strokes or effects here.
+type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GROUP" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON";
 
-const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "FRAME", "COMPONENT", "COMPONENT_SET"]);
+const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP"]);
 const FRAMES = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET"]);
-const SCENE = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
+const SCENE = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "GROUP", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
 const GEOMETRY = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
 const CORNERS = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "RECTANGLE", "VECTOR", "POLYGON"]);
 const SIDED = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "RECTANGLE"]);
@@ -817,7 +852,7 @@ class Node {
     // Figma's defaults for a new node: a frame or component filled white, text
     // black, strokes inside a frame and centered on a shape. The spike's
     // `defaults` item reads them live.
-    this.blendMode = FRAMES.has(type) ? "PASS_THROUGH" : "NORMAL";
+    this.blendMode = FRAMES.has(type) || type === "GROUP" ? "PASS_THROUGH" : "NORMAL";
     this.strokeAlign = FRAMES.has(type) || type === "RECTANGLE" ? "INSIDE" : "CENTER";
     if (type === "FRAME" || type === "COMPONENT") this.fills = [solid({ r: 1, g: 1, b: 1 })];
     if (type === "TEXT") this.fills = [solid({ r: 0, g: 0, b: 0 })];
@@ -845,6 +880,26 @@ class Node {
   }
 }
 
+/** A frame's children as its layout and constraints see them: a group's children in the group's place. */
+const layered = (n: Node): Node[] => n.kids.flatMap((k) => (k.type === "GROUP" ? layered(k) : [k]));
+
+/** The node whose coordinates `n`'s x and y are in: its parent, past any group. */
+function containerOf(n: Node): Node | null {
+  let at = n.parent;
+  while (at && at.type === "GROUP") at = at.parent;
+  return at;
+}
+
+/** Removes a group its last child left, as Figma does: a group never stands empty. */
+function dropIfEmptyGroup(n: Node | null): void {
+  if (!n || n.type !== "GROUP" || n.kids.length) return;
+  const parent = n.parent;
+  if (parent) parent.kids.splice(parent.kids.indexOf(n), 1);
+  n.removed = true;
+  n.parent = null;
+  dropIfEmptyGroup(parent);
+}
+
 const solid = (color: Rgb, opacity = 1): SolidPaint => ({ type: "SOLID", color, opacity, visible: true, blendMode: "NORMAL" });
 
 const HANDLES = new WeakMap<object, Node>();
@@ -866,8 +921,9 @@ function fontOf(n: Node): MockFont {
 function lineHeightOf(n: Node): number {
   if (n.lineHeight.unit === "PIXELS") return n.lineHeight.value ?? 0;
   if (n.lineHeight.unit === "PERCENT") return ((n.lineHeight.value ?? 0) / 100) * n.fontSize;
-  // AUTO: the font's own, which the mock takes as Inter's, 1.21 em.
-  return r2(n.fontSize * 1.21);
+  // AUTO: the font's own, which the mock takes as Inter's, 1.21em, to a
+  // whole pixel as the spike's labels came out (12px 15 tall, 14px 17).
+  return Math.round(n.fontSize * 1.21);
 }
 
 /**
@@ -932,11 +988,16 @@ function sizeText(n: Node): void {
 type Axis = "x" | "y";
 const SIZE = { x: "w", y: "h" } as const;
 
-/** The inset of a frame's own stroke into its content, per side, when strokes are included in layout. */
+/**
+ * The inset of a frame's own stroke into its content, per side, when strokes
+ * are included in layout: an INSIDE stroke's whole width, and nothing for a
+ * CENTER or OUTSIDE one, as the spike saw (item 4: a 2px INSIDE stroke grew a
+ * hugging row from 44x20 to 48x24 and moved its children by 2; CENTER and
+ * OUTSIDE left both alone).
+ */
 function strokeInset(n: Node): [number, number, number, number] {
-  if (!n.strokesIncluded || !n.strokes.length) return [0, 0, 0, 0];
-  const share = n.strokeAlign === "INSIDE" ? 1 : n.strokeAlign === "CENTER" ? 0.5 : 0;
-  return n.weights.map((w) => w * share) as [number, number, number, number];
+  if (!n.strokesIncluded || !n.strokes.length || n.strokeAlign !== "INSIDE") return [0, 0, 0, 0];
+  return [...n.weights];
 }
 
 /** A layout the mock does not model: thrown, never laid out by a guess. */
@@ -950,18 +1011,26 @@ function sizesItself(k: Node, axis: Axis): boolean {
 }
 
 /**
- * Lays out `node` and everything under it: text sizes itself, an auto-layout
- * frame sizes the axes it hugs to its in-flow children and then places them,
- * filling those that fill. Figma's model, as its documentation and the
- * figma-use skill describe it: children in order, `itemSpacing` apart from
- * the padding (SPACE_BETWEEN spreads the free space instead), each aligned
- * across by the frame's counterAxisAlignItems unless it stretches; hidden
- * and ABSOLUTE children take no part, and keep their own x and y. Throws on
- * a fill the mock does not model (unmodeled).
+ * Lays out `node` and everything under it: text sizes itself, a group covers
+ * its children, an auto-layout frame sizes the axes it hugs to its in-flow
+ * children and then places them, filling those that fill. Figma's model, as
+ * its documentation and the figma-use skill describe it and the spike saw
+ * it (item 11): children in order, `itemSpacing` apart from the padding
+ * (SPACE_BETWEEN spreads the free space instead), each aligned across by the
+ * frame's counterAxisAlignItems unless it stretches; hidden and ABSOLUTE
+ * children take no part, and keep their own x and y. Throws on a layout the
+ * mock does not model (unmodeled).
  */
 function layoutTree(node: Node): void {
   for (const kid of node.kids) layoutTree(kid);
   if (node.type === "TEXT") sizeText(node);
+  if (node.type === "GROUP" && node.kids.length) {
+    // In the frame's coordinates, as its children are.
+    const [x0, y0] = [Math.min(...node.kids.map((k) => k.x)), Math.min(...node.kids.map((k) => k.y))];
+    [node.x, node.y] = [r2(x0), r2(y0)];
+    node.w = r2(Math.max(...node.kids.map((k) => k.x + k.w)) - x0);
+    node.h = r2(Math.max(...node.kids.map((k) => k.y + k.h)) - y0);
+  }
   if (!node.isAutoLayout()) return;
   const main: Axis = node.layoutMode === "HORIZONTAL" ? "x" : "y";
   const cross: Axis = main === "x" ? "y" : "x";
@@ -978,20 +1047,19 @@ function layoutTree(node: Node): void {
   const grows = (k: Node) => k.layoutGrow > 0;
   const stretches = (k: Node) => k.layoutAlign === "STRETCH";
   for (const k of flow) {
-    if (grows(k) && node.primarySizing === "AUTO") {
-      unmodeled(k, "FILL or layoutGrow along a parent that hugs that axis",
-        "the figma-use skill documents Figma collapsing a FILL child of a HUG parent and compressing a growing one; fix the parent's size on that axis");
-    }
+    if (k.type === "GROUP") unmodeled(k, "a group in an auto layout's flow", "nothing the templates build puts one there");
     if (stretches(k) && node.counterSizing === "AUTO" && node.doc.options.fillAcrossHug === "refuse") {
-      unmodeled(k, "FILL across a parent that hugs that axis", "this MockFigma was made with fillAcrossHug 'refuse', until the spike's sizing item says what Figma does");
+      unmodeled(k, "FILL across a parent that hugs that axis", "this MockFigma was made with fillAcrossHug 'refuse', for a build that must not rely on it");
     }
     if ((grows(k) && sizesItself(k, main)) || (stretches(k) && sizesItself(k, cross))) {
       unmodeled(k, "FILL on a text node that sizes itself on that axis",
-        "the figma-use skill documents Figma ignoring FILL on WIDTH_AND_HEIGHT text; set textAutoResize to HEIGHT (or NONE, for its height) first");
+        "the spike saw layoutSizingHorizontal = 'FILL' turn a hugging text to HEIGHT, and tried nothing else; the figma-use skill documents Figma ignoring FILL on WIDTH_AND_HEIGHT text: set textAutoResize to HEIGHT (or NONE, for its height) first");
     }
   }
   // Hug first, from what doesn't fill: a stretching child takes the size the
-  // others give (fillAcrossHug "stretch"), and grows only in a fixed parent.
+  // others give (fillAcrossHug "stretch"), and a growing one keeps its own,
+  // as the spike saw (sizing: fillAcross, fillAlong, growAlong). Each fills
+  // only in a fixed frame.
   const spacing = node.primaryAlign === "SPACE_BETWEEN" ? 0 : node.itemSpacing;
   if (node.primarySizing === "AUTO") {
     const sum = flow.reduce((t, k) => t + size(k, main), 0) + spacing * Math.max(0, flow.length - 1);
@@ -1004,7 +1072,7 @@ function layoutTree(node: Node): void {
   }
   const room = size(node, main) - lead[main] - trail[main];
   const across = size(node, cross) - lead[cross] - trail[cross];
-  const growing = flow.filter(grows);
+  const growing = node.primarySizing === "AUTO" ? [] : flow.filter(grows);
   if (growing.length) {
     const fixed = flow.filter((k) => !grows(k)).reduce((t, k) => t + size(k, main), 0) + spacing * (flow.length - 1);
     for (const k of growing) set(k, main, (room - fixed) / growing.length);
@@ -1071,6 +1139,12 @@ function setSizing(n: Node, axis: Axis, value: unknown): void {
     if (n.layoutPositioning === "ABSOLUTE") invalid(prop, "FILL cannot be set on absolute positioned auto-layout children");
     if (axis === parentMain) n.layoutGrow = 1;
     else n.layoutAlign = "STRETCH";
+    if (n.type === "TEXT" && axis === "x" && n.textAutoResize === "WIDTH_AND_HEIGHT") {
+      // A hugging label wraps at the width it fills from the width it had,
+      // as the spike saw (sizing: textInFixedRow, textInHuggingRow).
+      sizeText(n);
+      n.textAutoResize = "HEIGHT";
+    }
     // Filling replaces hugging on that axis.
     if (ownMain) {
       if (axis === ownMain) n.primarySizing = "FIXED";
@@ -1122,6 +1196,7 @@ function getSizing(n: Node, axis: Axis): string {
 
 /** A resize: x and y kept, the axes it sets fixed, children moved by their constraints unless `plain`. */
 function resizeNode(n: Node, w: unknown, h: unknown, plain: boolean): void {
+  if (n.type === "GROUP") unmodeled(n, "resizing a group", "nothing the templates build resizes one");
   const width = finite("resize", w, 0.01);
   const height = finite("resize", h, n.type === "LINE" ? 0 : 0.01);
   // Constraints move children by the change in size, so it must be current.
@@ -1129,7 +1204,7 @@ function resizeNode(n: Node, w: unknown, h: unknown, plain: boolean): void {
   const [dw, dh] = [width - n.w, height - n.h];
   const [sx, sy] = [width / n.w, height / n.h];
   if (!plain && !n.isAutoLayout()) {
-    for (const kid of n.kids) {
+    for (const kid of layered(n)) {
       const before = { x: kid.x, y: kid.y, w: kid.w, h: kid.h };
       const c = kid.constraints;
       let { x, y, w: kw, h: kh } = before;
@@ -1158,6 +1233,7 @@ function resizeNode(n: Node, w: unknown, h: unknown, plain: boolean): void {
 
 /** Rescales a node from its top-left corner, everything with a length scaled with it. */
 function rescaleNode(n: Node, s: number, top = true): void {
+  if (top && n.type === "GROUP") unmodeled(n, "rescaling a group", "nothing the templates build rescales one");
   n.doc.settle();
   if (!top) [n.x, n.y] = [r2(n.x * s), r2(n.y * s)];
   [n.w, n.h] = [r2(n.w * s), r2(n.h * s)];
@@ -1182,7 +1258,7 @@ function rescaleNode(n: Node, s: number, top = true): void {
 function absolutePosition(n: Node): { x: number; y: number } {
   n.doc.settle();
   let [x, y] = [0, 0];
-  for (let at: Node | null = n; at && at.type !== "PAGE" && at.type !== "DOCUMENT"; at = at.parent) [x, y] = [x + at.x, y + at.y];
+  for (let at: Node | null = n; at && at.type !== "PAGE" && at.type !== "DOCUMENT"; at = containerOf(at)) [x, y] = [x + at.x, y + at.y];
   return { x: r2(x), y: r2(y) };
 }
 
@@ -1206,7 +1282,9 @@ function attach(parent: Node, child: Node, index?: number): void {
   if (parent === child || child.descendants().includes(parent)) throw new Error("Cannot move a node into itself or one of its descendants");
   if (parent.type === "COMPONENT_SET" && child.type !== "COMPONENT") throw new Error(`A component set can only contain components, not a ${child.type}`);
   if (parent.type === "PAGE" && child.type === "PAGE") throw new Error("A page can't contain a page");
-  if (child.parent) child.parent.kids.splice(child.parent.kids.indexOf(child), 1);
+  const from = child.parent;
+  if (from) from.kids.splice(from.kids.indexOf(child), 1);
+  if (from !== parent) dropIfEmptyGroup(from);
   child.parent = parent;
   const at = index === undefined ? parent.kids.length : Math.max(0, Math.min(index, parent.kids.length));
   parent.kids.splice(at, 0, child);
@@ -1292,6 +1370,12 @@ const enumProp = (types: Set<Kind>, prop: string, key: keyof Node, values: reado
   },
 });
 
+/** Moves a node on one axis; a group moves its children, whose coordinates are its frame's. */
+function place(n: Node, axis: Axis, value: number): void {
+  if (n.type === "GROUP") for (const k of layered(n)) k[axis] = r2(k[axis] + value - n[axis]);
+  n[axis] = value;
+}
+
 const PROPS: Record<string, Prop> = {
   id: { get: (n) => n.id },
   type: { get: (n) => n.type },
@@ -1306,8 +1390,8 @@ const PROPS: Record<string, Prop> = {
   },
   children: { types: CONTAINERS, get: (n) => Object.freeze(handles(loadedChildren(n))) },
   isPageDivider: { types: new Set(["PAGE"]), get: () => false },
-  x: { types: SCENE, geometry: true, get: (n) => n.x, set: (n, v) => { if (!n.inFlow()) n.x = finite("x", v); changed(n); } },
-  y: { types: SCENE, geometry: true, get: (n) => n.y, set: (n, v) => { if (!n.inFlow()) n.y = finite("y", v); changed(n); } },
+  x: { types: SCENE, geometry: true, get: (n) => n.x, set: (n, v) => { if (!n.inFlow()) place(n, "x", finite("x", v)); changed(n); } },
+  y: { types: SCENE, geometry: true, get: (n) => n.y, set: (n, v) => { if (!n.inFlow()) place(n, "y", finite("y", v)); changed(n); } },
   width: { types: SCENE, geometry: true, get: (n) => n.w },
   height: { types: SCENE, geometry: true, get: (n) => n.h },
   absoluteBoundingBox: { types: SCENE, geometry: true, get: (n) => ({ ...absolutePosition(n), width: n.w, height: n.h }) },
@@ -1501,13 +1585,15 @@ const METHODS: Record<string, Method> = {
         if (n.doc.call?.current === n) throw new Error("in remove: Cannot remove the current page");
         n.doc.pages.splice(n.doc.pages.indexOf(n), 1);
       }
-      if (n.parent) n.parent.kids.splice(n.parent.kids.indexOf(n), 1);
+      const parent = n.parent;
+      if (parent) parent.kids.splice(parent.kids.indexOf(n), 1);
       changed(n);
       for (const gone of [n, ...n.descendants()]) {
         gone.removed = true;
         if (n.doc.call) n.doc.call.removed++;
       }
       n.parent = null;
+      dropIfEmptyGroup(parent);
     },
   },
   getSharedPluginData: { fn: (n, ns, key) => n.data.get(`${ns}\u0000${key}`) ?? "" },
@@ -1537,11 +1623,13 @@ const METHODS: Record<string, Method> = {
     types: SCENE,
     fn: (n) => {
       n.doc.settle();
-      const page = n.doc.call?.current ?? n.page ?? n.doc.pages[0];
-      // Figma's typings: "By default, the duplicate will be parented under
-      // figma.currentPage", a variant's copy too, so a template appends it.
+      // Where the spike saw Figma put a copy (item 5): a node on a page gets
+      // its copy beside it, just above; a node in anything else, a variant
+      // in its set included, gets it on the current page, on top. So a
+      // template puts a copy where it belongs itself.
       const copy = cloneNode(n, null);
-      attach(page, copy);
+      if (n.parent?.type === "PAGE") attach(n.parent, copy, n.parent.kids.indexOf(n) + 1);
+      else attach(n.doc.call?.current ?? n.page ?? n.doc.pages[0], copy);
       return copy.handle;
     },
   },
@@ -1710,11 +1798,27 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
     },
     createNodeFromSvg: (markup: unknown) => {
       const svg = parseSvg(String(markup));
+      // As the spike saw the import (item 1): a frame that clips, with a
+      // frame's fill, which the probe counted and didn't read, so it is a new
+      // frame's white here; a `<rect>` as a VECTOR; a `<g>` as a GROUP.
+      // Circles and ellipses it didn't import.
       const frame = create("FRAME", "svg");
-      frame.fills = [];
-      frame.clipsContent = false;
       [frame.w, frame.h] = [svg.width, svg.height];
-      const kinds: Record<string, Kind> = { circle: "ELLIPSE", ellipse: "ELLIPSE", rect: "RECTANGLE" };
+      const kinds: Record<string, Kind> = { circle: "ELLIPSE", ellipse: "ELLIPSE" };
+      const groups: Node[] = [];
+      const holder = (chain: number[]): Node => {
+        let at = frame;
+        for (const g of chain) {
+          if (!groups[g]) {
+            groups[g] = new Node(doc, "GROUP", "Group");
+            call.created++;
+            groups[g].opacity = svg.groups[g].opacity;
+            attach(at, groups[g]);
+          }
+          at = groups[g];
+        }
+        return at;
+      };
       for (const s of svg.shapes) {
         const node = new Node(doc, kinds[s.tag] ?? "VECTOR", "Vector");
         call.created++;
@@ -1728,7 +1832,7 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
         node.strokeJoin = s.join.toUpperCase();
         node.opacity = s.opacity;
         node.constraints = { horizontal: "SCALE", vertical: "SCALE" };
-        attach(frame, node);
+        attach(holder(s.groups), node);
       }
       return frame.handle;
     },

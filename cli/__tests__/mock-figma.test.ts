@@ -10,7 +10,7 @@ import {
   CODE_LIMIT, FONTS, MockFigma, RESPONSE_LIMIT,
   estimateAdvance, fixtureVariants, imageSize, loadTreeFixture, measureFromTrees, parseSvg, svgShapeBoxes, treeFixtureAsset,
 } from "./mock-figma.js";
-import type { MockRun, NodeView } from "./mock-figma.js";
+import type { MockFont, MockRun, NodeView } from "./mock-figma.js";
 
 // The mock is what B's build, C's readback and D's end-to-end tests run
 // plugin code against, so what it gets wrong they would pass on. These pin
@@ -230,8 +230,8 @@ test("auto layout: FILL takes the room left along the flow and the whole room ac
   const row = await layout("f.layoutMode = 'HORIZONTAL'; f.resize(200, 50); f.paddingLeft = 10; f.paddingRight = 10; f.itemSpacing = 5; f.paddingTop = 5; f.paddingBottom = 5;",
     [[20, 10], [30, 10]], "kids[1].layoutSizingHorizontal = 'FILL'; kids[0].layoutSizingVertical = 'FILL';");
   assert.deepEqual(row.kids, [[10, 5, 20, 40], [35, 5, 155, 10]]);
-  // In a hugging frame, a stretched child takes the size the others give: the
-  // mock's assumption, until the spike's sizing item settles it.
+  // In a hugging frame, a stretched child takes the size the others give, as
+  // the spike saw (item 11, fillAcross).
   const hug = await layout(`${HUG}`, [[20, 30], [10, 10]], "kids[1].layoutAlign = 'STRETCH';");
   assert.deepEqual(hug, { frame: [30, 30], kids: [[0, 0, 20, 30], [20, 0, 10, 30]] });
   const reads = await ok(new MockFigma(), `
@@ -248,34 +248,36 @@ const SIDEBAR = `
   const kid = (h) => { const k = figma.createFrame(); k.resize(100, h); p.appendChild(k); return k; };
   const [a, b, c] = [kid(16), kid(688), kid(16)];`;
 
-test("auto layout: FILL or layoutGrow along a hugging parent is refused, as Figma collapses it", async () => {
-  const figma = new MockFigma();
-  const refused = /mock-figma: FILL or layoutGrow along a parent that hugs that axis is not modeled \("Frame", [\d:]+\); the figma-use skill documents Figma collapsing/;
-  assert.match(await fails(figma, `${SIDEBAR} b.layoutSizingVertical = 'FILL'; return p.height;`), refused, "on a read in the call");
-  assert.match(await fails(new MockFigma(), `${SIDEBAR} b.layoutGrow = 1;`), refused, "or when the call ends");
-  // It stays refused, on every read, until a write fixes it.
-  assert.throws(() => figma.pages(), refused);
-  const fixed = await ok(figma, `
-    const p = figma.currentPage.findOne((n) => n.name === 'sidebar-inner');
-    p.primaryAxisSizingMode = 'FIXED'; p.resize(100, 720);
-    return p.children.map((k) => [k.y, k.height, k.layoutSizingVertical]);`);
-  assert.deepEqual(fixed, [[0, 16, "FIXED"], [16, 688, "FILL"], [704, 16, "FIXED"]]);
+test("auto layout: a child filling or growing along a hugging parent keeps its size, and the parent hugs it", async () => {
+  // As the spike saw (item 11, fillAlong and growAlong): the column hugs 720, the child keeps its 688.
+  const read = "return [p.height, p.layoutSizingVertical, p.children.map((k) => [k.y, k.height, k.layoutSizingVertical])];";
+  const want = [720, "HUG", [[0, 16, "FIXED"], [16, 688, "FILL"], [704, 16, "FIXED"]]];
+  assert.deepEqual(await ok(new MockFigma(), `${SIDEBAR} b.layoutSizingVertical = 'FILL'; ${read}`), want);
+  assert.deepEqual(await ok(new MockFigma(), `${SIDEBAR} b.layoutGrow = 1; ${read}`), want);
+  // Fixed, the column gives it the room the others leave.
+  const fixed = await ok(new MockFigma(), `${SIDEBAR} b.layoutGrow = 1; p.primaryAxisSizingMode = 'FIXED'; p.resize(100, 800); ${read}`);
+  assert.deepEqual(fixed, [800, "FIXED", [[0, 16, "FIXED"], [16, 768, "FILL"], [784, 16, "FIXED"]]]);
   // Across a hugging parent it stretches, unless the test refuses that too.
   const across = `${SIDEBAR} b.layoutSizingHorizontal = 'FILL'; a.resize(120, 16); return [p.width, b.width];`;
   assert.deepEqual(await ok(new MockFigma(), across), [120, 120]);
   assert.match(await fails(new MockFigma({ fillAcrossHug: "refuse" }), across), /mock-figma: FILL across a parent that hugs that axis is not modeled/);
 });
 
-test("auto layout: FILL on a text node that sizes itself is refused, as Figma ignores it; at HEIGHT it fills", async () => {
-  const text = (setup: string) => `
+test("auto layout: FILL turns a hugging label to HEIGHT; any other fill of a text that sizes itself is refused", async () => {
+  const text = (setup: string, fixed = true) => `
     await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-    const p = figma.createAutoLayout('HORIZONTAL'); p.resize(300, 40); p.paddingLeft = 10; p.paddingRight = 10;
+    const p = figma.createAutoLayout('HORIZONTAL'); ${fixed ? "p.resize(300, 40);" : ""} p.paddingLeft = 10; p.paddingRight = 10;
     const t = figma.createText(); t.characters = 'hello'; p.appendChild(t);
     ${setup}
     return [t.width, t.textAutoResize, t.layoutSizingHorizontal];`;
   const ignored = /mock-figma: FILL on a text node that sizes itself on that axis is not modeled .*set textAutoResize to HEIGHT/;
-  assert.match(await fails(new MockFigma(), text("t.layoutSizingHorizontal = 'FILL';")), ignored);
+  // As the spike saw (item 11, textInFixedRow and textInHuggingRow): it fills a fixed row, and keeps its width in a hugging one.
+  const measure = { advance: (chars: string) => (chars === "hello" ? 27 : 0) };
+  assert.deepEqual(await ok(new MockFigma({ measure }), text("t.layoutSizingHorizontal = 'FILL';")), [280, "HEIGHT", "FILL"]);
+  assert.deepEqual(await ok(new MockFigma({ measure }), text("t.layoutSizingHorizontal = 'FILL';", false)), [27, "HEIGHT", "FILL"]);
   assert.deepEqual(await ok(new MockFigma(), text("t.textAutoResize = 'HEIGHT'; t.layoutSizingHorizontal = 'FILL';")), [280, "HEIGHT", "FILL"]);
+  // layoutGrow alone the spike didn't try.
+  assert.match(await fails(new MockFigma(), text("t.layoutGrow = 1;")), ignored);
   // Its height, too, while it hugs it.
   const column = `
     await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
@@ -306,10 +308,12 @@ test("auto layout: an ABSOLUTE child keeps its place and takes no space; a hidde
   assert.deepEqual((await layout(HUG, [[20, 20]], "kids[0].x = 50;")).kids[0], [0, 0, 20, 20]);
 });
 
-test("auto layout: strokes included in layout inset the children by the frame's own stroke", async () => {
+test("auto layout: strokes included in layout inset the children by the frame's own stroke, when INSIDE", async () => {
   const stroke = "f.strokes = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }]; f.strokeWeight = 2;";
   assert.deepEqual(await layout(`${HUG} ${stroke} f.strokesIncludedInLayout = true;`, [[20, 10]]), { frame: [24, 14], kids: [[2, 2, 20, 10]] });
-  assert.deepEqual(await layout(`${HUG} ${stroke} f.strokesIncludedInLayout = true; f.strokeAlign = 'CENTER';`, [[20, 10]]), { frame: [22, 12], kids: [[1, 1, 20, 10]] });
+  // Only an INSIDE stroke takes room, as the spike saw (item 4).
+  assert.deepEqual(await layout(`${HUG} ${stroke} f.strokesIncludedInLayout = true; f.strokeAlign = 'CENTER';`, [[20, 10]]), { frame: [20, 10], kids: [[0, 0, 20, 10]] });
+  assert.deepEqual(await layout(`${HUG} ${stroke} f.strokesIncludedInLayout = true; f.strokeAlign = 'OUTSIDE';`, [[20, 10]]), { frame: [20, 10], kids: [[0, 0, 20, 10]] });
   assert.deepEqual(await layout(`${HUG} ${stroke}`, [[20, 10]]), { frame: [20, 10], kids: [[0, 0, 20, 10]] }, "excluded, the stroke overlaps them");
 });
 
@@ -358,8 +362,8 @@ test("text: a hugging label is as wide as the measure says, times the width fact
   const measure = { advance: (chars: string) => (chars === "Login with Email Button" ? 154.8 : 0) };
   assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("")), [154.8, 20, "WIDTH_AND_HEIGHT"]);
   assert.deepEqual(await ok(new MockFigma({ measure, textWidthFactor: 1.045 }), TEXT_SETUP("")), [161.77, 20, "WIDTH_AND_HEIGHT"]);
-  // AUTO line height is the font's own, taken as 1.21em.
-  assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("t.lineHeight = { unit: 'AUTO' };")), [154.8, 16.94, "WIDTH_AND_HEIGHT"]);
+  // AUTO line height is the font's own, taken as 1.21em, to a whole pixel: 17 at 14px, as the spike's label came out.
+  assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("t.lineHeight = { unit: 'AUTO' };")), [154.8, 17, "WIDTH_AND_HEIGHT"]);
 });
 
 test("text: a fixed width wraps by words and grows in height; ENDING with maxLines stops at that many", async () => {
@@ -368,7 +372,7 @@ test("text: a fixed width wraps by words and grows in height; ENDING with maxLin
   assert.deepEqual(wrapped, [70, 60, "HEIGHT"], "'Login with' 'Email' 'Button': three lines of 10 characters or fewer");
   const truncated = await ok(new MockFigma({ measure }), TEXT_SETUP("t.textAutoResize = 'HEIGHT'; t.resize(70, 20); t.textTruncation = 'ENDING'; t.maxLines = 1;"));
   assert.deepEqual(truncated, [70, 20, "HEIGHT"]);
-  // resize() on a hugging label fixes it, as the mock models Figma; the spike (item 3) confirms.
+  // resize() on a hugging label fixes it, as the spike saw (item 3): a label meant to hug is never resized.
   assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("t.resize(50, 20);")), [50, 20, "NONE"]);
 });
 
@@ -398,8 +402,10 @@ test("svg: shape boxes are the geometry's exact bounds, arcs and curves included
   assert.deepEqual(svgShapeBoxes(basic), [[1, 1, 10, 10], [1, 2, 10, 8], [0, 0, 12, 0]]);
   // A viewBox of another aspect is fitted and centered, as xMidYMid meet does.
   assert.deepEqual(svgShapeBoxes('<svg width="20" height="10" viewBox="0 0 10 10"><rect x="0" y="0" width="10" height="10"/></svg>'), [[5, 0, 10, 10]]);
-  // Groups are flattened, their transforms applied.
+  // A group's transform is applied to its shapes, and the shapes say which group holds them.
   assert.deepEqual(svgShapeBoxes('<svg width="10" height="10"><g transform="translate(2 3)"><rect width="4" height="4"/></g></svg>'), [[2, 3, 4, 4]]);
+  const grouped = parseSvg('<svg width="10" height="10"><g opacity="0.5"><g><rect width="4" height="4" opacity="0.8"/></g></g><circle r="1"/></svg>');
+  assert.deepEqual([grouped.groups, grouped.shapes.map((sh) => [sh.groups, sh.opacity])], [[{ opacity: 0.5 }, { opacity: 1 }], [[[0, 1], 0.8], [[], 1]]]);
   const parsed = parseSvg('<svg width="16" height="16" viewBox="0 0 24 24" stroke="#0a0a0a" stroke-width="2" fill="none"><path d="M0 0L24 24"/><defs/></svg>');
   assert.deepEqual([Math.round(parsed.shapes[0].strokeWidth * 1000) / 1000, parsed.shapes[0].fill, parsed.dropped], [1.333, null, ["defs"]]);
   assert.throws(() => parseSvg('<svg><path d="M0 0" fill="oklch(0.5 0 0)"/></svg>'), /not hex/);
@@ -423,12 +429,13 @@ test("svg: createNodeFromSvg builds a frame of the shapes, strokes scaled to the
   const markup = Object.values(loadTreeFixture("button-icon").components[0].tree.assets.svg)[0];
   const read = `const f = figma.createNodeFromSvg(${JSON.stringify(markup)});
     return {
-      frame: [f.type, f.width, f.height, f.fills.length],
+      frame: [f.type, f.width, f.height, f.fills.length, f.clipsContent],
       kids: f.children.map((c) => [c.type, c.x, c.y, c.width, c.height, c.strokeWeight, c.strokes.length, c.fills.length, c.strokeAlign]),
     };`;
+  // As the spike saw lucide Mail come in (item 1): a clipping frame with a fill, a rect as a VECTOR.
   assert.deepEqual(await ok(new MockFigma(), read), {
-    frame: ["FRAME", 16, 16, 0],
-    kids: [["VECTOR", 1.33, 4.67, 13.33, 4, 1.33, 1, 0, "CENTER"], ["RECTANGLE", 1.33, 2.67, 13.33, 10.67, 1.33, 1, 0, "CENTER"]],
+    frame: ["FRAME", 16, 16, 1, true],
+    kids: [["VECTOR", 1.33, 4.67, 13.33, 4, 1.33, 1, 0, "CENTER"], ["VECTOR", 1.33, 2.67, 13.33, 10.67, 1.33, 1, 0, "CENTER"]],
   });
   const unscaled = (await ok(new MockFigma({ svgStrokeScales: false }), read)) as { kids: unknown[][] };
   assert.deepEqual(unscaled.kids.map((k) => k[5]), [2, 2]);
@@ -444,6 +451,41 @@ test("svg: createNodeFromSvg builds a frame of the shapes, strokes scaled to the
     f.resize(16, 16);
     return f.children.map((c) => [c.width, c.strokeWeight]);`);
   assert.deepEqual(resized, [[13.33, 2], [13.33, 2]]);
+});
+
+test("svg: a <g> comes in as a GROUP, whose shapes keep the frame's coordinates", async () => {
+  // As the spike saw (item 1): a group of the import's own. Its box is what its shapes cover.
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+    + '<g opacity="0.5" transform="translate(4 2)"><circle cx="4" cy="4" r="3"/><rect x="10" y="10" width="4" height="8"/></g><path d="M0 0L2 2"/></svg>';
+  const figma = new MockFigma();
+  const read = `const at = figma.createFrame(); at.x = 100; at.y = 50;
+    const f = figma.createNodeFromSvg(${JSON.stringify(markup)}); at.appendChild(f); f.x = 10; f.y = 20;
+    const g = f.children[0];
+    const box = (n) => [n.x, n.y, n.width, n.height];
+    const abs = (n) => { const b = n.absoluteBoundingBox; return [b.x, b.y]; };
+    const before = { kids: f.children.map((c) => c.type), group: [...box(g), g.opacity, 'fills' in g], shapes: g.children.map(box), abs: g.children.map(abs) };
+    g.x += 2;
+    const moved = g.children.map(box);
+    f.rescale(0.5);
+    return { before, moved, rescaled: [box(g), ...g.children.map(box)], found: f.findAll((n) => /VECTOR|ELLIPSE/.test(n.type)).length };`;
+  assert.deepEqual(await ok(figma, read), {
+    before: {
+      kids: ["GROUP", "VECTOR"],
+      group: [5, 3, 13, 17, 0.5, false],
+      shapes: [[5, 3, 6, 6], [14, 12, 4, 8]],
+      abs: [[115, 73], [124, 82]],
+    },
+    moved: [[7, 3, 6, 6], [16, 12, 4, 8]],
+    rescaled: [[3.5, 1.5, 6.5, 8.5], [3.5, 1.5, 3, 3], [8, 6, 2, 4]],
+    found: 3,
+  });
+  // A group its last shape leaves goes with it, as Figma never keeps an empty one.
+  const emptied = await ok(figma, `
+    const f = figma.currentPage.findOne((n) => n.name === 'svg');
+    const g = f.children[0];
+    for (const c of [...g.children]) c.remove();
+    return [g.removed, f.children.map((c) => c.type)];`);
+  assert.deepEqual(emptied, [true, ["VECTOR"]]);
 });
 
 // --- Images and variables ---------------------------------------------------------
@@ -621,6 +663,20 @@ const PROBE = readFileSync(`${ROOT}spikes/figma-probe.js`, "utf8");
 /** The probe's second call: the one line its header says to change. */
 const PROBE_IMAGE = PROBE.replace(/^const MODE = 'probe';$/m, "const MODE = 'image';");
 
+/** What the probe returned when it ran live in Figma, on 2026-10-08, kept unchanged. */
+const LIVE = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-spike.json`, "utf8")) as {
+  returnShape: string;
+  probe: { mode: string; items: Record<string, Record<string, unknown>> };
+  upload: { success: boolean; imageHash: string; sizeBytes: number; contentType: string };
+  image: { mode: string; items: { image: Record<string, unknown> } };
+};
+
+/** The probe's two labels as wide as Figma set them live, so the mock's stand-in measure doesn't decide them. */
+const PROBE_MEASURE = {
+  advance: (chars: string, font: MockFont) => (chars === "Login with Email Button" && font.style === "Medium" && font.size === 14 ? 158
+    : chars === "Login with Email" && font.style === "Regular" && font.size === 12 ? 93 : estimateAdvance(chars, font)),
+};
+
 const find = (views: NodeView[], test: (n: NodeView) => boolean): NodeView | undefined => {
   for (const view of views) {
     if (test(view)) return view;
@@ -635,9 +691,9 @@ function outside(figma: MockFigma, page: string): string {
   return JSON.stringify(figma.pages().filter((p) => p.name !== page));
 }
 
-test("spike: the probe runs as one call, only on its own page, and returns a compact result", async () => {
+test("spike: the probe runs as one call, only on its own page, and the mock answers it as Figma did live", async () => {
   const thumb = Object.values(loadTreeFixture("avatar").components[0].tree.assets.img)[0];
-  const figma = new MockFigma({ pages: ["Design", "Components"] });
+  const figma = new MockFigma({ pages: ["Design", "Components"], measure: PROBE_MEASURE });
   await ok(figma, "const f = figma.createFrame(); f.name = 'mine';");
   const before = outside(figma, "storysync spike");
   const run: MockRun = await figma.run(PROBE);
@@ -650,21 +706,15 @@ test("spike: the probe runs as one call, only on its own page, and returns a com
   for (const name of ["svg", "shadow", "text", "absolute", "clone", "search", "returned", "time", "blend", "defaults", "sizing"]) {
     assert.ok(result.items[name] && !result.items[name].error, `${name}: ${JSON.stringify(result.items[name])}`);
   }
-  assert.deepEqual(result.items.svg.rescaled, result.items.svg.kids, "the mock's import scales strokes, so both agree");
-  assert.equal((result.items.time as { height: number }).height > 0, true);
-  // The mock lands every copy on the current page, as the typings say; the nested and variant copies show it.
-  assert.deepEqual(result.items.clone, { root: "size=a", child: "thumb", plain: "beside the original", nested: "PAGE", variant: "PAGE" });
-  // Item 11: what the mock refuses comes back as its refusal, item by item, and the rest is read.
-  const sizing = result.items.sizing as Record<string, { error?: string; parent?: unknown[]; kids?: unknown[][]; textAutoResize?: string[] }>;
-  for (const refused of ["fillAlong", "growAlong"]) assert.match(sizing[refused].error!, /mock-figma: FILL or layoutGrow along a parent that hugs/, refused);
-  for (const refused of ["textInFixedRow", "textInHuggingRow"]) assert.match(sizing[refused].error!, /mock-figma: FILL/, refused);
-  assert.deepEqual(sizing.fillAcross.parent, [120, 32, "HUG", "HUG", "AUTO", "AUTO"]);
-  assert.deepEqual(sizing.fillAcross.kids![1], [0, 16, 120, 16, "FILL", "FIXED", 0, "STRETCH"]);
-  assert.deepEqual(sizing.fillAcrossAlone.kids![0].slice(2, 4), [100, 16]);
+  // Every item as Figma answered it, but the times, which are the mock's own.
+  const { time, ...items } = result.items as Record<string, Record<string, unknown>>;
+  const { time: liveTime, ...liveItems } = LIVE.probe.items;
+  assert.equal(LIVE.probe.mode, "probe");
+  for (const [name, live] of Object.entries(liveItems)) assert.deepEqual(items[name], live, name);
+  assert.deepEqual(Object.keys(items).sort(), Object.keys(liveItems).sort());
+  assert.deepEqual(Object.keys(time), Object.keys(liveTime));
+  assert.equal(time.height, liveTime.height, "400 frames of 8 and 100 labels of 15");
   assert.equal(find(figma.pages(), (n) => n.name === "storysync spike")!.children!.filter((n) => n.type === "FRAME" && n.children?.length === 3 && n.height === 720).length, 0, "each case is removed");
-  const time = result.items.time as Record<string, number>;
-  assert.deepEqual(Object.keys(time), ["frames", "texts", "layout", "height"]);
-  assert.deepEqual(result.items.blend, { blend: "DARKEN", dash: [3, 3] });
   const page = find(figma.pages(), (n) => n.name === "storysync spike")!;
   assert.equal(page.data["storysync.spike"], "1");
 
@@ -672,11 +722,16 @@ test("spike: the probe runs as one call, only on its own page, and returns a com
   const thumbBytes = treeFixtureAsset(thumb.file);
   const sha1 = createHash("sha1").update(thumbBytes).digest("hex");
   assert.ok(PROBE.includes(`bytes: ${thumbBytes.length}, fnv: '${thumb.fnv}', sha1: '${sha1}'`), "the probe expects the fixture's thumbnail");
-  figma.uploadAssets([result.imageNode], [thumbBytes]);
+  const [uploaded] = figma.uploadAssets([result.imageNode], [thumbBytes]);
+  // upload_assets answered live with the bytes' SHA-1 as their hash, as the mock does.
+  assert.deepEqual([LIVE.upload.success, LIVE.upload.imageHash, LIVE.upload.sizeBytes], [true, uploaded.imageHash, thumbBytes.length]);
   assert.notEqual(PROBE_IMAGE, PROBE);
   const image = await figma.run(PROBE_IMAGE);
   assert.ok(image.ok, image.text);
-  assert.deepEqual((image.value as { items: { image: Record<string, unknown> } }).items.image, {
+  // The live run also named the node it reused the hash on.
+  const { reuseNodeId: _reused, ...liveImage } = LIVE.image.items.image;
+  assert.deepEqual((image.value as { items: { image: Record<string, unknown> } }).items.image, liveImage);
+  assert.deepEqual(liveImage, {
     hash: sha1, scaleMode: "FILL", length: thumbBytes.length, fnv: thumb.fnv,
     size: { width: 80, height: 80 }, sameBytes: true, hashIsSha1: true, sameSize: true, reused: true,
   });
