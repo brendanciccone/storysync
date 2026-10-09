@@ -2187,22 +2187,23 @@ async function assertStaleFlagged(snapDir, { bin } = {}) {
 let mutantBuilds = 0;
 
 /**
- * A copy of the built CLI with `mutate` applied to its verify.js, beside a
- * link to this checkout's node_modules so it runs as the original does. With
- * no `mutate`, an unchanged copy: the control for the mutants, since a copy
- * that cannot run would make every one of them look caught.
+ * A copy of the built CLI with `mutate` applied to one of its modules,
+ * verify.js unless `file` names another, beside a link to this checkout's
+ * node_modules so it runs as the original does. With no `mutate`, an
+ * unchanged copy: the control for the mutants, since a copy that cannot run
+ * would make every one of them look caught.
  */
-function mutantCli(mutate) {
+function mutantCli(mutate, file = "verify.js") {
   const dir = join(WORK, `build-${++mutantBuilds}`);
   cpSync(join(ROOT, "dist", "cli"), join(dir, "dist", "cli"), { recursive: true, filter: (src) => !src.includes("__tests__") });
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   if (mutate) {
-    const file = join(dir, "dist", "cli", "verify.js");
-    const shipped = readFileSync(file, "utf8");
+    const path = join(dir, "dist", "cli", file);
+    const shipped = readFileSync(path, "utf8");
     const mutated = mutate(shipped);
-    assert(mutated !== shipped, "the mutation no longer matches verify");
-    writeFileSync(file, mutated);
+    assert(mutated !== shipped, `the mutation no longer matches ${file}`);
+    writeFileSync(path, mutated);
   }
   return join(dir, "dist", "cli", "index.js");
 }
@@ -3504,8 +3505,9 @@ async function main() {
 
   await check("a readback sealed another way, or a verify that skips a readback check, fails these checks", async () => {
     // Each template mutant rewrites the shipped readback template, and each
-    // verify mutant a copy of the built verify.js; every one has to fail the
-    // checks above, which the shipped pair passes.
+    // verify mutant a copy of the built verify.js, or of the module verify
+    // takes a function from (checksum.js, for canonicalJson); every one has
+    // to fail the checks above, which the shipped pair passes.
     const SEALED = "const text = canon({ [setId]: { [slug]: entry } });";
     const READ = "const entry = JSON.parse(JSON.stringify(Object.assign({}, fields, { readAt: new Date().toISOString() })));";
     const templateMutants = {
@@ -3535,7 +3537,9 @@ async function main() {
       "passes an entry with no checksum": (src) => src.replace('issues.push({ component, slug, problem: "no_checksum" });', ";"),
       "flags an entry but scores it anyway": (src) => src.replace("? unverifiedVerdict(component, slug, figma)",
         '? { ...verifyVariant(component, slug, measured, figma, tolerance), status: "unverified_readback" }'),
-      "keeps each object's keys in the order the file wrote them": (src) => src.replace("Object.keys(record).sort()", "Object.keys(record)"),
+      "keeps each object's keys in the order the file wrote them": {
+        file: "checksum.js", mutate: (src) => src.replace("Object.keys(record).sort()", "Object.keys(record)"),
+      },
       "checks a checksum under the slug alone, not the set's id": (src) => src.replace(
         "canonicalJson({ [setId]: { [slug]: JSON.parse(JSON.stringify(rest)) } })", "canonicalJson({ [slug]: JSON.parse(JSON.stringify(rest)) })"),
       "does not require the fields the template always returns": (src) => src.replace(
@@ -3561,8 +3565,9 @@ async function main() {
       const template = loadSkillReadback(mutate);
       if (!(await fails([() => assertSealed(snapDir, { template }), () => assertNullsScored(snapDir, { template })]))) survived.push(`a template that ${name}`);
     }
-    for (const [name, mutate] of Object.entries(verifyMutants)) {
-      if (!(await fails(every({ bin: mutantCli(mutate) })))) survived.push(`a verify that ${name}`);
+    for (const [name, mutant] of Object.entries(verifyMutants)) {
+      const { file, mutate } = typeof mutant === "function" ? { file: "verify.js", mutate: mutant } : mutant;
+      if (!(await fails(every({ bin: mutantCli(mutate, file) })))) survived.push(`a verify that ${name}`);
     }
     assert(survived.length === 0, `these pass every checksum check:\n${survived.join("\n")}`);
     return `${Object.keys(templateMutants).length} template and ${Object.keys(verifyMutants).length} verify mutants fail; an unchanged copy of the build passes`;
