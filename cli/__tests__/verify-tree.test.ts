@@ -32,15 +32,26 @@ for (const name of treeFixtureNames()) {
 
 // Every fixture but example-button draws its text in system-ui, which Figma
 // sets in a stand-in, Inter, a few percent wider: that text's width is
-// allowed 6% (design 10.5). example-button's is Inter in both, so the same
-// font drawn 4.5% wider is drift, on that text alone, below.
+// allowed 6% (design 10.5), and costs nothing around it. example-button's
+// is Inter in both, so the same font drawn 4.5% wider is drift, on that
+// text alone, below. But a text that truncates at the box the browser drew
+// it whole in is cut short there in Inter, as the fourth live push's
+// Attachment titles were: drift on its truncation alone, that many in
+// these fixtures. (The build widens such a label where it can, keepLines;
+// this harness builds every box as measured.)
+const CUT_SHORT_IN_INTER: Record<string, number> = { attachment: 2, sidebar: 5 };
 for (const name of treeFixtureNames().filter((n) => n !== "example-button")) {
-  test(`faithful build: ${name} still scores 100% with its text in Figma's Inter, laid out absolute or in auto layout`, async () => {
+  test(`faithful build: ${name} in Figma's Inter costs nothing but the texts Inter cuts short, laid out absolute or in auto layout`, async () => {
     for (const autoLayout of [false, true]) {
       for (const [fonts, measure] of [["the browser's widths", fixtureMeasure()], ["Figma's Inter", figmaFonts()]] as const) {
         const { fixture, readback } = await buildAndRead(name, { figma: newFigma({ measure }), autoLayout });
         const result = verify(fixture, readback, 0.5);
-        assert.equal(result.elementFidelity, 1, `${autoLayout ? "auto layout" : "absolute"}, ${fonts}:\n${drift(result)}`);
+        const where = `${autoLayout ? "auto layout" : "absolute"}, ${fonts}:\n${drift(result)}`;
+        const nodes = result.variants.flatMap((v) => v.nodes ?? []);
+        assert.equal(nodes.length, fonts === "Figma's Inter" ? CUT_SHORT_IN_INTER[name] ?? 0 : 0, where);
+        for (const n of nodes) {
+          assert.deepEqual(n.differences, [{ property: "truncation", measured: { maxLines: 1, cut: false }, figma: { truncation: "ENDING", maxLines: 1, cut: true } }], where);
+        }
       }
     }
   });
@@ -578,6 +589,54 @@ test("integrity: a record of the wrong length is incomplete", async () => {
   const result = verify(fixture, readback, 0.5);
   assert.deepEqual(result.readbackIssues.map((i) => [i.slug, i.problem]), [["size-default", "incomplete"], ["size-sm", "incomplete"]]);
   assert.match(result.readbackIssues[0].missing!.join(), /an F record of 14 fields, not 15/);
+});
+
+/**
+ * Attachment built faithfully where Figma sets its title `scale` times as
+ * wide as the browser drew it: wider, it cuts short the horizontal titles
+ * the browser drew whole, as the fourth live push's Figma did; narrower, it
+ * shows whole the vertical ones the browser cut.
+ */
+async function titleScaled(scale: number) {
+  const browser = fixtureMeasure();
+  const measure = { advance: (chars: string, font: MockFont) => browser.advance(chars, font) * (chars === "sales-dashboard.pdf" ? scale : 1) };
+  return buildAndRead("attachment", { figma: newFigma({ measure }) });
+}
+
+test("falsify: a title Figma cuts short where the browser drew it whole drifts on truncation, and one Figma shows whole where the browser cut it", async () => {
+  for (const [scale, orientation, cut] of [[1.2, "horizontal", true], [0.5, "vertical", false]] as const) {
+    const { fixture, readback } = await titleScaled(scale);
+    const result = verify(fixture, readback, 0.5);
+    const slugs = fixture.components[0].variants.map((v) => v.slug).filter((s) => s.includes(`orientation-${orientation}`));
+    assert.ok(slugs.length > 0);
+    assert.deepEqual(findings(result), slugs.map((s) => `${s} attachment-content/attachment-title: truncation`), `${scale}`);
+    const [title] = result.variants.flatMap((v) => v.nodes ?? []);
+    // Its truncation is as measured: only what it hides differs.
+    assert.deepEqual(title.differences, [{ property: "truncation", measured: { maxLines: 1, cut: !cut }, figma: { truncation: "ENDING", maxLines: 1, cut } }]);
+  }
+});
+
+test("integrity: an entry read with template 2, which can't tell what Figma cuts, scores truncation by its settings, as it did", async () => {
+  const { fixture, readback } = await titleScaled(1.2);
+  const component = Object.keys(readback.components)[0];
+  // What template 2 returned: no `cut` on a text's record.
+  const read = (tpl: number) => {
+    const copy = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+    for (const [key, entry] of Object.entries(copy.components[component].variants)) {
+      const { checksum: _checksum, ...rest } = entry;
+      rest.tpl = tpl;
+      rest.tree = rest.tree!.map((r) => (r[1] === "T" ? r.slice(0, 23) : r));
+      copy.components[component].variants[key] = { ...rest, checksum: readbackChecksum(copy.components[component].nodeId!, key, rest) };
+    }
+    return verify(fixture, copy, 0.5);
+  };
+  const old = read(2);
+  assert.deepEqual(old.readbackIssues, []);
+  assert.equal(old.elementFidelity, 1, drift(old));
+  // A template 3 entry without it was read with the template cut down.
+  const cut = read(3);
+  assert.deepEqual(cut.readbackIssues.map((i) => i.problem), ["incomplete", "incomplete", "incomplete", "incomplete"]);
+  assert.match(cut.readbackIssues[0].missing!.join(), /a T record of 23 fields, not 24/);
 });
 
 test("integrity: a variant renamed in Figma is a name_mismatch, not scored", async () => {

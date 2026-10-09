@@ -220,7 +220,7 @@ test("figma code: reads slice each page's variants in order, each call predicted
       const code = coded.code(call);
       assert.match(code, new RegExp(`\\nconst PAGE = ${JSON.stringify(call.page).replace(/\//g, "\\/")};\\nconst SLICES = `));
       // The constants the readback template reads, and none it declares.
-      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 2;\\nconst SUM = "[0-9a-f]{8}";\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n$`));
+      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 3;\\nconst SUM = "[0-9a-f]{8}";\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n$`));
       assert.deepEqual([...code.matchAll(/^const (\w+) = /gm)].map((m) => m[1]), ["PAGE", "SLICES", "LIMIT", "TPL", "SUM"]);
       for (const [id, first, last] of call.slices!) seen.set(id, [...(seen.get(id) ?? []), ...Array.from({ length: last - first + 1 }, (_, i) => first + i)]);
     }

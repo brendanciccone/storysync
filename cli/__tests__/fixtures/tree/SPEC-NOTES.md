@@ -1081,7 +1081,8 @@ T20. figma code on the third push's styles.json, Sidebar and Attachment,
 T21. **What verify can't see**: Figma doesn't say whether a text is cut
     short, so an ellipsis Figma draws where the browser drew none scores
     as truncation that matches. The build names it (`cut short`), and a
-    snap that draws stand-ins doesn't give one.
+    snap that draws stand-ins doesn't give one. (Since BV3, the readback
+    measures it and verify scores it.)
 
 # Layout after the third live push
 
@@ -1296,3 +1297,35 @@ BV2. **Every call checks a checksum of its own data before it does
    - `CALL_CONSTANTS` ends each kind's list with `SUM`. Tests that need a
      call figma code doesn't write change a constant with `withConstant`
      (`figma-build-harness.ts`), which writes the SUM again.
+BV3. **The readback says whether Figma cuts each text short, and verify
+   scores it** (sections 9.2 and 10.2; T21). Push4 drew all 15 horizontal
+   Attachment titles as "sales-dashboard.p…" where Storybook showed the
+   name whole, and scored them 100%: truncation ENDING at one line, as
+   measured.
+   - Readback template 3 adds `cut` to the end of a T record, after its
+     id, so `RECORD.T` is 24 (`RECORD_BY_TPL` keeps template 2's 23). For
+     a text with ENDING, the template clones it, loads its font, sets the
+     copy to HEIGHT with truncation off, and reads its height: taller than
+     the text by half its font size, the copy holds lines the text cuts
+     off, and `cut` is 1, else 0. The copy goes in a `finally`, so a read
+     changes nothing it reads. A text without ENDING is 0 with no copy; a
+     text of mixed fonts or sizes, or one whose font won't load, is null.
+     Height, not width: it is Figma's own line breaking that decides, and
+     T5's threshold for a line kept whole is in it.
+   - verify's `truncation` passes only where the settings match as before
+     and, where `cut` is 0 or 1, it equals the browser's: on one line with
+     an ellipsis (`el`), the browser cut a text whose ink runs past its
+     box by more than 0.5px; with a line clamp (`cl`), one that took more
+     lines than the clamp (Chrome lays out the lines it hides: checked in
+     Chromium 154). `cutInBrowser` in verify-tree.ts, written apart from
+     the build's textWhole (D9). The difference reads `truncation measured
+     {"maxLines":1,"cut":false}, Figma {"truncation":"ENDING",
+     "maxLines":1,"cut":true}`. The property count doesn't change.
+   - Template 2 entries, with 23-field T records, still verify, scored on
+     the settings alone; a template 3 entry with 23 fields was read with
+     the template cut down, and is incomplete.
+   - The fixtures were measured in system-ui, so in Figma's Inter the
+     faithful harness now drifts 2 Attachment titles and 5 Sidebar labels
+     on this, and tree-e2e, whose build widens what it can (T14), drifts
+     exactly the texts its build responses name `cut short`: Attachment's
+     2 horizontal titles. Those tests hold both counts.

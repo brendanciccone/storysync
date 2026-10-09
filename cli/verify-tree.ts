@@ -17,7 +17,7 @@
 
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, flowOf, parentKey, rootWithStyles } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, flowOf, parentKey, rootWithStyles } from "./tree-types.js";
 import type { Box, ComponentTree, Flow, Sides, TreeNode } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
@@ -102,19 +102,22 @@ interface Rec {
 const F_FIELDS = { fills: 6, stroke: 7, radius: 8, effects: 9, opacity: 10, blend: 11, clip: 12, visible: 13, id: 14 } as const;
 const T_FIELDS = {
   chars: 6, family: 7, weight: 8, italic: 9, size: 10, lineHeight: 11, letterSpacing: 12, color: 13, textCase: 14,
-  decoration: 15, align: 16, truncation: 17, maxLines: 18, autoResize: 19, opacity: 20, visible: 21, id: 22,
+  decoration: 15, align: 16, truncation: 17, maxLines: 18, autoResize: 19, opacity: 20, visible: 21, id: 22, cut: 23,
 } as const;
 const V_FIELDS = { shapes: 6, opacity: 7, visible: 8, id: 9 } as const;
 
 /**
  * Why a record can't be read, or null: one of another length than its kind
- * has, as a template cut down returns, or with a key or box that is not one.
+ * has in the template that read it, `tpl`, as a template cut down returns,
+ * or with a key or box that is not one. A template 2 entry's T records
+ * have no `cut`, and still read.
  */
-export function recordProblem(record: unknown, index: number): string | null {
+export function recordProblem(record: unknown, index: number, tpl?: unknown): string | null {
   if (!Array.isArray(record)) return `tree[${index}] is not a record`;
   const kind = record[1] as unknown;
   if (kind !== "F" && kind !== "T" && kind !== "V") return `tree[${index}] has no kind F, T or V`;
-  if (record.length !== RECORD[kind]) return `tree[${index}], ${kind === "F" ? "an" : "a"} ${kind} record of ${record.length} fields, not ${RECORD[kind]}`;
+  const length = (RECORD_BY_TPL[Number(tpl)] ?? RECORD)[kind];
+  if (record.length !== length) return `tree[${index}], ${kind === "F" ? "an" : "a"} ${kind} record of ${record.length} fields, not ${length}`;
   if (typeof record[0] !== "string" || [2, 3, 4, 5].some((i) => typeof record[i] !== "number")) return `tree[${index}] has no key or box`;
   return null;
 }
@@ -667,14 +670,37 @@ function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable
   check("decoration", field("decoration") === decoration, decoration, field("decoration"));
   const align = ALIGN[tx.ta ?? ""] ?? "LEFT";
   check("align", field("align") === align, align, field("align"));
-  // Cut off after as many lines as the browser cut it off after, or not cut off.
+  // Cut off after as many lines as the browser cut it off after, or not cut
+  // off; and, where the readback says whether Figma cuts it (template 3's
+  // `cut`), cutting off what the browser cut off and nothing it showed
+  // whole: a title Figma's font sets wider than its box ends in an ellipsis
+  // the browser didn't draw, with the same truncation set.
   const maxLines = tx.el ? 1 : tx.cl ?? null;
   const truncation = field("truncation");
+  const cut = field("cut");
+  const seen = cut === 0 || cut === 1;
   if (maxLines !== null && !spike.textTruncation) unscorable("truncation", "Figma's text truncation is unavailable (spike item 3)");
-  else if (maxLines !== null) check("truncation", truncation === "ENDING" && field("maxLines") === maxLines, { maxLines }, { truncation, maxLines: field("maxLines") });
-  else check("truncation", truncation !== "ENDING", { maxLines: null }, { truncation, maxLines: field("maxLines") });
+  else if (maxLines !== null) {
+    const want = cutInBrowser(n);
+    check("truncation", truncation === "ENDING" && field("maxLines") === maxLines && (!seen || (cut === 1) === want),
+      { maxLines, ...(seen ? { cut: want } : {}) }, { truncation, maxLines: field("maxLines"), ...(seen ? { cut: cut === 1 } : {}) });
+  } else check("truncation", truncation !== "ENDING", { maxLines: null }, { truncation, maxLines: field("maxLines") });
   if (tx.lh === "normal" || typeof lh !== "number" || lh <= 0) unscorable("lines", "line-height: normal, so the lines a height holds are unknown");
   else check("lines", Math.round(rec.box[3] / lh) === tx.n, tx.n, Math.round(rec.box[3] / lh));
+}
+
+/**
+ * Whether the browser cut a text short, from snap's facts: on one line with
+ * an ellipsis (`el`), where its glyphs run past its box, since a range lays
+ * a text out whole however much of it shows; with a line clamp (`cl`),
+ * where it took more lines than the clamp shows, since Chrome lays out the
+ * lines it hides too. Written here rather than taken from the build's
+ * textWhole (design D9).
+ */
+export function cutInBrowser(n: TreeNode): boolean {
+  const tx = n.tx!;
+  if (tx.el) return tx.ink[0] < -0.5 || tx.ink[0] + tx.ink[2] > n.box[2] + 0.5;
+  return tx.cl !== undefined && tx.n > tx.cl;
 }
 
 function scoreVector(n: TreeNode, field: Field, assets: ComponentTree["assets"], tolerance: number, check: Check, unscorable: Unscorable): void {

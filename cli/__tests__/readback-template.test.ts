@@ -24,9 +24,9 @@ test("template: carries no data of its own, and a call is the five header lines 
   assert.doesNotMatch(code, /SLUG_BY_NAME|SOURCE_BY_SLUG|SET_ID/, "no slugs, sources or set ids to fill in");
   // Design section 9.1's header, one constant a line, as `storysync figma
   // code` writes it, and SUM, the checksum of the four.
-  const sum = callSum(["ui/base", [["ui-base-card", 0, 1, 0]], 9000, 2]);
-  assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), `const PAGE = "ui/base";\nconst SLICES = [["ui-base-card",0,1,0]];\nconst LIMIT = 9000;\nconst TPL = 2;\nconst SUM = "${sum}";\n`);
-  assert.equal(readbackHeader("p", []), `const PAGE = "p";\nconst SLICES = [];\nconst LIMIT = 15000;\nconst TPL = 2;\nconst SUM = "${callSum(["p", [], 15000, 2])}";\n`, "LIMIT 15,000 unless told otherwise");
+  const sum = callSum(["ui/base", [["ui-base-card", 0, 1, 0]], 9000, 3]);
+  assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), `const PAGE = "ui/base";\nconst SLICES = [["ui-base-card",0,1,0]];\nconst LIMIT = 9000;\nconst TPL = 3;\nconst SUM = "${sum}";\n`);
+  assert.equal(readbackHeader("p", []), `const PAGE = "p";\nconst SLICES = [];\nconst LIMIT = 15000;\nconst TPL = 3;\nconst SUM = "${callSum(["p", [], 15000, 3])}";\n`, "LIMIT 15,000 unless told otherwise");
   const call = readbackCall(READBACK_TEMPLATE, "p", [], 1);
   assert.ok(call.endsWith(READBACK_TEMPLATE));
   // How `storysync figma next` finds the LIMIT a call was written with, to continue it with the same.
@@ -41,14 +41,14 @@ test("template: runs as `storysync figma code` writes a read call, and refuses a
   // four constants a line each, each slice with its first node, and their SUM.
   const slices = [[built.component, 0, 1, 0]];
   const header = (tpl: number) => `// storysync figma code, call 07: read back on "${PAGE}"\nconst PAGE = ${JSON.stringify(PAGE)};\nconst SLICES = ${JSON.stringify(slices)};\nconst LIMIT = 15000;\nconst TPL = ${tpl};\nconst SUM = "${callSum([PAGE, slices, 15000, tpl])}";\n`;
-  const run = await figma.run(`${header(2)}${READBACK_TEMPLATE}\n`);
+  const run = await figma.run(`${header(3)}${READBACK_TEMPLATE}\n`);
   assert.ok(run.ok, run.text);
   const result = run.value as { tpl: number; sets: { entries: Record<string, unknown> }[] };
-  assert.equal(result.tpl, 2);
+  assert.equal(result.tpl, 3);
   assert.deepEqual(Object.keys(result.sets[0].entries), ["size-default", "size-sm"]);
-  const other = await figma.run(`${header(3)}${READBACK_TEMPLATE}\n`);
+  const other = await figma.run(`${header(2)}${READBACK_TEMPLATE}\n`);
   assert.equal(other.ok, false);
-  assert.match(other.text, /This is readback template 2, not 3/);
+  assert.match(other.text, /This is readback template 3, not 2/);
 });
 
 test("template: refuses a call one character off the file figma code wrote, before it reads anything", async () => {
@@ -91,20 +91,22 @@ test("template: returns an object, each entry sealed under its set's id and key,
   const built = await buildFixture(figma, fixture);
   const [result] = await readBack(figma, [[built.component, 0, 3, 0]]);
   assert.equal(typeof result, "object");
-  assert.deepEqual([result.kind, result.tpl, result.page, result.more], ["read", 2, PAGE, undefined]);
+  assert.deepEqual([result.kind, result.tpl, result.page, result.more], ["read", 3, PAGE, undefined]);
   const [set] = result.sets;
   assert.deepEqual([set.id, set.component, set.title, set.total, set.unbuilt, set.absent], [built.id, "ui-base-attachment", "ui/base/Attachment", 4, [], []]);
   for (const [slug, entry] of Object.entries(set.entries)) {
     assert.equal(entry.checksum, readbackChecksum(set.id, slug, entry));
-    assert.equal(entry.tpl, 2);
+    assert.equal(entry.tpl, 3);
     assert.equal(entry.source, "measured");
     for (const record of entry.tree!) assert.equal(record.length, RECORD[record[1] as "F" | "T" | "V"]);
     assert.deepEqual(entry.tree!.map((r) => r[0]), ["", "attachment-content", "attachment-content/attachment-title", "attachment-content/attachment-description", "attachment-media", "attachment-media/svg", "attachment-action", "attachment-action/svg"]);
   }
-  // A record in the browser's terms: the title, cut off after one line.
+  // A record in the browser's terms: the title, cut off after one line, and
+  // cut short in Figma too, as in the browser.
   const title = set.entries["size-default--orientation-vertical--state-done"].tree![2];
   assert.deepEqual(title.slice(0, 7), ["attachment-content/attachment-title", "T", 4, 0, 94, 17.5, "sales-dashboard.pdf"]);
   assert.deepEqual(title.slice(17, 20), ["ENDING", 1, "HEIGHT"]);
+  assert.equal(title[23], 1);
 });
 
 test("template: an OUTSIDE stroke is read back in the browser's terms, its border box and outer radius", async () => {
@@ -192,17 +194,19 @@ test("template: reads each field as the header says, in the browser's terms", as
   assert.ok(run.ok, run.text);
   const [result] = await readBack(figma, [["enc", 0, 0, 0]], { page: "Page 1" });
   const { tree, designerLayers, readAt: _readAt, checksum: _checksum, ...fields } = result.sets[0].entries.default;
-  const records = tree!.map((r) => r.slice(0, -1));
-  assert.ok(tree!.every((r) => /^\d+:\d+$/.test(String(r[r.length - 1]))), "each record ends with its node id");
+  // Each record's node id, last but for a text's `cut` after it.
+  const idAt = (r: unknown[]) => (r[1] === "T" ? 22 : r.length - 1);
+  const records = tree!.map((r) => r.filter((_, i) => i !== idAt(r)));
+  assert.ok(tree!.every((r) => /^\d+:\d+$/.test(String(r[idAt(r)]))), "each record has its node id");
   assert.deepEqual(records, [
     ["", "F", 0, 0, 102, 52, ["#112233"], [2, ["#445566"], "solid", "C"], 7, [["D", 1, 2, 3, 4, "#00000080"], ["I", 0, 1, 2, 0, "#ff0000"], ["L", 5], ["B", 6]], 1, "MULTIPLY", 1, 1],
     // Its place from the root's border box, 1px outside the frame, and its own, 4px out on the left.
     ["a", "F", 0, 5, 26, 14, ["#000000b3"], [[1, 2, 3, 4], ["#0000ff"], "dotted", "O"], 0, [], 1, "PASS_THROUGH", 0, 1],
     ["b", "F", 1, 1, 10, 10, ["#ffffff"], [1, ["#000000"], "dashed", "I"], 0, [], 1, "PASS_THROUGH", 1, 0],
-    ["t", "T", 1, 1, 100, 15, "Hi", "Inter", 600, 1, 10, 15, 1, "#00ff00", "UPPER", "UNDERLINE", "CENTER", "ENDING", 2, "HEIGHT", 1, 1],
+    ["t", "T", 1, 1, 100, 15, "Hi", "Inter", 600, 1, 10, 15, 1, "#00ff00", "UPPER", "UNDERLINE", "CENTER", "ENDING", 2, "HEIGHT", 1, 1, 0],
     // AUTO line height at 12px is 15, as Figma sets it (the spike's labels).
     // As wide as the measure says, 1986.6, rounded up to a pixel, as Figma sizes a text.
-    ["long", "T", 1, 1, 1987, 15, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1],
+    ["long", "T", 1, 1, 1987, 15, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1, 0],
     ["v", "V", 1, 1, 10, 10, [[1, 2, 4, 5, "#0000ff", "#00ff00", 1.5]], 1, 1],
   ]);
   assert.deepEqual(designerLayers!.map(([name, type]) => [name, type]), [["Note", "TEXT"], ...Array.from({ length: 19 }, (_, i) => [`D${i}`, "RECTANGLE"])], "the hidden one not, and the first 20 shown");
@@ -217,8 +221,50 @@ test("template: reads each field as the header says, in the browser's terms", as
       { offsetX: 1, offsetY: 2, blur: 3, spread: 4, color: "#00000080", inset: false },
       { offsetX: 0, offsetY: 1, blur: 2, spread: 0, color: "#ff0000", inset: true },
     ],
-    name: "", source: "measured", tpl: 2, built: "abc",
+    name: "", source: "measured", tpl: 3, built: "abc",
   });
+});
+
+test("template: says whether Figma cuts each truncated text short, from a copy it measures and removes", async () => {
+  const figma = newFigma();
+  const run = await figma.run(`
+    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+    const root = figma.createComponent();
+    root.resize(300, 200);
+    for (const [k, v] of [['id', 'cut'], ['slug', 'default'], ['i', '0'], ['src', 'measured']]) root.setSharedPluginData('storysync', k, v);
+    // [key, characters, width, autoResize, maxLines]: one line in a box too
+    // narrow, one that fits, two lines of three, two of two, a fixed box
+    // (TRUNCATE) too narrow, and one that doesn't truncate.
+    for (const [k, chars, w, resize, lines] of [
+      ['narrow', 'sales-dashboard.pdf', 60, 'HEIGHT', 1],
+      ['fits', 'Home', 100, 'HEIGHT', 1],
+      ['three', 'one two three four five six', 70, 'HEIGHT', 2],
+      ['two', 'one two three', 70, 'HEIGHT', 2],
+      ['box', 'sales-dashboard.pdf', 60, 'TRUNCATE', 0],
+      ['wraps', 'sales-dashboard.pdf', 60, 'HEIGHT', 0],
+    ]) {
+      const t = figma.createText(); root.appendChild(t);
+      t.characters = chars;
+      t.resize(w, 15);
+      t.textAutoResize = resize;
+      if (lines) { t.textTruncation = 'ENDING'; t.maxLines = lines; }
+      t.setSharedPluginData('storysync', 'k', k);
+    }
+    return { kind: 'setup', page: figma.currentPage.children.map((n) => n.id) };`);
+  assert.ok(run.ok, run.text);
+  const [result] = await readBack(figma, [["cut", 0, 0, 0]], { page: "Page 1" });
+  const cut = Object.fromEntries(result.sets[0].entries.default.tree!.slice(1).map((r) => [r[0], [r[17], r[23]]]));
+  assert.deepEqual(cut, {
+    narrow: ["ENDING", 1], fits: ["ENDING", 0], three: ["ENDING", 1], two: ["ENDING", 0], box: ["ENDING", 1], wraps: ["DISABLED", 0],
+  });
+  // Each copy made was removed, and the page holds what it held.
+  const read = figma.runs[figma.runs.length - 1];
+  assert.deepEqual([read.created, read.removed], [5, 5]);
+  assert.deepEqual(figma.pages().find((p) => p.name === "Page 1")!.children!.map((n) => n.id), (run.value as { page: string[] }).page);
+  // A font that won't load: whether it is cut can't be told.
+  const fontless = `figma.loadFontAsync = async () => { throw new Error("no font"); };\n${READBACK_TEMPLATE}`;
+  const [unknown] = await readBack(figma, [["cut", 0, 0, 0]], { page: "Page 1", template: fontless });
+  assert.deepEqual(unknown.sets[0].entries.default.tree!.slice(1).map((r) => r[23]), [null, null, null, null, null, 0]);
 });
 
 test("template: an image whose bytes can't be read reads as unreadable, and the read goes on", async () => {

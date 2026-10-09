@@ -18,7 +18,7 @@ export { SHADCN_TOKENS } from "./shadcn-tokens.js";
  * A readback template standing in for package C's, which is not in this
  * package: it returns an empty read, so a plan's read calls run.
  */
-export const STUB_READBACK = "return { kind: 'read', tpl: 2, page: PAGE, sets: [], slices: SLICES, limit: LIMIT };";
+export const STUB_READBACK = "return { kind: 'read', tpl: 3, page: PAGE, sets: [], slices: SLICES, limit: LIMIT };";
 
 /**
  * A call file with its constant `name` set to `value`, and its SUM written

@@ -62,7 +62,7 @@ export interface ReadResult {
 export const READ_LIMIT = 15_000;
 
 /** The readback template this CLI writes calls for (templates/readback.js), which refuses a call for another. */
-export const READBACK_TPL = 2;
+export const READBACK_TPL = 3;
 
 /**
  * The lines the CLI writes ahead of templates/readback.js to make a read
