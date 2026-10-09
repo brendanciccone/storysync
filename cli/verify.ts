@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { canonicalJson, fnv1a32 } from "./checksum.js";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
 import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
@@ -725,41 +726,8 @@ export function expandSnap(snap: SnapResult): Map<string, Map<string, Normalized
 /** Names the algorithm, so a later change of it reads as one rather than as an edit. */
 export const CHECKSUM_PREFIX = "fnv1a:";
 
-/**
- * JSON with every object's keys sorted and no whitespace.
- *
- * Indentation and key order are how a file happens to be written, not what it
- * says, so they must not change the checksum; any change of value must.
- * Numbers are written as JavaScript writes them, the shortest form that reads
- * back as the same double, so 0.0000001, 1E-7 and 1e-7 are one number, while
- * 0.4 and the 0.4000000059604645 Figma reports for it are two. Strings are
- * compared exactly, so a color's case counts, and null is a value where an
- * absent key is not. Mirrors `canon` in the skill's readback template: the
- * two must agree character for character.
- */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const members = Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
-    return `{${members.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-/**
- * 32-bit FNV-1a over a string's UTF-16 code units, as 8 lowercase hex digits.
- *
- * Over the code units rather than UTF-8 bytes because the plugin context has
- * no TextEncoder; for the ASCII a readback is made of, they are the same.
- * Small enough to paste into every readback call, and a checksum, not a
- * cryptographic hash: nothing here could stop a deliberate forger anyway.
- */
-export function fnv1a32(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
-  return hash.toString(16).padStart(8, "0");
-}
+// In checksum.ts, which the element tree shares; re-exported for existing importers.
+export { canonicalJson, fnv1a32 };
 
 /**
  * The checksum the readback template gives an entry: FNV-1a over the

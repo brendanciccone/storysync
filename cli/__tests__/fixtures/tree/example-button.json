@@ -1,0 +1,665 @@
+{
+  "fixture": {
+    "name": "example-button",
+    "sources": [
+      "examples/storybook-vite Forms/Button, as snap 0.3.0 measured it (scratchpad snapdev2/ex-all/styles.json): every root style, slug and order as measured."
+    ],
+    "notes": [
+      "No tree prototype captured this story. The label is the button's only text run, beside no element, in an inline-flex button with line-height normal, so its box is the root's content box (border box less border and padding) and, at line-height normal, its ink box too: derived from the measured root, not captured. Package A's live capture replaces it.",
+      "No data-slot anywhere: keys are tags and #text, as for any React component without slots."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "name": "Button",
+      "title": "Forms/Button",
+      "category": "Forms",
+      "storyId": "forms-button--default",
+      "variantProperties": [
+        {
+          "name": "variant",
+          "type": "VARIANT",
+          "values": [
+            "primary",
+            "danger",
+            "outline"
+          ],
+          "defaultValue": "primary"
+        },
+        {
+          "name": "size",
+          "type": "VARIANT",
+          "values": [
+            "sm",
+            "lg"
+          ],
+          "defaultValue": "sm"
+        },
+        {
+          "name": "disabled",
+          "type": "BOOLEAN",
+          "values": [
+            "true",
+            "false"
+          ],
+          "defaultValue": "false"
+        }
+      ],
+      "base": {
+        "combination": {
+          "variant": "primary",
+          "size": "sm",
+          "disabled": "false"
+        },
+        "slug": "variant-primary--size-sm--disabled-false",
+        "styles": {
+          "display": "inline-flex",
+          "flexDirection": "row",
+          "alignItems": "center",
+          "justifyContent": "normal",
+          "gap": {
+            "row": 6,
+            "column": 6
+          },
+          "width": 54.19,
+          "height": 23,
+          "backgroundColor": "#2563eb",
+          "color": "#ffffff",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 3,
+            "topRight": 3,
+            "bottomRight": 3,
+            "bottomLeft": 3
+          },
+          "borderRadiusUniform": 3,
+          "padding": {
+            "top": 4,
+            "right": 8,
+            "bottom": 4,
+            "left": 8
+          },
+          "fontFamily": "Inter",
+          "fontSize": 12,
+          "fontWeight": 600,
+          "lineHeight": "normal",
+          "letterSpacing": 0,
+          "boxShadow": [],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": true,
+          "text": {
+            "color": "#ffffff",
+            "fontFamily": "Inter",
+            "fontSize": 12,
+            "fontWeight": 600
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {
+            "variant": "primary",
+            "size": "sm",
+            "disabled": "false"
+          },
+          "slug": "variant-primary--size-sm--disabled-false",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 54.19,
+            "height": 23
+          },
+          "element": "button",
+          "delta": {}
+        },
+        {
+          "combination": {
+            "variant": "primary",
+            "size": "sm",
+            "disabled": "true"
+          },
+          "slug": "variant-primary--size-sm--disabled-true",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 54.19,
+            "height": 23
+          },
+          "element": "button",
+          "delta": {
+            "opacity": 0.4
+          },
+          "treeDelta": {}
+        },
+        {
+          "combination": {
+            "variant": "primary",
+            "size": "lg",
+            "disabled": "true"
+          },
+          "slug": "variant-primary--size-lg--disabled-true",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 105.28,
+            "height": 45
+          },
+          "element": "button",
+          "delta": {
+            "width": 105.28,
+            "height": 45,
+            "borderRadius": {
+              "topLeft": 9,
+              "topRight": 9,
+              "bottomRight": 9,
+              "bottomLeft": 9
+            },
+            "borderRadiusUniform": 9,
+            "padding": {
+              "top": 12,
+              "right": 24,
+              "bottom": 12,
+              "left": 24
+            },
+            "fontSize": 18,
+            "opacity": 0.4,
+            "text": {
+              "color": "#ffffff",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[12,24,12,24]},"box":[0,0,105.28,45]},
+              "#text": {"box":[24,12,57.28,21],"tx":{"c":"Button","col":"#ffffff","f":"Inter","ink":[0,0,57.28,21],"lh":"normal","n":1,"sz":18,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "primary",
+            "size": "lg",
+            "disabled": "false"
+          },
+          "slug": "variant-primary--size-lg--disabled-false",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 105.28,
+            "height": 45
+          },
+          "element": "button",
+          "delta": {
+            "width": 105.28,
+            "height": 45,
+            "borderRadius": {
+              "topLeft": 9,
+              "topRight": 9,
+              "bottomRight": 9,
+              "bottomLeft": 9
+            },
+            "borderRadiusUniform": 9,
+            "padding": {
+              "top": 12,
+              "right": 24,
+              "bottom": 12,
+              "left": 24
+            },
+            "fontSize": 18,
+            "text": {
+              "color": "#ffffff",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[12,24,12,24]},"box":[0,0,105.28,45]},
+              "#text": {"box":[24,12,57.28,21],"tx":{"c":"Button","col":"#ffffff","f":"Inter","ink":[0,0,57.28,21],"lh":"normal","n":1,"sz":18,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "danger",
+            "size": "sm",
+            "disabled": "true"
+          },
+          "slug": "variant-danger--size-sm--disabled-true",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 54.19,
+            "height": 23
+          },
+          "element": "button",
+          "delta": {
+            "backgroundColor": "#dc2626",
+            "opacity": 0.4
+          },
+          "treeDelta": {}
+        },
+        {
+          "combination": {
+            "variant": "danger",
+            "size": "sm",
+            "disabled": "false"
+          },
+          "slug": "variant-danger--size-sm--disabled-false",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 54.19,
+            "height": 23
+          },
+          "element": "button",
+          "delta": {
+            "backgroundColor": "#dc2626"
+          },
+          "treeDelta": {}
+        },
+        {
+          "combination": {
+            "variant": "danger",
+            "size": "lg",
+            "disabled": "true"
+          },
+          "slug": "variant-danger--size-lg--disabled-true",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 105.28,
+            "height": 45
+          },
+          "element": "button",
+          "delta": {
+            "width": 105.28,
+            "height": 45,
+            "backgroundColor": "#dc2626",
+            "borderRadius": {
+              "topLeft": 9,
+              "topRight": 9,
+              "bottomRight": 9,
+              "bottomLeft": 9
+            },
+            "borderRadiusUniform": 9,
+            "padding": {
+              "top": 12,
+              "right": 24,
+              "bottom": 12,
+              "left": 24
+            },
+            "fontSize": 18,
+            "opacity": 0.4,
+            "text": {
+              "color": "#ffffff",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[12,24,12,24]},"box":[0,0,105.28,45]},
+              "#text": {"box":[24,12,57.28,21],"tx":{"c":"Button","col":"#ffffff","f":"Inter","ink":[0,0,57.28,21],"lh":"normal","n":1,"sz":18,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "danger",
+            "size": "lg",
+            "disabled": "false"
+          },
+          "slug": "variant-danger--size-lg--disabled-false",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 105.28,
+            "height": 45
+          },
+          "element": "button",
+          "delta": {
+            "width": 105.28,
+            "height": 45,
+            "backgroundColor": "#dc2626",
+            "borderRadius": {
+              "topLeft": 9,
+              "topRight": 9,
+              "bottomRight": 9,
+              "bottomLeft": 9
+            },
+            "borderRadiusUniform": 9,
+            "padding": {
+              "top": 12,
+              "right": 24,
+              "bottom": 12,
+              "left": 24
+            },
+            "fontSize": 18,
+            "text": {
+              "color": "#ffffff",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[12,24,12,24]},"box":[0,0,105.28,45]},
+              "#text": {"box":[24,12,57.28,21],"tx":{"c":"Button","col":"#ffffff","f":"Inter","ink":[0,0,57.28,21],"lh":"normal","n":1,"sz":18,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "sm",
+            "disabled": "true"
+          },
+          "slug": "variant-outline--size-sm--disabled-true",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 58.19,
+            "height": 27
+          },
+          "element": "button",
+          "delta": {
+            "width": 58.19,
+            "height": 27,
+            "backgroundColor": null,
+            "color": "#111827",
+            "border": {
+              "top": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "right": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "bottom": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "left": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              }
+            },
+            "borderUniform": {
+              "width": 2,
+              "style": "solid",
+              "color": "#9ca3af"
+            },
+            "opacity": 0.4,
+            "text": {
+              "color": "#111827",
+              "fontFamily": "Inter",
+              "fontSize": 12,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"box":[0,0,58.19,27]},
+              "#text": {"box":[10,6,38.19,15],"tx":{"c":"Button","col":"#111827","f":"Inter","ink":[0,0,38.19,15],"lh":"normal","n":1,"sz":12,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "sm",
+            "disabled": "false"
+          },
+          "slug": "variant-outline--size-sm--disabled-false",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 58.19,
+            "height": 27
+          },
+          "element": "button",
+          "delta": {
+            "width": 58.19,
+            "height": 27,
+            "backgroundColor": null,
+            "color": "#111827",
+            "border": {
+              "top": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "right": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "bottom": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "left": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              }
+            },
+            "borderUniform": {
+              "width": 2,
+              "style": "solid",
+              "color": "#9ca3af"
+            },
+            "text": {
+              "color": "#111827",
+              "fontFamily": "Inter",
+              "fontSize": 12,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"box":[0,0,58.19,27]},
+              "#text": {"box":[10,6,38.19,15],"tx":{"c":"Button","col":"#111827","f":"Inter","ink":[0,0,38.19,15],"lh":"normal","n":1,"sz":12,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "lg",
+            "disabled": "true"
+          },
+          "slug": "variant-outline--size-lg--disabled-true",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 109.28,
+            "height": 49
+          },
+          "element": "button",
+          "delta": {
+            "width": 109.28,
+            "height": 49,
+            "backgroundColor": null,
+            "color": "#111827",
+            "border": {
+              "top": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "right": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "bottom": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "left": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              }
+            },
+            "borderUniform": {
+              "width": 2,
+              "style": "solid",
+              "color": "#9ca3af"
+            },
+            "borderRadius": {
+              "topLeft": 9,
+              "topRight": 9,
+              "bottomRight": 9,
+              "bottomLeft": 9
+            },
+            "borderRadiusUniform": 9,
+            "padding": {
+              "top": 12,
+              "right": 24,
+              "bottom": 12,
+              "left": 24
+            },
+            "fontSize": 18,
+            "opacity": 0.4,
+            "text": {
+              "color": "#111827",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[12,24,12,24]},"box":[0,0,109.28,49]},
+              "#text": {"box":[26,14,57.28,21],"tx":{"c":"Button","col":"#111827","f":"Inter","ink":[0,0,57.28,21],"lh":"normal","n":1,"sz":18,"ta":"center","wt":600}}
+            }
+          }
+        },
+        {
+          "combination": {
+            "variant": "outline",
+            "size": "lg",
+            "disabled": "false"
+          },
+          "slug": "variant-outline--size-lg--disabled-false",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 109.28,
+            "height": 49
+          },
+          "element": "button",
+          "delta": {
+            "width": 109.28,
+            "height": 49,
+            "backgroundColor": null,
+            "color": "#111827",
+            "border": {
+              "top": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "right": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "bottom": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              },
+              "left": {
+                "width": 2,
+                "style": "solid",
+                "color": "#9ca3af"
+              }
+            },
+            "borderUniform": {
+              "width": 2,
+              "style": "solid",
+              "color": "#9ca3af"
+            },
+            "borderRadius": {
+              "topLeft": 9,
+              "topRight": 9,
+              "bottomRight": 9,
+              "bottomLeft": 9
+            },
+            "borderRadiusUniform": 9,
+            "padding": {
+              "top": 12,
+              "right": 24,
+              "bottom": 12,
+              "left": 24
+            },
+            "fontSize": 18,
+            "text": {
+              "color": "#111827",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": 600
+            }
+          },
+          "treeDelta": {
+            "set": {
+              "": {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[12,24,12,24]},"box":[0,0,109.28,49]},
+              "#text": {"box":[26,14,57.28,21],"tx":{"c":"Button","col":"#111827","f":"Inter","ink":[0,0,57.28,21],"lh":"normal","n":1,"sz":18,"ta":"center","wt":600}}
+            }
+          }
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"ai":"center","d":"inline-flex","gap":[6,6],"pad":[4,8,4,8]},"box":[0,0,54.19,23],"el":"button","k":"","t":"F"},
+          {"box":[8,4,38.19,15],"el":"#text","k":"#text","t":"T","tx":{"c":"Button","col":"#ffffff","f":"Inter","ink":[0,0,38.19,15],"lh":"normal","n":1,"sz":12,"ta":"center","wt":600}}
+        ],
+        "assets": {
+          "svg": {},
+          "img": {}
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 12,
+    "rendered": 12,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

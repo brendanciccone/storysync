@@ -1,0 +1,187 @@
+{
+  "fixture": {
+    "name": "switch",
+    "sources": [
+      "design/budget/raw/switch.raw.json (budget prototype: raw computed values per variant, normalized with storysync's own normalizers)",
+      "agents/push2/styles.json (0.4.0 snap of the same story: slugs; root styles checked equal)"
+    ],
+    "notes": [
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-switch",
+      "name": "Switch",
+      "title": "ui/base/Switch",
+      "category": "ui/base",
+      "storyId": "ui-base-switch--default",
+      "variantProperties": [
+        {
+          "name": "size",
+          "type": "VARIANT",
+          "values": [
+            "default",
+            "sm"
+          ],
+          "defaultValue": "default"
+        }
+      ],
+      "base": {
+        "combination": {
+          "size": "default"
+        },
+        "slug": "size-default",
+        "styles": {
+          "display": "flex",
+          "flexDirection": "row",
+          "alignItems": "center",
+          "justifyContent": "normal",
+          "gap": null,
+          "width": 32,
+          "height": 18.39,
+          "backgroundColor": "#e5e5e5",
+          "color": "#0a0a0a",
+          "border": {
+            "top": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            },
+            "right": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            },
+            "bottom": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            },
+            "left": {
+              "width": 1,
+              "style": "solid",
+              "color": null
+            }
+          },
+          "borderUniform": {
+            "width": 1,
+            "style": "solid",
+            "color": null
+          },
+          "borderRadius": {
+            "topLeft": 9.2,
+            "topRight": 9.2,
+            "bottomRight": 9.2,
+            "bottomLeft": 9.2
+          },
+          "borderRadiusUniform": 9.2,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "fontFamily": "system-ui",
+          "fontSize": 16,
+          "fontWeight": 400,
+          "lineHeight": 24,
+          "letterSpacing": 0,
+          "boxShadow": [
+            {
+              "offsetX": 0,
+              "offsetY": 1,
+              "blur": 2,
+              "spread": 0,
+              "color": "#0000000d",
+              "inset": false
+            }
+          ],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": null,
+          "text": null
+        }
+      },
+      "variants": [
+        {
+          "combination": {
+            "size": "default"
+          },
+          "slug": "size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 32,
+            "height": 18.39
+          },
+          "element": "span[data-slot=\"switch\"]",
+          "delta": {}
+        },
+        {
+          "combination": {
+            "size": "sm"
+          },
+          "slug": "size-sm",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 24,
+            "height": 14
+          },
+          "element": "span[data-slot=\"switch\"]",
+          "delta": {
+            "width": 24,
+            "height": 14,
+            "borderRadius": {
+              "topLeft": 7,
+              "topRight": 7,
+              "bottomRight": 7,
+              "bottomLeft": 7
+            },
+            "borderRadiusUniform": 7
+          },
+          "treeDelta": {
+            "set": {
+              "": {"box":[0,0,24,14]},
+              "switch-thumb": {"box":[1,1,12,12],"r":6}
+            }
+          }
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"ai":"center","d":"flex"},"box":[0,0,32,18.39],"el":"span[data-slot=switch]","k":"","t":"F"},
+          {"bg":"#ffffff","box":[1,1.19,16,16],"el":"span[data-slot=switch-thumb]","k":"switch-thumb","r":8,"t":"F"}
+        ],
+        "assets": {
+          "svg": {},
+          "img": {}
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 2,
+    "rendered": 2,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}
