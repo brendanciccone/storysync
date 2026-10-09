@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -31,6 +31,22 @@ function makeTempProject(files: Record<string, string> = {}): string {
 test("CLI: --version prints a version", () => {
   const out = run("--version").trim();
   assert.match(out, /^\d+\.\d+\.\d+/);
+});
+
+// npm makes a bin executable when it installs a package from the registry,
+// but a package linked or installed from a directory runs the build's own
+// file, as `npx storysync` does there: tsc writes it without the execute
+// bits, and it failed with "Permission denied" after every rebuild.
+test("CLI: the build leaves each bin executable, so a linked storysync runs through npx", { skip: process.platform === "win32" && "Windows has no execute bits" }, () => {
+  const root = join(__dirname, "..", "..", "..");
+  const { bin } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { bin: Record<string, string> };
+  assert.deepEqual(Object.values(bin), ["dist/cli/index.js"]);
+  for (const file of Object.values(bin)) {
+    const path = join(root, file);
+    assert.equal(statSync(path).mode & 0o111, 0o111, `${file} is executable by everyone who can read it`);
+    // Run as a shell runs node_modules/.bin/storysync: the file itself, through its #! line.
+    assert.match(execFileSync(path, ["--version"], { encoding: "utf8" }).trim(), /^\d+\.\d+\.\d+/);
+  }
 });
 
 test("CLI: tokens --json returns valid JSON", () => {
