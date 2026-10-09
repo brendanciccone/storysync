@@ -147,19 +147,25 @@ const paints = async (list, n) => {
 
 // Stroke weights per side, top right bottom left, and the part of each
 // outside the layer's own box: all of OUTSIDE, half of CENTER.
-const weights = (n) => (typeof n.strokeWeight === 'number' ? [1, 1, 1, 1].map(() => n.strokeWeight)
+const weights = (n) => (typeof n.strokeWeight === 'number' ? Array(4).fill(n.strokeWeight)
   : [n.strokeTopWeight, n.strokeRightWeight, n.strokeBottomWeight, n.strokeLeftWeight]);
 const outside = (n) => {
   const share = Array.isArray(n.strokes) && n.strokes.length ? { OUTSIDE: 1, CENTER: 0.5 }[n.strokeAlign] || 0 : 0;
   return share ? weights(n).map((w) => w * share) : [0, 0, 0, 0];
 };
-const WEIGHTS = {
-  thin: 100, extralight: 200, ultralight: 200, light: 300, regular: 400, normal: 400, book: 400, medium: 500,
-  semibold: 600, demibold: 600, bold: 700, extrabold: 800, ultrabold: 800, black: 900, heavy: 900,
-};
+// A weight from a style name, as 0.4.0's template reads one: the names of
+// each hundred, from 100 up; 400 for a name not among them.
+const WEIGHTS = 'thin,extralight ultralight,light,regular normal book,medium,semibold demibold,bold,extrabold ultrabold,black heavy'.split(',');
 const weightOf = (style) => {
   const key = String(style || '').toLowerCase().replace(/[^a-z]/g, '').replace(/italic$/, '');
-  return WEIGHTS[key] != null ? WEIGHTS[key] : 400;
+  const at = WEIGHTS.findIndex((names) => names.split(' ').includes(key));
+  return at < 0 ? 400 : (at + 1) * 100;
+};
+// A stroke's style from its dash pattern, against its weight `w`: a dash
+// longer than the weight is a dashed border's, one as long a dotted one's.
+const styleOf = (n, w) => {
+  const dash = n.dashPattern && n.dashPattern.length ? n.dashPattern[0] : 0;
+  return !dash ? 'solid' : dash > w ? 'dashed' : 'dotted';
 };
 const SHAPES = /^(VECTOR|ELLIPSE|RECTANGLE|LINE|POLYGON|STAR|BOOLEAN_OPERATION)$/;
 const effectsOf = (n) => (Array.isArray(n.effects) ? n.effects : []).filter((e) => e.visible !== false);
@@ -203,16 +209,15 @@ const record = async (n, k, around, root) => {
   let stroke = null;
   if (Array.isArray(n.strokes) && n.strokes.length) {
     const w = weights(n);
-    const dash = n.dashPattern && n.dashPattern.length ? n.dashPattern[0] : 0;
-    stroke = [typeof n.strokeWeight === 'number' ? n.strokeWeight : w, await paints(n.strokes, n),
-      !dash ? 'solid' : dash > Math.max(...w) ? 'dashed' : 'dotted', { INSIDE: 'I', OUTSIDE: 'O', CENTER: 'C' }[n.strokeAlign]];
+    stroke = [typeof n.strokeWeight === 'number' ? n.strokeWeight : w, await paints(n.strokes, n), styleOf(n, Math.max(...w)), n.strokeAlign[0]];
   }
   return [...head, await paints(n.fills, n), stroke,
     typeof n.cornerRadius === 'number' ? corner(n.cornerRadius, 0)
       : [n.topLeftRadius, n.topRightRadius, n.bottomRightRadius, n.bottomLeftRadius].map(corner),
+    // The type's initial: D(ROP_SHADOW), I(NNER_SHADOW), L(AYER_BLUR), B(ACKGROUND_BLUR).
     effectsOf(n).map((e) => (/SHADOW/.test(e.type)
-      ? [e.type === 'INNER_SHADOW' ? 'I' : 'D', r2(e.offset.x), r2(e.offset.y), r2(e.radius), r2(e.spread || 0), hexOf({ color: e.color })]
-      : [{ LAYER_BLUR: 'L', BACKGROUND_BLUR: 'B' }[e.type] || e.type, r2(e.radius)])),
+      ? [e.type[0], r2(e.offset.x), r2(e.offset.y), r2(e.radius), r2(e.spread || 0), hexOf({ color: e.color })]
+      : [e.type[0], r2(e.radius)])),
     n.opacity, n.blendMode, n.clipsContent ? 1 : 0, ...tail.slice(1)];
 };
 
@@ -246,16 +251,15 @@ const rootFields = (v) => {
   const own = outside(v);
   const text = v.findOne((n) => n.type === 'TEXT' && get(n, 'k') !== '');
   const font = text && typeof text.fontName === 'object' ? text.fontName : null;
-  const dash = v.dashPattern && v.dashPattern.length ? v.dashPattern[0] : 0;
+  // `source` too, which the entry gives every part.
   return {
-    source: get(v, 'src') || 'inferred',
     backgroundColor: fill && fill.type === 'SOLID' ? hexOf(fill) : null,
     color: text && text.fills[0] ? hexOf(text.fills[0]) : null,
     borderRadiusUniform: typeof v.cornerRadius === 'number' ? v.cornerRadius : null,
     padding: { top: v.paddingTop, right: v.paddingRight, bottom: v.paddingBottom, left: v.paddingLeft },
     borderUniform: stroke ? {
       width: v.strokeWeight,
-      style: !dash ? 'solid' : dash > (typeof v.strokeWeight === 'number' ? v.strokeWeight : v.strokeTopWeight) ? 'dashed' : 'dotted',
+      style: styleOf(v, typeof v.strokeWeight === 'number' ? v.strokeWeight : v.strokeTopWeight),
       color: hexOf(stroke),
     } : null,
     fontSize: text && typeof text.fontSize === 'number' ? text.fontSize : null,
