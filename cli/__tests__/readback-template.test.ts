@@ -91,6 +91,20 @@ function figmaX(figma: ReturnType<typeof newFigma>, id: string): number {
   return figma.node(id)!.x;
 }
 
+test("template: an image whose bytes can't be read reads as unreadable, and the read goes on", async () => {
+  const figma = newFigma();
+  const run = await figma.run(`
+    const root = figma.createComponent();
+    root.resize(10, 10);
+    root.fills = [{ type: 'IMAGE', imageHash: 'f00d', scaleMode: 'FILL' }];
+    for (const [k, v] of [['id', 'img'], ['slug', 'default'], ['i', '0'], ['src', 'measured']]) root.setSharedPluginData('storysync', k, v);`);
+  assert.ok(run.ok, run.text);
+  // As the sandbox would, should it refuse an image it can't find.
+  const refusing = `figma.getImageByHash = () => { throw new Error("no image f00d"); };\n${READBACK_TEMPLATE}`;
+  const [result] = await readBack(figma, [["img", 0, 0, 0]], { page: "Page 1", template: refusing });
+  assert.deepEqual(result.sets[0].entries.default.tree![0][6], ["img:?:FILL:?"]);
+});
+
 test("template: counts what it returns in bytes, as use_figma does, so text outside ASCII stops a call at LIMIT, not past 20kb", async () => {
   const figma = newFigma();
   const label = "読み込み中".repeat(58);

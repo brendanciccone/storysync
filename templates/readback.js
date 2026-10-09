@@ -106,17 +106,17 @@ const hexOf = (p) => {
   const a = Math.round((c.a == null ? 1 : c.a) * (p.opacity == null ? 1 : p.opacity) * 255 + 1e-4);
   return a ? '#' + [c.r, c.g, c.b].map((x) => byte(Math.round(x * 255))).join('') + (a < 255 ? byte(a) : '') : null;
 };
+// An image's bytes, as their FNV-1a, and its size, `<w>x<h>`.
 const images = {};
 const imageOf = async (hash) => {
   if (!images[hash]) {
-    const image = figma.getImageByHash(hash);
-    let bytes = '?', size = '?';
+    images[hash] = ['?', '?'];
     try {
-      bytes = fnv(await image.getBytesAsync());
+      const image = figma.getImageByHash(hash);
+      images[hash][0] = fnv(await image.getBytesAsync());
       const s = await image.getSizeAsync();
-      size = s.width + 'x' + s.height;
+      images[hash][1] = s.width + 'x' + s.height;
     } catch (e) { /* what can't be read stays '?' */ }
-    images[hash] = bytes + ':' + size;
   }
   return images[hash];
 };
@@ -129,7 +129,7 @@ const paints = async (list, n) => {
       const hex = hexOf(p);
       if (hex) out.push(hex);
     } else if (p.type === 'IMAGE') {
-      const [bytes, size] = p.imageHash ? (await imageOf(p.imageHash)).split(':') : ['?', '?'];
+      const [bytes, size] = p.imageHash ? await imageOf(p.imageHash) : ['?', '?'];
       out.push('img:' + bytes + ':' + p.scaleMode + ':' + size);
     } else if (p.type === 'GRADIENT_LINEAR') {
       // The gradient's line, (0, 0.5) to (1, 0.5) in gradient space, taken
