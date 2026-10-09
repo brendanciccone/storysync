@@ -12,7 +12,7 @@ import {
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
-  describeTruncatedTrees, describeClimbed,
+  describeTruncatedTrees, describeClimbed, describeFontStandIns,
 } from "../snap.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
@@ -2124,4 +2124,44 @@ test("detectFontSubstitution: a text inside the root drawn in a font that didn't
     tree: { version: 1, base: [{ k: "", t: "F", el: "div", box: [0, 0, 1, 1] }], assets: { svg: {}, img: {} } },
   } as unknown as Parameters<typeof detectFontSubstitution>[0];
   assert.match(detectFontSubstitution(component)!, /^the browser could not render "Geist"/);
+});
+
+// --- Stand-in fonts --------------------------------------------------------------
+
+test("runSnap: text drawn in a stand-in is recorded in it, with the family asked for, on the component and the run", async () => {
+  const stack = '"storysync Inter", ui-sans-serif, system-ui, sans-serif';
+  const TEXT = {
+    color: "rgb(10, 10, 10)", "font-family": stack, "font-size": "14px", "font-weight": "400", "font-style": "normal",
+    "line-height": "20px", "letter-spacing": "normal", "text-transform": "none", "text-decoration-line": "none",
+    "text-align": "start", "white-space": "nowrap", "text-overflow": "clip", "-webkit-line-clamp": "none",
+  };
+  const capture = (): RawTreeCapture => ({
+    root: { k: "e", tag: "span", box: [0, 0, 40, 20], cs: { display: "flex" }, path: [], kids: [
+      { k: "e", tag: "span", box: [0, 0, 40, 20], cs: {}, path: [0], text: TEXT, kids: [{ k: "t", text: "Home", rects: [[0, 1.5, 39.05, 17]] }] },
+    ] },
+    fonts: { [stack]: { families: ["storysync Inter", "ui-sans-serif", "system-ui", "sans-serif"], applied: [true, false, null, null] } },
+  });
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.fontStandIns, [["system-ui", "Inter"]]);
+    assert.deepEqual(result.fontStandIns, [["system-ui", "Inter"]]);
+    const tx = component.tree!.base.find((n) => n.tx)!.tx!;
+    assert.deepEqual([tx.f, tx.fs], ["Inter", "system-ui"]);
+    // In styles.json as returned.
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "styles.json"), "utf8")).fontStandIns, [["system-ui", "Inter"]]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("describeFontStandIns: once a run, what each family was measured in and why; nothing when none was", () => {
+  assert.equal(describeFontStandIns(undefined), null);
+  assert.equal(describeFontStandIns([]), null);
+  assert.equal(describeFontStandIns([["system-ui", "Inter"]]),
+    "Text in system-ui was measured in Inter, the font Figma sets it in, so the browser and Figma lay the text out alike.");
+  assert.equal(describeFontStandIns([["Menlo", "Roboto Mono"], ["system-ui", "Inter"]]),
+    "Text in Menlo was measured in Roboto Mono and text in system-ui in Inter, the fonts Figma sets them in, so the browser and Figma lay the text out alike.");
 });

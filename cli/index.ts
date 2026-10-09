@@ -10,7 +10,7 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
-import { runSnap, snapFailsStrict } from "./snap.js";
+import { describeFontStandIns, runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
@@ -471,6 +471,8 @@ program
         const { summary } = result;
         console.log(`\n${summary.rendered}/${summary.variants} variants measured across ${summary.components} components`);
         console.log(chalk.dim(`  Styles written to ${opts.out}/styles.json`));
+        const standIns = describeFontStandIns(result.fontStandIns);
+        if (standIns) console.log(chalk.dim(`\n  i ${standIns}`));
         for (const component of result.components) {
           for (const warning of component.warnings) {
             console.log(chalk.yellow(`\n  ! ${component.title ?? component.name}: ${warning}`));

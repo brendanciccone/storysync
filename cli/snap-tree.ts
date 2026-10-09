@@ -623,7 +623,7 @@ function shapeTransform(value: string): string | null {
 }
 
 /** The family a text is drawn in, as resolveFontFamily picks it from the page's probe of its stack. */
-function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { family: string; available: boolean | null } {
+function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { family: string; available: boolean | null; asked?: string } {
   const probe = fonts[stack];
   if (probe) return resolveFontFamily(probe);
   const first = (stack.split(",")[0] ?? "").trim().replace(/^(['"])(.*)\1$/, "$2");
@@ -644,6 +644,7 @@ function textFacts(
   const tx: TextFacts = { c: chars, f: font.family, sz: size, wt: normalizeFontWeight(text["font-weight"]), col: null, lh: "normal", n: 1, ink: [0, 0, 0, 0] };
   if (isFontKeyword(font.family)) tx.fk = 1;
   if (font.available === false) tx.fa = 0;
+  if (font.asked) tx.fs = font.asked;
   if (/italic|oblique/.test(text["font-style"] ?? "")) tx.it = 1;
   tx.col = normalizeColor(text["color"]);
   tx.lh = normalizeLineHeight(text["line-height"]);

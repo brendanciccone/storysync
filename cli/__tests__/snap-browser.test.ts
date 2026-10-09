@@ -10,7 +10,7 @@ import { fakePreview, inPage } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
-  captureTree, captureTreeInPage, drawingElementInPage, thumbnailInPage,
+  captureTree, captureTreeInPage, drawingElementInPage, thumbnailInPage, fontStacksInPage, standInFontsInPage, standInsMeasured,
 } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
@@ -778,4 +778,55 @@ test("drawingElementInPage: an element that draws nothing, holding nothing that 
   const bare: FakeElementSpec = { tag: "div", attrs: { id: "storybook-root" }, rect: [0, 0, 1, 1], kids: [{ tag: "span", rect: [0, 0, 0, 0] }] };
   const span = inFakePage(bare, (el) => (drawingElementInPage(el, ["#storybook-root"]) as unknown as { spec: FakeElementSpec }).spec, [], (root) => (root as unknown as { children: Element[] }).children[0]);
   assert.equal(span, bare.kids![0]);
+});
+
+// --- Stand-in fonts --------------------------------------------------------------
+
+const SANS = 'ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji"';
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+/** A story whose root inherits Tailwind's sans stack, a code sample its mono one, and a heading Geist. */
+const STACKS: FakeElementSpec = {
+  tag: "html", rect: [0, 0, 1280, 720], style: { "font-family": SANS }, kids: [
+    { tag: "body", rect: [0, 0, 1280, 720], style: { "font-family": SANS }, kids: [
+      { tag: "code", rect: [0, 0, 80, 20], style: { "font-family": MONO } },
+      { tag: "h1", rect: [0, 20, 80, 20], style: { "font-family": "Geist, sans-serif" } },
+    ] },
+  ],
+};
+
+test("fontStacksInPage: each computed font stack in the page once, in document order", () => {
+  assert.deepEqual(inFakePage(STACKS, (el) => fontStacksInPage(el)), [SANS, MONO, "Geist, sans-serif"]);
+});
+
+test("standInFontsInPage: an element on a stack Figma sets in a stand-in gets the stand-in ahead of it, inline and important", () => {
+  const stacks = { [SANS]: `"storysync Inter", ${SANS}`, [MONO]: `"storysync Roboto Mono", ${MONO}` };
+  const set = inFakePage(STACKS, (el) => {
+    const changed = standInFontsInPage({ stacks, faces: [] }, el);
+    const all: { tagName: string; style: { values: Record<string, string> } }[] = [];
+    const walk = (n: unknown) => {
+      const e = n as { tagName: string; style: { values: Record<string, string> }; children: unknown[] };
+      all.push(e);
+      e.children.forEach(walk);
+    };
+    walk(el);
+    return { changed, fonts: all.map((e) => [e.tagName, e.style.values["font-family"] ?? null]) };
+  });
+  // The page reads each element after those before it change: in a browser
+  // body would inherit html's new stack and be left alone; here it declares its own.
+  assert.equal(set.changed, 3);
+  assert.deepEqual(set.fonts, [
+    ["HTML", `"storysync Inter", ${SANS}`], ["BODY", `"storysync Inter", ${SANS}`],
+    ["CODE", `"storysync Roboto Mono", ${MONO}`], ["H1", null],
+  ]);
+});
+
+test("standInsMeasured: each family the capture drew in a stand-in, asked and drawn, from its fonts and its tree's texts", () => {
+  const probe = { families: ["storysync Inter", "ui-sans-serif", "system-ui"], applied: [true, false, null] as (boolean | null)[] };
+  const nodes = [
+    { k: "", t: "F", el: "div", box: [0, 0, 1, 1] },
+    { k: "a", t: "T", el: "#text", box: [0, 0, 1, 1], tx: { c: "x", f: "Roboto Mono", fs: "Menlo", sz: 12, wt: 400, col: null, lh: "normal", n: 1, ink: [0, 0, 1, 1] } },
+    { k: "b", t: "T", el: "#text", box: [0, 0, 1, 1], tx: { c: "y", f: "Geist", sz: 12, wt: 400, col: null, lh: "normal", n: 1, ink: [0, 0, 1, 1] } },
+  ] as never;
+  assert.deepEqual(standInsMeasured({ root: probe, text: probe }, { nodes }), [["Menlo", "Roboto Mono"], ["system-ui", "Inter"]]);
+  assert.deepEqual(standInsMeasured({ root: null, text: { families: ["Geist"], applied: [true] } }), []);
 });

@@ -62,13 +62,15 @@ export interface TreeSelf {                 // as a flex/grid item, only non-def
  * A text node's facts. `c` is the characters as the DOM holds them, before
  * `tt` transforms them; `f` the family the browser drew with (`fk` when that
  * is a CSS keyword such as system-ui, which names no Figma font, `fa: 0` when
- * a declared font failed to load); `col` the text's own color, not folded
+ * a declared font failed to load, `fs` the family the code asked for where
+ * snap drew `f`, the stand-in Figma sets it in, in its place: fonts.ts);
+ * `col` the text's own color, not folded
  * with any ancestor's opacity; `lh` the line height in px, or `normal`; `el`
  * an ellipsis on one line, `cl` a line clamp; `n` the lines it took; `ink`
  * the glyph box relative to the node's own box; `ph` a placeholder.
  */
 export interface TextFacts {
-  c: string; f: string; fk?: 1; fa?: 0;
+  c: string; f: string; fk?: 1; fa?: 0; fs?: string;
   sz: number; wt: number; it?: 1; col: string | null;
   lh: number | "normal"; ls?: number;
   tt?: "uppercase" | "lowercase" | "capitalize"; td?: "underline" | "line-through";

@@ -2592,6 +2592,18 @@ async function main() {
     return `${tree.components.length} components, ${nodes} nodes in their base trees, byte-identical twice`;
   });
 
+  await check("snap leaves a font the project loads as it is: the example's Inter is measured in Inter, with no stand-in", () => {
+    // Text in a CSS keyword or a platform face Figma lacks is drawn in the
+    // font Figma sets it in before snap measures it (cli/fonts.ts); the
+    // example bundles Inter, which Figma has, so none of its text is.
+    const tree = readJson(join(WORK, "tree", "styles.json"));
+    assert(tree.fontStandIns === undefined && tree.components.every((c) => c.fontStandIns === undefined),
+      `stand-ins recorded: ${JSON.stringify([tree.fontStandIns, ...tree.components.map((c) => c.fontStandIns)])}`);
+    const texts = tree.components.flatMap((c) => c.tree.base.filter((n) => n.tx));
+    assert(texts.length > 0 && texts.every((n) => n.tx.f === "Inter" && n.tx.fs === undefined), `families: ${[...new Set(texts.map((n) => `${n.tx.f}/${n.tx.fs}`))].join(", ")}`);
+    return `${texts.length} texts in Inter, none stood in`;
+  });
+
   await check("the push measures every Button combination, with the defaults as the base", () => {
     // Button declares 3 variants x 2 sizes x 2 disabled states. A Figma component
     // set needs all 12 to exist, or the variant picker has nothing to switch to.
@@ -2993,9 +3005,9 @@ async function main() {
     try {
       const tab = await (await createContext(browser)).newPage();
       const measured = {};
-      for (const [name, { component, timeoutMs = 10000 }] of Object.entries(pages)) {
+      for (const [name, { component, timeoutMs = 10000, standIns }] of Object.entries(pages)) {
         const started = Date.now();
-        const capture = await captureStory(tab, `http://127.0.0.1:${server.address().port}/${name}`, { timeoutMs, screenshot: false, component: { name: component } });
+        const capture = await captureStory(tab, `http://127.0.0.1:${server.address().port}/${name}`, { timeoutMs, screenshot: false, component: { name: component }, standIns });
         const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts, capture.textLayout) : null;
         measured[name] = { ...capture, styles, ms: Date.now() - started };
       }
@@ -3119,19 +3131,28 @@ async function main() {
     return `render_error in ${thrown.ms}ms; an empty story given up on in ${empty.ms}ms`;
   });
 
-  await check("a system font stack is recorded as the font Chrome drew, and an avatar's photo as loaded", async () => {
+  await check("a system font stack is drawn in Inter, as wide as Figma sets it, or recorded as the font Chrome drew; an avatar's photo as loaded", async () => {
     // Tailwind v4's default stack opens with -apple-system, which Chrome
     // doesn't implement; snap recorded it on every component, warned that
-    // it failed to load, and verify scored it as drift. And an Avatar loads
+    // it failed to load, and verify scored it as drift. Chrome draws the
+    // rest in the platform's face, which Figma lacks and sets in Inter, wider,
+    // so snap draws it in Inter itself (cli/fonts.ts). And an Avatar loads
     // its photo with new Image(), showing its initials until it arrives.
+    const button = `<div id="storybook-root"><button style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; font-weight: 500; display: inline-block; padding: 0; border: 0; background: #171717; color: #fff">Login with Email Button</button></div>`;
     const m = await captureStories({
-      stack: { component: "Button", html: `<div id="storybook-root"><button style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #171717; color: #fff">Go</button></div>` },
+      stack: { component: "Button", html: button },
+      bare: { component: "Button", html: button, standIns: false },
       avatar: { component: "Avatar", html: `<div id="storybook-root"><span data-slot="avatar" style="display: flex; width: 32px; height: 32px; background: #f5f5f5"><span id="fallback" style="display: flex; color: #737373">CN</span></span></div><script>requestAnimationFrame(() => { const img = new Image(); img.onload = () => { const shown = document.createElement("img"); shown.src = img.src; document.getElementById("fallback").replaceWith(shown); }; img.src = "/slow.png"; })</script>` },
     }, { slowImageMs: 1000 });
-    assert(m.stack.styles.fontFamily === "system-ui" && m.stack.styles.fontAvailable === null && m.stack.styles.text?.fontFamily === "system-ui",
-      `the system stack: ${JSON.stringify({ fontFamily: m.stack.styles.fontFamily, fontAvailable: m.stack.styles.fontAvailable, text: m.stack.styles.text?.fontFamily, probe: m.stack.fonts.root })}`);
+    const font = (c) => JSON.stringify({ fontFamily: c.styles.fontFamily, fontAvailable: c.styles.fontAvailable, text: c.styles.text?.fontFamily, standIns: c.standIns, width: c.boundingBox.width, probe: c.fonts.root });
+    assert(m.stack.styles.fontFamily === "Inter" && m.stack.styles.fontAvailable === true && m.stack.styles.text?.fontFamily === "Inter"
+      && JSON.stringify(m.stack.standIns) === JSON.stringify([["system-ui", "Inter"]]), `the system stack: ${font(m.stack)}`);
+    // Figma set this label 158 wide in Inter Medium, in the spike and the text probe: a hugging text, rounded up to a pixel.
+    assert(Math.ceil(m.stack.boundingBox.width) === 158, `drawn in Inter ${m.stack.boundingBox.width} wide`);
+    assert(m.bare.styles.fontFamily === "system-ui" && m.bare.styles.fontAvailable === null && m.bare.styles.text?.fontFamily === "system-ui"
+      && m.bare.standIns === undefined && Math.ceil(m.bare.boundingBox.width) !== 158, `without stand-ins: ${font(m.bare)}`);
     assert(m.avatar.styles.text === null, `the avatar measured its fallback, text ${JSON.stringify(m.avatar.styles.text)}`);
-    return "system-ui with no warning; the photo, after 1s";
+    return `system-ui drawn in Inter, ${m.stack.boundingBox.width} wide as Figma's 158 rounds it, ${m.bare.boundingBox.width} in the platform's face; no warning; the photo, after 1s`;
   });
 
   await check("a refused connection is a render error even when the story's URL says timeout; a server that never answers is a timeout", async () => {
