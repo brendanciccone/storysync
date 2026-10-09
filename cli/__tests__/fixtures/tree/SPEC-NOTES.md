@@ -116,11 +116,17 @@ gives the same output on every run.
     it grows. The figma-use skill documents that Figma collapses a FILL child of
     a HUG parent, compresses a growing one, and ignores FILL on a
     WIDTH_AND_HEIGHT text. Sidebar's `sidebar-inner` (16 + 688 + 16) hits this.
-    - The mock refuses all three with a `mock-figma:` error.
     - Proposed rule: a frame is FIXED on its main axis when any in-flow child
       grows, and a text is set to HEIGHT before FILL.
-    - Filling across a hugging parent stretches in the mock by default. Pass
-      `fillAcrossHug: "refuse"` until spike item 11 settles it.
+    - **Settled by the spike (item 11).** Figma collapses none of the three.
+      A child filling or growing along a hugging column keeps its size, and
+      the column hugs it with the rest (16 + 688 + 16 = 720). A child filling
+      across a hugging column takes its widest sibling's width (120), or
+      keeps its own alone. FILL on a hugging label turns it to HEIGHT, at the
+      row's width in a fixed row and at its own in a hugging one. The mock no
+      longer refuses the first two, and does all three as Figma did. The
+      proposed rule stands, since in CSS a grower takes the room its parent
+      leaves rather than growing the parent.
 20. **B's acceptance conflicts with section 8.4.** It expects 0 fallbacks for
     Attachment, horizontal and vertical. But the Attachment root has
     `flex-wrap: wrap` (`L.wrap: 1`), and its `relative` media tile paints after
@@ -144,20 +150,54 @@ gives the same output on every run.
     - It adds item 11 (sizing), a defaults check, and clone placement for a
       nested child and a variant.
 
-## What the mock assumes until the spike runs
+    It ran live as written on 2026-10-08, in a scratch file, with the owner's
+    go-ahead. Its raw results are `cli/__tests__/fixtures/figma-spike.json`:
+    the probe call, the upload_assets POST response and the image call, each
+    unchanged. The live image result also names the node that reused the
+    hash (`reuseNodeId`), which the probe as committed doesn't return.
 
-Each assumption below is an option or a spike item, and B and C rerun their
-tests on the spike's answers:
+## What the mock takes from the spike
 
-- `clone()` lands on the current page, as the typings say.
-- Frames and components start with a white fill.
-- `resize()` on a hugging text switches it to NONE.
-- AUTO line height is 1.21em.
-- An imported SVG's `<g>` is flattened.
-- A frame's own stroke insets its children only when `strokesIncludedInLayout`
-  is set: by its full width when INSIDE, half when CENTER, none when OUTSIDE.
-- SVG strokes scale with the import size (option `svgStrokeScales`).
-- A child filling across a hugging parent stretches (option `fillAcrossHug`).
+The mock first assumed the answers below. The spike measured each in Figma
+(fixtures/figma-spike.json), and the mock now does what Figma did. A test in
+`mock-figma.test.ts` replays the probe in the mock and holds every item to
+the live result, the times aside.
+
+- `clone()`: assumed to land on the current page. Figma puts a copy of a
+  page's own node beside it, and a copy of anything nested, a variant
+  included, on the page. The mock does both, so a template must put a copy
+  where it belongs itself. The copy and its children keep their plugin data.
+- New frames and components: assumed to have a white fill. Each has one fill;
+  the probe counted it and didn't read its color, so the mock keeps white.
+- `resize()` on a hugging text: assumed to switch it to NONE. It does (60 by
+  20, NONE).
+- AUTO line height: assumed 1.21em. Figma sets it to a whole pixel, 15 at
+  12px and 17 at 14px, which the mock now does (1.21em, rounded).
+- An imported SVG: assumed to be a frame of flattened shapes. It is a frame
+  that clips, with a fill, whose `<rect>` comes in as a VECTOR and whose
+  `<g>` comes in as a GROUP. The mock does all of these; a group's shapes
+  keep the frame's coordinates, as Figma's do. Circles and ellipses the
+  probe didn't import, and the mock still makes ELLIPSEs of them.
+- A frame's own stroke, included in layout: assumed to inset its children by
+  its full width when INSIDE, half when CENTER and none when OUTSIDE. Only
+  INSIDE takes room: a 2px INSIDE stroke grew a hugging row from 44x20 to
+  48x24 and moved its children by 2, and CENTER and OUTSIDE left both alone.
+- SVG strokes: assumed to scale with the import's size (option
+  `svgStrokeScales`). They do: lucide's 2 at 24 came in 1.33 wide at 16.
+- A child filling across a hugging parent: assumed to stretch (option
+  `fillAcrossHug`). It does, to the widest child that doesn't fill.
+- A child filling or growing along a hugging parent, and FILL on a hugging
+  label: refused by the mock (item 19). Now done as Figma did them.
+- Also confirmed as the mock had them: a shadow's spread is kept on a frame,
+  clipped or not; ENDING with maxLines is taken; per-side stroke weights read
+  `mixed`; an ABSOLUTE child keeps its x and y; findAllWithCriteria finds by
+  shared plugin data keys and by namespace alone; blend modes and dashes read
+  back as set; upload_assets keeps the bytes and hashes them by SHA-1; a frame
+  strokes INSIDE and a vector CENTER; a frame given a layoutMode hugs along it
+  and is fixed across; and a new text is WIDTH_AND_HEIGHT.
+
+The options that give the other answers stay, defaulting to the spike's, so
+the packages still test their fallbacks.
 
 # Package A: where snap's capture departs from the spec
 
@@ -327,7 +367,8 @@ A27. **`--stories` keys** are a component's ID, title or unique name. A name
 A28. **Thumbnail encoding** is chosen in one place: `THUMBNAIL_ENCODING` and
     `THUMBNAIL_MAX_SIDE` in `snap-assets.ts` (JPEG at quality 0.85 where every
     pixel is opaque, PNG where any isn't, twice the box, at most 1024px). PNG
-    throughout is `opaque: "image/png"`, should the spike argue for it.
+    throughout is `opaque: "image/png"`. The spike (item 10) uploaded a JPEG
+    thumbnail and read the same 2,186 bytes back, so JPEG stays.
 
 ## Package A's acceptance (section 15)
 
@@ -375,8 +416,10 @@ commit that made it.
     line.** This is item 20's other half. A wrap onto several lines is still
     NONE.
 25. **Sizing departs from 8.4.7, as item 19 proposes.**
-    - A frame is FIXED on any axis a child fills, along it (a grower) or
-      across it (a stretch), while `SPIKE.fillAcrossHug` is false.
+    - A frame is FIXED on the axis a child grows along. Across, it hugs the
+      children that don't fill, and the ones that do stretch over them, as
+      the spike saw Figma do (`SPIKE.fillAcrossHug`, now true). It is FIXED
+      across only where every child fills, leaving nothing to hug.
     - A grower fills only where filling gives it its measured size.
     - A text fills only its width, across a column, and only when it is laid
       out at a fixed width (HEIGHT).
@@ -413,7 +456,9 @@ commit that made it.
     a clone's copies, an icon import's shapes, and a changed icon imported
     again. On A's live snap that ran 1.5 to 2.2 layers a record.
     `cli/figma-spike.ts` says so beside `SPIKE.maxNodes`, so the spike's
-    timing (item 8) can be compared with real calls.
+    timing (item 8) can be compared with real calls. The spike made 400
+    frames in 3.2 s and 100 labels in 1.4 s, about 4.6 s for 500 nodes of a
+    few properties each, so 400 records stays the limit.
 32. **A build call lists at most 60 uploads**, since upload_assets hands
     out at most 60 URLs.
 33. **Read prediction is a calibrated heuristic**: 520 characters an entry
@@ -480,24 +525,29 @@ commit that made it.
     page, which is an assumption until someone checks Figma. Page ids no
     longer repeat after one goes.
 
-## What waits on the spike
+## What the spike settled
 
 Every spike-dependent constant is in `SPIKE` in `cli/figma-spike.ts`, with
-where it acts. The template's run-time fallbacks are marked `SPIKE(n)` in
-`templates/build.js`.
+what the spike saw and where it acts; runFigmaCode's `spike` still takes the
+other answer, for the tests. The template's run-time fallbacks are marked
+`SPIKE(n)` in `templates/build.js`, and stay as guards for what the spike
+didn't try. `cli/__tests__/figma-spike.test.ts` checks each constant against
+fixtures/figma-spike.json.
 
-| Item | Fallback used now | How to switch |
+| Item | What the spike saw | What the build does now |
 |---|---|---|
-| 1, SVG stroke scaling | `svgStrokesScale: false`: import at the viewBox's size and rescale, right either way | true once import scales strokes |
-| 2, shadow spread | try, and on refusal spread 0, listed | nothing to switch |
-| 3, textTruncation | try, and on refusal a fixed text box of the measured size, listed | nothing to switch |
-| 4, absolute children | `absoluteInsetByStroke: false`: x and y from the frame's corner | true if Figma insets by included strokes |
-| 4, OUTSIDE strokes in auto layout | `outsideStrokeTakesSpace: false`: plan from frame boxes | true if they take space |
-| 5, clone and plugin data | keys copied along a parallel walk, either way | nothing to switch |
-| 7, return shape | an object; the parser reads an object, a JSON string or an envelope | nothing to switch |
-| 8, time limit | `maxNodes: 400` records (item 31) | lower after the spike |
-| 10, image bytes | the images call reuses hashes either way | C's scoring only |
-| 11, fill across a hugging parent | `fillAcrossHug: false`: FIXED where a child fills | true if Figma hugs the other children |
+| 1, SVG stroke scaling | lucide's 2 at 24 came in 1.33 wide at 16, as Chrome draws it; `rescale(16/24)` of a 24 import gave the same | `svgStrokesScale: true`: each icon is imported at its measured size, no rescale. Markup sized otherwise is given that size |
+| 1, the import's frame | it clips, and has a fill | the build clears the fill: an icon draws only its shapes, and the readback reads no fill off a vector |
+| 1, `<g>` | imported as a GROUP | nothing to change: snap keeps a `<g>` only with a transform, opacity or effect, and the readback finds shapes inside groups |
+| 2, shadow spread | 1, kept on a frame clipped or not | spread built as measured; the guard for a refusal stays, for kinds of node the spike didn't try |
+| 3, textTruncation | ENDING with maxLines 1 kept a 94px label 94 by 20; `resize()` turns a hugging label to NONE | truncation built as measured, its guard kept; no label meant to hug is resized, which a test checks |
+| 4, absolute children | an ABSOLUTE child stayed at 3,4 under an included INSIDE stroke | `absoluteInsetByStroke: false`, x and y from the frame's corner |
+| 4, strokes in auto layout | only an INSIDE stroke took room; CENTER and OUTSIDE didn't | `outsideStrokeTakesSpace: false`; the build includes strokes only where it builds them INSIDE |
+| 5, clone and plugin data | kept on the copy and its children; a copy of a variant or of anything nested lands on the page | the copy is moved into its set beside its original, and no longer has its keys copied onto it |
+| 7, return shape | an object, written as JSON | the parser reads it, as it would a string or an envelope |
+| 8, time | 400 frames 3.2 s, 100 labels 1.4 s | `maxNodes: 400` records (item 31) |
+| 10, image bytes | the same bytes back, hashed by their SHA-1, the hash reusable on another node | the images call reuses hashes; verify proves content by bytes (C25) |
+| 11, fill across a hugging parent | the parent hugs its widest other child (120) and the filling one stretches to it | `fillAcrossHug: true`: such a frame hugs. Card's notification text blocks do |
 
 # Package C: where the readback and verify depart from the spec
 
@@ -544,7 +594,9 @@ C4. **Spec problem: where `unbuilt`, `absent` and `total` go.** 9.1 returns
 C5. **Image paints carry their size**, `img:<fnv>:<scaleMode>:<w>x<h>`, with
    `?` for what can't be read, so the spike's fallback (an image there, at
    the thumbnail's size) can be scored. An image the sandbox can't find
-   reads as unreadable, and the read goes on.
+   reads as unreadable, and the read goes on. The spike kept the bytes (item
+   10), so content is scored by the FNV; the size stays in the record for a
+   verify run with `imageBytesKept` off.
 C6. **A gradient's transparent stops are kept** as `#rrggbb00`, as snap
    writes them. A paint whose own color draws nothing is still left out of
    `fills`. The RGB of an alpha-0 stop is compared too, since snap records it
@@ -650,18 +702,33 @@ C24. **Spec problem: Attachment vertical untruncated scores 22.2%, not
 
 ## The spike (section 14)
 
-C25. **One place a side.**
-   - verify's assumptions are `SPIKE` in cli/verify-tree.ts
-     (`imageBytesKept`, `shadowSpreadKept`, `textTruncation`), each the
-     spec's expected answer, overridable per call through
-     `VerifyOptions.spike`. The root-only boxShadow comparison reads the
-     same.
-   - The template's one switch is `RETURN_TEXT` (item 7).
-   - Assumed with no spike item: Figma's blur radius equals CSS blur().
+C25. **One place a side, each now what the spike saw.**
+   - verify's assumptions are `SPIKE` in cli/verify-tree.ts, overridable per
+     call through `VerifyOptions.spike`. The root-only boxShadow comparison
+     reads the same. All three were the spec's expected answer, and the
+     spike confirmed each:
+     - `imageBytesKept: true` (item 10): the Avatar thumbnail came back as
+       the same 2,186 bytes (FNV ef9497ae), its hash their SHA-1, reusable
+       on another node. Image content is proven by bytes, not by the
+       presence-and-size fallback.
+     - `shadowSpreadKept: true` (item 2): a spread of 1 read back on a frame
+       that clips and one that doesn't.
+     - `textTruncation: true` (item 3): ENDING with maxLines 1 kept a 94px
+       label 94 by 20.
+   - The template's one switch, `RETURN_TEXT`, stays false (item 7):
+     use_figma gave the returned object as JSON, and a JSON string inside it
+     stayed a string.
+   - The stand-in width tolerance (6%, 10.5): the spike's Inter Medium label
+     came out 158 wide where Chrome drew it 154.8 in system-ui, 2.1% wider.
+   - Still assumed, with no spike item: Figma's blur radius equals CSS
+     blur().
    - ABSOLUTE children with per-side strokes are not a switch in C. The
      template reads where a child is, its x and y from the parent's frame
      plus the parent's stroke outside it, so how Figma places an absolute
-     child changes what is read, not how it is read.
+     child changes what is read, not how it is read. The spike saw one stay
+     where it was put, and per-side weights read back as set.
+   - `cli/__tests__/figma-spike.test.ts` checks each against
+     fixtures/figma-spike.json.
 
 ## Ownership (C and D)
 
