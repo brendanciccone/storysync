@@ -4,11 +4,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadTreeFixture } from "./mock-figma.js";
+import { FONTS, loadTreeFixture } from "./mock-figma.js";
 import { PAGE, READBACK_TEMPLATE, assemble, buildFixture, newFigma, readBack } from "./tree-harness.js";
 import { parseReadResult, readbackCall, readbackHeader } from "../figma-results.js";
+import type { ReadSlice } from "../figma-results.js";
 import { RECORD } from "../tree-types.js";
 import { readbackChecksum, verify } from "../verify.js";
+import { readbackChars } from "../verify-tree.js";
 
 /** The template with its comments and indentation stripped: an upper bound on what a minifier leaves. */
 function stripped(source: string): string {
@@ -46,9 +48,13 @@ test("template: runs as `storysync figma code` writes a read call, and refuses a
 });
 
 test("template: stays small enough to minify under 8,000 characters", () => {
-  // terser takes it to about 7.8k (B's templates test checks the minified
-  // file); stripped of comments and indentation alone it must stay under this.
-  assert.ok(stripped(READBACK_TEMPLATE).length <= 12_000, `${stripped(READBACK_TEMPLATE).length} characters stripped`);
+  // Design 9.1's limit is on the minified template, which `storysync figma
+  // code` sends (scripts/build-templates.mjs, terser, checked by the
+  // templates test beside it). Stripped of comments and indentation, it is
+  // 11,630 characters, which minify to 7,865: about 0.68 of it. So 11,800
+  // stripped is about 7,980 minified, and this fails on growth that would
+  // near the limit without terser to measure it.
+  assert.ok(stripped(READBACK_TEMPLATE).length <= 11_800, `${stripped(READBACK_TEMPLATE).length} characters stripped`);
 });
 
 test("template: returns an object, each entry sealed under its set's id and key, with records of their kind's length", async () => {
@@ -90,6 +96,100 @@ test("template: an OUTSIDE stroke is read back in the browser's terms, its borde
 function figmaX(figma: ReturnType<typeof newFigma>, id: string): number {
   return figma.node(id)!.x;
 }
+
+test("template: reads each field as the header says, in the browser's terms", async () => {
+  const figma = newFigma({ fonts: { ...FONTS, Inter: [...FONTS.Inter, "Semi Bold Italic"] } });
+  const run = await figma.run(`
+    const solid = (r, g, b, opacity = 1, visible = true) => ({ type: 'SOLID', color: { r, g, b }, opacity, visible });
+    // The variant: a CENTER stroke, half outside its box; hidden paints on
+    // top, a color and an image, and a hidden shadow, none of them drawn.
+    const root = figma.createComponent();
+    root.resize(100, 50);
+    root.fills = [solid(0x11 / 255, 0x22 / 255, 0x33 / 255), solid(1, 1, 1, 1, false), { type: 'IMAGE', scaleMode: 'FILL', visible: false }];
+    root.strokes = [solid(0x44 / 255, 0x55 / 255, 0x66 / 255)];
+    root.strokeWeight = 2;
+    root.strokeAlign = 'CENTER';
+    root.cornerRadius = 6;
+    root.effects = [
+      { type: 'DROP_SHADOW', offset: { x: 1, y: 2 }, radius: 3, spread: 4, color: { r: 0, g: 0, b: 0, a: 0.5 }, visible: true, blendMode: 'NORMAL' },
+      { type: 'INNER_SHADOW', offset: { x: 0, y: 1 }, radius: 2, spread: 0, color: { r: 1, g: 0, b: 0, a: 1 }, visible: true, blendMode: 'NORMAL' },
+      { type: 'LAYER_BLUR', radius: 5, visible: true },
+      { type: 'BACKGROUND_BLUR', radius: 6, visible: true },
+      { type: 'DROP_SHADOW', offset: { x: 9, y: 9 }, radius: 9, spread: 9, color: { r: 0, g: 0, b: 0, a: 1 }, visible: false, blendMode: 'NORMAL' },
+    ];
+    root.blendMode = 'MULTIPLY';
+    root.clipsContent = true;
+    for (const [k, v] of [['id', 'enc'], ['slug', 'default'], ['i', '0'], ['src', 'measured'], ['d', 'abc']]) root.setSharedPluginData('storysync', k, v);
+    // OUTSIDE strokes of a weight a side, dotted; a fill at 0.7 as Figma
+    // keeps it, a 32-bit float.
+    const a = figma.createFrame(); root.appendChild(a);
+    a.x = 3; a.y = 5; a.resize(20, 10);
+    a.fills = [solid(0, 0, 0, ${Math.fround(0.7)})];
+    a.strokes = [solid(0, 0, 1)];
+    a.strokeTopWeight = 1; a.strokeRightWeight = 2; a.strokeBottomWeight = 3; a.strokeLeftWeight = 4;
+    a.strokeAlign = 'OUTSIDE';
+    a.dashPattern = [2, 2];
+    a.clipsContent = false;
+    a.setSharedPluginData('storysync', 'k', 'a');
+    // Dashed, and hidden.
+    const b = figma.createFrame(); root.appendChild(b);
+    b.resize(10, 10); b.strokes = [solid(0, 0, 0)]; b.strokeWeight = 1; b.dashPattern = [10, 5]; b.visible = false;
+    b.setSharedPluginData('storysync', 'k', 'b');
+    await figma.loadFontAsync({ family: 'Inter', style: 'Semi Bold Italic' });
+    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+    // A designer's note inside a, ahead of every keyed text: not the text
+    // whose color and font the root fields give.
+    const note = figma.createText(); a.appendChild(note);
+    note.characters = 'Note'; note.name = 'Note'; note.fontSize = 20;
+    // Percent units, two fills (the top one shows), each style property.
+    const t = figma.createText(); root.appendChild(t);
+    t.fontName = { family: 'Inter', style: 'Semi Bold Italic' };
+    t.characters = 'Hi';
+    t.fontSize = 10;
+    t.lineHeight = { unit: 'PERCENT', value: 150 };
+    t.letterSpacing = { unit: 'PERCENT', value: 10 };
+    t.fills = [solid(1, 0, 0), solid(0, 1, 0)];
+    t.textCase = 'UPPER'; t.textDecoration = 'UNDERLINE'; t.textAlignHorizontal = 'CENTER';
+    t.textAutoResize = 'HEIGHT'; t.textTruncation = 'ENDING'; t.maxLines = 2;
+    t.setSharedPluginData('storysync', 'k', 't');
+    const long = figma.createText(); root.appendChild(long);
+    long.characters = ${JSON.stringify("x".repeat(301))};
+    long.setSharedPluginData('storysync', 'k', 'long');
+    const v = figma.createNodeFromSvg('<svg width="10" height="10"><rect x="1" y="2" width="4" height="5" fill="#0000ff" stroke="#00ff00" stroke-width="1.5"/></svg>');
+    root.appendChild(v);
+    v.setSharedPluginData('storysync', 'k', 'v'); v.setSharedPluginData('storysync', 'svg', 'svg:1');
+    // A designer's layers: one hidden, then 22 shown.
+    const hidden = figma.createRectangle(); hidden.name = 'Hidden'; hidden.visible = false; root.appendChild(hidden);
+    for (let i = 0; i < 22; i++) { const d = figma.createRectangle(); d.name = 'D' + i; root.appendChild(d); }`);
+  assert.ok(run.ok, run.text);
+  const [result] = await readBack(figma, [["enc", 0, 0, 0]], { page: "Page 1" });
+  const { tree, designerLayers, readAt: _readAt, checksum: _checksum, ...fields } = result.sets[0].entries.default;
+  const records = tree!.map((r) => r.slice(0, -1));
+  assert.ok(tree!.every((r) => /^\d+:\d+$/.test(String(r[r.length - 1]))), "each record ends with its node id");
+  assert.deepEqual(records, [
+    ["", "F", 0, 0, 102, 52, ["#112233"], [2, ["#445566"], "solid", "C"], 7, [["D", 1, 2, 3, 4, "#00000080"], ["I", 0, 1, 2, 0, "#ff0000"], ["L", 5], ["B", 6]], 1, "MULTIPLY", 1, 1],
+    // Its place from the root's border box, 1px outside the frame, and its own, 4px out on the left.
+    ["a", "F", 0, 5, 26, 14, ["#000000b3"], [[1, 2, 3, 4], ["#0000ff"], "dotted", "O"], 0, [], 1, "PASS_THROUGH", 0, 1],
+    ["b", "F", 1, 1, 10, 10, ["#ffffff"], [1, ["#000000"], "dashed", "I"], 0, [], 1, "PASS_THROUGH", 1, 0],
+    ["t", "T", 1, 1, 100, 15, "Hi", "Inter", 600, 1, 10, 15, 1, "#00ff00", "UPPER", "UNDERLINE", "CENTER", "ENDING", 2, "HEIGHT", 1, 1],
+    ["long", "T", 1, 1, 1986.6, 14.52, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1],
+    ["v", "V", 1, 1, 10, 10, [[1, 2, 4, 5, "#0000ff", "#00ff00", 1.5]], 1, 1],
+  ]);
+  assert.deepEqual(designerLayers!.map(([name, type]) => [name, type]), [["Note", "TEXT"], ...Array.from({ length: 19 }, (_, i) => [`D${i}`, "RECTANGLE"])], "the hidden one not, and the first 20 shown");
+  // 0.4.0's root fields, in the same terms: its radius and size with the
+  // stroke outside it; its text's color and font as 0.4.0 read them, from
+  // the first keyed text and its first paint.
+  assert.deepEqual(fields, {
+    backgroundColor: "#112233", color: "#ff0000", borderRadiusUniform: 7, padding: { top: 0, right: 0, bottom: 0, left: 0 },
+    borderUniform: { width: 2, style: "solid", color: "#445566" }, fontSize: 10, fontWeight: 600, fontFamily: "Inter", gap: null,
+    opacity: 1, width: 102, height: 52,
+    boxShadow: [
+      { offsetX: 1, offsetY: 2, blur: 3, spread: 4, color: "#00000080", inset: false },
+      { offsetX: 0, offsetY: 1, blur: 2, spread: 0, color: "#ff0000", inset: true },
+    ],
+    name: "", source: "measured", tpl: 2, built: "abc",
+  });
+});
 
 test("template: an image whose bytes can't be read reads as unreadable, and the read goes on", async () => {
   const figma = newFigma();
@@ -173,6 +273,20 @@ test("template: every response stays under use_figma's 20kb, at its default LIMI
   assert.ok(results.length >= 2, "more than one call's worth");
   for (const r of figma.runs.slice(-results.length)) assert.ok(r.bytes < 20_000, `${r.bytes} bytes`);
   assert.equal(new Set(results.flatMap((r) => r.sets.map((s) => s.component))).size, 5);
+  // A call written with a LIMIT past 20kb fails, rather than return a read
+  // use_figma would cut short.
+  await assert.rejects(readBack(figma, slices, { limit: 60_000 }), /This read returns \d+ bytes, too near 20kb/);
+});
+
+test("template: a variant the build left no source on reads as inferred, never as measured", async () => {
+  const figma = newFigma();
+  const run = await figma.run(`
+    const root = figma.createComponent();
+    root.resize(10, 10);
+    for (const [k, v] of [['id', 'nosrc'], ['slug', 'default'], ['i', '0']]) root.setSharedPluginData('storysync', k, v);`);
+  assert.ok(run.ok, run.text);
+  const [result] = await readBack(figma, [["nosrc", 0, 0, 0]], { page: "Page 1" });
+  assert.equal(result.sets[0].entries.default.source, "inferred");
 });
 
 test("template: finds a set only by its storysync id, and refuses none or two", async () => {
@@ -286,4 +400,17 @@ test("template: returned as a JSON string, should use_figma need one, it reads b
   const parsed = parseReadResult(run.text);
   assert.ok(parsed);
   assert.equal(verify(fixture, assemble([parsed]), 0.5).elementFidelity, 1);
+  // LIMIT holds for the string as the tool returns it, escapes and all: a
+  // Card read at 2,500, in parts filled to that, comes back in calls of at
+  // most that.
+  const card = await buildFixture(figma, loadTreeFixture("card"));
+  let left: ReadSlice[] | undefined = [[card.component, 0, 1, 0]];
+  const sizes: number[] = [];
+  while (left?.length && sizes.length < 40) {
+    const call = await figma.run(readbackCall(asText, PAGE, left, 2500));
+    assert.ok(call.ok, call.text);
+    sizes.push(call.bytes);
+    left = parseReadResult(call.text)!.more?.slices;
+  }
+  assert.ok(sizes.length > 2 && !left?.length && sizes.every((b) => b <= 2500), sizes.join(", "));
 });

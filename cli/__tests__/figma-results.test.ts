@@ -95,6 +95,38 @@ test("results: verify --plan reads every saved result, follows continuations, wr
   }
 });
 
+test("results: an entry read twice keeps the first reading, and the file is in key order whatever order the calls came in", async () => {
+  const figma = newFigma();
+  const switchFixture = loadTreeFixture("switch");
+  const toggleFixture = loadTreeFixture("toggle");
+  const builtSwitch = await buildFixture(figma, switchFixture);
+  const builtToggle = await buildFixture(figma, toggleFixture);
+  const [toggleRead] = await readBack(figma, [[builtToggle.component, 0, 5, 0]]);
+  const [first] = await readBack(figma, [[builtSwitch.component, 1, 1, 0], [builtSwitch.component, 0, 0, 0]]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const [again] = await readBack(figma, [[builtSwitch.component, 0, 1, 0]]);
+  const { dir, plan } = planDir([call(1, "read", "results/01.json"), call(2, "read", "results/02.json"), call(3, "read", "results/03.json")]);
+  try {
+    const results = join(dir, "figma", "results");
+    writeFileSync(join(results, "01.json"), JSON.stringify(toggleRead));
+    writeFileSync(join(results, "02.json"), JSON.stringify(first));
+    writeFileSync(join(results, "03.json"), JSON.stringify(again));
+    const loaded = loadPlanResults(plan);
+    assert.deepEqual(loaded.problems, [
+      "results/03.json reads ui/base/Switch size-default again; the first reading is kept",
+      "results/03.json reads ui/base/Switch size-sm again; the first reading is kept",
+    ]);
+    assert.deepEqual(loaded.readback.components["ui/base/Switch"].variants["size-sm"], first.sets[0].entries["size-sm"]);
+    const written = readFileSync(loaded.written, "utf8");
+    assert.deepEqual(Object.keys(JSON.parse(written).components), ["ui/base/Switch", "ui/base/Toggle"]);
+    assert.deepEqual(Object.keys(JSON.parse(written).components["ui/base/Switch"]), ["nodeId", "total", "unbuilt", "variants"]);
+    assert.deepEqual(Object.keys(JSON.parse(written).components["ui/base/Switch"].variants), ["size-default", "size-sm"]);
+    assert.deepEqual(JSON.parse(written).components["ui/base/Switch"].total, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("results: one component read from two sets is reported, not merged", async () => {
   const figma = newFigma();
   const fixture = loadTreeFixture("switch");

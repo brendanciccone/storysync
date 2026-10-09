@@ -427,6 +427,8 @@ export async function readBack(figma: MockFigma, slices: ReadSlice[], { limit = 
   while (left?.length) {
     const result = await run(figma, readbackCall(template, page, left, limit)) as ReadResult;
     results.push(result);
+    // Continuations that don't move on would be sent for ever: fail instead.
+    if (results.length > 200) throw new Error(`200 read calls and still more: ${JSON.stringify(result.more?.slices)}`);
     left = result.more?.slices;
   }
   return results;
