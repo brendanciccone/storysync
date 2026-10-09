@@ -501,7 +501,7 @@ test("verify CLI: a tree snap is scored by elements, a faithful build passes --s
   const { fixture, readback } = await buildAndRead("switch");
   const r = verify(fixture, readback, "--strict");
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /Fidelity: 100\.0% of elements \(4\/4\), 100\.0% of properties \(\d+\/\d+\)/);
+  assert.match(r.out, /Fidelity: 100\.0% of elements \(4 of 4 verified\), 100\.0% of properties \(\d+\/\d+\)/);
   assert.match(r.out, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
   assert.match(r.out, /Figma matches the measured styles for ui\/base\/Switch/);
   assert.doesNotMatch(r.out, /only the outer element/);
@@ -519,7 +519,7 @@ test("verify CLI: an element missing, or a designer's layer, fails --strict and 
   const again = assemble(await readBack(ctx.figma, [[ctx.built.component, 0, 1, 0]]));
   const r = verify(ctx.fixture, again, "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Fidelity: 75\.0% of elements \(3\/4\)/);
+  assert.match(r.out, /Fidelity: 75\.0% of elements \(3 of 4 verified\)/);
   assert.match(r.out, /- ui\/base\/Switch size=sm › switch-thumb: missing from Figma/);
   assert.match(r.out, /\? ui\/base\/Switch size=default: a layer nothing keyed, "Note" \(RECTANGLE, node \d+:\d+\): a designer's, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);

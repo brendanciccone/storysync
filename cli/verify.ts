@@ -1779,7 +1779,9 @@ export function formatElementReport(result: VerifyResult): string[] {
   const e = summary.elements ?? { measured: 0, verified: 0, drifted: 0, missing: 0, extra: 0, designerLayers: 0, notReadBack: 0 };
   const excluded = summary.unverifiedReadback;
   const excludedNote = excluded > 0 ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`) : "";
-  lines.push(`\nFidelity: ${chalk.bold(`${percent(result.elementFidelity)} of elements`)} ${chalk.dim(`(${count(e.verified)}/${count(e.measured + e.extra)})`)}, `
+  // The elements' scores summed, so a node right on most of its properties
+  // counts for most of one: the count beside it is of the ones right on all.
+  lines.push(`\nFidelity: ${chalk.bold(`${percent(result.elementFidelity)} of elements`)} ${chalk.dim(`(${count(e.verified)} of ${count(e.measured + e.extra)} verified)`)}, `
     + `${percent(result.fidelity)} of properties ${chalk.dim(`(${count(summary.propertiesMatched)}/${count(summary.propertiesCompared)})`)}${excludedNote}`);
 
   // The component scoring lowest, where one is below 100%.

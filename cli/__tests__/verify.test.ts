@@ -1587,7 +1587,7 @@ test("element readback: a later part needs only its part's fields, every other e
 test("element report: the headline is element fidelity beside the share of properties, then what drifted by key and node", async () => {
   const { fixture, readback } = await buildAndRead("switch");
   const clean = formatElementReport(verify(fixture, readback, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(clean, /^\nFidelity: 100\.0% of elements \(4\/4\), 100\.0% of properties \(\d+\/\d+\)$/m);
+  assert.match(clean, /^\nFidelity: 100\.0% of elements \(4 of 4 verified\), 100\.0% of properties \(\d+\/\d+\)$/m);
   assert.match(clean, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
   const thumb = readback.components["ui/base/Switch"].variants["size-sm"].tree![1] as unknown[];
   const tampered = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
@@ -1596,7 +1596,9 @@ test("element report: the headline is element fidelity beside the share of prope
   const { checksum: _c, ...rest } = entry;
   entry.checksum = readbackChecksum(tampered.components["ui/base/Switch"].nodeId!, "size-sm", rest);
   const report = formatElementReport(verify(fixture, tampered, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(report, /Fidelity: 9\d\.\d% of elements \(3\/4\)/);
+  // The thumb's fill alone wrong: it scores most of one element, and the
+  // count beside the percentage is of the elements right on everything.
+  assert.match(report, /Fidelity: 97\.9% of elements \(3 of 4 verified\)/);
   assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
   assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
   assert.doesNotMatch(report, /coverage/, "a Switch has nothing verify can't score");
