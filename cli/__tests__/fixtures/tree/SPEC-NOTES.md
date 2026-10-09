@@ -1248,3 +1248,25 @@ LC2. **Each MCP request has `--request-timeout`, five minutes by default**
    600. The MCP transports now fetch through a dispatcher of Node's own
    kind with those limits off (`untimedFetch`), and cli-connect's test
    shortens Node's limits to 400ms to hold that.
+
+# After the fourth live push: the build, the readback, verify and the CLI
+
+The fourth live push (Figma file nCldItWrdQWKueFNy5dPZM, agents/push4)
+verified 872 of 872 elements. Yet Figma cut short a title the browser
+drew whole, and the agent's paste of one call differed from its file by a
+character. These notes are numbered BV1 on.
+
+BV1. **The build template's budget is 18,000 and the readback's 9,000**
+   (section 8.2's 16,000, which L1 and T15 had taken to 17,000, and 9.1's
+   8,000), to make room for the call checksum (BV2) and the readback's
+   truncation check (BV3). `templates.test.ts` says why each is safe and
+   holds them to it:
+   - A build call is template and DATA, packed to 45,000, so a packed call
+     keeps 27,000 for DATA. Each of the fourth push's 100 variants, in a
+     call of its own, took 1,364 characters beside the template at the
+     median and 7,454 at most: the 1,000 costs a packed call less than
+     one variant.
+   - A variant alone may take use_figma's 50,000: 32,000 of DATA, over
+     four times that push's largest.
+   - A read call is its template and a short header, and what it returns
+     is held by LIMIT, not by its code.
