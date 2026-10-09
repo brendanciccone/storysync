@@ -5,16 +5,31 @@ import { STATUS_CODES } from "node:http";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 
 export type McpServer = "Storybook" | "Figma";
 
 /**
- * How long a request waits for its answer when no limit was given: the MCP
- * SDK's own. Named here so an error can say what the limit was.
+ * How long a request may wait for its answer once connected when no limit
+ * was given, --request-timeout's default: five minutes. It was the MCP
+ * SDK's 60 seconds, held to --connect-timeout, and coder's Storybook, which
+ * Vite builds as it is asked for each component's docs, took about 70
+ * seconds a docs request, so every run on it failed unless the user knew to
+ * raise the limit. A server that never answers still fails, at this.
  */
-export const DEFAULT_REQUEST_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MSEC;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+
+/**
+ * Each request's limit: `requestMs`, --request-timeout's, where it was
+ * given; otherwise DEFAULT_REQUEST_TIMEOUT_MS, or `connectMs`,
+ * --connect-timeout's, where that is longer. Before --request-timeout,
+ * --connect-timeout held each request too, so a run that raised it for a
+ * slow Storybook keeps the limit it gave.
+ */
+export function requestLimit(connectMs: number, requestMs?: number): number {
+  return requestMs ?? Math.max(DEFAULT_REQUEST_TIMEOUT_MS, connectMs);
+}
 
 /**
  * Connects `client` over Streamable HTTP, which addon-mcp and Figma serve,
@@ -29,17 +44,43 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MSEC;
  */
 export async function connectWithFallback(client: Client, url: URL, server: McpServer, timeoutMs?: number): Promise<void> {
   const options = timeoutMs ? { timeout: timeoutMs } : undefined;
+  const fetch = await untimedFetch();
   let streamable: unknown;
   try {
-    await client.connect(new StreamableHTTPClientTransport(url), options);
+    await client.connect(new StreamableHTTPClientTransport(url, { fetch }), options);
     return;
   } catch (err) {
     streamable = err;
   }
   try {
-    await client.connect(new SSEClientTransport(url), options);
+    await client.connect(new SSEClientTransport(url, { fetch }), options);
   } catch (sse) {
     throw connectFailure(server, url, streamable, sse);
+  }
+}
+
+/**
+ * Node's fetch, without the limits of its own that it puts on every
+ * request: five minutes for the headers, and five between parts of the
+ * body. A docs request that took longer failed at five minutes whatever
+ * --request-timeout said, as "fetch failed" when the server sends its
+ * answer whole, or, when it streams it, as a timeout at the flag's limit,
+ * the answer having been cut off. The MCP SDK's request limit, and
+ * connecting's, still hold each request. Undefined, so the SDK uses fetch
+ * as it is, where Node's dispatcher can't be had: one replaced by another
+ * kind, say.
+ */
+async function untimedFetch(): Promise<FetchLike | undefined> {
+  try {
+    // Node loads fetch, and with it its dispatcher, on first use.
+    await globalThis.fetch("data:,").catch(() => undefined);
+    const current = (globalThis as Record<symbol, unknown>)[Symbol.for("undici.globalDispatcher.1")];
+    const Dispatcher = (current as { constructor?: new (options: object) => unknown } | undefined)?.constructor;
+    if (typeof Dispatcher !== "function" || Dispatcher === Object) return undefined;
+    const dispatcher = new Dispatcher({ headersTimeout: 0, bodyTimeout: 0 });
+    return (input, init) => globalThis.fetch(input, { ...init, dispatcher } as RequestInit);
+  } catch {
+    return undefined;
   }
 }
 
@@ -140,9 +181,10 @@ export function isRequestTimeout(err: unknown): boolean {
 
 /**
  * A request's timeout, said as connecting's is: what didn't answer, the
- * limit, and the flag that raises it. The SDK's own, "MCP error -32001:
- * Request timed out", named neither.
+ * limit, and the flag that raises it, --request-timeout, which only
+ * requests once connected take. The SDK's own, "MCP error -32001: Request
+ * timed out", named neither.
  */
 export function requestTimeoutError(server: McpServer, tool: string, timeoutMs: number): Error {
-  return new Error(`${server} MCP didn't answer ${tool} within ${timeoutMs / 1000}s; raise --connect-timeout if it needs longer`);
+  return new Error(`${server} MCP didn't answer ${tool} within ${timeoutMs / 1000}s; raise --request-timeout if it needs longer`);
 }

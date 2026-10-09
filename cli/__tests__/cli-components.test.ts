@@ -902,6 +902,18 @@ test("map, snap, list, inspect and diff CLI: a --connect-timeout that isn't a po
   }
 });
 
+test("map, snap, list, inspect and diff CLI: a --request-timeout that isn't a positive number, or is past Node's longest timer, fails before connecting", async () => {
+  const url = await unreachable();
+  for (const value of ["0", "-1", "soon", "2147483648"]) {
+    for (const command of [["map"], ["snap"], ["list"], ["inspect", "--component", "Button"], ["diff", "--figma", `${url}/mcp`, "--file-key", "x"]]) {
+      const r = await run(...command, "--storybook", url, "--request-timeout", value);
+      assert.equal(r.status, 1, r.out);
+      assert.match(r.out, value === "2147483648" ? /--request-timeout can be at most 2147483647 milliseconds/ : new RegExp(`--request-timeout must be a positive number of milliseconds, received "${value}"`), command[0]);
+      assert.doesNotMatch(r.out, /MCP/, command[0]);
+    }
+  }
+});
+
 test("map CLI: a --connect-timeout past Node's longest timer is refused, not fired at once", async () => {
   // setTimeout fires after 1ms for anything above 2^31 - 1, so such a value
   // would fail every connect while telling the user to raise it.

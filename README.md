@@ -340,7 +340,7 @@ The CLI handles setup (`init`, `setup`) and gives deterministic output you can c
 
 A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it. When the server answers with an HTTP error, the message gives the status and what to do about it, such as running `storysync init` when Storybook has no `/mcp`.
 
-`--connect-timeout` also limits each request once connected. A component whose docs don't come back in time fails on its own, and `--strict` catches it.
+Once connected, each request has `--request-timeout` (default 300000 ms, five minutes). A large Storybook can take more than a minute to answer one, since it builds each component's docs when they're asked for. A component whose docs don't come back in time fails on its own, with an error that names the flag, and `--strict` catches it. A `--connect-timeout` longer than five minutes raises the request limit too, as it did before `--request-timeout`.
 
 `map`, `snap`, and `diff` read components one at a time, which can take minutes for a large library. On a terminal they show which component they're on, on stderr, so `--json` output stays clean. Piped or in CI, they print nothing extra, unless you set `STORYSYNC_PROGRESS=1`, which prints a line per component (and per snap variant) to stderr. That lets you follow a run in the background from its stderr file. `STORYSYNC_PROGRESS=0` turns the terminal line off.
 
@@ -409,7 +409,8 @@ Maps every component to Figma variant definitions. Each one has its Storybook `i
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
   --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
@@ -427,7 +428,8 @@ Renders each component variant in a headless browser and records its computed st
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
   --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
@@ -673,7 +675,8 @@ Lists the components in Storybook, each by its title and ID, either of which `--
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
   --json                 Output JSON instead of formatted text
 ```
 
@@ -688,8 +691,10 @@ Options:
   --figma <url>          Figma MCP server URL (required)
   --file-key <key>       Figma file key (required)
   --storybook <url>      Storybook URL (enables component diff)
-  --connect-timeout <ms> How long to wait for Figma MCP, and Storybook MCP, to answer
+  --connect-timeout <ms> How long to wait to connect to Figma MCP, and Storybook MCP
                          (default: 60000)
+  --request-timeout <ms> How long each request to either may take once connected
+                         (default: 300000)
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
@@ -730,7 +735,8 @@ Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --component <name>     Component name, title or ID to inspect (required);
                          a name that matches nothing, or several, is an error
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
 ```
 
 ## Limitations

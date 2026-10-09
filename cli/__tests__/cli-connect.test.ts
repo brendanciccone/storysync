@@ -16,7 +16,7 @@ import type { AddressInfo } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { connectFailure } from "../mcp-connect.js";
+import { DEFAULT_REQUEST_TIMEOUT_MS, connectFailure, requestLimit } from "../mcp-connect.js";
 import { runSnap } from "../snap.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
@@ -199,7 +199,7 @@ type Rpc = { id?: number; method: string; params?: { protocolVersion?: string; n
  * `delays[tool]` milliseconds, or never when that is Infinity. Records each
  * call by name in `calls`.
  */
-async function slowStandIn(delays: Record<string, number>, { list = LIST, story = false } = {}): Promise<{ url: string; calls: string[] }> {
+async function slowStandIn(delays: Record<string, number>, { list = LIST, story = false, stream = false } = {}): Promise<{ url: string; calls: string[] }> {
   const calls: string[] = [];
   const tools = ["docs-list", "docs-show", "use_figma"];
   const url = await listen((req, res) => {
@@ -234,6 +234,15 @@ async function slowStandIn(delays: Record<string, number>, { list = LIST, story 
         calls.push(name);
         const text = name === "docs-list" ? list : name === "docs-show" ? DOCS : "{}";
         const delay = delays[name] ?? 0;
+        // With `stream`, as addon-mcp answers: an event stream, its headers
+        // sent at once and the answer when it is ready.
+        if (stream) {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.flushHeaders();
+          const event = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text }] } });
+          if (delay !== Infinity) setTimeout(() => res.end(`event: message\ndata: ${event}\n\n`), delay);
+          return;
+        }
         if (delay !== Infinity) setTimeout(() => answer({ content: [{ type: "text", text }] }), delay);
       } else {
         answer({});
@@ -243,48 +252,126 @@ async function slowStandIn(delays: Record<string, number>, { list = LIST, story 
   return { url, calls };
 }
 
-test("map CLI: a docs-show that never answers fails its component within --connect-timeout, and --strict", { timeout: 30_000 }, async () => {
+test("map CLI: a docs-show that never answers fails its component within --request-timeout, and --strict", { timeout: 30_000 }, async () => {
   // Each request got the SDK's fixed 60 seconds, whatever --connect-timeout
   // said, and failed with "MCP error -32001: Request timed out", naming
   // neither the limit nor the flag.
   const { url } = await slowStandIn({ "docs-show": Infinity });
   const started = Date.now();
-  const strict = await run("map", "--storybook", url, "--connect-timeout", "1500", "--json", "--strict");
+  const strict = await run("map", "--storybook", url, "--request-timeout", "1500", "--json", "--strict");
   assert.equal(strict.status, 1, strict.out);
   assert.ok(Date.now() - started < 15_000, `map took ${Date.now() - started}ms`);
   const data = JSON.parse(strict.stdout) as { components: { name: string; error: string | null }[]; summary: { failed: number } };
   assert.equal(data.summary.failed, 1);
-  assert.equal(data.components[0].error, "Error: Storybook MCP didn't answer docs-show within 1.5s; raise --connect-timeout if it needs longer");
+  assert.equal(data.components[0].error, "Error: Storybook MCP didn't answer docs-show within 1.5s; raise --request-timeout if it needs longer");
 
   // Without --strict a failed component is reported and the run exits 0, as
   // for any other component that can't be read.
-  const lenient = await run("map", "--storybook", url, "--connect-timeout", "1500", "--json");
+  const lenient = await run("map", "--storybook", url, "--request-timeout", "1500", "--json");
   assert.equal(lenient.status, 0, lenient.out);
   assert.equal((JSON.parse(lenient.stdout) as { summary: { failed: number } }).summary.failed, 1);
 });
 
-test("map CLI: --connect-timeout sets how long each request may take, not only connecting", { timeout: 30_000 }, async () => {
+test("map CLI: --request-timeout sets how long each request may take once connected", { timeout: 30_000 }, async () => {
   const { url } = await slowStandIn({ "docs-show": 1200 });
-  const short = await run("map", "--storybook", url, "--connect-timeout", "500", "--json");
-  assert.match((JSON.parse(short.stdout) as { components: { error: string | null }[] }).components[0].error ?? "", /didn't answer docs-show within 0\.5s/);
+  const short = await run("map", "--storybook", url, "--request-timeout", "500", "--json");
+  assert.match((JSON.parse(short.stdout) as { components: { error: string | null }[] }).components[0].error ?? "", /didn't answer docs-show within 0\.5s; raise --request-timeout/);
 
-  const long = await run("map", "--storybook", url, "--connect-timeout", "5000", "--json", "--strict");
+  const long = await run("map", "--storybook", url, "--request-timeout", "5000", "--json", "--strict");
   assert.equal(long.status, 0, long.out);
   assert.equal((JSON.parse(long.stdout) as { summary: { mapped: number } }).summary.mapped, 1);
 });
 
-test("diff CLI: a use_figma that never answers fails the Figma read within --connect-timeout", { timeout: 30_000 }, async () => {
+test("list, map, inspect, snap and diff CLI: a request slower than --connect-timeout isn't held to it, and --request-timeout names itself", { timeout: 60_000 }, async () => {
+  // --connect-timeout held each request too, at 60 seconds by default, and
+  // coder's Storybook took about 70 seconds a docs request: every run on it
+  // failed unless the user knew to raise the flag. Requests now have
+  // --request-timeout, five minutes by default, so a short limit on
+  // connecting leaves a slow answer alone.
+  const { url } = await slowStandIn({ "docs-list": 1200, "docs-show": 1200, use_figma: 1200 });
+  const project = emptyProject();
+  const out = join(project, "snaps");
+  try {
+    const commands = [["list", "--json"], ["map", "--json", "--strict"], ["inspect", "--component", "Button"], ["diff", "--figma", `${url}/mcp`, "--file-key", "x", "--project", project, "--json"]];
+    for (const command of commands) {
+      const r = await run(...command, "--storybook", url, "--connect-timeout", "500");
+      assert.doesNotMatch(r.out, /didn't answer/, command[0]);
+      if (command[0] !== "diff") assert.equal(r.status, 0, `${command[0]}: ${r.out}`);
+    }
+    // And each says which flag raises a request's limit when one runs out:
+    // snap's first request too, before it starts a browser.
+    for (const command of [...commands, ["snap", "--out", out, "--json"]]) {
+      const r = await run(...command, "--storybook", url, "--request-timeout", "300");
+      assert.match(r.out, /MCP didn't answer (docs-list|use_figma) within 0\.3s; raise --request-timeout if it needs longer/, command[0]);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("list and map CLI: a request is held to --request-timeout, not to the limits Node's fetch puts on every request", { timeout: 60_000 }, async () => {
+  // Node's fetch stops waiting for an answer's headers after five minutes,
+  // and between parts of its body after five more. A docs request slower
+  // than that failed at five minutes whatever --request-timeout said: as
+  // "fetch failed" where the answer comes whole, and where it streams, as
+  // addon-mcp's does, with its answer cut off and the run left to time out
+  // at the flag's limit. Here Node's limits are 400ms, set before the CLI
+  // runs, and Storybook answers after 1.2s.
+  const dir = emptyProject();
+  const preload = join(dir, "short-fetch.mjs");
+  writeFileSync(preload, [
+    "await fetch(\"data:,\").catch(() => {});",
+    "const key = Symbol.for(\"undici.globalDispatcher.1\");",
+    "globalThis[key] = new globalThis[key].constructor({ headersTimeout: 400, bodyTimeout: 400 });",
+  ].join("\n"));
+  const runShort = (...args: string[]) => new Promise<{ status: number; out: string }>((resolve) => {
+    execFile(process.execPath, ["--import", pathToFileURL(preload).href, ...args], { encoding: "utf8", timeout: 25_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
+      resolve({ status: err ? Number((err as { code?: unknown }).code ?? -1) : 0, out: `${stdout}${stderr}` });
+    });
+  });
+  try {
+    for (const stream of [false, true]) {
+      const { url } = await slowStandIn({ "docs-list": 1200, "docs-show": 1200 }, { stream });
+      // Node's limits, so shortened, stop a plain fetch of the answer.
+      const call = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "docs-list" } });
+      const plain = await runShort("-e", `fetch(${JSON.stringify(`${url}/mcp`)}, { method: "POST", body: ${JSON.stringify(call)} }).then((r) => r.text()).then(() => console.log("answered"), (e) => console.log(e.cause?.code ?? String(e)))`);
+      assert.match(plain.out, stream ? /UND_ERR_BODY_TIMEOUT/ : /UND_ERR_HEADERS_TIMEOUT/);
+      const list = await runShort(CLI, "list", "--storybook", url, "--json", "--request-timeout", "5000");
+      assert.equal(list.status, 0, `${stream ? "streamed" : "whole"}: ${list.out}`);
+      assert.deepEqual((JSON.parse(list.out) as { components: { id: string }[] }).components.map((c) => c.id), ["forms-button"]);
+      const map = await runShort(CLI, "map", "--storybook", url, "--json", "--strict");
+      assert.equal(map.status, 0, `${stream ? "streamed" : "whole"}: ${map.out}`);
+      // And --request-timeout still holds each request.
+      const short = await runShort(CLI, "list", "--storybook", url, "--json", "--request-timeout", "600");
+      assert.match(short.out, /didn't answer docs-list within 0\.6s; raise --request-timeout/, stream ? "streamed" : "whole");
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("diff CLI: a use_figma that never answers fails the Figma read within --request-timeout", { timeout: 30_000 }, async () => {
   const { url } = await slowStandIn({ use_figma: Infinity });
   const project = emptyProject();
   try {
-    const r = await run("diff", "--figma", `${url}/mcp`, "--file-key", "x", "--project", project, "--connect-timeout", "1500", "--strict");
+    const r = await run("diff", "--figma", `${url}/mcp`, "--file-key", "x", "--project", project, "--request-timeout", "1500", "--strict");
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /Failed to read Figma variables/);
-    assert.match(r.out, /Figma MCP didn't answer use_figma within 1\.5s; raise --connect-timeout if it needs longer/);
+    assert.match(r.out, /Figma MCP didn't answer use_figma within 1\.5s; raise --request-timeout if it needs longer/);
     assert.match(r.out, /Figma read failed — diff results above are partial/);
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
+});
+
+test("requestLimit: --request-timeout where given, else five minutes, or --connect-timeout's where that is longer", () => {
+  assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 300_000);
+  assert.equal(requestLimit(60_000), 300_000);
+  assert.equal(requestLimit(500), 300_000);
+  // A run that raised --connect-timeout past it, as the skills once said to, keeps its limit.
+  assert.equal(requestLimit(600_000), 600_000);
+  assert.equal(requestLimit(600_000, 1_000), 1_000);
+  assert.equal(requestLimit(500, 900_000), 900_000);
 });
 
 // --- A snap that is stopped ---
