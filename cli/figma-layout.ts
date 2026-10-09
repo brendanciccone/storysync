@@ -18,8 +18,37 @@ import { SPIKE } from "./figma-spike.js";
 import type { Spike } from "./figma-spike.js";
 import type { Box, Kind, TreeLayout } from "./tree-types.js";
 
-/** Whether to put siblings in flow order when paint order differs and the reordered ones don't overlap; see planLayout. */
+/**
+ * Whether to put siblings in flow order when paint order differs and the
+ * reordered ones don't overlap; see planLayout. False sends every such frame
+ * to NONE (section 8.4.6 as written): Attachment's root, for one. verify's
+ * `order` check must use visibleReorder while this is true.
+ */
 export const REORDER_NON_OVERLAPPING = true;
+
+/**
+ * The first pair of siblings that Figma's layer order paints the other way
+ * round from the browser's paint order, and that overlap, so the difference
+ * shows: [the one painted first, the one painted after it]. Null when every
+ * pair whose order changed keeps apart, so both orders draw the same.
+ *
+ * `painted` is the siblings in paint order (as a tree stores them), each with
+ * its border box in their parent's frame; `layers` is their keys in Figma's
+ * layer order, bottom to top. A key in only one of them is skipped. The
+ * build orders layers by this, and verify scores `order` by it, so the two
+ * agree on what counts as the same order.
+ */
+export function visibleReorder(painted: readonly { k: string; box: Box }[], layers: readonly string[]): [string, string] | null {
+  const at = new Map(layers.map((k, i) => [k, i]));
+  const present = painted.filter((c) => at.has(c.k));
+  for (let i = 0; i < present.length; i++) {
+    for (let j = i + 1; j < present.length; j++) {
+      const [a, b] = [present[i], present[j]];
+      if (at.get(a.k)! > at.get(b.k)! && overlaps(a.box, b.box)) return [a.k, b.k];
+    }
+  }
+  return null;
+}
 
 /** A child as planLayout sees it. */
 export interface LayoutChild {
@@ -27,6 +56,8 @@ export interface LayoutChild {
   kind: Kind;
   /** Its frame box, relative to the parent frame's corner. */
   box: Box;
+  /** Its border box in the same frame, where it differs, for what it paints over (visibleReorder). */
+  paint?: Box;
   /** Out of flow: absolute or fixed. */
   abs?: boolean;
   /** visibility: hidden, which Figma's auto layout skips but CSS gives room. */
@@ -170,17 +201,10 @@ function fit(
   // layer order is that flow, each absolute child kept in its paint place.
   const flow = [...inflow].sort((a, b) => a.box[m] - b.box[m]);
   const order = layerOrder(children, flow.map((k) => k.k));
-  const painted = new Map(children.map((k, i) => [k.k, i]));
-  const at = new Map(order.map((k, i) => [k, i]));
-  const byKey = new Map(children.map((k) => [k.k, k]));
-  for (const a of children) {
-    for (const b of children) {
-      if (painted.get(a.k)! >= painted.get(b.k)! || at.get(a.k)! < at.get(b.k)!) continue;
-      // a painted under b, and now above it: only where they don't overlap does that show nowhere.
-      if (!REORDER_NON_OVERLAPPING || overlaps(byKey.get(a.k)!.box, byKey.get(b.k)!.box)) {
-        return "its children paint in another order than they flow, and some of them overlap";
-      }
-    }
+  if (order.some((k, i) => k !== children[i].k)) {
+    // Where the reordered siblings keep apart, paint order shows nowhere.
+    const shown = REORDER_NON_OVERLAPPING ? visibleReorder(children.map((k) => ({ k: k.k, box: k.paint ?? k.box })), order) : true;
+    if (shown) return REORDER_NON_OVERLAPPING ? "its children paint in another order than they flow, and some of them overlap" : "its children paint in another order than they flow";
   }
   const size = (k: LayoutChild) => k.box[ms];
   const gaps = flow.slice(1).map((k, i) => k.box[m] - (flow[i].box[m] + size(flow[i])));

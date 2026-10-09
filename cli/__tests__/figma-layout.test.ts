@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { variantLayouts } from "../figma-code.js";
-import { planLayout } from "../figma-layout.js";
+import { planLayout, visibleReorder } from "../figma-layout.js";
 import type { LayoutChild, LayoutParent } from "../figma-layout.js";
 import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
 
@@ -50,6 +50,24 @@ test("planLayout: Attachment's media tile, painted after the content it precedes
   const vertical = variantLayouts(attachment, attachment.variants[2]).get("")!;
   assert.deepEqual(vertical.order, ["attachment-media", "attachment-content", "attachment-action"], "the absolute X button stays last, on top");
   assert.equal(vertical.mode, "VERTICAL");
+});
+
+test("visibleReorder: siblings Figma paints the other way round matter only where they overlap", () => {
+  const painted = [{ k: "content", box: [56, 8, 200, 40] as const }, { k: "media", box: [8, 8, 40, 40] as const }, { k: "x", box: [260, 16, 24, 24] as const }];
+  const mutable = painted.map((p) => ({ k: p.k, box: [...p.box] as [number, number, number, number] }));
+  assert.equal(visibleReorder(mutable, ["content", "media", "x"]), null, "the same order");
+  assert.equal(visibleReorder(mutable, ["media", "content", "x"]), null, "Attachment's: media and content keep apart");
+  assert.deepEqual(visibleReorder(mutable.map((p) => (p.k === "media" ? { ...p, box: [8, 8, 60, 40] as [number, number, number, number] } : p)), ["media", "content", "x"]), ["content", "media"], "4px over each other");
+  assert.equal(visibleReorder(mutable.map((p) => (p.k === "media" ? { ...p, box: [8, 8, 48.5, 40] as [number, number, number, number] } : p)), ["media", "content", "x"]), null, "within half a pixel");
+  assert.equal(visibleReorder(mutable, ["x", "media"]), null, "a key in only one is skipped");
+});
+
+test("planLayout: a reorder that would show is built absolute, and says why", () => {
+  // b paints over a in CSS (a z-index), but flows first: on top of it in Figma's order, the other way round.
+  const plan = planLayout(parent({ size: [100, 40], L: { d: "flex" } }), [kid("a", [40, 0, 60, 40], { paint: [38, 0, 62, 40] }), kid("b", [0, 0, 40, 40])]);
+  assert.deepEqual([plan.mode, plan.why], ["NONE", "its children paint in another order than they flow, and some of them overlap"]);
+  // Their frame boxes touch; their border boxes, a stroke built outside included, overlap.
+  assert.equal(planLayout(parent({ size: [100, 40], L: { d: "flex" } }), [kid("a", [40, 0, 60, 40]), kid("b", [0, 0, 40, 40])]).mode, "HORIZONTAL");
 });
 
 test("planLayout: a frame with nothing in its flow has no auto layout, and no reason to give", () => {

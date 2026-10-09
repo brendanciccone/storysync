@@ -2,7 +2,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { absoluteBoxes } from "../tree-types.js";
+import { visibleReorder } from "../figma-layout.js";
+import { absoluteBoxes, parentKey } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
 import { MockFigma, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
@@ -91,6 +92,32 @@ function synthetic(name: string, tree: TreeNode[], styles: object, svg: Record<s
 }
 
 const CHEVRON = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>';
+
+test("build: Figma's layer order differs from snap's paint order only between siblings that don't overlap (verify's `order`)", async () => {
+  // Attachment's media tile is `relative`, so it paints after the content it
+  // flows before. Its layers follow the flow, which auto layout needs; verify
+  // scores order with the same visibleReorder, so it counts as the same.
+  let reordered = 0;
+  for (const name of treeFixtureNames()) {
+    const fixture = loadTreeFixture(name);
+    const { mock } = await buildAll(fixture);
+    for (const variant of fixtureVariants(fixture)) {
+      const built = variantsBySlug(mock).get(variant.slug)!;
+      const parents = new Map<string, TreeNode[]>();
+      for (const node of variant.nodes.slice(1)) {
+        const p = parentKey(node.k)!;
+        parents.set(p, [...(parents.get(p) ?? []), node]);
+      }
+      for (const [p, kids] of parents) {
+        const view = p === "" ? built : keyed(built, p)!;
+        const layers = view.children!.map((c) => c.data["storysync.k"]).filter((k): k is string => Boolean(k));
+        assert.equal(visibleReorder(kids, layers), null, `${name} ${variant.slug} › ${p || "(root)"}`);
+        if (layers.join() !== kids.map((k) => k.k).join()) reordered++;
+      }
+    }
+  }
+  assert.equal(reordered, 4, "Attachment's root, in each of its 4 variants");
+});
 
 test("build: a sibling after a label moves by as much as a wider stand-in widens the label", async () => {
   const fixture = synthetic("Next", [

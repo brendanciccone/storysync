@@ -227,7 +227,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
     const plan = planLayout(
       { k: node.k, size: figmaSize(node), L: node.L, inset: strokeInset },
       children.map((c): LayoutChild => ({
-        k: c.k, kind: c.t, box: layoutBox(c), abs: Boolean(c.abs), hidden: c.vis === 0,
+        k: c.k, kind: c.t, box: layoutBox(c), paint: c.box, abs: Boolean(c.abs), hidden: c.vis === 0,
         grow: c.S?.grow, alignSelf: c.S?.as, text: c.t === "T" ? (textSizesItself(c) ? "hug" : "fixed") : undefined,
       })),
       spike,
