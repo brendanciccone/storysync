@@ -396,6 +396,37 @@ function propertiesOf(n: TreeNode, root: boolean): string[] {
 /** Properties that make a node another node when they differ: it scores 0. */
 const GATES = new Set(["kind", "chars", "shapes", "content", "visible"]);
 
+/** How far two siblings' border boxes may run into each other and still keep apart. */
+const OVERLAP_PX = 0.5;
+
+/**
+ * The first pair of siblings Figma's layer order paints the other way round
+ * from snap's paint order and whose border boxes overlap, so the change
+ * shows: [the one snap paints first, the one it paints after]. Null when
+ * every pair whose order changed keeps apart, so both orders draw the same.
+ *
+ * `painted` is the siblings in snap's paint order, as a tree stores them,
+ * with their boxes; `layers` their keys in Figma's layer order, bottom to
+ * top. Figma's layer order is both what paints over what and an auto
+ * layout's flow, so where a child paints out of its flow order, as
+ * Attachment's `relative` media tile does, the build lays the children out
+ * in flow order when nothing reordered overlaps (SPEC-NOTES 23 and C13).
+ * This is that rule, the build's visibleReorder (cli/figma-layout.ts),
+ * written again here rather than taken from the build (design D9).
+ */
+export function visibleReorder(painted: readonly Pick<TreeNode, "k" | "box">[], layers: readonly string[]): [string, string] | null {
+  const at = new Map(layers.map((k, i) => [k, i]));
+  const present = painted.filter((c) => at.has(c.k));
+  const overlap = (a: Box, b: Box) => Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]) > OVERLAP_PX
+    && Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]) > OVERLAP_PX;
+  for (let i = 0; i < present.length; i++) {
+    for (let j = i + 1; j < present.length; j++) {
+      if (at.get(present[i].k)! > at.get(present[j].k)! && overlap(present[i].box, present[j].box)) return [present[i].k, present[j].k];
+    }
+  }
+  return null;
+}
+
 /**
  * Scores one variant's nodes against its records (design sections 10.2-10.5).
  *
@@ -525,12 +556,14 @@ export function scoreTree(input: TreeInput): TreeScore {
     if (n.ol) unscorable("outline", `outline ${n.ol[0]}px ${n.ol[1]} is not built in phase 1`);
     if (n.cp) unscorable("clip-path", `clip-path ${n.cp}`);
 
-    // Paint order among its keyed children, where it has two or more.
+    // Paint order among its keyed children, where it has two or more: drift
+    // where Figma paints one over another the other way round, not where
+    // siblings that keep apart are in another order (visibleReorder).
     const children = (kids.get(n.k) ?? []).filter((c) => records.has(c.k));
     if (children.length >= 2) {
       const want = children.map((c) => c.k);
       const got = [...children].sort((a, b) => records.get(a.k)!.index - records.get(b.k)!.index).map((c) => c.k);
-      check("order", want.join("\u0000") === got.join("\u0000"), want, got);
+      check("order", visibleReorder(children, got) === null, want, got);
     }
 
     const gate = diffs.find((d) => GATES.has(d.property))?.property;

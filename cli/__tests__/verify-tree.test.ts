@@ -10,7 +10,8 @@ import type { TreeFixture } from "./mock-figma.js";
 import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
 import { readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import type { ReadbackFile, ReadbackStyles, VerifyResult } from "../verify.js";
-import { SPIKE, cssLinearGradient, svgShapePaints } from "../verify-tree.js";
+import { SPIKE, cssLinearGradient, svgShapePaints, visibleReorder } from "../verify-tree.js";
+import type { Box } from "../tree-types.js";
 
 /** Every node verify didn't verify, as `slug key: property measured→figma`, for an assertion's message. */
 function drift(result: VerifyResult): string {
@@ -255,8 +256,9 @@ const PROPERTY_CASES: { property: string; fixture: string; key: string; change: 
   { property: "blend, measured darken", fixture: "avatar", key: "::after", finding: "blend", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["::after"]).blendMode = "MULTIPLY"; } },
   { property: "clip", fixture: "switch", key: "switch-thumb", finding: "clip", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).clipsContent = true; } },
   {
-    property: "order", fixture: "card", key: "", finding: "order", change: (ctx) => {
-      node(ctx.figma, ctx.built.variants[0].id).insertChild(0, node(ctx.figma, ctx.built.variants[0].layers["card-content"]));
+    // Avatar's ring, painted over its photo, put under it.
+    property: "order", fixture: "avatar", key: "", finding: "order", change: (ctx) => {
+      node(ctx.figma, ctx.built.variants[0].id).insertChild(0, node(ctx.figma, ctx.built.variants[0].layers["::after"]));
     },
   },
   { property: "width", fixture: "switch", key: "switch-thumb", finding: "w", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).resize(20, 16); } },
@@ -318,6 +320,43 @@ for (const c of GATE_CASES) {
     assert.deepEqual([nodes[0].key, nodes[0].gate, nodes[0].score], [c.key, c.gate, 0]);
   });
 }
+
+test("order: visibleReorder judges as the build does, on the same cases as the build's test", () => {
+  // cli/__tests__/figma-layout.test.ts holds the build's rule to these.
+  const painted: { k: string; box: Box }[] = [{ k: "content", box: [56, 8, 200, 40] }, { k: "media", box: [8, 8, 40, 40] }, { k: "x", box: [260, 16, 24, 24] }];
+  const media = (box: Box) => painted.map((p) => (p.k === "media" ? { ...p, box } : p));
+  assert.equal(visibleReorder(painted, ["content", "media", "x"]), null, "the same order");
+  assert.equal(visibleReorder(painted, ["media", "content", "x"]), null, "Attachment's: media and content keep apart");
+  assert.deepEqual(visibleReorder(media([8, 8, 60, 40]), ["media", "content", "x"]), ["content", "media"], "12px over each other");
+  assert.deepEqual(visibleReorder(media([8, 8, 49, 40]), ["media", "content", "x"]), ["content", "media"], "1px over each other");
+  assert.equal(visibleReorder(media([8, 8, 48.5, 40]), ["media", "content", "x"]), null, "within half a pixel");
+  assert.equal(visibleReorder(painted, ["x", "media"]), null, "a key in only one is skipped");
+  assert.equal(visibleReorder(media([8, 8, 60, 40]), ["x", "content"]), null, "and one over another is skipped too");
+});
+
+test("order: siblings in another order that keep apart draw the same, and verify, as the build lays them out", async () => {
+  // Card's content put under its header and footer, which it doesn't touch.
+  const card = await falsified("card", ({ figma, built }) => {
+    node(figma, built.variants[0].id).insertChild(0, node(figma, built.variants[0].layers["card-content"]));
+  });
+  assert.deepEqual(findings(card), []);
+  // Attachment's media tile paints after the content it flows before; the
+  // build lays its layers out in flow order, media first.
+  const attachment = await falsified("attachment", ({ figma, built }) => {
+    for (const v of built.variants) node(figma, v.id).insertChild(0, node(figma, v.layers["attachment-media"]));
+  });
+  assert.equal(attachment.elementFidelity, 1, findings(attachment).join("\n"));
+  // Moved 30px right, over the content, it drifts on x. Whether an order
+  // shows is judged where snap drew the two, apart, as the build judges it,
+  // so the order is not drift as well.
+  const over = await falsified("attachment", ({ figma, built }) => {
+    const v = built.variants[0];
+    node(figma, v.id).insertChild(0, node(figma, v.layers["attachment-media"]));
+    node(figma, v.layers["attachment-media"]).x += 30;
+  });
+  const slug = loadTreeFixture("attachment").components[0].variants[0].slug;
+  assert.deepEqual(findings(over), [`${slug} attachment-media: x`]);
+});
 
 test("positions and sizes: a container grows across its flow by its tallest child's growth, and no more", async () => {
   // Two of InputOTP's slots 4px taller, which a hugging row grows by 4,
