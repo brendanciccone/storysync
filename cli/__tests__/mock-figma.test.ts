@@ -618,6 +618,8 @@ test("templates: the 0.4.0 skill's build and readback run unchanged, and verify 
 // --- The spike probe ------------------------------------------------------------
 
 const PROBE = readFileSync(`${ROOT}spikes/figma-probe.js`, "utf8");
+/** The probe's second call: the one line its header says to change. */
+const PROBE_IMAGE = PROBE.replace(/^const MODE = 'probe';$/m, "const MODE = 'image';");
 
 const find = (views: NodeView[], test: (n: NodeView) => boolean): NodeView | undefined => {
   for (const view of views) {
@@ -645,12 +647,23 @@ test("spike: the probe runs as one call, only on its own page, and returns a com
   assert.equal(outside(figma, "storysync spike"), before, "nothing outside the spike page changed");
   const result = run.value as { mode: string; page: string; imageNode: string; items: Record<string, Record<string, unknown>> };
   assert.equal(result.mode, "probe");
-  for (const name of ["svg", "shadow", "text", "absolute", "clone", "search", "returned", "time", "blend", "defaults"]) {
+  for (const name of ["svg", "shadow", "text", "absolute", "clone", "search", "returned", "time", "blend", "defaults", "sizing"]) {
     assert.ok(result.items[name] && !result.items[name].error, `${name}: ${JSON.stringify(result.items[name])}`);
   }
   assert.deepEqual(result.items.svg.rescaled, result.items.svg.kids, "the mock's import scales strokes, so both agree");
   assert.equal((result.items.time as { height: number }).height > 0, true);
-  assert.deepEqual(result.items.clone, { root: "size=a", child: "thumb", parent: "same", variantParent: "PAGE" });
+  // The mock lands every copy on the current page, as the typings say; the nested and variant copies show it.
+  assert.deepEqual(result.items.clone, { root: "size=a", child: "thumb", plain: "beside the original", nested: "PAGE", variant: "PAGE" });
+  // Item 11: what the mock refuses comes back as its refusal, item by item, and the rest is read.
+  const sizing = result.items.sizing as Record<string, { error?: string; parent?: unknown[]; kids?: unknown[][]; textAutoResize?: string[] }>;
+  for (const refused of ["fillAlong", "growAlong"]) assert.match(sizing[refused].error!, /mock-figma: FILL or layoutGrow along a parent that hugs/, refused);
+  for (const refused of ["textInFixedRow", "textInHuggingRow"]) assert.match(sizing[refused].error!, /mock-figma: FILL/, refused);
+  assert.deepEqual(sizing.fillAcross.parent, [120, 32, "HUG", "HUG", "AUTO", "AUTO"]);
+  assert.deepEqual(sizing.fillAcross.kids![1], [0, 16, 120, 16, "FILL", "FIXED", 0, "STRETCH"]);
+  assert.deepEqual(sizing.fillAcrossAlone.kids![0].slice(2, 4), [100, 16]);
+  assert.equal(find(figma.pages(), (n) => n.name === "storysync spike")!.children!.filter((n) => n.type === "FRAME" && n.children?.length === 3 && n.height === 720).length, 0, "each case is removed");
+  const time = result.items.time as Record<string, number>;
+  assert.deepEqual(Object.keys(time), ["frames", "texts", "layout", "height"]);
   assert.deepEqual(result.items.blend, { blend: "DARKEN", dash: [3, 3] });
   const page = find(figma.pages(), (n) => n.name === "storysync spike")!;
   assert.equal(page.data["storysync.spike"], "1");
@@ -660,7 +673,8 @@ test("spike: the probe runs as one call, only on its own page, and returns a com
   const sha1 = createHash("sha1").update(thumbBytes).digest("hex");
   assert.ok(PROBE.includes(`bytes: ${thumbBytes.length}, fnv: '${thumb.fnv}', sha1: '${sha1}'`), "the probe expects the fixture's thumbnail");
   figma.uploadAssets([result.imageNode], [thumbBytes]);
-  const image = await figma.run(PROBE.replace("const MODE = 'probe';", "const MODE = 'image';"));
+  assert.notEqual(PROBE_IMAGE, PROBE);
+  const image = await figma.run(PROBE_IMAGE);
   assert.ok(image.ok, image.text);
   assert.deepEqual((image.value as { items: { image: Record<string, unknown> } }).items.image, {
     hash: sha1, scaleMode: "FILL", length: thumbBytes.length, fnv: thumb.fnv,
@@ -673,5 +687,5 @@ test("spike: the probe runs as one call, only on its own page, and returns a com
   assert.equal(outside(figma, "storysync spike"), before);
   const other = new MockFigma({ pages: ["storysync spike"] });
   assert.match(await fails(other, PROBE), /exists that this probe did not create/);
-  assert.match(await fails(new MockFigma(), PROBE.replace("const MODE = 'probe';", "const MODE = 'image';")), /Run MODE probe first/);
+  assert.match(await fails(new MockFigma(), PROBE_IMAGE), /Run MODE probe first/);
 });

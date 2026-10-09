@@ -1,21 +1,25 @@
-// Figma spike for the element-tree design (section 14): one use_figma call
-// that measures what the build and readback templates must not guess about
+// Figma spike for the element-tree design (section 14): use_figma code that
+// measures what the build and readback templates must not guess about
 // Figma, run once, live, before package B finalizes. Send this file as the
-// `code` of a use_figma call, unchanged, in a scratch Design file, and only
-// with the owner's go-ahead for the writes.
+// `code` of a use_figma call, in a scratch Design file, and only with the
+// owner's go-ahead for the writes.
 //
 // It creates a page named "storysync spike", marks it as its own, switches
 // to it, and builds everything there. It removes nothing outside that page:
 // a re-run clears only the page it created, and it refuses to touch a page
 // of that name it did not create. Delete the page when done.
 //
-// Two calls:
-//   1. MODE = 'probe' measures items 1-9 and creates the frame for item 10,
-//      returning its id as `imageNode`.
-//      Then upload the Avatar thumbnail fixture to it:
+// Two calls, with an upload between them:
+//   1. Send the file exactly as it is. MODE 'probe' measures items 1-9 and
+//      11, and creates the frame for item 10, returning its id as
+//      `imageNode`.
+//   Then upload the Avatar thumbnail fixture to that frame:
 //        upload_assets({ fileKey, count: 1, nodeIds: [imageNode], scaleMode: 'FILL' })
-//      and POST the bytes of EXPECT.file (below) to the URL it returns.
-//   2. MODE = 'image' reads that image back (item 10) and reuses its hash.
+//      and POST the bytes of the file named above EXPECT (below) to the URL
+//      it returns.
+//   2. Send the file again with one change, to the line right below this
+//      comment: `const MODE = 'probe';` becomes `const MODE = 'image';`.
+//      It reads that image back (item 10) and reuses its hash.
 // Save each response unchanged as cli/__tests__/fixtures/figma-spike.json
 // (`probe` and `image`), noting for item 7 whether the tool's text showed
 // the returned value as an object or as a JSON string.
@@ -147,7 +151,10 @@ if (MODE === 'probe') {
     return { at, sides: [r(s.strokeWeight), s.strokeTopWeight, s.strokeLeftWeight, s.strokeAlign, r(s.width)] };
   });
 
-  // 5. Clone: does plugin data come along, on the root and its children, and where does the copy go?
+  // 5. Clone: does plugin data come along, on the root and its children, and
+  // where does the copy go: beside the original, or onto the current page?
+  // `plain` is on the page, so its copy lands there either way; the copies of
+  // a component's child and of a variant tell the two apart.
   await item('clone', () => {
     const make = (name) => {
       const c = figma.createComponent();
@@ -161,11 +168,15 @@ if (MODE === 'probe') {
     };
     const plain = make('size=a');
     const copy = plain.clone();
+    const inner = plain.children[0];
+    const nested = inner.clone();
     const set = figma.combineAsVariants([make('size=b'), make('size=c')], page);
-    const variant = set.children[0].clone();
+    const first = set.children[0];
+    const variant = first.clone();
+    const where = (c, original) => (c.parent === original.parent ? 'beside the original' : c.parent.type);
     return {
       root: copy.getSharedPluginData('storysync', 'slug'), child: copy.children[0].getSharedPluginData('storysync', 'k'),
-      parent: copy.parent === plain.parent ? 'same' : copy.parent.type, variantParent: variant.parent.type,
+      plain: where(copy, plain), nested: where(nested, inner), variant: where(variant, first),
     };
   });
 
@@ -204,7 +215,10 @@ if (MODE === 'probe') {
       t.characters = 'Label ' + i;
       holder.appendChild(t);
     }
-    return { frames, texts: Date.now() - start - frames, height: r(holder.height) };
+    const texts = Date.now() - start - frames;
+    // Reading a size lays the frame out, if Figma waited to: timed too.
+    const height = r(holder.height);
+    return { frames, texts, layout: Date.now() - start - frames - texts, height };
   });
 
   // 9. Blend mode and dashes read back.
@@ -225,6 +239,56 @@ if (MODE === 'probe') {
     al.layoutMode = 'HORIZONTAL';
     const v = figma.createVector();
     return { frame: f.fills.length, component: c.fills.length, strokeAlign: [f.strokeAlign, v.strokeAlign], autoLayout: [al.primaryAxisSizingMode, al.counterAxisSizingMode], text: figma.createText().textAutoResize };
+  });
+
+  // 11. Sizing the mock refuses or assumes, each as section 8.4.7 would
+  // build it: a child that fills or grows along a hugging column (Sidebar's
+  // sidebar-inner, 16 + 688 + 16), one that fills across a hugging column
+  // beside a wider sibling and alone, and FILL on a hugging label, in a fixed
+  // row and in a hugging one. Each case is read, then removed.
+  await item('sizing', async () => {
+    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+    const size = (n) => [r(n.width), r(n.height), n.layoutSizingHorizontal, n.layoutSizingVertical];
+    const kid = (p, w, h) => {
+      const f = figma.createFrame();
+      f.resize(w, h);
+      f.fills = gray;
+      p.appendChild(f);
+      return f;
+    };
+    const read = (p, kids, more) => ({
+      parent: [...size(p), p.primaryAxisSizingMode, p.counterAxisSizingMode],
+      kids: kids.map((k) => [r(k.x), r(k.y), ...size(k), k.layoutGrow, k.layoutAlign]),
+      ...more,
+    });
+    const run = (direction, build) => {
+      const p = figma.createAutoLayout(direction);
+      try {
+        return build(p);
+      } catch (e) {
+        return { error: String((e && e.message) || e) };
+      } finally {
+        p.remove();
+      }
+    };
+    const column = (p) => [kid(p, 100, 16), kid(p, 100, 688), kid(p, 100, 16)];
+    const label = (fixed) => (p) => {
+      if (fixed) p.resize(300, 40);
+      const t = figma.createText();
+      t.characters = 'Login with Email';
+      p.appendChild(t);
+      const before = t.textAutoResize;
+      t.layoutSizingHorizontal = 'FILL';
+      return read(p, [t], { textAutoResize: [before, t.textAutoResize] });
+    };
+    return {
+      fillAlong: run('VERTICAL', (p) => { const k = column(p); k[1].layoutSizingVertical = 'FILL'; return read(p, k); }),
+      growAlong: run('VERTICAL', (p) => { const k = column(p); k[1].layoutGrow = 1; return read(p, k); }),
+      fillAcross: run('VERTICAL', (p) => { const k = [kid(p, 120, 16), kid(p, 100, 16)]; k[1].layoutSizingHorizontal = 'FILL'; return read(p, k); }),
+      fillAcrossAlone: run('VERTICAL', (p) => { const k = [kid(p, 100, 16)]; k[0].layoutSizingHorizontal = 'FILL'; return read(p, k); }),
+      textInFixedRow: run('HORIZONTAL', label(true)),
+      textInHuggingRow: run('HORIZONTAL', label(false)),
+    };
   });
 
   // 10. The frame upload_assets fills, between this call and MODE 'image'.
