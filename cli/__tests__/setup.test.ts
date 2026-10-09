@@ -300,11 +300,12 @@ test("every push instruction keeps each use_figma call inside Figma's limits", (
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -331,11 +332,12 @@ test("every push instruction re-pushes in place and says what to do when a readb
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -372,11 +374,12 @@ test("every push instruction lays the set out again after re-running a part", ()
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -409,11 +412,12 @@ test("every push instruction lays a set out in snap's order, not its children's"
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -459,11 +463,12 @@ test("every push instruction refuses a set with auto layout and checks each vari
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -493,11 +498,12 @@ test("every push instruction reads a variant's size from its geometry and keeps 
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -524,11 +530,12 @@ test("every push instruction reports a pixel of text width as a font-rendering d
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -553,11 +560,12 @@ test("every push instruction reads a translucent color back with its alpha, and 
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -701,11 +709,12 @@ test("every push instruction builds a transparent border to fill as the browser 
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -718,7 +727,7 @@ test("every push instruction builds a transparent border to fill as the browser 
       assert.match(text, /hugging frame[^\n]*OUTSIDE'?`, or `INSIDE` with `strokesIncludedInLayout = true`/, `${path} never builds a border INSIDE in a hugging frame's layout`);
       assert.doesNotMatch(text, /Use `INSIDE` only when you give the frame a fixed size/, `${path} still allows INSIDE only at a fixed size`);
       assert.doesNotMatch(text, /sized to the measured size less the border\b/, `${path} still sizes a padding-box frame less one border`);
-      const summary = /^\d+\. Summarize[^\n]*/m.exec(text);
+      const summary = [...text.matchAll(/^\d+\. Summarize[^\n]*/gm)].pop();
       assert.ok(summary, `${path} has no summary step`);
       assert.match(summary[0], /transparent or translucent border, say how its fill meets that border[^\n]*`backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`/,
         `${path}'s summary never says how a transparent border's fill was built`);
@@ -742,11 +751,12 @@ test("every push instruction builds a component with no variant properties as on
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -775,11 +785,12 @@ test("every push instruction places a new set below the page's others and keeps 
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -812,11 +823,12 @@ test("every push instruction keeps a bound color's alpha and never fails over a 
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -848,11 +860,12 @@ test("every push instruction prices a part at real entries, and builds a long on
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -971,7 +984,7 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       // --merge keeps measuredAt at the oldest component's time, so a merge
       // that worked failed a check of measuredAt alone.
       assert.match(text, /after a `--merge`, which keeps `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is/, `${path} fails every merge on its measuredAt`);
-      assert.match(text, /read the measurements from `\.storysync\/snaps\/styles\.json` on disk/i, `${path} reads snap's one-line stdout`);
+      assert.match(text, /read (?:the measurements|what it recorded) from `\.storysync\/snaps\/styles\.json` on disk/i, `${path} reads snap's one-line stdout`);
       assert.match(text, /adding `--components <their IDs> --merge` and a longer `--timeout`/, `${path} re-measures timeouts without --merge`);
       assert.match(text, /Never re-measure some components with `--components` alone/, `${path} doesn't warn against --components alone`);
       assert.doesNotMatch(text, /re-run `?snap`? for those components with `--components` and a longer/, `${path} still re-runs timeouts with --components alone`);
@@ -986,6 +999,9 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       assert.match(text, /`--skip`[^\n]*leaves them out of the score/, `${path} lets verify fail a push on the components the user skipped`);
       assert.match(text, /names a component's error,? (?:means )?measure that component again/, `${path} re-measures for every recorded snap failure`);
       assert.match(text, /restart Storybook/, `${path} leaves out restarting Storybook after init`);
+      // Binding by hand is the root-only push's, in the skills: the push
+      // command's build binds through figma code, from tokens.json.
+      if (path.endsWith("storysync-push.md")) continue;
       assert.match(text, /`bg-primary`[^\n]*`primary`[^\n]*leave it unbound and list it in the summary|`bg-primary` is `primary`[^\n]*leave the value unbound and list it in the summary/, `${path} picks among variables that share a value`);
       // Variables are named as tokens names them, and a class with an
       // opacity modifier bound to its opaque variable lost the measured alpha
@@ -1308,11 +1324,12 @@ test("every push instruction writes the readback exactly as returned, and says v
     setupOutput(project, false, "claude");
     setupOutput(project, false, "codex");
     setupOutput(project, false, "cursor");
+    // 0.4.0's templates: in the skills' root-only section alone, since the
+    // push command builds through figma code and points there for --root-only.
     const files = [
       join(".claude", "skills", "storysync", "SKILL.md"),
       join(".agents", "skills", "storysync", "SKILL.md"),
       join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
@@ -1374,6 +1391,11 @@ test("verify requires exactly the fields the Claude template returns on every va
 });
 
 /** Each push instruction setup installs, as [path, text]: the three skills and the push command. */
+/** The push texts' root-only parts: the skills, whose root-only section keeps 0.4.0's templates. */
+function installedSkillTexts(): [string, string][] {
+  return installedPushTexts().filter(([path]) => !path.endsWith("storysync-push.md"));
+}
+
 function installedPushTexts(): [string, string][] {
   const project = tempProject();
   try {
@@ -1395,7 +1417,8 @@ test("every push summary says how many entries verify left unverified when its s
   // Without --strict, verify exits 0 under a score of the entries it could
   // verify: a summary quoting the percentage alone reads as a clean pass.
   for (const [path, text] of installedPushTexts()) {
-    assert.match(text, /fidelity score\**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified/,
+    // The root-only score's line says `of verified entries`; the element score's, `unverified, not scored`.
+    assert.match(text, /fidelity score\**, worded as `verify` words it: (?:where its line says `of verified entries`|element fidelity, with the share of properties beside it\**, and where its line says entries were `unverified, not scored`), how many entries it left unverified/,
       `${path} reports the score without the entries verify left out of it`);
   }
 });
@@ -1405,11 +1428,13 @@ test("every push instruction labels a set without escaping its description again
   // back what it read turned Dialog's note into
   // button[data-slot=&quot;dialog-trigger&quot;], once more on every push. And
   // the push left Figma's empty Page 1 beside the pages it made.
-  for (const [path, text] of installedPushTexts()) {
+  for (const [path, text] of installedSkillTexts()) {
     assert.match(text, /Figma returns (?:it|a description) HTML-escaped/, `${path} writes a description back as it read it`);
     assert.match(text, /descriptionMarkdown/, `${path} drops a designer's formatting`);
     assert.match(text, /removes Figma's default page, `Page 1`,[^\n]*(?:still named `Page 1`, empty[^\n]*not the file's only page|still named so, empty and not the only page)/,
       `${path} doesn't remove Page 1 only while Figma's own`);
+  }
+  for (const [path, text] of installedPushTexts()) {
     assert.match(text, /whether the label call removed Figma's default page `Page 1` or why it kept it/, `${path}'s summary doesn't say what became of Page 1`);
   }
 });
@@ -1447,7 +1472,7 @@ test("every step a command names is the step it means, in the command or the ski
     return text.slice(at, next < 0 ? undefined : at + 1 + next);
   };
   const means: Record<string, RegExp> = {
-    "Components 5": /combineAsVariants/,
+    "Components 5": /npx storysync figma code/,
     "Components 6": /npx storysync verify/,
   };
   for (const file of ["storysync-push.md", "storysync-diff.md"]) {
@@ -1461,12 +1486,12 @@ test("every step a command names is the step it means, in the command or the ski
       if (meant) assert.match(step, meant, `${file}'s "the skill's ${name} step ${n}" isn't the step it means`);
     }
   }
-  // The push command's own steps: 4 measures, 6 builds, 7 verifies.
+  // The push command's own steps: 4 measures, 5 writes the calls, 6 sends them, 7 verifies.
   const push = readFileSync(join(root, "commands", "storysync-push.md"), "utf8");
-  for (const [n, meant] of [[4, /npx storysync snap/], [6, /Call `use_figma` per component/], [7, /npx storysync verify/]] as const) {
+  for (const [n, meant] of [[4, /npx storysync snap/], [5, /npx storysync figma code/], [6, /call `use_figma` with `code` the contents of its `file`/], [7, /npx storysync verify/]] as const) {
     assert.match(stepOf(push, n) ?? "", meant, `the push command's step ${n} isn't the step its references mean`);
   }
-  assert.match(push, /to step 7's `verify`/, "the push command no longer sends skipped components to its own step 7's verify");
+  assert.match(push, /step 5's `figma code` and step 7's `verify`/, "the push command no longer sends skipped components to its own steps 5 and 7");
 });
 
 test("every audit says what its token counts don't cover: other modes, the dark theme, unread tokens and Tailwind's default scales", () => {
@@ -1517,11 +1542,47 @@ test("every push instruction sizes a label as snap measured it fits, and reads b
   // at its card's width, as a text that hugged and ran past the card. And a
   // token detached in Figma at the same value scored 100%: the readback read
   // values alone.
-  for (const [path, text] of installedPushTexts()) {
+  for (const [path, text] of installedSkillTexts()) {
     assert.match(text, /`text\.layout`[^\n]*`textAutoResize = 'HEIGHT'`[^\n]*`textTruncation = 'ENDING'` and `maxLines = layout\.lines`/, `${path} doesn't size a label as the browser fitted it`);
     for (const field of ["textLayout", "bound", "unbound"]) {
       assert.ok(text.includes(`\`${field}\``), `${path} doesn't read back ${field}`);
     }
     assert.match(text, /the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound/, `${path}'s summary leaves out what verify found unbound`);
   }
+});
+
+test("every push builds with generated calls and CLI commands alone: no styling code outside the root-only section", () => {
+  // Design section 12: the agent sends the files figma code writes and
+  // saves what Figma returns, so the push's own steps carry no template to
+  // fill in. 0.4.0's templates stay, for --root-only, in a section of their
+  // own, which figma code's refusal of a root-only snap points to.
+  const ROOT_ONLY = "## Root-only snaps (`--root-only`)";
+  for (const [path, text] of installedPushTexts()) {
+    const skill = !path.endsWith("storysync-push.md");
+    let outside = text;
+    if (skill) {
+      const at = text.indexOf(ROOT_ONLY);
+      assert.ok(at > 0, `${path} has no section titled ${ROOT_ONLY}`);
+      const end = text.indexOf("\n## ", at + 1);
+      assert.match(text.slice(at, end), /npx storysync snap [^`\n]*--root-only/, `${path}: the root-only section's snap doesn't pass --root-only`);
+      outside = text.slice(0, at) + text.slice(end);
+    }
+    for (const word of ["applyStyles", "setPaints", "loadFont", "SPEC", "BIND", "VARIANTS", "PROPERTIES", "SLUG_BY_NAME", "SOURCE_BY_SLUG"]) {
+      assert.doesNotMatch(outside, new RegExp(`\\b${word}\\b`), `${path} names ${word} outside the root-only section`);
+    }
+    for (const command of ["npx storysync tokens --json --project . > .storysync/tokens.json", "npx storysync figma code", "npx storysync figma upload --plan", "npx storysync figma next --plan", "npx storysync verify --plan"]) {
+      assert.ok(outside.includes(command), `${path}'s push never runs \`${command}\``);
+    }
+    // The build, read and score steps: commands and generated files, no code of their own.
+    const start = skill ? outside.indexOf("\n5. **Build with the calls") : outside.indexOf("\n5. ");
+    const stop = skill ? outside.indexOf("\n## ", start) : outside.indexOf("\n8. ", start);
+    assert.ok(start > 0 && stop > start, `${path}: no steps 5 to 7 found`);
+    const steps = outside.slice(start, stop);
+    assert.doesNotMatch(steps, /code: `|use_figma\(\{/, `${path}: steps 5 to 7 hold use_figma code to write`);
+    assert.match(steps, /unchanged/, `${path}: steps 5 to 7 never say to send each call and save each response unchanged`);
+    assert.match(steps, /upload_assets/, `${path}: steps 5 to 7 never upload pictures`);
+  }
+  // figma code's refusal of a root-only snap names the section.
+  const figmaCode = readFileSync(fileURLToPath(new URL("../figma-code.js", import.meta.url)), "utf8");
+  assert.match(figmaCode, /the skill's root-only templates/, "figma code no longer points a root-only snap to the skill's root-only templates");
 });
