@@ -18,11 +18,12 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MockFigma, TREE_FIXTURES_DIR, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
+import { parseReadResult } from "../figma-results.js";
 import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
 import type { FigmaPlan, TreeDelta, TreeNode } from "../tree-types.js";
@@ -188,14 +189,34 @@ async function push(snap: SnapResult, { codeArgs = [], edit }: { codeArgs?: stri
   return { dir, snapPath, planPath, plan, mock, reads };
 }
 
-/** Sends a push's read calls again, as the skill has the agent do after a change in Figma. */
-async function readAgain(p: Push): Promise<void> {
-  for (const call of p.plan.calls.filter((c) => c.kind === "read")) {
-    const out = dirname(p.planPath);
-    const run = await p.mock.run(readFileSync(join(out, call.file), "utf8"));
+/**
+ * Sends a push's read calls again, as the skill has the agent do after a
+ * change in Figma: each read call, then what `figma next` asks for after
+ * it, until it says there is nothing left. `continued: false` stops at the
+ * read calls, as an agent that skipped `figma next` would. Returns the
+ * continuations `figma next` asked for again, by result path.
+ */
+async function readAgain(p: Push, { edit, continued = true }: { edit?: (code: string, kind: string) => string; continued?: boolean } = {}): Promise<string[]> {
+  const out = dirname(p.planPath);
+  const send = async (file: string, result: string) => {
+    const text = readFileSync(file, "utf8");
+    const run = await p.mock.run(edit ? edit(text, "read") : text);
     assert.ok(run.ok, run.text);
-    writeFileSync(join(out, call.result), run.text);
+    writeFileSync(result, run.text);
+  };
+  const again: string[] = [];
+  for (const call of p.plan.calls.filter((c) => c.kind === "read")) {
+    await send(join(out, call.file), join(out, call.result));
+    while (continued) {
+      const next = await cli(["figma", "next", "--plan", p.planPath, "--seq", String(call.seq), "--json"]);
+      assert.equal(next.status, 0, `figma next exited ${next.status}\n${next.stdout}${next.stderr}`);
+      const more = jsonOf(next).next as { file: string; result: string; again?: true } | null;
+      if (!more) break;
+      if (more.again) again.push(more.result);
+      await send(more.file, more.result);
+    }
   }
+  return again;
 }
 
 async function verifyPlan(p: Push, ...flags: string[]): Promise<{ status: number; json: Record<string, unknown>; text: CliRun }> {
@@ -290,6 +311,40 @@ test("tree e2e: a read that stops at its LIMIT is continued with figma next, and
     assert.equal(status, 0, `${text.stdout}${text.stderr}`);
     assert.equal(json.elementFidelity, 1);
     assert.equal(elementsOf(json).measured, 46);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a read call sent again after a change in Figma has its continuations asked for again, so the change is read", async () => {
+  const squeeze = (code: string, kind: string) => (kind === "read" ? code.replace(/\nconst LIMIT = \d+;\n/, "\nconst LIMIT = 2500;\n") : code);
+  const p = await push(asSnap(loadTreeFixture("card")), { edit: squeeze });
+  try {
+    const out = dirname(p.planPath);
+    const [seq, results] = [...p.reads].find(([, r]) => r.length > 1)!;
+    // A text only the call's last continuation read, changed by a designer.
+    const last = parseReadResult(readFileSync(resolve(out, results[results.length - 1]), "utf8"))!;
+    const text = Object.values(last.sets[0].entries).flatMap((e) => (e as { tree?: unknown[][] }).tree ?? []).find((r) => r[1] === "T")!;
+    const [key, id] = [text[0] as string, text[text.length - 1] as string];
+    await editInFigma(p.mock, `const t = await figma.getNodeByIdAsync(${JSON.stringify(id)}); await figma.loadFontAsync(t.fontName); t.characters = "Changed by a designer";`);
+
+    // The read call alone sent again: its continuations are from before.
+    await readAgain(p, { edit: squeeze, continued: false });
+    const stale = await verifyPlan(p, "--strict-age");
+    assert.equal(stale.status, 1, "a continuation from before the change was scored as Figma now");
+    assert.deepEqual(stale.json.notRead, [seq]);
+    assert.match((stale.json.plan as { problems: string[] }).problems.join("\n"), new RegExp(`call ${seq}: \\S+b\\.json was read before results/${String(seq).padStart(2, "0")}\\.json, which it continues`));
+
+    // As the skill says: figma next after the read call, until nothing is left.
+    const again = await readAgain(p, { edit: squeeze });
+    assert.deepEqual(again.map((r) => basename(r)), results.slice(1).map((r) => basename(r)), "figma next didn't ask for each continuation again");
+    const now = await verifyPlan(p, "--strict-age");
+    assert.equal(now.status, 1);
+    assert.deepEqual(now.json.notRead, []);
+    const drift = (now.json.variants as { nodes?: { key: string; status: string; differences: { property: string }[] }[] }[])
+      .flatMap((v) => v.nodes ?? []).map((n) => [n.key, n.status, n.differences.map((d) => d.property)]);
+    assert.deepEqual(drift.map(([k, status, properties]) => [k, status, (properties as string[]).includes("chars")]), [[key, "drifted", true]]);
+    assert.match(now.text.stdout, /chars measured .*, Figma Changed by a designer/);
   } finally {
     cleanup(p);
   }

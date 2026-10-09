@@ -961,6 +961,8 @@ figma
       }
       console.log(`Send ${next.file}`);
       console.log(`  description: ${next.description}`);
+      // A read call sent again leaves its continuations from the reading before.
+      if (next.again) console.log(`  ${shownPath(next.result)} was read before the result it continues, so it holds Figma as it was: send this again, and save its response over it.`);
       console.log(`  save its response unchanged to ${next.result}, then run this again: a result with \`more\` continues once more.`);
     } catch (err) {
       reportError(err, json);

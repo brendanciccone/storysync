@@ -370,6 +370,35 @@ test("figma next: a read result with `more` gets its continuation, b then c; wit
   await assert.rejects(runFigmaNext({ ...opts, seq: 1 }), /call 01 is a build call: only a read call continues/);
 });
 
+test("figma next: a continuation read before the result it continues, as a read call sent again leaves it, is asked for again", async () => {
+  const coded = await codeFor(loadTreeFixture("card"));
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  const nn = String(read.seq).padStart(2, "0");
+  const opts = { plan: join(coded.out, "plan.json"), seq: read.seq, templates: { readback: STUB_READBACK } };
+  // A result whose one entry Figma read at `at`.
+  const readAt = (at: string, more?: unknown[]) => JSON.stringify({
+    kind: "read", sets: [{ id: "1:1", component: "ui-base-card", entries: { [`e${at}`]: { readAt: at } } }], ...(more ? { more: { slices: more } } : {}),
+  });
+  const slices = [["ui-base-card", 1, 1, 12]];
+  writeFileSync(join(coded.out, read.result), readAt("2026-10-09T10:00:00.000Z", slices));
+  writeFileSync(join(coded.out, `results/${nn}b.json`), readAt("2026-10-09T10:00:01.000Z"));
+  assert.equal(await runFigmaNext(opts), null, "a continuation read after its call's result is taken");
+  // The read call sent again, later: the continuation saved before is from the reading before.
+  writeFileSync(join(coded.out, read.result), readAt("2026-10-09T11:00:00.000Z", slices));
+  const again = await runFigmaNext(opts);
+  assert.deepEqual(again, {
+    file: join(coded.out, `calls/${nn}b-read-ui-base.js`), result: join(coded.out, `results/${nn}b.json`),
+    description: `Continue reading back ui-base-card on page "ui/base" (call ${nn}b)`, again: true,
+  });
+  assert.deepEqual(await runFigmaNext(opts), again, "until its result is saved again, the same file");
+  writeFileSync(join(coded.out, `results/${nn}b.json`), readAt("2026-10-09T11:00:01.000Z", [["ui-base-card", 1, 1, 20]]));
+  // And the one after it, saved before too, is asked for again in turn.
+  writeFileSync(join(coded.out, `results/${nn}c.json`), readAt("2026-10-09T10:00:02.000Z"));
+  assert.equal((await runFigmaNext(opts))!.again, true);
+  writeFileSync(join(coded.out, `results/${nn}c.json`), readAt("2026-10-09T11:00:02.000Z"));
+  assert.equal(await runFigmaNext(opts), null);
+});
+
 test("figma code: the spike's absolute-inset answer moves an absolute child by its parent's included stroke", async () => {
   const xOf = async (absoluteInsetByStroke: boolean) => {
     const coded = await codeFor(loadTreeFixture("attachment"), { spike: { absoluteInsetByStroke } });

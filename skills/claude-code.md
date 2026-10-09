@@ -189,7 +189,7 @@ npx storysync figma code --components <the agreed IDs>
 
    Each URL takes one upload: if `figma upload` fails, call `upload_assets` again for new URLs, save that response over the last, and run it again. The plan's `images` call fills the other layers that show the same picture, and a later push reuses a picture already in the file rather than uploading it again.
 
-   **Reads that continue.** A read call stops before its response nears `use_figma`'s 20kb and says in `more` where it stopped. After saving a read call's response, run `npx storysync figma next --plan .storysync/figma/plan.json --seq <its seq>`. It says there is nothing left to continue, or prints the file of a call that reads the rest, its description, and where to save its response (`results/07b.json`). Send that file the same way, save its response there, and run `figma next` again, until it says there is nothing left.
+   **Reads that continue.** A read call stops before its response nears `use_figma`'s 20kb and says in `more` where it stopped. After saving a read call's response, run `npx storysync figma next --plan .storysync/figma/plan.json --seq <its seq>`. It says there is nothing left to continue, or prints the file of a call that reads the rest, its description, and where to save its response (`results/07b.json`). Send that file the same way, save its response there, and run `figma next` again, until it says there is nothing left. Do the same after sending a read call again: the continuations saved after it the time before hold Figma as it was then, so `figma next` asks for each of them again, saying it `was read before the result it continues`; send it and save its response over the old one.
 
    **If a call throws**, Figma's error is its response, and a build call removes the variants it created for that set before it fails, so none is left loose on the page. Deal with what the error says, then send the same call again, saving its response over the error. Every call can be sent again: a build finds what it made before and changes only what differs.
 
@@ -230,6 +230,7 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
    What else it can say, and what to do:
 
    - `planned read call N has no result saved`: send that read call, save its response, and run `verify` again. A missing result fails `--strict`.
+   - `… was read before …, which it continues`: a read call was sent again without its continuations. Run `figma next` for it, as above, and send what it asks for. It fails `--strict` until then, and what that continuation reads isn't scored.
    - A readback entry that `does not match its checksum`: a saved response was changed after Figma returned it. Send that read call again, save its response unchanged, and run `verify` again. Never edit a saved response to make it pass. An entry that `is incomplete`, `is stale`, read before the snap, or is a part that doesn't add up, is read again the same way, now.
    - An entry sealed under another name than the variant snap measured: a variant renamed in Figma. Report it.
    - `read back without its tree, so only its root was compared`: those entries were read with the root-only readback. Send this plan's read calls.

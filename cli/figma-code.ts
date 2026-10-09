@@ -24,6 +24,7 @@ import { planLayout } from "./figma-layout.js";
 import type { LayoutChild, LayoutPlan } from "./figma-layout.js";
 import { figmaSize, nodeStyle, outsideInsets, textSizesItself } from "./figma-map.js";
 import type { FigmaStyle, MapContext, NotBuilt, Unbound } from "./figma-map.js";
+import { readBefore, readTimes } from "./figma-results.js";
 import { MAX_CALL_CHARS, MAX_UPLOADS_PER_CALL, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import type { Spike } from "./figma-spike.js";
 import { parseMeasurementWarning } from "./snap.js";
@@ -799,9 +800,12 @@ export function readCallResult(planPath: string, file: string, kind: string): Re
  * Writes the continuation of a readback call whose result carries `more`,
  * as its next file (`07b`, then `07c`, ...), and returns it; null when the
  * last result in that call's chain needs none. Run again before its result
- * is saved, it returns the same file.
+ * is saved, it returns the same file. A continuation whose result was read
+ * before the result it continues, as a read call sent again leaves the
+ * ones saved after it the time before, is written and returned again,
+ * with `again`, for its result to be read now.
  */
-export async function runFigmaNext(opts: { plan: string; seq: number; minify?: boolean; templates?: FigmaCodeOptions["templates"] }): Promise<{ file: string; result: string; description: string } | null> {
+export async function runFigmaNext(opts: { plan: string; seq: number; minify?: boolean; templates?: FigmaCodeOptions["templates"] }): Promise<{ file: string; result: string; description: string; again?: true } | null> {
   const plan = readPlan(opts.plan);
   const call = plan.calls.find((c) => c.seq === opts.seq);
   if (!call) throw new Error(`${opts.plan} has no call ${opts.seq}`);
@@ -810,6 +814,8 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
   let suffix = "";
   let read = call.result;
   let result = readCallResult(opts.plan, read, "read");
+  // The last time the chain so far was read at.
+  let latest = readTimes(result)?.last ?? null;
   for (;;) {
     const more = result.more as { slices?: unknown } | undefined;
     if (!more) return null;
@@ -821,10 +827,17 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     if (suffix > "z") throw new Error(`call ${pad(opts.seq)} has continued more than 25 times`);
     const file = `calls/${pad(call.seq)}${suffix}-read-${pageSlug(call.page)}.js`;
     const resultFile = `results/${pad(call.seq)}${suffix}.json`;
+    let again = false;
     if (existsSync(join(dir, resultFile))) {
-      read = resultFile;
-      result = readCallResult(opts.plan, read, "read");
-      continue;
+      const saved = readCallResult(opts.plan, resultFile, "read");
+      again = readBefore(saved, latest);
+      if (!again) {
+        read = resultFile;
+        result = saved;
+        const times = readTimes(saved);
+        if (times) latest = Math.max(latest ?? -Infinity, times.last);
+        continue;
+      }
     }
     const template = loadTemplate("readback", opts.minify ?? true, opts.templates);
     // The same limit the call it continues was written with.
@@ -835,6 +848,6 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file);
     writeFileSync(join(dir, file), code);
-    return { file: join(dir, file), result: join(dir, resultFile), description };
+    return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };
   }
 }
