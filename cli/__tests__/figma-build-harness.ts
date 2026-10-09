@@ -151,7 +151,8 @@ export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], 
 export function drawnInSet(mock: MockFigma, variant: NodeView): [number, number, number, number] {
   const out: [number, number, number, number] = [variant.x, variant.y, variant.x + variant.width, variant.y + variant.height];
   type Shadow = { type: string; visible: boolean; radius: number; spread?: number; offset: { x: number; y: number } };
-  const visit = (n: NodeView, x: number, y: number) => {
+  // `origin` is where the frame n's own x and y are in sits: a group's children's are in that frame too, not the group.
+  const visit = (n: NodeView, x: number, y: number, origin: [number, number]) => {
     const h = mock.handle(n.id) as { visible: boolean; effects: Shadow[]; clipsContent?: boolean; type: string };
     if (!h.visible) return;
     const reach = [[0, 0, 0, 0], ...h.effects.filter((e) => e.visible && e.type === "DROP_SHADOW").map((e) => {
@@ -160,8 +161,9 @@ export function drawnInSet(mock: MockFigma, variant: NodeView): [number, number,
     })];
     const [l, t, r, b] = [0, 1, 2, 3].map((i) => Math.max(...reach.map((s) => s[i])));
     [x - l, y - t, x + n.width + r, y + n.height + b].forEach((v, i) => { out[i] = i < 2 ? Math.min(out[i], v) : Math.max(out[i], v); });
-    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, x + c.x, y + c.y);
+    const at: [number, number] = h.type === "GROUP" ? origin : [x, y];
+    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, at[0] + c.x, at[1] + c.y, at);
   };
-  visit(variant, variant.x, variant.y);
+  visit(variant, variant.x, variant.y, [0, 0]);
   return out;
 }

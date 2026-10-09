@@ -889,3 +889,20 @@ test("build: the set's grid keeps each row's boxes on one top edge and each colu
     }
   }
 });
+
+test("drawnInSet: a group's shapes draw where the frame around the group puts them, as in Figma", async () => {
+  // An imported icon, its frame not clipping, its <g> moved 30px left of
+  // the frame: the group's x and its shape's are both in the frame's
+  // coordinates, so the shape draws at the frame's x less 30, once.
+  const mock = new MockFigma();
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g><rect x="0" y="0" width="4" height="4"/></g></svg>';
+  const run = await mock.run(`const v = figma.createComponent(); v.resize(40, 40); v.x = 100; v.y = 50; v.clipsContent = false;
+    const f = figma.createNodeFromSvg(${JSON.stringify(markup)}); v.appendChild(f); f.x = 10; f.y = 20; f.clipsContent = false;
+    const g = f.children[0]; g.x = -30; g.y = -40;
+    return [g.x, g.y, g.children[0].x, g.children[0].y];`);
+  assert.ok(run.ok, run.text);
+  assert.deepEqual(run.value, [-30, -40, -30, -40]);
+  const variant = mock.nodes("COMPONENT")[0];
+  // The frame draws to 134 by 94; the shape at 110 - 30 and 70 - 40.
+  assert.deepEqual(drawnInSet(mock, variant), [80, 30, 140, 94]);
+});
