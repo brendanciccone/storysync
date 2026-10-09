@@ -140,16 +140,15 @@ function findCSSWithCustomProperties(projectPath: string): string[] {
 
 /**
  * Whether a stylesheet bundles other packages' styles rather than being
- * the project's own: a Storybook build in storybook-static/, which
- * storysync walks, or a minified `.min.css`, as a vendored Bootstrap is.
- * Their selector lists, as Bootstrap's `:root, [data-bs-theme=light]` and
+ * the project's own: a minified `.min.css`, as a vendored Bootstrap is.
+ * Its selector lists, as Bootstrap's `:root, [data-bs-theme=light]` and
  * Radix Colors' `:root, .light, .light-theme`, hold no project tokens, and
  * no earlier version read them, so they aren't read there: read, they
- * added a package's palette to a project's tokens whenever a build was
- * present.
+ * added a package's palette to a project's tokens. A Storybook build in
+ * storybook-static/ bundles them too, but walkCSS skips that folder.
  */
 function isBundled(file: string): boolean {
-  return file.endsWith(".min.css") || file.split(/[\\/]/).includes("storybook-static");
+  return file.endsWith(".min.css");
 }
 
 /** Stylesheets with a Tailwind v4 `@theme` block that declares a variable. */
@@ -171,13 +170,21 @@ function findCSS(projectPath: string, test: (css: string, file: string) => boole
   return results;
 }
 
+/**
+ * Directories of installed or built files, not the project's own
+ * stylesheets: `storybook build` writes its compiled CSS, every Tailwind
+ * utility of the stories included, to storybook-static, Next's static export
+ * to out, and a coverage report its own CSS to coverage.
+ */
+const SKIPPED_DIRS = new Set(["node_modules", "dist", ".next", "build", "storybook-static", "out", "coverage"]);
+
 function walkCSS(dir: string, results: string[], test: (css: string, file: string) => boolean, depth: number): void {
   if (depth > 5) return;
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
 
   for (const entry of entries) {
-    if (entry === "node_modules" || entry === "dist" || entry === ".next" || entry === "build") continue;
+    if (SKIPPED_DIRS.has(entry)) continue;
     const full = join(dir, entry);
     let stat;
     try { stat = statSync(full); } catch { continue; }
@@ -277,6 +284,13 @@ const LENGTH_CATEGORIES: ReadonlySet<TokenCategory> = new Set(["radius", "spacin
 
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
   const { vars, written, varsFrom, ...result } = extractFromSource(projectPath, sourceType);
+  // Where the tokens came through the stylesheets' variables, say that a
+  // dark theme's are not among them, so a comparison of these tokens, an
+  // audit's "39 matched" say, isn't read as covering both themes.
+  if (vars && varsFrom !== "the theme file") {
+    const dark = darkThemeWarning(projectPath);
+    if (dark) result.warnings.push(dark);
+  }
   for (const collection of result.collections) {
     collection.tokens = collection.tokens.map((token) => {
       // `value` stays as the source writes it, for --check. CSS custom
@@ -566,6 +580,48 @@ function themeLayer(blocks: ThemeBlocks, warnings: string[]): ThemeLayer {
     extend: themeCollections({ root: "", extend: blocks.extend }, warnings),
     sets: new Set(CATEGORY_KEYS.filter(([, key]) => keys.has(key)).map(([category]) => category)),
   };
+}
+
+/** A selector for a dark theme: `.dark`, as shadcn/ui and Tailwind's class strategy write it, or a `data-theme="dark"` or like attribute. */
+const DARK_SELECTOR = /\.(?:dark|dark-mode|dark-theme|theme-dark)(?![\w-])|\[data-[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?dark["']?\s*\]/i;
+
+/**
+ * A warning naming how many custom properties the project's stylesheets set
+ * for a dark theme, none of which tokens reads: in a rule for a dark
+ * selector, or a `:root` in `@media (prefers-color-scheme: dark)`. Null
+ * when they set none. tokens extracts the light theme's alone, and said
+ * nothing of it, so an audit of shadcn/ui's 31 colors reported them
+ * matched with no word of the 31 dark values never compared. Tailwind's
+ * own `--tw-` variables, which a compiled `dark:` utility sets, are no
+ * theme's, and left out.
+ */
+function darkThemeWarning(projectPath: string): string | null {
+  const found: string[] = [];
+  for (const file of new Set(findCSSWithCustomProperties(projectPath).map((f) => resolve(f)))) {
+    let css: string;
+    try {
+      css = readCss(file);
+    } catch {
+      continue;
+    }
+    const names = new Set<string>();
+    const where = new Set<string>();
+    // Each rule's own declarations, as rootDeclarations reads the default
+    // theme's: a `:root` in the dark color scheme's @media, or a rule for a
+    // dark selector, nested in another or not.
+    for (const rule of styleRules(css)) {
+      const selector = rule.selector.replace(/\s+/g, " ");
+      const inMedia = rule.atRules.some(isDarkScheme) && /:root/.test(selector);
+      if (!inMedia && !DARK_SELECTOR.test(selector)) continue;
+      const declared = [...rule.declarations.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]).filter((name) => !name.startsWith("--tw-"));
+      if (!declared.length) continue;
+      for (const name of declared) names.add(name);
+      where.add(inMedia ? "@media (prefers-color-scheme: dark)" : selector);
+    }
+    if (names.size) found.push(`${relative(resolve(projectPath), file) || file} sets ${names.size} ${names.size === 1 ? "variable" : "variables"} for ${[...where].join(", ")}`);
+  }
+  if (!found.length) return null;
+  return `Only the light theme is read: ${found.join("; ")}, which no token here holds, so a comparison of these tokens covers the light theme alone`;
 }
 
 /**
@@ -1015,10 +1071,10 @@ function setsDefaultTheme(rule: StyleRule, bundled = false): boolean {
  * Whether a rule is Tailwind v4's compiled output of its own theme: the
  * `:root, :host` it writes in `@layer theme`, holding Tailwind's default
  * palette, fonts and scales, and in `@layer properties`, holding
- * `@property` fallbacks. A Storybook build in storybook-static/, or the
- * src/output.css of Tailwind's CLI docs, has one, and storysync walks
- * those folders: read as the default theme, Tailwind's red-500, font-sans
- * and text-sm became the project's tokens. No earlier version read a list
+ * `@property` fallbacks. The src/output.css of Tailwind's CLI docs has
+ * one, as a Storybook build does, and storysync walks src/: read as the
+ * default theme, Tailwind's red-500, font-sans and text-sm became the
+ * project's tokens. No earlier version read a list
  * that doesn't end in `:root`, so leaving this one out keeps what they
  * read.
  */
@@ -1587,8 +1643,11 @@ function addRootDerivedTheme(
   if (left.size) {
     warnings.push(`Not read from @theme, since they aren't built from :root's variables: ${named(left)}. Pass --source tailwind to read @theme instead`);
   }
+  // Starting `Unresolved:`, as a token kept with its var() as written is
+  // named: the skill has the agent name every token such a warning names,
+  // and these never reach Figma either.
   if (unresolved.size) {
-    warnings.push(`Not read from @theme, since a var() in them doesn't resolve: ${named(unresolved)}`);
+    warnings.push(`Unresolved: not read from @theme, since a var() in them doesn't resolve: ${named(unresolved)}`);
   }
 }
 

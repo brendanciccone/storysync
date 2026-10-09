@@ -398,6 +398,46 @@ test("addAddonToConfig: inserts entry with toolsets.docs", () => {
   assert.match(result.content, /toolsets:\s*\{\s*docs:\s*true/);
 });
 
+test("addAddonToConfig: indents the entry as the file indents, tabs in a tab-indented file", () => {
+  // coder/coder's .storybook/main.ts is indented with tabs, and init wrote
+  // the entry with four spaces.
+  const entry = `{ name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
+  const cases: [string, string, string][] = [
+    // An entry a line: indented as the first one is.
+    ["tabs, an entry a line", `const config = {\n\taddons: [\n\t\t"@storybook/addon-docs",\n\t],\n};`, `\n\taddons: [\n\t\t${entry}\n\t\t"@storybook/addon-docs",`],
+    // On one line, or empty: a level deeper than the addons line.
+    ["tabs, on one line", `const config = {\n\taddons: ["@storybook/addon-docs"],\n};`, `\n\taddons: [\n\t\t${entry}"@storybook/addon-docs"],`],
+    ["tabs, empty over two lines", `export default {\n\tframework: "x",\n\taddons: [\n\t],\n};`, `\n\taddons: [\n\t\t${entry}\n\t],`],
+    ["four spaces, an entry a line", `const config = {\n    addons: [\n        "a",\n    ],\n};`, `\n    addons: [\n        ${entry}\n        "a",`],
+    ["four spaces, on one line", `const config = {\n    addons: [],\n};`, `\n    addons: [\n        ${entry}],`],
+    ["CRLF line endings", `const config = {\r\n\taddons: [\r\n\t\t"a",\r\n\t],\r\n};`, `\r\n\taddons: [\r\n\t\t${entry}\r\n\t\t"a",`],
+    // Comments say nothing of the code's indentation: a JSDoc block's
+    // lines are indented a space, and a comment may be indented with tabs.
+    ["two spaces, under a JSDoc block", `/**\n * Storybook config\n */\nconst config = {\n  addons: [],\n};`, `\n  addons: [\n    ${entry}],`],
+    ["two spaces, beside a comment indented with tabs", `const config = {\n\t// the addons\n  addons: [],\n};`, `\n  addons: [\n    ${entry}],`],
+    // A line aligned under an open bracket is no step.
+    ["two spaces, with a line aligned at three", `const config = {\n  stories: ["a",\n   "b"],\n  framework: {\n    name: "x",\n  },\n  addons: [],\n};`, `\n  addons: [\n    ${entry}],`],
+  ];
+  for (const [name, input, expected] of cases) {
+    const result = addAddonToConfig(input);
+    assert.equal(result.ok, true, name);
+    assert.ok(result.content.includes(expected), `${name}: ${JSON.stringify(result.content)}`);
+  }
+});
+
+test("addAddonToConfig: finds the addons key quoted, as storybook init writes it", () => {
+  // storybook init writes main.ts with its keys quoted, and init couldn't
+  // find "addons": [ in it, so it asked the user to add the entry by hand.
+  const generated = `const config: StorybookConfig = {\n  "stories": [\n    "../src/**/*.mdx"\n  ],\n  "addons": [\n    "@chromatic-com/storybook",\n    "@storybook/addon-docs"\n  ],\n  "framework": {\n    "name": "@storybook/react-vite",\n    "options": {}\n  }\n};`;
+  const result = addAddonToConfig(generated);
+  assert.equal(result.ok, true);
+  assert.ok(result.content.includes(`\n  "addons": [\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },\n    "@chromatic-com/storybook",`), result.content);
+  assert.equal(hasAddonMcpInConfig(result.content), true);
+  assert.equal(addAddonToConfig(`const config = { 'addons': [] };`).ok, true, "single quotes");
+  // Not a key that ends in addons.
+  assert.equal(addAddonToConfig(`const config = { myaddons: [] };`).ok, false);
+});
+
 test("addAddonToConfig: returns ok=false when no addons array found", () => {
   const result = addAddonToConfig(`const config = { framework: '@storybook/nextjs-vite' };`);
   assert.equal(result.ok, false);

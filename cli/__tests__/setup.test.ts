@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
 import type { Client } from "../setup.js";
-import { COMPARABLE_PROPERTIES, READBACK_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
+import { COMPARABLE_PROPERTIES, READBACK_FIELDS, READBACK_LATER_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 
 function tempProject(): string {
@@ -204,7 +205,7 @@ test("the Cursor rule asks for every readback property the Claude template retur
     const readbackStep = /properties back([\s\S]*?)figma-readback\.json/.exec(cursor);
     assert.ok(readbackStep, "Cursor rule never describes the readback");
     for (const key of keys) {
-      assert.ok(key === "source" || (COMPARABLE_PROPERTIES as readonly string[]).includes(key), `${key} is not compared`);
+      assert.ok(key === "source" || (COMPARABLE_PROPERTIES as readonly string[]).includes(key) || (READBACK_LATER_FIELDS as readonly string[]).includes(key), `${key} is not compared`);
       assert.ok(readbackStep[1].includes(`\`${key}\``), `Cursor rule's readback never asks for ${key}`);
     }
     // And the checksum the template seals each entry with.
@@ -637,7 +638,11 @@ async function runReadback(text: string, path: string, children: Record<string, 
     table("SOURCE_BY_SLUG", Object.fromEntries(names.map((name) => [name, "measured"]))),
   ].reduce((src, fill) => fill(src), code);
   const set = { id: "12:34", type: "COMPONENT_SET", name: "Dropzone", children };
-  const figma = { getNodeByIdAsync: async () => set };
+  // A file with no local variables, so nothing is bound or matches one.
+  const figma = {
+    getNodeByIdAsync: async () => set,
+    variables: { getLocalVariablesAsync: async () => [], getLocalVariableCollectionsAsync: async () => [], getVariableByIdAsync: async () => null },
+  };
   const run = new Function("figma", `return (async () => {${body}})();`) as (f: unknown) => Promise<string>;
   return JSON.parse(await run(figma));
 }
@@ -1082,7 +1087,7 @@ test("every audit summary counts code-only, Figma-only, ambiguous and errored co
     ];
     for (const path of files) {
       const text = readFileSync(join(project, path), "utf8");
-      const audit = text.slice(text.search(/^(?:## Audit|Workflow:)$/m));
+      const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
       assert.match(audit, /N components matched,? \/? ?(?:N )?mismatched,? \/? ?(?:N )?code-only,? \/? ?(?:N )?Figma-only,? \/? ?(?:N )?ambiguous,? \/? ?(?:N )?errored in Figma, and N components outside any set not from the push, not compared\./, `${path}'s summary leaves out code-only, Figma-only, ambiguous or errored components, or those not from the push`);
       assert.match(audit, /`\?` (?:for )?ambiguous/, `${path} gives an ambiguous name no label`);
       assert.match(audit, /`!` (?:for )?errored in Figma/, `${path} gives a set Figma flags as errored no label`);
@@ -1348,7 +1353,9 @@ test("verify requires exactly the fields the Claude template returns on every va
     const fields = [...body.matchAll(new RegExp(`^${indent}(\\w+):([\\s\\S]*?)(?=^${indent}\\w+:|$(?![\\s\\S]))`, "gm"))]
       .map(([, key, value]) => ({ key, value }));
     assert.ok(fields.length > 10, `read ${fields.length} fields from the template`);
-    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS].sort(), "verify's required fields are not the ones the template returns");
+    // Less the fields added since, which verify can't require of a readback
+    // an earlier template read.
+    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS, ...READBACK_LATER_FIELDS].sort(), "verify's required fields are not the ones the template returns");
     // None of them is left out where Figma has nothing to report: a field
     // that can be undefined drops out of what the call returns.
     for (const { key, value } of fields) {
@@ -1363,5 +1370,157 @@ test("verify requires exactly the fields the Claude template returns on every va
     assert.match(fields.find((f) => f.key === "fontSize")?.value ?? "", /text && typeof text\.fontSize === 'number'/, "fontSize is not null when mixed");
   } finally {
     rmSync(project, { recursive: true, force: true });
+  }
+});
+
+/** Each push instruction setup installs, as [path, text]: the three skills and the push command. */
+function installedPushTexts(): [string, string][] {
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    return [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ].map((path) => [path, readFileSync(join(project, path), "utf8")]);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
+test("every push summary says how many entries verify left unverified when its score doesn't cover them", () => {
+  // Without --strict, verify exits 0 under a score of the entries it could
+  // verify: a summary quoting the percentage alone reads as a clean pass.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /fidelity score\**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified/,
+      `${path} reports the score without the entries verify left out of it`);
+  }
+});
+
+test("every push instruction labels a set without escaping its description again, and removes only an untouched Page 1", () => {
+  // Figma returns a description HTML-escaped, and a label call that wrote
+  // back what it read turned Dialog's note into
+  // button[data-slot=&quot;dialog-trigger&quot;], once more on every push. And
+  // the push left Figma's empty Page 1 beside the pages it made.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /Figma returns (?:it|a description) HTML-escaped/, `${path} writes a description back as it read it`);
+    assert.match(text, /descriptionMarkdown/, `${path} drops a designer's formatting`);
+    assert.match(text, /removes Figma's default page, `Page 1`,[^\n]*(?:still named `Page 1`, empty[^\n]*not the file's only page|still named so, empty and not the only page)/,
+      `${path} doesn't remove Page 1 only while Figma's own`);
+    assert.match(text, /whether the label call removed Figma's default page `Page 1` or why it kept it/, `${path}'s summary doesn't say what became of Page 1`);
+  }
+});
+
+test("every push instruction names the @theme tokens an Unresolved: warning says weren't read", () => {
+  // tokens warned "Not read from @theme, since a var() in them doesn't
+  // resolve: typography font/sans ...", which no instruction told the agent
+  // to name: they look for a warning starting Unresolved:.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /any token a `tokens` warning starting `Unresolved:` names/, `${path} doesn't leave out unresolved tokens`);
+    assert.match(text, /not read from `@theme`[^\n]*out of the output already/, `${path} doesn't name the @theme tokens tokens left out`);
+  }
+});
+
+test("every step a command names is the step it means, in the command or the skill", () => {
+  // The push command's step 4 sent skipped IDs to "step 7's verify" and the
+  // build to "the skill's step 5 template", where the skill runs verify in
+  // its step 6: the command's steps run one ahead of the skill's from
+  // measuring on, so a reference read in the other file pointed elsewhere.
+  // A reference to the skill's steps names its section, and each names a
+  // step that does what the reference says.
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const skill = readFileSync(join(root, "skills", "claude-code.md"), "utf8");
+  const section = (name: string) => {
+    const at = skill.indexOf(`\n## ${name}\n`);
+    const end = skill.indexOf("\n## ", at + 1);
+    return skill.slice(at, end < 0 ? undefined : end);
+  };
+  // A section's step N, from its "N. " line to the next step's.
+  const stepOf = (text: string, n: number) => {
+    const at = text.search(new RegExp(`^${n}\\. `, "m"));
+    if (at < 0) return null;
+    const next = text.slice(at + 1).search(/^\d+\. /m);
+    return text.slice(at, next < 0 ? undefined : at + 1 + next);
+  };
+  const means: Record<string, RegExp> = {
+    "Components 5": /combineAsVariants/,
+    "Components 6": /npx storysync verify/,
+  };
+  for (const file of ["storysync-push.md", "storysync-diff.md"]) {
+    const text = readFileSync(join(root, "commands", file), "utf8");
+    assert.match(text, /^Workflow\. The step numbers here are this command's own/m, `${file} doesn't say whose step numbers it uses`);
+    assert.doesNotMatch(text, /the skill's step \d/, `${file} names a step of the skill without its section`);
+    for (const [, name, n] of text.matchAll(/the skill's (Tokens|Components|Audit) steps? (\d)/g)) {
+      const step = stepOf(section(name), Number(n));
+      assert.ok(step, `${file} names the skill's ${name} step ${n}, which it doesn't have`);
+      const meant = means[`${name} ${n}`];
+      if (meant) assert.match(step, meant, `${file}'s "the skill's ${name} step ${n}" isn't the step it means`);
+    }
+  }
+  // The push command's own steps: 4 measures, 6 builds, 7 verifies.
+  const push = readFileSync(join(root, "commands", "storysync-push.md"), "utf8");
+  for (const [n, meant] of [[4, /npx storysync snap/], [6, /Call `use_figma` per component/], [7, /npx storysync verify/]] as const) {
+    assert.match(stepOf(push, n) ?? "", meant, `the push command's step ${n} isn't the step its references mean`);
+  }
+  assert.match(push, /to step 7's `verify`/, "the push command no longer sends skipped components to its own step 7's verify");
+});
+
+test("every audit says what its token counts don't cover: other modes, the dark theme, unread tokens and Tailwind's default scales", () => {
+  // An audit of shadcn/ui ended "39 matched, 0 missing", silent on the
+  // dark theme neither side compared, the fonts tokens couldn't resolve,
+  // and the spacing and type Tailwind's defaults give, which have no tokens.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    for (const path of [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-diff.md"),
+    ]) {
+      const text = readFileSync(join(project, path), "utf8");
+      const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
+      assert.match(audit, /every mode of a Figma collection but its first/, `${path} doesn't name the modes it didn't compare`);
+      assert.match(audit, /`Only the light theme is read`/, `${path} doesn't name the dark theme tokens doesn't read`);
+      assert.match(audit, /`Unresolved:`, `Not read from @theme`, `Uncategorized:`/, `${path} doesn't name the tokens tokens didn't read`);
+      assert.match(audit, /Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract/, `${path} doesn't name Tailwind's default scales`);
+      assert.match(audit, /Beside the token counts, say what they cover and what they don't/, `${path}'s summary gives the counts alone`);
+      assert.match(audit, /modes/, `${path} never reads each collection's modes`);
+      assert.match(audit, /never say the two are in sync\. Say with it what the audit compares: tokens, in the modes it noted, and each component's variant properties, not the styles the push's `verify` scores\./,
+        `${path}'s "in sync" doesn't say it covers tokens and variant properties, not styles`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("every push instruction tells a story that drops its args from props that change only behavior", () => {
+  // InputOTP's story passed its args through, but snap's warning, and the
+  // push's summary after it, said it didn't: textAlign and
+  // pushPasswordManagerStrategy change only input-otp's hidden input.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /`rendered the same markup`[^\n]*the story may not pass its args through/, `${path} doesn't say when the story is to blame`);
+    assert.match(text, /`their markup changed with the args`, the story passes them[^\n]*never (?:say the story drops its args|blame the story)/, `${path} blames the story for props that change only behavior`);
+    assert.match(text, /whether to leave (?:those props|them) out[^\n]*`--exclude-props`/, `${path} doesn't offer to leave behavior-only props out`);
+    assert.match(text, /any props snap found reach a component but change nothing it measures, and what the user chose for them/, `${path}'s summary leaves out the behavior-only props`);
+  }
+});
+
+test("every push instruction sizes a label as snap measured it fits, and reads back how Figma fits it and what is bound", () => {
+  // A live push built Attachment's vertical title, which the browser cut off
+  // at its card's width, as a text that hugged and ran past the card. And a
+  // token detached in Figma at the same value scored 100%: the readback read
+  // values alone.
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /`text\.layout`[^\n]*`textAutoResize = 'HEIGHT'`[^\n]*`textTruncation = 'ENDING'` and `maxLines = layout\.lines`/, `${path} doesn't size a label as the browser fitted it`);
+    for (const field of ["textLayout", "bound", "unbound"]) {
+      assert.ok(text.includes(`\`${field}\``), `${path} doesn't read back ${field}`);
+    }
+    assert.match(text, /the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound/, `${path}'s summary leaves out what verify found unbound`);
   }
 });

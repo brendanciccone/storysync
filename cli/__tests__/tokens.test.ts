@@ -809,7 +809,9 @@ test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @t
     ]);
     // --source tailwind would find them unresolved too, so it isn't offered.
     assert.deepEqual(auto.warnings, [
-      "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
+      "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
+      // The .dark block's variables, which no token holds.
+      "Only the light theme is read: app/globals.css sets 1 variable for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
     ]);
 
     // A baseline from before lists the colors alone, so it sees the radius
@@ -920,7 +922,8 @@ test("CSS: a :root for the dark color scheme doesn't override the light one", ()
     assert.deepEqual(tokenTable(extractTokens(dir)), light);
     assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")).slice(0, 1), light);
     assert.deepEqual(extractTokens(dir).warnings, [
-      "Not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
+      "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
+      "Only the light theme is read: app/globals.css sets 2 variables for @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
     ]);
   } finally { cleanup(dir); }
 
@@ -1317,10 +1320,11 @@ test("CSS: Tailwind v4's compiled :root, :host theme in a build is not the proje
   } finally { cleanup(own); }
 });
 
-test("CSS: a Storybook build or a .min.css is read as earlier versions read it, without its selector lists", () => {
-  // A build bundles the stylesheets of the packages a project imports, and
-  // a vendored kit is minified: their `:root, .light` lists are a
-  // package's palette, which no earlier version read.
+test("CSS: a .min.css is read as earlier versions read it, without its selector lists, and a Storybook build not at all", () => {
+  // A vendored kit is minified: its `:root, .light` lists are a package's
+  // palette, which no earlier version read. A build bundles the
+  // stylesheets of the packages a project imports, and its folder isn't
+  // walked, so neither its lists nor its plain `:root` are read.
   const dir = makeProject({
     "src/app.css": `:root { --color-brand: #ff0000; }`,
     "storybook-static/assets/iframe-1.css": `:root, .light, .light-theme { --gray-1: #fcfcfc; }
@@ -1332,7 +1336,7 @@ test("CSS: a Storybook build or a .min.css is read as earlier versions read it, 
   try {
     for (const source of [undefined, "css"] as const) {
       assert.deepEqual(tokenTable(extractTokens(dir, source)), [
-        ["colors", [["color/brand", "#ff0000"], ["color/ink", "#111111"], ["color/line", "#dddddd"], ["color/surface", "#fafafa"]]],
+        ["colors", [["color/brand", "#ff0000"], ["color/ink", "#111111"], ["color/line", "#dddddd"]]],
       ]);
     }
   } finally { cleanup(dir); }
@@ -2026,4 +2030,50 @@ test("baselineCommand: quotes paths the shell would split", () => {
     baselineCommand("my tokens/base's.json"),
     `mkdir -p -- 'my tokens' && storysync tokens --json > 'my tokens/base'\\''s.json'`,
   );
+});
+
+test("CSS: a dark theme's variables are named as not read, by selector, and a light-only project warns of none", () => {
+  // tokens reads the light theme alone. An audit of shadcn/ui's tokens
+  // reported 39 matched with no word of the dark values it never compared.
+  const dir = makeProject({
+    "app/globals.css": `@custom-variant dark (&:is(.dark *));
+:root { --background: #ffffff; --foreground: #171717; --radius: 0.625rem; }
+.dark { --background: #0a0a0a; --foreground: #ededed; }
+[data-theme="dark"] { --background: #000000; --ring: #333333; }
+.darker { --background: #111111; }
+@media (prefers-color-scheme: dark) { :root { --background: #0a0a0a; } }
+`,
+  });
+  try {
+    const dark = extractTokens(dir).warnings.filter((w) => w.startsWith("Only the light theme is read:"));
+    assert.deepEqual(dark, [
+      "Only the light theme is read: app/globals.css sets 3 variables for .dark, [data-theme=\"dark\"], @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
+    ]);
+  } finally { cleanup(dir); }
+
+  const light = makeProject({ "app/globals.css": `:root { --background: #ffffff; }\n.card { --inset: 4px; }\n` });
+  try {
+    assert.equal(extractTokens(light).warnings.some((w) => w.startsWith("Only the light theme")), false);
+  } finally { cleanup(light); }
+});
+
+test("CSS: a built Storybook's stylesheet, and Tailwind's own --tw- variables, are no dark theme", () => {
+  // storybook build writes the stories' compiled CSS to storybook-static,
+  // where a dark: utility sets --tw- variables under .dark, and the warning
+  // counted them as dark tokens, naming the bundle.
+  const dir = makeProject({
+    "src/globals.css": `:root { --background: #ffffff; }\n.dark { --background: #0a0a0a; }\n`,
+    "storybook-static/assets/iframe-abc123.css": `:root { --background: #ffffff; }\n.dark { --background: #0a0a0a; --ring: #333333; }\n.dark\\:shadow-xs:is(.dark *) { --tw-shadow: 0 1px 2px #0000000d; }\n`,
+    "src/compiled.css": `:root { --tw-ring-offset-width: 0px; }\n.dark\\:ring:is(.dark *) { --tw-ring-color: #333333; --tw-ring-shadow: 0 0 0 1px; }\n`,
+    "out/_next/static/css/app.css": `.dark { --background: #0a0a0a; }\n`,
+    "coverage/lcov-report/base.css": `.dark { --background: #0a0a0a; }\n`,
+  });
+  try {
+    const result = extractTokens(dir);
+    const dark = result.warnings.filter((w) => w.startsWith("Only the light theme is read:"));
+    assert.deepEqual(dark, [
+      "Only the light theme is read: src/globals.css sets 1 variable for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
+    ]);
+    assert.equal(JSON.stringify(result).includes("storybook-static"), false, "the built bundle is read as a source");
+  } finally { cleanup(dir); }
 });

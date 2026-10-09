@@ -88,7 +88,7 @@ use_figma({
 })
 ```
 
-   Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6, and `value` is as the source writes it. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, such as one in em or % (as letter spacing often is), which depends on the element. Leave out too, and say which, any token a `tokens` warning starting `Unresolved:` names: its `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). A `value` can keep a `var()` that did resolve, as `calc(var(--radius) - 4px)` in `:root` does; set that token from its `px` or `hex` as usual. If no token in the output has a `px` at all, an older storysync ran: use a plain rem `value` times 16, or a px one as is, in place of `px`.
+   Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6, and `value` is as the source writes it. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, such as one in em or % (as letter spacing often is), which depends on the element. Leave out too, and say which, any token a `tokens` warning starting `Unresolved:` names: its `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). The tokens such a warning says were not read from `@theme`, shadcn/ui's `font/sans` and `font/mono` among them, are out of the output already: name them all the same. A `value` can keep a `var()` that did resolve, as `calc(var(--radius) - 4px)` in `:root` does; set that token from its `px` or `hex` as usual. If no token in the output has a `px` at all, an older storysync ran: use a plain rem `value` times 16, or a px one as is, in place of `px`.
 
    Set each color from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `value` is the color as the source writes it, and `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a value in `oklch()`, `oklab()`, `lch()`, `hwb()` or `color()`, or bare HSL channels such as `0 0% 100%`, throws. `hex` is sRGB, `#rrggbbaa` when the color is translucent, which `rgba` keeps. A color token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
 
@@ -192,6 +192,7 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
    | `boxShadow[]` | one effect per layer: `INNER_SHADOW` where `inset` is true, a ring like `ring-inset` included, else `DROP_SHADOW`, with `offset` from `offsetX`/`offsetY`, `radius` from `blur`, and `spread` (`verify` does not read effects back, so it will not flag a shadow built wrong) |
    | `display: flex` + `flexDirection` | auto-layout direction |
    | `fontSize` / `fontWeight` / `fontFamily` | text style, its font loaded with the build template's `loadFont` (see below) |
+   | `text.layout` | how the label fits its box. Absent, the browser drew it on one line at its own width: let the text hug it (`textAutoResize = 'WIDTH_AND_HEIGHT'`). Present, the browser fitted it to its box: give the text a fixed width of `layout.width` (`resize(layout.width, text.height)`, or `layoutSizingHorizontal = 'FIXED'` in auto layout) and `textAutoResize = 'HEIGHT'`, so it wraps where the browser did; with a `truncation`, also `textTruncation = 'ENDING'` and `maxLines = layout.lines`, so it ends in an ellipsis after as many lines. Figma has no flat cut, so build a `clip` the same way and name it in the summary. Step 6 reads it back, and `verify` scores a label that hugs where the browser cut it off as drift: a title that hugs runs past its card |
    | `borderUniform` on a hugging frame | `strokeAlign = 'OUTSIDE'`, or `INSIDE` with `strokesIncludedInLayout = true` for a transparent or translucent border the fill runs under (see below) |
    | `width` or `height` of 0 | 0.01, the least Figma's `resize` takes: a closed collapsible's content renders nothing, and is built as next to nothing |
 
@@ -207,7 +208,7 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
 
    **Every fallback must be recorded, not just mentioned.** In step 6 you will write a `source` of `"measured"` or `"inferred"` for each variant. A run inspected later must be able to tell the difference without reading this conversation. So must an audit tell which props you left out with `--exclude-props`: pass the same list to every `snap` you run for this push, re-runs included, and name those props in the summary (step 7). snap records them as `excludeProps` in `styles.json`, where an audit reads them, and a run without the flag measures them again and drops that record (a `--merge` without it refuses to run).
 
-   **Checkpoint before step 5**: every variant has either measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` will have warned that the story is not passing its args through — still write the measured values and label them `measured` — they are what the story actually renders — and say so in the summary. Do not substitute values from source: the fix belongs in the story, and a variant styled from source would be scored against a measurement it does not match. The same goes for a warning that a prop's values all measured the same: build what was measured, and name it in the summary with the fix the warning gives.
+   **Checkpoint before step 5**: every variant has either measured styles or an explicit source-derived spec. If all of a component's variants measured identically, `snap` says why it thinks so, by what each variant's markup did. Where they also `rendered the same markup`, nothing the args set reached the page: the story may not pass its args through. Still write the measured values and label them `measured`, which is what the story actually renders, and say so in the summary; the fix belongs in the story. Where `their markup changed with the args`, the story passes them through, and the props the warning names change nothing snap measures, likely only behavior, as input-otp's `textAlign` and `pushPasswordManagerStrategy` do: never say the story drops its args. Ask the user, in the same message as any cap or trigger question below, whether to leave those props out, re-running snap with the warning's `--exclude-props` added to any this push already passes, or to build the identical variants as measured; name the props in the summary either way. Where the warning says both, the markup couldn't settle it: say both in the summary. In every case, do not substitute values from source: a variant styled from source would be scored against a measurement it does not match. The same goes for a warning that a prop's values all measured the same: build what was measured, and name it in the summary with the fix the warning gives.
 
    **Stop and ask about every component snap measured as something else.** When snap warns that it measured a closed trigger (a dialog, popover, sheet, menu or tooltip whose content renders only while open) or a layout wrapper rather than the component, the Figma component would be that trigger or wrapper, and `verify` would score it as faithful. Before building any of them, ask the user once, listing each such component with the element snap measured, which they want:
 
@@ -217,7 +218,9 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
 
    Ask it in the same message as any cap question, and do not choose for them. Never style such a component from source instead: it would be scored against a measurement it does not match.
 
-   **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set and plain component this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger.
+   **Label the sets after the build, on every push.** Once step 5 has built them, make one `use_figma` call with the template below, giving it every set and plain component this push built, by the id step 5 returned: a note for each one built from a closed trigger or a layout wrapper, and `''` for every other. It replaces only the description's line that starts `storysync:`, keeping every other line, a designer's own included, and an empty note removes the line an earlier push left. So a set rebuilt once its story renders it open no longer says it was measured from its trigger. Figma returns a description HTML-escaped, `"` as `&quot;` and `&` as `&amp;`, so one written back as it was read gains another escape on every push (a live push left `button[data-slot=&quot;dialog-trigger&quot;]` on Dialog): the template reads it unescaped, edits a designer's formatted description through `descriptionMarkdown` so their formatting stays, and writes only a description it changed, so a second run changes nothing.
+
+   The same call removes Figma's default page, `Page 1`, once the push has put every set on a page of its category, but only while it is as Figma made it: still named `Page 1`, empty, and not the file's only page. It returns `pageOne`: `removed`, `kept: it holds layers`, `kept: it is the only page`, `kept: Figma refused to remove it` with Figma's reason, or `none` where the file has no page of that name. It loads the page to count its layers without switching to it, so the user stays on the page they are on, unless that is the `Page 1` it removes. Say in the summary which it was; a page a designer renamed or used is left alone.
 
 ```js
 use_figma({
@@ -231,24 +234,59 @@ use_figma({
       '12:56': '',
       // ... one entry per set or plain component this push built, by the id step 5 returned
     };
-    const NL = String.fromCharCode(10);
+    const NL = String.fromCharCode(10), BS = String.fromCharCode(92);
+    // Figma returns a description HTML-escaped, " as &quot; and & as &amp;,
+    // so one written back as read gains an escape on every push: read it
+    // unescaped, once. A designer's formatted description is markdown in
+    // descriptionMarkdown: edit that where there is one, so the formatting
+    // stays, with the note's markdown characters escaped, and the plain
+    // description otherwise. Write only a description this changes.
+    const ENTITY = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'" };
+    const unescape = (s) => (s || '').replace(/&(amp|lt|gt|quot|apos|#39);/g, (m, e) => ENTITY[e]);
+    const SPECIAL = '*_[]<>' + String.fromCharCode(96) + BS;
+    const markdown = (s) => [...s].map((c) => (SPECIAL.includes(c) ? BS + c : c)).join('');
     const changed = [];
     for (const [id, note] of Object.entries(NOTES)) {
       const node = await figma.getNodeByIdAsync(id);
       if (!node || (node.type !== 'COMPONENT_SET' && node.type !== 'COMPONENT')) {
         throw new Error('No component set or component has the id ' + id);
       }
-      const lines = node.description ? node.description.split(NL).filter((line) => !line.startsWith(MARK)) : [];
-      if (note) lines.push(MARK + ' ' + note);
-      const description = lines.join(NL);
-      if (description !== node.description) {
-        node.description = description;
+      const rich = Boolean(node.descriptionMarkdown);
+      const key = rich ? 'descriptionMarkdown' : 'description';
+      const before = unescape(node[key]);
+      const lines = before ? before.split(NL).filter((line) => !line.startsWith(MARK)) : [];
+      if (note) lines.push(MARK + ' ' + (rich ? markdown(note) : note));
+      const after = lines.join(NL);
+      if (after !== before) {
+        node[key] = after;
         changed.push(id);
       }
     }
-    return JSON.stringify({ changed });
+    // Figma's default page, left empty once every set is on its category's
+    // page: removed only as Figma made it, named Page 1 and empty, while
+    // another page remains. loadAsync loads it, so its layers count, without
+    // switching to it: the user stays on their page, and is moved off Page 1
+    // only to remove it, and back if Figma refuses.
+    let pageOne = 'none';
+    const blank = figma.root.children.find((p) => p.name === 'Page 1');
+    if (blank) {
+      await blank.loadAsync();
+      const other = figma.root.children.find((p) => p !== blank);
+      pageOne = blank.children.length ? 'kept: it holds layers' : !other ? 'kept: it is the only page' : 'removed';
+      if (pageOne === 'removed') {
+        const onIt = figma.currentPage.id === blank.id;
+        if (onIt) await figma.setCurrentPageAsync(other);
+        try {
+          blank.remove();
+        } catch (e) {
+          pageOne = 'kept: Figma refused to remove it (' + String((e && e.message) || e) + ')';
+          if (onIt) await figma.setCurrentPageAsync(blank);
+        }
+      }
+    }
+    return JSON.stringify({ changed, pageOne });
   `,
-  description: "Label the sets measured from a closed trigger or a layout wrapper in their descriptions",
+  description: "Label the sets measured from a closed trigger or a layout wrapper in their descriptions, and remove Figma's empty default page",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
@@ -642,6 +680,71 @@ use_figma({
       return found[0];
     });
 
+    // Variable bindings, which no value shows: a token detached in Figma
+    // keeps its value. bound names the variable each field is bound to;
+    // unbound lists the fields bound to none whose value a local variable
+    // of the field's own kind has, in any of its modes, a color by its
+    // #rrggbb, as a translucent one is bound at an opacity. Lengths of 0
+    // are left out. A variable's kinds are the ones its scopes name, where
+    // they name some; else a color variable's are the three colors, and a
+    // number's the one its collection is named for, as Tokens step 3 names
+    // them. So a padding of 8 is no detached radius, though shadcn/ui's
+    // radius md is 8, and a number in a collection named for none of them
+    // is never matched.
+    const VARIABLES = await figma.variables.getLocalVariablesAsync();
+    const COLLECTIONS = {};
+    for (const c of await figma.variables.getLocalVariableCollectionsAsync()) COLLECTIONS[c.id] = c.name;
+    const SCOPE_KINDS = {
+      ALL_FILLS: ['fill', 'text'], FRAME_FILL: ['fill'], SHAPE_FILL: ['fill'], TEXT_FILL: ['text'],
+      STROKE_COLOR: ['stroke'], CORNER_RADIUS: ['radius'], GAP: ['spacing'], FONT_SIZE: ['fontSize'],
+    };
+    const kindsOf = (v) => {
+      if (Array.isArray(v.scopes) && !v.scopes.includes('ALL_SCOPES')) return v.scopes.flatMap((s) => SCOPE_KINDS[s] || []);
+      if (v.resolvedType === 'COLOR') return ['fill', 'text', 'stroke'];
+      const collection = COLLECTIONS[v.variableCollectionId] || '';
+      if (/radi|rounded|corner/i.test(collection)) return ['radius'];
+      if (/spac|gap/i.test(collection)) return ['spacing'];
+      // A typography collection holds weights and line heights too.
+      if (/typo|font|text/i.test(collection) && !/weight|leading|line.?height|tracking|letter/i.test(v.name)) return ['fontSize'];
+      return [];
+    };
+    const hex6 = (c) => '#' + [c.r, c.g, c.b].map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+    const hasValue = (kind, value) => VARIABLES.some((v) => kindsOf(v).includes(kind) && Object.values(v.valuesByMode).some((x) => (typeof value === 'number'
+      ? typeof x === 'number' && Math.abs(x - value) < 0.01 : x !== null && typeof x === 'object' && 'r' in x && hex6(x) === value)));
+    const NAMES = {};
+    const variableName = async (alias) => {
+      const id = ((Array.isArray(alias) ? alias[0] : alias) || {}).id;
+      if (id && !NAMES[id]) NAMES[id] = ((await figma.variables.getVariableByIdAsync(id)) || { name: id }).name;
+      return id ? NAMES[id] : null;
+    };
+    const bindingsOf = async (child, fill, stroke, text) => {
+      const own = child.boundVariables || {};
+      const paint = (p) => (p && p.type === 'SOLID' && p.visible !== false && p.opacity !== 0 ? hex6(p.color) : null);
+      const textFill = text && Array.isArray(text.fills) ? text.fills[0] : null;
+      const auto = child.layoutMode && child.layoutMode !== 'NONE';
+      // Each field, with its kind, its binding and the value it shows.
+      const FIELDS = [
+        ['backgroundColor', 'fill', fill && fill.boundVariables && fill.boundVariables.color, paint(fill)],
+        ['color', 'text', textFill && textFill.boundVariables && textFill.boundVariables.color, paint(textFill)],
+        ['borderColor', 'stroke', stroke && stroke.boundVariables && stroke.boundVariables.color, paint(stroke)],
+        ['borderRadiusUniform', 'radius', own.topLeftRadius, typeof child.cornerRadius === 'number' ? child.cornerRadius : null],
+        ['paddingTop', 'spacing', own.paddingTop, child.paddingTop],
+        ['paddingRight', 'spacing', own.paddingRight, child.paddingRight],
+        ['paddingBottom', 'spacing', own.paddingBottom, child.paddingBottom],
+        ['paddingLeft', 'spacing', own.paddingLeft, child.paddingLeft],
+        ['gap', 'spacing', own.itemSpacing, auto ? child.itemSpacing : null],
+        ['fontSize', 'fontSize', text && text.boundVariables && text.boundVariables.fontSize, text && typeof text.fontSize === 'number' ? text.fontSize : null],
+      ];
+      const bound = {};
+      const unbound = [];
+      for (const [field, kind, alias, value] of FIELDS) {
+        const name = alias ? await variableName(alias) : null;
+        if (name) bound[field] = name;
+        else if (value !== null && value !== undefined && value !== 0 && hasValue(kind, value)) unbound.push(field);
+      }
+      return { bound, unbound };
+    };
+
     // Read back what is actually there, keyed by the snap variant slug.
     const readback = {};
     for (const child of children) {
@@ -707,6 +810,7 @@ use_figma({
         return WEIGHTS[key] != null ? WEIGHTS[key] : 400;
       };
       const slug = slugFor(child);
+      const bindings = await bindingsOf(child, fill, stroke, text);
       // Every field comes back on every variant, null where Figma has nothing
       // to report, never left out: verify reports an entry without one as
       // incomplete and scores none of it. Leave them all.
@@ -746,6 +850,16 @@ use_figma({
         // The border box, from the geometry: see edge above.
         width: child.width + edge('Left') + edge('Right'),
         height: child.height + edge('Top') + edge('Bottom'),
+        // How the text fits its box, compared where snap measured that the
+        // browser wrapped it or cut it off: its width, and the line it ends
+        // in an ellipsis after (0 for one cut off at its height), null where
+        // it isn't cut off. null for a text that hugs its content, or none.
+        textLayout: text && (text.textAutoResize !== 'WIDTH_AND_HEIGHT' || text.textTruncation === 'ENDING')
+          ? { width: text.width, maxLines: text.textTruncation === 'ENDING' ? text.maxLines || 0 : null }
+          : null,
+        // Bindings, which verify names beside the score: see bindingsOf.
+        bound: bindings.bound,
+        unbound: bindings.unbound,
       });
     }
     // total counts every variant in the set, read or not: if the slices add up
@@ -825,8 +939,9 @@ use_figma({
           "padding": { "top": 4, "right": 8, "bottom": 4, "left": 8 },
           "borderUniform": null, "fontSize": 12, "fontWeight": 600, "fontFamily": "Inter",
           "gap": { "row": 6, "column": 6 }, "opacity": 1, "width": 64, "height": 24,
+          "textLayout": null, "bound": { "backgroundColor": "primary/600", "color": "white" }, "unbound": [],
           "readAt": "2026-10-01T22:19:04.123Z",
-          "checksum": "fnv1a:e14125de"
+          "checksum": "fnv1a:a61e11e7"
         }
       }
     },
@@ -839,14 +954,17 @@ use_figma({
           "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
           "borderUniform": null, "fontSize": null, "fontWeight": null, "fontFamily": null,
           "gap": null, "opacity": 1, "width": 8, "height": 8,
+          "textLayout": null, "bound": {}, "unbound": ["backgroundColor"],
           "readAt": "2026-10-01T22:19:04.391Z",
-          "checksum": "fnv1a:3d72d28a"
+          "checksum": "fnv1a:5786a6b0"
         }
       }
     }
   }
 }
 ```
+
+   **`textLayout`, `bound` and `unbound` come back on every variant too.** `textLayout` is how Figma fits the text, compared where snap measured that the browser wrapped it or cut it off (step 3's table): a title the browser cut off at its card's width with an ellipsis, built as a text that hugs and runs past the card, drifts. `bound` names the variable each field is bound to, and `unbound` the fields bound to none though a variable of their kind in the file has their value, as the status dot's fill above is: a color variable for a color, and for a number the kind the variable's scopes name, or else its collection's (Tokens step 3), so a padding of 8 is not taken for a detached radius `md` of 8. `verify` doesn't score bindings, since the values are compared already, but names every field `unbound` lists beside the score: a token detached in Figma keeps its value, so no value shows it. Where the push left a value unbound on purpose, because several variables share it (Variable binding, below), the summary says so. A readback read before these three were added has none of them, and still scores, but `verify` says it can't see bindings, and where snap measured how the browser fitted a text, that it couldn't compare how Figma fits it, which fails `--strict`: read the set back with the template as it is now. An entry with one or two of the three, not all, was read with the template cut down, and is `incomplete`.
 
    **`source` is required on every variant**, and the template sets it from `SOURCE_BY_SLUG`: `"measured"` when the values came from `snap`, `"inferred"` when you fell back to reading source in step 3. Omitting it is not neutral: `verify` reports the entry as incomplete, since the template always returns it, and its provenance as `unrecorded`, and `--strict` and `--strict-measured` both fail on it, because a run that cannot distinguish measured from guessed is decorative. To correct one, correct the table and read the slice again: the checksum covers `source` too, so an entry whose `source` was changed in the file is an unverified readback.
 
@@ -860,7 +978,7 @@ npx storysync verify --strict-age
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, not Figma: where it names a component's error, measure that component again (step 3, with `--merge`), and where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, components grouped by page, variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, how many variants were measured versus inferred, any components whose stories did not pass their args through, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
+7. Summarize what was synced: token collections created, and that they hold the light theme alone where a `tokens` warning starts `Only the light theme is read`, components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any label built ending in an ellipsis where the browser cut it off flat (`text.layout`'s `truncation` of `clip`), the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
 
 ## Variable binding
 
@@ -883,7 +1001,7 @@ If the `use_figma` tool doesn't return the plugin code's return value in a usabl
 
 `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call. The code below is small, but a full palette or library passes 20kb on the way back, so both reads return a slice per call. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices. The variables read throws if a slice comes too close to 20kb; lower `BATCH` and read that slice again. The components read takes as many as fit under that limit in each call.
 
-1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values:
+1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values. It reads each collection's first mode, and the first call returns every collection's `modes`, for step 7 to name the others as not compared:
 
 ```js
 use_figma({
@@ -912,7 +1030,10 @@ use_figma({
       results.push({ name: v.name, type: v.resolvedType, value, collection: coll.name });
     }
     const next = START + BATCH < all.length ? START + BATCH : null;
-    const result = JSON.stringify({ total: all.length, next, variables: results });
+    // Each collection's modes, on the first slice: only the first is read
+    // above, so the summary names the rest as not compared.
+    const modes = START === 0 ? collections.map((coll) => ({ collection: coll.name, modes: coll.modes.map((m) => m.name) })) : undefined;
+    const result = JSON.stringify({ total: all.length, next, modes, variables: results });
     // use_figma JSON-encodes what this returns: measure the encoded string.
     const size = JSON.stringify(result).length;
     if (size > 17000) {
@@ -1015,6 +1136,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - In Figma but not in code → **missing from code** (orphaned or manually added)
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
    - Normalize before comparing: compare a color by its token's `hex` and a spacing, radius or size token by its `px`, which has rem and `calc()` worked out, where the token has one; otherwise lowercase hex colors, convert rem→px (1rem=16px), and strip units for numeric comparison. A translucent color is `#rrggbbaa` on both sides, step 1's template writing Figma's alpha as tokens does, so compare all eight digits. Round numbers to thousandths on both sides, since Figma can return a float with a tail of binary noise.
+   - Note what can't be compared, for step 7 to name: every mode of a Figma collection but its first, from the `modes` step 1 returns; the dark theme, which `tokens` doesn't read, where a `tokens` warning starts `Only the light theme is read`; the tokens a `tokens` warning says it didn't read (`Unresolved:`, `Not read from @theme`, `Uncategorized:`); and the categories `tokens` has no collection for in a project on Tailwind, whose components use Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract.
 
 6. **Compare components** — pair each code component with a Figma component from step 2: a set, or a component outside any set, which is how the push builds a component with no variant properties.
    - **By ID first.** A Figma component whose `storybookId` is a code component's `id` is that component's, whatever its name or page, since a designer may have moved or renamed it. If two carry the ID, as a copy of a set does, tell them apart by page as below. One whose `storybookId` no code component has is Figma only, pushed from a component code no longer has under that ID (removed, or its story moved): never pair it with another component by name.
@@ -1032,7 +1154,8 @@ npx storysync map --storybook http://localhost:6006 --json
    - Group by category (tokens) or component name
    - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch, `?` ambiguous, `!` errored in Figma
    - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous, N errored in Figma, and N components outside any set not from the push, not compared.
-   - Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous or set errored; components outside any set not from the push don't count against it. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync.
+   - Beside the token counts, say what they cover and what they don't, from step 5's notes, so `39 matched` isn't read as every token in both themes: `39 matched (colors and radius, light mode only; not compared: the Dark mode of Colors and the code's .dark theme, font/sans and font/mono, which tokens couldn't resolve, and Tailwind's default spacing, type and shadow scales, which have no tokens)`.
+   - Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous or set errored; components outside any set not from the push don't count against it. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync. Say with it what the audit compares: tokens, in the modes it noted, and each component's variant properties, not the styles the push's `verify` scores.
 
 ## Visual accuracy guidelines
 
@@ -1040,4 +1163,4 @@ npx storysync map --storybook http://localhost:6006 --json
 - **Never invent a value that could be measured.** Guessing that "a primary button is typically blue" produces a library that looks plausible and is wrong, which is worse than one that is visibly incomplete. If a variant could not be measured, derive it from source and record it as `inferred`.
 - The goal is a Figma library a designer can use directly, not variant scaffolding.
 - Prefer auto-layout so components resize properly. The measured `display`, `flexDirection`, `padding`, and `gap` map onto it directly.
-- Add a text layer carrying the text the story actually renders — the story's args if they set the content, otherwise the component's default children (e.g. `children = "Button"`). Read it from source if you need to: the rule against reading source is about styles, not labels. Inline components are scored on width, so a different label reads as drift. Style it from the measured `text` values where present.
+- Add a text layer carrying the text the story actually renders — the story's args if they set the content, otherwise the component's default children (e.g. `children = "Button"`). Read it from source if you need to: the rule against reading source is about styles, not labels. Inline components are scored on width, so a different label reads as drift. Style it from the measured `text` values where present, and size it as `text.layout` says (step 3's table): a label snap gives no layout hugs its content, and one it gives a layout is fixed at that width, cut off or wrapped as the browser drew it, so a long title stays inside its frame.

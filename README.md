@@ -249,7 +249,7 @@ The push sets Figma variables from `hex`, since Figma's color helpers only accep
 
 A value in em or %, or with no unit, like a font weight, has no `px`. `tokens --check` compares only `value`, so baselines written before `hex` and `px` existed still pass.
 
-A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
+A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. An `@theme` token whose `var()` doesn't resolve is left out, and an `Unresolved:` warning names it too. Only the light theme is read. Where the stylesheets also set variables for a dark theme, in `.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`, a warning says how many, so a comparison of these tokens isn't taken to cover both themes. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
@@ -273,7 +273,7 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 
 A reference with no matching variable and no fallback, or an empty one as in `var(--x,)`, is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
-Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, a rule nested in `:root` such as `&.dark { }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. Earlier versions read `.dark:root { }` as the default theme, and read a `&.dark { }` nested in `:root` as part of it, dropping the declarations after it, so a baseline one of them wrote lists those tokens as changed, and the dropped ones as added. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A Storybook build in `storybook-static/` and a minified `.min.css` bundle other packages' styles, such as Bootstrap's `:root, [data-bs-theme=light] { }`, so in those a selector list is read only when it ends in `:root`, as earlier versions read it.
+Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, a rule nested in `:root` such as `&.dark { }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. Earlier versions read `.dark:root { }` as the default theme, and read a `&.dark { }` nested in `:root` as part of it, dropping the declarations after it, so a baseline one of them wrote lists those tokens as changed, and the dropped ones as added. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A minified `.min.css` bundles other packages' styles, such as Bootstrap's `:root, [data-bs-theme=light] { }`, so in one a selector list is read only when it ends in `:root`, as earlier versions read it.
 
 ### Tailwind presets and configs built by code
 
@@ -480,11 +480,11 @@ Use the version the error prints. Other Playwright versions install a browser th
 - **Background clip** as `backgroundClip` when it isn't `border-box`, such as `padding-box` for Tailwind's `bg-clip-padding`. The push uses it to decide whether the fill shows under a transparent border.
 - **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
 - **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
-- **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its color.
+- **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its color. Where the browser wrapped the text or cut it off, `text.layout` records the width it was laid out in, the lines it drew, and whether it ends in an ellipsis, so the push can size the label the same way instead of letting it run past its frame.
 - **Fonts** as the family the browser drew with. A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `system-ui`, since Chrome skips `-apple-system`, and its mono stack as the platform's font, such as `Menlo` on macOS. snap warns when a named font your code asks for didn't load and the browser used a fallback, but not about another platform's font listed after a system keyword, like `SFMono-Regular`. Figma also needs the font installed, which Storysync can't do for you.
 - **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
 
-**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. Plain CSF3 args-driven stories are the reliable shape.
+**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. When every variant measures the same, snap also compares the markup each one rendered. The same markup means the story likely drops its args. Markup that changed with them means the args reach the component and its props change only what snap doesn't measure, such as behavior, so the warning names them for `--exclude-props` instead of blaming the story. Plain CSF3 args-driven stories are the reliable shape.
 
 Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so a value like `Nav/Primary` can't be measured and is marked `args_unsupported`.
 
@@ -526,7 +526,7 @@ Fidelity: 95.0% (38/40 properties)
       borderRadiusUniform: measured 3, Figma 8
 ```
 
-**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`.
+**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, saying whether its args reached it, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`.
 
 ```text
 Fidelity: 100.0% (12/12 properties)
@@ -543,13 +543,21 @@ The comparison is numeric, not visual, so it's deterministic and free. Only prop
 **Readback checks.** `verify` never contacts Figma, so before scoring it checks that the readback file is what Figma returned:
 
 - Each entry carries a checksum computed inside Figma over exactly what it returned, so an entry that was edited, made up, or copied from another variant fails.
-- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties.
+- Each entry must have all 13 fields the readback returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties. Three later fields, `textLayout`, `bound`, and `unbound`, aren't required, so a readback from before them still verifies. An entry with some of them must have all three. Where snap recorded a `text.layout` and the entry has no `textLayout`, `verify` says the text's fit wasn't compared, doesn't say Figma matches that component, and fails `--strict`.
 - Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
 - No two components can share a `nodeId`.
 
-Entries that fail aren't scored and fail `--strict`. The checksum isn't a signature, though (see [Limitations](#limitations)).
+Entries that fail aren't scored and fail `--strict`. Without `--strict` the run still exits 0, so the score's own line says it left them out, and can't be read as a clean pass:
 
-**Comparison details.** Text color, size, weight, and family are compared against the element that holds the text. Colors are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, color, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
+```text
+Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
+```
+
+The checksum isn't a signature, though (see [Limitations](#limitations)).
+
+**Comparison details.** Text color, size, weight, and family are compared against the element that holds the text, the first one whose text the browser shows. Text kept for screen readers, such as an icon button's `sr-only` label, is passed over. Where snap recorded a `text.layout`, the text's width and where it ends in an ellipsis are compared too, so a cut-off title built to hug its content shows as drift. Colors are compared as hex, ignoring case, and opacity allows 0.01. Gap is compared along the flex direction only. Borders are compared on width, color, and style; Figma can't draw `double`, `groove`, `ridge`, `inset`, or `outset` borders, so the push builds them solid and they show as drift.
+
+**Variable bindings.** A token detached in Figma keeps its value, so no value comparison shows it. The readback names the variable each field is bound to, and the fields bound to none though a variable of their kind in the file has their value. A field is matched only with variables of its kind, by the variable's scopes or else its collection, so a padding of 8 isn't taken for a radius of 8. `verify` lists those under the score, by component and field. It doesn't fail `--strict` on them, since the push leaves a value unbound on purpose where several variables share it and the component's source doesn't say which one it uses. A binding moved to another variable of the same value isn't reported, for the same reason. One moved to a variable of another value shows as drift in the value.
 
 **Staleness.** `snap` writes a `meta.json` next to `styles.json` recording when and against which Storybook it measured. It's a separate file so `styles.json` stays stable to diff. `verify` uses it to catch a snap taken before the code changed, which would otherwise score 100%. `--strict-age` fails when `meta.json` is missing or invalid, since it's often gitignored. After `snap --merge`, each component's readback is checked against the time that component was measured.
 

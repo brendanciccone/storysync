@@ -246,6 +246,63 @@ export function detectIdenticalVariants(variants: SnapVariant[]): string | null 
 }
 
 /**
+ * The warning for a component whose rendered variants all measured the
+ * same, or null when they didn't, told apart by the markup each variant
+ * rendered, `markups` in the order of its measured variants, as
+ * captureStory reads it:
+ *
+ * - the same markup on every variant: nothing the args set reached the
+ *   page, so the story may not pass them through, the one failure
+ *   measurement can't otherwise see;
+ * - markup that changed with the args: they reach the component, and its
+ *   properties change only what snap doesn't measure, as input-otp's
+ *   `textAlign` and `pushPasswordManagerStrategy` do. A live push's warning
+ *   blamed the story, whose args were passed through, and the summary
+ *   repeated it. So this names the properties and the `--exclude-props`
+ *   that leaves them out;
+ * - markup not read on every variant, or one that changed as it was
+ *   measured: either, so it says both.
+ */
+export function describeIdenticalVariants(
+  variants: SnapVariant[],
+  properties: FigmaVariantProperty[],
+  markups: (string | null)[],
+): string | null {
+  const identical = detectIdenticalVariants(variants);
+  if (!identical) return null;
+  const names = properties.map((p) => p.name);
+  const measured = variants.filter((v) => v.status === "ok").length;
+  const known = markups.length === measured && markups.every((m) => m !== null);
+  if (known && new Set(markups).size === 1) {
+    return identical.replace(" — the story may not", " and rendered the same markup — the story may not");
+  }
+  if (!names.length) return identical;
+  const list = names.map((name) => `\`${name}\``).join(", ");
+  const exclude = `\`--exclude-props ${names.join(",")}\``;
+  const one = names.length === 1;
+  const change = one ? "changes" : "change";
+  if (known) {
+    return (
+      `all ${measured} rendered variants measured identically, though their markup changed with the args, so the story ` +
+      `passes them through: ${list} ${change} nothing snap measures, likely only behavior, or something it doesn't measure, ` +
+      `such as a child element. If ${one ? "it doesn't" : "they don't"} change how it looks, leave ${one ? "it" : "them"} out ` +
+      `of every component with ${exclude}, and build it as one variant.`
+    );
+  }
+  return `${identical} Or ${list} ${change} only behavior, which snap doesn't measure: if so, leave ${one ? "it" : "them"} out of every component with ${exclude}.`;
+}
+
+/**
+ * The properties a warning describeIdenticalVariants wrote names as
+ * changing nothing snap measures, though the args reached the component,
+ * or null for any other warning.
+ */
+export function parseBehaviorOnlyWarning(warning: string): string[] | null {
+  const m = /^all \d+ rendered variants measured identically, though their markup changed with the args\b.*`--exclude-props ([^`]+)`/.exec(warning);
+  return m ? m[1].split(",") : null;
+}
+
+/**
  * Variant properties whose values all measured the same wherever the other
  * properties held still: an axis that changes nothing snap records, such as
  * Radix's `asChild`, or a prop the story drops on its way to the component.
@@ -806,6 +863,8 @@ async function snapComponent(
   // context whose first page fails to open still gets closed.
   let context: Awaited<ReturnType<typeof createContext>> | null = null;
   const notes: { slug: string; note: MeasurementNote }[] = [];
+  // Each measured variant's markup checksum, for describeIdenticalVariants.
+  const markups: (string | null)[] = [];
   try {
     checkpoint();
     context = await createContext(browser);
@@ -849,13 +908,14 @@ async function snapComponent(
         continue;
       }
 
-      const styles = normalizeStyles(captured.raw, captured.boundingBox, captured.textRaw, captured.fontAvailable, captured.fonts);
+      const styles = normalizeStyles(captured.raw, captured.boundingBox, captured.textRaw, captured.fontAvailable, captured.fonts, captured.textLayout);
       const variant: SnapVariant = {
         combination, slug, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },
         ...(captured.element ? { element: captured.element } : {}),
       };
       for (const note of captured.notes) notes.push({ slug, note });
+      markups.push(captured.markup ?? null);
 
       // The first successful render becomes the reference for every delta.
       if (!shell.base) {
@@ -882,7 +942,7 @@ async function snapComponent(
   const measured = shell.variants.filter((v) => v.status === "ok").length;
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
 
-  const identical = detectIdenticalVariants(shell.variants);
+  const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups);
   if (identical) {
     shell.warnings.push(identical);
   } else {

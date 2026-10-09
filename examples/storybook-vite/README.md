@@ -17,15 +17,15 @@ npx storysync snap --storybook http://localhost:6006 --screenshots
 
 ```text
 ✓ Forms/Button 5/5 variants measured
-! Forms/Frozen: all 3 rendered variants measured identically — the story may not
-  pass args through to the component ...
+! Forms/Frozen: all 3 rendered variants measured identically and rendered the same
+  markup — the story may not pass args through to the component ...
 ```
 
 Both lines matter.
 
 **Button** is a normal args-driven story. Five variants get measured rather than five guessed — `--variants representative` measures each declared value once against the others' defaults, so it renders 5 times instead of the full product of 12.
 
-**Frozen is broken on purpose.** Its story uses a custom `render` that ignores incoming args, so every variant produces an identical render. This is the one failure mode measurement cannot catch on its own: the values look real, they just all describe the default state. `snap` notices every variant measured identically and says so. Delete the `render` line in `src/Frozen.stories.tsx` and the warning goes away.
+**Frozen is broken on purpose.** Its story uses a custom `render` that ignores incoming args, so every variant produces an identical render. This is the one failure mode measurement cannot catch on its own: the values look real, they just all describe the default state. `snap` notices every variant measured identically, and that their markup was the same too, so the args never reached the component, and says so. Delete the `render` line in `src/Frozen.stories.tsx` and the warning goes away.
 
 ## Checking the measurements are real
 
@@ -75,7 +75,7 @@ npx storysync verify --strict-measured --strict-age
 
 To prove the score is real, change a corner radius in Figma by hand, then have the agent **re-read** the nodes into `.storysync/figma-readback.json` and run `verify` again. It should report exactly that property as drifted. Re-running `verify` alone is not enough: it compares two local files and never contacts Figma, so it will report 100% whatever you changed. If the re-read still says 100%, the readback echoed the values it sent rather than reading them off the nodes, and the score means nothing.
 
-`verify` also checks that the file holds what Figma returned. The readback computes a checksum of each entry inside Figma, under the set's id and the variant's slug, with the time Figma read it, and `verify` recomputes it, so an entry the agent edited, wrote from snap's values instead of from the response, or copied from another variant or component, is reported as an unverified readback, scores nothing, and fails `--strict`, as is one missing a field the readback always returns or read before the snap, and every entry of two components with the same `nodeId`. To see it fire, change one color in `.storysync/figma-readback.json` by hand and run `verify` again: that variant, and only that one, is flagged. The two tests catch different things, so run both. The checksum shows the file is what the readback returned, unless it was sealed deliberately with the skill's code, which anyone can run over values they made up; it does not show that the readback read the nodes: a readback that echoed what it sent would checksum the echo. The corner radius shows the readback read the nodes.
+`verify` also checks that the file holds what Figma returned. The readback computes a checksum of each entry inside Figma, under the set's id and the variant's slug, with the time Figma read it, and `verify` recomputes it, so an entry the agent edited, wrote from snap's values instead of from the response, or copied from another variant or component, is reported as an unverified readback, scores nothing, and fails `--strict`, as is one missing a field the readback always returns or read before the snap, and every entry of two components with the same `nodeId`. To see it fire, change one color in `.storysync/figma-readback.json` by hand and run `verify` again: that variant, and only that one, is flagged. If `verify --strict` already failed before your edit, as a pixel of font rendering can make it, its exit code says nothing about the edit: compare what it names before and after, or pass the component that already drifts to `--skip`. The two tests catch different things, so run both. The checksum shows the file is what the readback returned, unless it was sealed deliberately with the skill's code, which anyone can run over values they made up; it does not show that the readback read the nodes: a readback that echoed what it sent would checksum the echo. The corner radius shows the readback read the nodes.
 
 ## Requirements
 

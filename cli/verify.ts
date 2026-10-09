@@ -11,8 +11,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
-import type { NormalizedStyles, BorderSide, BoxShadowLayer } from "./snap-normalize.js";
-import { SNAP_META_FILENAME, detectIdenticalVariants, parseMeasurementWarning } from "./snap.js";
+import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
+import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import type { SnapComponent, SnapResult } from "./snap.js";
@@ -71,6 +71,31 @@ export interface ReadbackStyles {
   width?: number;
   height?: number;
   /**
+   * The text child's width and the line Figma ends it in an ellipsis after,
+   * its `maxLines`, null where it isn't cut off, where the text has a fixed
+   * width or is cut off; null where it hugs its content, or there is none.
+   * Compared where snap measured how the browser fitted the text, its
+   * `text.layout`, and only there: see sameTextLayout. A readback from an
+   * earlier template has none, and isn't compared on it.
+   */
+  textLayout?: ReadbackTextLayout | null;
+  /**
+   * The variable each field is bound to, by name, for the fields bound to
+   * one: `backgroundColor`, `color`, `borderColor`, `borderRadiusUniform`,
+   * the four `padding` sides, `gap` and `fontSize`. Not scored: see
+   * bindingReport. An earlier template's readback has none.
+   */
+  bound?: Record<string, string>;
+  /**
+   * The fields of those bound to no variable, though a local variable of
+   * the field's kind has the value they show, in one of its modes: a token
+   * detached in Figma at the same value, or one the push never bound. The
+   * template matches a field only with variables of its kind, by their
+   * scopes or else their collection, so a padding of 8 isn't taken for a
+   * radius of 8.
+   */
+  unbound?: string[];
+  /**
    * When the readback template read this entry, as an ISO 8601 time from
    * Figma's clock, sealed under the checksum: see READ_AT_SKEW_MS. Not a
    * style property.
@@ -81,6 +106,12 @@ export interface ReadbackStyles {
    * `fnv1a:` and 8 hex digits: see readbackChecksum. Not a style property.
    */
   checksum?: string;
+}
+
+/** See ReadbackStyles.textLayout. */
+export interface ReadbackTextLayout {
+  width: number;
+  maxLines: number | null;
 }
 
 export interface ReadbackFile {
@@ -98,7 +129,7 @@ export interface ReadbackFile {
 export const COMPARABLE_PROPERTIES = [
   "backgroundColor", "color", "borderRadiusUniform", "padding", "borderUniform",
   "boxShadow", "fontSize", "fontWeight", "fontFamily", "gap", "flexDirection", "opacity",
-  "width", "height",
+  "width", "height", "textLayout",
 ] as const;
 
 /**
@@ -211,6 +242,13 @@ export interface VariantVerdict {
   matched: number;
   mismatched: number;
   differences: PropertyDiff[];
+  /**
+   * Properties snap measured on this variant that the entry, read with an
+   * earlier template, has no field for, so they weren't compared: only
+   * `textLayout`, where snap measured how the browser fitted the text. Left
+   * out where there are none. See VerifyResult.uncompared.
+   */
+  uncompared?: string[];
 }
 
 export interface SnapAgeKnown {
@@ -312,6 +350,16 @@ export interface VerifyResult {
    * back to inferring it wholesale.
    */
   unmeasuredInFigma: { component: string; slug: string }[];
+  /** What the readback says of variable bindings: see bindingReport. */
+  bindings: BindingReport;
+  /**
+   * Per component and property, how many scored variants snap measured it
+   * on that their entry has no field for: a text the browser wrapped or cut
+   * off, and an entry an earlier template read, without `textLayout`. Not
+   * drift, since nothing was compared, but not a match either: a title
+   * that runs past its card scored 100% that way. A --strict failure.
+   */
+  uncompared: { component: string; property: string; variants: number }[];
   /**
    * Readback entries verify cannot score as what Figma returned, measured or
    * not: see ReadbackIssue.
@@ -323,12 +371,37 @@ export interface VerifyResult {
   variants: VariantVerdict[];
 }
 
+/**
+ * What the readback entries verify could score say of variable bindings,
+ * from a template that reads them: see bindingReport.
+ */
+export interface BindingReport {
+  /** Entries that carry bindings. Fewer than were scored means a readback from an earlier template. */
+  read: number;
+  /** Fields bound to a variable, across those entries. */
+  bound: number;
+  /**
+   * Per component and field, how many variants have it bound to no
+   * variable though a local variable of its kind has its value: a token
+   * detached in Figma at the same value, or one the push left unbound, as
+   * it does where several variables share a value and the source names
+   * none.
+   */
+  unbound: { component: string; field: string; variants: number }[];
+}
+
 export interface ScoreCaveat {
   component: string;
-  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "default-assumed";
+  /**
+   * `behavior-only`: every variant measured the same though the markup
+   * changed with the args, so they reach the component and its properties
+   * change nothing snap measures, rather than the story dropping them, as
+   * `identical-variants` has it.
+   */
+  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
-  /** The properties whose default is assumed, for `default-assumed`. */
+  /** The properties whose default is assumed, for `default-assumed`, or that change nothing measured, for `behavior-only`. */
   properties?: string[];
 }
 
@@ -402,6 +475,23 @@ function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {
   });
 }
 
+/**
+ * Whether Figma fits the text as the browser did: at the width it was laid
+ * out in, and, where the browser cut it off, ending in an ellipsis after as
+ * many lines as it drew, or, where it wrapped, not cut off at all. Figma has
+ * no flat cut, so text the browser clipped is built ending in an ellipsis,
+ * and matches one. A text that hugs its content reads as null, and matches
+ * none: a live push built Attachment's truncated title that way, and it ran
+ * past its card.
+ */
+function sameTextLayout(measured: unknown, figma: unknown, tolerance: number): boolean {
+  const want = measured as TextLayout;
+  const got = figma as ReadbackTextLayout | null;
+  if (got == null || typeof got !== "object") return false;
+  const width = closeEnough(want.width, Number(got.width), geometryTolerance(tolerance, want.width, got.width));
+  return width && (want.truncation ? got.maxLines === want.lines : got.maxLines == null);
+}
+
 /** Absent, or present with every component at zero — the same rendering either way. */
 function isAbsentOrZeroRecord(value: unknown): boolean {
   if (value == null) return true;
@@ -470,6 +560,8 @@ export function propertyMatches(
       return sameShadows(measured, figma, tolerance);
     case "flexDirection":
       return String(measured ?? "").toLowerCase() === String(figma ?? "").toLowerCase();
+    case "textLayout":
+      return sameTextLayout(measured, figma, tolerance);
   }
 }
 
@@ -513,10 +605,32 @@ export function verifyVariant(
   // variant has none.
   const measuredText = measured.text as Record<string, unknown> | null | undefined;
 
+  const uncompared: string[] = [];
+
   for (const property of COMPARABLE_PROPERTIES) {
-    if (!(property in figma)) continue;
+    if (!(property in figma)) {
+      // An entry an earlier template read has no textLayout. Where snap
+      // measured one, that is a property it can't compare, not one that
+      // matched, so it is said beside the score.
+      if (property === "textLayout" && (measuredText as { layout?: TextLayout } | null | undefined)?.layout) uncompared.push(property);
+      continue;
+    }
     // A block element's measured size is its container's, not its own.
     if ((property === "width" || property === "height") && !geometryMeaningful) continue;
+    // Only where the browser wrapped or cut the text off: a label on one
+    // line at its own width is one Figma's own metrics set a pixel apart,
+    // however it is built.
+    if (property === "textLayout") {
+      const layout = (measuredText as { layout?: TextLayout } | null | undefined)?.layout;
+      if (!layout) continue;
+      if (sameTextLayout(layout, figma.textLayout, tolerance)) {
+        matched++;
+      } else {
+        mismatched++;
+        differences.push({ property, status: "mismatch", measured: layout, figma: figma.textLayout });
+      }
+      continue;
+    }
     const figmaValue = (figma as Record<string, unknown>)[property];
     // Compare like with like: the readback reads these off Figma's text child,
     // so score them against the text styles snap measured on the corresponding
@@ -548,6 +662,7 @@ export function verifyVariant(
     component, slug,
     status: mismatched > 0 ? "drifted" : matched === 0 ? "unscored" : "verified",
     source, matched, mismatched, differences,
+    ...(uncompared.length > 0 ? { uncompared } : {}),
   };
 }
 
@@ -673,13 +788,31 @@ export const READBACK_FIELDS = [
 ] as const;
 
 /**
- * The fields of READBACK_FIELDS an entry lacks. Present as `null` is
+ * The fields the readback template returns that verify doesn't require of
+ * every entry: `textLayout`, `bound` and `unbound`, added after
+ * READBACK_FIELDS, so a readback an earlier template read, which has none
+ * of them, still verifies. Each is sealed under the checksum like any
+ * other where an entry has it. An entry without them says nothing of
+ * bindings, and where snap measured how the browser fitted its text, isn't
+ * compared on how Figma fits it: verify says both beside the score, and
+ * --strict fails on the second (see VerifyResult.uncompared). The template
+ * that returns one returns all three, so an entry with some but not all
+ * was read with the template cut down, and is incomplete: a template cut
+ * down to leave out `textLayout` alone would otherwise score a title that
+ * runs past its card as one never compared.
+ */
+export const READBACK_LATER_FIELDS = ["textLayout", "bound", "unbound"] as const;
+
+/**
+ * The fields of READBACK_FIELDS an entry lacks, and, where it has any of
+ * READBACK_LATER_FIELDS, those of them it lacks. Present as `null` is
  * present; absent, or undefined as JSON leaves it, is not.
  */
 export function missingReadbackFields(entry: object): string[] {
   const record = entry as Record<string, unknown>;
   const has = (key: string) => Object.prototype.hasOwnProperty.call(record, key) && record[key] !== undefined;
-  return READBACK_FIELDS.filter((key) => !has(key));
+  const later = READBACK_LATER_FIELDS.some(has) ? READBACK_LATER_FIELDS.filter((key) => !has(key)) : [];
+  return [...READBACK_FIELDS.filter((key) => !has(key)), ...later];
 }
 
 /**
@@ -911,6 +1044,16 @@ export function verify(
   const caveats = (snap.components ?? [])
     .filter((component) => readbackComponents[componentKey(component)] != null)
     .flatMap(scoreCaveats);
+  const bindings = bindingReport(readbackComponents, unverified);
+  const uncompared = new Map<string, { component: string; property: string; variants: number }>();
+  for (const verdict of verdicts) {
+    for (const property of verdict.uncompared ?? []) {
+      const key = JSON.stringify([verdict.component, property]);
+      const seen = uncompared.get(key) ?? { component: verdict.component, property, variants: 0 };
+      seen.variants++;
+      uncompared.set(key, seen);
+    }
+  }
 
   return {
     version: READBACK_SCHEMA_VERSION,
@@ -934,12 +1077,54 @@ export function verify(
     snapIssues,
     snapWarnings,
     caveats,
+    bindings,
+    uncompared: [...uncompared.values()],
     componentsNotInSnap,
     skipped,
     unmeasuredInFigma,
     readbackIssues,
     variants: verdicts,
   };
+}
+
+/**
+ * The variable bindings the readback reports, from the entries verify can
+ * trust, those `unverified` doesn't name, as `JSON.stringify([component,
+ * slug])`.
+ *
+ * Reported, not scored. Values are compared already, a bound field's at the
+ * variable's value, so a binding changed to a variable of another value is
+ * drift there. What a value can't show is a field bound to no variable at a
+ * value a variable of its kind has: a token detached in Figma keeps its
+ * value, and scored 100% while the library had lost the link that keeps it
+ * in step with the code. The readback template finds those in Figma, where
+ * the variables are, so verify needs neither the tokens nor what the push
+ * meant to bind. Only variables of the field's kind count, so a padding of
+ * 8 on shadcn/ui, where the radius md is 8, is no detached radius. Which of several variables of one value a field should be
+ * bound to only the component's source says, so a binding moved to
+ * another of the same value is not reported.
+ */
+export function bindingReport(components: ReadbackFile["components"], unverified: Set<string>): BindingReport {
+  let read = 0;
+  let bound = 0;
+  const unbound = new Map<string, { component: string; field: string; variants: number }>();
+  for (const [component, entry] of Object.entries(components ?? {})) {
+    for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
+      if (variant == null || typeof variant !== "object" || unverified.has(JSON.stringify([component, slug]))) continue;
+      const hasBound = variant.bound != null && typeof variant.bound === "object";
+      const hasUnbound = Array.isArray(variant.unbound);
+      if (!hasBound && !hasUnbound) continue;
+      read++;
+      if (hasBound) bound += Object.keys(variant.bound!).length;
+      for (const field of hasUnbound ? variant.unbound! : []) {
+        const key = JSON.stringify([component, field]);
+        const seen = unbound.get(key) ?? { component, field: String(field), variants: 0 };
+        seen.variants++;
+        unbound.set(key, seen);
+      }
+    }
+  }
+  return { read, bound, unbound: [...unbound.values()] };
 }
 
 /**
@@ -957,7 +1142,12 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     seen.add(note.kind + note.element);
     caveats.push({ component: key, kind: note.kind, element: note.element });
   }
-  if (detectIdenticalVariants(component.variants ?? [])) caveats.push({ component: key, kind: "identical-variants" });
+  // Which of the two snap said, where it said: an older snap's warning
+  // blames the story whatever the markup did.
+  const behaviorOnly = (component.warnings ?? []).map(parseBehaviorOnlyWarning).find((names) => names != null);
+  if (detectIdenticalVariants(component.variants ?? [])) {
+    caveats.push(behaviorOnly ? { component: key, kind: "behavior-only", properties: behaviorOnly } : { component: key, kind: "identical-variants" });
+  }
   // A VARIANT's only: a boolean with no default is assumed false, as React
   // treats a boolean left out, and the push lays it out default first, so
   // Figma's default is the code's; and every optional boolean has one.

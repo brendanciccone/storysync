@@ -11,7 +11,7 @@ import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
   chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
 } from "./snap-normalize.js";
-import type { RawComputedStyles, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
+import type { RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -198,6 +198,15 @@ export interface CaptureResult {
   fontAvailable: boolean | null;
   /** What the page probed of the root's and the text's font stacks, for normalizeStyles. */
   fonts: { root: FontProbe | null; text: FontProbe | null };
+  /** How the text fits its box, as readTextLayout reads it, for normalizeStyles; null without text. */
+  textLayout: RawTextLayout | null;
+  /**
+   * A checksum of the story's markup, as readMarkup reads it, or null when
+   * it changed while the variant was measured, or couldn't be read. snap
+   * compares it across a component's variants and doesn't record it: see
+   * describeIdenticalVariants.
+   */
+  markup: string | null;
 }
 
 export interface CaptureOptions {
@@ -230,7 +239,7 @@ const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
 export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
     retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
-    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null },
+    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, textLayout: null, markup: null,
   };
   const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
   let images: ImageRequests | null = null;
@@ -266,16 +275,20 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
     const { target, element, notes, matchedSelector } = located;
 
+    // Read before the styles and again after the picture: markup that
+    // changes in between, a story that animates, is no evidence either way.
+    const markupBefore = await readMarkup(page);
     const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
     const holder = await findTextHolder(target);
     const textRaw = holder ? await readTextStyles(page, holder, target, TEXT_PROPERTIES) : null;
+    const textLayout = holder ? await readTextLayout(holder, target) : null;
     const fonts = { root: await probeFontStack(target), text: holder ? await probeFontStack(holder) : null };
     const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
     const boundingBox = await target.boundingBox();
 
     // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {
-      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts };
+      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts, textLayout };
     }
 
     // Playwright waits for an element to be visible before taking its
@@ -285,7 +298,9 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // picture otherwise waits no longer than --timeout.
     const drawable = boundingBox.width > 0 && boundingBox.height > 0;
     const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
-    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts };
+    const markupAfter = await readMarkup(page);
+    const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
+    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
@@ -604,13 +619,63 @@ async function readComputedStyles(
 }
 
 
-/** The nearest element at or under `root` holding text of its own, or null when there is none. */
+/**
+ * A checksum of the story's markup: its root container's, and that of what
+ * it renders into the body beside it, as a portal does, leaving out
+ * Storybook's own nodes, scripts and styles. Null when it can't be read.
+ *
+ * Every variant of a component can measure the same for two reasons a
+ * score can't tell apart: the story drops its args, so nothing they set
+ * reaches the page, or they reach the component and change only what snap
+ * doesn't measure, as input-otp's `textAlign` sets the alignment of an
+ * input that draws no text. The markup tells them apart: a dropped arg
+ * changes none of it.
+ */
+async function readMarkup(page: Page): Promise<string | null> {
+  return page.evaluate((containers) => {
+    const root = containers.map((selector) => document.querySelector(selector)).find((el) => el != null) ?? null;
+    const parts = [root ? root.outerHTML : ""];
+    for (const el of Array.from(document.body.children)) {
+      if (el === root || el.tagName === "SCRIPT" || el.tagName === "STYLE" || el.tagName === "NOSCRIPT") continue;
+      if (/^storybook-/.test(el.id) || /(?:^|\s)sb-/.test(el.getAttribute("class") ?? "")) continue;
+      parts.push(el.outerHTML);
+    }
+    const text = parts.join("\n");
+    // 32-bit FNV-1a, with the length: a checksum to compare, not to keep.
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    return `${hash.toString(16).padStart(8, "0")}:${text.length}`;
+  }, [...ROOT_CONTAINERS]).catch(() => null);
+}
+
+/**
+ * The nearest element at or under `root` holding text the browser shows, or
+ * null when there is none.
+ *
+ * Text that is in the page but not drawn is passed over, with everything
+ * under it: an element not displayed, text whose `visibility` hides it, and
+ * an element cut down to a pixel or less that clips what it holds, as
+ * Tailwind's `sr-only` does (1px, `overflow: hidden`) and as Base UI's
+ * Progress hides a span. Measured, an icon button's `sr-only` label gave
+ * the button a text it doesn't show, and the hidden span gave Progress a
+ * text cut off at 1px, which the push would build as a 1px label.
+ */
 async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHandle<Element> | null> {
   const handle = await root.evaluateHandle((node) => {
+    const hidden = (el: Element): boolean => {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none") return true;
+      // display: contents draws no box of its own, its children do.
+      if (cs.display === "contents") return false;
+      const box = el.getBoundingClientRect();
+      const clips = cs.overflowX !== "visible" || cs.overflowY !== "visible"
+        || (cs.clip !== "" && cs.clip !== "auto") || (cs.clipPath !== "" && cs.clipPath !== "none");
+      return box.width <= 1 && box.height <= 1 && clips;
+    };
     const find = (el: Element): Element | null => {
       for (const child of Array.from(el.childNodes)) {
-        if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim()) return el;
-        if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() && getComputedStyle(el).visibility === "visible") return el;
+        if (child.nodeType === Node.ELEMENT_NODE && !hidden(child as Element)) {
           const found = find(child as Element);
           if (found) return found;
         }
@@ -622,6 +687,51 @@ async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHand
   const holder = handle.asElement();
   if (!holder) await handle.dispose();
   return holder;
+}
+
+/**
+ * How the text fits the block that lays it out, for normalizeTextLayout:
+ * that block is the holder, or its nearest ancestor up to the measured root
+ * that isn't `display: inline`, since an inline element wraps at its
+ * container's width and has none of its own to clip at. The lines are
+ * counted from the holder's own text, its rects grouped by height, so a
+ * line cut off with an ellipsis is one, as is a nested label's line.
+ */
+async function readTextLayout(holder: ElementHandle<Element>, root: ElementHandle<Element>): Promise<RawTextLayout | null> {
+  return holder.evaluate((text, node) => {
+    let block = text as HTMLElement;
+    while (block !== node && block.parentElement && getComputedStyle(block).display === "inline") block = block.parentElement;
+    const cs = getComputedStyle(block);
+    const px = (value: string) => parseFloat(value) || 0;
+    const width = block.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight);
+    const rects: DOMRect[] = [];
+    for (const child of Array.from(text.childNodes)) {
+      if (child.nodeType !== Node.TEXT_NODE || !(child.textContent ?? "").trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(child);
+      rects.push(...Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0));
+    }
+    rects.sort((a, b) => a.top - b.top);
+    let lines = 0;
+    let bottom = -Infinity;
+    for (const rect of rects) {
+      if ((rect.top + rect.bottom) / 2 > bottom) {
+        lines++;
+        bottom = rect.bottom;
+      } else {
+        bottom = Math.max(bottom, rect.bottom);
+      }
+    }
+    const clamp = parseInt(cs.getPropertyValue("-webkit-line-clamp") || cs.getPropertyValue("line-clamp"), 10);
+    return {
+      width,
+      lines,
+      overflowsX: cs.overflowX !== "visible" && block.scrollWidth > block.clientWidth + 0.5,
+      overflowsY: cs.overflowY !== "visible" && block.scrollHeight > block.clientHeight + 0.5,
+      textOverflow: cs.textOverflow,
+      lineClamp: Number.isFinite(clamp) && clamp > 0 ? clamp : null,
+    };
+  }, root).catch(() => null);
 }
 
 /**

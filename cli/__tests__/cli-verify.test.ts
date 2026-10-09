@@ -112,7 +112,7 @@ test("verify CLI: a readback cut down to source, width and height, still sealed,
   const r = verify(snap(), readback({ source: "measured", width: 61.5, height: 24 }), "--strict-measured");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, which/);
-  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
 
@@ -195,7 +195,7 @@ test("verify CLI: a readback entry edited after Figma returned it fails --strict
   assert.match(r.out, /1 with an unverified readback/);
   assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it — nothing in it was scored/);
   assert.match(r.out, /Read these variants back again[^\n]*exactly as returned/);
-  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
   const { checksum: _checksum, ...edited } = file.components["Forms/Button"].variants.a;
   assert.doesNotMatch(r.out, new RegExp(readbackChecksum("1:2", "a", edited).slice("fnv1a:".length)), "printed the checksum that would pass");
@@ -237,10 +237,25 @@ test("verify CLI: one variant sealed and matching beside one edited fails --stri
   file.components["Forms/Button"].variants.b.backgroundColor = "#2563eb";
   const r = verify(snapOfTwo(), file, "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Fidelity: 100\.0% \(12\/12 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /^Fidelity: 100\.0% of verified entries \(12\/12 properties\); 1 entry unverified, not scored$/m);
   assert.match(r.out, /1 verified, 0 drifted, 0 missing from Figma, 1 with an unverified readback, across 2 variants/);
   assert.match(r.out, /Forms\/Button b readback entry does not match its checksum/);
   assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: without --strict, a score that left entries out says so on its own line, and a clean one doesn't", () => {
+  // A falsification run read "Fidelity: 100.0%" with an entry failing its
+  // checksum, and the run exited 0: the percentage alone read as a pass.
+  const file = readbackOf({ a: MATCHING, b: MATCHING });
+  file.components["Forms/Button"].variants.b.backgroundColor = "#ff00ff";
+  const r = verify(snapOfTwo(), file);
+  assert.equal(r.status, 0, r.out);
+  const headline = r.out.split("\n").find((line) => line.startsWith("Fidelity:"));
+  assert.equal(headline, "Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored");
+
+  const clean = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }));
+  assert.equal(clean.status, 0, clean.out);
+  assert.equal(clean.out.split("\n").find((line) => line.startsWith("Fidelity:")), "Fidelity: 100.0% (24/24 properties)");
 });
 
 test("verify CLI: a component with no nodeId, or another set's, fails --strict", () => {
@@ -351,6 +366,18 @@ test("verify CLI: what snap warned about a scored component is said beside the s
   ]);
 });
 
+test("verify CLI: props that reach the component and change nothing measured are said as such, not as the story's fault", () => {
+  const warning = "all 2 rendered variants measured identically, though their markup changed with the args, so the story passes them through: " +
+    "`textAlign` changes nothing snap measures, likely only behavior, or something it doesn't measure, such as a child element. " +
+    "If it doesn't change how it looks, leave it out of every component with `--exclude-props textAlign`, and build it as one variant.";
+  const r = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }));
+  const withWarning = verify({ ...snapOfTwo(), components: [{ ...snapOfTwo().components[0], warnings: [warning] }] }, readbackOf({ a: MATCHING, b: MATCHING }));
+  assert.match(r.out, /Forms\/Button: every variant measured the same, so the story may not pass its args through/);
+  assert.equal(withWarning.status, 0, withWarning.out);
+  assert.match(withWarning.out, /\n {6}Forms\/Button: every variant measured the same though the args reached it: `textAlign` changes nothing snap measures, so its variants in Figma look alike; `--exclude-props textAlign` leaves it out\n/);
+  assert.doesNotMatch(withWarning.out, /story may not pass/);
+});
+
 test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
   try {
@@ -372,4 +399,49 @@ test("verify CLI: a component snap measured again holds its readback to that tim
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("verify CLI: a field bound to no variable though one has its value is named beside the score, and fails nothing", () => {
+  // A token detached in Figma keeps its value, so the values alone scored a
+  // detached radius 100%.
+  const file = readbackOf({
+    a: { ...MATCHING, textLayout: null, bound: { backgroundColor: "primary", borderRadiusUniform: "radius/sm" }, unbound: [] },
+    b: { ...MATCHING, textLayout: null, bound: { backgroundColor: "primary" }, unbound: ["borderRadiusUniform"] },
+  });
+  const r = verify(snapOfTwo(), file, "--strict");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /\n {2}Variables: 3 fields bound across 2 variants\n {2}! Bound to no variable, though a variable of its kind has the value: a token detached in Figma, or one the push left unbound \(its summary says which\):\n {6}Forms\/Button borderRadiusUniform, on 1 variant\n/);
+
+  // A readback from an earlier template says nothing of bindings, and still scores.
+  const older = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }), "--strict");
+  assert.equal(older.status, 0, older.out);
+  assert.match(older.out, /Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen/);
+});
+
+test("verify CLI: a text layout snap measured, against a readback without textLayout, is said beside the score and fails --strict", () => {
+  // A readback from a template before textLayout, or an older skill beside
+  // a newer CLI, scored a title that runs past its card 100%, said Figma
+  // matched, and passed --strict.
+  const text = { color: "#ffffff", fontFamily: "Inter", fontSize: 12, fontWeight: 600, layout: { width: 40, lines: 1, truncation: "ellipsis" } };
+  const cut = snapOfTwo();
+  cut.components[0].base = { combination: {}, slug: "a", styles: { ...STYLES, text } as never };
+  const older = readbackOf({ a: MATCHING, b: MATCHING });
+  const strict = verify(cut, older, "--strict");
+  assert.equal(strict.status, 1, strict.out);
+  assert.match(strict.out, /Fidelity: 100\.0%/);
+  assert.match(strict.out, /\n {2}! Not compared, since the readback has no textLayout[^\n]*\n {6}Forms\/Button, 2 variants\n/);
+  assert.doesNotMatch(strict.out, /Figma matches/);
+  assert.equal(verify(cut, older).status, 0, "a score, not a failure, without --strict");
+
+  // Read with the template as it is, it is compared, and passes.
+  const current = readbackOf({ a: { ...MATCHING, textLayout: { width: 40, maxLines: 1 }, bound: {}, unbound: [] }, b: { ...MATCHING, textLayout: { width: 40, maxLines: 1 }, bound: {}, unbound: [] } });
+  const passed = verify(cut, current, "--strict");
+  assert.equal(passed.status, 0, passed.out);
+  assert.doesNotMatch(passed.out, /Not compared/);
+  assert.match(passed.out, /Figma matches the measured styles for Forms\/Button\./);
+
+  // Where snap measured no layout, an older readback is compared on all it has.
+  const plain = verify(snapOfTwo(), older, "--strict");
+  assert.equal(plain.status, 0, plain.out);
+  assert.doesNotMatch(plain.out, /Not compared/);
 });

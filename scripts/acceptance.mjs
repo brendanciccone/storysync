@@ -235,16 +235,26 @@ function renderBounds(node) {
  * the frame is the measured size less the stroke. `strokeHidden` builds a transparent
  * border's stroke as a designer might, a paint of full opacity hidden with the
  * eye icon, `visible: false`. A width or height of 0, a closed Collapsible's,
- * is built at 0.01, the least Figma takes, as the skill says.
+ * is built at 0.01, the least Figma takes, as the skill says. A label is built
+ * as the skill says too: see textNode below.
  */
-function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false, hugging = false } = {}) {
+function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false, hugging = false, textHugs = false } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
+  // As the skill builds a label: hugging its content, or, where snap
+  // measured how the browser fitted it, fixed at that width and cut off
+  // after as many lines as the browser drew; with `textHugs`, hugging all
+  // the same, as a push before snap measured it built Attachment's title.
+  const layout = textHugs ? null : text.layout ?? null;
   const textNode = {
     type: "TEXT",
     fills: text.color ? [solidPaint(text.color)] : [],
     fontSize: text.fontSize,
     // What Figma actually reports: a style *name*, e.g. Inter 600 is "Semi Bold".
     fontName: { family: text.fontFamily, style: STYLE_NAME[text.fontWeight] ?? "Regular" },
+    textAutoResize: layout ? "HEIGHT" : "WIDTH_AND_HEIGHT",
+    textTruncation: layout?.truncation ? "ENDING" : "DISABLED",
+    maxLines: layout?.truncation ? layout.lines : null,
+    width: layout ? layout.width : Math.max(1, Math.round(st.width - st.padding.left - st.padding.right)),
   };
   const border = Object.fromEntries(SIDES.map((side) => [side, st.borderUniform ?? st.border?.[side.toLowerCase()] ?? null]));
   const drawn = SIDES.map((side) => border[side]).find(Boolean) ?? null;
@@ -296,6 +306,92 @@ function expandVariants(component) {
 /** A variant's name as the skill gives it: '' for a component with no variant properties. */
 function figmaVariantName(combination) {
   return Object.entries(combination ?? {}).map(([k, v]) => `${k}=${v}`).join(", ");
+}
+
+/** Text HTML-escaped, as Figma returns a component's description. */
+function htmlEscaped(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/**
+ * A component set or component whose description behaves as a live push
+ * found Figma's: `description` returns its text HTML-escaped, `"` as
+ * `&quot;` and `&` as `&amp;`, and setting it stores the text as given and
+ * empties `descriptionMarkdown`, as it read back after a push set it.
+ * `descriptionMarkdown` holds a designer's formatted description as
+ * markdown; setting it stores that, with the text shown as the markdown less
+ * its emphasis and escapes. Whether Figma returns the markdown escaped too no
+ * run has shown, so `escapeMarkdown` returns it both ways. `stored` is what
+ * Figma keeps, for the checks to read.
+ */
+function describedNode(id, type, { text = "", markdown = "", escapeMarkdown = false } = {}) {
+  const stored = { text: markdown ? shownText(markdown) : text, markdown };
+  const node = { id, type, stored };
+  Object.defineProperty(node, "description", {
+    enumerable: true,
+    get: () => htmlEscaped(stored.text),
+    set: (value) => Object.assign(stored, { text: String(value), markdown: "" }),
+  });
+  Object.defineProperty(node, "descriptionMarkdown", {
+    enumerable: true,
+    get: () => (escapeMarkdown ? htmlEscaped(stored.markdown) : stored.markdown),
+    set: (value) => Object.assign(stored, { markdown: String(value), text: shownText(String(value)) }),
+  });
+  return node;
+}
+
+/** The text markdown shows: without its `**`, `__` and single `*` or `_` emphasis, and its backslash escapes undone. */
+function shownText(markdown) {
+  const kept = [];
+  const out = markdown.replace(/\\(.)/g, (_, c) => `\u0000${kept.push(c) - 1}\u0000`)
+    .replace(/\*\*|__|[*_]/g, "");
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+}
+
+/**
+ * The pages for the label call, each `[name, layers]`, the user on the one
+ * at `current`, the first unless given: as use_figma loads them, only that
+ * one is loaded when the call starts, and another lists no layers until the
+ * call loads it, with its `loadAsync` or by switching to it. Figma refuses
+ * to remove the page it is on, or the last one. `figma` serves them;
+ * `pages` is what is left.
+ */
+function labelPages(spec, current = 0) {
+  const pages = [];
+  const loaded = new Set();
+  for (const [index, [name, layers]] of spec.entries()) {
+    const page = { type: "PAGE", id: `0:${index + 1}`, name, layers: Array.from({ length: layers }, (_, i) => ({ id: `${name}:${i}` })) };
+    Object.defineProperty(page, "children", { get: () => (loaded.has(page) ? page.layers : []) });
+    page.loadAsync = async () => { loaded.add(page); };
+    page.remove = () => {
+      if (figma.currentPage === page) throw new Error("Cannot remove the current page");
+      if (pages.length === 1) throw new Error("Cannot remove the last page");
+      pages.splice(pages.indexOf(page), 1);
+    };
+    pages.push(page);
+  }
+  loaded.add(pages[current]);
+  const figma = {
+    root: { children: pages },
+    currentPage: pages[current],
+    setCurrentPageAsync: async (page) => {
+      loaded.add(page);
+      figma.currentPage = page;
+    },
+  };
+  return { figma, pages };
+}
+
+/**
+ * Runs the skill's label call over `nodes`, by id, in a file of `pages`, a
+ * labelPages figma, a page of components alone unless one is given, with
+ * the NOTES table set to each run's notes.
+ */
+function labelCall(code, nodes, pages = labelPages([["ui/base", 1]]).figma) {
+  const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
+  const figma = { ...pages, getNodeByIdAsync: async (id) => nodes[id] ?? null };
+  Object.defineProperty(figma, "currentPage", { get: () => pages.currentPage });
+  return async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
 }
 
 const AsyncFunction = (async () => {}).constructor;
@@ -453,7 +549,20 @@ function loadSkillReadback(mutate = null) {
   // `clock`, the time in ms Figma's Date gives the call, for a readback read
   // at another time: the template's own Date is shadowed with one fixed there.
   const run = async (componentSet, slugByName, sourceBySlug, opts) => {
-    const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
+    // The file's local variables, opts.variables, none unless given: each
+    // { id, name, resolvedType, valuesByMode, variableCollectionId, scopes },
+    // as Figma gives one, and their collections, opts.collections, each
+    // { id, name }. A variable given no scopes has ALL_SCOPES, Figma's default.
+    const variables = (opts?.variables ?? []).map((v) => ({ scopes: ["ALL_SCOPES"], ...v }));
+    const collections = opts?.collections ?? [];
+    const figma = {
+      getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null),
+      variables: {
+        getLocalVariablesAsync: async () => variables,
+        getLocalVariableCollectionsAsync: async () => collections,
+        getVariableByIdAsync: async (id) => variables.find((v) => v.id === id) ?? null,
+      },
+    };
     return new AsyncFunction("figma", "Date", code(componentSet.id, slugByName, sourceBySlug, opts))(figma, clockAt(opts?.clock));
   };
   const read = async (...args) => JSON.parse(await run(...args));
@@ -1634,13 +1743,15 @@ function buildScenarios(snapDir) {
 // --- Simulated Figma for the audit -------------------------------------------
 
 /** One use_figma call's figma, serving local variables. */
-function variablesFigma(variables) {
+function variablesFigma(variables, modes = {}) {
   const collections = [];
   const byId = new Map();
   variables.forEach((v, i) => {
     let coll = collections.find((c) => c.name === v.collection);
     if (!coll) {
-      coll = { name: v.collection, modes: [{ modeId: `${v.collection}:default`, name: "Default" }], variableIds: [] };
+      // Its modes, by name, the first its default: one, "Default", unless `modes` gives the collection's.
+      const names = modes[v.collection] ?? ["Default"];
+      coll = { name: v.collection, modes: names.map((name) => ({ modeId: `${v.collection}:${name}`, name })), variableIds: [] };
       collections.push(coll);
     }
     const id = `VariableID:${i}`;
@@ -2549,7 +2660,7 @@ async function main() {
       for (const [name, { component, timeoutMs = 10000 }] of Object.entries(pages)) {
         const started = Date.now();
         const capture = await captureStory(tab, `http://127.0.0.1:${server.address().port}/${name}`, { timeoutMs, screenshot: false, component: { name: component } });
-        const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts) : null;
+        const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts, capture.textLayout) : null;
         measured[name] = { ...capture, styles, ms: Date.now() - started };
       }
       return measured;
@@ -2580,6 +2691,84 @@ async function main() {
     assert(m.closed.notes[0]?.kind === "closed-trigger", `a closed Dialog: ${say}`);
     assert(m.open.element === 'div[data-slot="dialog-content"]' && m.open.styles.backgroundColor === "#ffffff" && m.open.boundingBox.width === 348, `an open Dialog: ${say}`);
     return "the OTP boxes, the switch, the open dialog; the row and the trigger flagged";
+  });
+
+  await check("a story's markup checksum changes with what its args set, leaves out Storybook's own nodes, and is null while it changes", async () => {
+    // InputOTP's textAlign sets only the style of input-otp's hidden input,
+    // so every variant measured the same though the args reached it: the
+    // markup is what tells that from a story that drops its args.
+    const input = (align) => `<div id="storybook-root"><div data-slot="input-otp" style="display: flex; width: 120px; height: 36px; background: #e5e5e5"><input style="text-align: ${align}; opacity: 0"></div></div>`;
+    const docs = (text) => `<div id="storybook-docs">${text}</div><div class="sb-errordisplay">${text}</div><script>window.x = "${text}";</script>`;
+    const m = await captureStories({
+      left: { component: "InputOTP", html: input("left") + docs("one") },
+      leftAgain: { component: "InputOTP", html: input("left") + docs("two") },
+      right: { component: "InputOTP", html: input("right") + docs("one") },
+      // A portal, as Radix renders an open popover's content into the body.
+      portal: { component: "InputOTP", html: `${input("left")}<div data-radix-portal><div role="dialog">Hello</div></div>` },
+      // Markup that changes as the story is measured, as an animation's
+      // would: no evidence either way. Changed on each style read, so it
+      // changes between the two reads of the markup every time.
+      ticking: { component: "InputOTP", html: `${input("left")}<script>const read = window.getComputedStyle; let n = 0; window.getComputedStyle = function (...args) { document.querySelector("input")?.setAttribute("data-n", String(n++)); return read.apply(this, args); };</script>` },
+    });
+    const markup = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.markup : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(markup);
+    assert(typeof markup.left === "string" && markup.left === markup.leftAgain, `the same story with Storybook's own nodes changed: ${say}`);
+    assert(markup.right !== markup.left, `text-align left and right: ${say}`);
+    assert(typeof markup.portal === "string" && markup.portal !== markup.left, `a portal beside the root: ${say}`);
+    assert(markup.ticking === null, `markup that changed while it was measured: ${say}`);
+    return "the same for the same story, apart for a style or a portal, null while ticking";
+  });
+
+  await check("text the browser cuts off or wraps is recorded with the width it was laid out in, and a label on one line isn't", async () => {
+    // Attachment's vertical title has Tailwind's truncate, so the browser cut
+    // it off at the card's width with an ellipsis; snap recorded nothing of
+    // it, and the push built a title that ran 28px past its card.
+    const card = (inner, extra = "") => `<div id="storybook-root"><div data-slot="attachment" style="display: flex; flex-direction: column; width: 120px; padding: 8px; border: 1px solid #e5e5e5; box-sizing: border-box; font: 500 14px/20px sans-serif${extra}">${inner}</div></div>`;
+    const long = "sales-dashboard-quarterly-final-v2.png";
+    const m = await captureStories({
+      truncate: { component: "Attachment", html: card(`<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${long}</span>`) },
+      clip: { component: "Attachment", html: card(`<span style="display: block; overflow: hidden; white-space: nowrap">${long}</span>`) },
+      wrap: { component: "Attachment", html: card(`<span style="display: block">A quarterly report of sales, by region and by product line</span>`) },
+      clamp: { component: "Attachment", html: card(`<span style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden">A quarterly report of sales, by region and by product line, for the board</span>`) },
+      // An inline label wraps and is cut off by the block it is in.
+      inline: { component: "Attachment", html: card(`<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap"><span>${long}</span></div>`) },
+      label: { component: "Button", html: `<div id="storybook-root"><button data-slot="button" style="display: inline-flex; padding: 4px 8px; font: 600 12px sans-serif">Save</button></div>` },
+    });
+    const layout = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.styles.text?.layout ?? null : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(layout);
+    assert(JSON.stringify(layout.truncate) === JSON.stringify({ width: 102, lines: 1, truncation: "ellipsis" }), `truncate: ${say}`);
+    assert(JSON.stringify(layout.clip) === JSON.stringify({ width: 102, lines: 1, truncation: "clip" }), `clip: ${say}`);
+    assert(layout.wrap?.width === 102 && layout.wrap.lines >= 3 && layout.wrap.truncation === undefined, `wrap: ${say}`);
+    assert(JSON.stringify(layout.clamp) === JSON.stringify({ width: 102, lines: 2, truncation: "ellipsis" }), `clamp: ${say}`);
+    assert(JSON.stringify(layout.inline) === JSON.stringify({ width: 102, lines: 1, truncation: "ellipsis" }), `inline: ${say}`);
+    assert(layout.label === null, `a one-line label: ${say}`);
+    return say;
+  });
+
+  await check("text the browser doesn't show is passed over: an sr-only label, a hidden span, one not displayed or hidden", async () => {
+    // Base UI's Progress keeps a span of text in a fixed 1px box that clips
+    // it: snap measured it as Progress's text, cut off at 1px, and the push
+    // would have built a 1px label. An icon button's sr-only label gave the
+    // button a text it doesn't show in the same way.
+    const v3 = "position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; font-size: 20px";
+    const v4 = "position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border-width: 0; font-size: 20px";
+    const button = (inner) => `<div id="storybook-root"><button data-slot="button" style="display: inline-flex; gap: 4px; padding: 4px 8px; font: 600 12px sans-serif">${inner}</button></div>`;
+    const icon = `<svg width="16" height="16"><rect width="16" height="16"/></svg>`;
+    const m = await captureStories({
+      progress: { component: "Progress", html: `<div id="storybook-root"><div data-slot="progress" style="position: relative; width: 200px; height: 8px; background: #e5e5e5"><div style="width: 50%; height: 100%; background: #171717"></div><span style="position: fixed; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; white-space: nowrap">50%</span></div></div>` },
+      srOnly: { component: "Button", html: button(`${icon}<span style="${v3}">Close</span>`) },
+      srOnlyV4: { component: "Button", html: button(`${icon}<span style="${v4}">Close</span>`) },
+      // The label shown, after a hidden one: the shown one's 13px, not 20px.
+      shownAfter: { component: "Button", html: button(`<span style="${v3}">Close</span><span style="display: none; font-size: 20px">Off</span><span style="visibility: hidden; font-size: 20px">Off</span><span style="font-size: 13px">Save</span>`) },
+      // A label shown inside a box that hides others: visibility is
+      // inherited, and a child can show itself again.
+      shownInside: { component: "Button", html: button(`<span style="visibility: hidden; font-size: 20px">Off <span style="visibility: visible; font-size: 13px">On</span></span>`) },
+    });
+    const text = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.styles.text ?? null : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(text);
+    for (const name of ["progress", "srOnly", "srOnlyV4"]) assert(text[name] === null, `${name}: ${say}`);
+    for (const name of ["shownAfter", "shownInside"]) assert(text[name]?.fontSize === 13 && text[name].layout === undefined, `${name}: ${say}`);
+    return "no text on Progress or the icon buttons; the shown label's 13px beside hidden ones";
   });
 
   await check("a story that throws after load is a render error, found without waiting out --timeout", async () => {
@@ -2670,7 +2859,12 @@ async function main() {
     const button = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", join(WORK, "button"), "--strict-warnings"]);
     assert(frozen.status === 1, `Frozen exited ${frozen.status}, expected 1`);
     assert(button.status === 0, `Button exited ${button.status}, expected 0`);
-    return "Frozen fails, Button passes";
+    // Its markup is the same on every variant too, so the story is to blame,
+    // not props that change only what snap doesn't measure.
+    const warnings = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").warnings;
+    assert(warnings.some((w) => /^all 3 rendered variants measured identically and rendered the same markup — the story may not pass args through/.test(w)),
+      `Frozen warned ${JSON.stringify(warnings)}`);
+    return "Frozen fails, blaming its story, Button passes";
   });
 
   heading("Snap guards");
@@ -2863,6 +3057,134 @@ async function main() {
     assert(decimalRead === "#000000b3", `a fill whose opacity was set to 0.7 read back as ${decimalRead}, not #000000b3`);
     return `fill ${got.backgroundColor}, stroke ${got.border}, text ${got.color}; opacity 0.7 as b3; a hidden 1px stroke null; ` +
       `${verdicts.translucent.status} and ${verdicts["hidden-stroke"].status}`;
+  });
+
+  await check("text the browser cut off is scored on how Figma fits it: a title that hugs and runs past its card drifts", async () => {
+    // A live push built Attachment's vertical title, which Tailwind's
+    // truncate cuts off at 94px with an ellipsis, as a text that hugged its
+    // 140px and ran 28px past a 120px card, and verify scored it 100%.
+    const plain = edgeVariants(snapDir)[0].styles;
+    assert(plain.text, "the example Button's edge variant has no measured text");
+    const cut = { ...plain, text: { ...plain.text, layout: { width: 40, lines: 1, truncation: "ellipsis" } } };
+    const wrapped = { ...plain, text: { ...plain.text, layout: { width: 40, lines: 3 } } };
+    const verdicts = await scoreEdges(snapDir, loadSkillReadback(), [
+      { edge: "plain", styles: { ...plain, borderUniform: null, border: null } },
+      { edge: "cut", styles: cut },
+      { edge: "cut-hugging", styles: cut, textHugs: true },
+      { edge: "wrapped", styles: wrapped },
+      { edge: "wrapped-hugging", styles: wrapped, textHugs: true },
+    ]);
+    const say = JSON.stringify(Object.fromEntries(Object.entries(verdicts).map(([edge, v]) => [edge, `${v.status} ${v.differences.map((d) => d.property).join(",")}`])));
+    for (const edge of ["plain", "cut", "wrapped"]) assert(verdicts[edge].status === "verified", `${edge}: ${say}`);
+    for (const edge of ["cut-hugging", "wrapped-hugging"]) {
+      assert(verdicts[edge].status === "drifted" && verdicts[edge].differences.map((d) => d.property).join() === "textLayout", `${edge}: ${say}`);
+    }
+    return say;
+  });
+
+  await check("the readback says what each field is bound to, and verify names a field bound to nothing at a variable's value", async () => {
+    // A falsification run had to detach the radius variable to edit a radius
+    // by hand. Detached at the same value, the readback, which read values
+    // alone, scored 100%: the link that keeps the library in step with the
+    // code was gone, and nothing said so.
+    const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+    const variants = expandVariants(button);
+    const base = variants[0].styles;
+    const color = (hex) => ({ ...rgb01(hex), a: 1 });
+    // As Tokens step 3 makes them: each kind in a collection of its own.
+    const collections = [{ id: "VariableCollectionId:1:0", name: "Colors" }, { id: "VariableCollectionId:2:0", name: "Radius" }];
+    const variables = [
+      { id: "VariableID:1:1", name: "primary", resolvedType: "COLOR", valuesByMode: { "1:0": color(base.backgroundColor) }, variableCollectionId: "VariableCollectionId:1:0" },
+      { id: "VariableID:1:2", name: "md", resolvedType: "FLOAT", valuesByMode: { "2:0": base.borderRadiusUniform }, variableCollectionId: "VariableCollectionId:2:0" },
+      { id: "VariableID:1:3", name: "alias", resolvedType: "FLOAT", valuesByMode: { "2:0": { type: "VARIABLE_ALIAS", id: "VariableID:1:2" } }, variableCollectionId: "VariableCollectionId:2:0" },
+    ];
+    const alias = (id) => ({ type: "VARIABLE_ALIAS", id });
+    const detached = variants[1].slug;
+    const sets = simulatedSets(snapDir, {
+      mutate: (node, v, component) => {
+        if (component.name !== "Button") return;
+        if (v.styles.backgroundColor === base.backgroundColor) node.fills = [{ ...node.fills[0], boundVariables: { color: alias("VariableID:1:1") } }];
+        // Every radius bound, but one, detached at the same value.
+        if (v.styles.borderRadiusUniform === base.borderRadiusUniform && v.slug !== detached) node.boundVariables = { topLeftRadius: alias("VariableID:1:2") };
+      },
+    });
+    const template = loadSkillReadback();
+    const withVariables = { ...template, read: (set, slugs, sources, opts) => template.read(set, slugs, sources, { ...opts, variables, collections }) };
+    const components = {};
+    for (const set of sets) {
+      const { variants: read } = await readSet(withVariables, set, READ_BATCH);
+      components[set.component.title ?? set.component.name] = { nodeId: set.componentSet.id, variants: read };
+    }
+    const entry = components["Forms/Button"].variants;
+    assert(entry[variants[0].slug].bound.backgroundColor === "primary" && entry[variants[0].slug].bound.borderRadiusUniform === "md",
+      `the first variant read back bound ${JSON.stringify(entry[variants[0].slug].bound)}`);
+    assert(JSON.stringify(entry[detached].unbound) === JSON.stringify(["borderRadiusUniform"]) && !("borderRadiusUniform" in entry[detached].bound),
+      `the detached variant read back ${JSON.stringify({ bound: entry[detached].bound, unbound: entry[detached].unbound })}`);
+    const path = join(WORK, "readback-bindings.json");
+    writeJson(path, { version: 1, fileKey: "acceptance", components });
+    const v = verifyJson(snapDir, path);
+    assert(v.json?.fidelity === 1, `the bound readback scored ${v.json?.fidelity}\n${v.out}`);
+    assert(JSON.stringify(v.json.bindings.unbound) === JSON.stringify([{ component: "Forms/Button", field: "borderRadiusUniform", variants: 1 }]),
+      `verify reported unbound ${JSON.stringify(v.json.bindings)}`);
+    const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path, "--strict"]);
+    assert(text.status === 0 && /Bound to no variable, though a variable of its kind has the value[^\n]*\n\s+Forms\/Button borderRadiusUniform, on 1 variant/.test(text.out),
+      `verify --strict exited ${text.status}:\n${text.out}`);
+    // A readback from before, without bindings, still scores, and says it can't see them.
+    const older = JSON.parse(JSON.stringify({ version: 1, fileKey: "acceptance", components }));
+    for (const component of Object.values(older.components)) {
+      for (const read of Object.values(component.variants)) { delete read.bound; delete read.unbound; delete read.textLayout; delete read.checksum; }
+    }
+    const olderPath = join(WORK, "readback-unbound-older.json");
+    writeJson(olderPath, sealed(older));
+    const old = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", olderPath, "--strict"]);
+    assert(old.status === 0 && /this readback doesn't say what is bound/.test(old.out), `an older readback: exit ${old.status}\n${old.out}`);
+    return `${v.json.bindings.bound} fields bound across ${v.json.bindings.read} variants; the detached radius named; an older readback scored, saying it can't see bindings`;
+  });
+
+  await check("the readback matches a field only with variables of its kind: a padding at a radius's value is no detached radius", async () => {
+    // The readback matched a field with every local variable. shadcn/ui's
+    // only number tokens are its radii (sm 6, md 8, xl 14), so a Button
+    // built and bound faithfully read back its py-2 padding, gap-2 and
+    // text-sm as detached tokens, on nearly every variant.
+    const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+    const variant = expandVariants(button)[0];
+    const st = variant.styles;
+    const name = figmaVariantName(variant.combination);
+    const lengths = [st.padding.top, st.padding.right, st.gap?.column, (st.text ?? st).fontSize];
+    assert(new Set([...lengths, st.borderRadiusUniform]).size === 5 && lengths.every((n) => n > 0),
+      `the example Button's padding, gap, font size and radius are no longer five lengths apart: ${lengths}, ${st.borderRadiusUniform}`);
+    const [top, side, gap, size] = lengths;
+    const unbound = async (variables, collections) => (await loadSkillReadback().read(
+      { id: "set:Kinds", type: "COMPONENT_SET", name: "Kinds", children: [figmaNode(name, st)] },
+      { [name]: variant.slug }, { [variant.slug]: "measured" }, { variables, collections },
+    )).readback[variant.slug].unbound.join();
+    const COLLECTIONS = ["Radius", "Spacing", "Typography", "Primitives"].map((n) => ({ id: `VariableCollectionId:${n}`, name: n }));
+    const float = (name, value, collection, scopes) => ({
+      id: `VariableID:${collection}/${name}`, name, resolvedType: "FLOAT", valuesByMode: { "1:0": value },
+      variableCollectionId: `VariableCollectionId:${collection}`, ...(scopes ? { scopes } : {}),
+    });
+    // A file whose only number variables are radii, at every length the
+    // variant shows but its radius: nothing on it is a detached radius.
+    const radii = lengths.map((n) => float(`r${n}`, n, "Radius"));
+    const got = {
+      radii: await unbound(radii, COLLECTIONS),
+      // A spacing variable at the top padding, and a font size, are the
+      // fields' own kind, so named; a line height at the font size is not.
+      ownKind: await unbound([...radii, float("4", top, "Spacing"), float("leading/x", size, "Typography"), float("text/xs", size, "Typography")], COLLECTIONS),
+      noLineHeight: await unbound([float("leading/x", size, "Typography"), float("font/weight/x", size, "Typography")], COLLECTIONS),
+      // Scopes, where they name some, say the kind over the collection's
+      // name, and a number in a collection named for no kind is never
+      // matched.
+      scoped: await unbound([float("a", side, "Radius", ["GAP"]), float("b", gap, "Primitives", ["CORNER_RADIUS"]), float("c", top, "Primitives")], COLLECTIONS),
+    };
+    const want = {
+      radii: "",
+      ownKind: "paddingTop,paddingBottom,fontSize",
+      noLineHeight: "",
+      scoped: "paddingRight,paddingLeft",
+    };
+    assert(JSON.stringify(got) === JSON.stringify(want), `read back unbound ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    return `radii at the padding (${top}, ${side}), gap (${gap}) and font size (${size}) named none of them; a spacing variable and a font size were named; scopes over the collection`;
   });
 
   await check("a readback that reads render bounds, or gets a stroke or a color wrong, fails these checks", async () => {
@@ -3432,19 +3754,17 @@ async function main() {
     // A plain assignment replaced whatever a designer had written on a set,
     // and nothing took the label off once the component was measured open.
     const code = useFigmaBlock(/^Label the sets measured from/);
-    assert(code.length < 2000, `the label template is ${code.length} characters`);
+    assert(code.length < 4000, `the label template is ${code.length} characters`);
     const NL = "\n";
     const nodes = {
-      "1:1": { id: "1:1", type: "COMPONENT_SET", description: "Use for the main action." },
-      "1:2": { id: "1:2", type: "COMPONENT_SET", description: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` },
-      "1:3": { id: "1:3", type: "COMPONENT", description: "" },
-      "1:4": { id: "1:4", type: "COMPONENT_SET", description: "storysync: measured from its closed trigger, button, not the open dialog" },
-      "1:5": { id: "1:5", type: "COMPONENT_SET", description: "" },
-      "1:6": { id: "1:6", type: "FRAME", description: "" },
+      "1:1": describedNode("1:1", "COMPONENT_SET", { text: "Use for the main action." }),
+      "1:2": describedNode("1:2", "COMPONENT_SET", { text: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` }),
+      "1:3": describedNode("1:3", "COMPONENT"),
+      "1:4": describedNode("1:4", "COMPONENT_SET", { text: "storysync: measured from its closed trigger, button, not the open dialog" }),
+      "1:5": describedNode("1:5", "COMPONENT_SET"),
+      "1:6": describedNode("1:6", "FRAME"),
     };
-    const figma = { getNodeByIdAsync: async (id) => nodes[id] ?? null };
-    const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
-    const run = async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
+    const run = labelCall(code, nodes);
     const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
     const wrapper = "measured from what may be its story's layout wrapper, div, not Switch";
     const notes = { "1:1": trigger, "1:2": trigger, "1:3": wrapper, "1:4": "", "1:5": "" };
@@ -3457,8 +3777,8 @@ async function main() {
       "1:4": "",
       "1:5": "",
     };
-    for (const [id, description] of Object.entries(expected)) {
-      assert(nodes[id].description === description, `${id} has ${JSON.stringify(nodes[id].description)}, expected ${JSON.stringify(description)}`);
+    for (const [id, text] of Object.entries(expected)) {
+      assert(nodes[id].stored.text === text, `${id} has ${JSON.stringify(nodes[id].stored.text)}, expected ${JSON.stringify(text)}`);
     }
     assert(first.changed.join() === "1:1,1:2,1:3,1:4", `changed ${first.changed.join()}`);
     // Run again, it changes nothing, and adds no second line.
@@ -3466,7 +3786,7 @@ async function main() {
     assert(again.changed.length === 0, `a second run changed ${again.changed.join()}`);
     // Measured open, the set loses the line and keeps the designer's.
     await run({ "1:1": "" });
-    assert(nodes["1:1"].description === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].description)}`);
+    assert(nodes["1:1"].stored.text === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].stored.text)}`);
     // Anything but a component set or component is refused.
     for (const id of ["1:6", "9:9"]) {
       let refused = false;
@@ -3474,6 +3794,87 @@ async function main() {
       assert(refused, `labeled ${id}, which is no component set`);
     }
     return `${code.length} characters`;
+  });
+
+  await check("the label call reads Figma's escaped description once, keeps a designer's formatting, and changes nothing a second time", async () => {
+    // Figma returns a description HTML-escaped. Read and written back as it
+    // came, a live push turned Dialog's note into
+    // button[data-slot=&quot;dialog-trigger&quot;], escaped once more on
+    // every push, and a second run reported it changed again.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    const NL = "\n";
+    const designer = `Use "primary" & <b>bold</b> for the main action.`;
+    const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
+    // The stand-in escapes as Figma does: a template that writes back what it
+    // read gains an escape on every run here.
+    const naive = describedNode("0:1", "COMPONENT_SET", { text: designer });
+    for (let i = 0; i < 2; i++) naive.description = naive.description;
+    assert(naive.stored.text.includes("&amp;quot;"), `the stand-in doesn't escape as Figma does: ${naive.stored.text}`);
+
+    const results = [];
+    for (const escapeMarkdown of [false, true]) {
+      const nodes = {
+        "2:1": describedNode("2:1", "COMPONENT_SET", { text: designer }),
+        "2:2": describedNode("2:2", "COMPONENT_SET", { markdown: `**Use** "primary" & keep _this_ for the main action.`, escapeMarkdown }),
+        "2:3": describedNode("2:3", "COMPONENT", { text: `${designer}${NL}storysync: ${trigger}` }),
+      };
+      const run = labelCall(code, nodes);
+      const notes = { "2:1": trigger, "2:2": trigger, "2:3": "" };
+      const first = await run(notes);
+      assert(first.changed.join() === "2:1,2:2,2:3", `changed ${first.changed.join()}`);
+      for (let i = 0; i < 3; i++) {
+        const again = await run(notes);
+        assert(again.changed.length === 0, `run ${i + 2} changed ${again.changed.join()} again`);
+      }
+      assert(nodes["2:1"].stored.text === `${designer}${NL}storysync: ${trigger}`, `2:1 holds ${JSON.stringify(nodes["2:1"].stored.text)}`);
+      assert(nodes["2:3"].stored.text === designer, `2:3 holds ${JSON.stringify(nodes["2:3"].stored.text)}`);
+      // The designer's bold and italic stay, and the note shows as written.
+      const bs = "\\";
+      assert(nodes["2:2"].stored.markdown === `**Use** "primary" & keep _this_ for the main action.${NL}storysync: measured from its closed trigger, button${bs}[data-slot="dialog-trigger"${bs}], not the open dialog`,
+        `2:2's markdown is ${JSON.stringify(nodes["2:2"].stored.markdown)}`);
+      assert(nodes["2:2"].stored.text.endsWith(`storysync: ${trigger}`), `2:2 shows ${JSON.stringify(nodes["2:2"].stored.text)}`);
+      results.push(escapeMarkdown ? "escaped markdown" : "plain markdown");
+    }
+    return `no escape added over four runs, with Figma's markdown read as ${results.join(" and as ")}`;
+  });
+
+  await check("the label call removes Figma's empty Page 1, keeps one a designer used, or the only page, and leaves the user where they were", async () => {
+    // A live push left Page 1 empty beside the pages it made, and didn't say.
+    // And the call switched to Page 1 to load it, and stayed, so the user's
+    // view jumped at the end of every push.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    const set = describedNode("3:1", "COMPONENT_SET");
+    const outcome = async (pages, current, refuse = false) => {
+      const doc = labelPages(pages, current);
+      if (refuse) doc.pages.find((p) => p.name === "Page 1").remove = () => { throw new Error("Cannot remove this page"); };
+      const result = await labelCall(code, { "3:1": set }, doc.figma)({ "3:1": "" });
+      return { pageOne: result.pageOne, left: doc.pages.map((p) => p.name).join(), on: doc.figma.currentPage.name };
+    };
+    // Each: the pages, the one the user is on, what the call returns, the
+    // pages left and the one the user is on after.
+    const cases = [
+      [[["Page 1", 0], ["ui/base", 1]], 1, "removed", "ui/base", "ui/base"],
+      // On Page 1, the user is moved off it to remove it.
+      [[["Page 1", 0], ["ui/base", 1]], 0, "removed", "ui/base", "ui/base"],
+      // Not loaded yet, it lists no layers: the call has to load it to see them.
+      [[["ui/base", 1], ["Page 1", 2]], 0, "kept: it holds layers", "ui/base,Page 1", "ui/base"],
+      [[["Page 1", 0]], 0, "kept: it is the only page", "Page 1", "Page 1"],
+      [[["Cover", 0], ["ui/base", 1]], 1, "none", "Cover,ui/base", "ui/base"],
+    ];
+    for (const [pages, current, pageOne, left, on] of cases) {
+      const got = await outcome(pages, current);
+      const want = { pageOne, left, on };
+      assert(JSON.stringify(got) === JSON.stringify(want), `pages ${JSON.stringify(pages)}, on ${pages[current][0]}: ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    }
+    // A removal Figma refuses is said, after the labels, rather than lost in
+    // a throw, and the user is left on the page they were on.
+    const refusal = "kept: Figma refused to remove it (Cannot remove this page)";
+    for (const [current, on] of [[0, "Page 1"], [1, "ui/base"]]) {
+      const got = await outcome([["Page 1", 0], ["ui/base", 1]], current, true);
+      const want = { pageOne: refusal, left: "Page 1,ui/base", on };
+      assert(JSON.stringify(got) === JSON.stringify(want), `a refused removal, on ${on}: ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    }
+    return cases.map(([, , pageOne]) => pageOne).join("; ") + "; " + refusal + ", the user left where they were each time";
   });
 
   heading("Readback checksums");
@@ -3599,6 +4000,22 @@ async function main() {
       return new AsyncFunction("figma", body)(variablesFigma(long));
     }, long.length);
     return `${counts.join(", ")}; ${refused}`;
+  });
+
+  await check("the audit's variables read returns each collection's modes once, for the summary to name the ones not compared", async () => {
+    // It reads each collection's first mode, and an audit of shadcn/ui said
+    // "39 matched" with no word of a Dark mode it never compared.
+    const code = useFigmaBlock(/^Read all variable collections/);
+    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
+    const variables = Array.from({ length: batch + 3 }, (_, i) => (i < batch
+      ? { collection: "Colors", name: `color/${i}`, type: "COLOR", value: { r: 0, g: 0, b: 0, a: 1 } }
+      : { collection: "Radius", name: `radius/${i}`, type: "FLOAT", value: i }));
+    const read = await readAllSlices(code, () => variablesFigma(variables, { Colors: ["Light", "Dark"] }));
+    assert(read.length === 2, `read in ${read.length} calls`);
+    assert(JSON.stringify(read[0].modes) === JSON.stringify([{ collection: "Colors", modes: ["Light", "Dark"] }, { collection: "Radius", modes: ["Default"] }]),
+      `the first slice returns modes ${JSON.stringify(read[0].modes)}`);
+    assert(read.slice(1).every((slice) => slice.modes === undefined), "a later slice returns the modes again");
+    return "Colors: Light, Dark; Radius: Default, on the first of 2 slices";
   });
 
   await check("the audit reads the component sets on every page, not only the one loaded first", async () => {
