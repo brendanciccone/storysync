@@ -107,6 +107,14 @@ export interface MockFigmaOptions {
    * refused (see the file's header).
    */
   fillAcrossHug?: "stretch" | "refuse";
+  /**
+   * Spike items 2 and 3, for a build's fallbacks: "refuse" throws on a
+   * shadow with a spread on a node that doesn't clip its content, and on
+   * textTruncation ENDING, as Figma would if it doesn't take them. Default
+   * "keep", the expected answer.
+   */
+  shadowSpread?: "keep" | "refuse";
+  textTruncation?: "keep" | "refuse";
 }
 
 /**
@@ -1025,12 +1033,12 @@ function requireFont(n: Node, prop: string, font = n.fontName): void {
   }
 }
 
-const textProp = (key: keyof Node, check: (value: unknown) => unknown, after?: (n: Node) => void): Prop => ({
+const textProp = (key: keyof Node, check: (value: unknown, n: Node) => unknown, after?: (n: Node) => void): Prop => ({
   types: new Set(["TEXT"]),
   get: (n) => frozenCopy(n[key]),
   set: (n, value) => {
     requireFont(n, key);
-    (n as unknown as Record<string, unknown>)[key] = check(value);
+    (n as unknown as Record<string, unknown>)[key] = check(value, n);
     after?.(n);
     n.doc.dirty = true;
   },
@@ -1305,7 +1313,11 @@ const PROPS: Record<string, Prop> = {
     get: (n) => frozenCopy(n.effects),
     set: (n, v) => {
       if (!Array.isArray(v)) invalid("effects", "Expected array");
-      n.effects = v.map(effect);
+      const effects = v.map(effect);
+      if (n.doc.options.shadowSpread === "refuse" && !(FRAMES.has(n.type) && n.clipsContent) && effects.some((e) => e.spread)) {
+        invalid("effects", "spread is only supported on frames that clip their content (mock-figma shadowSpread 'refuse')");
+      }
+      n.effects = effects;
     },
   },
   fills: { types: GEOMETRY, get: (n) => frozenCopy(n.fills), set: paintsSetter("fills") },
@@ -1453,7 +1465,11 @@ const PROPS: Record<string, Prop> = {
   textAlignHorizontal: textProp("textAlignHorizontal", (v) => oneOf("textAlignHorizontal", v, ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"])),
   textAlignVertical: textProp("textAlignVertical", (v) => oneOf("textAlignVertical", v, ["TOP", "CENTER", "BOTTOM"])),
   textAutoResize: textProp("textAutoResize", (v) => oneOf("textAutoResize", v, ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"])),
-  textTruncation: textProp("textTruncation", (v) => oneOf("textTruncation", v, ["DISABLED", "ENDING"])),
+  textTruncation: textProp("textTruncation", (v, n) => {
+    const value = oneOf("textTruncation", v, ["DISABLED", "ENDING"]);
+    if (value === "ENDING" && n.doc.options.textTruncation === "refuse") invalid("textTruncation", "not supported (mock-figma textTruncation 'refuse')");
+    return value;
+  }),
   maxLines: textProp("maxLines", (v) => (v === null ? null : finite("maxLines", v, 1))),
   hasMissingFont: { types: new Set(["TEXT"]), get: () => false },
 };
@@ -1805,6 +1821,8 @@ export class MockFigma {
       clonePluginData: options.clonePluginData ?? true,
       svgStrokeScales: options.svgStrokeScales ?? true,
       fillAcrossHug: options.fillAcrossHug ?? "stretch",
+      shadowSpread: options.shadowSpread ?? "keep",
+      textTruncation: options.textTruncation ?? "keep",
       reencodeImage: options.reencodeImage,
     }, options.pages ?? ["Page 1"]);
   }

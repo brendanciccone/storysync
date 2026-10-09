@@ -315,6 +315,24 @@ test("spike item 1: where Figma doesn't scale an SVG's strokes, importing at the
   assert.deepEqual([...new Set(mock.nodes("VECTOR").map((n) => Math.round((mock.handle(n.id).strokeWeight as number) * 100) / 100))], [1.33]);
 });
 
+test("spike item 2: a shadow's spread Figma refuses on a frame that doesn't clip is left out, and said", async () => {
+  const fixture = copy(loadTreeFixture("switch"));
+  fixture.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#0a0a0a1a", inset: false }];
+  const { mock, results } = await buildAll(fixture, { shadowSpread: "refuse" });
+  assert.equal(results[0].fallbacks.length, 2);
+  assert.match(results[0].fallbacks[0].join(" "), /^ui\/base\/Switch size-default  shadow spread left out: /);
+  const root = mock.handle(variantsBySlug(mock).get("size-default")!.id) as { effects: { spread: number }[] };
+  assert.equal(root.effects[0].spread, 0);
+});
+
+test("spike item 3: truncation Figma refuses is built as a text box of the measured size", async () => {
+  const fixture = loadTreeFixture("attachment");
+  const { mock, results } = await buildAll(fixture, { textTruncation: "refuse" });
+  assert.ok(results[0].fallbacks.every((f) => /truncation refused/.test(f.join(" "))));
+  const title = mock.nodes("TEXT").find((n) => n.data["storysync.k"] === "attachment-content/attachment-title" && n.width === 94)!;
+  assert.deepEqual([mock.handle(title.id).textAutoResize, title.width, title.height], ["NONE", 94, 17.5]);
+});
+
 test("spike item 11: no build relies on a frame hugging a child that fills it, which the mock can refuse", async () => {
   for (const name of treeFixtureNames()) await buildAll(loadTreeFixture(name), { fillAcrossHug: "refuse" });
   // Taking the spike's other answer is what makes Card rely on it.
