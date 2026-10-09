@@ -906,3 +906,39 @@ test("drawnInSet: a group's shapes draw where the frame around the group puts th
   // The frame draws to 134 by 94; the shape at 110 - 30 and 70 - 40.
   assert.deepEqual(drawnInSet(mock, variant), [80, 30, 140, 94]);
 });
+
+test("build: the set's grid gives room to an outside stroke and a layer blur, which draw past a box too", async () => {
+  // A badge over the corner with a 30px border it keeps its fill inside,
+  // built as a frame its fill's size with an OUTSIDE stroke, and an icon
+  // blurred by 40px: each draws further past its frame than GAP, so laid
+  // out by boxes and shadows alone, the variants drew over each other.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [{ name: "look", type: "VARIANT", values: ["plain", "ring", "blur"], defaultValue: "plain" }];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const keys = c.tree!.base.map((n) => n.k);
+  const ring = { k: "ring", t: "F", el: "span", box: [150, -40, 100, 110], abs: 1, bg: "#ffffff", bgc: "padding-box", bd: { w: 30, s: "solid", c: "#ff0000" } };
+  Object.assign(c.base!, { combination: { look: "plain" }, slug: "look-plain" });
+  c.variants = [
+    { ...base, combination: { look: "plain" }, slug: "look-plain" },
+    { ...base, combination: { look: "ring" }, slug: "look-ring", delta: {}, treeDelta: { keys: [...keys, "ring"], set: { ring } } },
+    { ...base, combination: { look: "blur" }, slug: "look-blur", delta: {}, treeDelta: { set: { svg: { fl: "blur(40px)" } } } },
+  ] as typeof c.variants;
+  const { mock, results } = await buildAll(fixture);
+  assert.deepEqual([results[0].sets[0].variants, results[0].fallbacks], [3, []]);
+  const set = mock.nodes("COMPONENT_SET")[0];
+  const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
+  const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
+  // The stroke draws the badge's border box, 40px above the button's and
+  // 70 down, the button's frame being inside its own 1px border; the blur
+  // 40px round the icon at 9 down.
+  assert.deepEqual([at.get("look=ring")![1] - own.get("look=ring")![1], at.get("look=ring")![3] - own.get("look=ring")![1]], [-41, 69]);
+  assert.equal(at.get("look=blur")![1] - own.get("look=blur")![1], 9 - 40);
+  const drawn = [...at.entries()];
+  for (const [i, [name, a]] of drawn.entries()) {
+    assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);
+    for (const [other, b] of drawn.slice(i + 1)) {
+      assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `${name} (${a.map(Math.round)}) draws over ${other} (${b.map(Math.round)})`);
+    }
+  }
+});

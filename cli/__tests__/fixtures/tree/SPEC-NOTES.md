@@ -902,9 +902,15 @@ notes are numbered L1 on.
 L1. **The set's grid spaces variants by where they draw** (section 8.2,
    step 5, says the 0.4.0 grid code is kept unchanged).
    - A variant's drawn bounds, measured in Figma: its box, each visible
-     layer's box that no frame around it clips, and the reach of each
-     drop shadow, its radius, spread and both offsets taken on every
-     side, which is more than it draws. A designer's layers count.
+     layer's box that no frame around it clips, and how far past its box
+     each layer draws: its stroke's weight OUTSIDE, half of it CENTER
+     (an imported vector's, spike #1), the widest side's; its drop
+     shadows' radius, spread and both offsets; its layer blur's radius.
+     Each is taken on every side and they add up, which is more than
+     draws. A designer's layers count. An OUTSIDE stroke matters: a
+     border kept outside the fill (`bgc`) is built as a frame the
+     fill's size with the border as a stroke around it, so the frame's
+     box alone misses the border.
    - A row's boxes share their top edge and a column's their left edge,
      as in 0.4.0's grid. A row is as tall as the most any of its
      variants draws above that edge plus the most below it, a column as
@@ -923,7 +929,7 @@ L1. **The set's grid spaces variants by where they draw** (section 8.2,
      each other (at the icon sizes the label draws about 71px past each
      side of a 36px button, as the browser draws it) and radix Button
      6; now none, at width factor 1.045 too.
-   - The minified build is 16,254 characters, so `templates.test.ts`
+   - The minified build is 16,546 characters, so `templates.test.ts`
      allows the build 17,000 rather than 16,000. figma code packs a
      call by its whole length, template included, so this only leaves a
      call a little less room for DATA.

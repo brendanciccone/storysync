@@ -477,15 +477,22 @@ const checkLayout = (nodes, recs, slug, absolute) => {
 };
 
 // Where a variant draws, relative to it: its box, and each visible layer's
-// box and drop shadows that no frame around the layer clips. A label wider
-// than its icon button draws past it, as the browser draws it, and so do a
-// shadow and an absolute badge; the set's grid gives each variant this room.
-// A shadow's reach is taken on every side, which is more than it draws. A
-// designer's slice has no effects.
+// box, stroke, drop shadows and blur that no frame around the layer clips. A
+// label wider than its icon button draws past it, as the browser draws it,
+// and so do a shadow and an absolute badge; the set's grid gives each
+// variant this room. A stroke reaches past the box by its weight OUTSIDE,
+// half of it CENTER (an imported vector's), its widest side's; a shadow by
+// its radius, spread and both offsets; a blur by its radius. Each is taken
+// on every side, and they add up, which is more than draws. A designer's
+// slice has none of them, nor a group strokes.
 const drawn = (v) => {
   const d = [0, 0, 0, 0];
+  const reach = (n, type, f) => Math.max(0, ...(n.effects || []).map((e) => (e.visible && e.type === type ? f(e) : 0)));
   const add = (n, x, y) => {
-    const o = Math.max(0, ...(n.effects || []).map((e) => (e.visible && e.type === 'DROP_SHADOW' ? e.radius + (e.spread || 0) + Math.abs(e.offset.x) + Math.abs(e.offset.y) : 0)));
+    const s = 'strokes' in n && n.strokes.some((p) => p.visible !== false) ? { OUTSIDE: 1, CENTER: 0.5 }[n.strokeAlign] || 0 : 0;
+    const o = (s && s * (typeof n.strokeWeight === 'number' ? n.strokeWeight : Math.max(n.strokeTopWeight, n.strokeRightWeight, n.strokeBottomWeight, n.strokeLeftWeight)))
+      + reach(n, 'DROP_SHADOW', (e) => e.radius + (e.spread || 0) + Math.abs(e.offset.x) + Math.abs(e.offset.y))
+      + reach(n, 'LAYER_BLUR', (e) => e.radius);
     [x - o, y - o, x + n.width + o, y + n.height + o].map((t, i) => (d[i] = Math[i < 2 ? 'min' : 'max'](d[i], t)));
     if (isFrame(n) && !n.clipsContent) for (const c of n.children) if (c.visible) add(c, x + c.x, y + c.y);
   };
