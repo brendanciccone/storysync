@@ -91,8 +91,9 @@ for (const v of await figma.variables.getLocalVariablesAsync()) (VARS[v.resolved
 let collections = null;
 const unbound = [];
 // Where Figma refused what the design asked for and the build fell back
-// (SPIKE(n)): [component, key, what, variants], once per component, key
-// and what, however many variants it happened in.
+// (SPIKE(n)), or set a text wider than measured (keepLines): [component,
+// key, what, variants], once per component, key and what, however many
+// variants it happened in.
 const fallbacks = [];
 const seen = {};
 let at = [];
@@ -421,6 +422,42 @@ const converge = async (root, recs) => {
   return { nodes, designer };
 };
 
+// Keeps each text the browser drew whole on one line (`o`) so in Figma,
+// once the variant is laid out. Figma's font can set it wider than the box
+// it was measured in: Inter is wider than the system-ui a snap from before
+// the stand-ins measured, and Figma may one day hold another Inter than
+// snap's. At that width it would wrap, or, truncated, end in an ellipsis
+// the browser didn't draw. Such a text is built at its own width in Figma
+// instead, wider than measured, still truncating should it shrink. One that
+// fills its parent can't take a width of its own: where it truncates it is
+// named, since verify can't see an ellipsis; where it wraps, verify sees it.
+const keepLines = (nodes, recs) => {
+  for (let i = 1; i < recs.length; i++) {
+    const st = S[recs[i][7]];
+    const t = st.t;
+    if (!t || !t.o) continue;
+    const n = nodes[i];
+    // Without its line limit a truncated text wraps where it would be cut.
+    n.maxLines = null;
+    const wraps = n.height >= 1.5 * recs[i][6];
+    n.maxLines = t.tr || null;
+    if (!wraps) continue;
+    at[2] = S[recs[i][0]];
+    const fills = (st.z || [])[0] === 'L';
+    if (fills && !t.tr) continue;
+    if (!fills) {
+      n.textAutoResize = 'WIDTH_AND_HEIGHT';
+      if (t.tr) {
+        n.resize(n.width, n.height);
+        n.textAutoResize = 'HEIGHT';
+        n.textTruncation = 'ENDING';
+        n.maxLines = t.tr;
+      }
+    }
+    fallback(fills ? 'cut short' : 'kept on one line', 'Figma sets it wider');
+  }
+};
+
 // Checks each auto layout frame inside Figma (section 8.5): every child in
 // its flow must sit where the browser drew it relative to what places it,
 // the content edge, its center, or the sibling before it. A frame where
@@ -573,6 +610,7 @@ for (const [s, set] of DATA.sets.entries()) {
       }
       if (want === 'COMPONENT_SET') variant.name = name;
       const { nodes, designer } = await converge(variant, recs);
+      keepLines(nodes, recs);
       designerLayers += designer;
       if (src) checkLayout(nodes, recs, slug, absoluteContainers);
       put(variant, 'slug', slug);

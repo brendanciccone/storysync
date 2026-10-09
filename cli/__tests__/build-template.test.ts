@@ -177,6 +177,53 @@ test("build: truncation is set after the size and textAutoResize, which turn it 
   }
 });
 
+test("build: a label the browser drew whole stays whole on one line where Figma's font sets it wider, and is named", async () => {
+  // Sidebar's menu labels were measured in system-ui, which Figma sets in
+  // Inter, wider: "Home" 38.25 in the browser, 39.04 in Inter. At its
+  // measured width it would end in an ellipsis the browser didn't draw.
+  const fixture = loadTreeFixture("sidebar");
+  const { mock, results } = await buildAll(fixture, { measure: figmaFonts() });
+  const spans = texts(mock, /sidebar-menu-button(:\d)?\/span$/);
+  assert.equal(spans.length, 5);
+  const inter = figmaFonts();
+  for (const t of spans) {
+    const own = inter.advance(t.chars, { family: "Inter", style: "Regular", size: 14, letterSpacing: 0 });
+    // At least as wide as Inter sets it, rounded up as Figma rounds a hugging text, so nothing is cut; still truncating, on one line.
+    assert.deepEqual([t.w, t.h, t.tr, t.max, t.ar], [Math.ceil(own), 20, "ENDING", 1, "HEIGHT"], t.key);
+  }
+  assert.deepEqual(results[0].fallbacks.map(([, key, what, n]) => [key.replace(/.*\//, ""), what, n]).filter(([key]) => key === "span"),
+    spans.map(() => ["span", "kept on one line: Figma sets it wider", 1]));
+  // As wide as the browser drew it, it is left as built, and nothing is named.
+  const faithful = await buildAll(fixture);
+  assert.deepEqual(faithful.results[0].fallbacks, []);
+  assert.ok(texts(faithful.mock, /\/span$/).every((t) => t.w < 60 && t.max === 1));
+});
+
+test("build: a one-line label in a box Figma's font overflows is set to its own width instead of wrapping; one that fills its parent is named", async () => {
+  const fixture = synthetic("Labels", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 60], L: { d: "block" } },
+    // In a box 10% wider than its glyphs as the browser drew them, which Inter, wider, doesn't fit.
+    { k: "label", t: "T", el: "p", box: [0, 0, 33, 20], tx: { c: "Home", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ink: [0, 1, 30, 17] } },
+    // Across the block, whole and truncatable in the browser, wider than the block in Inter.
+    { k: "fill", t: "T", el: "span", box: [0, 20, 200, 20], tx: { c: "sales-dashboard.pdf sales-dashboard.pdf", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, el: 1, ws: "nowrap", ink: [0, 1, 190, 17] } },
+    // Across it too, not truncated: it wraps in Figma, as verify's lines see, and isn't named.
+    { k: "wrap", t: "T", el: "p", box: [0, 40, 200, 20], tx: { c: "sales-dashboard.pdf sales-dashboard.pdf", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ink: [0, 1, 150, 17] } },
+  ], { width: 200, height: 60, display: "block" });
+  const { mock, results } = await buildAll(fixture, { measure: figmaFonts() });
+  const [label] = texts(mock, /^label$/);
+  // Inter's 39.04, rounded up as Figma rounds a hugging text: on one line, past its 33px box.
+  assert.deepEqual([label.ar, label.w, label.h, label.tr], ["WIDTH_AND_HEIGHT", 40, 20, "DISABLED"]);
+  // The filling one keeps its width and its truncation, cut short where the browser showed it whole: named.
+  const [fill] = texts(mock, /^fill$/);
+  assert.deepEqual([fill.ar, fill.w, fill.h, fill.tr, fill.max], ["HEIGHT", 200, 20, "ENDING", 1]);
+  const [wrap] = texts(mock, /^wrap$/);
+  assert.deepEqual([wrap.ar, wrap.w, wrap.h, wrap.tr], ["HEIGHT", 200, 40, "DISABLED"]);
+  assert.deepEqual(results[0].fallbacks.map(([, key, what]) => `${key} ${what}`), [
+    "label kept on one line: Figma sets it wider",
+    "fill cut short: Figma sets it wider",
+  ]);
+});
+
 test("build: a frame Figma lays out otherwise than planned is built without auto layout, each child where snap measured it", async () => {
   for (const [name, tweak] of [
     ["button-icon", (L: { g: number }) => { L.g += 12; }],

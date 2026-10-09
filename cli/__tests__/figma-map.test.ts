@@ -138,10 +138,20 @@ test("textSizesItself: one line at its glyphs' width hugs; a wider box, more lin
 test("nodeStyle: a text's properties, sizing and truncation", () => {
   assert.deepEqual(nodeStyle(text({}), ctx()).t, { c: "Notifications", f: "system-ui", w: 500, z: 16, l: 24, ar: "W" });
   const all = nodeStyle(text({ tt: "uppercase", td: "line-through", ta: "center", it: 1, ls: 0.5, lh: "normal", el: 1 }), ctx()).t;
-  assert.deepEqual(all, { c: "Notifications", f: "system-ui", w: 500, z: 16, l: 0, ar: "H", i: 1, s: 0.5, tc: "UPPER", td: "STRIKETHROUGH", ta: "CENTER", tr: 1 });
+  assert.deepEqual(all, { c: "Notifications", f: "system-ui", w: 500, z: 16, l: 0, ar: "H", i: 1, s: 0.5, tc: "UPPER", td: "STRIKETHROUGH", ta: "CENTER", tr: 1, o: 1 });
   assert.equal(nodeStyle(text({ cl: 3, n: 3 }), ctx()).t!.tr, 3);
   // A text has no layer name of its own: Figma names it by its characters.
   assert.equal(nodeStyle(text({}), ctx()).n, undefined);
+});
+
+test("nodeStyle: a label the browser drew whole on one line in a box Figma sets at its width is marked to stay so", () => {
+  // In a wider box, centered; truncatable, but whole: each is kept on one line should Figma set it wider.
+  assert.equal(nodeStyle(text({ ta: "center", ink: [120, 3, 94.17, 18] }, [0, 0, 336, 24]), ctx()).t!.o, 1);
+  assert.equal(nodeStyle(text({ el: 1 }), ctx()).t!.o, 1);
+  // Cut off by its ellipsis, wrapped, or sizing itself: none is.
+  assert.equal(nodeStyle(text({ el: 1, ink: [0, 3, 140, 18] }, [0, 0, 94, 24]), ctx()).t!.o, undefined);
+  assert.equal(nodeStyle(text({ n: 2, lh: 24, ink: [0, 3, 90, 42] }, [0, 0, 94, 48]), ctx()).t!.o, undefined);
+  assert.equal(nodeStyle(text({}), ctx()).t!.o, undefined);
 });
 
 test("nodeStyle: the stand-in a text's family gets in Figma, from the one mapping snap measures with", () => {
