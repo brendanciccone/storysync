@@ -21,25 +21,30 @@ import { RECORD, flowOf, parentKey, rootWithStyles } from "./tree-types.js";
 import type { Box, ComponentTree, Flow, Sides, TreeNode } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
-// --- Behavior the Figma spike settles ----------------------------------------
+// --- What the Figma spike saw -------------------------------------------------
 
 /**
- * What verify assumes about Figma until the spike (design section 14)
- * measures it live. Each is the design's expected answer; set one false to
- * switch to its fallback, which leaves the property it covers out of the
- * score and lists it under coverage instead.
+ * What verify takes of Figma from the design's spike (section 14), which
+ * measured it live on 2026-10-08 (cli/__tests__/fixtures/figma-spike.json).
+ * Each is what the spike saw. Set one false, here or for one call through
+ * VerifyOptions.spike, to score a Figma that behaves otherwise: the property
+ * it covers is then left out of the score and listed under coverage.
  *
  * - `imageBytesKept` (item 10): an image upload_assets stored reads back
- *   byte for byte, so its content is the FNV-1a of the thumbnail snap wrote.
- *   Fallback: content is scored by an image being there at the thumbnail's
- *   pixel size.
- * - `shadowSpreadKept` (item 2): a shadow's spread reads back as built.
- *   Fallback: spread is left out of the comparison.
- * - `textTruncation` (item 3): Figma takes `textTruncation` and `maxLines`.
- *   Fallback: whether a text is cut off is left unscored.
+ *   byte for byte. The spike's thumbnail came back as the same 2,186 bytes,
+ *   hashed by their SHA-1, so an image's content is proven by the FNV-1a of
+ *   the thumbnail snap wrote. Otherwise it is scored by an image being there
+ *   at the thumbnail's pixel size.
+ * - `shadowSpreadKept` (item 2): a shadow's spread reads back as built, as a
+ *   spread of 1 did on a frame, clipped or not. Otherwise spread is left out
+ *   of the comparison.
+ * - `textTruncation` (item 3): Figma takes `textTruncation` ENDING and
+ *   `maxLines`, as it did on a 94px label, kept 94 by 20. Otherwise whether
+ *   a text is cut off is left unscored.
  *
- * The rest of the spike's items are the build's (cli/figma-code.ts) or, for
- * how use_figma returns a value, the readback template's (RETURN_TEXT).
+ * The rest of the spike's items are the build's (cli/figma-spike.ts) or, for
+ * how use_figma returns a value, the readback template's (RETURN_TEXT, false:
+ * the spike saw the object come back as JSON).
  */
 export interface SpikeAssumptions {
   imageBytesKept: boolean;
@@ -60,7 +65,9 @@ const MIN_SIZE_TOLERANCE_PX = 1;
 const SIZE_TOLERANCE_RATIO = 0.03;
 /**
  * A text's width when Figma sets it in another family than the browser drew
- * it in, a stand-in: system-ui drawn in Inter measured 4.2% wider. To be
+ * it in, a stand-in: system-ui drawn in Inter measured 4.2% wider in a
+ * prototype, and in the spike Figma set "Login with Email Button" in Inter
+ * Medium 158 wide where Chrome drew it 154.8 in system-ui, 2.1% wider. To be
  * tuned on the first live push (design risk R1).
  */
 const STAND_IN_WIDTH_RATIO = 0.06;

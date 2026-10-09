@@ -609,7 +609,7 @@ function sameShadows(a: unknown, b: unknown, tolerance: number, spike: SpikeAssu
     return closeEnough(x.offsetX, y.offsetX, tolerance)
       && closeEnough(x.offsetY, y.offsetY, tolerance)
       && closeEnough(x.blur, y.blur, tolerance)
-      // Unless the spike finds Figma drops a shadow's spread (verify-tree SPIKE).
+      // Figma keeps a spread, as the spike saw (verify-tree SPIKE).
       && (!spike.shadowSpreadKept || closeEnough(x.spread, y.spread, tolerance))
       && sameColor(x.color, y.color)
       // An inset ring built as a drop shadow draws outside the element.
@@ -656,8 +656,8 @@ function sameNumericRecord(a: unknown, b: unknown, tolerance: number): boolean {
  * True when a Figma value matches the measured one. Comparison is per-property
  * because the meaningful notion of equality differs: colors are
  * case-insensitive strings, lengths need a tolerance for sub-pixel rounding.
- * `spike` is what to assume of Figma where the spike hasn't said (verify-tree
- * SPIKE): whether a shadow's spread survives, here.
+ * `spike` is what Figma does, as the spike saw it (verify-tree SPIKE):
+ * whether a shadow's spread survives, here.
  */
 export function propertyMatches(
   property: ComparableProperty,
@@ -1063,7 +1063,7 @@ export interface VerifyOptions extends ReadbackCheckOptions {
   rootsOnly?: boolean;
   /** Planned read calls with no result saved, from loadPlanResults: reported, and a --strict failure. */
   notRead?: number[];
-  /** What to assume of Figma where the spike hasn't said: see verify-tree SPIKE. */
+  /** What Figma does, as the spike saw it: see verify-tree SPIKE. */
   spike?: SpikeAssumptions;
   /**
    * Whether layers a designer added inside variants pass --strict

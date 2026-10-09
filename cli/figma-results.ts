@@ -101,10 +101,11 @@ function isReadResult(value: unknown): value is ReadResult {
 
 /**
  * The read result in what the agent saved: use_figma's text as it came, the
- * returned object as JSON, or that again as a JSON string, as the template
- * returns one should the tool not show objects (its RETURN_TEXT), or the
- * MCP result around it, `{ content: [{ type: "text", text }] }`. Null when
- * none of those holds one: the call failed, and the text is its error.
+ * returned object as JSON, which is what the spike saw the tool give (item
+ * 7); or that again as a JSON string, as the template returns one with its
+ * RETURN_TEXT on; or the MCP result around it, `{ content: [{ type: "text",
+ * text }] }`. Null when none of those holds one: the call failed, and the
+ * text is its error.
  */
 export function parseReadResult(text: string): ReadResult | null {
   const found = findToolValue([text], isReadResult);

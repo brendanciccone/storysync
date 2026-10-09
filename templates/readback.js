@@ -67,10 +67,10 @@
 
 if (TPL !== 2) throw new Error('This is readback template 2, not ' + TPL);
 
-// Spike-dependent (design section 14, item 7): how use_figma shows what a
-// call returns. false returns the object, which the tool writes as JSON;
-// true returns it as a JSON string, should the tool turn an object into
-// anything else. verify reads either (cli/figma-results.ts).
+// How use_figma shows what a call returns (design section 14, item 7): the
+// spike saw the tool write a returned object as JSON, so false returns the
+// object. true would return it as a JSON string, should the tool ever turn
+// an object into anything else. verify reads either (cli/figma-results.ts).
 const RETURN_TEXT = false;
 
 const NS = 'storysync';
