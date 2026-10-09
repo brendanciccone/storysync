@@ -10,6 +10,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readbackChecksum } from "../verify.js";
+import type { ReadbackFile } from "../verify.js";
+import { buildAndRead, buildFixture, newFigma, readBack, assemble } from "./tree-harness.js";
+import { loadTreeFixture } from "./mock-figma.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
@@ -489,4 +492,62 @@ test("verify CLI: a text layout snap measured, against a readback without textLa
   const plain = verify(snapOfTwo(), older, "--strict");
   assert.equal(plain.status, 0, plain.out);
   assert.doesNotMatch(plain.out, /Not compared/);
+});
+
+
+// --- Element trees ---------------------------------------------------------------
+
+test("verify CLI: a tree snap is scored by elements, a faithful build passes --strict and says so", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const r = verify(fixture, readback, "--strict");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /Fidelity: 100\.0% of elements \(4\/4\), 100\.0% of properties \(\d+\/\d+\)/);
+  assert.match(r.out, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
+  assert.match(r.out, /Figma matches the measured styles for ui\/base\/Switch/);
+  assert.doesNotMatch(r.out, /only the outer element/);
+  assert.doesNotMatch(r.out, /Variables: this readback doesn't say/);
+  const json = JSON.parse(verify(fixture, readback, "--json").out);
+  assert.equal(json.elementFidelity, 1);
+  assert.equal(json.summary.elements.measured, 4);
+});
+
+test("verify CLI: an element missing, or a designer's layer, fails --strict and is named by key and node", async () => {
+  const ctx = await buildAndRead("switch");
+  const thumb = ctx.built.variants[1].layers["switch-thumb"];
+  await ctx.figma.run(`(await figma.getNodeByIdAsync(${JSON.stringify(thumb)})).remove();
+    const v = await figma.getNodeByIdAsync(${JSON.stringify(ctx.built.variants[0].id)}); const r = figma.createRectangle(); r.name = 'Note'; v.appendChild(r);`);
+  const again = assemble(await readBack(ctx.figma, [[ctx.built.component, 0, 1, 0]]));
+  const r = verify(ctx.fixture, again, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Fidelity: 75\.0% of elements \(3\/4\)/);
+  assert.match(r.out, /- ui\/base\/Switch size=sm › switch-thumb: missing from Figma/);
+  assert.match(r.out, /\? ui\/base\/Switch size=default: a layer nothing keyed, "Note" \(RECTANGLE, node \d+:\d+\): a designer's, not scored/);
+  assert.doesNotMatch(r.out, /Figma matches/);
+  assert.equal(verify(ctx.fixture, again).status, 0, "a score, not a failure, without --strict");
+});
+
+test("verify CLI: a readback from before trees against a tree snap fails --strict, its roots still scored", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const v1 = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+  for (const entry of Object.values(v1.components)) {
+    for (const [slug, e] of Object.entries(entry.variants)) {
+      const { tpl: _t, name: _n, built: _b, tree: _tr, designerLayers: _d, boxShadow: _s, checksum: _c, ...rest } = e;
+      entry.variants[slug] = { ...rest, checksum: readbackChecksum(entry.nodeId!, slug, rest) };
+    }
+  }
+  const r = verify(fixture, v1, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /not read back 2/);
+  assert.match(r.out, /ui\/base\/Switch size-sm: read back without its tree, so only its root was compared/);
+});
+
+test("verify CLI: placeholders for variants snap couldn't measure fail --strict-measured, not --strict", async () => {
+  const figma = newFigma();
+  const fixture = loadTreeFixture("button-icon");
+  const built = await buildFixture(figma, fixture);
+  const readback = assemble(await readBack(figma, [[built.component, 0, fixture.components[0].variants.length - 1, 0]]));
+  const strict = verify(fixture, readback, "--strict");
+  assert.match(strict.out, /not measured 2/);
+  assert.match(strict.out, /\? ui\/base\/Button variant=link, size=xs: not measured, so Figma holds a placeholder for it/);
+  assert.equal(verify(fixture, readback, "--strict-measured").status, 1);
 });

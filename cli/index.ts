@@ -12,7 +12,7 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
-import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures } from "./verify.js";
 import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
@@ -491,7 +491,10 @@ program
         const excludedNote = excluded > 0
           ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`)
           : "";
-        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        // Elements first where snap measured them (cli/verify.ts formatElementReport).
+        const elementReport = formatElementReport(result);
+        if (elementReport.length) for (const line of elementReport) console.log(line);
+        else console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
         if (result.skipped.length > 0) {
           console.log(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }
@@ -538,7 +541,8 @@ program
         }
 
         for (const variant of result.variants) {
-          if (variant.status === "verified" || variant.status === "unverified_readback") continue;
+          // A variant scored element by element is in the element report.
+          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.elements || variant.status === "not_measured") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
             continue;
@@ -559,6 +563,7 @@ program
           && (result.snapIssues?.length ?? 0) === 0
           && result.componentsNotInSnap.length === 0
           && readbackIssues.length === 0
+          && treeStrictFailures(result, { allowDesignerLayers: true }).length === 0
           && result.summary.propertiesCompared > 0;
         // Not of a component with something measured left uncompared.
         const uncomparedComponents = new Set(result.uncompared.map((u) => u.component));
@@ -608,7 +613,7 @@ program
               console.log(chalk.yellow(`      ${u.component} ${u.field}, on ${u.variants} ${u.variants === 1 ? "variant" : "variants"}`));
             }
           }
-        } else if (scored > 0) {
+        } else if (scored > 0 && result.elementFidelity === undefined) {
           console.log(chalk.dim("  Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen. Read it back with the skill's template as it is now."));
         }
 
@@ -646,7 +651,8 @@ program
         || (result.snapIssues?.length ?? 0) > 0
         || result.componentsNotInSnap.length > 0
         || (result.readbackIssues?.length ?? 0) > 0
-        || result.uncompared.length > 0;
+        || result.uncompared.length > 0
+        || treeStrictFailures(result, { allowDesignerLayers: !!opts.allowDesignerLayers }).length > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one. So
       // does a variant snap measured without knowing the story was given its
@@ -654,7 +660,8 @@ program
       const notMeasured = result.summary.inferred > 0
         || result.summary.unrecorded > 0
         || result.summary.unmeasured > 0
-        || result.caveats.some((c) => c.kind === "args-unchecked");
+        || result.caveats.some((c) => c.kind === "args-unchecked")
+        || (result.summary.notMeasured ?? 0) > 0;
       // An age that cannot be established is not a pass. `meta.json` is the
       // file most likely to be gitignored, so failing open here would make
       // --strict-age succeed unconditionally in exactly the CI setup the

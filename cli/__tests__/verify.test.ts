@@ -10,7 +10,7 @@ import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { headlineFidelity, slugOfKey } from "../verify.js";
+import { headlineFidelity, slugOfKey, formatElementReport } from "../verify.js";
 import { buildAndRead } from "./tree-harness.js";
 import { loadTreeFixture } from "./mock-figma.js";
 import { join } from "node:path";
@@ -1557,4 +1557,23 @@ test("element readback: a later part needs only its part's fields, every other e
   assert.equal(slugOfKey("size-sm#12"), "size-sm");
   assert.equal(slugOfKey("size-sm"), "size-sm");
   assert.equal(slugOfKey("#text"), "#text");
+});
+
+test("element report: the headline is element fidelity beside the share of properties, then what drifted by key and node", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const clean = formatElementReport(verify(fixture, readback, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(clean, /^\nFidelity: 100\.0% of elements \(4\/4\), 100\.0% of properties \(\d+\/\d+\)$/m);
+  assert.match(clean, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
+  const thumb = readback.components["ui/base/Switch"].variants["size-sm"].tree![1] as unknown[];
+  const tampered = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+  const entry = tampered.components["ui/base/Switch"].variants["size-sm"];
+  (entry.tree![1] as unknown[])[6] = ["#f5f5f5"];
+  const { checksum: _c, ...rest } = entry;
+  entry.checksum = readbackChecksum(tampered.components["ui/base/Switch"].nodeId!, "size-sm", rest);
+  const report = formatElementReport(verify(fixture, tampered, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(report, /Fidelity: 9\d\.\d% of elements \(3\/4\)/);
+  assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
+  assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
+  assert.doesNotMatch(report, /coverage/, "a Switch has nothing verify can't score");
+  assert.deepEqual(formatElementReport(verify(loadTreeFixture("switch"), readback, 0.5, { rootsOnly: true })), []);
 });

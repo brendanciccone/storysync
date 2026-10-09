@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import chalk from "chalk";
 import { canonicalJson, fnv1a32 } from "./checksum.js";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import { expandTree, rootWithStyles, treeDigest } from "./tree-types.js";
@@ -1684,3 +1685,90 @@ function firstLine(err: unknown): string {
   return String(err instanceof Error ? err.message : err).split("\n")[0].trim();
 }
 
+// --- Element report ------------------------------------------------------------
+
+/** How many nodes' drift the report prints before it points at --json for the rest. */
+const REPORT_NODE_LINES = 40;
+
+const percent = (n: number | null | undefined) => (n == null ? "n/a" : `${(n * 100).toFixed(1)}%`);
+const count = (n: number) => n.toLocaleString("en-US");
+
+/** A value as a drift line shows it: a color or name as it is, anything else as JSON. */
+function shown(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value) ?? "nothing";
+}
+
+/**
+ * verify's report where it scored elements (design section 10.6): the
+ * headline, element fidelity beside the share of properties; the worst
+ * component; the counts; coverage; then each element missing, extra or
+ * drifted, by component, variant and key, with its Figma node id; the
+ * layers designers added; and the variants not measured. Lines to print,
+ * colored. Nothing for a run that scored no elements.
+ */
+export function formatElementReport(result: VerifyResult): string[] {
+  if (result.elementFidelity === undefined) return [];
+  const lines: string[] = [];
+  const { summary } = result;
+  const e = summary.elements ?? { measured: 0, verified: 0, drifted: 0, missing: 0, extra: 0, designerLayers: 0, notReadBack: 0 };
+  const excluded = summary.unverifiedReadback;
+  const excludedNote = excluded > 0 ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`) : "";
+  lines.push(`\nFidelity: ${chalk.bold(`${percent(result.elementFidelity)} of elements`)} ${chalk.dim(`(${count(e.verified)}/${count(e.measured + e.extra)})`)}, `
+    + `${percent(result.fidelity)} of properties ${chalk.dim(`(${count(summary.propertiesMatched)}/${count(summary.propertiesCompared)})`)}${excludedNote}`);
+
+  // The component scoring lowest, where one is below 100%.
+  const byComponent = new Map<string, { score: number; elements: number }>();
+  for (const v of result.variants) {
+    if (!v.elements) continue;
+    const seen = byComponent.get(v.component) ?? { score: 0, elements: 0 };
+    seen.score += (v.elements.fidelity ?? 0) * (v.elements.measured + v.elements.extra);
+    seen.elements += v.elements.measured + v.elements.extra;
+    byComponent.set(v.component, seen);
+  }
+  const worst = [...byComponent].map(([name, s]) => [name, s.elements ? s.score / s.elements : 1] as const).sort((a, b) => a[1] - b[1])[0];
+  if (worst && worst[1] < 1) lines.push(`  worst: ${worst[0]} ${percent(worst[1])} of elements`);
+
+  const counts = [
+    `missing ${e.missing}`, `drifted ${e.drifted}`, `extra ${e.extra}`, `designer layers ${e.designerLayers}`,
+    `not measured ${summary.notMeasured ?? 0}`,
+    ...(e.notReadBack ? [`not read back ${e.notReadBack}`] : []),
+  ];
+  const clean = !e.missing && !e.drifted && !e.extra && !e.notReadBack;
+  lines.push(`  ${(clean ? chalk.dim : chalk.red)(counts.join(" · "))}`);
+
+  const unscorable = result.unscorable ?? [];
+  if (unscorable.length) {
+    const named = unscorable.slice(0, 3).map((u) => `${u.reason} on ${u.component} › ${u.key || "(root)"}`);
+    const more = unscorable.length > 3 ? `, and ${unscorable.length - 3} more (--json lists them)` : "";
+    lines.push(chalk.dim(`  coverage ${percent(result.coverage)}: not scored: ${named.join("; ")}${more}`));
+  }
+
+  // Missing first, then extra, then drifted, each by key and Figma node id.
+  const drift: { order: number; text: string }[] = [];
+  for (const v of result.variants) {
+    for (const node of v.nodes ?? []) {
+      const where = `${v.component} ${v.name || v.slug} › ${node.key || "(root)"}`;
+      const id = node.figmaId ? ` (node ${node.figmaId})` : "";
+      if (node.status === "missing") drift.push({ order: 0, text: chalk.red(`  - ${where}: missing from Figma`) });
+      else if (node.status === "extra") drift.push({ order: 1, text: chalk.red(`  + ${where}: in Figma${id}, but snap no longer measures it`) });
+      else {
+        const gate = node.gate ? chalk.red(` [${node.gate} wrong, so it scores 0]`) : "";
+        const diffs = node.differences.map((d) => `${d.property} measured ${shown(d.measured)}, Figma ${shown(d.figma)}`).join("; ");
+        drift.push({ order: 2, text: `  ${chalk.red("~")} ${where}: ${diffs}${id}${gate}` });
+      }
+    }
+  }
+  drift.sort((a, b) => a.order - b.order);
+  for (const line of drift.slice(0, REPORT_NODE_LINES)) lines.push(line.text);
+  if (drift.length > REPORT_NODE_LINES) lines.push(chalk.dim(`  … and ${drift.length - REPORT_NODE_LINES} more (--json lists every one)`));
+
+  for (const v of result.variants) {
+    if (v.childrenNotReadBack) lines.push(chalk.red(`  ! ${v.component} ${v.slug}: read back without its tree, so only its root was compared; read it again with the calls \`storysync figma code\` writes`));
+    for (const [name, type, id] of v.designerLayers ?? []) {
+      lines.push(chalk.yellow(`  ? ${v.component} ${v.name || v.slug}: a layer nothing keyed, "${name}" (${type}, node ${id}): a designer's, not scored`));
+    }
+    if (v.status === "not_measured") lines.push(chalk.yellow(`  ? ${v.component} ${v.name || v.slug}: not measured, so Figma holds a placeholder for it; snap's warning names the story change it needs`));
+  }
+  for (const seq of result.notRead ?? []) lines.push(chalk.red(`  ! planned read call ${seq} has no result saved, so what it reads wasn't scored`));
+  return lines;
+}
