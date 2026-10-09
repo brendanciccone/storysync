@@ -54,6 +54,9 @@ export const TREE_PROPERTY_DEFAULTS: Readonly<Record<string, string>> = {
   transform: "none", "clip-path": "none", isolation: "auto", "overflow-x": "visible", "overflow-y": "visible", visibility: "visible",
   "outline-style": "none", "outline-width": "0px", "outline-color": "", "outline-offset": "0px",
   "object-fit": "fill", "object-position": "50% 50%", appearance: "none",
+  // What else makes an element the containing block of fixed and absolute ones: see holdsFixed.
+  translate: "none", rotate: "none", scale: "none", perspective: "none", "offset-path": "none",
+  "will-change": "auto", contain: "none", "content-visibility": "visible", "transform-style": "flat",
 };
 
 /** What the page reads off an element holding a run of text, an input, or a pseudo-element with text: all of them, every time. */
@@ -437,8 +440,23 @@ function contentBox(el: RawTreeElement): Box {
 
 // --- Elements placed against the page -------------------------------------------
 
-/** Whether an element is the containing block of `fixed` elements in it, as of `absolute` ones: a transform or filter makes it one. */
-const holdsFixed = (css: Css) => css("transform") !== "none" || css("filter") !== "none" || css("backdrop-filter") !== "none";
+/** Properties whose every value but `none` makes an element the containing block of fixed and absolute elements in it. */
+const CONTAINING = ["transform", "translate", "rotate", "scale", "perspective", "filter", "backdrop-filter", "offset-path"];
+
+/**
+ * Whether an element is the containing block of `fixed` elements in it, as
+ * of `absolute` ones. In Chromium 154 these make one, each checked in the
+ * browser (SPEC-NOTES L5): CONTAINING, `will-change` naming one of them,
+ * `contain` or `transform-style`, layout or paint containment, and
+ * `content-visibility` other than `visible`. Base UI's Slider thumb, at
+ * `translate: -50% -50%`, holds its `fixed` input so. `container-type`
+ * doesn't, nor size or style containment alone.
+ */
+const holdsFixed = (css: Css) =>
+  CONTAINING.some((p) => css(p) !== "none") ||
+  css("will-change").split(/,\s*/).some((p) => CONTAINING.includes(p) || p === "contain" || p === "transform-style") ||
+  /\b(layout|paint|strict|content)\b/.test(css("contain")) ||
+  css("content-visibility") !== "visible" || css("transform-style") === "preserve-3d";
 
 /**
  * Moves the elements the root's own box doesn't place, so what they draw

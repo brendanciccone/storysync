@@ -923,12 +923,27 @@ L2. **The mock's groups have effects**, as Figma's GroupNode does
    the mock threw.
 L3. **An element placed against the window or page is measured inside
    its root's box** (section 6.9, positioning, extended).
-   - Such an element is `fixed` with no transform or filter in the tree
-     to hold it, or `absolute` with nothing positioned around it in the
+   - Such an element is `fixed` with nothing in the tree to hold it, or
+     `absolute` with nothing positioned or holding it around it in the
      tree, it or the outermost wrapper collapsed into it. Where it draws
      depends on the window, not the component: shadcn's Sidebar
      container, `fixed` at `right-0` for side=right, drew 1024px right
      of its own 256px root in snap's 1280px window.
+   - What holds a fixed element, as an absolute one, in Chromium 154,
+     each value tried on a static page: `transform`, `translate`,
+     `rotate`, `scale`, `perspective`, `filter`, `backdrop-filter` and
+     `offset-path` other than `none`; `will-change` naming any of them,
+     `contain` or `transform-style`; `contain` with layout or paint
+     (`layout`, `paint`, `content`, `strict`); `content-visibility`
+     `auto` or `hidden`; `transform-style: preserve-3d`. Not
+     `container-type`, size or style containment alone, `will-change:
+     opacity`, `isolation`, `clip-path`, a mask, opacity or a blend
+     mode. The tree's page reads the ones it didn't (they join
+     TREE_PROPERTY_DEFAULTS); a capture without them reads them as
+     their defaults, as before. Base UI's Slider thumb is at
+     `translate: -50% -50%` and its input `fixed` at the thumb's corner,
+     where Chrome draws it: read by transform alone, the input moved 5px
+     and Slider gained a warning (fixtures/raw/slider.json).
    - Where such elements draw outside the root's box, snap moves them,
      together, as far as it takes and no further: what they cover then
      starts inside the box, or at its corner when larger. What is inside
@@ -937,9 +952,7 @@ L3. **An element placed against the window or page is measured inside
    - A component warning names each element moved. No `approx` is set:
      the build puts the element where snap now records it, and verify
      scores it there as any other.
-   - Not read: `perspective`, `contain` and `will-change`, which also
-     hold fixed elements. A transform or filter on an ancestor outside
-     the root is not seen either.
+   - Not seen: what holds it on an ancestor outside the root.
 L4. **Open overlay content in a portal is measured when the story's root
    shows nothing that draws, or only a closed trigger** (section 6.1;
    chooseMeasuredElement gains a step).

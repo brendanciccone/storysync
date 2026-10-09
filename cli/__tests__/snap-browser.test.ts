@@ -667,6 +667,12 @@ test("captureTreeInPage: sends only what differs from a default, and nothing a p
   assert.deepEqual(raw.root.cs, { display: "flex", "border-top-width": "1px", "border-top-color": "rgb(229, 229, 229)" });
 });
 
+test("captureTreeInPage: reads what makes an element hold the fixed and absolute elements in it, a translate as a transform", () => {
+  // Base UI's Slider thumb: `translate`, not `transform`, holds its `fixed` input.
+  const holds = { translate: "-50% -50%", rotate: "5deg", scale: "1.1", perspective: "100px", "offset-path": 'path("M 0 0")', "will-change": "transform", contain: "paint", "content-visibility": "auto", "transform-style": "preserve-3d" };
+  assert.deepEqual(readTree({ tag: "div", rect: [0, 0, 16, 16], style: { ...holds, "box-sizing": "border-box" } }).root.cs, holds);
+});
+
 test("captureTreeInPage: a pseudo-element that draws, though its color's last channel is 0, and none that is transparent", () => {
   // rgb(255, 165, 0) is orange: read as transparent, its ::after went missing.
   const raw = readTree({

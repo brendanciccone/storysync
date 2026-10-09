@@ -258,6 +258,31 @@ test("buildTree: an element placed against the window or page, drawn outside the
   assert.deepEqual(buildTree(tree(inTransform)).nodes[1].box, [600, 0, 10, 10]);
 });
 
+test("buildTree: a fixed or absolute element in one that translate, will-change, containment and the like make its containing block stays where it drew", () => {
+  // Base UI's Slider: the thumb is at `translate: -50% -50%`, its input
+  // `fixed` at the thumb's corner, where Chrome draws it. Read as placed
+  // against the window, the input moved 5px down, with a warning.
+  const slider = buildTree(raw("slider"));
+  assert.deepEqual(byKey(slider.nodes).get("div/slider-thumb/input")!.box, [0, 0, 14, 14]);
+  assert.deepEqual(slider.notes, []);
+
+  // What Chromium 154 draws a fixed and an absolute element in as their
+  // containing block, and what it doesn't, each checked in the browser.
+  const holds: Record<string, string>[] = [
+    { translate: "-50% -50%" }, { translate: "0px" }, { rotate: "0deg" }, { scale: "1" }, { perspective: "100px" }, { "offset-path": 'path("M 0 0")' },
+    { "will-change": "transform" }, { "will-change": "opacity, filter" }, { "will-change": "contain" }, { "will-change": "transform-style" },
+    { contain: "paint" }, { contain: "layout" }, { contain: "content" }, { contain: "strict" }, { contain: "inline-size layout" },
+    { "content-visibility": "auto" }, { "content-visibility": "hidden" }, { "transform-style": "preserve-3d" },
+  ];
+  const not: Record<string, string>[] = [{ "will-change": "opacity" }, { "will-change": "top" }, { contain: "size" }, { contain: "style" }, { isolation: "isolate" }, { "clip-path": "inset(0px)" }];
+  for (const position of ["fixed", "absolute"]) {
+    const holder = (cs: Record<string, string>) =>
+      tree(el("span", [0, 0, 40, 40], cs, [el("span", [36, -6, 10, 10], { position, "background-color": "rgb(255, 0, 0)" })]));
+    for (const cs of holds) assert.deepEqual(buildTree(holder(cs)).nodes[1].box, [36, -6, 10, 10], `${position} in ${JSON.stringify(cs)}`);
+    for (const cs of not) assert.deepEqual(buildTree(holder(cs)).nodes[1].box, [30, 0, 10, 10], `${position} in ${JSON.stringify(cs)}`);
+  }
+});
+
 test("buildTree: an input laid over what draws, transparent and drawing nothing, is left out; one showing text is kept", () => {
   const overlay = el("input", [0, 0, 100, 40], { position: "absolute" }, [], {
     text: { ...TEXT, color: "rgba(0, 0, 0, 0)" }, input: { type: "text", value: "", placeholder: "", advance: 0 },
