@@ -9,7 +9,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -733,6 +733,23 @@ test("snap CLI: --stories reaches the run, which refuses a name no component has
     const twice = await run("snap", "--storybook", storybook, "--out", out, "--stories", "Button=forms-button--primary", "--stories", "Card=nope--x");
     assert.equal(twice.status, 1, twice.out);
     assert.match(twice.out, /--stories gives data-display-card the story "nope--x"/);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("snap CLI: --no-channel-args reaches the run, which records it in meta.json", async () => {
+  // A Storybook with an MDX page and no components: snap writes its files without a browser.
+  const empty = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { list: "# Docs\n- Introduction (introduction--docs)", docs: {} });
+  standIns.push(empty);
+  const out = mkdtempSync(join(tmpdir(), "storysync-channel-"));
+  try {
+    const meta = () => JSON.parse(readFileSync(join(out, "meta.json"), "utf8")) as { channelArgs?: boolean };
+    const off = await run("snap", "--storybook", empty.url, "--out", out, "--no-channel-args", "--json");
+    assert.ok(existsSync(join(out, "meta.json")), off.out);
+    assert.equal(meta().channelArgs, false);
+    await run("snap", "--storybook", empty.url, "--out", out, "--json");
+    assert.equal(meta().channelArgs, undefined, "a run that sets values through the preview says nothing of it");
   } finally {
     rmSync(out, { recursive: true, force: true });
   }

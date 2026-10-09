@@ -264,6 +264,13 @@ export interface SnapMeta {
    */
   platform?: string;
   browser?: string;
+  /**
+   * False where the run that wrote this file left the values Storybook
+   * won't take from a story's URL unmeasured rather than setting them
+   * through its preview (`--no-channel-args`): its arg_rejected variants
+   * may be ones the preview would have measured. Absent otherwise.
+   */
+  channelArgs?: false;
 }
 
 export const SNAP_META_FILENAME = "meta.json";
@@ -1112,7 +1119,7 @@ function writeSnap(
   const oldest = Object.values(times ?? {}).reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min), measuredAt);
 
   writeStylesJson(opts.outDir, result);
-  writeMetaJson(opts.outDir, result, oldest, times, browserVersion);
+  writeMetaJson(opts.outDir, result, oldest, times, browserVersion, opts.channelArgs === false);
   return result;
 }
 
@@ -1533,6 +1540,7 @@ function writeMetaJson(
   measuredAt: string,
   componentsMeasuredAt?: Record<string, string>,
   browserVersion?: string,
+  noChannelArgs = false,
 ): string {
   const meta: SnapMeta = {
     version: SNAP_SCHEMA_VERSION,
@@ -1545,6 +1553,7 @@ function writeMetaJson(
     ...(componentsMeasuredAt ? { componentsMeasuredAt } : {}),
     platform: `${process.platform}-${process.arch}`,
     ...(browserVersion ? { browser: browserVersion } : {}),
+    ...(noChannelArgs ? { channelArgs: false as const } : {}),
   };
   const path = join(outDir, SNAP_META_FILENAME);
   mkdirSync(outDir, { recursive: true });

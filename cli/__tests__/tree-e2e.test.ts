@@ -493,6 +493,30 @@ test("verify --plan: a read call with no result saved is named, its variants not
   }
 });
 
+test("verify --plan: a problem assembling the readback fails --strict on its own, with every element verified", async () => {
+  const all = ["switch", "toggle"].map((n) => asSnap(loadTreeFixture(n)));
+  const p = await push({ ...all[0], components: all.flatMap((s) => s.components) } as SnapResult, { codeArgs: ["--read-limit", "3000"] });
+  try {
+    const [first, second] = p.plan.calls.filter((c) => c.kind === "read");
+    assert.ok(second, "the reads weren't split into two calls");
+    // The second read's response saved with the first's sets in it too, as
+    // they came: every entry is still sealed, and one is read twice.
+    const out = dirname(p.planPath);
+    const one = JSON.parse(readFileSync(join(out, first.result), "utf8")) as { sets: unknown[] };
+    const two = JSON.parse(readFileSync(join(out, second.result), "utf8")) as { sets: unknown[] };
+    writeFileSync(join(out, second.result), JSON.stringify({ ...two, sets: [...two.sets, ...one.sets] }));
+    const loose = await verifyPlan(p);
+    assert.equal(loose.status, 0, `${loose.text.stdout}${loose.text.stderr}`);
+    assert.equal(loose.json.elementFidelity, 1);
+    assert.deepEqual(loose.json.notRead, []);
+    assert.match((loose.json.plan as { problems: string[] }).problems.join("\n"), /again; the first reading is kept/);
+    const strict = await verifyPlan(p, "--strict");
+    assert.equal(strict.status, 1, "a readback assembled with a problem passed --strict");
+  } finally {
+    cleanup(p);
+  }
+});
+
 test("verify --plan: writes the readback where --readback says, and scores the snap the plan names unless --snap does", async () => {
   const p = await push(asSnap(loadTreeFixture("switch")));
   try {
