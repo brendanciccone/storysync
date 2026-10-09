@@ -1211,8 +1211,14 @@ export function verify(
       }
 
       // The root alone: a snap without trees, a component measured
-      // without one, or a readback from a template before trees.
-      const verdict = verifyVariant(component, slug, measured, figma, tolerance, spike);
+      // without one, a readback from a template before trees, or
+      // --roots-only. An element-tree build places a frame's children
+      // itself (design D2), with no padding or with spacing that takes in
+      // their margins, so its root's padding and gap are not 0.4.0's and
+      // are left out: its children's places, which they stood for, are
+      // scored element by element, and not here.
+      const rootFigma = isTreeEntry(figma) ? withoutLayoutFields(figma) : figma;
+      const verdict = verifyVariant(component, slug, measured, rootFigma, tolerance, spike);
       if (figma == null) {
         // Missing from Figma: every element snap measured is missing, and
         // where it measured a tree, every property of each.
@@ -1388,6 +1394,12 @@ function partsOf(entries: Record<string, ReadbackStyles> | undefined, slug: stri
 /** A variant's records, its parts' in order. */
 function recordsOf(entries: Record<string, ReadbackStyles>, slug: string): ReadRecord[] {
   return partsOf(entries, slug).flatMap((entry) => entry.tree ?? []);
+}
+
+/** An entry without the root's padding and gap, which verifyVariant then doesn't compare. */
+function withoutLayoutFields(entry: ReadbackStyles): ReadbackStyles {
+  const { padding: _padding, gap: _gap, ...rest } = entry;
+  return rest;
 }
 
 function addUnscorable(into: Map<string, UnscorableProperty & { component: string; variants: number }>, component: string, u: UnscorableProperty): void {

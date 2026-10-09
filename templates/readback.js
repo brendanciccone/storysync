@@ -169,6 +169,10 @@ const styleOf = (n, w) => {
   return !dash ? 'solid' : dash > w ? 'dashed' : 'dotted';
 };
 const SHAPES = /^(VECTOR|ELLIPSE|RECTANGLE|LINE|POLYGON|STAR|BOOLEAN_OPERATION)$/;
+// A corner's radius with the stroke outside it (`own`), where it is
+// rounded: the browser's outer radius. Corner i is top left, top right,
+// bottom right, bottom left; `own` is top, right, bottom, left.
+const corner = (r, own, i) => (r > 0 ? r2(r + Math.max(own[i], own[(i + 3) % 4])) : 0);
 const effectsOf = (n) => (Array.isArray(n.effects) ? n.effects : []).filter((e) => e.visible !== false);
 
 // One keyed layer's record. `around` is its parent's stroke outside its box.
@@ -205,16 +209,14 @@ const record = async (n, k, around, root) => {
     }
     return [...head, shapes, ...tail];
   }
-  // A corner's radius with the stroke outside it, where it is rounded.
-  const corner = (r, i) => (r > 0 ? r2(r + Math.max(own[i], own[(i + 3) % 4])) : 0);
   let stroke = null;
   if (Array.isArray(n.strokes) && n.strokes.length) {
     const w = weights(n);
     stroke = [typeof n.strokeWeight === 'number' ? n.strokeWeight : w, await paints(n.strokes, n), styleOf(n, Math.max(...w)), n.strokeAlign[0]];
   }
   return [...head, await paints(n.fills, n), stroke,
-    typeof n.cornerRadius === 'number' ? corner(n.cornerRadius, 0)
-      : [n.topLeftRadius, n.topRightRadius, n.bottomRightRadius, n.bottomLeftRadius].map(corner),
+    typeof n.cornerRadius === 'number' ? corner(n.cornerRadius, own, 0)
+      : [n.topLeftRadius, n.topRightRadius, n.bottomRightRadius, n.bottomLeftRadius].map((r, i) => corner(r, own, i)),
     // The type's initial: D(ROP_SHADOW), I(NNER_SHADOW), L(AYER_BLUR), B(ACKGROUND_BLUR).
     effectsOf(n).map((e) => (/SHADOW/.test(e.type)
       ? [e.type[0], r2(e.offset.x), r2(e.offset.y), r2(e.radius), r2(e.spread || 0), hexOf({ color: e.color })]
@@ -245,7 +247,9 @@ const walk = async (variant) => {
 };
 
 // 0.4.0's root fields, read as its template reads them, so an older verify
-// still scores the root; and boxShadow, as snap writes one.
+// still scores the root, but in the browser's terms as the records are: the
+// size and radius with the stroke outside the box; and boxShadow, as snap
+// writes one.
 const rootFields = (v) => {
   const fill = v.fills && v.fills[0];
   const stroke = v.strokes && v.strokes[0];
@@ -256,7 +260,7 @@ const rootFields = (v) => {
   return {
     backgroundColor: fill && fill.type === 'SOLID' ? hexOf(fill) : null,
     color: text && text.fills[0] ? hexOf(text.fills[0]) : null,
-    borderRadiusUniform: typeof v.cornerRadius === 'number' ? v.cornerRadius : null,
+    borderRadiusUniform: typeof v.cornerRadius === 'number' ? corner(v.cornerRadius, own, 0) : null,
     padding: { top: v.paddingTop, right: v.paddingRight, bottom: v.paddingBottom, left: v.paddingLeft },
     borderUniform: stroke ? {
       width: v.strokeWeight,

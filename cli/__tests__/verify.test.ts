@@ -1544,6 +1544,19 @@ test("roots-only: a tree snap scored by its roots alone scores as 0.4.0 would, a
   assert.equal(headlineFidelity(roots), roots.fidelity);
 });
 
+test("roots-only: an element-tree build's roots score their radius in the browser's terms, and not the padding and gap its children's places stand for", async () => {
+  // button-icon's root has its border outside its fill (padding-box),
+  // built as an OUTSIDE stroke with the radius less the border; its
+  // children are placed, absolutely or in auto layout spaced by their
+  // margins too.
+  for (const autoLayout of [false, true]) {
+    const { fixture, readback } = await buildAndRead("button-icon", { autoLayout });
+    const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
+    assert.deepEqual(roots.variants.flatMap((v) => v.differences.map((d) => `${v.slug} ${d.property}`)), [], autoLayout ? "auto layout" : "absolute");
+    assert.equal(roots.fidelity, 1);
+  }
+});
+
 test("root-only snap, element readback: roots scored from the root fields, boxShadow among them, the records left alone", async () => {
   const { fixture, readback } = await buildAndRead("inputotp");
   const snap = JSON.parse(JSON.stringify(fixture)) as SnapResult & { components: Record<string, unknown>[] };
