@@ -244,6 +244,8 @@ test("figma next: a read result with `more` gets its continuation, b then c; wit
   assert.deepEqual(await runFigmaNext(opts), next, "until its result is saved, the same file");
   writeFileSync(join(coded.out, `results/${nn}b.json`), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 20]] } }));
   assert.equal((await runFigmaNext(opts))!.file, join(coded.out, `calls/${nn}c-read-ui-base.js`));
+  writeFileSync(join(coded.out, `results/${nn}c.json`), JSON.stringify({ kind: "read", more: {} }));
+  await assert.rejects(runFigmaNext(opts), new RegExp(`^Error: results/${nn}c\\.json has a "more" without the slices to continue from$`));
   writeFileSync(join(coded.out, `results/${nn}c.json`), JSON.stringify({ kind: "read", sets: [] }));
   assert.equal(await runFigmaNext(opts), null);
   await assert.rejects(runFigmaNext({ ...opts, seq: 1 }), /call 01 is a build call: only a read call continues/);

@@ -731,20 +731,22 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
   if (call.kind !== "read") throw new Error(`call ${pad(opts.seq)} is a ${call.kind} call: only a read call continues`);
   const dir = dirname(opts.plan);
   let suffix = "";
-  let result = readCallResult(opts.plan, call.result, "read");
+  let read = call.result;
+  let result = readCallResult(opts.plan, read, "read");
   for (;;) {
     const more = result.more as { slices?: unknown } | undefined;
     if (!more) return null;
     const slices = more.slices;
     if (!Array.isArray(slices) || !slices.length || slices.some((s) => !Array.isArray(s) || s.length < 3 || s.length > 4 || typeof s[0] !== "string")) {
-      throw new Error(`${call.result}${suffix} has a "more" without the slices to continue from`);
+      throw new Error(`${read} has a "more" without the slices to continue from`);
     }
     suffix = suffix ? String.fromCharCode(suffix.charCodeAt(0) + 1) : "b";
     if (suffix > "z") throw new Error(`call ${pad(opts.seq)} has continued more than 25 times`);
     const file = `calls/${pad(call.seq)}${suffix}-read-${pageSlug(call.page)}.js`;
     const resultFile = `results/${pad(call.seq)}${suffix}.json`;
     if (existsSync(join(dir, resultFile))) {
-      result = readCallResult(opts.plan, resultFile, "read");
+      read = resultFile;
+      result = readCallResult(opts.plan, read, "read");
       continue;
     }
     const template = loadTemplate("readback", opts.minify ?? true, opts.templates);
