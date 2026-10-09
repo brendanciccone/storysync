@@ -10,16 +10,22 @@
 // its asset id `svg`. So a call carries no slugs, sources or expected values
 // for an agent to fill in, and returns only what Figma has.
 //
-// A call file is one line the CLI writes, then this template:
+// A call file is four lines the CLI writes (cli/figma-results.ts
+// readbackHeader, as `storysync figma code` writes them), then this
+// template:
 //
-//   const PAGE = "ui/base", SLICES = [["ui-base-card", 0, 1, 0]], LIMIT = 14000;
+//   const PAGE = "ui/base";
+//   const SLICES = [["ui-base-card",0,1,0]];
+//   const LIMIT = 15000;
+//   const TPL = 2;
 //
 // PAGE is the page the sets are on, switched to once. Each slice is a set's
 // storysync id, the first and last variant index `i` to read, and the node
 // to start the first variant at (0, or where a part before it stopped).
 // LIMIT is the characters of entries to return: when the next entry would
 // pass it, the call stops and returns `more`, the slices left, from which
-// `storysync figma next` writes the next call.
+// `storysync figma next` writes the next call. TPL is the template the CLI
+// pairs the call with, this one, 2; any other refuses to run.
 //
 // It returns, for each set read, its entries by slug, each sealed with the
 // checksum verify recomputes (FNV-1a over canonical JSON under the set's id
@@ -58,7 +64,7 @@
 // shapes: `[x, y, w, h, fill, stroke, strokeWeight]` for each shape of the
 // vector, relative to it. An image is an F record whose fills hold `img:`.
 
-const TPL = 2;
+if (TPL !== 2) throw new Error('This is readback template 2, not ' + TPL);
 
 // Spike-dependent (design section 14, item 7): how use_figma shows what a
 // call returns. false returns the object, which the tool writes as JSON;

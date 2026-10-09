@@ -18,7 +18,7 @@ import { expandTree, parentKey, rootWithStyles, textHugs, treeDigest } from "../
 import type { Sides, TreeDelta, TreeNode } from "../tree-types.js";
 import { applyDelta } from "../snap-normalize.js";
 import { componentKey } from "../storybook.js";
-import { addReadResult, readbackCall } from "../figma-results.js";
+import { READ_LIMIT, addReadResult, readbackCall } from "../figma-results.js";
 import type { ReadResult, ReadSlice } from "../figma-results.js";
 import { READBACK_SCHEMA_VERSION } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
@@ -387,7 +387,7 @@ export async function buildFixture(figma: MockFigma, fixture: TreeFixture, optio
  * `storysync figma next` would: one call over the slices, then one per
  * `more`, until none is left. Returns each call's result.
  */
-export async function readBack(figma: MockFigma, slices: ReadSlice[], { limit = 14_000, page = PAGE, template = READBACK_TEMPLATE } = {}): Promise<ReadResult[]> {
+export async function readBack(figma: MockFigma, slices: ReadSlice[], { limit = READ_LIMIT, page = PAGE, template = READBACK_TEMPLATE } = {}): Promise<ReadResult[]> {
   const results: ReadResult[] = [];
   let left: ReadSlice[] | undefined = slices;
   while (left?.length) {

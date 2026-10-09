@@ -15,12 +15,34 @@ function stripped(source: string): string {
   return source.split("\n").map((line) => line.replace(/^\s+/, "")).filter((line) => line && !line.startsWith("//")).join("\n");
 }
 
-test("template: carries no data of its own, and a call is the header line and the template", () => {
+test("template: carries no data of its own, and a call is the four header lines and the template", () => {
   const code = stripped(READBACK_TEMPLATE);
-  assert.doesNotMatch(code, /\bconst (PAGE|SLICES|LIMIT)\b/, "the CLI's header declares these");
+  assert.doesNotMatch(code, /\b(const|let|var) (PAGE|SLICES|LIMIT|TPL)\b/, "the CLI's header declares these");
   assert.doesNotMatch(code, /SLUG_BY_NAME|SOURCE_BY_SLUG|SET_ID/, "no slugs, sources or set ids to fill in");
-  assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), 'const PAGE = "ui/base", SLICES = [["ui-base-card",0,1,0]], LIMIT = 9000;\n');
-  assert.ok(readbackCall(READBACK_TEMPLATE, "p", [], 1).endsWith(READBACK_TEMPLATE));
+  // Design section 9.1's header, one constant a line, as `storysync figma code` writes it.
+  assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), 'const PAGE = "ui/base";\nconst SLICES = [["ui-base-card",0,1,0]];\nconst LIMIT = 9000;\nconst TPL = 2;\n');
+  assert.equal(readbackHeader("p", []), "const PAGE = \"p\";\nconst SLICES = [];\nconst LIMIT = 15000;\nconst TPL = 2;\n", "LIMIT 15,000 unless told otherwise");
+  const call = readbackCall(READBACK_TEMPLATE, "p", [], 1);
+  assert.ok(call.endsWith(READBACK_TEMPLATE));
+  // How `storysync figma next` finds the LIMIT a call was written with, to continue it with the same.
+  assert.equal(/\nconst LIMIT = (\d+);/.exec(`// storysync figma code, call 07: read back\n${call}`)?.[1], "1");
+});
+
+test("template: runs as `storysync figma code` writes a read call, and refuses a call for another template", async () => {
+  const figma = newFigma();
+  const fixture = loadTreeFixture("switch");
+  const built = await buildFixture(figma, fixture);
+  // A call file as figma-code.ts readCode writes it: a comment, then the
+  // four constants a line each, each slice with its first node.
+  const header = (tpl: number) => `// storysync figma code, call 07: read back on "${PAGE}"\nconst PAGE = ${JSON.stringify(PAGE)};\nconst SLICES = ${JSON.stringify([[built.component, 0, 1, 0]])};\nconst LIMIT = 15000;\nconst TPL = ${tpl};\n`;
+  const run = await figma.run(`${header(2)}${READBACK_TEMPLATE}\n`);
+  assert.ok(run.ok, run.text);
+  const result = run.value as { tpl: number; sets: { entries: Record<string, unknown> }[] };
+  assert.equal(result.tpl, 2);
+  assert.deepEqual(Object.keys(result.sets[0].entries), ["size-default", "size-sm"]);
+  const other = await figma.run(`${header(3)}${READBACK_TEMPLATE}\n`);
+  assert.equal(other.ok, false);
+  assert.match(other.text, /This is readback template 2, not 3/);
 });
 
 test("template: stays small enough to minify under 8,000 characters", () => {

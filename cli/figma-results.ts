@@ -51,16 +51,29 @@ export interface ReadResult {
   more?: { slices: ReadSlice[] };
 }
 
-/** The readback template's default LIMIT: entries a call returns, in characters, under use_figma's 20kb. */
-export const READ_LIMIT = 14_000;
+/**
+ * The readback template's default LIMIT, the bytes a read call returns at
+ * most, as design section 9.1 has it, under use_figma's 20kb. `storysync
+ * figma code` packs each call's slices to a predicted 14,000 and writes
+ * this, 1,000 above, so a call stops short only where its prediction was
+ * low.
+ */
+export const READ_LIMIT = 15_000;
+
+/** The readback template this CLI writes calls for (templates/readback.js), which refuses a call for another. */
+export const READBACK_TPL = 2;
 
 /**
- * The line the CLI writes ahead of templates/readback.js to make a read
- * call: the page to read on, the slices, and the characters to return at
- * most. The template is data-free, so this is all a read call carries.
+ * The lines the CLI writes ahead of templates/readback.js to make a read
+ * call (design section 9.1): the page to read on, the slices, the bytes to
+ * return at most, and the template the call is for. The template is
+ * data-free, so this is all a read call carries. `storysync figma code`
+ * writes a call's header in this form, one constant a line, and finds a
+ * call's LIMIT again by its line when it writes the call that continues
+ * it.
  */
 export function readbackHeader(page: string, slices: ReadSlice[], limit = READ_LIMIT): string {
-  return `const PAGE = ${JSON.stringify(page)}, SLICES = ${JSON.stringify(slices)}, LIMIT = ${limit};\n`;
+  return `const PAGE = ${JSON.stringify(page)};\nconst SLICES = ${JSON.stringify(slices)};\nconst LIMIT = ${limit};\nconst TPL = ${READBACK_TPL};\n`;
 }
 
 /** A read call's code: the header, then the template (readable or minified) as it is. */
