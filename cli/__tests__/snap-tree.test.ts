@@ -342,6 +342,28 @@ test("buildTree: keys are data-slot, else the tag, numbered among siblings in DO
   assert.deepEqual(byKey(built.nodes).get("div")!.S, { z: 2 });
 });
 
+test("buildTree: what makes a stacking context paints with the positioned, and a flex item's z-index counts though it isn't positioned", () => {
+  const red = { ...BORDER, "background-color": "rgb(255, 0, 0)" };
+  // A translucent box over the next one: Chrome paints it on top.
+  const faded = buildTree(tree(el("div", [0, 0, 40, 20], {}, [el("div", [0, 0, 20, 20], { ...red, opacity: "0.5" }), el("div", [10, 0, 20, 20], red)]))).nodes;
+  assert.deepEqual(faded.map((n) => n.k), ["", "div:2", "div"]);
+  const contexts: Record<string, string>[] = [{ transform: "matrix(1, 0, 0, 1, 2, 0)" }, { filter: "blur(1px)" }, { isolation: "isolate" }, { "mix-blend-mode": "multiply" }];
+  for (const cs of contexts) {
+    const nodes = buildTree(tree(el("div", [0, 0, 40, 20], {}, [el("div", [0, 0, 20, 20], { ...red, ...cs }), el("div", [10, 0, 20, 20], red)]))).nodes;
+    assert.deepEqual(nodes.map((n) => n.k), ["", "div:2", "div"], JSON.stringify(cs));
+  }
+  // In a flex row, z-index orders items that aren't positioned: 1 after the
+  // rest, 0 with the positioned; in a block, it does nothing.
+  const items = (display: string) => buildTree(tree(el("div", [0, 0, 60, 20], { display }, [
+    el("div", [0, 0, 20, 20], { ...red, "z-index": "1" }),
+    el("div", [20, 0, 20, 20], { ...red, "z-index": "0" }),
+    el("div", [40, 0, 20, 20], red),
+  ]))).nodes;
+  const flex = items("flex");
+  assert.deepEqual(flex.map((n) => [n.k, n.S?.z]), [["", undefined], ["div:3", undefined], ["div:2", 0], ["div", 1]]);
+  assert.deepEqual(items("block").map((n) => [n.k, n.S?.z]), [["", undefined], ["div", undefined], ["div:2", undefined], ["div:3", undefined]]);
+});
+
 test("buildTree: a run of text between elements is its own node, in DOM order", () => {
   const root = el("p", [0, 0, 300, 20], { display: "block" }, [
     run("Read the ", [[0, 1, 60, 17]]),

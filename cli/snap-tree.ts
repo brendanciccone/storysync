@@ -51,7 +51,7 @@ export const TREE_PROPERTY_DEFAULTS: Readonly<Record<string, string>> = {
   "border-top-color": "", "border-right-color": "", "border-bottom-color": "", "border-left-color": "",
   "border-top-left-radius": "0px", "border-top-right-radius": "0px", "border-bottom-right-radius": "0px", "border-bottom-left-radius": "0px",
   "box-shadow": "none", opacity: "1", "mix-blend-mode": "normal", filter: "none", "backdrop-filter": "none",
-  transform: "none", "clip-path": "none", "overflow-x": "visible", "overflow-y": "visible", visibility: "visible",
+  transform: "none", "clip-path": "none", isolation: "auto", "overflow-x": "visible", "overflow-y": "visible", visibility: "visible",
   "outline-style": "none", "outline-width": "0px", "outline-color": "", "outline-offset": "0px",
   "object-fit": "fill", "object-position": "50% 50%", appearance: "none",
 };
@@ -385,7 +385,7 @@ function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
     only?.kind === "el" && !item.paints && !hasPadding(css) && !clips(css) && sameBox(only.box, box) &&
     css("opacity") === "1" && css("mix-blend-mode") === "normal" && css("filter") === "none" &&
     css("backdrop-filter") === "none" && css("transform") === "none" && css("clip-path") === "none" &&
-    css("visibility") === "visible"
+    css("isolation") === "auto" && css("visibility") === "visible"
   ) {
     only.wrappers.push(el);
     return [only];
@@ -451,17 +451,32 @@ function zOf(item: Item, parentLays: boolean): number | null {
 }
 
 /**
+ * Whether an element makes a stacking context of its own without being
+ * positioned: an opacity below 1, a transform, a filter, a backdrop
+ * filter, a blend mode, a clip path or `isolation: isolate`. Chrome paints
+ * such an element with the positioned ones at z-index 0, after its in-flow
+ * siblings: a translucent box overlapping the next one is drawn over it.
+ * (`will-change`, `contain` and masks do too; snap doesn't read them.)
+ */
+function makesStackingContext(css: Css): boolean {
+  return Number(css("opacity")) < 1 || css("transform") !== "none" || css("filter") !== "none" || css("backdrop-filter") !== "none" ||
+    css("mix-blend-mode") !== "normal" || css("clip-path") !== "none" || css("isolation") === "isolate";
+}
+
+/**
  * Siblings in paint order, which is the order Figma stacks layers in:
  * negative z-index first, then what isn't positioned (text, and ::before
  * first and ::after last, as the DOM has them), then positioned elements
- * with no z-index, then positive z-index, each in DOM order.
+ * with no z-index or 0, and elements making a stacking context of their
+ * own (a flex or grid item's z-index 0 among them), then positive
+ * z-index, each in DOM order.
  */
 function paintOrder<T extends { item: Item; dom: number }>(kids: T[], parentLays: boolean): T[] {
   const group = ({ item }: T) => {
     const z = zOf(item, parentLays);
     if (z !== null && z < 0) return 0;
     if (z !== null && z > 0) return 3;
-    if ((item.kind === "el" || item.kind === "pseudo") && positioned(flowCss(item))) return 2;
+    if ((item.kind === "el" || item.kind === "pseudo") && (positioned(flowCss(item)) || z === 0 || makesStackingContext(item.css!))) return 2;
     return 1;
   };
   return [...kids].sort((a, b) =>
