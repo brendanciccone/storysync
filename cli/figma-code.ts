@@ -739,10 +739,10 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
 
 /**
  * The object a call returned, from its response saved unchanged: the tool's
- * text holding the returned object as JSON, that JSON once more as a string,
- * an MCP envelope of text parts, or text around it. Spike item 7 settles
- * which use_figma gives; each is read the same. Null when none holds an
- * object with a `kind`.
+ * text holding the returned object as JSON, which is what use_figma gave
+ * the spike (item 7), or that JSON once more as a string, an MCP envelope of
+ * text parts, or text around it, each read the same. Null when none holds
+ * an object with a `kind`.
  */
 export function parseCallResult(text: string): Record<string, unknown> | null {
   const parse = (s: string): unknown => {

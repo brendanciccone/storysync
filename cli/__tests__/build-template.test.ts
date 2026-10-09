@@ -501,17 +501,18 @@ test("label: Figma's empty Page 1 is removed once the sets are on their own page
   assert.deepEqual(run.value, { kind: "label", changed: [], missing: ["ui-base-switch"], pageOne: "kept: it is the only page" });
 });
 
-test("spike item 1: where Figma doesn't scale an SVG's strokes, importing at the viewBox and rescaling does", async () => {
+test("spike item 1: icons import at their measured size, as Figma scales their strokes; the fallback rescales", async () => {
   const fixture = loadTreeFixture("toggle");
-  const weights = async (svgStrokesScale: boolean) => {
-    const { mock } = await buildAll(fixture, { svgStrokeScales: false }, { spike: { svgStrokesScale } });
+  const weights = async (mockOptions: MockFigmaOptions, svgStrokesScale?: boolean) => {
+    const { mock } = await buildAll(fixture, mockOptions, svgStrokesScale === undefined ? {} : { spike: { svgStrokesScale } });
     return [...new Set(mock.nodes("VECTOR").map((n) => Math.round((mock.handle(n.id).strokeWeight as number) * 100) / 100))];
   };
-  assert.deepEqual(await weights(false), [1.33], "lucide's 2 at 24 drawn at 16, as the browser draws it");
-  assert.deepEqual(await weights(true), [2], "imported at 16, the strokes stay 2 wide");
-  // Where Figma does scale them, the fallback is right all the same.
-  const { mock } = await buildAll(fixture);
-  assert.deepEqual([...new Set(mock.nodes("VECTOR").map((n) => Math.round((mock.handle(n.id).strokeWeight as number) * 100) / 100))], [1.33]);
+  // lucide's 2 at 24 drawn at 16, as the browser draws it and the spike saw Figma import it.
+  assert.deepEqual(await weights({}), [1.33]);
+  assert.deepEqual(await weights({}, false), [1.33], "imported at 24 and rescaled, the same");
+  // Where a Figma kept the strokes as written, only the fallback would be right.
+  assert.deepEqual(await weights({ svgStrokeScales: false }), [2]);
+  assert.deepEqual(await weights({ svgStrokeScales: false }, false), [1.33]);
 });
 
 test("spike item 2: a shadow's spread Figma refuses on a frame that doesn't clip is left out, and said", async () => {
@@ -533,10 +534,10 @@ test("spike item 3: truncation Figma refuses is built as a text box of the measu
   assert.deepEqual([mock.handle(title.id).textAutoResize, title.width, title.height], ["NONE", 94, 17.5]);
 });
 
-test("spike item 11: no build relies on a frame hugging a child that fills it, which the mock can refuse", async () => {
-  for (const name of treeFixtureNames()) await buildAll(loadTreeFixture(name), { fillAcrossHug: "refuse" });
-  // Taking the spike's other answer is what makes Card rely on it.
-  await assert.rejects(buildAll(loadTreeFixture("card"), { fillAcrossHug: "refuse" }, { spike: { fillAcrossHug: true } }), /FILL across a parent that hugs/);
+test("spike item 11: a frame hugs across a child that fills it, as Figma stretches it; the fallback doesn't rely on that", async () => {
+  // Each of Card's notifications hugs its first line and stretches the second across it, which a Figma that refused would collapse.
+  await assert.rejects(buildAll(loadTreeFixture("card"), { fillAcrossHug: "refuse" }), /FILL across a parent that hugs/);
+  for (const name of treeFixtureNames()) await buildAll(loadTreeFixture(name), { fillAcrossHug: "refuse" }, { spike: { fillAcrossHug: false } });
 });
 
 test("build: an SVG Figma won't import is an empty keyed frame, named so, tried again next time", async () => {

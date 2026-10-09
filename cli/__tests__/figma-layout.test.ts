@@ -164,14 +164,17 @@ test("planLayout: padding and an included stroke make the content box; text land
   assert.deepEqual([plan.mode, plan.primary, plan.counter, plan.hug], ["HORIZONTAL", "CENTER", "CENTER", [true, false]]);
 });
 
-test("planLayout: a stretched child fills across, and its frame is fixed on that axis", () => {
+test("planLayout: a stretched child fills across, and its frame hugs the children that don't", () => {
   // A block holding a label at its own width and a frame stretched to it.
   const kids = [kid("label", [0, 0, 100, 20], { kind: "T", text: "hug" }), kid("box", [0, 20, 100, 40])];
   const plan = planLayout(parent({ size: [100, 60], L: { d: "block" } }), kids);
   assert.deepEqual(plan.fill, { box: [true, false] });
-  assert.deepEqual(plan.hug, [false, true], "SPIKE.fillAcrossHug: a frame doesn't hug where a child fills");
-  // With the spike's other answer, the frame hugs the label, as CSS shrink-wraps the block, and the box fills it.
-  assert.deepEqual(planLayout(parent({ size: [100, 60], L: { d: "block" } }), kids, { fillAcrossHug: true }).hug, [true, true]);
+  // The frame hugs the label, as CSS shrink-wraps the block, and the box fills it: Figma stretches it so (spike item 11).
+  assert.deepEqual(plan.hug, [true, true], "SPIKE.fillAcrossHug");
+  // With the fallback, a frame doesn't hug where a child fills.
+  assert.deepEqual(planLayout(parent({ size: [100, 60], L: { d: "block" } }), kids, { fillAcrossHug: false }).hug, [false, true]);
+  // Nor, either way, where every child fills: nothing is left to hug.
+  assert.deepEqual(planLayout(parent({ size: [100, 40], L: { d: "block" } }), [kid("box", [0, 0, 100, 40])]).hug, [false, true]);
 });
 
 test("planLayout: text fills only its width, across a column, at a fixed width; an icon never fills", () => {

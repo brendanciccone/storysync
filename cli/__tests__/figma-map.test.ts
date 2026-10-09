@@ -163,17 +163,22 @@ const MAIL = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" vie
 test("nodeStyle: a vector carries its markup and asset id, and binds the colors its classes name", () => {
   const icon: TreeNode = { k: "svg", t: "V", el: "svg.lucide-mail", box: [11, 10, 16, 16], svg: "svg:75dee6f9", cls: ["text-primary"] };
   const style = nodeStyle(icon, ctx(new Binder(SHADCN_TOKENS)), MAIL);
-  assert.equal(style.markup, MAIL.replace('width="16" height="16"', 'width="24" height="24"'));
+  assert.equal(style.markup, MAIL, "imported at its measured size, which snap wrote on it");
   assert.equal(style.id, "svg:75dee6f9");
   assert.equal(style.n, "lucide-mail", "named by its class");
   assert.equal(nodeStyle({ ...icon, el: "svg" }, ctx(), MAIL).n, "svg", "or, without one, its element");
-  assert.equal(style.rs, 0.666667, "imported at its viewBox and rescaled, by SPIKE's fallback");
+  assert.equal(style.rs, undefined, "Figma scales its strokes with the import (spike item 1): nothing to rescale");
+  assert.equal(nodeStyle(icon, { ...ctx(new Binder(SHADCN_TOKENS)), spike: { svgStrokesScale: false } }, MAIL).rs, 0.666667, "the fallback rescales");
   assert.deepEqual(style.vb, undefined, "#0a0a0a is four tokens and text-primary names none of them");
   assert.throws(() => nodeStyle(icon, ctx()), /svg asset svg:75dee6f9 is not in the tree's assets/);
 });
 
-test("vectorImport: where strokes don't scale with the import, it imports at the viewBox and rescales", () => {
+test("vectorImport: imports at the measured size, or, where strokes don't scale with the import, at the viewBox, rescaled", () => {
   assert.deepEqual(vectorImport(MAIL, [0, 0, 16, 16], true), { markup: MAIL });
+  // An icon drawn at another size than the markup says, or markup with none, is imported at the size drawn.
+  assert.deepEqual(vectorImport(MAIL, [0, 0, 20, 20], true), { markup: MAIL.replace('width="16" height="16"', 'width="20" height="20"') });
+  const bare = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M2 2h20"/></svg>';
+  assert.deepEqual(vectorImport(bare, [0, 0, 16, 12.5], true), { markup: '<svg width="16" height="12.5" viewBox="0 0 24 24" stroke-width="2"><path d="M2 2h20"/></svg>' });
   const fallback = vectorImport(MAIL, [0, 0, 16, 16], false);
   assert.match(fallback.markup, /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg" width="24" height="24" viewBox="0 0 24 24"/);
   assert.equal(fallback.rescale, 0.666667);

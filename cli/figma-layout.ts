@@ -139,8 +139,10 @@ function declaredCounter(L: TreeLayout | undefined, flex: boolean): LayoutPlan["
  *   paint order then shows nowhere; otherwise NONE.
  * - A wrapping flex whose children sit on one line is laid out as one line.
  * - Sizing: the frame hugs an axis where its padding, stroke and children
- *   (with their spacing, along the flow; the largest, across it) make its
- *   measured size, and no child fills that axis (SPIKE.fillAcrossHug).
+ *   (with their spacing, along the flow; the largest that doesn't fill,
+ *   across it) make its measured size. No child may grow along it; across
+ *   it, some may fill while another doesn't, which Figma stretches them over
+ *   as the spike saw (SPIKE.fillAcrossHug).
  *   A child fills along the flow when it grows and filling gives its
  *   measured size, and across when CSS stretches it (flex's default
  *   alignment, or any block or grid child) to the frame's content size. Text

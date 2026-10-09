@@ -365,17 +365,29 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
 
 // --- Vectors ----------------------------------------------------------------
 
-/** A vector's markup to import and the factor to rescale it by, as SPIKE.svgStrokesScale says. */
+/** `markup` with its root's width and height set to these, written where it has none; unchanged where they are these already. */
+function sizedSvg(markup: string, width: number, height: number): string {
+  const set = (text: string, name: string, value: number) => {
+    const attr = new RegExp(`^<svg([^>]*?)\\s${name}="[^"]*"`);
+    return attr.test(text) ? text.replace(attr, `<svg$1 ${name}="${value}"`) : text.replace(/^<svg/, `<svg ${name}="${value}"`);
+  };
+  return set(set(markup, "height", height), "width", width);
+}
+
+/**
+ * A vector's markup to import and the factor to rescale it by, as
+ * SPIKE.svgStrokesScale says. Figma scales strokes with the import (spike
+ * item 1), so the markup is imported at the node's measured size, which
+ * snap writes on it, or which it is given when it lacks it. The fallback
+ * imports at the viewBox's own size and rescales to the box.
+ */
 export function vectorImport(markup: string, box: Box, strokesScale: boolean = SPIKE.svgStrokesScale): { markup: string; rescale?: number } {
-  if (strokesScale) return { markup };
-  // Fallback: import at the viewBox's own size and rescale to the box, which
-  // scales the strokes with it.
+  if (strokesScale) return { markup: sizedSvg(markup, round2(box[2]), round2(box[3])) };
   const view = /viewBox="([^"]*)"/.exec(markup)?.[1].split(/[\s,]+/).map(Number);
   if (!view || view.length !== 4 || !(view[2] > 0) || !(view[3] > 0)) return { markup };
   const factor = Math.round((box[2] / view[2]) * 1e6) / 1e6;
   if (!(factor > 0) || factor === 1) return { markup };
-  const sized = markup.replace(/^<svg([^>]*?)\swidth="[^"]*"/, `<svg$1 width="${view[2]}"`).replace(/^<svg([^>]*?)\sheight="[^"]*"/, `<svg$1 height="${view[3]}"`);
-  return { markup: sized, rescale: factor };
+  return { markup: sizedSvg(markup, view[2], view[3]), rescale: factor };
 }
 
 /** The colors in SVG markup, `#rrggbb`, from its fill and stroke attributes. */
