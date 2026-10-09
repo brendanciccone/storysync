@@ -23,6 +23,7 @@ import {
   normalizeLetterSpacing, normalizeLineHeight, parseBoxShadow, pxToNumber, resolveFontFamily, resolveRadii, splitTopLevel,
 } from "./snap-normalize.js";
 import type { FontProbe } from "./snap-normalize.js";
+import { stackFamilies, standInDrawn } from "./fonts.js";
 import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
 import { ROOT_FIELDS, TREE_LIMITS } from "./tree-types.js";
@@ -627,7 +628,12 @@ function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { famil
   const probe = fonts[stack];
   if (probe) return resolveFontFamily(probe);
   const first = (stack.split(",")[0] ?? "").trim().replace(/^(['"])(.*)\1$/, "$2");
-  return { family: first, available: null };
+  // A stand-in snap drew (fonts.ts), by the name Figma has it under, and
+  // the family after it as asked.
+  const drawn = standInDrawn(first);
+  if (!drawn) return { family: first, available: null };
+  const next = stackFamilies(stack)[1];
+  return { family: drawn, available: null, ...(next ? { asked: next } : {}) };
 }
 
 function textFacts(

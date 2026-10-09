@@ -982,8 +982,11 @@ T9. **The faces** come from the npm packages, every unicode-range subset of
 T10. **What snap records.** The stand-in is what the browser drew, so a
     text's `f` is the Figma family, `Inter`, with `fs`, the family the code
     asked for as resolveFontFamily would have recorded it (`system-ui`, or
-    `Menlo` for Tailwind's mono stack on a Mac), and no `fk`. The root's
-    and its text's `fontFamily` are `Inter` too, `fontAvailable` true. Each
+    `Menlo` for Tailwind's mono stack on a Mac), and no `fk`. Where the
+    page couldn't probe a stack, its first family is read the same way:
+    `Inter`, never snap's own `storysync Inter`, which no Figma font is
+    named, with the family after it as `fs`. The root's and its text's
+    `fontFamily` are `Inter` too, `fontAvailable` true. Each
     component's `fontStandIns` lists its `[asked, drawn]` pairs, and the
     run's `fontStandIns` all of them; `snap` prints one line a run saying
     what it drew in what, and `--json` carries the lists. `standIns: false`

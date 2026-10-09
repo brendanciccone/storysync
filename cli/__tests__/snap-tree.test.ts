@@ -58,6 +58,10 @@ test("buildTree: a text snap drew in a stand-in records the family Figma sets it
   }));
   const old = before.find((n) => n.tx)!.tx!;
   assert.deepEqual([old.f, old.fs, old.fk], ["system-ui", undefined, 1]);
+  // And where the page couldn't probe the stack, by the name Figma has the stand-in under, never snap's own.
+  const { nodes: unprobed } = buildTree(tree(el("div", [0, 0, 40, 20], { display: "flex" }, [label])));
+  const bare = unprobed.find((n) => n.tx)!.tx!;
+  assert.deepEqual([bare.f, bare.fs, bare.fk, bare.fa], ["Inter", "ui-sans-serif", undefined, undefined]);
 });
 
 // --- What the registry's stories give ------------------------------------------------

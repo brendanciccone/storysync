@@ -126,6 +126,9 @@ test("firstFontFamily: takes the first family and strips quotes", () => {
   assert.equal(firstFontFamily("Helvetica, Arial, sans-serif"), "Helvetica");
   assert.equal(firstFontFamily('"Inter var", sans-serif'), "Inter var");
   assert.equal(firstFontFamily(undefined), "");
+  // A stand-in snap drew (fonts.ts), where no probe of the stack says so, by the name Figma has it under.
+  assert.equal(firstFontFamily('"storysync Inter", ui-sans-serif, system-ui'), "Inter");
+  assert.equal(firstFontFamily("storysync Roboto Mono, monospace"), "Roboto Mono");
 });
 
 // --- Borders ----------------------------------------------------------------

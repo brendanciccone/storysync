@@ -260,8 +260,9 @@ export function isFullyTransparent(value: string | undefined): boolean {
 /** First family in a font stack, with quotes stripped. */
 export function firstFontFamily(value: string | undefined): string {
   if (!value) return "";
-  const first = value.split(",")[0]?.trim() ?? "";
-  return first.replace(/^['"]|['"]$/g, "");
+  const first = (value.split(",")[0]?.trim() ?? "").replace(/^['"]|['"]$/g, "");
+  // A stand-in snap drew (fonts.ts), by the name Figma has it under.
+  return standInDrawn(first) ?? first;
 }
 
 // --- Fonts ------------------------------------------------------------------
