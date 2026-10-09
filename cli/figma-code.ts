@@ -17,14 +17,15 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalJson, fnv1a32Bytes } from "./checksum.js";
+import { callConstants, canonicalJson, fnv1a32Bytes } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
 import { planLayout } from "./figma-layout.js";
 import type { LayoutChild, LayoutPlan } from "./figma-layout.js";
 import { figmaSize, nodeStyle, outsideInsets, textSizesItself } from "./figma-map.js";
 import type { FigmaStyle, MapContext, NotBuilt, Unbound } from "./figma-map.js";
-import { readBefore, readTimes } from "./figma-results.js";
+import { READBACK_TPL, readBefore, readTimes, readbackHeader } from "./figma-results.js";
+import type { ReadSlice } from "./figma-results.js";
 import { MAX_CALL_CHARS, MAX_UPLOADS_PER_CALL, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import type { Spike } from "./figma-spike.js";
 import { parseMeasurementWarning } from "./snap.js";
@@ -63,18 +64,20 @@ export interface FigmaCodeOptions {
 export type TemplateName = "build" | "images" | "label" | "readback";
 
 /** The readback template a read call is written for (section 9.1), which refuses a call written for another. */
-export const READBACK_TPL = 2;
+export { READBACK_TPL };
 
 /**
  * The constants each kind of call writes before its template, which the
  * template reads and must not declare itself: declared twice, every call of
- * that kind is a SyntaxError in Figma.
+ * that kind is a SyntaxError in Figma. The last, SUM, is the checksum of
+ * the others' values (checksum.ts, callSum), which each template checks
+ * before it changes or reads anything.
  */
 export const CALL_CONSTANTS: Record<TemplateName, readonly string[]> = {
-  build: ["DATA"],
-  images: ["PAGE"],
-  label: ["DATA"],
-  readback: ["PAGE", "SLICES", "LIMIT", "TPL"],
+  build: ["DATA", "SUM"],
+  images: ["PAGE", "SUM"],
+  label: ["DATA", "SUM"],
+  readback: ["PAGE", "SLICES", "LIMIT", "TPL", "SUM"],
 };
 
 /** use_figma runs a call's code as the body of an async function. */
@@ -491,7 +494,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string): 
       v: variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, deltaOf(base, intern(v.records, table))]),
     };
   });
-  return `${header(seq, "build", page)}const DATA = ${JSON.stringify({ page, S: table.values, sets })};\n${template}\n`;
+  return `${header(seq, "build", page)}${callConstants([["DATA", { page, S: table.values, sets }]])}${template}\n`;
 }
 
 const pad = (seq: number) => String(seq).padStart(2, "0");
@@ -516,8 +519,8 @@ function describeParts(parts: Part[]): string {
 type Slice = [string, number, number];
 
 function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string): string {
-  const full = slices.map((s) => (s.length === 4 ? s : [...s, 0]));
-  return `${header(seq, "read back", page)}const PAGE = ${JSON.stringify(page)};\nconst SLICES = ${JSON.stringify(full)};\nconst LIMIT = ${limit};\nconst TPL = ${READBACK_TPL};\n${template}\n`;
+  const full = slices.map((s): ReadSlice => (s.length === 4 ? s : [...s, 0]));
+  return `${header(seq, "read back", page)}${readbackHeader(page, full, limit)}${template}\n`;
 }
 
 // --- figma code -------------------------------------------------------------
@@ -676,7 +679,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     if (!shown.length) continue;
     add(
       { kind: "images", page, components: shown.map((c) => c.key), description: `Fill the image layers on page "${page}" with images already uploaded` },
-      (seq) => `${header(seq, "images", page)}const PAGE = ${JSON.stringify(page)};\n${templates.images}\n`,
+      (seq) => `${header(seq, "images", page)}${callConstants([["PAGE", page]])}${templates.images}\n`,
     );
   }
 
@@ -684,7 +687,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const label = { pages: builtPages, sets: built.map((c) => [c.id, c.note]) };
   add(
     { kind: "label", page: "", components: built.map((c) => c.key), description: "Label the sets snap measured from something other than the component, and remove Figma's empty default page" },
-    (seq) => `${header(seq, "label", "")}const DATA = ${JSON.stringify(label)};\n${templates.label}\n`,
+    (seq) => `${header(seq, "label", "")}${callConstants([["DATA", label]])}${templates.label}\n`,
   );
 
   // Reads: by page, slices of each set's variants packed by predicted size.

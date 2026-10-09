@@ -59,3 +59,33 @@ export function fnv1a32Bytes(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i++) hash = Math.imul(hash ^ bytes[i], 0x01000193) >>> 0;
   return hash.toString(16).padStart(8, "0");
 }
+
+/**
+ * The checksum a use_figma call carries of its own data, `const SUM`:
+ * fnv1a32 over the JSON of its constants' values, in the order the call
+ * declares them.
+ *
+ * An agent sends each call by pasting the file `storysync figma code` wrote,
+ * up to 45,000 characters, and the fourth live push's agent typed `1.790`
+ * for `1.79` in an icon's path in one: harmless that time, but nothing
+ * would have noticed a change that wasn't. Each template computes this
+ * again from the values the call gave it, before it changes or reads
+ * anything, and refuses to run when the two differ. JSON.stringify of
+ * values parsed from JSON that JSON.stringify wrote gives back the same
+ * text, so an honest call always matches, and a value changed anywhere in
+ * the call, a string's characters included, doesn't. What it can't cover
+ * is the template itself, which can't read its own code: a change there
+ * mostly fails to run at all.
+ */
+export function callSum(values: readonly unknown[]): string {
+  return fnv1a32(JSON.stringify(values));
+}
+
+/**
+ * The lines a call writes before its template: each constant, one a line,
+ * as `const NAME = <JSON>;`, then `const SUM = "<callSum of their values>";`.
+ */
+export function callConstants(constants: readonly (readonly [name: string, value: unknown])[]): string {
+  const lines = constants.map(([name, value]) => `const ${name} = ${JSON.stringify(value)};\n`);
+  return `${lines.join("")}const SUM = ${JSON.stringify(callSum(constants.map(([, value]) => value)))};\n`;
+}

@@ -7,7 +7,7 @@ import { textSizesItself } from "../figma-map.js";
 import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
-import { SHADCN_TOKENS, boxDrift, codeFor, drawnInSet, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
+import { SHADCN_TOKENS, boxDrift, codeFor, drawnInSet, mockFor, readBoxes, runPlan, variantsBySlug, withConstant } from "./figma-build-harness.js";
 import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
@@ -265,7 +265,7 @@ test("build: a label set wider than measured stays so in a frame built without a
   // The row's gap, wrong as Figma might take it: the frame falls back to absolute.
   const at = data.S.findIndex((st) => typeof st === "object" && st !== null && "L" in st);
   (data.S[at] as { L: { g: number } }).L.g += 12;
-  const run = await mock.run(code.replace(/\nconst DATA = .*;\n/, () => `\nconst DATA = ${JSON.stringify(data)};\n`));
+  const run = await mock.run(withConstant(code, "DATA", data));
   assert.ok(run.ok, run.text);
   assert.deepEqual((result(run).sets[0].absoluteContainers as string[][]).map(([, key]) => key), [""]);
   // At Inter's width still, whole, not cut back to its 36px and an ellipsis.
@@ -288,7 +288,7 @@ test("build: a frame Figma lays out otherwise than planned is built without auto
     // The first auto layout style the call has, wrong as Figma might take it.
     const at = data.S.findIndex((st) => typeof st === "object" && st !== null && "L" in st);
     (tweak as (L: unknown) => void)((data.S[at] as { L: unknown }).L);
-    const run = await mock.run(code.replace(/\nconst DATA = .*;\n/, () => `\nconst DATA = ${JSON.stringify(data)};\n`));
+    const run = await mock.run(withConstant(code, "DATA", data));
     assert.ok(run.ok, run.text);
     const absolute = result(run).sets[0].absoluteContainers as [string, string, string][];
     assert.ok(absolute.length > 0, name);
@@ -481,7 +481,7 @@ test("build: a part that fails on its third new variant leaves the set as it was
   data.S.push({ b: "NOT_A_BLEND_MODE" });
   records[0][7] = data.S.length - 1;
   data.sets[0].v[3][5] = { r: records };
-  const broken = code.replace(/\nconst DATA = .*;\n/, () => `\nconst DATA = ${JSON.stringify(data)};\n`);
+  const broken = withConstant(code, "DATA", data);
   const run = await mock.run(broken);
   assert.equal(run.ok, false);
   assert.match(run.text, /blendMode/);
@@ -921,6 +921,56 @@ test("build: a call refused for one of its sets changes none of them", async () 
   const run = await mock.run(coded.code(call));
   assert.match(run.text, /The page has COMPONENT_SET "Toggle" .*, COMPONENT_SET "Toggle" .*: ask the user which to update/);
   assert.equal(JSON.stringify(mock.pages()), before, "Switch, first in the call, wasn't built either");
+});
+
+/** The error every template throws for a call that fails its SUM. */
+const CHANGED_CALL = /^Error: This call differs from the file storysync figma code wrote: its data fails its checksum, SUM\. Nothing was changed\. Send the file again, exactly as it is\.$/;
+
+test("build, images and label: a call one character off the file figma code wrote is refused, and changes nothing", async () => {
+  // Avatar's picture makes an images call, Card's icon a path to mistype.
+  const snap = copy(loadTreeFixture("avatar"));
+  snap.components.push(copy(loadTreeFixture("card").components[0]));
+  const coded = await codeFor(snap);
+  const code = (kind: string) => coded.code(coded.plan.calls.find((c) => c.kind === kind)!);
+  assert.deepEqual(coded.plan.calls.map((c) => c.kind), ["build", "images", "label", "read"]);
+  const build = code("build");
+  // As the fourth live push's agent pasted `1.790` for `1.79` in an icon's
+  // path: the same number, but not the call figma code wrote. And a digit
+  // changed, a variant's name, and the SUM itself.
+  const svg = build.indexOf("<svg");
+  assert.ok(svg > 0, "the call holds an icon");
+  const number = /\d\.\d+/.exec(build.slice(svg))!;
+  const end = svg + number.index + number[0].length;
+  const digit = build[end - 1] === "9" ? "8" : "9";
+  const name = /"(size=[^"]+)"/.exec(build)!;
+  const sum = /const SUM = "(.)/.exec(build)!;
+  const changes = [
+    build.slice(0, end) + "0" + build.slice(end),
+    build.slice(0, end - 1) + digit + build.slice(end),
+    build.replace(name[0], `"${name[1]} "`),
+    build.replace(sum[0], `const SUM = "${sum[1] === "0" ? "1" : "0"}`),
+  ];
+  const mock = mockFor([loadTreeFixture("avatar"), loadTreeFixture("card")], { pages: ["Page 1"] });
+  const before = JSON.stringify(mock.pages());
+  for (const changed of changes) {
+    assert.equal(changed.length - build.length <= 1 && changed !== build, true);
+    const run = await mock.run(changed);
+    assert.equal(run.ok, false);
+    assert.match(run.text, CHANGED_CALL);
+    assert.deepEqual([run.created, run.switches, JSON.stringify(mock.pages())], [0, [], before], "not even its page made");
+  }
+  // The file as written builds.
+  await runPlan(mock, coded, ["build"]);
+  const built = JSON.stringify(mock.pages());
+  for (const kind of ["images", "label"]) {
+    const call = code(kind);
+    // The page's name in the call's constant, not in the comment above it.
+    const page = call.indexOf("ui/base", call.indexOf("\nconst "));
+    const run = await mock.run(call.slice(0, page) + "ui/Base" + call.slice(page + "ui/base".length));
+    assert.match(run.text, CHANGED_CALL, kind);
+    assert.deepEqual([run.created, run.removed, run.switches, JSON.stringify(mock.pages())], [0, 0, [], built], `${kind}: Page 1 kept, nothing filled`);
+  }
+  await runPlan(mock, coded, ["images", "label"]);
 });
 
 test("build: the set's grid gives each variant the room it draws in: a label past its icon button, a shadow, overlap nothing", async () => {

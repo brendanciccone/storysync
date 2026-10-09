@@ -557,7 +557,7 @@ What the build does:
 - A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source.
 - The `label` call writes a `storysync:` line on the description of a set measured from a closed trigger or a layout wrapper, and removes Figma's default `Page 1` while it is empty.
 
-Every call can be sent again, and changes only what differs. A build call that throws removes the variants it had added to that set, so none is left loose on the page.
+Every call can be sent again, and changes only what differs. A build call that throws removes the variants it had added to that set, so none is left loose on the page. Each call also carries a checksum of its own data, `SUM`, which it checks before it changes or reads anything. A call that reached Figma with a character changed, as one pasted by hand can, is refused with `This call differs from the file storysync figma code wrote`, and changes nothing: send the file again exactly as it is.
 
 **Pictures.** `use_figma` can't create an image, so a build call lists the image layers it left empty in its response's `uploads`. The agent calls Figma's `upload_assets` for that many upload URLs, with those layers as targets, and saves its response as the call's `results/NN.upload.json`. `figma upload --plan .storysync/figma/plan.json --seq NN` then posts each thumbnail snap saved to its URL, with its own content type. That is the one request Storysync sends to Figma itself. The `images` call puts each picture on the other layers that show it, and a later push reuses a picture already in the file.
 

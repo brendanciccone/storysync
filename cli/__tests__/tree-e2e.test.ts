@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
-import { drawnInSet } from "./figma-build-harness.js";
+import { drawnInSet, withConstant } from "./figma-build-harness.js";
 import { parseReadResult } from "../figma-results.js";
 import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
@@ -393,7 +393,7 @@ test("tree e2e: what snap warned is said beside the score, before the drift unde
 test("tree e2e: a read that stops at its LIMIT is continued with figma next, and the parts verify as one", async () => {
   // A low prediction, as a read call whose responses ran long: the template
   // stops at LIMIT and returns `more`, and figma next writes the rest.
-  const squeeze = (code: string, kind: string) => (kind === "read" ? code.replace(/\nconst LIMIT = \d+;\n/, "\nconst LIMIT = 2500;\n") : code);
+  const squeeze = (code: string, kind: string) => (kind === "read" ? withConstant(code, "LIMIT", 2500) : code);
   const p = await push(asSnap(loadTreeFixture("card")), { edit: squeeze });
   try {
     const continued = [...p.reads.values()].flat().filter((r) => /\d+[b-z]\.json$/.test(r));
@@ -408,7 +408,7 @@ test("tree e2e: a read that stops at its LIMIT is continued with figma next, and
 });
 
 test("tree e2e: a read call sent again after a change in Figma has its continuations asked for again, so the change is read", async () => {
-  const squeeze = (code: string, kind: string) => (kind === "read" ? code.replace(/\nconst LIMIT = \d+;\n/, "\nconst LIMIT = 2500;\n") : code);
+  const squeeze = (code: string, kind: string) => (kind === "read" ? withConstant(code, "LIMIT", 2500) : code);
   // At the browser's widths, so the changed text, which the line below it
   // stretches across, keeps that line within its width tolerance: drift on
   // the changed text alone.

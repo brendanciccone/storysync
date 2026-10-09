@@ -1270,3 +1270,29 @@ BV1. **The build template's budget is 18,000 and the readback's 9,000**
      four times that push's largest.
    - A read call is its template and a short header, and what it returns
      is held by LIMIT, not by its code.
+BV2. **Every call checks a checksum of its own data before it does
+   anything** (no section; 8.1 and 9.1 list the constants a call writes).
+   The agent sends a call by pasting the file, up to 45,000 characters,
+   and push4's agent typed `1.790` for `1.79` in an icon's path in call
+   02: numerically the same, but nothing would have noticed a change that
+   wasn't.
+   - figma code writes `const SUM = "<fnv1a32>";` after a call's
+     constants (`callConstants` in `cli/checksum.ts`): FNV-1a over
+     `JSON.stringify([...values])`, the values in the order the call
+     declares them, DATA for a build or label call, PAGE for images, and
+     PAGE, SLICES, LIMIT and TPL for a read, a continuation included.
+   - Each template computes the same from the values it was given, first,
+     and throws `This call differs from the file storysync figma code
+     wrote: its data fails its checksum, SUM. Nothing was changed. Send
+     the file again, exactly as it is.` A build refuses before it creates
+     its page, a read before it switches to one. JSON.stringify of values
+     parsed from what JSON.stringify wrote is the same text, so an honest
+     call always matches, and a character changed anywhere in its values,
+     inside a string too, doesn't (a number written longer but equal, as
+     `1.790` outside a string, is the same value, and passes).
+   - The template itself isn't covered: use_figma runs the code as the
+     body of a function, and nothing in it can read its own text. A
+     change there mostly fails to parse or to run.
+   - `CALL_CONSTANTS` ends each kind's list with `SUM`. Tests that need a
+     call figma code doesn't write change a constant with `withConstant`
+     (`figma-build-harness.ts`), which writes the SUM again.
