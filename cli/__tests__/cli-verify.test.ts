@@ -500,6 +500,7 @@ test("verify CLI: a text layout snap measured, against a readback without textLa
 test("verify CLI: a tree snap is scored by elements, a faithful build passes --strict and says so", async () => {
   const { fixture, readback } = await buildAndRead("switch");
   const r = verify(fixture, readback, "--strict");
+  assert.match(r.out, /Variables: the element-tree readback doesn't read variable bindings yet/);
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /Fidelity: 100\.0% of elements \(4 of 4 verified\), 100\.0% of properties \(\d+\/\d+\)/);
   assert.match(r.out, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);

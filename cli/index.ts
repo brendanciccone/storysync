@@ -640,8 +640,13 @@ program
               console.log(chalk.yellow(`      ${u.component} ${u.field}, on ${u.variants} ${u.variants === 1 ? "variant" : "variants"}`));
             }
           }
-        } else if (scored > 0 && result.elementFidelity === undefined) {
-          console.log(chalk.dim("  Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen. Read it back with the skill's template as it is now."));
+        } else if (scored > 0) {
+          // The element-tree readback (templates/readback.js) reads no
+          // bindings yet; an older template's would, read again as it is now.
+          const elementRead = Object.values(readback.components ?? {}).some((c) => Object.values(c?.variants ?? {}).some((e) => e?.tpl !== undefined));
+          console.log(chalk.dim(elementRead
+            ? "  Variables: the element-tree readback doesn't read variable bindings yet, so a token detached in Figma at the same value can't be seen."
+            : "  Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen. Read it back with the skill's template as it is now."));
         }
 
         const age = result.snapAge;
