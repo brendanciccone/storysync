@@ -269,17 +269,36 @@ export function cssLinearGradient(layer: string, w: number, h: number): string |
   return `lin:${deg}:${stops.map((s) => `${s.color}@${Math.round(s.at! * 100) / 100}`).join(",")}`;
 }
 
-function sameGradient(a: string, b: string): boolean {
+/** A color that draws nothing: `#rrggbb00`. */
+const CLEAR = /^#[0-9a-f]{6}00$/;
+
+/**
+ * Whether two `lin:` gradients match: the angle within a degree, and stop
+ * for stop, the position within 0.01 and the color exact. A stop that
+ * draws nothing matches one that draws nothing in its own color or a
+ * neighbor's: the browser interpolates colors premultiplied by their
+ * alpha, so a transparent stop's own color never shows, and Figma, which
+ * interpolates them as they are, draws the same fade only from a
+ * transparent stop in its neighbor's color (`transparent` is #00000000,
+ * which in Figma fades to white through gray).
+ */
+export function sameGradient(want: string, got: string): boolean {
   const parse = (s: string) => {
     const [, angle, stops] = s.split(":");
-    return { angle: Number(angle), stops: (stops ?? "").split(",").map((p) => p.split("@")) };
+    return { angle: Number(angle), stops: (stops ?? "").split(",").map((p) => p.split("@").map((v, i) => (i ? v : String(lower(v))))) };
   };
-  const x = parse(a);
-  const y = parse(b);
+  const x = parse(want);
+  const y = parse(got);
   const turn = Math.abs(x.angle - y.angle) % 360;
+  const sameColor = (color: string, i: number) => {
+    const other = y.stops[i][0];
+    if (color === other) return true;
+    if (!CLEAR.test(color) || !CLEAR.test(other)) return false;
+    return [x.stops[i - 1], x.stops[i + 1]].some((s) => s !== undefined && s[0].slice(0, 7) === other.slice(0, 7));
+  };
   return Math.min(turn, 360 - turn) <= GRADIENT_ANGLE_TOLERANCE_DEG
     && x.stops.length === y.stops.length
-    && x.stops.every(([color, at], i) => color === lower(y.stops[i][0]) && near(Number(at), Number(y.stops[i][1]), GRADIENT_STOP_TOLERANCE));
+    && x.stops.every(([color, at], i) => sameColor(color, i) && near(Number(at), Number(y.stops[i][1]), GRADIENT_STOP_TOLERANCE));
 }
 
 /** One painted shape of an SVG as the browser paints it: colors as hex, alpha included; stroke width in px. */

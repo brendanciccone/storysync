@@ -95,16 +95,21 @@ const seal = (setId, key, fields) => {
   return entry;
 };
 
-// A paint's color as snap writes colors: #rrggbb, then the alpha byte when
-// under ff, from the color's alpha times the paint's opacity; null for one
-// hidden or fully transparent, which draws nothing. + 1e-4: Figma keeps
-// opacity as a 32-bit float, so 0.7 reads 0.69999… and would round down.
+// A color as snap writes colors: #rrggbb, then the alpha byte when under
+// ff, from the color's alpha times `o`, a paint's opacity. + 1e-4: Figma
+// keeps opacity as a 32-bit float, so 0.7 reads 0.69999… and would round
+// down.
+const byte = (n) => n.toString(16).padStart(2, '0');
+const hex = (c, o) => {
+  const a = Math.round((c.a == null ? 1 : c.a) * (o == null ? 1 : o) * 255 + 1e-4);
+  return '#' + [c.r, c.g, c.b].map((x) => byte(Math.round(x * 255))).join('') + (a < 255 ? byte(a) : '');
+};
+// A paint's color; null for one hidden or fully transparent, which draws
+// nothing. (A gradient's transparent stop is kept, `#rrggbb00`, as snap
+// writes one: it shapes the gradient.)
 const hexOf = (p) => {
-  if (!p || p.visible === false || !p.color) return null;
-  const c = p.color;
-  const byte = (n) => n.toString(16).padStart(2, '0');
-  const a = Math.round((c.a == null ? 1 : c.a) * (p.opacity == null ? 1 : p.opacity) * 255 + 1e-4);
-  return a ? '#' + [c.r, c.g, c.b].map((x) => byte(Math.round(x * 255))).join('') + (a < 255 ? byte(a) : '') : null;
+  const h = p && p.visible !== false && p.color ? hex(p.color, p.opacity) : '';
+  return h && !/^#\w{6}00$/.test(h) ? h : null;
 };
 // An image's bytes, as their FNV-1a, and its size, `<w>x<h>`.
 const images = {};
@@ -140,7 +145,7 @@ const paints = async (list, n) => {
       const at = (u) => [(e * (u - c) - b * (0.5 - f)) / det, (a * (0.5 - f) - d * (u - c)) / det];
       const [[x0, y0], [x1, y1]] = [at(0), at(1)];
       const deg = (Math.round((Math.atan2((x1 - x0) * n.width, (y0 - y1) * n.height) * 180) / Math.PI) + 360) % 360;
-      out.push('lin:' + deg + ':' + p.gradientStops.map((s) => hexOf({ color: s.color, opacity: p.opacity }) + '@' + r2(s.position)).join(','));
+      out.push('lin:' + deg + ':' + p.gradientStops.map((s) => hex(s.color, p.opacity) + '@' + r2(s.position)).join(','));
     } else out.push('other:' + p.type);
   }
   return out;

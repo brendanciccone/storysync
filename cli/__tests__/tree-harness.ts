@@ -16,7 +16,8 @@ import { MockFigma, loadTreeFixture, measureFromTrees, treeFixtureAsset, treeFix
 import type { MockFigmaOptions, MockRun, TreeFixture } from "./mock-figma.js";
 import { expandTree, parentKey, rootWithStyles, textHugs, treeDigest } from "../tree-types.js";
 import type { Sides, TreeDelta, TreeNode } from "../tree-types.js";
-import { applyDelta } from "../snap-normalize.js";
+import { applyDelta, splitTopLevel } from "../snap-normalize.js";
+import { cssLinearGradient } from "../verify-tree.js";
 import { componentKey } from "../storybook.js";
 import { READ_LIMIT, addReadResult, readbackCall } from "../figma-results.js";
 import type { ReadResult, ReadSlice } from "../figma-results.js";
@@ -56,6 +57,34 @@ const sides = <T>(v: Sides<T>): [T, T, T, T] => (Array.isArray(v) ? v : [v, v, v
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const STYLES: Record<number, string> = { 100: "Thin", 200: "Extra Light", 300: "Light", 400: "Regular", 500: "Medium", 600: "Semi Bold", 700: "Bold", 800: "Extra Bold", 900: "Black" };
 const BLEND: Record<string, string> = { darken: "DARKEN", multiply: "MULTIPLY", screen: "SCREEN", lighten: "LIGHTEN", overlay: "OVERLAY" };
+
+/**
+ * Figma's GRADIENT_LINEAR paint for a gradient as the readback encodes one,
+ * `lin:<css angle>:<#hex@position,…>`, in a layer of `w` by `h`: the
+ * gradient's line through the layer's center at the CSS angle, 0 up and 90
+ * right, as long as CSS makes it, its stops' colors as written.
+ */
+export function linearGradientPaint(encoded: string, w: number, h: number): Record<string, unknown> {
+  const [, deg, list] = encoded.split(":");
+  const rad = (Number(deg) * Math.PI) / 180;
+  const length = Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad));
+  const [dx, dy] = [Math.sin(rad) * length, -Math.cos(rad) * length];
+  const p0 = [(w / 2 - dx / 2) / w, (h / 2 - dy / 2) / h];
+  const d = [dx / w, dy / h];
+  const q = [-dy / w, dx / h];
+  // Gradient space (u, v) to the layer is p0 + u d + (v - 0.5) q; Figma's transform is its inverse.
+  const m = [[d[0], q[0], p0[0] - 0.5 * q[0]], [d[1], q[1], p0[1] - 0.5 * q[1]]];
+  const det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+  const gradientTransform = [
+    [m[1][1] / det, -m[0][1] / det, (m[0][1] * m[1][2] - m[1][1] * m[0][2]) / det],
+    [-m[1][0] / det, m[0][0] / det, (m[1][0] * m[0][2] - m[0][0] * m[1][2]) / det],
+  ];
+  const gradientStops = list.split(",").map((stop) => {
+    const [hex, at] = stop.split("@");
+    return { position: Number(at), color: { ...rgb(hex), a: alpha(hex) } };
+  });
+  return { type: "GRADIENT_LINEAR", gradientTransform, gradientStops };
+}
 
 /** A layer as the builder code makes it: Figma's values, decided here. */
 export interface LayerSpec {
@@ -131,7 +160,12 @@ export function layersOf(nodes: TreeNode[], rootStyles: Parameters<typeof rootWi
     } else if (n.t === "V") {
       spec.svg = { id: n.svg!, markup: assets.svg[n.svg!] };
     } else {
-      spec.fills = n.t === "I" ? [] : n.bg ? [solid(n.bg)] : [];
+      // The background color under the image layers, which CSS lists top first.
+      const gradients = (n.bgi ? splitTopLevel(n.bgi).reverse() : [])
+        .map((layer) => cssLinearGradient(layer, n.box[2], n.box[3]))
+        .filter((g): g is string => g !== null)
+        .map((g) => linearGradientPaint(g, spec.w, spec.h));
+      spec.fills = n.t === "I" ? [] : [...(n.bg ? [solid(n.bg)] : []), ...gradients];
       if (n.t === "I") spec.img = n.img;
       const weights: [number, number, number, number] = n.bd ? sides(n.bd.w) : [0, 0, 0, 0];
       if (n.bd && weights.some((w) => w > 0)) {
@@ -408,10 +442,10 @@ export function assemble(results: ReadResult[]): ReadbackFile {
   return readback;
 }
 
-/** A fixture built faithfully and read back whole. */
-export async function buildAndRead(name: string, options: BuildOptions & { figma?: MockFigma; limit?: number } = {}): Promise<{ figma: MockFigma; fixture: TreeFixture; built: BuiltSet; readback: ReadbackFile; results: ReadResult[] }> {
+/** A fixture, by name or as a test changed it, built faithfully and read back whole. */
+export async function buildAndRead(name: string | TreeFixture, options: BuildOptions & { figma?: MockFigma; limit?: number } = {}): Promise<{ figma: MockFigma; fixture: TreeFixture; built: BuiltSet; readback: ReadbackFile; results: ReadResult[] }> {
   const figma = options.figma ?? newFigma();
-  const fixture = loadTreeFixture(name);
+  const fixture = typeof name === "string" ? loadTreeFixture(name) : name;
   const built = await buildFixture(figma, fixture, options);
   const results = await readBack(figma, [[built.component, 0, fixture.components[0].variants.length - 1, 0]], { limit: options.limit });
   return { figma, fixture, built, readback: assemble(results), results };

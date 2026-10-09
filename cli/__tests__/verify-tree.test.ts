@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
-import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, newFigma, readBack, reread } from "./tree-harness.js";
+import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
 import { readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import type { ReadbackFile, ReadbackStyles, VerifyResult } from "../verify.js";
 import { SPIKE, cssLinearGradient, svgShapePaints } from "../verify-tree.js";
@@ -202,6 +202,30 @@ test("falsify: a vertical Attachment built as its root and an untruncated title 
   // truncation of the 18 it is scored on: (1 + 14/18) / 8.
   near(vertical.elements!.fidelity, 22.2, "Attachment vertical untruncated");
   assert.deepEqual(vertical.nodes!.find((n) => n.key.endsWith("attachment-title"))!.differences.map((d) => d.property), ["x", "y", "w", "truncation"]);
+});
+
+test("linear gradients: a gradient built faithfully verifies, transparent stops too, and one turned 10 degrees drifts on its fills", async () => {
+  const fixture = loadTreeFixture("switch");
+  const thumb = fixture.components[0].tree.base.find((n) => n.k === "switch-thumb")!;
+  // A fade from nothing, as snap writes rgba(255 255 255 / 0), and from
+  // `transparent`, which Figma draws only in its neighbor's color.
+  thumb.bgi = "linear-gradient(90deg, #ffffff00 0%, #000000 100%), linear-gradient(to bottom, #00000000, #ff0000 40%, #0000ff)";
+  const ctx = await buildAndRead(fixture);
+  assert.equal(verify(ctx.fixture, ctx.readback, 0.5).elementFidelity, 1);
+  const fills = node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).fills as Record<string, unknown>[];
+  const read = ctx.readback.components["ui/base/Switch"].variants["size-default"].tree![1][6] as string[];
+  assert.deepEqual(read.slice(1), ["lin:180:#00000000@0,#ff0000@0.4,#0000ff@1", "lin:90:#ffffff00@0,#000000@1"]);
+  // `transparent` built in its neighbor's color, as Figma needs it.
+  const borrowed = { ...fills[1], gradientStops: [{ position: 0, color: { r: 1, g: 0, b: 0, a: 0 } }, ...(fills[1].gradientStops as unknown[]).slice(1)] };
+  node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).fills = [fills[0], borrowed, fills[2]];
+  assert.equal(verify(ctx.fixture, await reread(ctx.figma, ctx.fixture, ctx.built), 0.5).elementFidelity, 1);
+  // Not another color, though.
+  const blue = { ...fills[1], gradientStops: [{ position: 0, color: { r: 0, g: 0, b: 1, a: 0 } }, ...(fills[1].gradientStops as unknown[]).slice(1)] };
+  node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).fills = [fills[0], blue, fills[2]];
+  assert.deepEqual(findings(verify(ctx.fixture, await reread(ctx.figma, ctx.fixture, ctx.built), 0.5)), ["size-default switch-thumb: fills"]);
+  // Turned 10 degrees.
+  node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).fills = [fills[0], fills[1], linearGradientPaint("lin:100:#ffffff00@0,#000000@1", 16, 16)];
+  assert.deepEqual(findings(verify(ctx.fixture, await reread(ctx.figma, ctx.fixture, ctx.built), 0.5)), ["size-default switch-thumb: fills"]);
 });
 
 // --- Integrity (design section 15, package C) -------------------------------------
@@ -430,23 +454,10 @@ test("linear gradients: CSS angles, sides and corners, and stop positions as the
 test("linear gradients: a gradient fill reads back at the angle and stops CSS gave it", async () => {
   const figma = newFigma();
   for (const [angle, w, h] of [[90, 120, 40], [180, 40, 120], [45, 80, 80], [135, 200, 50], [300, 60, 30]] as const) {
-    // Figma's transform for the CSS line: through the center, `angle` from up, as long as CSS makes it.
-    const rad = (angle * Math.PI) / 180;
-    const length = Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad));
-    const [dx, dy] = [Math.sin(rad) * length, -Math.cos(rad) * length];
-    const p0 = [(w / 2 - dx / 2) / w, (h / 2 - dy / 2) / h];
-    const d = [dx / w, dy / h];
-    const q = [-dy / w, dx / h];
-    // Gradient (u, v) to the layer: p0 + u d + (v - 0.5) q; its inverse is the transform.
-    const m = [[d[0], q[0], p0[0] - 0.5 * q[0]], [d[1], q[1], p0[1] - 0.5 * q[1]]];
-    const det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-    const t = [
-      [m[1][1] / det, -m[0][1] / det, (m[0][1] * m[1][2] - m[1][1] * m[0][2]) / det],
-      [-m[1][0] / det, m[0][0] / det, (m[1][0] * m[0][2] - m[0][0] * m[1][2]) / det],
-    ];
+    const paint = linearGradientPaint(`lin:${angle}:#ff0000@0,#0000ff80@1`, w, h);
     const run = await figma.run(`const page = figma.root.children[0];
       const c = figma.createComponent(); c.resize(${w}, ${h}); c.name = '';
-      c.fills = [{ type: 'GRADIENT_LINEAR', gradientTransform: ${JSON.stringify(t)}, gradientStops: [{ position: 0, color: { r: 1, g: 0, b: 0, a: 1 } }, { position: 1, color: { r: 0, g: 0, b: 1, a: 0.5 } }] }];
+      c.fills = [${JSON.stringify(paint)}];
       for (const [k, v] of [['id', 'g${angle}'], ['slug', 'default'], ['i', '0'], ['src', 'measured']]) c.setSharedPluginData('storysync', k, v);
       return c.id;`);
     assert.ok(run.ok, run.text);
