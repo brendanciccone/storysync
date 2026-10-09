@@ -11,13 +11,18 @@ import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
-  parseMeasurementWarning, snapFailsStrict,
+  parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
+  describeTruncatedTrees, describeClimbed,
 } from "../snap.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
-import type { StorybookComponent } from "../mapper.js";
-import { storyArgsInPage, applyStoryArgsInPage } from "../snap-browser.js";
+import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
+import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, thumbnailInPage } from "../snap-browser.js";
+import type { RawTreeCapture } from "../snap-tree.js";
+import { imageAssetId } from "../snap-assets.js";
+import { fnv1a32Bytes } from "../checksum.js";
 import { fakePreview, inPage, urlArgs } from "./preview-standin.js";
+import type { FakeArgType } from "./preview-standin.js";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "storysync-snap-"));
@@ -32,6 +37,11 @@ function options(outDir: string, overrides: Partial<SnapOptions> = {}): SnapOpti
     variants: "representative",
     ...overrides,
   };
+}
+
+/** What a stand-in page's element gives captureTreeInPage: itself, `width` by `height`, holding nothing. */
+function bareTree(width = 40, height = 20) {
+  return { root: { k: "e", tag: "div", box: [0, 0, width, height], cs: {}, kids: [], path: [] }, fonts: {} };
 }
 
 /** A launcher that fails if it is ever called. */
@@ -781,6 +791,11 @@ test("describeIdenticalVariants: blames the story only where the markup didn't c
   assert.match(behavior, /^all 3 rendered variants measured identically, though their markup changed with the args, so the story passes them through: `textAlign`, `pushPasswordManagerStrategy` change nothing snap measures, likely only behavior/);
   assert.match(behavior, /leave them out of every component with `--exclude-props textAlign,pushPasswordManagerStrategy`/);
   assert.deepEqual(parseBehaviorOnlyWarning(behavior), ["textAlign", "pushPasswordManagerStrategy"]);
+  assert.match(behavior, /something it doesn't measure, such as a child element\./);
+  // With trees, a child element is measured: what isn't is a state or an animation.
+  const treeBehavior = describeIdenticalVariants(variants, OTP_PROPS, ["a", "b", "c"], { tree: true })!;
+  assert.match(treeBehavior, /something it doesn't measure, such as a hover or focus state, or an animation\. If they don't change how it looks/);
+  assert.deepEqual(parseBehaviorOnlyWarning(treeBehavior), ["textAlign", "pushPasswordManagerStrategy"]);
 
   // The same markup on every variant: nothing the args set reached the page.
   const frozen = describeIdenticalVariants(variants, OTP_PROPS, ["a", "a", "a"])!;
@@ -1040,7 +1055,8 @@ function screenshotPage(onNavigate: () => void = () => {}) {
     $: async () => {
       let described = false;
       return {
-        evaluate: async () => {
+        evaluate: async (fn: unknown) => {
+          if (fn === captureTreeInPage) return bareTree();
           if (described) return null;
           described = true;
           return { tag: "div", slot: null, role: null };
@@ -1378,7 +1394,8 @@ function badgeBrowser(configure: (args: Record<string, unknown>) => Omit<Paramet
   // The element's description, then its font stack, which the stand-in can't probe.
   let described = false;
   const target = {
-    evaluate: async () => {
+    evaluate: async (fn: unknown) => {
+      if (fn === captureTreeInPage) return bareTree(55, 20);
       if (described) return null;
       described = true;
       return { tag: "span", slot: "badge", role: null };
@@ -1580,4 +1597,500 @@ test("runSnap: a variant whose args can't be checked is measured, marked, named 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- Element trees ---
+
+const RAW_DIR = new URL("../../../cli/__tests__/fixtures/raw/", import.meta.url);
+
+/** A capture from fixtures/raw: what the page read of a shadcn/ui story. */
+function rawCapture(name: string): RawTreeCapture {
+  return (JSON.parse(readFileSync(new URL(`${name}.json`, RAW_DIR), "utf8")) as { capture: RawTreeCapture }).capture;
+}
+
+/**
+ * A browser whose one page serves a story through a stand-in preview with
+ * `argTypes`, measuring at --selector, its tree as `capture` gives it for the
+ * args the story was given and the story's ID, and drawing every thumbnail
+ * as `thumbnail` gives its bytes ("thumbnail bytes", by default), each one
+ * asked for recorded in `drawn`.
+ */
+function treeBrowser(opts: {
+  storyId: string;
+  capture: (args: Record<string, unknown>, storyId: string) => RawTreeCapture;
+  argTypes?: Record<string, FakeArgType>;
+  version?: string;
+  thumbnail?: (arg: { size: [number, number] }) => Buffer;
+  /** How many loads time out before any loads, as a cold Storybook's first story may. */
+  timeouts?: number;
+  /** The story's markup checksum, as readMarkup reads it, for the args it was given; unread by default. */
+  markup?: (args: Record<string, unknown>) => string;
+}) {
+  const drawn: unknown[] = [];
+  let timeouts = opts.timeouts ?? 0;
+  let storyId = opts.storyId;
+  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId });
+  let described = false;
+  const given = () => fake.preview.storyStoreValue.getStoryContext().args;
+  const target = {
+    evaluate: async (fn: unknown) => {
+      if (fn === captureTreeInPage) return opts.capture(given(), storyId);
+      if (described) return null;
+      described = true;
+      return { tag: "span", slot: "switch", role: null };
+    },
+    evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+    boundingBox: async () => {
+      const root = opts.capture(given(), storyId).root.box;
+      return { x: 0, y: 0, width: root[2], height: root[3] };
+    },
+    screenshot: async () => Buffer.from("png"),
+  };
+  const page = {
+    on: () => {}, off: () => {},
+    goto: async (url: string) => {
+      if (timeouts-- > 0) throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+      described = false;
+      storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
+      fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {} });
+      return null;
+    },
+    waitForSelector: async () => null,
+    addStyleTag: async () => null,
+    $: async () => target,
+    evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn === storyArgsInPage || fn === applyStoryArgsInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
+      if (fn === thumbnailInPage) {
+        drawn.push(arg);
+        const bytes = opts.thumbnail ? opts.thumbnail(arg as { size: [number, number] }) : Buffer.from("thumbnail bytes");
+        return { mime: "image/jpeg", base64: bytes.toString("base64") };
+      }
+      // readMarkup, given the story's root containers.
+      if (opts.markup && Array.isArray(arg) && arg[0] === "#storybook-root") return opts.markup(given());
+      if (Array.isArray(arg) && Array.isArray(arg[1])) return { display: "flex", "background-color": "rgb(229, 229, 229)" };
+      return arg ? {} : null;
+    },
+  };
+  const launch = async () => ({
+    via: "stub",
+    browser: { version: () => opts.version ?? "154.0.0.0", newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+  }) as never;
+  return { launch, drawn };
+}
+
+const SWITCH_SIZE = { name: "size", type: { name: "union", raw: '"default" | "sm"' }, defaultValue: "default" };
+
+function switchDocs(props: object[] = [SWITCH_SIZE]) {
+  return {
+    listComponents: async () => [{ id: "ui-base-switch", name: "Switch", title: "ui/base/Switch", storyIds: ["ui-base-switch--default", "ui-base-switch--disabled"] }],
+    getComponent: async () => ({ name: "Switch", props, stories: [{ id: "ui-base-switch--default", name: "Default" }] }),
+  } as never;
+}
+
+const switchCapture = (args: Record<string, unknown>) => rawCapture(args.size === "sm" ? "switch-sm" : "switch");
+
+test("runSnap: each variant's element tree, the base whole and the rest as deltas, written a node a line", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    assert.equal(result.treeVersion, 1);
+    assert.deepEqual(result.treeLimits, { maxNodes: 400, maxDepth: 24, maxSvgChars: 20000 });
+    const [component] = result.components;
+    assert.equal(component.capture, "tree");
+    assert.deepEqual(component.tree!.base.map((n) => n.k), ["", "switch-thumb"]);
+    assert.deepEqual(component.tree!.assets, { svg: {}, img: {} });
+    const [base, sm] = component.variants;
+    assert.equal(base.treeDelta, undefined);
+    assert.deepEqual(sm.treeDelta, { set: { "": { box: [0, 0, 24, 14] }, "switch-thumb": { box: [1, 1, 12, 12], r: 6 } } });
+    assert.deepEqual(Object.keys(sm), ["combination", "slug", "status", "error", "boundingBox", "element", "delta", "treeDelta"]);
+
+    const text = readFileSync(join(dir, "styles.json"), "utf8");
+    assert.match(text, /\n {6}"capture": "tree",\n/);
+    assert.match(text, /\n {10}\{"bg":"#ffffff","box":\[1,1\.19,16,16\],"cls":\[[^\]]*\],"el":"span\[data-slot=switch-thumb\]","k":"switch-thumb","r":8,"t":"F"\}\n/);
+    assert.match(text, /\n {14}"switch-thumb": \{"box":\[1,1,12,12\],"r":6\}\n/);
+    assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(result)));
+    const meta = readJson(join(dir, "meta.json"));
+    assert.equal(meta.platform, `${process.platform}-${process.arch}`);
+    assert.equal(meta.browser, "154.0.0.0");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: two snaps of one render write the same styles.json, byte for byte", async () => {
+  const dirs = [tempDir(), tempDir()];
+  try {
+    for (const dir of dirs) {
+      const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } } });
+      await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs(), launch });
+    }
+    assert.equal(readFileSync(join(dirs[0], "styles.json"), "utf8"), readFileSync(join(dirs[1], "styles.json"), "utf8"));
+  } finally {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap --root-only: styles.json as before trees, each variant saying how many elements went unmeasured", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: () => rawCapture("card"), argTypes: { size: { options: ["default", "sm"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", rootOnly: true }), { storybook: switchDocs(), launch });
+    assert.equal(result.treeVersion, undefined);
+    assert.equal(result.treeLimits, undefined);
+    const [component] = result.components;
+    assert.equal(component.capture, undefined);
+    assert.equal(component.tree, undefined);
+    assert.deepEqual(component.variants.map((v) => [v.innerElements, v.treeDelta]), [[22, undefined], [22, undefined]]);
+    // Without trees, written as JSON.stringify writes it, as 0.4.0 did.
+    assert.equal(readFileSync(join(dir, "styles.json"), "utf8"), `${JSON.stringify(result, null, 2)}\n`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap --merge: a tree snap and a root-only one are not mixed, either way round", async () => {
+  const dir = tempDir();
+  try {
+    const run = (rootOnly: boolean, merge: boolean) => {
+      const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture });
+      return runSnap(options(dir, { selector: "[data-slot=switch]", rootOnly, merge, components: ["ui-base-switch"] }), { storybook: switchDocs(), launch });
+    };
+    await run(false, false);
+    await assert.rejects(() => run(true, true), /which were measured with their element trees: pass no --root-only, or run snap without --merge/);
+    await run(false, true);
+    await run(true, false);
+    await assert.rejects(() => run(false, true), /which were measured root only \(--root-only, or by a storysync that measured no trees\): pass --root-only/);
+    await run(true, true);
+    // Trees of another format: not mixed with this one's either.
+    await run(false, false);
+    const path = join(dir, "styles.json");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/\n {2}"treeVersion": 1,\n/, '\n  "treeVersion": 2,\n'));
+    await assert.rejects(() => run(false, true), /which were measured with their element trees: pass no --root-only, or run snap without --merge/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: an image is kept as a thumbnail of what its box shows, named by its bytes and crop, beside styles.json", async () => {
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000020000000208060000007b", "hex");
+  const photo = (size: number): RawTreeCapture => ({
+    root: {
+      k: "e", tag: "span", box: [0, 0, size, size], cs: { display: "flex" }, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, size, size], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: `data:image/png;base64,${png.toString("base64")}`, natural: [2, 2] } }],
+    },
+    fonts: {},
+  });
+  const dir = tempDir();
+  try {
+    // The base shows it at 24px, a later variant at 32.
+    const { launch, drawn } = treeBrowser({ storyId: "ui-base-switch--default", capture: (args) => photo(args.size === "sm" ? 32 : 24), argTypes: { size: { options: ["default", "sm"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const { tree } = result.components[0];
+    const id = imageAssetId(png, "0,0,2,2");
+    assert.equal(tree!.base[1].img, id);
+    // Drawn once, at twice the largest box it showed in, whichever variant that was.
+    assert.equal(drawn.length, 1);
+    assert.deepEqual((drawn[0] as { size: number[] }).size, [64, 64]);
+    const fnv = fnv1a32Bytes(Buffer.from("thumbnail bytes"));
+    const file = `assets/${id.slice(4)}-${fnv}.jpg`;
+    assert.deepEqual(tree!.assets.img, { [id]: { file, mime: "image/jpeg", size: [64, 64], natural: [2, 2], fnv } });
+    assert.equal(readFileSync(join(dir, file), "utf8"), "thumbnail bytes");
+    assert.equal(result.components[0].variants[1].treeDelta?.set?.["avatar-image"], undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: an image whose thumbnail can't be drawn is a frame in every variant, saying so, and warned about", async () => {
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000020000000208060000007b", "hex");
+  const photo = (size: number): RawTreeCapture => ({
+    root: {
+      k: "e", tag: "span", box: [0, 0, size, size], cs: { display: "flex" }, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, size, size], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: `data:image/png;base64,${png.toString("base64")}`, natural: [2, 2] } }],
+    },
+    fonts: {},
+  });
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: (args) => photo(args.size === "sm" ? 24 : 32), argTypes: { size: { options: ["default", "sm"] } },
+      thumbnail: () => { throw new Error("EncodingError: The source image cannot be decoded."); },
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    const img = component.tree!.base[1];
+    assert.deepEqual([img.t, img.img, img.approx], ["F", undefined, "image-unavailable"]);
+    assert.deepEqual(component.tree!.assets.img, {});
+    // The smaller variant differs only in size, not in what it is.
+    assert.deepEqual(Object.keys(component.variants[1].treeDelta!.set!.img), ["box"]);
+    assert.ok(component.warnings.some((w) => /couldn't draw a thumbnail of img:[0-9a-f]{12}-[0-9a-f]{4} \(EncodingError: The source image cannot be decoded\.\)/.test(w)), JSON.stringify(component.warnings));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: two components showing one photo at two sizes each keep their own thumbnail, on --merge too", async () => {
+  // shadcn.png is the Avatar's photo at 32px and Empty's at 48px: one id,
+  // as the crop is the same, but two thumbnails. Named by id alone, the
+  // second written replaced the first, whose record then named other bytes.
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000020000000208060000007b", "hex");
+  const photo = (size: number): RawTreeCapture => ({
+    root: {
+      k: "e", tag: "span", box: [0, 0, size, size], cs: { display: "flex" }, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, size, size], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: `data:image/png;base64,${png.toString("base64")}`, natural: [2, 2] } }],
+    },
+    fonts: {},
+  });
+  const docs = {
+    listComponents: async () => [
+      { id: "ui-base-avatar", name: "Avatar", title: "ui/base/Avatar", storyIds: ["ui-base-avatar--default"] },
+      { id: "ui-base-empty", name: "Empty", title: "ui/base/Empty", storyIds: ["ui-base-empty--with-avatar"] },
+    ],
+    getComponent: async (id: string) => ({ name: id === "ui-base-avatar" ? "Avatar" : "Empty", props: [], stories: [] }),
+  } as never;
+  const dir = tempDir();
+  try {
+    const snap = (sizes: Record<string, number>, overrides: Partial<SnapOptions> = {}) => {
+      const { launch } = treeBrowser({
+        storyId: "ui-base-avatar--default",
+        capture: (_args, storyId) => photo(sizes[storyId.split("--")[0]]),
+        thumbnail: ({ size }) => Buffer.from(`thumbnail at ${size.join("x")}`),
+      });
+      return runSnap(options(dir, { selector: "[data-slot=avatar]", ...overrides }), { storybook: docs, launch });
+    };
+    const check = (result: Awaited<ReturnType<typeof snap>>, expected: Record<string, string>) => {
+      const id = imageAssetId(png, "0,0,2,2");
+      const records = result.components.map((c) => c.tree!.assets.img[id]);
+      assert.deepEqual(records.map((r) => r.size), Object.values(expected).map((s) => s.split("x").map(Number)));
+      assert.notEqual(records[0].file, records[1].file);
+      for (const record of records) assert.equal(fnv1a32Bytes(readFileSync(join(dir, record.file))), record.fnv, record.file);
+    };
+    check(await snap({ "ui-base-avatar": 32, "ui-base-empty": 48 }), { avatar: "64x64", empty: "96x96" });
+    // A merge that measures Empty at another size leaves the Avatar's file as it was.
+    check(await snap({ "ui-base-avatar": 32, "ui-base-empty": 40 }, { merge: true, components: ["ui-base-empty"] }), { avatar: "64x64", empty: "80x80" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: --stories measures a component from the story it names, and refuses one that isn't its", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--disabled", capture: switchCapture });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", stories: { "ui-base-switch": "ui-base-switch--disabled" } }), { storybook: switchDocs(), launch });
+    assert.equal(result.components[0].storyId, "ui-base-switch--disabled");
+    await assert.rejects(
+      () => runSnap(options(dir, { stories: { "ui-base-switch": "ui-base-switch--checked" } }), { storybook: switchDocs(), launch: launchShouldNotHappen }),
+      /--stories gives ui-base-switch the story "ui-base-switch--checked", which isn't one of its stories: ui-base-switch--default, ui-base-switch--disabled\./,
+    );
+    await assert.rejects(
+      () => runSnap(options(dir, { stories: { Toggle: "ui-base-toggle--default" } }), { storybook: switchDocs(), launch: launchShouldNotHappen }),
+      /--stories names "Toggle", which is none of the components being measured \(ui-base-switch\)/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveStoryOverrides: by ID or title; a name two components share is refused unless the story tells them apart", () => {
+  const entries = [
+    { id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds: ["ui-base-button--default", "ui-base-button--with-icon"] },
+    { id: "ui-radix-button", name: "Button", title: "ui/radix/Button", storyIds: ["ui-radix-button--default"] },
+  ];
+  assert.deepEqual([...resolveStoryOverrides(entries, { "ui/radix/button": "ui-radix-button--default" })], [["ui-radix-button", "ui-radix-button--default"]]);
+  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon" })], [["ui-base-button", "ui-base-button--with-icon"]]);
+  assert.throws(() => resolveStoryOverrides(entries, { Button: "ui-x--y" }), /--stories names "Button", which is 2 components \(ui-base-button, ui-radix-button\)/);
+  assert.equal(resolveStoryOverrides(entries, undefined).size, 0);
+});
+
+test("runSnap: with channelArgs off, a value the story won't take leaves its variant unmeasured, never measured as the default", async () => {
+  const launch = badgeBrowser(() => ({ argTypes: { variant: { options: ["default", "secondary"], type: { name: "enum" } } }, initial: { variant: "default" } }));
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200, channelArgs: false }), {
+      storybook: badgeDocs([BADGE_VARIANT]),
+      launch,
+    });
+    const statuses = result.components[0].variants.map((v) => [v.combination.variant, v.status]);
+    assert.deepEqual(statuses, [["default", "ok"], ["secondary", "ok"], ["ghost", "arg_rejected"], ["link", "arg_rejected"]]);
+    assert.match(result.components[0].variants[2].error!, /--no-channel-args/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: the story's argTypes options add the values the docs' type lacks, measured after the planned ones", async () => {
+  const dir = tempDir();
+  try {
+    const sides = { name: "side", type: { name: "Side" }, defaultValue: "top" };
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default",
+      capture: switchCapture,
+      argTypes: { size: { options: ["default", "sm", "lg"] }, side: { options: ["top", "bottom"] } },
+    });
+    // size's type has default and sm; the options add lg. side's type
+    // lists nothing; the options make it an axis, and the plan starts again.
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variantProperties.map((p) => [p.name, p.values, p.defaultValue]), [["size", ["default", "sm", "lg"], "default"], ["side", ["top", "bottom"], "top"]]);
+    assert.deepEqual(component.variants.map((v) => [v.slug, v.combination, v.status]), [
+      ["size-default--side-top", { size: "default", side: "top" }, "ok"],
+      ["size-sm--side-top", { size: "sm", side: "top" }, "ok"],
+      ["size-lg--side-top", { size: "lg", side: "top" }, "ok"],
+      ["size-default--side-bottom", { size: "default", side: "bottom" }, "ok"],
+    ]);
+    assert.deepEqual(component.base!.combination, { size: "default", side: "top" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a variant that failed before the options added an axis is measured again in the new plan, not kept without it", async () => {
+  const dir = tempDir();
+  try {
+    const sides = { name: "side", type: { name: "Side" }, defaultValue: "top" };
+    // The first story times out twice, as a cold Storybook's may, so its
+    // args are never read; the second's add the side axis.
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default",
+      capture: switchCapture,
+      argTypes: { size: { options: ["default", "sm"] }, side: { options: ["top", "bottom"] } },
+      timeouts: 2,
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", screenshots: true }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variants.map((v) => [v.slug, v.combination, v.status]), [
+      ["size-default--side-top", { size: "default", side: "top" }, "ok"],
+      ["size-sm--side-top", { size: "sm", side: "top" }, "ok"],
+      ["size-default--side-bottom", { size: "default", side: "bottom" }, "ok"],
+    ]);
+    assert.equal(result.summary.variants, 3);
+    // Only the new plan's screenshots: none for a slug no variant has.
+    assert.deepEqual(readdirSync(join(dir, "ui-base-switch")).sort(), ["size-default--side-bottom.png", "size-default--side-top.png", "size-sm--side-top.png"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: values the options add to an axis already planned come after the planned ones, their slugs unchanged", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm", "lg"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs(), launch });
+    assert.deepEqual(result.components[0].variants.map((v) => v.slug), ["size-default", "size-sm", "size-lg"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: values the options add past --max-combinations start a capped plan that measures them, not one cut short of them", async () => {
+  const dir = tempDir();
+  try {
+    // size x tone is 4, within the limit; the options' lg makes it 6, past it.
+    const tone = { name: "tone", type: { name: "union", raw: '"a" | "b"' }, defaultValue: "a" };
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm", "lg"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all", maxCombinations: 4 }), { storybook: switchDocs([SWITCH_SIZE, tone]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variants.map((v) => v.slug), ["size-default--tone-a", "size-sm--tone-a", "size-lg--tone-a", "size-default--tone-b"]);
+    assert.deepEqual([component.cap!.totalPossible, component.cap!.generated, component.cap!.uncovered], [6, 4, []]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a tree snap whose variants measure alike though their markup changed names a state or an animation as what it didn't measure", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: () => rawCapture("switch"), argTypes: { size: { options: ["default", "sm"] } },
+      markup: (args) => `markup-${String(args.size)}`,
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const warning = result.components[0].warnings.find((w) => parseBehaviorOnlyWarning(w));
+    assert.match(warning ?? "", /something it doesn't measure, such as a hover or focus state, or an animation\./);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectIdenticalValues: values that measured the same, root and tree, wherever both were measured", () => {
+  const props: FigmaVariantProperty[] = [
+    { name: "variant", type: "VARIANT", values: ["default", "ghost", "link"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+  ];
+  const v = (variant: string, size: string, delta: object, treeDelta?: object): SnapVariant =>
+    ({ combination: { variant, size }, slug: `${variant}-${size}`, status: "ok", error: null, delta, ...(treeDelta ? { treeDelta } : {}) }) as SnapVariant;
+  const variants = [
+    v("default", "sm", {}), v("ghost", "sm", { backgroundColor: null }), v("link", "sm", { backgroundColor: null }),
+    v("default", "lg", { width: 50 }), v("ghost", "lg", { width: 50, backgroundColor: null }), v("link", "lg", { width: 50, backgroundColor: null }),
+  ];
+  assert.deepEqual(detectIdenticalValues(props, variants), [{ property: "variant", values: ["ghost", "link"] }]);
+  // A property already named as changing nothing isn't named again.
+  assert.deepEqual(detectIdenticalValues(props, variants, ["variant"]), []);
+  // A tree that differs tells them apart.
+  variants[5] = v("link", "lg", { width: 50, backgroundColor: null }, { set: { "#text": { tx: { td: "underline" } } } });
+  assert.deepEqual(detectIdenticalValues(props, variants), []);
+  assert.deepEqual(describeIdenticalValues([{ property: "variant", values: ["ghost", "link"] }]), [
+    "`variant=ghost` and `variant=link` render identically: everything snap measures, the root and the elements in it, is the same wherever both were measured. " +
+      "If the code draws them differently, the story may not pass variant through for these values; if it doesn't, they could be one Figma variant.",
+  ]);
+});
+
+test("detectIdenticalVariants and detectNoOpProperties: a change inside the root is a change", () => {
+  const props: FigmaVariantProperty[] = [{ name: "state", type: "VARIANT", values: ["done", "error"], defaultValue: "done" }];
+  const done = { combination: { state: "done" }, slug: "state-done", status: "ok", error: null, delta: {} } as SnapVariant;
+  const error = { combination: { state: "error" }, slug: "state-error", status: "ok", error: null, delta: {}, treeDelta: { set: { "attachment-media": { bg: "#df22251a" } } } } as SnapVariant;
+  assert.equal(detectIdenticalVariants([done, error]), null);
+  assert.deepEqual(detectNoOpProperties(props, [done, error]), []);
+  const unchanged = { ...error, treeDelta: {} };
+  assert.match(detectIdenticalVariants([done, unchanged])!, /^all 2 rendered variants measured identically/);
+  assert.deepEqual(detectNoOpProperties(props, [done, unchanged]), ["state"]);
+});
+
+test("describeTruncatedTrees and describeClimbed: what snap left out of a tree, and where it measured instead", () => {
+  assert.equal(describeTruncatedTrees([], 3), null);
+  assert.equal(
+    describeTruncatedTrees([{ slug: "default", truncated: { nodes: 1001, at: "div:400" } }], 1),
+    "the element tree of every variant holds more than snap keeps (400 elements, 24 levels deep): up to 1001 elements, so everything from `div:400` on was left out, " +
+      "and verify lists it as not measured. To measure all of it, snap a story that renders less, with --stories, or measure its parts as components of their own.",
+  );
+  assert.equal(
+    describeClimbed([{ slug: "a", element: "div[data-slot=\"toaster\"]", from: "section" }], 2),
+    "snap measured div[data-slot=\"toaster\"] rather than section in 1 of 2 variants (a): section draws nothing and holds nothing that does, so its tree would be empty, and div[data-slot=\"toaster\"] is the nearest element around it that draws.",
+  );
+});
+
+test("ScreenshotStage: a file two components staged stays until neither is measured again", () => {
+  const dir = tempDir();
+  const a = { id: "a", name: "A" } as never;
+  const b = { id: "b", name: "B" } as never;
+  try {
+    const stage = new ScreenshotStage(dir);
+    stage.writeFile(a, "assets/x.jpg", Buffer.from("x"));
+    stage.writeFile(b, "assets/x.jpg", Buffer.from("x"));
+    stage.drop(a);
+    stage.commit();
+    assert.equal(readFileSync(join(dir, "assets", "x.jpg"), "utf8"), "x");
+    const again = new ScreenshotStage(dir);
+    again.writeFile(a, "assets/y.jpg", Buffer.from("y"));
+    again.drop(a);
+    again.commit();
+    assert.equal(existsSync(join(dir, "assets", "y.jpg")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectFontSubstitution: a text inside the root drawn in a font that didn't load is named too", () => {
+  const component = {
+    name: "Card", storyId: null, variantProperties: [], warnings: [], error: null,
+    base: { combination: {}, slug: "default", styles: { fontFamily: "Inter", fontAvailable: true } },
+    variants: [
+      { combination: {}, slug: "default", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "ok", error: null, delta: {}, treeDelta: { set: { p: { k: "p", t: "T", el: "p", box: [0, 0, 1, 1], tx: { c: "x", f: "Geist", fa: 0, sz: 14, wt: 400, col: null, lh: 20, n: 1, ink: [0, 0, 1, 1] } } } } },
+    ],
+    tree: { version: 1, base: [{ k: "", t: "F", el: "div", box: [0, 0, 1, 1] }], assets: { svg: {}, img: {} } },
+  } as unknown as Parameters<typeof detectFontSubstitution>[0];
+  assert.match(detectFontSubstitution(component)!, /^the browser could not render "Geist"/);
 });

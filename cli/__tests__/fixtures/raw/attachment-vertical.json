@@ -1,0 +1,573 @@
+{
+ "source": {
+  "story": "ui-base-attachment--default",
+  "args": "orientation:vertical",
+  "root": "[data-slot=attachment]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "div",
+   "box": [
+    0,
+    0,
+    120,
+    163.5
+   ],
+   "cs": {
+    "display": "flex",
+    "position": "relative",
+    "padding-top": "8px",
+    "padding-right": "8px",
+    "padding-bottom": "8px",
+    "padding-left": "8px",
+    "flex-direction": "column",
+    "flex-wrap": "wrap",
+    "flex-shrink": "0",
+    "row-gap": "8px",
+    "column-gap": "8px",
+    "background-color": "oklch(1 0 0)",
+    "border-top-width": "1px",
+    "border-right-width": "1px",
+    "border-bottom-width": "1px",
+    "border-left-width": "1px",
+    "border-top-color": "oklch(0.922 0 0)",
+    "border-right-color": "oklch(0.922 0 0)",
+    "border-bottom-color": "oklch(0.922 0 0)",
+    "border-left-color": "oklch(0.922 0 0)",
+    "border-top-left-radius": "14px",
+    "border-top-right-radius": "14px",
+    "border-bottom-right-radius": "14px",
+    "border-bottom-left-radius": "14px"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      9,
+      9,
+      102,
+      102
+     ],
+     "cs": {
+      "display": "flex",
+      "position": "relative",
+      "justify-content": "center",
+      "align-items": "center",
+      "flex-shrink": "0",
+      "background-color": "oklch(0.97 0 0)",
+      "border-top-left-radius": "10px",
+      "border-top-right-radius": "10px",
+      "border-bottom-right-radius": "10px",
+      "border-bottom-left-radius": "10px",
+      "overflow-x": "hidden",
+      "overflow-y": "hidden"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "svg",
+       "box": [
+        48,
+        48,
+        24,
+        24
+       ],
+       "cs": {
+        "overflow-x": "hidden",
+        "overflow-y": "hidden"
+       },
+       "kids": [],
+       "path": [
+        0,
+        0
+       ],
+       "lucide": "lucide-file-text",
+       "svg": {
+        "tag": "svg",
+        "attrs": {
+         "viewBox": "0 0 24 24"
+        },
+        "kids": [
+         {
+          "tag": "path",
+          "attrs": {
+           "d": "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+          },
+          "paint": {
+           "fill": "none",
+           "fill-opacity": "1",
+           "stroke": "oklch(0.145 0 0)",
+           "stroke-opacity": "1",
+           "stroke-width": "2px",
+           "stroke-linecap": "round",
+           "stroke-linejoin": "round",
+           "opacity": "1",
+           "fill-rule": "nonzero",
+           "clip-rule": "nonzero"
+          }
+         },
+         {
+          "tag": "path",
+          "attrs": {
+           "d": "M14 2v5a1 1 0 0 0 1 1h5"
+          },
+          "paint": {
+           "fill": "none",
+           "fill-opacity": "1",
+           "stroke": "oklch(0.145 0 0)",
+           "stroke-opacity": "1",
+           "stroke-width": "2px",
+           "stroke-linecap": "round",
+           "stroke-linejoin": "round",
+           "opacity": "1",
+           "fill-rule": "nonzero",
+           "clip-rule": "nonzero"
+          }
+         },
+         {
+          "tag": "path",
+          "attrs": {
+           "d": "M10 9H8"
+          },
+          "paint": {
+           "fill": "none",
+           "fill-opacity": "1",
+           "stroke": "oklch(0.145 0 0)",
+           "stroke-opacity": "1",
+           "stroke-width": "2px",
+           "stroke-linecap": "round",
+           "stroke-linejoin": "round",
+           "opacity": "1",
+           "fill-rule": "nonzero",
+           "clip-rule": "nonzero"
+          }
+         },
+         {
+          "tag": "path",
+          "attrs": {
+           "d": "M16 13H8"
+          },
+          "paint": {
+           "fill": "none",
+           "fill-opacity": "1",
+           "stroke": "oklch(0.145 0 0)",
+           "stroke-opacity": "1",
+           "stroke-width": "2px",
+           "stroke-linecap": "round",
+           "stroke-linejoin": "round",
+           "opacity": "1",
+           "fill-rule": "nonzero",
+           "clip-rule": "nonzero"
+          }
+         },
+         {
+          "tag": "path",
+          "attrs": {
+           "d": "M16 17H8"
+          },
+          "paint": {
+           "fill": "none",
+           "fill-opacity": "1",
+           "stroke": "oklch(0.145 0 0)",
+           "stroke-opacity": "1",
+           "stroke-width": "2px",
+           "stroke-linecap": "round",
+           "stroke-linejoin": "round",
+           "opacity": "1",
+           "fill-rule": "nonzero",
+           "clip-rule": "nonzero"
+          }
+         }
+        ]
+       },
+       "shapes": [
+        [
+         4,
+         2,
+         16,
+         20
+        ],
+        [
+         14,
+         2,
+         6,
+         6
+        ],
+        [
+         8,
+         9,
+         2,
+         0
+        ],
+        [
+         8,
+         13,
+         8,
+         0
+        ],
+        [
+         8,
+         17,
+         8,
+         0
+        ]
+       ]
+      }
+     ],
+     "path": [
+      0
+     ],
+     "slot": "attachment-media",
+     "cls": [
+      "rounded-lg",
+      "bg-muted",
+      "text-foreground",
+      "group-data-[size=xs]/attachment:rounded-md",
+      "group-data-[state=error]/attachment:bg-destructive/10",
+      "group-data-[state=error]/attachment:text-destructive"
+     ]
+    },
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      9,
+      119,
+      102,
+      35.5
+     ],
+     "cs": {
+      "padding-right": "4px",
+      "padding-left": "4px",
+      "flex-grow": "1",
+      "flex-basis": "0%"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "span",
+       "box": [
+        13,
+        119,
+        94,
+        17.5
+       ],
+       "cs": {
+        "overflow-x": "hidden",
+        "overflow-y": "hidden"
+       },
+       "kids": [
+        {
+         "k": "t",
+         "text": "sales-dashboard.pdf",
+         "rects": [
+          [
+           13,
+           119,
+           137.6875,
+           17
+          ],
+          [
+           13,
+           119,
+           81.265625,
+           17
+          ]
+         ]
+        }
+       ],
+       "path": [
+        1,
+        0
+       ],
+       "slot": "attachment-title",
+       "text": {
+        "color": "oklch(0.145 0 0)",
+        "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+        "font-size": "14px",
+        "font-weight": "500",
+        "font-style": "normal",
+        "line-height": "17.5px",
+        "letter-spacing": "normal",
+        "text-transform": "none",
+        "text-decoration-line": "none",
+        "text-align": "start",
+        "white-space": "nowrap",
+        "text-overflow": "ellipsis",
+        "-webkit-line-clamp": "none"
+       }
+      },
+      {
+       "k": "e",
+       "tag": "span",
+       "box": [
+        13,
+        138.5,
+        94,
+        16
+       ],
+       "cs": {
+        "overflow-x": "hidden",
+        "overflow-y": "hidden"
+       },
+       "kids": [
+        {
+         "k": "t",
+         "text": "PDF · 2.4 MB",
+         "rects": [
+          [
+           13,
+           138.5,
+           73.28125,
+           15
+          ]
+         ]
+        }
+       ],
+       "path": [
+        1,
+        1
+       ],
+       "slot": "attachment-description",
+       "cls": [
+        "text-xs",
+        "text-muted-foreground",
+        "group-data-[state=error]/attachment:text-destructive/80"
+       ],
+       "text": {
+        "color": "oklch(0.556 0 0)",
+        "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+        "font-size": "12px",
+        "font-weight": "400",
+        "font-style": "normal",
+        "line-height": "16px",
+        "letter-spacing": "normal",
+        "text-transform": "none",
+        "text-decoration-line": "none",
+        "text-align": "start",
+        "white-space": "nowrap",
+        "text-overflow": "ellipsis",
+        "-webkit-line-clamp": "none"
+       }
+      }
+     ],
+     "path": [
+      1
+     ],
+     "slot": "attachment-content"
+    },
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      83,
+      13,
+      24,
+      24
+     ],
+     "cs": {
+      "display": "flex",
+      "position": "absolute",
+      "z-index": "20",
+      "align-items": "center",
+      "flex-shrink": "0",
+      "row-gap": "4px",
+      "column-gap": "4px"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "button",
+       "box": [
+        83,
+        13,
+        24,
+        24
+       ],
+       "cs": {
+        "display": "flex",
+        "justify-content": "center",
+        "align-items": "center",
+        "flex-shrink": "0",
+        "background-clip": "padding-box",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(0, 0, 0, 0)",
+        "border-right-color": "rgba(0, 0, 0, 0)",
+        "border-bottom-color": "rgba(0, 0, 0, 0)",
+        "border-left-color": "rgba(0, 0, 0, 0)",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "svg",
+         "box": [
+          89,
+          19,
+          12,
+          12
+         ],
+         "cs": {
+          "flex-shrink": "0",
+          "overflow-x": "hidden",
+          "overflow-y": "hidden"
+         },
+         "kids": [],
+         "path": [
+          2,
+          0,
+          0
+         ],
+         "lucide": "lucide-x",
+         "svg": {
+          "tag": "svg",
+          "attrs": {
+           "viewBox": "0 0 24 24"
+          },
+          "kids": [
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M18 6 6 18"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "m6 6 12 12"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           }
+          ]
+         },
+         "shapes": [
+          [
+           3,
+           3,
+           6,
+           6
+          ],
+          [
+           3,
+           3,
+           6,
+           6
+          ]
+         ]
+        }
+       ],
+       "path": [
+        2,
+        0
+       ],
+       "slot": "attachment-action",
+       "cls": [
+        "focus-visible:border-ring",
+        "focus-visible:ring-ring/50",
+        "aria-invalid:ring-destructive/20",
+        "dark:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "dark:aria-invalid:border-destructive/50",
+        "border-transparent",
+        "bg-clip-padding",
+        "text-sm",
+        "outline-none",
+        "focus-visible:ring-[3px]",
+        "aria-invalid:ring-[3px]",
+        "hover:bg-muted",
+        "hover:text-foreground",
+        "dark:hover:bg-muted/50",
+        "aria-expanded:bg-muted",
+        "aria-expanded:text-foreground",
+        "rounded-[min(var(--radius-md),8px)]",
+        "in-data-[slot=button-group]:rounded-md"
+       ]
+      }
+     ],
+     "path": [
+      2
+     ],
+     "slot": "attachment-actions"
+    }
+   ],
+   "path": [],
+   "slot": "attachment",
+   "cls": [
+    "rounded-xl",
+    "bg-card",
+    "text-card-foreground",
+    "focus-within:ring-1",
+    "focus-within:ring-ring/50",
+    "has-[>a,>button]:hover:bg-muted/50",
+    "data-[state=error]:border-destructive/30",
+    "data-[state=idle]:border-dashed",
+    "text-sm"
+   ]
+  },
+  "fonts": {
+   "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"": {
+    "families": [
+     "-apple-system",
+     "system-ui",
+     "Segoe UI",
+     "Roboto",
+     "Helvetica Neue",
+     "Noto Sans",
+     "Arial",
+     "sans-serif",
+     "Apple Color Emoji",
+     "Segoe UI Emoji",
+     "Segoe UI Symbol",
+     "Noto Color Emoji"
+    ],
+    "applied": [
+     false,
+     true,
+     false,
+     true,
+     true,
+     false,
+     true,
+     null,
+     true,
+     false,
+     false,
+     false
+    ]
+   }
+  }
+ }
+}

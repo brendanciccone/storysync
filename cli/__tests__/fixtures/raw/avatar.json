@@ -1,0 +1,102 @@
+{
+ "source": {
+  "story": "ui-base-avatar--default",
+  "args": null,
+  "root": "[data-slot=avatar]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "span",
+   "box": [
+    0,
+    0,
+    32,
+    32
+   ],
+   "cs": {
+    "display": "flex",
+    "position": "relative",
+    "flex-shrink": "0",
+    "border-top-left-radius": "3.35544e+07px",
+    "border-top-right-radius": "3.35544e+07px",
+    "border-bottom-right-radius": "3.35544e+07px",
+    "border-bottom-left-radius": "3.35544e+07px"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "img",
+     "box": [
+      0,
+      0,
+      32,
+      32
+     ],
+     "cs": {
+      "border-top-left-radius": "3.35544e+07px",
+      "border-top-right-radius": "3.35544e+07px",
+      "border-bottom-right-radius": "3.35544e+07px",
+      "border-bottom-left-radius": "3.35544e+07px",
+      "overflow-x": "clip",
+      "overflow-y": "clip",
+      "object-fit": "cover"
+     },
+     "kids": [],
+     "path": [
+      0
+     ],
+     "slot": "avatar-image",
+     "cls": [
+      "rounded-full"
+     ],
+     "img": {
+      "src": "https://github.com/shadcn.png",
+      "natural": [
+       460,
+       460
+      ]
+     }
+    },
+    {
+     "k": "p",
+     "which": "after",
+     "cs": {
+      "position": "absolute",
+      "border-top-width": "1px",
+      "border-right-width": "1px",
+      "border-bottom-width": "1px",
+      "border-left-width": "1px",
+      "border-top-color": "oklch(0.922 0 0)",
+      "border-right-color": "oklch(0.922 0 0)",
+      "border-bottom-color": "oklch(0.922 0 0)",
+      "border-left-color": "oklch(0.922 0 0)",
+      "border-top-left-radius": "3.35544e+07px",
+      "border-top-right-radius": "3.35544e+07px",
+      "border-bottom-right-radius": "3.35544e+07px",
+      "border-bottom-left-radius": "3.35544e+07px",
+      "mix-blend-mode": "darken"
+     },
+     "content": "",
+     "box": [
+      0,
+      0,
+      32,
+      32
+     ],
+     "how": "abs"
+    }
+   ],
+   "path": [],
+   "slot": "avatar",
+   "cls": [
+    "after:border-border",
+    "rounded-full",
+    "after:rounded-full"
+   ]
+  },
+  "fonts": {}
+ }
+}

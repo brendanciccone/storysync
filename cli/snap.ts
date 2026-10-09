@@ -10,7 +10,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
-import { mapComponent, withoutProps, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, withoutProps, representativeCombinations, supplementOptions, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
 import { selectComponents, componentKey } from "./storybook.js";
@@ -20,10 +20,16 @@ import {
   assignVariantSlugs, componentSlug, componentSlots, contentSlots, diffFromBase,
 } from "./snap-normalize.js";
 import type { MeasurementNote, NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
-import { resolveAndLaunch, createContext, captureStory } from "./snap-browser.js";
-import type { CaptureResult, CaptureStatus } from "./snap-browser.js";
-import { argsNotInDocs, describeArgRejections, describeUncheckedArgs } from "./snap-args.js";
+import { resolveAndLaunch, createContext, captureStory, makeThumbnail } from "./snap-browser.js";
+import type { CaptureResult, CaptureStatus, CapturedImage } from "./snap-browser.js";
+import { argsNotInDocs, describeArgRejections, describeUncheckedArgs, nameSlugs } from "./snap-args.js";
 import type { ArgRejection, StoryArgType } from "./snap-args.js";
+import { TREE_LIMITS, TREE_VERSION, diffTree } from "./tree-types.js";
+import type { ComponentTree, ImageAsset, TreeDelta, TreeNode } from "./tree-types.js";
+import { imageAssetFile } from "./snap-assets.js";
+import { fnv1a32Bytes } from "./checksum.js";
+import { stylesJsonText } from "./snap-tree.js";
+import { canonicalJson } from "./checksum.js";
 
 export const SNAP_SCHEMA_VERSION = 1;
 
@@ -47,6 +53,23 @@ export interface SnapOptions {
    * (`--merge`). Without it, a run writes only what it measured.
    */
   merge?: boolean;
+  /**
+   * Measure each variant's root element alone, as 0.4.0 did, without its
+   * element tree (`--root-only`): styles.json is then what 0.4.0 wrote,
+   * with each variant's `innerElements`, how many elements went unmeasured.
+   */
+  rootOnly?: boolean;
+  /**
+   * Whether a value Storybook won't take from the story URL is set through
+   * its preview's channel and measured (the default), or the variant left
+   * unmeasured, as `arg_rejected` (`--no-channel-args`).
+   */
+  channelArgs?: boolean;
+  /**
+   * The story to measure a component from, by the component's ID or title,
+   * in place of the one snap picks (`--stories ui-base-button=ui-base-button--with-icon`).
+   */
+  stories?: Record<string, string>;
 }
 
 /**
@@ -88,6 +111,16 @@ export interface SnapVariant {
    * been measured as its default. Absent when it checked.
    */
   argsChecked?: false;
+  /**
+   * The variant's element tree as a change to the component's base tree
+   * (`tree`): on every measured variant of a tree snap but the base.
+   */
+  treeDelta?: TreeDelta;
+  /**
+   * Under `--root-only`, how many elements under the root a tree would
+   * have held, none of which were measured.
+   */
+  innerElements?: number;
 }
 
 export interface SnapComponent {
@@ -126,6 +159,10 @@ export interface SnapComponent {
    * properties: shadcn/ui Button's `disabled`, say.
    */
   argsNotInDocs?: string[];
+  /** What was measured of each variant: its element tree, or (`--root-only`) its root alone. Absent from a root-only snap. */
+  capture?: "tree" | "root";
+  /** The base variant's element tree, and the assets every variant's draws. */
+  tree?: ComponentTree;
 }
 
 export interface SnapResult {
@@ -139,6 +176,10 @@ export interface SnapResult {
    * leave out too, or it reports each as missing from Figma.
    */
   excludeProps?: string[];
+  /** The element-tree format, on a snap that measured trees; absent from a root-only one. */
+  treeVersion?: number;
+  /** Where the tree walk stopped: elements, depth, and SVG markup kept as a vector. */
+  treeLimits?: typeof TREE_LIMITS;
   components: SnapComponent[];
   summary: {
     components: number;
@@ -215,6 +256,14 @@ export interface SnapMeta {
    * time. Absent when one run measured every component at `measuredAt`.
    */
   componentsMeasuredAt?: Record<string, string>;
+  /**
+   * Where this run measured: the OS and CPU (`darwin-arm64`), and the
+   * browser's version. Text is drawn a little wider or narrower from one
+   * platform to the next, so snaps compared with each other are best taken
+   * on one (in CI, say).
+   */
+  platform?: string;
+  browser?: string;
 }
 
 export const SNAP_META_FILENAME = "meta.json";
@@ -288,7 +337,9 @@ export function describeCap(name: string, cap: CapInfo & { uncovered?: string[] 
 export function detectIdenticalVariants(variants: SnapVariant[]): string | null {
   const measured = variants.filter((v) => v.status === "ok");
   if (measured.length < 2) return null;
-  const allEmpty = measured.every((v) => !v.delta || Object.keys(v.delta).length === 0);
+  // Under a tree, a variant that changes only what is inside the root, as
+  // Attachment's error state colors its icon, didn't measure identically.
+  const allEmpty = measured.every((v) => (!v.delta || Object.keys(v.delta).length === 0) && !treeChanged(v));
   if (!allEmpty) return null;
   return (
     `all ${measured.length} rendered variants measured identically — the story may not pass args ` +
@@ -314,11 +365,15 @@ export function detectIdenticalVariants(variants: SnapVariant[]): string | null 
  *   that leaves them out;
  * - markup not read on every variant, or one that changed as it was
  *   measured: either, so it says both.
+ *
+ * With `tree`, the elements inside the root were measured too, so what
+ * snap doesn't measure is a state or an animation, not a child element.
  */
 export function describeIdenticalVariants(
   variants: SnapVariant[],
   properties: FigmaVariantProperty[],
   markups: (string | null)[],
+  options: { tree?: boolean } = {},
 ): string | null {
   const identical = detectIdenticalVariants(variants);
   if (!identical) return null;
@@ -337,7 +392,8 @@ export function describeIdenticalVariants(
     return (
       `all ${measured} rendered variants measured identically, though their markup changed with the args, so the story ` +
       `passes them through: ${list} ${change} nothing snap measures, likely only behavior, or something it doesn't measure, ` +
-      `such as a child element. If ${one ? "it doesn't" : "they don't"} change how it looks, leave ${one ? "it" : "them"} out ` +
+      `such as ${options.tree ? "a hover or focus state, or an animation" : "a child element"}. ` +
+      `If ${one ? "it doesn't" : "they don't"} change how it looks, leave ${one ? "it" : "them"} out ` +
       `of every component with ${exclude}, and build it as one variant.`
     );
   }
@@ -376,13 +432,122 @@ export function detectNoOpProperties(properties: FigmaVariantProperty[], variant
       if (value === undefined) continue;
       const others = JSON.stringify(Object.entries(variant.combination).filter(([name]) => name !== property.name));
       const group = groups.get(others) ?? new Map<string, string>();
-      group.set(value, JSON.stringify(variant.delta ?? {}));
+      group.set(value, measuredAs(variant));
       groups.set(others, group);
     }
     const compared = [...groups.values()].filter((group) => group.size >= 2);
     if (compared.length && compared.every((group) => new Set(group.values()).size === 1)) noOps.push(property.name);
   }
   return noOps;
+}
+
+/** Whether a variant's tree differs from its base's. */
+function treeChanged(variant: SnapVariant): boolean {
+  return !!variant.treeDelta && (variant.treeDelta.keys !== undefined || Object.keys(variant.treeDelta.set ?? {}).length > 0);
+}
+
+/**
+ * What a variant measured, as one string to compare: its root's delta, and
+ * its tree's when it has one. Canonical, so key order doesn't count.
+ */
+function measuredAs(variant: SnapVariant): string {
+  return canonicalJson({ delta: variant.delta ?? {}, tree: treeChanged(variant) ? variant.treeDelta : {} });
+}
+
+/**
+ * Values of one property that measured the same as each other wherever
+ * both were measured with the other properties held still, root and tree
+ * alike (section 5.3 of the design): `variant=ghost` and `variant=link`
+ * drawing one thing. detectNoOpProperties names a property all of whose
+ * values do; `skip` are those it named, which this leaves out. Each group
+ * lists the values that matched, in the property's order.
+ */
+export function detectIdenticalValues(
+  properties: FigmaVariantProperty[],
+  variants: SnapVariant[],
+  skip: readonly string[] = [],
+): { property: string; values: string[] }[] {
+  const measured = variants.filter((v) => v.status === "ok");
+  const found: { property: string; values: string[] }[] = [];
+  for (const property of properties) {
+    if (skip.includes(property.name)) continue;
+    // For each pair of values: whether every comparison found them equal, and how many there were.
+    const pairs = new Map<string, { same: boolean }>();
+    const groups = new Map<string, Map<string, string>>();
+    for (const variant of measured) {
+      const value = variant.combination[property.name];
+      if (value === undefined) continue;
+      const others = JSON.stringify(Object.entries(variant.combination).filter(([name]) => name !== property.name));
+      const group = groups.get(others) ?? new Map<string, string>();
+      group.set(value, measuredAs(variant));
+      groups.set(others, group);
+    }
+    for (const group of groups.values()) {
+      const values = property.values.filter((v) => group.has(v));
+      for (let i = 0; i < values.length; i++) {
+        for (let j = i + 1; j < values.length; j++) {
+          const key = `${values[i]}\u0000${values[j]}`;
+          const pair = pairs.get(key) ?? { same: true };
+          pair.same &&= group.get(values[i]) === group.get(values[j]);
+          pairs.set(key, pair);
+        }
+      }
+    }
+    // Values joined into groups by the pairs that always matched.
+    const joined = new Map<string, string[]>();
+    for (const [key, { same }] of pairs) {
+      if (!same) continue;
+      const [a, b] = key.split("\u0000");
+      const into = joined.get(a) ?? joined.get(b) ?? [a];
+      for (const v of [a, b]) if (!into.includes(v)) into.push(v);
+      for (const v of into) joined.set(v, into);
+    }
+    const seen = new Set<string[]>();
+    for (const value of property.values) {
+      const group = joined.get(value);
+      if (!group || seen.has(group)) continue;
+      seen.add(group);
+      found.push({ property: property.name, values: property.values.filter((v) => group.includes(v)) });
+    }
+  }
+  return found;
+}
+
+/** Warnings for what detectIdenticalValues found: one per group of values. */
+export function describeIdenticalValues(groups: { property: string; values: string[] }[]): string[] {
+  return groups.map(({ property, values }) => {
+    const named = values.map((v) => `\`${property}=${v}\``);
+    const list = named.length === 2 ? named.join(" and ") : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+    return (
+      `${list} render identically: everything snap measures, the root and the elements in it, is the same wherever ` +
+      `${values.length === 2 ? "both were" : "they were"} measured. If the code draws them differently, the story ` +
+      `may not pass ${property} through for these values; if it doesn't, they could be one Figma variant.`
+    );
+  });
+}
+
+/** Warning for variants whose tree was cut off at TREE_LIMITS, or null. */
+export function describeTruncatedTrees(cut: { slug: string; truncated: { nodes: number; at: string } }[], measured: number): string | null {
+  if (!cut.length) return null;
+  const largest = Math.max(...cut.map((c) => c.truncated.nodes));
+  const first = cut[0].truncated.at;
+  const which = cut.length < measured ? `${cut.length} of ${measured} variants (${nameSlugs(cut.map((c) => c.slug))})` : "every variant";
+  return (
+    `the element tree of ${which} holds more than snap keeps (${TREE_LIMITS.maxNodes} elements, ${TREE_LIMITS.maxDepth} levels deep): ` +
+    `up to ${largest} elements, so everything from ${first === "" ? "the root" : `\`${first}\``} on was left out, and verify lists it as not measured. ` +
+    `To measure all of it, snap a story that renders less, with --stories, or measure its parts as components of their own.`
+  );
+}
+
+/** Warning for variants measured at an element around the one snap chose, or null. */
+export function describeClimbed(climbed: { slug: string; element: string; from: string }[], measured: number): string | null {
+  if (!climbed.length) return null;
+  const { element, from } = climbed[0];
+  const which = climbed.length < measured ? ` in ${climbed.length} of ${measured} variants (${nameSlugs(climbed.map((c) => c.slug))})` : "";
+  return (
+    `snap measured ${element} rather than ${from}${which}: ${from} draws nothing and holds nothing that does, ` +
+    `so its tree would be empty, and ${element} is the nearest element around it that draws.`
+  );
 }
 
 /** Warning for properties detectNoOpProperties found. */
@@ -472,8 +637,12 @@ export class BrowserLostError extends Error {}
  */
 export class ScreenshotStage {
   private dir: string | null = null;
-  /** Each staged PNG's recorded path, with the ID of the component it shows. */
-  private readonly files = new Map<string, string>();
+  /**
+   * Each staged file's recorded path, with the IDs of the components that
+   * wrote it: an image's thumbnail is named by its content, so two
+   * components showing one image stage one file.
+   */
+  private readonly files = new Map<string, Set<string>>();
 
   constructor(private readonly outDir: string) {}
 
@@ -489,13 +658,33 @@ export class ScreenshotStage {
 
   /** Stages a variant's PNG, returning the path styles.json records for it. */
   write(entry: ComponentEntry, slug: string, png: Buffer): string {
+    const recorded = writeScreenshot(this.open(), entry, slug, png);
+    this.claim(recorded, entry);
+    return recorded;
+  }
+
+  /**
+   * Stages a file at `recorded`, relative to the output directory: an
+   * image's thumbnail, which a run that stops part-way must not leave
+   * beside the last run's styles.json either.
+   */
+  writeFile(entry: ComponentEntry, recorded: string, bytes: Buffer): void {
+    const path = join(this.open(), recorded);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+    this.claim(recorded, entry);
+  }
+
+  private claim(recorded: string, entry: ComponentEntry): void {
+    this.files.set(recorded, (this.files.get(recorded) ?? new Set<string>()).add(entry.id));
+  }
+
+  private open(): string {
     if (!this.dir) {
       this.dir = mkdtempSync(join(tmpdir(), "storysync-screenshots-"));
       process.on("exit", this.onExit);
     }
-    const recorded = writeScreenshot(this.dir, entry, slug, png);
-    this.files.set(recorded, entry.id);
-    return recorded;
+    return this.dir;
   }
 
   /**
@@ -504,14 +693,14 @@ export class ScreenshotStage {
    * its first attempt's would otherwise replace the last run's file.
    */
   drop(entry: ComponentEntry): void {
-    for (const [recorded, id] of this.files) {
-      if (id !== entry.id) continue;
+    for (const [recorded, ids] of this.files) {
+      if (!ids.delete(entry.id) || ids.size) continue;
       rmSync(join(this.dir!, recorded), { force: true });
       this.files.delete(recorded);
     }
   }
 
-  /** Moves every staged PNG into the output directory. */
+  /** Moves every staged file into the output directory. */
   commit(): void {
     for (const recorded of this.files.keys()) {
       const from = join(this.dir!, recorded);
@@ -594,6 +783,17 @@ export function detectFontSubstitution(component: SnapComponent): string | null 
     const family = delta.fontFamily ?? base.fontFamily;
     if (family) families.add(family);
   }
+  // And every text in the tree: a card's description can be set in a font
+  // its title, the root's text, isn't.
+  if (component.tree) {
+    const texts = [component.tree.base, ...component.variants.map((v) => Object.values(v.treeDelta?.set ?? {}))];
+    for (const nodes of texts) {
+      for (const node of nodes) {
+        const tx = (node as Partial<TreeNode>).tx;
+        if (tx?.fa === 0 && tx.f) families.add(tx.f);
+      }
+    }
+  }
   if (!families.size) return null;
 
   const named = [...families].map((f) => `"${f}"`).join(", ");
@@ -654,11 +854,50 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
     const was = result.excludeProps?.length ? `--exclude-props ${result.excludeProps.join(",")}` : "no --exclude-props";
     throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or run snap without --merge.`);
   }
+  // A tree snap's components carry their elements, a root-only one's don't:
+  // mixed, a push would build some components whole and some as their outer
+  // element, and verify score them two ways.
+  const trees = result.treeVersion !== undefined;
+  if (trees !== !opts.rootOnly || (trees && result.treeVersion !== TREE_VERSION)) {
+    const was = trees ? "with their element trees" : "root only (--root-only, or by a storysync that measured no trees)";
+    const pass = trees ? "pass no --root-only" : "pass --root-only";
+    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured ${was}: ${pass}, or run snap without --merge.`);
+  }
   const url = (u: string) => String(u).replace(/\/+$/, "");
   if (url(result.storybookUrl) !== url(opts.storybookUrl)) {
     throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured from ${result.storybookUrl}, not ${opts.storybookUrl}: pass the same --storybook, or run snap without --merge.`);
   }
   return { result, meta };
+}
+
+/**
+ * The story `--stories` names for each component it names, by the
+ * component's ID: refused before anything is measured when a name matches
+ * no component being measured, or several, or the story isn't one of the
+ * component's, so a typo isn't measured as the default story.
+ */
+export function resolveStoryOverrides(entries: readonly ComponentEntry[], stories: Record<string, string> | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [name, storyId] of Object.entries(stories ?? {})) {
+    const key = name.trim().toLowerCase();
+    const exact = entries.filter((e) => e.id.toLowerCase() === key || e.title?.toLowerCase() === key);
+    const named = exact.length ? exact : entries.filter((e) => e.name.toLowerCase() === key || e.title?.split("/").pop()?.toLowerCase() === key);
+    if (!named.length) {
+      throw new Error(`--stories names "${name}", which is none of the components being measured (${entries.map((e) => e.id).join(", ") || "none"}). Name each by its ID or title.`);
+    }
+    // A name two components share, as Button is under ui/base and ui/radix, is the one whose story it is.
+    const matched = named.length > 1 ? named.filter((e) => e.storyIds?.includes(storyId.trim())) : named;
+    if (matched.length !== 1) {
+      throw new Error(`--stories names "${name}", which is ${named.length} components (${named.map((e) => e.id).join(", ")}). Name it by its ID or title.`);
+    }
+    const [entry] = matched;
+    const story = storyId.trim();
+    if (entry.storyIds?.length && !entry.storyIds.includes(story)) {
+      throw new Error(`--stories gives ${entry.id} the story "${story}", which isn't one of its stories: ${entry.storyIds.join(", ")}.`);
+    }
+    out.set(entry.id, story);
+  }
+  return out;
 }
 
 /** The warning runSnap gives each of two components that share a key. */
@@ -671,6 +910,8 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   const listed = await deps.storybook.listComponents();
   const entries = selectComponents(listed, opts.components);
   const earlier = opts.merge ? readMergeBase(opts) : null;
+  const stories = resolveStoryOverrides(entries, opts.stories);
+  let browserVersion: string | undefined;
 
   const components: SnapComponent[] = [];
   const stage = new ScreenshotStage(opts.outDir);
@@ -681,6 +922,15 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     if (entries.length) {
       let { browser, via } = await deps.launch({ headless: true });
       progress(`Browser: ${via}`);
+      // For meta.json: text widths differ from one browser build to the next.
+      const versionOf = (b: typeof browser) => {
+        try {
+          return typeof b.version === "function" ? b.version() : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      browserVersion = versionOf(browser);
       // A browser that goes before the run ends, crashed or killed from
       // outside, failed every component left as a broken session, and the
       // run then wrote that over the last styles.json and exited 0. It is
@@ -719,7 +969,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
           deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
           try {
             checkpoint();
-            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage);
+            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage, stories.get(entry.id));
             // Its failures may have been the browser going.
             checkpoint();
             components.push(measured);
@@ -734,6 +984,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
             stage.drop(entry);
             await browser.close().catch(() => { /* already gone */ });
             ({ browser } = await deps.launch({ headless: true }));
+            browserVersion = versionOf(browser) ?? browserVersion;
             watch(browser);
           }
         }
@@ -748,7 +999,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     // snap command handles between tasks, comes before any of it is written
     // or after all of it is.
     stage.commit();
-    return writeSnap(opts, deps, listed, components, earlier, progress);
+    return writeSnap(opts, deps, listed, components, earlier, progress, browserVersion);
   } finally {
     stage.discard();
   }
@@ -766,6 +1017,7 @@ function writeSnap(
   measured: SnapComponent[],
   earlier: MergeBase | null,
   progress: (m: string) => void,
+  browserVersion?: string,
 ): SnapResult {
   const measuredAt = new Date(deps.now?.() ?? Date.now()).toISOString();
   // Under --merge, every component the earlier snap has that this run didn't
@@ -821,6 +1073,7 @@ function writeSnap(
     storybookUrl: opts.storybookUrl,
     variantSelection: opts.variants,
     ...(opts.excludeProps?.length ? { excludeProps: opts.excludeProps } : {}),
+    ...(opts.rootOnly ? {} : { treeVersion: TREE_VERSION, treeLimits: { ...TREE_LIMITS } }),
     components,
     summary: {
       components: components.length,
@@ -848,8 +1101,15 @@ function writeSnap(
   const oldest = Object.values(times ?? {}).reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min), measuredAt);
 
   writeStylesJson(opts.outDir, result);
-  writeMetaJson(opts.outDir, result, oldest, times);
+  writeMetaJson(opts.outDir, result, oldest, times, browserVersion);
   return result;
+}
+
+/** A variant's tree as captured, until the component's base is known and its assets are written. */
+interface VariantTree {
+  variant: SnapVariant;
+  nodes: TreeNode[];
+  truncated?: { nodes: number; at: string };
 }
 
 async function snapComponent(
@@ -860,6 +1120,7 @@ async function snapComponent(
   progress: (m: string) => void,
   checkpoint: () => void,
   stage: ScreenshotStage,
+  storyOverride?: string,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     id: entry.id,
@@ -883,8 +1144,9 @@ async function snapComponent(
     return shell;
   }
 
-  const definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS);
-  const storyId = pickStory(entry.storyIds, component);
+  const maxCombinations = opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS;
+  let definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), maxCombinations);
+  const storyId = storyOverride ?? pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;
 
@@ -894,21 +1156,22 @@ async function snapComponent(
     return shell;
   }
 
-  const combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
+  let combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
   // Only the full product can exceed the ceiling; representative mode measures
   // one value at a time and never approaches it.
-  if (opts.variants === "all" && definition.cap) {
-    shell.cap = { ...definition.cap, uncovered: uncoveredValues(definition.variantProperties, combinations) };
-    shell.warnings.push(describeCap(entry.title ?? entry.name, shell.cap));
-  }
+  const capOf = () => {
+    delete shell.cap;
+    if (opts.variants === "all" && definition.cap) {
+      shell.cap = { ...definition.cap, uncovered: uncoveredValues(definition.variantProperties, combinations) };
+    }
+  };
+  capOf();
 
   // Slugs are assigned up front, for the whole set at once, because uniqueness
   // is a property of the set rather than of any one combination. This is also
   // why it happens before the browser starts: the clash is in the declared
   // values, so it is worth reporting even if nothing renders.
-  const { slugs, collisions } = assignVariantSlugs(combinations);
-  const collided = describeSlugCollisions(collisions);
-  if (collided) shell.warnings.push(collided);
+  let { slugs, collisions } = assignVariantSlugs(combinations);
 
   // Context creation is inside the guarded block so a failure here is recorded
   // against this component rather than abandoning the whole run, and so a
@@ -922,13 +1185,21 @@ async function snapComponent(
   let captures = 0;
   const unchecked: string[] = [];
   let uncheckedError: string | undefined;
+  // The element tree of each measured variant, and what its assets are made of.
+  const trees: VariantTree[] = [];
+  const svgAssets: Record<string, string> = {};
+  const images = new Map<string, CapturedImage>();
+  const treeNotes = new Set<string>();
+  const climbed: { slug: string; element: string; from: string }[] = [];
+  // Whether the story's argTypes options have been read into the variant properties yet.
+  let supplemented = false;
   try {
     checkpoint();
     context = await createContext(browser);
     const page = await context.newPage();
 
-    for (const [index, combination] of combinations.entries()) {
-      const slug = slugs[index];
+    for (let index = 0; index < combinations.length; index++) {
+      const combination = combinations[index];
       deps.onVariantStart?.(index + 1, combinations.length);
       // A value the URL can't carry is left out of it and set through
       // Storybook's preview once the story loads, as one it refused is.
@@ -942,6 +1213,8 @@ async function snapComponent(
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title },
           story: { id: storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
+          channelArgs: opts.channelArgs ?? true,
+          tree: opts.rootOnly ? "count" : "tree",
         });
       };
       // Once more on a timeout loading the story: a busy Storybook times out
@@ -950,6 +1223,56 @@ async function snapComponent(
       // would only take as long again.
       let captured = await capture();
       if (captured.status === "timeout" && captured.retryable) captured = await capture();
+
+      // The story's argTypes options, read with the first variant, add the
+      // values the docs' types don't list, and make a prop whose type lists
+      // none an axis (section 5.2 of the design): planned now, measured in
+      // this run, after the planned ones. A new axis renames every
+      // combination, the first one measured included, so then the plan
+      // starts again; so does one the added values would push past
+      // --max-combinations, whose tail, the added values, would be cut
+      // off, where the wider plan's capped set covers every value.
+      if (!supplemented && captured.args?.argTypes) {
+        supplemented = true;
+        const wider = mapComponent(withoutProps(supplementOptions(component, captured.args.argTypes), opts.excludeProps ?? []), maxCombinations);
+        if (JSON.stringify(wider.variantProperties) !== JSON.stringify(definition.variantProperties)) {
+          const known = new Set(definition.variantProperties.map((p) => p.name));
+          const axis = wider.variantProperties.some((p) => !known.has(p.name));
+          const plan = selectCombinations(opts.variants, wider.variantProperties, wider.variantCombinations);
+          const same = (a: Record<string, string>, b: Record<string, string>) => JSON.stringify(a) === JSON.stringify(b);
+          const appended = [...combinations, ...plan.filter((c) => !combinations.some((d) => same(c, d)))];
+          const restart = axis || (opts.variants === "all" && appended.length > Math.max(maxCombinations, 1));
+          combinations = restart ? plan : appended;
+          definition = wider;
+          shell.variantProperties = definition.variantProperties;
+          ({ slugs, collisions } = assignVariantSlugs(combinations));
+          capOf();
+          progress(`  ${entry.title ?? entry.name}: the story's argTypes options add ${axis ? "a variant property" : "values"}; ${combinations.length} variants planned`);
+          if (restart) {
+            // Nothing measured under the old plan stands: a variant that
+            // failed before the args could be read has a combination
+            // without the new property, which no variant of the set names,
+            // and a cold Storybook's first story is the likeliest to time out.
+            shell.variants = [];
+            shell.base = null;
+            captures = 0;
+            unchecked.length = 0;
+            uncheckedError = undefined;
+            notes.length = 0;
+            markups.length = 0;
+            trees.length = 0;
+            for (const id of Object.keys(svgAssets)) delete svgAssets[id];
+            images.clear();
+            treeNotes.clear();
+            climbed.length = 0;
+            stage.drop(entry);
+            index = -1;
+            continue;
+          }
+        }
+      }
+
+      const slug = slugs[index];
       captures++;
 
       // What the story's argTypes are, from the first variant that read them.
@@ -1001,6 +1324,7 @@ async function snapComponent(
         ...argsRecord,
       };
       for (const note of captured.notes) notes.push({ slug, note });
+      if (captured.climbedFrom) climbed.push({ slug, element: captured.element ?? "", from: captured.climbedFrom });
       markups.push(captured.markup ?? null);
 
       // The first successful render becomes the reference for every delta.
@@ -1010,12 +1334,34 @@ async function snapComponent(
       } else {
         variant.delta = diffFromBase(shell.base.styles, styles);
       }
+      // Its tree's delta comes once every variant is in, as the base's
+      // images may only then have their thumbnails; this keeps its place
+      // beside `delta`.
+      if (captured.tree) {
+        variant.treeDelta = undefined;
+        trees.push({ variant, nodes: captured.tree.nodes, ...(captured.tree.truncated ? { truncated: captured.tree.truncated } : {}) });
+        Object.assign(svgAssets, captured.tree.svg);
+        for (const [id, image] of Object.entries(captured.tree.images)) {
+          const known = images.get(id);
+          // One thumbnail serves every variant: the largest box's, so the smaller downscale it.
+          if (!known || image.box[0] * image.box[1] > known.box[0] * known.box[1]) images.set(id, image);
+        }
+        for (const note of captured.tree.notes) treeNotes.add(note);
+      }
+      if (captured.innerElements !== undefined) variant.innerElements = captured.innerElements;
 
       if (captured.screenshot) {
         variant.screenshot = stage.write(entry, slug, captured.screenshot);
       }
 
       shell.variants.push(variant);
+    }
+
+    // Each image's thumbnail, drawn in the page from its source's bytes.
+    if (trees.length) {
+      const assets = await writeImageAssets(page, entry, images, stage, shell.warnings);
+      shell.capture = "tree";
+      shell.tree = assembleTree(trees, svgAssets, assets);
     }
   } catch (err) {
     if (err instanceof BrowserLostError) throw err;
@@ -1025,20 +1371,32 @@ async function snapComponent(
     await context?.close().catch(() => { /* already gone */ });
   }
 
+  const collided = describeSlugCollisions(collisions);
+  if (collided) shell.warnings.unshift(collided);
+  if (shell.cap) shell.warnings.unshift(describeCap(entry.title ?? entry.name, shell.cap));
+
   const measured = shell.variants.filter((v) => v.status === "ok").length;
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
+  const climbedWarning = describeClimbed(climbed, measured);
+  if (climbedWarning) shell.warnings.push(climbedWarning);
   const label = entry.title ?? entry.name;
   shell.warnings.push(...describeArgRejections(label, shell.variants, { storyFile: shell.storyFile, id: entry.id }));
   const uncheckedWarning = describeUncheckedArgs(label, unchecked, captures, { error: uncheckedError, id: entry.id });
   if (uncheckedWarning) shell.warnings.push(uncheckedWarning);
 
-  const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups);
+  const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups, { tree: trees.length > 0 });
   if (identical) {
     shell.warnings.push(identical);
   } else {
-    const noOps = describeNoOpProperties(detectNoOpProperties(definition.variantProperties, shell.variants));
+    const noOpNames = detectNoOpProperties(definition.variantProperties, shell.variants);
+    const noOps = describeNoOpProperties(noOpNames);
     if (noOps) shell.warnings.push(noOps);
+    shell.warnings.push(...describeIdenticalValues(detectIdenticalValues(definition.variantProperties, shell.variants, noOpNames)));
   }
+
+  const truncatedWarning = describeTruncatedTrees(trees.filter((t) => t.truncated).map((t) => ({ slug: t.variant.slug, truncated: t.truncated! })), measured);
+  if (truncatedWarning) shell.warnings.push(truncatedWarning);
+  for (const note of treeNotes) shell.warnings.push(`${label}: ${note}.`);
 
   const substituted = detectFontSubstitution(shell);
   if (substituted) shell.warnings.push(substituted);
@@ -1051,6 +1409,66 @@ async function snapComponent(
   const ok = shell.variants.filter((v) => v.status === "ok").length;
   progress(`  ${ok === shell.variants.length ? "✓" : "!"} ${label} ${ok}/${shell.variants.length} variants measured`);
   return shell;
+}
+
+/**
+ * Writes each image's thumbnail into the snap's assets, returning their
+ * records by id. One that can't be drawn is left out, with a warning, and
+ * the nodes showing it become frames that say so.
+ */
+async function writeImageAssets(
+  page: Parameters<typeof makeThumbnail>[0],
+  entry: ComponentEntry,
+  images: Map<string, CapturedImage>,
+  stage: ScreenshotStage,
+  warnings: string[],
+): Promise<Record<string, ImageAsset>> {
+  const assets: Record<string, ImageAsset> = {};
+  for (const id of [...images.keys()].sort()) {
+    const image = images.get(id)!;
+    try {
+      const thumbnail = await makeThumbnail(page, image);
+      const fnv = fnv1a32Bytes(thumbnail.bytes);
+      const file = imageAssetFile(id, thumbnail.mime, fnv);
+      stage.writeFile(entry, file, thumbnail.bytes);
+      assets[id] = {
+        file, mime: thumbnail.mime, size: thumbnail.size, natural: image.natural, fnv,
+        ...(image.raster ? { raster: 1 as const } : {}),
+      };
+    } catch (err) {
+      warnings.push(`${entry.title ?? entry.name}: snap couldn't draw a thumbnail of ${id} (${String(err instanceof Error ? err.message : err).split("\n")[0]}), so the nodes showing it are kept as frames without it.`);
+    }
+  }
+  return assets;
+}
+
+/**
+ * The component's tree: the base variant's nodes, and each other variant's
+ * as a delta against them. A node showing an image that has no asset is a
+ * frame, flagged, in every variant alike.
+ */
+function assembleTree(trees: VariantTree[], svg: Record<string, string>, img: Record<string, ImageAsset>): ComponentTree {
+  for (const { nodes } of trees) {
+    for (const node of nodes) {
+      if (node.img && !img[node.img]) {
+        node.t = "F";
+        delete node.img;
+        delete node.raster;
+        node.approx = [node.approx, "image-unavailable"].filter(Boolean).join(",");
+      }
+    }
+  }
+  const [base, ...rest] = trees;
+  for (const tree of rest) tree.variant.treeDelta = diffTree(base.nodes, tree.nodes);
+  const sorted = <T>(record: Record<string, T>) => Object.fromEntries(Object.keys(record).sort().map((id) => [id, record[id]]));
+  // The component's truncation is its largest variant's.
+  const truncated = trees.map((t) => t.truncated).filter((t) => t !== undefined).sort((a, b) => b.nodes - a.nodes)[0];
+  return {
+    version: TREE_VERSION,
+    base: base.nodes,
+    assets: { svg: sorted(svg), img: sorted(img) },
+    ...(truncated ? { truncated } : {}),
+  };
 }
 
 /** Longest variant slug used whole as a screenshot's file name. */
@@ -1094,11 +1512,17 @@ export function writeScreenshot(
 function writeStylesJson(outDir: string, result: SnapResult): string {
   const path = join(outDir, SNAP_STYLES_FILENAME);
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(path, `${JSON.stringify(result, null, 2)}\n`);
+  writeFileSync(path, stylesJsonText(result));
   return path;
 }
 
-function writeMetaJson(outDir: string, result: SnapResult, measuredAt: string, componentsMeasuredAt?: Record<string, string>): string {
+function writeMetaJson(
+  outDir: string,
+  result: SnapResult,
+  measuredAt: string,
+  componentsMeasuredAt?: Record<string, string>,
+  browserVersion?: string,
+): string {
   const meta: SnapMeta = {
     version: SNAP_SCHEMA_VERSION,
     measuredAt,
@@ -1108,6 +1532,8 @@ function writeMetaJson(outDir: string, result: SnapResult, measuredAt: string, c
     components: result.summary.components,
     variants: result.summary.variants,
     ...(componentsMeasuredAt ? { componentsMeasuredAt } : {}),
+    platform: `${process.platform}-${process.arch}`,
+    ...(browserVersion ? { browser: browserVersion } : {}),
   };
   const path = join(outDir, SNAP_META_FILENAME);
   mkdirSync(outDir, { recursive: true });

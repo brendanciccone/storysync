@@ -1,0 +1,1135 @@
+{
+ "source": {
+  "story": "ui-base-card--default",
+  "args": null,
+  "root": "[data-slot=card]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "div",
+   "box": [
+    0,
+    0,
+    384,
+    332
+   ],
+   "cs": {
+    "display": "flex",
+    "padding-top": "24px",
+    "padding-bottom": "24px",
+    "flex-direction": "column",
+    "row-gap": "24px",
+    "column-gap": "24px",
+    "background-color": "oklch(1 0 0)",
+    "border-top-left-radius": "14px",
+    "border-top-right-radius": "14px",
+    "border-bottom-right-radius": "14px",
+    "border-bottom-left-radius": "14px",
+    "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+    "overflow-x": "hidden",
+    "overflow-y": "hidden"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      24,
+      384,
+      48
+     ],
+     "cs": {
+      "display": "grid",
+      "padding-right": "24px",
+      "padding-left": "24px",
+      "align-items": "flex-start",
+      "row-gap": "4px",
+      "column-gap": "4px",
+      "grid-template-columns": "336px",
+      "grid-template-rows": "24px 20px",
+      "border-top-left-radius": "14px",
+      "border-top-right-radius": "14px"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        24,
+        24,
+        336,
+        24
+       ],
+       "cs": {},
+       "kids": [
+        {
+         "k": "t",
+         "text": "Notifications",
+         "rects": [
+          [
+           24,
+           27,
+           94.171875,
+           18
+          ]
+         ]
+        }
+       ],
+       "path": [
+        0,
+        0
+       ],
+       "slot": "card-title",
+       "cls": [
+        "text-base",
+        "group-data-[size=sm]/card:text-sm"
+       ],
+       "text": {
+        "color": "oklch(0.145 0 0)",
+        "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+        "font-size": "16px",
+        "font-weight": "500",
+        "font-style": "normal",
+        "line-height": "24px",
+        "letter-spacing": "normal",
+        "text-transform": "none",
+        "text-decoration-line": "none",
+        "text-align": "start",
+        "white-space": "normal",
+        "text-overflow": "clip",
+        "-webkit-line-clamp": "none"
+       }
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        24,
+        52,
+        336,
+        20
+       ],
+       "cs": {},
+       "kids": [
+        {
+         "k": "t",
+         "text": "You have 3 unread messages.",
+         "rects": [
+          [
+           24,
+           53,
+           192.15625,
+           17
+          ]
+         ]
+        }
+       ],
+       "path": [
+        0,
+        1
+       ],
+       "slot": "card-description",
+       "cls": [
+        "text-muted-foreground",
+        "text-sm"
+       ],
+       "text": {
+        "color": "oklch(0.556 0 0)",
+        "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+        "font-size": "14px",
+        "font-weight": "400",
+        "font-style": "normal",
+        "line-height": "20px",
+        "letter-spacing": "normal",
+        "text-transform": "none",
+        "text-decoration-line": "none",
+        "text-align": "start",
+        "white-space": "normal",
+        "text-overflow": "clip",
+        "-webkit-line-clamp": "none"
+       }
+      }
+     ],
+     "path": [
+      0
+     ],
+     "slot": "card-header",
+     "cls": [
+      "rounded-t-xl"
+     ]
+    },
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      96,
+      384,
+      152
+     ],
+     "cs": {
+      "display": "grid",
+      "padding-right": "24px",
+      "padding-left": "24px",
+      "row-gap": "16px",
+      "column-gap": "16px",
+      "grid-template-columns": "336px",
+      "grid-template-rows": "40px 40px 40px"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        24,
+        96,
+        336,
+        40
+       ],
+       "cs": {
+        "display": "flex",
+        "align-items": "center",
+        "row-gap": "16px",
+        "column-gap": "16px"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "svg",
+         "box": [
+          24,
+          104,
+          24,
+          24
+         ],
+         "cs": {
+          "overflow-x": "hidden",
+          "overflow-y": "hidden"
+         },
+         "kids": [],
+         "path": [
+          1,
+          0,
+          0
+         ],
+         "lucide": "lucide-bell-ring",
+         "svg": {
+          "tag": "svg",
+          "attrs": {
+           "viewBox": "0 0 24 24"
+          },
+          "kids": [
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M10.268 21a2 2 0 0 0 3.464 0"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M22 8c0-2.3-.8-4.3-2-6"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M4 2C2.8 3.7 2 5.7 2 8"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           }
+          ]
+         },
+         "shapes": [
+          [
+           10.26800537109375,
+           21,
+           3.4639892578125,
+           0.999908447265625
+          ],
+          [
+           20,
+           2,
+           2,
+           6
+          ],
+          [
+           3.000732421875,
+           2,
+           17.9996337890625,
+           15
+          ],
+          [
+           2,
+           2,
+           2,
+           6
+          ]
+         ]
+        },
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          64,
+          96,
+          191.078125,
+          40
+         ],
+         "cs": {},
+         "kids": [
+          {
+           "k": "e",
+           "tag": "p",
+           "box": [
+            64,
+            96,
+            191.078125,
+            20
+           ],
+           "cs": {},
+           "kids": [
+            {
+             "k": "t",
+             "text": "Your call has been confirmed.",
+             "rects": [
+              [
+               64,
+               97,
+               191.078125,
+               17
+              ]
+             ]
+            }
+           ],
+           "path": [
+            1,
+            0,
+            1,
+            0
+           ],
+           "text": {
+            "color": "oklch(0.145 0 0)",
+            "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+            "font-size": "14px",
+            "font-weight": "400",
+            "font-style": "normal",
+            "line-height": "20px",
+            "letter-spacing": "normal",
+            "text-transform": "none",
+            "text-decoration-line": "none",
+            "text-align": "start",
+            "white-space": "normal",
+            "text-overflow": "clip",
+            "-webkit-line-clamp": "none"
+           }
+          },
+          {
+           "k": "e",
+           "tag": "p",
+           "box": [
+            64,
+            116,
+            191.078125,
+            20
+           ],
+           "cs": {},
+           "kids": [
+            {
+             "k": "t",
+             "text": "1 hour ago",
+             "rects": [
+              [
+               64,
+               117,
+               67.40625,
+               17
+              ]
+             ]
+            }
+           ],
+           "path": [
+            1,
+            0,
+            1,
+            1
+           ],
+           "cls": [
+            "text-foreground/60"
+           ],
+           "text": {
+            "color": "oklab(0.145 0 0 / 0.6)",
+            "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+            "font-size": "14px",
+            "font-weight": "400",
+            "font-style": "normal",
+            "line-height": "20px",
+            "letter-spacing": "normal",
+            "text-transform": "none",
+            "text-decoration-line": "none",
+            "text-align": "start",
+            "white-space": "normal",
+            "text-overflow": "clip",
+            "-webkit-line-clamp": "none"
+           }
+          }
+         ],
+         "path": [
+          1,
+          0,
+          1
+         ]
+        }
+       ],
+       "path": [
+        1,
+        0
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        24,
+        152,
+        336,
+        40
+       ],
+       "cs": {
+        "display": "flex",
+        "align-items": "center",
+        "row-gap": "16px",
+        "column-gap": "16px"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "svg",
+         "box": [
+          24,
+          160,
+          24,
+          24
+         ],
+         "cs": {
+          "overflow-x": "hidden",
+          "overflow-y": "hidden"
+         },
+         "kids": [],
+         "path": [
+          1,
+          1,
+          0
+         ],
+         "lucide": "lucide-bell-ring",
+         "svg": {
+          "tag": "svg",
+          "attrs": {
+           "viewBox": "0 0 24 24"
+          },
+          "kids": [
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M10.268 21a2 2 0 0 0 3.464 0"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M22 8c0-2.3-.8-4.3-2-6"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M4 2C2.8 3.7 2 5.7 2 8"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           }
+          ]
+         },
+         "shapes": [
+          [
+           10.26800537109375,
+           21,
+           3.4639892578125,
+           0.999908447265625
+          ],
+          [
+           20,
+           2,
+           2,
+           6
+          ],
+          [
+           3.000732421875,
+           2,
+           17.9996337890625,
+           15
+          ],
+          [
+           2,
+           2,
+           2,
+           6
+          ]
+         ]
+        },
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          64,
+          152,
+          165.796875,
+          40
+         ],
+         "cs": {},
+         "kids": [
+          {
+           "k": "e",
+           "tag": "p",
+           "box": [
+            64,
+            152,
+            165.796875,
+            20
+           ],
+           "cs": {},
+           "kids": [
+            {
+             "k": "t",
+             "text": "You have a new message!",
+             "rects": [
+              [
+               64,
+               153,
+               165.796875,
+               17
+              ]
+             ]
+            }
+           ],
+           "path": [
+            1,
+            1,
+            1,
+            0
+           ],
+           "text": {
+            "color": "oklch(0.145 0 0)",
+            "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+            "font-size": "14px",
+            "font-weight": "400",
+            "font-style": "normal",
+            "line-height": "20px",
+            "letter-spacing": "normal",
+            "text-transform": "none",
+            "text-decoration-line": "none",
+            "text-align": "start",
+            "white-space": "normal",
+            "text-overflow": "clip",
+            "-webkit-line-clamp": "none"
+           }
+          },
+          {
+           "k": "e",
+           "tag": "p",
+           "box": [
+            64,
+            172,
+            165.796875,
+            20
+           ],
+           "cs": {},
+           "kids": [
+            {
+             "k": "t",
+             "text": "1 hour ago",
+             "rects": [
+              [
+               64,
+               173,
+               67.40625,
+               17
+              ]
+             ]
+            }
+           ],
+           "path": [
+            1,
+            1,
+            1,
+            1
+           ],
+           "cls": [
+            "text-foreground/60"
+           ],
+           "text": {
+            "color": "oklab(0.145 0 0 / 0.6)",
+            "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+            "font-size": "14px",
+            "font-weight": "400",
+            "font-style": "normal",
+            "line-height": "20px",
+            "letter-spacing": "normal",
+            "text-transform": "none",
+            "text-decoration-line": "none",
+            "text-align": "start",
+            "white-space": "normal",
+            "text-overflow": "clip",
+            "-webkit-line-clamp": "none"
+           }
+          }
+         ],
+         "path": [
+          1,
+          1,
+          1
+         ]
+        }
+       ],
+       "path": [
+        1,
+        1
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        24,
+        208,
+        336,
+        40
+       ],
+       "cs": {
+        "display": "flex",
+        "align-items": "center",
+        "row-gap": "16px",
+        "column-gap": "16px"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "svg",
+         "box": [
+          24,
+          216,
+          24,
+          24
+         ],
+         "cs": {
+          "overflow-x": "hidden",
+          "overflow-y": "hidden"
+         },
+         "kids": [],
+         "path": [
+          1,
+          2,
+          0
+         ],
+         "lucide": "lucide-bell-ring",
+         "svg": {
+          "tag": "svg",
+          "attrs": {
+           "viewBox": "0 0 24 24"
+          },
+          "kids": [
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M10.268 21a2 2 0 0 0 3.464 0"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M22 8c0-2.3-.8-4.3-2-6"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           },
+           {
+            "tag": "path",
+            "attrs": {
+             "d": "M4 2C2.8 3.7 2 5.7 2 8"
+            },
+            "paint": {
+             "fill": "none",
+             "fill-opacity": "1",
+             "stroke": "oklch(0.145 0 0)",
+             "stroke-opacity": "1",
+             "stroke-width": "2px",
+             "stroke-linecap": "round",
+             "stroke-linejoin": "round",
+             "opacity": "1",
+             "fill-rule": "nonzero",
+             "clip-rule": "nonzero"
+            }
+           }
+          ]
+         },
+         "shapes": [
+          [
+           10.26800537109375,
+           21,
+           3.4639892578125,
+           0.999908447265625
+          ],
+          [
+           20,
+           2,
+           2,
+           6
+          ],
+          [
+           3.000732421875,
+           2,
+           17.9996337890625,
+           15
+          ],
+          [
+           2,
+           2,
+           2,
+           6
+          ]
+         ]
+        },
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          64,
+          208,
+          221.59375,
+          40
+         ],
+         "cs": {},
+         "kids": [
+          {
+           "k": "e",
+           "tag": "p",
+           "box": [
+            64,
+            208,
+            221.59375,
+            20
+           ],
+           "cs": {},
+           "kids": [
+            {
+             "k": "t",
+             "text": "Your subscription is expiring soon!",
+             "rects": [
+              [
+               64,
+               209,
+               221.59375,
+               17
+              ]
+             ]
+            }
+           ],
+           "path": [
+            1,
+            2,
+            1,
+            0
+           ],
+           "text": {
+            "color": "oklch(0.145 0 0)",
+            "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+            "font-size": "14px",
+            "font-weight": "400",
+            "font-style": "normal",
+            "line-height": "20px",
+            "letter-spacing": "normal",
+            "text-transform": "none",
+            "text-decoration-line": "none",
+            "text-align": "start",
+            "white-space": "normal",
+            "text-overflow": "clip",
+            "-webkit-line-clamp": "none"
+           }
+          },
+          {
+           "k": "e",
+           "tag": "p",
+           "box": [
+            64,
+            228,
+            221.59375,
+            20
+           ],
+           "cs": {},
+           "kids": [
+            {
+             "k": "t",
+             "text": "2 hours ago",
+             "rects": [
+              [
+               64,
+               229,
+               76.40625,
+               17
+              ]
+             ]
+            }
+           ],
+           "path": [
+            1,
+            2,
+            1,
+            1
+           ],
+           "cls": [
+            "text-foreground/60"
+           ],
+           "text": {
+            "color": "oklab(0.145 0 0 / 0.6)",
+            "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+            "font-size": "14px",
+            "font-weight": "400",
+            "font-style": "normal",
+            "line-height": "20px",
+            "letter-spacing": "normal",
+            "text-transform": "none",
+            "text-decoration-line": "none",
+            "text-align": "start",
+            "white-space": "normal",
+            "text-overflow": "clip",
+            "-webkit-line-clamp": "none"
+           }
+          }
+         ],
+         "path": [
+          1,
+          2,
+          1
+         ]
+        }
+       ],
+       "path": [
+        1,
+        2
+       ]
+      }
+     ],
+     "path": [
+      1
+     ],
+     "slot": "card-content"
+    },
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      272,
+      384,
+      36
+     ],
+     "cs": {
+      "display": "flex",
+      "padding-right": "24px",
+      "padding-left": "24px",
+      "align-items": "center",
+      "border-bottom-right-radius": "14px",
+      "border-bottom-left-radius": "14px"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "button",
+       "box": [
+        24,
+        272,
+        59.203125,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "padding-right": "10px",
+        "padding-left": "10px",
+        "justify-content": "center",
+        "align-items": "center",
+        "flex-shrink": "0",
+        "row-gap": "6px",
+        "column-gap": "6px",
+        "background-clip": "padding-box",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgba(0, 0, 0, 0)",
+        "border-right-color": "rgba(0, 0, 0, 0)",
+        "border-bottom-color": "rgba(0, 0, 0, 0)",
+        "border-left-color": "rgba(0, 0, 0, 0)",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px"
+       },
+       "kids": [
+        {
+         "k": "t",
+         "text": "Close",
+         "rects": [
+          [
+           35,
+           281,
+           37.203125,
+           17
+          ]
+         ]
+        }
+       ],
+       "path": [
+        2,
+        0
+       ],
+       "slot": "button",
+       "cls": [
+        "focus-visible:border-ring",
+        "focus-visible:ring-ring/50",
+        "aria-invalid:ring-destructive/20",
+        "dark:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "dark:aria-invalid:border-destructive/50",
+        "rounded-md",
+        "border-transparent",
+        "bg-clip-padding",
+        "text-sm",
+        "outline-none",
+        "focus-visible:ring-[3px]",
+        "aria-invalid:ring-[3px]",
+        "text-primary",
+        "in-data-[slot=button-group]:rounded-md"
+       ],
+       "text": {
+        "color": "oklch(0.205 0 0)",
+        "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+        "font-size": "14px",
+        "font-weight": "500",
+        "font-style": "normal",
+        "line-height": "20px",
+        "letter-spacing": "normal",
+        "text-transform": "none",
+        "text-decoration-line": "none",
+        "text-align": "center",
+        "white-space": "nowrap",
+        "text-overflow": "clip",
+        "-webkit-line-clamp": "none"
+       }
+      }
+     ],
+     "path": [
+      2
+     ],
+     "slot": "card-footer",
+     "cls": [
+      "rounded-b-xl"
+     ]
+    }
+   ],
+   "path": [],
+   "slot": "card",
+   "cls": [
+    "ring-foreground/10",
+    "bg-card",
+    "text-card-foreground",
+    "rounded-xl",
+    "text-sm",
+    "shadow-xs",
+    "ring-1",
+    "*:[img:first-child]:rounded-t-xl",
+    "*:[img:last-child]:rounded-b-xl"
+   ]
+  },
+  "fonts": {
+   "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"": {
+    "families": [
+     "-apple-system",
+     "system-ui",
+     "Segoe UI",
+     "Roboto",
+     "Helvetica Neue",
+     "Noto Sans",
+     "Arial",
+     "sans-serif",
+     "Apple Color Emoji",
+     "Segoe UI Emoji",
+     "Segoe UI Symbol",
+     "Noto Color Emoji"
+    ],
+    "applied": [
+     false,
+     true,
+     false,
+     true,
+     true,
+     false,
+     true,
+     null,
+     true,
+     false,
+     false,
+     false
+    ]
+   }
+  }
+ }
+}

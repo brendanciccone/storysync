@@ -7,7 +7,7 @@
 
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request } from "playwright-core";
+import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request, Response } from "playwright-core";
 import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
   chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
@@ -18,6 +18,14 @@ import {
 } from "./snap-args.js";
 import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
 import type { FigmaVariantProperty } from "./mapper.js";
+import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS, buildTree, countInnerElements } from "./snap-tree.js";
+import type { PendingImage, RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
+import {
+  SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING,
+  decodeDataUrl, imageAssetId, imageCrop, pngSize, sniffImageType, thumbnailSize,
+} from "./snap-assets.js";
+import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
+import type { TreeNode } from "./tree-types.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -223,6 +231,16 @@ export interface CaptureResult {
    * any it didn't, when `story` was given and the story loaded.
    */
   args: StoryArgsCheck | null;
+  /** The element tree under the measured element, when `tree` was "tree". */
+  tree?: CapturedTree;
+  /** How many elements that tree would hold, when `tree` was "count" (`--root-only`). */
+  innerElements?: number;
+  /**
+   * The element snap would have measured, when it drew nothing and held
+   * nothing that does, so the nearest one around it that draws was measured
+   * instead (section 6.1 of the design).
+   */
+  climbedFrom?: string;
 }
 
 export interface CaptureOptions {
@@ -246,6 +264,16 @@ export interface CaptureOptions {
     /** Args left out of the URL, which can't carry their values: each is set through the preview. */
     notInUrl?: readonly string[];
   };
+  /**
+   * Whether a value Storybook didn't take from the URL is set through its
+   * preview (the default), or the variant left unmeasured (`--no-channel-args`).
+   */
+  channelArgs?: boolean;
+  /**
+   * What to read under the measured element: its tree ("tree"), only how
+   * many elements a tree would hold ("count", for `--root-only`), or nothing.
+   */
+  tree?: "tree" | "count";
 }
 
 /** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
@@ -273,12 +301,15 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
   };
   const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
   let images: ImageRequests | null = null;
+  let responses: ImageResponses | null = null;
   let warnings: ArgWarnings | null = null;
   let loaded = false;
 
   try {
     // From before the navigation, so a request the story makes as it renders is seen.
     images = watchImageRequests(page);
+    // And the bytes of each, which a tree's images are made from.
+    if (opts.tree === "tree") responses = watchImageResponses(page);
     // Likewise Storybook's warning for a value it rejects, read if its preview can't be.
     if (opts.story) warnings = watchArgWarnings(page);
     await page.goto(url, { waitUntil: "load", timeout: opts.timeoutMs });
@@ -306,7 +337,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // leaves its default on screen, under the variant's name. Kept on
     // `empty`, so a capture that fails after this still says what it found.
     if (opts.story) {
-      empty.args = await checkStoryArgs(page, opts.story, opts.timeoutMs, warnings?.texts ?? []);
+      empty.args = await checkStoryArgs(page, opts.story, opts.timeoutMs, warnings?.texts ?? [], opts.channelArgs ?? true);
       if (empty.args.unapplied.length) {
         return { status: "arg_rejected", error: describeUnapplied(empty.args), ...empty };
       }
@@ -321,6 +352,9 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
 
     const located = opts.selector ? await locateSelector(page, opts.selector) : await locateComponent(page, slots);
     if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
+    // Under a tree, an element that draws nothing and holds nothing that
+    // does is no root to build: the nearest one around it that draws is.
+    const climbedFrom = opts.tree === "tree" && !opts.selector ? await climbToDrawing(located) : null;
     const { target, element, notes, matchedSelector } = located;
 
     // Read before the styles and again after the picture: markup that
@@ -348,7 +382,23 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
     const markupAfter = await readMarkup(page);
     const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
-    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args };
+    // After the markup is read again: Playwright's screenshots, of an
+    // element the tree keeps as a picture, rewrite inline style attributes,
+    // which would read as a story that changed while it was measured.
+    let tree: CapturedTree | undefined;
+    let innerElements: number | undefined;
+    try {
+      if (opts.tree === "tree") tree = await captureTree(page, target, responses, opts.timeoutMs);
+      if (opts.tree === "count") innerElements = await countTree(target);
+    } catch (err) {
+      // Not measured, rather than measured without its tree: a variant
+      // with no tree delta reads as its base's tree.
+      return { status: "render_error", error: `snap couldn't read the element tree: ${firstLine(err)}`, ...empty };
+    }
+    return {
+      status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args,
+      ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
+    };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
@@ -358,8 +408,29 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
   } finally {
     images?.stop();
+    responses?.stop();
     warnings?.stop();
   }
+}
+
+/**
+ * Moves `located` to the nearest element around it that draws, when neither
+ * it nor anything in it does (section 6.1 of the design), returning the
+ * element it was on, or null when it stays.
+ */
+async function climbToDrawing(located: Located): Promise<string | null> {
+  const handle = await located.target.evaluateHandle(drawingElementInPage, [...ROOT_CONTAINERS]);
+  const climbed = handle.asElement() as ElementHandle<Element> | null;
+  if (!climbed || await climbed.evaluate((el, from) => el === from, located.target)) {
+    await handle.dispose();
+    return null;
+  }
+  const from = located.element;
+  located.target = climbed;
+  located.element = describeElement(await climbed.evaluate((el) => ({
+    tag: el.tagName.toLowerCase(), slot: el.getAttribute("data-slot"), role: el.getAttribute("role"),
+  })));
+  return from;
 }
 
 /** Storybook renders thrown errors into the preview rather than failing the load. */
@@ -1144,6 +1215,7 @@ export async function checkStoryArgs(
   story: NonNullable<CaptureOptions["story"]>,
   timeoutMs: number,
   warnings: readonly string[],
+  apply = true,
 ): Promise<StoryArgsCheck> {
   const read = async () => asSnapshot(await page.evaluate(storyArgsInPage, { storyId: story.id, waitMs: Math.min(timeoutMs, ARGS_WAIT_MS) }));
   const notInUrl = story.notInUrl ?? [];
@@ -1161,6 +1233,7 @@ export async function checkStoryArgs(
   const known = { argTypes: compactArgTypes(first.argTypes), ...(first.fileName ? { storyFile: first.fileName } : {}) };
   const rejected = findRejectedArgs(story.args, first, story.properties, notInUrl);
   if (!rejected.length) return { checked: true, rejected, unapplied: [], ...known };
+  if (!apply) return { checked: true, rejected, unapplied: rejected, error: "snap was told not to set values through it (--no-channel-args)", ...known };
 
   const { updates, lift } = previewArgUpdate(rejected, first, story.properties);
   let applied: { ok: true } | { error: string };
@@ -1186,4 +1259,680 @@ function describeUnapplied(check: StoryArgsCheck): string {
   const values = check.unapplied.map((r) => `${r.name}=${r.value} (${r.reasons.join(", ")})`).join(", ");
   const why = check.error ? `; through Storybook's preview, ${check.error}` : "";
   return `Storybook didn't give the story ${values}${why}, so this variant was not measured`;
+}
+
+// --- Element tree -------------------------------------------------------------
+//
+// Everything under the measured root that draws, read in one page.evaluate
+// as raw computed values; snap-tree.ts decides what the tree keeps. Images
+// are fetched and screenshots taken here, after it has.
+
+/** What captureTreeInPage is told, from snap-tree.ts and snap-assets.ts, as a page function can import nothing. */
+interface TreeInPageArgs {
+  mode: "tree" | "count";
+  defaults: Record<string, string>;
+  textProperties: readonly string[];
+  maxElements: number;
+  maxDepth: number;
+  maxSvgElements: number;
+  svgShapes: readonly string[];
+  svgGeometry: readonly string[];
+  svgPaint: readonly string[];
+  svgGroup: readonly string[];
+  svgDropped: readonly string[];
+  nonRendered: readonly string[];
+}
+
+/**
+ * Runs in the page: the subtree of `root`, as snap-tree.ts reads it. Boxes
+ * are relative to the root's border box, unrounded. Elements not displayed,
+ * at opacity 0, and the inside of an `<svg>`, `<img>` or form control are not
+ * walked; `display: contents` is, its children taken as its parent's. In
+ * `count` mode, for `--root-only`, nothing is measured that would take more
+ * than reading: no pseudo-element stand-ins, SVG markup or font probes.
+ *
+ * A pseudo-element that may paint and sits in the flow is measured on a
+ * stand-in span carrying its computed style, the real one hidden by a rule
+ * on a temporary attribute meanwhile; both are gone before this returns, so
+ * the markup snap compares across variants is as it was.
+ */
+export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeCapture {
+  const R = root.getBoundingClientRect();
+  const rel = (r: DOMRect): RawBox => [r.left - R.left, r.top - R.top, r.width, r.height];
+  const properties = Object.keys(args.defaults);
+  const nonRendered = new Set(args.nonRendered);
+  const fonts: Record<string, FontProbe | null> = {};
+  const tree = args.mode === "tree";
+  let read = 0;
+  let hider: HTMLStyleElement | null = null;
+  const HIDE = "data-storysync-pseudo";
+
+  // A color drawn at alpha 0, in any space Chromium writes one in.
+  // rgba() with alpha 0, or the slash syntax's `/ 0`: not rgb(r, g, 0), which is opaque.
+  const clear = (c: string) => !c || c === "transparent" || /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(c) || /\/\s*0(?:\.0+)?\s*\)$/.test(c);
+  const evidence = /(?:^|[:!])(?:bg|text|border|ring|fill|stroke|outline|rounded|shadow)-/;
+
+  // Radii only layout can resolve, calc() of a percentage, sized on a probe
+  // the element's size, as readComputedStyles sizes the root's.
+  const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
+  const resolveRadius = (value: string, rect: DOMRect): string => {
+    const parts = value.trim().split(/\s+(?![^(]*\))/);
+    if (!parts.length || parts.every((t) => plain.test(t))) return value;
+    const host = document.createElement("div");
+    const probe = document.createElement("div");
+    const pin = (el: HTMLElement, styles: Record<string, string>) => {
+      for (const [name, v] of Object.entries(styles)) el.style.setProperty(name, v, "important");
+    };
+    const bare = {
+      position: "absolute", left: "0", top: "0", margin: "0", padding: "0", border: "0", "box-sizing": "content-box",
+      "min-width": "0", "min-height": "0", "max-width": "none", "max-height": "none", visibility: "hidden",
+    };
+    pin(host, { ...bare, width: `${rect.width}px`, height: `${rect.height}px` });
+    pin(probe, { ...bare, width: parts[0], height: parts[1] ?? parts[0] });
+    if (!probe.style.getPropertyValue("width") || !probe.style.getPropertyValue("height")) return value;
+    host.appendChild(probe);
+    document.body.appendChild(host);
+    const size = probe.getBoundingClientRect();
+    host.remove();
+    return `${size.width}px ${size.height}px`;
+  };
+
+  // Properties that say nothing about an element unless another says so:
+  // a side's style and color without its width, an outline's width without
+  // its style, a background's layout without a picture, an object's fit
+  // anywhere but an image, a control's appearance anywhere but an input or
+  // a select.
+  const readCss = (cs: CSSStyleDeclaration, rect: DOMRect | null, tag = ""): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const outline = cs.getPropertyValue("outline-style") !== "none";
+    const picture = /url\(/.test(cs.getPropertyValue("background-image"));
+    for (const p of properties) {
+      const side = /^border-(top|right|bottom|left)-(?:style|color)$/.exec(p);
+      if (side && cs.getPropertyValue(`border-${side[1]}-width`) === "0px") continue;
+      if (p.startsWith("outline-") && p !== "outline-style" && !outline) continue;
+      if (/^background-(size|position|repeat)$/.test(p) && !picture) continue;
+      if (p.startsWith("object-") && tag !== "img") continue;
+      if (p === "appearance" && tag !== "input" && tag !== "select") continue;
+      let v = cs.getPropertyValue(p);
+      if (rect && p.endsWith("-radius") && v !== args.defaults[p]) v = resolveRadius(v, rect);
+      if (v !== args.defaults[p]) out[p] = v;
+    }
+    return out;
+  };
+  const readText = (cs: CSSStyleDeclaration): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const p of args.textProperties) out[p] = cs.getPropertyValue(p);
+    if (tree && !(out["font-family"] in fonts)) fonts[out["font-family"]] = probeFonts(cs);
+    return out;
+  };
+
+  // Which families of a stack the browser draws with: probeFontStack's
+  // reading, once per stack.
+  const probeFonts = (cs: CSSStyleDeclaration): FontProbe | null => {
+    try {
+      const written: string[] = [];
+      let current = "";
+      let quote: string | null = null;
+      for (const ch of cs.fontFamily || "") {
+        if (quote) {
+          if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+          quote = ch;
+        } else if (ch === ",") {
+          if (current.trim()) written.push(current.trim());
+          current = "";
+          continue;
+        }
+        current += ch;
+      }
+      if (current.trim()) written.push(current.trim());
+      if (!written.length) return null;
+      const families = written.map((family) => family.replace(/^(['"])(.*)\1$/, "$2"));
+      const GENERIC = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "math", "emoji", "fangsong"];
+      const size = cs.fontSize || "16px";
+      const weight = cs.fontWeight || "400";
+      const ctx = document.createElement("canvas").getContext("2d");
+      const PROBE = "mmmmmmmmmmlliWWQQ@#%&08";
+      const widthWith = (stack: string) => {
+        ctx!.font = `${weight} 72px ${stack}`;
+        return ctx!.measureText(PROBE).width;
+      };
+      const bases = ["monospace", "serif"];
+      const baseWidths = ctx ? bases.map(widthWith) : [];
+      const applied = written.map((family, index) => {
+        if (family === families[index] && GENERIC.includes(family.toLowerCase())) return null;
+        try {
+          if (document.fonts.check(`${weight} ${size} ${family}`) === false) return false;
+        } catch {
+          // Not a font the shorthand can parse; the canvas can still tell.
+        }
+        if (!ctx) return null;
+        return bases.some((base, b) => widthWith(`${family}, ${base}`) !== baseWidths[b]);
+      });
+      return { families, applied };
+    } catch {
+      return null;
+    }
+  };
+
+  const svgOf = (svg: Element): { svg?: RawSvgNode; shapes?: RawBox[]; svgElements?: number } => {
+    const count = svg.getElementsByTagName("*").length;
+    if (count > args.maxSvgElements) return { svgElements: count };
+    if (!tree) return { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [] };
+    const box = svg.getBoundingClientRect();
+    const hidden = "defs, clipPath, mask, symbol, pattern, marker";
+    const visit = (el: Element): RawSvgNode | null => {
+      const tag = el.tagName;
+      if (args.svgDropped.includes(tag)) return null;
+      const attrs: Record<string, string> = {};
+      for (const a of args.svgGeometry) {
+        const v = el.getAttribute(a);
+        if (v !== null) attrs[a] = v;
+      }
+      if (tag === "g") {
+        // What a group does to its shapes as one, which their own computed style doesn't show.
+        const cs = getComputedStyle(el);
+        const paint: Record<string, string> = {};
+        for (const p of args.svgGroup) paint[p] = cs.getPropertyValue(p);
+        return { tag, attrs, paint, kids: Array.from(el.children).map(visit).filter((k): k is RawSvgNode => k !== null) };
+      }
+      if (args.svgShapes.includes(tag)) {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none") return null;
+        const paint: Record<string, string> = {};
+        for (const p of args.svgPaint) {
+          const v = cs.getPropertyValue(p);
+          paint[p] = /^currentcolor$/i.test(v) ? cs.color : v;
+        }
+        return { tag, attrs, paint };
+      }
+      return { tag, attrs: {}, raw: el.outerHTML.replace(/>\s+</g, "><") };
+    };
+    const attrs: Record<string, string> = {};
+    for (const a of ["viewBox", "preserveAspectRatio"]) {
+      const v = svg.getAttribute(a);
+      if (v !== null) attrs[a] = v;
+    }
+    const kids = Array.from(svg.children).map(visit).filter((k): k is RawSvgNode => k !== null);
+    const shapes = Array.from(svg.querySelectorAll(args.svgShapes.join(",")))
+      .filter((s) => {
+        if (s.closest(hidden)) return false;
+        const cs = getComputedStyle(s);
+        return cs.display !== "none" && cs.visibility === "visible" && (cs.fill !== "none" || cs.stroke !== "none");
+      })
+      .map((s) => {
+        const r = s.getBoundingClientRect();
+        return [r.left - box.left, r.top - box.top, r.width, r.height] as RawBox;
+      });
+    return { svg: { tag: "svg", attrs, kids }, shapes };
+  };
+
+  const pseudoOf = (el: Element, which: "before" | "after", elCs: CSSStyleDeclaration, rect: DOMRect): RawTreePseudo | null => {
+    const pcs = getComputedStyle(el, `::${which}`);
+    const content = pcs.content;
+    if (!content || content === "none" || content === "normal" || pcs.display === "none") return null;
+    const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(content);
+    const text = quoted ? quoted[1].replace(/\\(.)/g, "$1") : "";
+    // Whether it may paint, leaning to yes: snap-tree.ts decides exactly.
+    const border = ["top", "right", "bottom", "left"].some((s) =>
+      parseFloat(pcs.getPropertyValue(`border-${s}-width`)) > 0 && !["none", "hidden"].includes(pcs.getPropertyValue(`border-${s}-style`)));
+    const shadow = pcs.boxShadow !== "none" && !pcs.boxShadow.split(/,(?![^(]*\))/).every((layer) => {
+      const color = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^)]*\)/.exec(layer)?.[0] ?? "";
+      return color !== "" && clear(color);
+    });
+    const outline = pcs.outlineStyle !== "none" && parseFloat(pcs.outlineWidth) > 0;
+    if (clear(pcs.backgroundColor) && pcs.backgroundImage === "none" && !border && !shadow && !outline && !text.trim()) return null;
+    const out: RawTreePseudo = { k: "p", which, cs: readCss(pcs, null), content: text, box: [0, 0, 0, 0], how: "flow" };
+    if (text.trim()) out.text = readText(pcs);
+    const px = (v: string) => parseFloat(v) || 0;
+    if (pcs.position === "absolute" || pcs.position === "fixed") {
+      // A pseudo-element has no rect: placed from its insets and size, in
+      // its parent's padding box, which is its containing block when the
+      // parent is positioned.
+      let w = px(pcs.width);
+      let h = px(pcs.height);
+      if (pcs.boxSizing === "content-box") {
+        w += px(pcs.paddingLeft) + px(pcs.paddingRight) + px(pcs.borderLeftWidth) + px(pcs.borderRightWidth);
+        h += px(pcs.paddingTop) + px(pcs.paddingBottom) + px(pcs.borderTopWidth) + px(pcs.borderBottomWidth);
+      }
+      out.box = [rect.left - R.left + px(elCs.borderLeftWidth) + px(pcs.left), rect.top - R.top + px(elCs.borderTopWidth) + px(pcs.top), w, h];
+      // Its transform moves it from where its insets put it, as shadcn's
+      // `after:-translate-x-1/2` centers a handle on its line. A matrix's
+      // last terms are that move, which about the default centered origin
+      // is also where a rotation or scale leaves its middle; snap-tree.ts
+      // flags those.
+      const matrix = /^matrix(3d)?\((.*)\)$/.exec(pcs.transform);
+      if (matrix) {
+        const terms = matrix[2].split(",").map(Number);
+        const [tx, ty] = matrix[1] ? [terms[12], terms[13]] : [terms[4], terms[5]];
+        if (Number.isFinite(tx) && Number.isFinite(ty)) out.box = [out.box[0] + tx, out.box[1] + ty, w, h];
+      }
+      out.how = "abs";
+      if (elCs.position === "static" || pcs.position === "fixed") out.unanchored = true;
+      // Its radii resolve against its own size.
+      for (const p of Object.keys(out.cs)) if (p.endsWith("-radius")) out.cs[p] = resolveRadius(out.cs[p], new DOMRect(0, 0, w, h));
+      return out;
+    }
+    if (!tree) return out;
+    if (!hider) {
+      hider = document.createElement("style");
+      hider.textContent = `[${HIDE}="before"]::before, [${HIDE}="after"]::after { content: none !important; display: none !important; }`;
+      document.head.appendChild(hider);
+    }
+    const span = document.createElement("span");
+    for (let i = 0; i < pcs.length; i++) span.style.setProperty(pcs[i], pcs.getPropertyValue(pcs[i]));
+    span.textContent = text;
+    const watched = [el, ...Array.from(el.children)];
+    const before = watched.map((n) => n.getBoundingClientRect());
+    el.setAttribute(HIDE, which);
+    if (which === "before") el.insertBefore(span, el.firstChild);
+    else el.appendChild(span);
+    const box = span.getBoundingClientRect();
+    const after = watched.map((n) => n.getBoundingClientRect());
+    span.remove();
+    el.removeAttribute(HIDE);
+    out.box = rel(box);
+    if (before.some((b, i) => ["left", "top", "width", "height"].some((k) => Math.abs(b[k as "left"] - after[i][k as "left"]) > 0.5))) out.moved = true;
+    for (const p of Object.keys(out.cs)) if (p.endsWith("-radius")) out.cs[p] = resolveRadius(out.cs[p], box);
+    return out;
+  };
+
+  // The element's children, with `display: contents` flattened into it, in DOM order.
+  const childrenOf = (el: Element, path: number[], depth: number, into: RawTreeItem[], owner: Element) => {
+    const elements = Array.from(el.children);
+    for (const child of Array.from(el.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const raw = child.textContent ?? "";
+        if (!raw.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0).map(rel);
+        const run: RawTreeText = { k: "t", text: raw, rects };
+        // Text in a `display: contents` element is drawn in that element's
+        // style, which may not be the one whose child it becomes.
+        if (el !== owner) run.style = readText(getComputedStyle(el));
+        into.push(run);
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const kid = child as Element;
+      const tag = kid.tagName.toLowerCase();
+      if (nonRendered.has(tag)) continue;
+      const cs = getComputedStyle(kid);
+      if (cs.display === "none" || cs.opacity === "0") continue;
+      const at = [...path, elements.indexOf(kid)];
+      if (cs.display === "contents") {
+        childrenOf(kid, at, depth, into, owner);
+        continue;
+      }
+      if (read >= args.maxElements || depth + 1 > args.maxDepth) {
+        if (!into.some((item) => item.k === "cut")) into.push({ k: "cut" });
+        continue;
+      }
+      into.push(walk(kid, at, depth + 1));
+    }
+  };
+
+  const walk = (el: Element, path: number[], depth: number): RawTreeElement => {
+    read++;
+    const cs = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    const tag = el.tagName.toLowerCase();
+    const node: RawTreeElement = { k: "e", tag, box: rel(rect), cs: readCss(cs, rect, tag), kids: [], path };
+    const slot = el.getAttribute("data-slot");
+    if (slot) node.slot = slot;
+    const role = el.getAttribute("role");
+    if (role) node.role = role;
+    const classes = (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+    const cls = classes.filter((t) => evidence.test(t));
+    if (cls.length) node.cls = cls;
+    if (cs.transform !== "none" && !/^matrix\(1, 0, 0, 1, [^,]+, [^,]+\)$/.test(cs.transform) && el instanceof HTMLElement) {
+      node.size = [el.offsetWidth, el.offsetHeight];
+    }
+    if (tag === "svg") {
+      const lucide = classes.find((c) => c.startsWith("lucide-"));
+      if (lucide) node.lucide = lucide;
+      return Object.assign(node, svgOf(el));
+    }
+    if (tag === "img") {
+      const img = el as HTMLImageElement;
+      node.img = { src: img.currentSrc || img.src, natural: [img.naturalWidth, img.naturalHeight] };
+      return node;
+    }
+    if (tag === "canvas" || tag === "video") return node;
+    if (tag === "input" || tag === "textarea" || tag === "select") {
+      const input = el as HTMLInputElement;
+      node.text = readText(cs);
+      // A select shows its chosen option's label, not its options, which have no box.
+      const value = tag === "select" ? ((el as HTMLSelectElement).selectedOptions[0]?.label ?? "") : (input.value ?? "");
+      const placeholder = tag === "select" ? "" : (input.getAttribute("placeholder") ?? "");
+      const shown = value || placeholder;
+      let advance = 0;
+      const ctx = document.createElement("canvas").getContext("2d");
+      if (ctx && shown) {
+        ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        advance = ctx.measureText(input.type === "password" ? "•".repeat(shown.length) : shown).width;
+      }
+      node.input = { type: tag === "input" ? (input.type || "text") : tag, value, placeholder, advance };
+      if (!value && placeholder) node.input.placeholderColor = getComputedStyle(el, "::placeholder").color;
+      return node;
+    }
+    if (Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim())) node.text = readText(cs);
+    const before = pseudoOf(el, "before", cs, rect);
+    if (before) node.kids.push(before);
+    childrenOf(el, path, depth, node.kids, el);
+    const after = pseudoOf(el, "after", cs, rect);
+    if (after) node.kids.push(after);
+    return node;
+  };
+
+  try {
+    return { root: walk(root, [], 0), fonts };
+  } finally {
+    (hider as HTMLStyleElement | null)?.remove();
+  }
+}
+
+/** A variant's tree as captureStory read it, with what its assets are made from. */
+export interface CapturedTree {
+  nodes: TreeNode[];
+  truncated?: { nodes: number; at: string };
+  /** Each SVG kept as a vector, by asset id. */
+  svg: Record<string, string>;
+  /** Each image by asset id: what its thumbnail is made from. */
+  images: Record<string, CapturedImage>;
+  notes: string[];
+  /** How long reading the tree took, its images' bytes and screenshots included, in ms. */
+  ms: number;
+}
+
+/** What an image's thumbnail is drawn from: its source, or for a raster the screenshot that is its thumbnail. */
+export interface CapturedImage {
+  bytes: Buffer;
+  /** The source's type, for the data URL the page draws it from. */
+  mime: string;
+  natural: [number, number];
+  crop: ImageCrop;
+  /** The box it was drawn into, in CSS px. */
+  box: [number, number];
+  raster?: true;
+}
+
+/** The arguments captureTreeInPage takes, from the modules it can't import. */
+function treeInPageArgs(mode: "tree" | "count"): TreeInPageArgs {
+  return {
+    mode,
+    defaults: { ...TREE_PROPERTY_DEFAULTS },
+    textProperties: TEXT_TREE_PROPERTIES,
+    ...RAW_TREE_LIMITS,
+    svgShapes: SVG_SHAPE_TAGS,
+    svgGeometry: SVG_GEOMETRY,
+    svgPaint: SVG_PAINT_PROPERTIES,
+    svgGroup: SVG_GROUP_PROPERTIES,
+    svgDropped: SVG_DROPPED_TAGS,
+    nonRendered: NON_RENDERED_TAGS,
+  };
+}
+
+/** Image responses a page received, by URL, from now until stop(): the bytes snap keeps a thumbnail of. */
+interface ImageResponses {
+  body(url: string): Promise<Buffer | null> | undefined;
+  stop(): void;
+}
+
+/**
+ * Keeps each image's bytes as the page receives them, under its URL and
+ * every URL that redirected to it: an `<img>` names the URL it asked for,
+ * and shadcn.png answers from avatars.githubusercontent.com.
+ */
+function watchImageResponses(page: Page): ImageResponses {
+  const bodies = new Map<string, Promise<Buffer | null>>();
+  const listener = (response: Response) => {
+    const request = response.request();
+    if (request.resourceType() !== "image") return;
+    const status = response.status();
+    if (status >= 300 && status < 400) return;
+    const body = response.body().catch(() => null);
+    for (let at: Request | null = request; at; at = at.redirectedFrom()) bodies.set(at.url(), body);
+  };
+  page.on("response", listener);
+  return { body: (url) => bodies.get(url), stop: () => page.off("response", listener) };
+}
+
+/**
+ * An image's bytes: from the response the page had, a `data:` URL, a
+ * request of its own with the page's cookies, or a fetch in the page, which
+ * a `blob:` URL needs. Null when none gives an image a browser draws.
+ */
+async function imageBytes(page: Page, src: string, responses: ImageResponses | null, timeoutMs: number): Promise<{ bytes: Buffer; mime: string } | null> {
+  const typed = (bytes: Buffer | null | undefined) => {
+    const mime = bytes?.length ? sniffImageType(bytes) : null;
+    return mime ? { bytes: bytes!, mime } : null;
+  };
+  if (!src) return null;
+  const data = decodeDataUrl(src);
+  if (data) return typed(Buffer.from(data.bytes));
+  const cached = typed(await responses?.body(src));
+  if (cached) return cached;
+  if (/^https?:/i.test(src)) {
+    try {
+      const response = await page.context().request.get(src, { timeout: timeoutMs });
+      const fetched = response.ok() ? typed(await response.body()) : null;
+      if (fetched) return fetched;
+    } catch {
+      // Unreachable from Node; the page may still reach it.
+    }
+  }
+  try {
+    const base64 = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      let text = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return btoa(text);
+    }, src);
+    return base64 ? typed(Buffer.from(base64, "base64")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The element at `path` under `root`, by child index at each level, or null. */
+async function elementAt(root: ElementHandle<Element>, path: number[]): Promise<ElementHandle<Element> | null> {
+  const handle = await root.evaluateHandle((el, at) => at.reduce<Element | null>((node, index) => node?.children[index] ?? null, el), path);
+  const element = handle.asElement();
+  if (!element) await handle.dispose();
+  return element as ElementHandle<Element> | null;
+}
+
+/** A screenshot of the element at `path`, or null when it has no box to take one of. */
+async function rasterOf(root: ElementHandle<Element>, path: number[], timeoutMs: number): Promise<Buffer | null> {
+  const element = await elementAt(root, path);
+  if (!element) return null;
+  try {
+    const box = await element.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) return null;
+    return await element.screenshot({ type: "png", timeout: timeoutMs });
+  } catch {
+    return null;
+  } finally {
+    await element.dispose();
+  }
+}
+
+/** Runs in the page: an image's pixel size, decoded from `url`. */
+async function naturalSizeInPage(url: string): Promise<[number, number]> {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return [img.naturalWidth, img.naturalHeight];
+}
+
+const dataUrl = (bytes: Buffer, mime: string) => `data:${mime};base64,${bytes.toString("base64")}`;
+
+/**
+ * The tree under `target`, every image's source bytes fetched and every
+ * node only a screenshot can keep taken (section 6.7 of the design). An
+ * image whose bytes can't be had is kept as a screenshot of its element.
+ */
+export async function captureTree(
+  page: Page,
+  target: ElementHandle<Element>,
+  responses: ImageResponses | null,
+  timeoutMs: number,
+): Promise<CapturedTree> {
+  const started = Date.now();
+  const raw = await target.evaluate(captureTreeInPage, treeInPageArgs("tree")) as RawTreeCapture | null;
+  if (!raw?.root) throw new Error("the page returned no tree");
+  const built = buildTree(raw);
+  const byKey = new Map(built.nodes.map((node) => [node.k, node]));
+  const images: Record<string, CapturedImage> = {};
+
+  const raster = async (key: string, path: number[]) => {
+    const node = byKey.get(key)!;
+    const png = await rasterOf(target, path, timeoutMs);
+    const size = png ? pngSize(png) : null;
+    if (!png || !size) {
+      // Nothing to keep a picture of: a frame its size, saying so.
+      node.t = "F";
+      delete node.raster;
+      delete node.img;
+      node.approx = [node.approx, "raster-unavailable"].filter(Boolean).join(",");
+      return;
+    }
+    const crop = imageCrop(size, size, "fill", "0% 0%");
+    const id = imageAssetId(png, `raster:${crop.key}`);
+    node.t = "I";
+    node.raster = 1;
+    node.img = id;
+    images[id] = { bytes: png, mime: "image/png", natural: size, crop, box: [node.box[2], node.box[3]], raster: true };
+  };
+
+  // An image from its source's bytes, or false to keep a screenshot of it.
+  const image = async (pending: PendingImage): Promise<boolean> => {
+    const node = byKey.get(pending.key)!;
+    const source = await imageBytes(page, pending.src, responses, timeoutMs);
+    let natural = pending.natural;
+    if (source && !(natural[0] > 0 && natural[1] > 0)) {
+      natural = await page.evaluate(naturalSizeInPage, dataUrl(source.bytes, source.mime)).catch(() => [0, 0] as [number, number]);
+    }
+    if (!source || !(natural[0] > 0 && natural[1] > 0) || !(pending.content[0] > 0 && pending.content[1] > 0)) return false;
+    const crop = imageCrop(natural, pending.content, pending.fit, pending.position);
+    const id = imageAssetId(source.bytes, crop.key);
+    node.img = id;
+    const known = images[id];
+    // Several variants, or nodes, share a crop: the largest box serves all.
+    if (!known || pending.content[0] * pending.content[1] > known.box[0] * known.box[1]) {
+      images[id] = { bytes: source.bytes, mime: source.mime, natural, crop, box: pending.content };
+    }
+    return true;
+  };
+  for (const pending of built.images) {
+    // One image that can't be read is a screenshot, never the variant failed.
+    const kept = await image(pending).catch(() => false);
+    if (!kept) await raster(pending.key, pending.path);
+  }
+  for (const pending of built.rasters) await raster(pending.key, pending.path);
+  return {
+    nodes: built.nodes,
+    ...(built.truncated ? { truncated: built.truncated } : {}),
+    svg: built.svg,
+    images,
+    notes: built.notes,
+    ms: Date.now() - started,
+  };
+}
+
+/** How many elements a tree under `target` would hold, for `--root-only`. */
+export async function countTree(target: ElementHandle<Element>): Promise<number> {
+  const raw = await target.evaluate(captureTreeInPage, treeInPageArgs("count")) as RawTreeCapture | null;
+  if (!raw?.root) throw new Error("the page returned no tree");
+  return countInnerElements(raw);
+}
+
+/**
+ * Runs in the page: an image's thumbnail, drawn from its source as its box
+ * shows it, at `size` pixels, encoded as THUMBNAIL_ENCODING says: one type
+ * where every pixel is opaque, another where any isn't. The source arrives
+ * as a `data:` URL, so a picture from another origin draws without
+ * tainting the canvas.
+ */
+export async function thumbnailInPage(args: {
+  url: string;
+  src: [number, number, number, number];
+  dst: [number, number, number, number];
+  size: [number, number];
+  encoding: typeof THUMBNAIL_ENCODING;
+}): Promise<{ mime: "image/jpeg" | "image/png"; base64: string }> {
+  const img = new Image();
+  img.src = args.url;
+  await img.decode();
+  const [w, h] = args.size;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const [sx, sy, sw, sh] = args.src;
+  const [dx, dy, dw, dh] = args.dst;
+  ctx.drawImage(img, sx, sy, sw, sh, dx * w, dy * h, dw * w, dh * h);
+  const pixels = ctx.getImageData(0, 0, w, h).data;
+  let alpha = false;
+  for (let i = 3; i < pixels.length; i += 4) {
+    if (pixels[i] < 255) {
+      alpha = true;
+      break;
+    }
+  }
+  const mime = alpha ? args.encoding.alpha : args.encoding.opaque;
+  const url = canvas.toDataURL(mime, args.encoding.quality);
+  return { mime, base64: url.slice(url.indexOf(",") + 1) };
+}
+
+/**
+ * An image asset's thumbnail bytes and type: drawn in `page` at twice the
+ * largest box it was seen in, or, for a raster, the screenshot itself.
+ */
+export async function makeThumbnail(page: Page, image: CapturedImage): Promise<{ bytes: Buffer; mime: "image/jpeg" | "image/png"; size: [number, number] }> {
+  if (image.raster) return { bytes: image.bytes, mime: "image/png", size: image.natural };
+  const size = thumbnailSize(image.box);
+  const drawn = await page.evaluate(thumbnailInPage, { url: dataUrl(image.bytes, image.mime), src: image.crop.src, dst: image.crop.dst, size, encoding: THUMBNAIL_ENCODING });
+  return { bytes: Buffer.from(drawn.base64, "base64"), mime: drawn.mime, size };
+}
+
+/**
+ * Runs in the page: `el`, or when neither it nor anything in it draws, the
+ * nearest element around it inside the story's root that does (section 6.1
+ * of the design). Draws: a fill, picture, border, shadow or outline of its
+ * own, an `<svg>`, `<img>`, `<canvas>` or `<video>`, text, or an input
+ * showing a value or placeholder.
+ */
+export function drawingElementInPage(el: Element, containers: readonly string[]): Element {
+  // rgba() with alpha 0, or the slash syntax's `/ 0`: not rgb(r, g, 0), which is opaque.
+  const clear = (c: string) => !c || c === "transparent" || /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(c) || /\/\s*0(?:\.0+)?\s*\)$/.test(c);
+  const own = (e: Element, cs: CSSStyleDeclaration): boolean => {
+    const tag = e.tagName.toLowerCase();
+    if (["svg", "img", "canvas", "video"].includes(tag)) return true;
+    if ((tag === "input" || tag === "textarea") && ((e as HTMLInputElement).value || e.getAttribute("placeholder"))) return true;
+    if (!clear(cs.backgroundColor) || cs.backgroundImage !== "none") return true;
+    if (["Top", "Right", "Bottom", "Left"].some((s) => parseFloat(cs.getPropertyValue(`border-${s.toLowerCase()}-width`)) > 0)) return true;
+    if (cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0) return true;
+    if (cs.boxShadow !== "none" && !cs.boxShadow.split(/,(?![^(]*\))/).every((l) => clear(/(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^)]*\)/.exec(l)?.[0] ?? ""))) return true;
+    return Array.from(e.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim());
+  };
+  let budget = 2000;
+  const draws = (e: Element): boolean => {
+    if (budget-- <= 0) return true;
+    const cs = getComputedStyle(e);
+    if (cs.display === "none" || cs.opacity === "0") return false;
+    return own(e, cs) || Array.from(e.children).some(draws);
+  };
+  if (draws(el)) return el;
+  const story = containers.map((s) => document.querySelector(s)).find((c) => c?.contains(el)) ?? null;
+  for (let at = el.parentElement; at && story && at !== story && story.contains(at); at = at.parentElement) {
+    if (draws(at)) return at;
+  }
+  return el;
 }

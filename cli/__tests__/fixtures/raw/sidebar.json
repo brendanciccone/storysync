@@ -1,0 +1,1526 @@
+{
+ "source": {
+  "story": "ui-base-sidebar--simple",
+  "args": null,
+  "root": "[data-slot=sidebar]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "div",
+   "box": [
+    0,
+    0,
+    256,
+    720
+   ],
+   "cs": {},
+   "kids": [
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      0,
+      256,
+      0
+     ],
+     "cs": {
+      "position": "relative"
+     },
+     "kids": [],
+     "path": [
+      0
+     ],
+     "slot": "sidebar-gap",
+     "cls": [
+      "bg-transparent"
+     ]
+    },
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      0,
+      256,
+      720
+     ],
+     "cs": {
+      "display": "flex",
+      "position": "fixed",
+      "z-index": "10",
+      "border-right-width": "1px",
+      "border-right-color": "oklch(0.922 0 0)"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        0,
+        0,
+        255,
+        720
+       ],
+       "cs": {
+        "display": "flex",
+        "flex-direction": "column",
+        "background-color": "oklch(0.985 0 0)"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          0,
+          0,
+          255,
+          16
+         ],
+         "cs": {
+          "display": "flex",
+          "padding-top": "8px",
+          "padding-right": "8px",
+          "padding-bottom": "8px",
+          "padding-left": "8px",
+          "flex-direction": "column",
+          "row-gap": "8px",
+          "column-gap": "8px"
+         },
+         "kids": [],
+         "path": [
+          1,
+          0,
+          0
+         ],
+         "slot": "sidebar-header"
+        },
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          0,
+          16,
+          255,
+          688
+         ],
+         "cs": {
+          "display": "flex",
+          "flex-direction": "column",
+          "flex-grow": "1",
+          "flex-basis": "0%",
+          "row-gap": "8px",
+          "column-gap": "8px",
+          "overflow-x": "auto",
+          "overflow-y": "auto"
+         },
+         "kids": [
+          {
+           "k": "e",
+           "tag": "div",
+           "box": [
+            0,
+            16,
+            255,
+            224
+           ],
+           "cs": {
+            "display": "flex",
+            "position": "relative",
+            "padding-top": "8px",
+            "padding-right": "8px",
+            "padding-bottom": "8px",
+            "padding-left": "8px",
+            "flex-direction": "column"
+           },
+           "kids": [
+            {
+             "k": "e",
+             "tag": "div",
+             "box": [
+              8,
+              24,
+              239,
+              32
+             ],
+             "cs": {
+              "display": "flex",
+              "padding-right": "8px",
+              "padding-left": "8px",
+              "align-items": "center",
+              "flex-shrink": "0",
+              "border-top-left-radius": "8px",
+              "border-top-right-radius": "8px",
+              "border-bottom-right-radius": "8px",
+              "border-bottom-left-radius": "8px"
+             },
+             "kids": [
+              {
+               "k": "t",
+               "text": "Application",
+               "rects": [
+                [
+                 16,
+                 32,
+                 65.265625,
+                 15
+                ]
+               ]
+              }
+             ],
+             "path": [
+              1,
+              0,
+              1,
+              0,
+              0
+             ],
+             "slot": "sidebar-group-label",
+             "cls": [
+              "text-sidebar-foreground/70",
+              "ring-sidebar-ring",
+              "rounded-md",
+              "text-xs",
+              "outline-hidden",
+              "focus-visible:ring-2"
+             ],
+             "text": {
+              "color": "oklab(0.145 0 0 / 0.7)",
+              "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+              "font-size": "12px",
+              "font-weight": "500",
+              "font-style": "normal",
+              "line-height": "16px",
+              "letter-spacing": "normal",
+              "text-transform": "none",
+              "text-decoration-line": "none",
+              "text-align": "start",
+              "white-space": "normal",
+              "text-overflow": "clip",
+              "-webkit-line-clamp": "none"
+             }
+            },
+            {
+             "k": "e",
+             "tag": "div",
+             "box": [
+              8,
+              56,
+              239,
+              176
+             ],
+             "cs": {},
+             "kids": [
+              {
+               "k": "e",
+               "tag": "ul",
+               "box": [
+                8,
+                56,
+                239,
+                176
+               ],
+               "cs": {
+                "display": "flex",
+                "flex-direction": "column",
+                "row-gap": "4px",
+                "column-gap": "4px"
+               },
+               "kids": [
+                {
+                 "k": "e",
+                 "tag": "li",
+                 "box": [
+                  8,
+                  56,
+                  239,
+                  32
+                 ],
+                 "cs": {
+                  "display": "list-item",
+                  "position": "relative"
+                 },
+                 "kids": [
+                  {
+                   "k": "e",
+                   "tag": "a",
+                   "box": [
+                    8,
+                    56,
+                    239,
+                    32
+                   ],
+                   "cs": {
+                    "display": "flex",
+                    "padding-top": "8px",
+                    "padding-right": "8px",
+                    "padding-bottom": "8px",
+                    "padding-left": "8px",
+                    "align-items": "center",
+                    "row-gap": "8px",
+                    "column-gap": "8px",
+                    "border-top-left-radius": "8px",
+                    "border-top-right-radius": "8px",
+                    "border-bottom-right-radius": "8px",
+                    "border-bottom-left-radius": "8px",
+                    "overflow-x": "hidden",
+                    "overflow-y": "hidden"
+                   },
+                   "kids": [
+                    {
+                     "k": "e",
+                     "tag": "svg",
+                     "box": [
+                      16,
+                      64,
+                      16,
+                      16
+                     ],
+                     "cs": {
+                      "flex-shrink": "0",
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      0,
+                      0,
+                      0
+                     ],
+                     "lucide": "lucide-house",
+                     "svg": {
+                      "tag": "svg",
+                      "attrs": {
+                       "viewBox": "0 0 24 24"
+                      },
+                      "kids": [
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       }
+                      ]
+                     },
+                     "shapes": [
+                      [
+                       6,
+                       8,
+                       4,
+                       6
+                      ],
+                      [
+                       2,
+                       1.3330154418945312,
+                       12,
+                       12.666984558105469
+                      ]
+                     ]
+                    },
+                    {
+                     "k": "e",
+                     "tag": "span",
+                     "box": [
+                      40,
+                      62,
+                      38.25,
+                      20
+                     ],
+                     "cs": {
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [
+                      {
+                       "k": "t",
+                       "text": "Home",
+                       "rects": [
+                        [
+                         40,
+                         63,
+                         38.25,
+                         17
+                        ]
+                       ]
+                      }
+                     ],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      0,
+                      0,
+                      1
+                     ],
+                     "text": {
+                      "color": "oklch(0.145 0 0)",
+                      "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+                      "font-size": "14px",
+                      "font-weight": "400",
+                      "font-style": "normal",
+                      "line-height": "20px",
+                      "letter-spacing": "normal",
+                      "text-transform": "none",
+                      "text-decoration-line": "none",
+                      "text-align": "left",
+                      "white-space": "nowrap",
+                      "text-overflow": "ellipsis",
+                      "-webkit-line-clamp": "none"
+                     }
+                    }
+                   ],
+                   "path": [
+                    1,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0,
+                    0,
+                    0
+                   ],
+                   "slot": "sidebar-menu-button",
+                   "cls": [
+                    "ring-sidebar-ring",
+                    "active:bg-sidebar-accent",
+                    "active:text-sidebar-accent-foreground",
+                    "data-active:bg-sidebar-accent",
+                    "data-active:text-sidebar-accent-foreground",
+                    "data-open:hover:bg-sidebar-accent",
+                    "data-open:hover:text-sidebar-accent-foreground",
+                    "rounded-md",
+                    "text-left",
+                    "outline-hidden",
+                    "focus-visible:ring-2",
+                    "hover:bg-sidebar-accent",
+                    "hover:text-sidebar-accent-foreground",
+                    "text-sm"
+                   ]
+                  }
+                 ],
+                 "path": [
+                  1,
+                  0,
+                  1,
+                  0,
+                  1,
+                  0,
+                  0
+                 ],
+                 "slot": "sidebar-menu-item"
+                },
+                {
+                 "k": "e",
+                 "tag": "li",
+                 "box": [
+                  8,
+                  92,
+                  239,
+                  32
+                 ],
+                 "cs": {
+                  "display": "list-item",
+                  "position": "relative"
+                 },
+                 "kids": [
+                  {
+                   "k": "e",
+                   "tag": "a",
+                   "box": [
+                    8,
+                    92,
+                    239,
+                    32
+                   ],
+                   "cs": {
+                    "display": "flex",
+                    "padding-top": "8px",
+                    "padding-right": "8px",
+                    "padding-bottom": "8px",
+                    "padding-left": "8px",
+                    "align-items": "center",
+                    "row-gap": "8px",
+                    "column-gap": "8px",
+                    "border-top-left-radius": "8px",
+                    "border-top-right-radius": "8px",
+                    "border-bottom-right-radius": "8px",
+                    "border-bottom-left-radius": "8px",
+                    "overflow-x": "hidden",
+                    "overflow-y": "hidden"
+                   },
+                   "kids": [
+                    {
+                     "k": "e",
+                     "tag": "svg",
+                     "box": [
+                      16,
+                      100,
+                      16,
+                      16
+                     ],
+                     "cs": {
+                      "flex-shrink": "0",
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      0
+                     ],
+                     "lucide": "lucide-inbox",
+                     "svg": {
+                      "tag": "svg",
+                      "attrs": {
+                       "viewBox": "0 0 24 24"
+                      },
+                      "kids": [
+                       {
+                        "tag": "polyline",
+                        "attrs": {
+                         "points": "22 12 16 12 14 15 10 15 8 12 2 12"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       }
+                      ]
+                     },
+                     "shapes": [
+                      [
+                       1.333333969116211,
+                       8,
+                       13.333333969116211,
+                       2
+                      ],
+                      [
+                       1.333333969116211,
+                       2.6666641235351562,
+                       13.333333969116211,
+                       10.666671752929688
+                      ]
+                     ]
+                    },
+                    {
+                     "k": "e",
+                     "tag": "span",
+                     "box": [
+                      40,
+                      98,
+                      35.046875,
+                      20
+                     ],
+                     "cs": {
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [
+                      {
+                       "k": "t",
+                       "text": "Inbox",
+                       "rects": [
+                        [
+                         40,
+                         99,
+                         35.046875,
+                         17
+                        ]
+                       ]
+                      }
+                     ],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      1
+                     ],
+                     "text": {
+                      "color": "oklch(0.145 0 0)",
+                      "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+                      "font-size": "14px",
+                      "font-weight": "400",
+                      "font-style": "normal",
+                      "line-height": "20px",
+                      "letter-spacing": "normal",
+                      "text-transform": "none",
+                      "text-decoration-line": "none",
+                      "text-align": "left",
+                      "white-space": "nowrap",
+                      "text-overflow": "ellipsis",
+                      "-webkit-line-clamp": "none"
+                     }
+                    }
+                   ],
+                   "path": [
+                    1,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0
+                   ],
+                   "slot": "sidebar-menu-button",
+                   "cls": [
+                    "ring-sidebar-ring",
+                    "active:bg-sidebar-accent",
+                    "active:text-sidebar-accent-foreground",
+                    "data-active:bg-sidebar-accent",
+                    "data-active:text-sidebar-accent-foreground",
+                    "data-open:hover:bg-sidebar-accent",
+                    "data-open:hover:text-sidebar-accent-foreground",
+                    "rounded-md",
+                    "text-left",
+                    "outline-hidden",
+                    "focus-visible:ring-2",
+                    "hover:bg-sidebar-accent",
+                    "hover:text-sidebar-accent-foreground",
+                    "text-sm"
+                   ]
+                  }
+                 ],
+                 "path": [
+                  1,
+                  0,
+                  1,
+                  0,
+                  1,
+                  0,
+                  1
+                 ],
+                 "slot": "sidebar-menu-item"
+                },
+                {
+                 "k": "e",
+                 "tag": "li",
+                 "box": [
+                  8,
+                  128,
+                  239,
+                  32
+                 ],
+                 "cs": {
+                  "display": "list-item",
+                  "position": "relative"
+                 },
+                 "kids": [
+                  {
+                   "k": "e",
+                   "tag": "a",
+                   "box": [
+                    8,
+                    128,
+                    239,
+                    32
+                   ],
+                   "cs": {
+                    "display": "flex",
+                    "padding-top": "8px",
+                    "padding-right": "8px",
+                    "padding-bottom": "8px",
+                    "padding-left": "8px",
+                    "align-items": "center",
+                    "row-gap": "8px",
+                    "column-gap": "8px",
+                    "border-top-left-radius": "8px",
+                    "border-top-right-radius": "8px",
+                    "border-bottom-right-radius": "8px",
+                    "border-bottom-left-radius": "8px",
+                    "overflow-x": "hidden",
+                    "overflow-y": "hidden"
+                   },
+                   "kids": [
+                    {
+                     "k": "e",
+                     "tag": "svg",
+                     "box": [
+                      16,
+                      136,
+                      16,
+                      16
+                     ],
+                     "cs": {
+                      "flex-shrink": "0",
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      2,
+                      0,
+                      0
+                     ],
+                     "lucide": "lucide-calendar",
+                     "svg": {
+                      "tag": "svg",
+                      "attrs": {
+                       "viewBox": "0 0 24 24"
+                      },
+                      "kids": [
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M8 2v3"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M16 2v3"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "rect",
+                        "attrs": {
+                         "x": "3",
+                         "y": "3",
+                         "width": "18",
+                         "height": "18",
+                         "rx": "2"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M3 9h18"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       }
+                      ]
+                     },
+                     "shapes": [
+                      [
+                       5.333333969116211,
+                       1.3333282470703125,
+                       0,
+                       2
+                      ],
+                      [
+                       10.666667938232422,
+                       1.3333282470703125,
+                       0,
+                       2
+                      ],
+                      [
+                       2,
+                       2,
+                       12,
+                       12
+                      ],
+                      [
+                       2,
+                       6,
+                       12,
+                       0
+                      ]
+                     ]
+                    },
+                    {
+                     "k": "e",
+                     "tag": "span",
+                     "box": [
+                      40,
+                      134,
+                      57.921875,
+                      20
+                     ],
+                     "cs": {
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [
+                      {
+                       "k": "t",
+                       "text": "Calendar",
+                       "rects": [
+                        [
+                         40,
+                         135,
+                         57.921875,
+                         17
+                        ]
+                       ]
+                      }
+                     ],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      2,
+                      0,
+                      1
+                     ],
+                     "text": {
+                      "color": "oklch(0.145 0 0)",
+                      "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+                      "font-size": "14px",
+                      "font-weight": "400",
+                      "font-style": "normal",
+                      "line-height": "20px",
+                      "letter-spacing": "normal",
+                      "text-transform": "none",
+                      "text-decoration-line": "none",
+                      "text-align": "left",
+                      "white-space": "nowrap",
+                      "text-overflow": "ellipsis",
+                      "-webkit-line-clamp": "none"
+                     }
+                    }
+                   ],
+                   "path": [
+                    1,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0,
+                    2,
+                    0
+                   ],
+                   "slot": "sidebar-menu-button",
+                   "cls": [
+                    "ring-sidebar-ring",
+                    "active:bg-sidebar-accent",
+                    "active:text-sidebar-accent-foreground",
+                    "data-active:bg-sidebar-accent",
+                    "data-active:text-sidebar-accent-foreground",
+                    "data-open:hover:bg-sidebar-accent",
+                    "data-open:hover:text-sidebar-accent-foreground",
+                    "rounded-md",
+                    "text-left",
+                    "outline-hidden",
+                    "focus-visible:ring-2",
+                    "hover:bg-sidebar-accent",
+                    "hover:text-sidebar-accent-foreground",
+                    "text-sm"
+                   ]
+                  }
+                 ],
+                 "path": [
+                  1,
+                  0,
+                  1,
+                  0,
+                  1,
+                  0,
+                  2
+                 ],
+                 "slot": "sidebar-menu-item"
+                },
+                {
+                 "k": "e",
+                 "tag": "li",
+                 "box": [
+                  8,
+                  164,
+                  239,
+                  32
+                 ],
+                 "cs": {
+                  "display": "list-item",
+                  "position": "relative"
+                 },
+                 "kids": [
+                  {
+                   "k": "e",
+                   "tag": "a",
+                   "box": [
+                    8,
+                    164,
+                    239,
+                    32
+                   ],
+                   "cs": {
+                    "display": "flex",
+                    "padding-top": "8px",
+                    "padding-right": "8px",
+                    "padding-bottom": "8px",
+                    "padding-left": "8px",
+                    "align-items": "center",
+                    "row-gap": "8px",
+                    "column-gap": "8px",
+                    "border-top-left-radius": "8px",
+                    "border-top-right-radius": "8px",
+                    "border-bottom-right-radius": "8px",
+                    "border-bottom-left-radius": "8px",
+                    "overflow-x": "hidden",
+                    "overflow-y": "hidden"
+                   },
+                   "kids": [
+                    {
+                     "k": "e",
+                     "tag": "svg",
+                     "box": [
+                      16,
+                      172,
+                      16,
+                      16
+                     ],
+                     "cs": {
+                      "flex-shrink": "0",
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      3,
+                      0,
+                      0
+                     ],
+                     "lucide": "lucide-search",
+                     "svg": {
+                      "tag": "svg",
+                      "attrs": {
+                       "viewBox": "0 0 24 24"
+                      },
+                      "kids": [
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "m21 21-4.34-4.34"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "circle",
+                        "attrs": {
+                         "r": "8",
+                         "cx": "11",
+                         "cy": "11"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       }
+                      ]
+                     },
+                     "shapes": [
+                      [
+                       11.106666564941406,
+                       11.106658935546875,
+                       2.8933334350585938,
+                       2.893341064453125
+                      ],
+                      [
+                       2,
+                       2,
+                       10.666667938232422,
+                       10.666671752929688
+                      ]
+                     ]
+                    },
+                    {
+                     "k": "e",
+                     "tag": "span",
+                     "box": [
+                      40,
+                      170,
+                      44.953125,
+                      20
+                     ],
+                     "cs": {
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [
+                      {
+                       "k": "t",
+                       "text": "Search",
+                       "rects": [
+                        [
+                         40,
+                         171,
+                         44.953125,
+                         17
+                        ]
+                       ]
+                      }
+                     ],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      3,
+                      0,
+                      1
+                     ],
+                     "text": {
+                      "color": "oklch(0.145 0 0)",
+                      "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+                      "font-size": "14px",
+                      "font-weight": "400",
+                      "font-style": "normal",
+                      "line-height": "20px",
+                      "letter-spacing": "normal",
+                      "text-transform": "none",
+                      "text-decoration-line": "none",
+                      "text-align": "left",
+                      "white-space": "nowrap",
+                      "text-overflow": "ellipsis",
+                      "-webkit-line-clamp": "none"
+                     }
+                    }
+                   ],
+                   "path": [
+                    1,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0,
+                    3,
+                    0
+                   ],
+                   "slot": "sidebar-menu-button",
+                   "cls": [
+                    "ring-sidebar-ring",
+                    "active:bg-sidebar-accent",
+                    "active:text-sidebar-accent-foreground",
+                    "data-active:bg-sidebar-accent",
+                    "data-active:text-sidebar-accent-foreground",
+                    "data-open:hover:bg-sidebar-accent",
+                    "data-open:hover:text-sidebar-accent-foreground",
+                    "rounded-md",
+                    "text-left",
+                    "outline-hidden",
+                    "focus-visible:ring-2",
+                    "hover:bg-sidebar-accent",
+                    "hover:text-sidebar-accent-foreground",
+                    "text-sm"
+                   ]
+                  }
+                 ],
+                 "path": [
+                  1,
+                  0,
+                  1,
+                  0,
+                  1,
+                  0,
+                  3
+                 ],
+                 "slot": "sidebar-menu-item"
+                },
+                {
+                 "k": "e",
+                 "tag": "li",
+                 "box": [
+                  8,
+                  200,
+                  239,
+                  32
+                 ],
+                 "cs": {
+                  "display": "list-item",
+                  "position": "relative"
+                 },
+                 "kids": [
+                  {
+                   "k": "e",
+                   "tag": "a",
+                   "box": [
+                    8,
+                    200,
+                    239,
+                    32
+                   ],
+                   "cs": {
+                    "display": "flex",
+                    "padding-top": "8px",
+                    "padding-right": "8px",
+                    "padding-bottom": "8px",
+                    "padding-left": "8px",
+                    "align-items": "center",
+                    "row-gap": "8px",
+                    "column-gap": "8px",
+                    "border-top-left-radius": "8px",
+                    "border-top-right-radius": "8px",
+                    "border-bottom-right-radius": "8px",
+                    "border-bottom-left-radius": "8px",
+                    "overflow-x": "hidden",
+                    "overflow-y": "hidden"
+                   },
+                   "kids": [
+                    {
+                     "k": "e",
+                     "tag": "svg",
+                     "box": [
+                      16,
+                      208,
+                      16,
+                      16
+                     ],
+                     "cs": {
+                      "flex-shrink": "0",
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      4,
+                      0,
+                      0
+                     ],
+                     "lucide": "lucide-settings",
+                     "svg": {
+                      "tag": "svg",
+                      "attrs": {
+                       "viewBox": "0 0 24 24"
+                      },
+                      "kids": [
+                       {
+                        "tag": "path",
+                        "attrs": {
+                         "d": "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       },
+                       {
+                        "tag": "circle",
+                        "attrs": {
+                         "r": "3",
+                         "cx": "12",
+                         "cy": "12"
+                        },
+                        "paint": {
+                         "fill": "none",
+                         "fill-opacity": "1",
+                         "stroke": "oklch(0.145 0 0)",
+                         "stroke-opacity": "1",
+                         "stroke-width": "2px",
+                         "stroke-linecap": "round",
+                         "stroke-linejoin": "round",
+                         "opacity": "1",
+                         "fill-rule": "nonzero",
+                         "clip-rule": "nonzero"
+                        }
+                       }
+                      ]
+                     },
+                     "shapes": [
+                      [
+                       2.0290985107421875,
+                       1.3449554443359375,
+                       11.941802978515625,
+                       13.309432983398438
+                      ],
+                      [
+                       6,
+                       6,
+                       4,
+                       4
+                      ]
+                     ]
+                    },
+                    {
+                     "k": "e",
+                     "tag": "span",
+                     "box": [
+                      40,
+                      206,
+                      53.375,
+                      20
+                     ],
+                     "cs": {
+                      "overflow-x": "hidden",
+                      "overflow-y": "hidden"
+                     },
+                     "kids": [
+                      {
+                       "k": "t",
+                       "text": "Settings",
+                       "rects": [
+                        [
+                         40,
+                         207,
+                         53.375,
+                         17
+                        ]
+                       ]
+                      }
+                     ],
+                     "path": [
+                      1,
+                      0,
+                      1,
+                      0,
+                      1,
+                      0,
+                      4,
+                      0,
+                      1
+                     ],
+                     "text": {
+                      "color": "oklch(0.145 0 0)",
+                      "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+                      "font-size": "14px",
+                      "font-weight": "400",
+                      "font-style": "normal",
+                      "line-height": "20px",
+                      "letter-spacing": "normal",
+                      "text-transform": "none",
+                      "text-decoration-line": "none",
+                      "text-align": "left",
+                      "white-space": "nowrap",
+                      "text-overflow": "ellipsis",
+                      "-webkit-line-clamp": "none"
+                     }
+                    }
+                   ],
+                   "path": [
+                    1,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0,
+                    4,
+                    0
+                   ],
+                   "slot": "sidebar-menu-button",
+                   "cls": [
+                    "ring-sidebar-ring",
+                    "active:bg-sidebar-accent",
+                    "active:text-sidebar-accent-foreground",
+                    "data-active:bg-sidebar-accent",
+                    "data-active:text-sidebar-accent-foreground",
+                    "data-open:hover:bg-sidebar-accent",
+                    "data-open:hover:text-sidebar-accent-foreground",
+                    "rounded-md",
+                    "text-left",
+                    "outline-hidden",
+                    "focus-visible:ring-2",
+                    "hover:bg-sidebar-accent",
+                    "hover:text-sidebar-accent-foreground",
+                    "text-sm"
+                   ]
+                  }
+                 ],
+                 "path": [
+                  1,
+                  0,
+                  1,
+                  0,
+                  1,
+                  0,
+                  4
+                 ],
+                 "slot": "sidebar-menu-item"
+                }
+               ],
+               "path": [
+                1,
+                0,
+                1,
+                0,
+                1,
+                0
+               ],
+               "slot": "sidebar-menu"
+              }
+             ],
+             "path": [
+              1,
+              0,
+              1,
+              0,
+              1
+             ],
+             "slot": "sidebar-group-content",
+             "cls": [
+              "text-sm"
+             ]
+            }
+           ],
+           "path": [
+            1,
+            0,
+            1,
+            0
+           ],
+           "slot": "sidebar-group"
+          }
+         ],
+         "path": [
+          1,
+          0,
+          1
+         ],
+         "slot": "sidebar-content"
+        },
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          0,
+          704,
+          255,
+          16
+         ],
+         "cs": {
+          "display": "flex",
+          "padding-top": "8px",
+          "padding-right": "8px",
+          "padding-bottom": "8px",
+          "padding-left": "8px",
+          "flex-direction": "column",
+          "row-gap": "8px",
+          "column-gap": "8px"
+         },
+         "kids": [],
+         "path": [
+          1,
+          0,
+          2
+         ],
+         "slot": "sidebar-footer"
+        }
+       ],
+       "path": [
+        1,
+        0
+       ],
+       "slot": "sidebar-inner",
+       "cls": [
+        "bg-sidebar",
+        "group-data-[variant=floating]:ring-sidebar-border",
+        "group-data-[variant=floating]:rounded-lg",
+        "group-data-[variant=floating]:shadow-sm",
+        "group-data-[variant=floating]:ring-1"
+       ]
+      }
+     ],
+     "path": [
+      1
+     ],
+     "slot": "sidebar-container",
+     "cls": [
+      "group-data-[side=left]:border-r",
+      "group-data-[side=right]:border-l"
+     ]
+    }
+   ],
+   "path": [],
+   "slot": "sidebar",
+   "cls": [
+    "text-sidebar-foreground"
+   ]
+  },
+  "fonts": {
+   "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"": {
+    "families": [
+     "-apple-system",
+     "system-ui",
+     "Segoe UI",
+     "Roboto",
+     "Helvetica Neue",
+     "Noto Sans",
+     "Arial",
+     "sans-serif",
+     "Apple Color Emoji",
+     "Segoe UI Emoji",
+     "Segoe UI Symbol",
+     "Noto Color Emoji"
+    ],
+    "applied": [
+     false,
+     true,
+     false,
+     true,
+     true,
+     false,
+     true,
+     null,
+     true,
+     false,
+     false,
+     false
+    ]
+   }
+  }
+ }
+}
