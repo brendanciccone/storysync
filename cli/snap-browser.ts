@@ -265,6 +265,11 @@ export interface CaptureOptions {
     notInUrl?: readonly string[];
   };
   /**
+   * Whether a value Storybook didn't take from the URL is set through its
+   * preview (the default), or the variant left unmeasured (`--no-channel-args`).
+   */
+  channelArgs?: boolean;
+  /**
    * What to read under the measured element: its tree ("tree"), only how
    * many elements a tree would hold ("count", for `--root-only`), or nothing.
    */
@@ -332,7 +337,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // leaves its default on screen, under the variant's name. Kept on
     // `empty`, so a capture that fails after this still says what it found.
     if (opts.story) {
-      empty.args = await checkStoryArgs(page, opts.story, opts.timeoutMs, warnings?.texts ?? []);
+      empty.args = await checkStoryArgs(page, opts.story, opts.timeoutMs, warnings?.texts ?? [], opts.channelArgs ?? true);
       if (empty.args.unapplied.length) {
         return { status: "arg_rejected", error: describeUnapplied(empty.args), ...empty };
       }
@@ -1210,6 +1215,7 @@ export async function checkStoryArgs(
   story: NonNullable<CaptureOptions["story"]>,
   timeoutMs: number,
   warnings: readonly string[],
+  apply = true,
 ): Promise<StoryArgsCheck> {
   const read = async () => asSnapshot(await page.evaluate(storyArgsInPage, { storyId: story.id, waitMs: Math.min(timeoutMs, ARGS_WAIT_MS) }));
   const notInUrl = story.notInUrl ?? [];
@@ -1227,6 +1233,7 @@ export async function checkStoryArgs(
   const known = { argTypes: compactArgTypes(first.argTypes), ...(first.fileName ? { storyFile: first.fileName } : {}) };
   const rejected = findRejectedArgs(story.args, first, story.properties, notInUrl);
   if (!rejected.length) return { checked: true, rejected, unapplied: [], ...known };
+  if (!apply) return { checked: true, rejected, unapplied: rejected, error: "snap was told not to set values through it (--no-channel-args)", ...known };
 
   const { updates, lift } = previewArgUpdate(rejected, first, story.properties);
   let applied: { ok: true } | { error: string };

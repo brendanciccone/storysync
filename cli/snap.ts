@@ -59,6 +59,17 @@ export interface SnapOptions {
    * with each variant's `innerElements`, how many elements went unmeasured.
    */
   rootOnly?: boolean;
+  /**
+   * Whether a value Storybook won't take from the story URL is set through
+   * its preview's channel and measured (the default), or the variant left
+   * unmeasured, as `arg_rejected` (`--no-channel-args`).
+   */
+  channelArgs?: boolean;
+  /**
+   * The story to measure a component from, by the component's ID or title,
+   * in place of the one snap picks (`--stories ui-base-button=ui-base-button--with-icon`).
+   */
+  stories?: Record<string, string>;
 }
 
 /**
@@ -854,6 +865,36 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
   return { result, meta };
 }
 
+/**
+ * The story `--stories` names for each component it names, by the
+ * component's ID: refused before anything is measured when a name matches
+ * no component being measured, or several, or the story isn't one of the
+ * component's, so a typo isn't measured as the default story.
+ */
+export function resolveStoryOverrides(entries: readonly ComponentEntry[], stories: Record<string, string> | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [name, storyId] of Object.entries(stories ?? {})) {
+    const key = name.trim().toLowerCase();
+    const exact = entries.filter((e) => e.id.toLowerCase() === key || e.title?.toLowerCase() === key);
+    const named = exact.length ? exact : entries.filter((e) => e.name.toLowerCase() === key || e.title?.split("/").pop()?.toLowerCase() === key);
+    if (!named.length) {
+      throw new Error(`--stories names "${name}", which is none of the components being measured (${entries.map((e) => e.id).join(", ") || "none"}). Name each by its ID or title.`);
+    }
+    // A name two components share, as Button is under ui/base and ui/radix, is the one whose story it is.
+    const matched = named.length > 1 ? named.filter((e) => e.storyIds?.includes(storyId.trim())) : named;
+    if (matched.length !== 1) {
+      throw new Error(`--stories names "${name}", which is ${named.length} components (${named.map((e) => e.id).join(", ")}). Name it by its ID or title.`);
+    }
+    const [entry] = matched;
+    const story = storyId.trim();
+    if (entry.storyIds?.length && !entry.storyIds.includes(story)) {
+      throw new Error(`--stories gives ${entry.id} the story "${story}", which isn't one of its stories: ${entry.storyIds.join(", ")}.`);
+    }
+    out.set(entry.id, story);
+  }
+  return out;
+}
+
 /** The warning runSnap gives each of two components that share a key. */
 const SHARED_KEY_WARNING = /^\d+ components share the key "/;
 
@@ -864,6 +905,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   const listed = await deps.storybook.listComponents();
   const entries = selectComponents(listed, opts.components);
   const earlier = opts.merge ? readMergeBase(opts) : null;
+  const stories = resolveStoryOverrides(entries, opts.stories);
   let browserVersion: string | undefined;
 
   const components: SnapComponent[] = [];
@@ -922,7 +964,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
           deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
           try {
             checkpoint();
-            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage);
+            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage, stories.get(entry.id));
             // Its failures may have been the browser going.
             checkpoint();
             components.push(measured);
@@ -1073,6 +1115,7 @@ async function snapComponent(
   progress: (m: string) => void,
   checkpoint: () => void,
   stage: ScreenshotStage,
+  storyOverride?: string,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     id: entry.id,
@@ -1098,7 +1141,7 @@ async function snapComponent(
 
   const maxCombinations = opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS;
   let definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), maxCombinations);
-  const storyId = pickStory(entry.storyIds, component);
+  const storyId = storyOverride ?? pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;
 
@@ -1165,6 +1208,7 @@ async function snapComponent(
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title },
           story: { id: storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
+          channelArgs: opts.channelArgs ?? true,
           tree: opts.rootOnly ? "count" : "tree",
         });
       };

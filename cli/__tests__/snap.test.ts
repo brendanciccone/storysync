@@ -11,7 +11,7 @@ import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
-  parseMeasurementWarning, snapFailsStrict, detectIdenticalValues, describeIdenticalValues,
+  parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed,
 } from "../snap.js";
 import { VERSION } from "../version.js";
@@ -1771,6 +1771,52 @@ test("runSnap: an image is kept as a thumbnail of what its box shows, named by i
     assert.deepEqual(tree!.assets.img, { [id]: { file, mime: "image/jpeg", size: [64, 64], natural: [2, 2], fnv: fnv1a32Bytes(Buffer.from("thumbnail bytes")) } });
     assert.equal(readFileSync(join(dir, file), "utf8"), "thumbnail bytes");
     assert.equal(result.components[0].variants[1].treeDelta?.set?.["avatar-image"], undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: --stories measures a component from the story it names, and refuses one that isn't its", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--disabled", capture: switchCapture });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", stories: { "ui-base-switch": "ui-base-switch--disabled" } }), { storybook: switchDocs(), launch });
+    assert.equal(result.components[0].storyId, "ui-base-switch--disabled");
+    await assert.rejects(
+      () => runSnap(options(dir, { stories: { "ui-base-switch": "ui-base-switch--checked" } }), { storybook: switchDocs(), launch: launchShouldNotHappen }),
+      /--stories gives ui-base-switch the story "ui-base-switch--checked", which isn't one of its stories: ui-base-switch--default, ui-base-switch--disabled\./,
+    );
+    await assert.rejects(
+      () => runSnap(options(dir, { stories: { Toggle: "ui-base-toggle--default" } }), { storybook: switchDocs(), launch: launchShouldNotHappen }),
+      /--stories names "Toggle", which is none of the components being measured \(ui-base-switch\)/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveStoryOverrides: by ID or title; a name two components share is refused unless the story tells them apart", () => {
+  const entries = [
+    { id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds: ["ui-base-button--default", "ui-base-button--with-icon"] },
+    { id: "ui-radix-button", name: "Button", title: "ui/radix/Button", storyIds: ["ui-radix-button--default"] },
+  ];
+  assert.deepEqual([...resolveStoryOverrides(entries, { "ui/radix/button": "ui-radix-button--default" })], [["ui-radix-button", "ui-radix-button--default"]]);
+  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon" })], [["ui-base-button", "ui-base-button--with-icon"]]);
+  assert.throws(() => resolveStoryOverrides(entries, { Button: "ui-x--y" }), /--stories names "Button", which is 2 components \(ui-base-button, ui-radix-button\)/);
+  assert.equal(resolveStoryOverrides(entries, undefined).size, 0);
+});
+
+test("runSnap: with channelArgs off, a value the story won't take leaves its variant unmeasured, never measured as the default", async () => {
+  const launch = badgeBrowser(() => ({ argTypes: { variant: { options: ["default", "secondary"], type: { name: "enum" } } }, initial: { variant: "default" } }));
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200, channelArgs: false }), {
+      storybook: badgeDocs([BADGE_VARIANT]),
+      launch,
+    });
+    const statuses = result.components[0].variants.map((v) => [v.combination.variant, v.status]);
+    assert.deepEqual(statuses, [["default", "ok"], ["secondary", "ok"], ["ghost", "arg_rejected"], ["link", "arg_rejected"]]);
+    assert.match(result.components[0].variants[2].error!, /--no-channel-args/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
