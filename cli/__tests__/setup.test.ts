@@ -1586,3 +1586,34 @@ test("every push builds with generated calls and CLI commands alone: no styling 
   const figmaCode = readFileSync(fileURLToPath(new URL("../figma-code.js", import.meta.url)), "utf8");
   assert.match(figmaCode, /the skill's root-only templates/, "figma code no longer points a root-only snap to the skill's root-only templates");
 });
+
+test("every audit can score how the sets look, reading Figma and changing nothing in it", () => {
+  // The audit compared variant names and token values, so a set with its
+  // icon missing or its title misplaced was "in sync". It can now read the
+  // sets back as a push's verify does, without the calls that write.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    for (const path of [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-diff.md"),
+    ]) {
+      const text = readFileSync(join(project, path), "utf8");
+      const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
+      // A snap of its own, so the push's snap and readback stay as they were.
+      assert.match(audit, /npx storysync snap [^`\n]*--variants all[^`\n]*--out \.storysync\/audit\/snaps/, `${path} snaps over the push's snap`);
+      assert.match(audit, /npx storysync figma code --snap \.storysync\/audit\/snaps\/styles\.json --out \.storysync\/audit\/figma/, `${path} writes its calls over the push's`);
+      assert.match(audit, /only the plan's `read` calls[^\n]*[Nn]ever[^\n]*`build`, `images` or `label` calls/, `${path} lets the audit send calls that change the file`);
+      assert.match(audit, /npx storysync figma next --plan \.storysync\/audit\/figma\/plan\.json/, `${path} never continues a read that stopped`);
+      assert.match(audit, /npx storysync verify --plan \.storysync\/audit\/figma\/plan\.json/, `${path} never scores what it read`);
+      assert.match(audit, /not built by storysync/, `${path} doesn't say how a set pushed root-only reads`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+

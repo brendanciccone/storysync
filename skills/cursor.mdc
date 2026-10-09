@@ -369,6 +369,21 @@ npx storysync map --storybook http://localhost:6006 --json
 
 7. **Report** — present a structured drift report grouped by category/component. Use `+` for missing from Figma, `-` for missing from code, `~` for value mismatch, `?` for ambiguous, `!` for errored in Figma. End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous, N errored in Figma, and N components outside any set not from the push, not compared. Beside the token counts, say what they cover and what they don't, so `39 matched` isn't read as every token in both themes: `39 matched (colors and radius, light mode only; not compared: the Dark mode of Colors and the code's .dark theme, font/sans and font/mono, which tokens couldn't resolve, and Tailwind's default spacing, type and shadow scales, which have no tokens)`. Say "Figma and code are in sync." only if everything matches and no name is ambiguous or set errored; components outside any set not from the push don't count against it. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync. Say with it what the audit compares: tokens, in the modes it noted, and each component's variant properties, not the styles the push's `verify` scores.
 
+8. **Score how the sets look, when the user asks.** Steps 1 to 7 compare token values and variant properties, not what a set looks like. To audit that too, score the sets as a push's `verify` does, reading Figma and changing nothing in it:
+
+```bash
+STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --variants all --out .storysync/audit/snaps --json > .storysync/audit-snap-out.json 2> .storysync/audit-snap-progress.log; echo "exit $?" >> .storysync/audit-snap-progress.log
+npx storysync figma code --snap .storysync/audit/snaps/styles.json --out .storysync/audit/figma
+```
+
+   Run the snap in the background, as Components step 3 does, outside the sandbox, with the components in scope as `--components` and the push's `--exclude-props`, and check that it ended `exit 0`. It writes under `.storysync/audit`, so the push's own snap and readback stay as they are. Then send **only the plan's `read` calls**, as Components step 5 sends calls, saving each response unchanged and continuing each with `npx storysync figma next --plan .storysync/audit/figma/plan.json --seq <its seq>`. Never send its `build`, `images` or `label` calls: they change the file. A read call that throws `Found 0 sets with storysync id …` names a set storysync never pushed, or one on another page: note it, run `figma code` again with that component in `--skip`, and send the read calls again. Then:
+
+```bash
+npx storysync verify --plan .storysync/audit/figma/plan.json
+```
+
+   It writes the readback to `.storysync/audit/figma-readback.json`. Add to the report, per component: its element fidelity and each difference, by key and node id; elements missing from Figma, and layers for elements snap no longer measures; designer layers; pictures not filled, which score as a wrong picture; the sets an earlier storysync pushed root-only, whose variants carry no element keys, so `verify` reports each variant missing and lists it as `not built by storysync`, which a push with Components step 5 deepens; the sets no read found; and that the element-tree readback doesn't read variable bindings yet, so it can't say how many paints are bound to a variable. Report what it finds; never fix it in the audit.
+
 ## Visual accuracy guidelines
 
 - **Measured values from `snap` are ground truth.** They come from a real browser rendering the real component. Where they disagree with your reading of the source, the measurement is right — computed style accounts for the cascade, inherited values, and anything a class name does not reveal.
