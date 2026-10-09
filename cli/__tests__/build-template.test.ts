@@ -329,6 +329,27 @@ test("label: a set measured from its closed trigger says so on one line, written
   assert.deepEqual((again.value as { changed: string[]; missing: string[] }), { kind: "label", changed: [], missing: [], pageOne: (again.value as { pageOne: string }).pageOne });
 });
 
+test("label: Figma's empty Page 1 is removed once the sets are on their own page, and kept when it holds anything", async () => {
+  const fixture = loadTreeFixture("switch");
+  const coded = await codeFor(fixture);
+  for (const [setup, pageOne, pages] of [
+    ["", "removed", ["ui/base"]],
+    ["figma.createFrame();", "kept: it holds layers", ["Page 1", "ui/base"]],
+  ] as const) {
+    const mock = mockFor([fixture], { pages: ["Page 1"] });
+    if (setup) await mock.run(setup);
+    await runPlan(mock, coded, ["build"]);
+    const [label] = await runPlan(mock, coded, ["label"]);
+    assert.equal((label.value as { pageOne: string }).pageOne, pageOne);
+    assert.deepEqual(mock.pages().map((p) => p.name), pages);
+    assert.equal(label.switches.length, pageOne === "removed" ? 1 : 0, "off it only to remove it");
+  }
+  // A file whose only page is Page 1 keeps it.
+  const alone = mockFor([fixture], { pages: ["Page 1"] });
+  const run = await alone.run(coded.code(coded.plan.calls.find((c) => c.kind === "label")!));
+  assert.deepEqual(run.value, { kind: "label", changed: [], missing: ["ui-base-switch"], pageOne: "kept: it is the only page" });
+});
+
 test("spike item 1: where Figma doesn't scale an SVG's strokes, importing at the viewBox and rescaling does", async () => {
   const fixture = loadTreeFixture("toggle");
   const weights = async (svgStrokesScale: boolean) => {
