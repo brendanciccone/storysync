@@ -10,7 +10,14 @@ import { fakePreview, inPage } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
+  captureTree, captureTreeInPage, drawingElementInPage,
 } from "../snap-browser.js";
+import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, imageAssetId } from "../snap-assets.js";
+import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
+import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
+import { NON_RENDERED_TAGS } from "../snap-normalize.js";
+import { inFakePage } from "./dom-standin.js";
+import type { FakeElementSpec } from "./dom-standin.js";
 
 /** Listening for requests, which captureStory does to wait for images. */
 const LISTENS = { on: () => {}, off: () => {} };
@@ -410,4 +417,195 @@ test("captureStory: with no preview to read, Storybook's warning still rejects t
   const unchecked = await captureStory(previewPage(undefined), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "ghost" }));
   assert.equal(unchecked.status, "ok");
   assert.deepEqual([unchecked.args?.checked, unchecked.args?.rejected], [false, []]);
+});
+
+// --- Element trees ---
+
+test("captureTree: what only a picture can keep is a screenshot of its element, and an image whose bytes can't be had too", async () => {
+  // A 4 by 2 PNG's header is all the screenshot needs to be.
+  const png = Buffer.from("89504e470d0a1a0a0000000d494844520000000400000002080600000000", "hex");
+  const shot: number[][] = [];
+  const element = (path: number[]) => ({
+    boundingBox: async () => ({ x: 0, y: 0, width: 2, height: 1 }),
+    screenshot: async () => { shot.push(path); return png; },
+    dispose: async () => {},
+  });
+  const capture = {
+    root: {
+      k: "e", tag: "div", box: [0, 0, 20, 10], cs: {}, path: [],
+      kids: [
+        { k: "e", tag: "canvas", box: [0, 0, 2, 1], cs: {}, kids: [], path: [0] },
+        { k: "e", tag: "img", box: [2, 0, 2, 1], cs: {}, kids: [], path: [1], img: { src: "https://example.test/private.png", natural: [10, 5] } },
+      ],
+    },
+    fonts: {},
+  };
+  const target = {
+    evaluate: async (fn: unknown) => { assert.equal(fn, captureTreeInPage); return capture; },
+    evaluateHandle: async (_fn: unknown, path: number[]) => ({ asElement: () => element(path), dispose: async () => {} }),
+  };
+  const page = {
+    context: () => ({ request: { get: async () => { throw new Error("401"); } } }),
+    evaluate: async () => { throw new Error("TypeError: Failed to fetch"); },
+  };
+  const tree = await captureTree(page as unknown as Page, target as never, null, 1000);
+  const id = imageAssetId(png, "raster:0,0,4,2");
+  assert.deepEqual(tree.nodes.slice(1).map((n) => [n.k, n.t, n.raster, n.img]), [["canvas", "I", 1, id], ["img", "I", 1, id]]);
+  assert.deepEqual(shot, [[1], [0]]);
+  assert.deepEqual(Object.keys(tree.images), [id]);
+  assert.equal(tree.images[id].raster, true);
+  assert.deepEqual(tree.images[id].natural, [4, 2]);
+});
+
+test("captureTree: an image's bytes from the page's own response, its id from them and its crop", async () => {
+  const bytes = Buffer.from("ffd8ffe000104a464946", "hex");
+  const capture = {
+    root: {
+      k: "e", tag: "span", box: [0, 0, 32, 32], cs: {}, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, 32, 32], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: "https://example.test/a.jpg", natural: [460, 460] } }],
+    },
+    fonts: {},
+  };
+  const target = { evaluate: async () => capture };
+  const responses = { body: (url: string) => (url === "https://example.test/a.jpg" ? Promise.resolve(bytes) : undefined), stop: () => {} };
+  const tree = await captureTree({} as Page, target as never, responses, 1000);
+  const id = imageAssetId(bytes, "0,0,460,460");
+  assert.equal(tree.nodes[1].img, id);
+  assert.deepEqual({ ...tree.images[id], bytes: undefined }, { bytes: undefined, mime: "image/jpeg", natural: [460, 460], crop: { src: [0, 0, 460, 460], dst: [0, 0, 1, 1], key: "0,0,460,460" }, box: [32, 32] });
+});
+
+test("captureStory: with a tree, a variant whose tree can't be read is not measured, rather than built as its base", async () => {
+  // The variant would otherwise have no treeDelta, which reads as the base's tree.
+  const { page } = measuredPage({ x: 0, y: 0, width: 10, height: 10 }, async () => Buffer.from("png"));
+  const result = await captureStory(page, "http://localhost:6006/iframe.html?id=x--y", { ...OPTS, selector: "#storybook-root > div", tree: "tree" });
+  assert.equal(result.status, "render_error");
+  assert.match(result.error!, /element tree/);
+});
+
+// --- captureTreeInPage, in a stand-in page ---
+
+/** captureTreeInPage's arguments, as captureTree passes them. */
+const TREE_ARGS: Parameters<typeof captureTreeInPage>[1] = {
+  mode: "tree", defaults: { ...TREE_PROPERTY_DEFAULTS }, textProperties: TEXT_TREE_PROPERTIES, ...RAW_TREE_LIMITS,
+  svgShapes: SVG_SHAPE_TAGS, svgGeometry: SVG_GEOMETRY, svgPaint: SVG_PAINT_PROPERTIES, svgDropped: SVG_DROPPED_TAGS, nonRendered: NON_RENDERED_TAGS,
+};
+
+const readTree = (root: FakeElementSpec, args: Partial<typeof TREE_ARGS> = {}, moves: Parameters<typeof inFakePage>[2] = []) =>
+  inFakePage(root, (el) => captureTreeInPage(el, { ...TREE_ARGS, ...args }), moves);
+
+test("captureTreeInPage: sends only what differs from a default, and nothing a property doesn't apply to", () => {
+  const raw = readTree({
+    tag: "div", rect: [0, 0, 100, 40],
+    style: { display: "flex", "border-top-width": "1px", "border-top-style": "solid", "border-top-color": "rgb(229, 229, 229)", "border-left-color": "rgb(1, 2, 3)", "background-size": "cover", "object-fit": "cover", appearance: "button", "box-sizing": "border-box" },
+  });
+  assert.deepEqual(raw.root.cs, { display: "flex", "border-top-width": "1px", "border-top-color": "rgb(229, 229, 229)" });
+});
+
+test("captureTreeInPage: a pseudo-element that draws, though its color's last channel is 0, and none that is transparent", () => {
+  // rgb(255, 165, 0) is orange: read as transparent, its ::after went missing.
+  const raw = readTree({
+    tag: "div", rect: [0, 0, 100, 40], style: { position: "relative", "border-left-width": "2px" },
+    before: { content: '""', position: "absolute", "background-color": "rgba(0, 0, 0, 0)" },
+    after: { content: '""', position: "absolute", "background-color": "rgb(255, 165, 0)", left: "4px", top: "6px", width: "10px", height: "12px", "box-sizing": "border-box" },
+  });
+  assert.deepEqual(raw.root.kids.map((k) => (k as RawTreePseudo).which), ["after"]);
+  const after = raw.root.kids[0] as RawTreePseudo;
+  // In its parent's padding box: inside the 2px border.
+  assert.deepEqual([after.how, after.box, after.unanchored], ["abs", [6, 6, 10, 12], undefined]);
+  const loose = readTree({ tag: "div", rect: [0, 0, 100, 40], after: { content: '""', position: "absolute", "background-color": "oklch(0.5 0.1 30 / 0.5)" } });
+  assert.equal((loose.root.kids[0] as RawTreePseudo).unanchored, true);
+  assert.equal(readTree({ tag: "div", rect: [0, 0, 1, 1], after: { content: '""', "background-color": "oklab(0 0 0 / 0)" } }).root.kids.length, 0);
+});
+
+test("captureTreeInPage: a pseudo-element in the flow is measured on a stand-in, which is gone after, and says when it moved a sibling", () => {
+  const sibling: FakeElementSpec = { tag: "b", rect: [10, 0, 20, 20] };
+  const root: FakeElementSpec = {
+    tag: "p", rect: [0, 0, 100, 20], kids: [sibling],
+    before: { content: '"→"', display: "inline-block", "background-color": "rgb(255, 0, 0)", standIn: "[0,2,10,16]" },
+  };
+  const raw = readTree(root, {}, [[sibling, [12, 0, 20, 20]]]);
+  const before = raw.root.kids[0] as RawTreePseudo;
+  assert.deepEqual([before.how, before.box, before.content, before.moved], ["flow", [0, 2, 10, 16], "→", true]);
+  assert.equal(before.text?.["font-family"], "Times");
+  assert.equal(inFakePage(root, (el) => { captureTreeInPage(el, TREE_ARGS); return (el as unknown as { outerHTML: string }).outerHTML; }), "<p><b></b></p>");
+});
+
+test("captureTreeInPage: display: contents gives its children to its parent; what isn't drawn isn't read", () => {
+  const raw = readTree({
+    tag: "div", rect: [0, 0, 100, 40],
+    kids: [
+      { tag: "span", rect: [0, 0, 0, 0], style: { display: "contents", color: "rgb(255, 0, 0)" }, kids: [{ text: "red", rects: [[0, 0, 20, 20]] }, { tag: "i", rect: [20, 0, 10, 20] }] },
+      { tag: "div", rect: [0, 0, 10, 10], style: { display: "none" } },
+      { tag: "div", rect: [0, 0, 10, 10], style: { opacity: "0" } },
+      { tag: "style", rect: [0, 0, 0, 0] },
+      { text: "  ", rects: [] },
+    ],
+  });
+  assert.deepEqual(raw.root.kids.map((k) => (k.k === "e" ? k.tag : k.k === "t" ? k.text : k.k)), ["red", "i"]);
+  // The run is drawn in the contents element's style; the element's path,
+  // by element children, goes through it.
+  assert.equal((raw.root.kids[0] as RawTreeText).style?.color, "rgb(255, 0, 0)");
+  assert.deepEqual((raw.root.kids[1] as RawTreeElement).path, [0, 0]);
+});
+
+test("captureTreeInPage: stops reading at its limits, saying where", () => {
+  const kids = Array.from({ length: 5 }, (_, i): FakeElementSpec => ({ tag: "div", rect: [0, i, 1, 1] }));
+  const raw = readTree({ tag: "div", rect: [0, 0, 1, 5], kids }, { maxElements: 3 });
+  assert.deepEqual(raw.root.kids.map((k) => k.k), ["e", "e", "cut"]);
+  const deep = readTree({ tag: "div", rect: [0, 0, 1, 1], kids: [{ tag: "div", rect: [0, 0, 1, 1], kids: [{ tag: "div", rect: [0, 0, 1, 1] }] }] }, { maxDepth: 1 });
+  assert.deepEqual((deep.root.kids[0] as RawTreeElement).kids, [{ k: "cut" }]);
+});
+
+test("captureTreeInPage: an SVG as structure and computed paint, its painted shapes' boxes, or its size when too big", () => {
+  const path: FakeElementSpec = { tag: "path", svg: true, attrs: { d: "M0 0h4", class: "x" }, rect: [12, 12, 8, 0], style: { stroke: "currentcolor", color: "rgb(10, 10, 10)", fill: "none" } };
+  const hidden: FakeElementSpec = { tag: "path", svg: true, attrs: { d: "M1 1" }, rect: [10, 10, 1, 1], style: { fill: "none" } };
+  const svg: FakeElementSpec = {
+    tag: "svg", svg: true, attrs: { viewBox: "0 0 24 24", class: "lucide lucide-x size-4", width: "24" }, rect: [10, 10, 16, 16],
+    kids: [{ tag: "title", svg: true, rect: [0, 0, 0, 0] }, path, hidden, { tag: "defs", svg: true, rect: [0, 0, 0, 0] }],
+  };
+  const raw = readTree({ tag: "button", rect: [0, 0, 36, 36], kids: [svg] });
+  const icon = raw.root.kids[0] as RawTreeElement;
+  assert.equal(icon.lucide, "lucide-x");
+  assert.deepEqual(icon.svg!.attrs, { viewBox: "0 0 24 24" });
+  assert.deepEqual(icon.svg!.kids!.map((k) => [k.tag, k.raw === undefined]), [["path", true], ["path", true], ["defs", false]]);
+  assert.equal(icon.svg!.kids![0].paint!.stroke, "rgb(10, 10, 10)");
+  // Only what paints, relative to the svg's box.
+  assert.deepEqual(icon.shapes, [[2, 2, 8, 0]]);
+  const big = readTree({ tag: "div", rect: [0, 0, 36, 36], kids: [svg] }, { maxSvgElements: 2 });
+  assert.equal((big.root.kids[0] as RawTreeElement).svgElements, 4);
+});
+
+test("captureTreeInPage: an input's value or placeholder, with how wide it draws; an image's source", () => {
+  const raw = readTree({
+    tag: "div", rect: [0, 0, 300, 40],
+    kids: [
+      { tag: "input", attrs: { placeholder: "Email" }, rect: [0, 0, 200, 36], placeholderColor: "rgb(115, 115, 115)" },
+      { tag: "img", attrs: { src: "https://example.test/a.png" }, rect: [200, 0, 40, 40], natural: [80, 80], style: { "object-fit": "cover" } },
+    ],
+  });
+  const [input, img] = raw.root.kids as RawTreeElement[];
+  assert.deepEqual(input.input, { type: "text", value: "", placeholder: "Email", advance: 35, placeholderColor: "rgb(115, 115, 115)" });
+  assert.equal(input.text?.color, "rgb(0, 0, 0)");
+  assert.deepEqual(img.img, { src: "https://example.test/a.png", natural: [80, 80] });
+  assert.deepEqual(img.cs, { "box-sizing": "content-box", "object-fit": "cover" });
+});
+
+test("drawingElementInPage: an element that draws nothing, holding nothing that does, gives way to the nearest one around it that draws", () => {
+  const empty: FakeElementSpec = { tag: "section", rect: [0, 0, 0, 0] };
+  const story: FakeElementSpec = {
+    tag: "div", attrs: { id: "storybook-root" }, rect: [0, 0, 300, 100],
+    kids: [{ tag: "div", rect: [0, 0, 300, 100], style: { "background-color": "rgb(250, 250, 250)" }, kids: [{ tag: "div", rect: [0, 0, 300, 100], kids: [empty] }] }],
+  };
+  const pick = (target: (root: Element) => Element) =>
+    inFakePage(story, (el) => (drawingElementInPage(el, ["#storybook-root", "#root"]) as unknown as { tagName: string; spec: FakeElementSpec }).spec, [], target);
+  const deepest = (root: Element) => (root as unknown as { children: Element[] }).children[0].children[0].children[0];
+  // Past the wrapper that draws nothing too, to the one with a fill.
+  assert.equal(pick(deepest), story.kids![0]);
+  // One that draws stays.
+  const drawing = (root: Element) => (root as unknown as { children: Element[] }).children[0];
+  assert.equal(pick(drawing), story.kids![0]);
+  // Nothing around it draws: it stays, never past the story's root.
+  const bare: FakeElementSpec = { tag: "div", attrs: { id: "storybook-root" }, rect: [0, 0, 1, 1], kids: [{ tag: "span", rect: [0, 0, 0, 0] }] };
+  const span = inFakePage(bare, (el) => (drawingElementInPage(el, ["#storybook-root"]) as unknown as { spec: FakeElementSpec }).spec, [], (root) => (root as unknown as { children: Element[] }).children[0]);
+  assert.equal(span, bare.kids![0]);
 });
