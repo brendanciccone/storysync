@@ -1,0 +1,225 @@
+{
+ "source": {
+  "story": "ui-base-slider--default",
+  "args": null,
+  "root": "[data-slot=slider]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "div",
+   "box": [
+    0,
+    0,
+    1248,
+    6
+   ],
+   "cs": {},
+   "kids": [
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      0,
+      1248,
+      6
+     ],
+     "cs": {
+      "display": "flex",
+      "position": "relative",
+      "align-items": "center"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        0,
+        0,
+        1248,
+        6
+       ],
+       "cs": {
+        "position": "relative",
+        "flex-grow": "1",
+        "background-color": "oklch(0.97 0 0)",
+        "border-top-left-radius": "3.35544e+07px",
+        "border-top-right-radius": "3.35544e+07px",
+        "border-bottom-right-radius": "3.35544e+07px",
+        "border-bottom-left-radius": "3.35544e+07px",
+        "overflow-x": "hidden",
+        "overflow-y": "hidden"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "div",
+         "box": [
+          0,
+          0,
+          414.546875,
+          6
+         ],
+         "cs": {
+          "position": "relative",
+          "background-color": "oklch(0.205 0 0)"
+         },
+         "kids": [],
+         "path": [
+          0,
+          0,
+          0
+         ],
+         "slot": "slider-range",
+         "cls": [
+          "bg-primary"
+         ]
+        }
+       ],
+       "path": [
+        0,
+        0
+       ],
+       "slot": "slider-track",
+       "cls": [
+        "bg-muted",
+        "rounded-full"
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        406.546875,
+        -5,
+        16,
+        16
+       ],
+       "cs": {
+        "position": "absolute",
+        "flex-shrink": "0",
+        "background-color": "rgb(255, 255, 255)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "oklch(0.205 0 0)",
+        "border-right-color": "oklch(0.205 0 0)",
+        "border-bottom-color": "oklch(0.205 0 0)",
+        "border-left-color": "oklch(0.205 0 0)",
+        "border-top-left-radius": "3.35544e+07px",
+        "border-top-right-radius": "3.35544e+07px",
+        "border-bottom-right-radius": "3.35544e+07px",
+        "border-bottom-left-radius": "3.35544e+07px",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.1) 0px 1px 2px -1px",
+        "translate": "-50% -50%"
+       },
+       "kids": [
+        {
+         "k": "e",
+         "tag": "input",
+         "box": [
+          406.546875,
+          -5,
+          14,
+          14
+         ],
+         "cs": {
+          "position": "fixed",
+          "clip-path": "inset(50%)",
+          "overflow-x": "hidden",
+          "overflow-y": "hidden",
+          "appearance": "auto"
+         },
+         "kids": [],
+         "path": [
+          0,
+          1,
+          0
+         ],
+         "text": {
+          "color": "oklch(0.145 0 0)",
+          "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+          "font-size": "16px",
+          "font-weight": "400",
+          "font-style": "normal",
+          "line-height": "24px",
+          "letter-spacing": "normal",
+          "text-transform": "none",
+          "text-decoration-line": "none",
+          "text-align": "start",
+          "white-space": "nowrap",
+          "text-overflow": "clip",
+          "-webkit-line-clamp": "none"
+         },
+         "input": {
+          "type": "range",
+          "value": "33",
+          "placeholder": "",
+          "advance": 19.4375
+         }
+        }
+       ],
+       "path": [
+        0,
+        1
+       ],
+       "slot": "slider-thumb",
+       "cls": [
+        "border-primary",
+        "ring-ring/50",
+        "rounded-full",
+        "bg-white",
+        "shadow-sm",
+        "hover:ring-4",
+        "focus-visible:ring-4",
+        "focus-visible:outline-hidden"
+       ]
+      }
+     ],
+     "path": [
+      0
+     ]
+    }
+   ],
+   "path": [],
+   "slot": "slider",
+   "role": "group"
+  },
+  "fonts": {
+   "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"": {
+    "families": [
+     "-apple-system",
+     "system-ui",
+     "Segoe UI",
+     "Roboto",
+     "Helvetica Neue",
+     "Noto Sans",
+     "Arial",
+     "sans-serif",
+     "Apple Color Emoji",
+     "Segoe UI Emoji",
+     "Segoe UI Symbol",
+     "Noto Color Emoji"
+    ],
+    "applied": [
+     false,
+     true,
+     false,
+     true,
+     true,
+     false,
+     true,
+     null,
+     true,
+     false,
+     false,
+     false
+    ]
+   }
+  }
+ }
+}

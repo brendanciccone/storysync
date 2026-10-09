@@ -196,11 +196,16 @@ export const TEXT_PROPERTIES: readonly string[] = [
   "color", "font-family", "font-size", "font-weight", "text-transform", "letter-spacing",
 ];
 
-/** What snap-browser reads off a Storybook wrapper to decide whether to look past it. */
+/**
+ * What snap-browser reads off a Storybook wrapper to decide whether to look
+ * past it, and off the story's elements, and their ::before and ::after, to
+ * decide whether anything in its root draws.
+ */
 export const WRAPPER_PROPERTIES: readonly string[] = [
   "display", "background-color", "background-image", "box-shadow",
   "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
   "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "outline-style", "outline-width", "outline-color",
 ];
 
 // --- Scalar helpers ---------------------------------------------------------
@@ -607,6 +612,17 @@ export interface StoryNode {
   position: string;
   /** Whether it has a layout box: false for `display: none` and `display: contents`. */
   rendered: boolean;
+  /**
+   * Whether it holds text of its own, not only whitespace. Absent where it
+   * wasn't read, which counts as text: see subtreeDraws.
+   */
+  text?: boolean;
+  /**
+   * Its ::before and ::after that have content, `none` and `normal` left
+   * out: the content as computed (`""`, `"★"`, `url(...)`) and their
+   * WRAPPER_PROPERTIES. Absent where none has, or they weren't read.
+   */
+  pseudos?: { content: string; styles: RawComputedStyles }[];
   /** WRAPPER_PROPERTIES, computed. */
   styles: RawComputedStyles;
   /**
@@ -623,7 +639,20 @@ export interface PortalNode {
   role: string | null;
   id: string | null;
   rendered: boolean;
+  /** Whether it is an open overlay's content: OVERLAY_SELECTOR matches it, and no element around it. */
+  overlay?: boolean;
 }
+
+/**
+ * What an open overlay's content is, wherever it renders: a dialog, alert
+ * dialog, tooltip or menu by its role; shadcn/ui's `*-content` slot, as
+ * `popover-content`; and what Radix's popper places, a popover's or a
+ * select's content without either. An overlay renders into a portal, a
+ * child of the body outside the story's root (Base UI's in a
+ * `data-base-ui-portal` holder).
+ */
+export const OVERLAY_SELECTOR =
+  '[role="dialog"], [role="alertdialog"], [role="tooltip"], [role="menu"], [data-slot$="-content"], [data-radix-popper-content-wrapper] > *';
 
 /** Why the element snap measured may not be the component. */
 export type MeasurementNote =
@@ -685,6 +714,36 @@ function isDisplayContents(node: StoryNode): boolean {
 /** Children that take up space: what a reader would see as the element's parts. */
 function drawnChildren(node: StoryNode): StoryNode[] {
   return node.children.filter((child) => !isNonRendered(child) && (child.rendered || isDisplayContents(child)));
+}
+
+/** Tags that draw by what they are, as a picture, a meter or an embedded page does, or as a form field does. */
+const DRAWING_TAGS: readonly string[] = [
+  "svg", "img", "canvas", "video", "input", "textarea", "select", "progress", "meter", "iframe", "object", "embed",
+];
+
+/**
+ * Whether an element, or anything in it, draws: a fill, picture, shadow,
+ * border or outline, text, a ::before or ::after that draws, or what an
+ * `<svg>`, `<img>`, `<progress>` or form field is. Text the page didn't
+ * read for counts, so this says no only where it knows.
+ */
+function subtreeDraws(node: StoryNode): boolean {
+  if (isNonRendered(node) || (!node.rendered && !isDisplayContents(node))) return false;
+  return node.text !== false || paints(node.styles) || DRAWING_TAGS.includes(node.tag) ||
+    (node.pseudos ?? []).some(pseudoDraws) || node.children.some(subtreeDraws);
+}
+
+/** Whether an element paints its own box: drawsNothing's fill, picture, shadow or border, or an outline that shows. */
+function paints(styles: RawComputedStyles): boolean {
+  const outline = styles["outline-style"];
+  return !drawsNothing(styles) ||
+    (outline !== undefined && outline !== "none" && parseFloat(styles["outline-width"] ?? "") > 0 && !isFullyTransparent(styles["outline-color"]));
+}
+
+/** Whether a ::before or ::after draws: any content but an empty string, an icon font's glyph say, or a box that paints. */
+function pseudoDraws(pseudo: { content: string; styles: RawComputedStyles }): boolean {
+  if ((pseudo.styles["display"] ?? "").trim() === "none") return false;
+  return pseudo.content !== '""' || paints(pseudo.styles);
 }
 
 /** Whether an element paints nothing itself: no fill, image, shadow or border, whatever its padding. */
@@ -814,11 +873,15 @@ function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
  *   2. Content rendered into a portal outside the story's root: an element
  *      with the component's own slot, or its `-content` slot, as an open
  *      Dialog's `dialog-content`.
- *   3. Otherwise, as snap always has, the root, past single-child wrappers
+ *   3. An open overlay's content in a portal (OVERLAY_SELECTOR), when nothing
+ *      under the story's root draws: a story that renders a dialog open,
+ *      with no trigger, shows nothing else.
+ *   4. Otherwise, as snap always has, the root, past single-child wrappers
  *      that draw nothing. When that is an open trigger whose `aria-controls`
- *      names an element in a portal, that element is measured instead.
+ *      names an element in a portal, that element is measured instead, and
+ *      when it is a closed trigger, an open overlay's content in a portal.
  *
- * What 3 settles on is flagged when it is a closed trigger, or holds several
+ * What 4 settles on is flagged when it is a closed trigger, or holds several
  * elements while drawing nothing itself and bearing no mark of a component's
  * root, which is how a story's layout wrapper looks. Neither is certain, so
  * each is a note for a warning.
@@ -842,6 +905,11 @@ export function chooseMeasuredElement(
     portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
   if (portaled) return portaled;
 
+  const overlay = () => portal((candidate) => candidate.overlay === true);
+  const shown = container?.children.some(subtreeDraws) ?? false;
+  const open = shown ? null : overlay();
+  if (open) return open;
+
   if (!root) {
     return { kind: "none", error: "the story rendered no element that draws (only elements such as noscript, script or style, or none)" };
   }
@@ -861,6 +929,9 @@ export function chooseMeasuredElement(
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];
   if (isClosedTrigger(node)) {
+    // Opened by something other than its trigger, as a story's `open` arg does.
+    const content = overlay();
+    if (content) return content;
     notes.push({ kind: "closed-trigger", element });
   } else {
     const children = drawnChildren(node).length;

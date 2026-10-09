@@ -1032,7 +1032,7 @@ T14. **A label the browser drew whole on one line stays so (`o`).**
 T15. **loadFont takes the text's style**, `f`, `w`, `i` and `a`, and one
     helper sets a text's size, autoResize and truncation in that order for
     style() and keepLines, to fit the template's budget: the minified build
-    is 15,969 characters, of 16,000.
+    is 15,969 characters, of 16,000, and 16,824 of 17,000 with L1's grid.
 
 ## The mock (`cli/__tests__/mock-figma.ts`)
 
@@ -1082,3 +1082,126 @@ T21. **What verify can't see**: Figma doesn't say whether a text is cut
     short, so an ellipsis Figma draws where the browser drew none scores
     as truncation that matches. The build names it (`cut short`), and a
     snap that draws stand-ins doesn't give one.
+
+# Layout after the third live push
+
+The third live push (Figma file UPmguLPQ7w1ESdOZsq6vlw, agents/push3)
+built real components, but laid icon buttons' labels over their
+neighbors and built Sidebar's side=right variants off to the side. These
+notes are numbered L1 on.
+
+L1. **The set's grid spaces variants by where they draw** (section 8.2,
+   step 5, says the 0.4.0 grid code is kept unchanged).
+   - A variant's drawn bounds, measured in Figma: its box, each visible
+     layer's box that no frame around it clips, and how far past its box
+     each layer draws: its stroke's weight OUTSIDE, half of it CENTER
+     (an imported vector's, spike #1), the widest side's; its drop
+     shadows' radius, spread and both offsets; its layer blur's radius.
+     Each is taken on every side and they add up, which is more than
+     draws. A designer's layers count. An OUTSIDE stroke matters: a
+     border kept outside the fill (`bgc`) is built as a frame the
+     fill's size with the border as a stroke around it, so the frame's
+     box alone misses the border.
+   - A row's boxes share their top edge and a column's their left edge,
+     as in 0.4.0's grid. A row is as tall as the most any of its
+     variants draws above that edge plus the most below it, a column as
+     wide as the most left of its edge plus the most right of it; rows
+     and columns are GAP apart, the set's order and default-first rule
+     kept. So the default variant is still the one top-left, where
+     Figma takes the set's default from, however far another variant
+     draws past its box. Each variant placed where its own drawn bounds
+     start, as first written, put a default with a shadow below and
+     right of its neighbors, and left push3's Toggle columns ragged.
+   - Variants that fit no grid cell, in a row below, share a top edge
+     the same way.
+   - The template's checks (past the set, over another variant) read
+     the drawn bounds, so a build whose variants overlap fails.
+   - On push3's snap, base Button had 48 pairs of variants drawing over
+     each other (at the icon sizes the label draws about 71px past each
+     side of a 36px button, as the browser draws it) and radix Button
+     6; now none, at width factor 1.045 too, and in Figma's own fonts
+     (T17) once merged with the text fixes.
+   - The minified build is 16,546 characters, 16,824 with T15's text
+     helpers, so `templates.test.ts` allows the build 17,000 rather than
+     16,000. figma code packs a
+     call by its whole length, template included, so this only leaves a
+     call a little less room for DATA.
+L2. **The mock's groups have effects**, as Figma's GroupNode does
+   (BlendMixin). The drawn bounds read them on an icon root's shapes;
+   the mock threw.
+L3. **An element placed against the window or page is measured inside
+   its root's box** (section 6.9, positioning, extended).
+   - Such an element is `fixed` with nothing in the tree to hold it, or
+     `absolute` with nothing positioned or holding it around it in the
+     tree, it or the outermost wrapper collapsed into it. Where it draws
+     depends on the window, not the component: shadcn's Sidebar
+     container, `fixed` at `right-0` for side=right, drew 1024px right
+     of its own 256px root in snap's 1280px window.
+   - What holds a fixed element, as an absolute one, in Chromium 154,
+     each value tried on a static page: `transform`, `translate`,
+     `rotate`, `scale`, `perspective`, `filter`, `backdrop-filter` and
+     `offset-path` other than `none`; `will-change` naming any of them,
+     `contain` or `transform-style`; `contain` with layout or paint
+     (`layout`, `paint`, `content`, `strict`); `content-visibility`
+     `auto` or `hidden`; `transform-style: preserve-3d`. Not
+     `container-type`, size or style containment alone, `will-change:
+     opacity`, `isolation`, `clip-path`, a mask, opacity or a blend
+     mode. The tree's page reads the ones it didn't (they join
+     TREE_PROPERTY_DEFAULTS); a capture without them reads them as
+     their defaults, as before. Base UI's Slider thumb is at
+     `translate: -50% -50%` and its input `fixed` at the thumb's corner,
+     where Chrome draws it: read by transform alone, the input moved 5px
+     and Slider gained a warning (fixtures/raw/slider.json).
+   - Where such elements draw outside the root's box, snap moves them,
+     together, as far as it takes and no further: what they cover then
+     starts inside the box, or at its corner when larger. What is inside
+     them keeps its place in them. The right sidebar now measures the
+     same tree as the left one but for its border's side.
+   - The variant records the key of each element moved that drew
+     outside the box as `movedInside`, not one that only moved along
+     with it. It was first a component warning, but there is nothing in
+     the story to fix, and every stock shadcn Sidebar with side variants
+     then failed `--strict-warnings`, which the README recommends for
+     CI. No `approx` is set: the build puts the element where snap now
+     records it, and verify scores it there as any other.
+   - Not seen: what holds it on an ancestor outside the root.
+L4. **Open overlay content in a portal is measured when the story's root
+   shows nothing that draws, or only a closed trigger** (section 6.1;
+   chooseMeasuredElement gains a step).
+   - coder's ConfirmDialog and DeleteDialog render Radix's Dialog with
+     `open: true` and no trigger, into the body, with no `data-slot`:
+     every variant was element_not_found (10 of 10, against coder's
+     Storybook with the base build). Now, with `--exclude-props
+     open,isOpen`, all 8 measure as `div[role="dialog"]`. Without it,
+     the variants with `open` or `isOpen` false render nothing and stay
+     element_not_found, as they should.
+   - `OVERLAY_SELECTOR` (`cli/snap-normalize.ts`) is what open overlay
+     content is: role `dialog`, `alertdialog`, `tooltip` or `menu`, a
+     `-content` slot, or Radix's popper wrapper's child. The outermost
+     match outside the story's root is a candidate, first in document
+     order: Radix's tooltip holds a hidden copy of its text as
+     role=tooltip, inside the content.
+   - The wait for a story ends on it too, so such a story no longer
+     waits out `--timeout`.
+   - Whether the root draws is read off the story's elements as
+     chooseMeasuredElement already reads them, with `text`, whether an
+     element holds text of its own, added. A StoryNode without `text`
+     counts as drawing, so no older caller changes.
+   - An element draws by a fill, picture, shadow or border, an outline
+     with a width and a color, its own text, a ::before or ::after with
+     any content but an empty string or with a box that paints (an icon
+     font's glyph, a status dot), or by its tag: `svg`, `img`,
+     `canvas`, `video`, a form field, `progress`, `meter`, `iframe`,
+     `object` or `embed`. The page reads outlines (WRAPPER_PROPERTIES)
+     and the pseudo-elements with content (`pseudos`) for this. Without
+     them, a story root holding only a `<progress>`, an outlined box or
+     an icon-font glyph read as drawing nothing, and an open overlay
+     elsewhere on the page was measured instead (checked in Chromium on
+     static pages).
+   - The variant records `portal: true` beside `element`, for this and
+     for content found by its slot or `aria-controls` as before.
+     `matchedSelector` already said `portal ...`, but styles.json didn't
+     keep it.
+   - The shadcn registry has no story that renders a dialog, sheet or
+     popover open: each opens in a play function. Their Default stories
+     still measure the closed trigger, with the warning as before.

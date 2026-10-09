@@ -55,6 +55,9 @@ export const TREE_PROPERTY_DEFAULTS: Readonly<Record<string, string>> = {
   transform: "none", "clip-path": "none", isolation: "auto", "overflow-x": "visible", "overflow-y": "visible", visibility: "visible",
   "outline-style": "none", "outline-width": "0px", "outline-color": "", "outline-offset": "0px",
   "object-fit": "fill", "object-position": "50% 50%", appearance: "none",
+  // What else makes an element the containing block of fixed and absolute ones: see holdsFixed.
+  translate: "none", rotate: "none", scale: "none", perspective: "none", "offset-path": "none",
+  "will-change": "auto", contain: "none", "content-visibility": "visible", "transform-style": "flat",
 };
 
 /** What the page reads off an element holding a run of text, an input, or a pseudo-element with text: all of them, every time. */
@@ -183,6 +186,12 @@ export interface BuiltTree {
   rasters: PendingRaster[];
   /** Things worth a warning: a data-slot with a `/` in it, say. */
   notes: string[];
+  /**
+   * Keys of the elements placed against the browser window or the page
+   * that drew outside the root's box, which the tree holds moved inside it
+   * (anchorToRoot). Nothing to fix, so no warning: the variant records it.
+   */
+  movedInside: string[];
 }
 
 export interface TreeBuildOptions {
@@ -290,6 +299,10 @@ interface Item {
   paints: boolean;
   /** The element item it sits in, for inherited class evidence. */
   parent?: Item;
+  /** How far anchorToRoot moved it, an element placed against something outside the root. */
+  shift?: [number, number];
+  /** Of those it moved, one that drew outside the root's box, not only moved along with one that did. */
+  drewOutside?: true;
 }
 
 /**
@@ -432,6 +445,73 @@ function contentBox(el: RawTreeElement): Box {
   const css = reader(el.cs);
   const [t, r, b, l] = SIDES.map((side) => sideWidth(css, side) + px(css(`padding-${side}`)));
   return roundBox([el.box[0] + l, el.box[1] + t, el.box[2] - l - r, el.box[3] - t - b]);
+}
+
+// --- Elements placed against the page -------------------------------------------
+
+/** Properties whose every value but `none` makes an element the containing block of fixed and absolute elements in it. */
+const CONTAINING = ["transform", "translate", "rotate", "scale", "perspective", "filter", "backdrop-filter", "offset-path"];
+
+/**
+ * Whether an element is the containing block of `fixed` elements in it, as
+ * of `absolute` ones. In Chromium 154 these make one, each checked in the
+ * browser (SPEC-NOTES L5): CONTAINING, `will-change` naming one of them,
+ * `contain` or `transform-style`, layout or paint containment, and
+ * `content-visibility` other than `visible`. Base UI's Slider thumb, at
+ * `translate: -50% -50%`, holds its `fixed` input so. `container-type`
+ * doesn't, nor size or style containment alone.
+ */
+const holdsFixed = (css: Css) =>
+  CONTAINING.some((p) => css(p) !== "none") ||
+  css("will-change").split(/,\s*/).some((p) => CONTAINING.includes(p) || p === "contain" || p === "transform-style") ||
+  /\b(layout|paint|strict|content)\b/.test(css("contain")) ||
+  css("content-visibility") !== "visible" || css("transform-style") === "preserve-3d";
+
+/**
+ * Moves the elements the root's own box doesn't place, so what they draw
+ * starts inside it: each element `fixed` with nothing in the tree a
+ * transform or filter makes its containing block, or `absolute` with
+ * nothing positioned around it in the tree (it or a wrapper collapsed into
+ * it, the outermost such). Where the browser window or the page put them
+ * is no part of the component: shadcn's Sidebar container is `fixed` at
+ * `right-0` for side=right, and drew 1024px to the right of its own 256px
+ * root in snap's 1280px window, where a Figma component would hold it off
+ * to its side. They move together, as far as it takes and no further, so
+ * they keep their places relative to each other and one already inside the
+ * box stays. Each is given its `shift`, and `drewOutside` where it did.
+ */
+function anchorToRoot(root: Item): void {
+  const outside: Item[] = [];
+  const walk = (item: Item, absolute: boolean, fixed: boolean) => {
+    for (const kid of item.kids) {
+      if (kid.kind !== "el") continue;
+      let [a, f, out] = [absolute, fixed, false];
+      // Its collapsed wrappers sit between it and its parent, the outermost last.
+      for (const el of [...kid.wrappers].reverse().concat(kid.el!)) {
+        const css = reader(el.cs);
+        if ((css("position") === "fixed" && !f) || (css("position") === "absolute" && !a)) out = true;
+        if (positioned(css)) a = true;
+        if (holdsFixed(css)) a = f = true;
+      }
+      if (out) outside.push(kid);
+      else walk(kid, a, f);
+    }
+  };
+  const css = root.css!;
+  walk(root, positioned(css) || holdsFixed(css), holdsFixed(css));
+  if (!outside.length) return;
+  const by = [0, 1].map((a) => {
+    const start = Math.min(...outside.map((i) => i.box[a]));
+    const size = Math.max(...outside.map((i) => i.box[a] + i.box[a + 2])) - start;
+    return r2(Math.max(0, Math.min(start, root.box[a + 2] - size)) - start);
+  }) as [number, number];
+  if (!by[0] && !by[1]) return;
+  const [, , w, h] = root.box;
+  for (const item of outside) {
+    item.shift = by;
+    const [x, y, iw, ih] = item.box;
+    if (x < -0.5 || y < -0.5 || x + iw > w + 0.5 || y + ih > h + 0.5) item.drewOutside = true;
+  }
 }
 
 // --- Keys and paint order ------------------------------------------------------
@@ -829,6 +909,8 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
   const raster = isNativeControl(el) || el.tag === "canvas" || el.tag === "video";
   let kind: TreeNode["t"] = item.leaf ? "T" : el.tag === "svg" ? "V" : el.tag === "img" || raster ? "I" : "F";
   const node: TreeNode = { k: key, t: kind, el: elementName(el), box: isRoot ? [0, 0, box[2], box[3]] : rel(box) };
+  // Its children stay where they were in it: their boxes are relative to its unmoved one.
+  if (item.shift) node.box = [r2(node.box[0] + item.shift[0]), r2(node.box[1] + item.shift[1]), node.box[2], node.box[3]];
   const approx: string[] = [];
 
   if (!isRoot) {
@@ -1026,8 +1108,10 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
   const maxDepth = options.maxDepth ?? TREE_LIMITS.maxDepth;
   const ctx: Ctx = { fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
   const [root] = buildItem(capture.root, true);
+  anchorToRoot(root);
 
   const nodes: TreeNode[] = [];
+  const movedInside: string[] = [];
   let total = 0;
   let at: string | null = null;
   // The facts of a node are made only when it is kept, so an image past
@@ -1043,6 +1127,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
     const keep = depth <= maxDepth && nodes.length < maxNodes;
     if (!keep && at === null) at = key;
     if (keep) nodes.push(factsOf(item, key, parent, parentBox, ctx));
+    if (keep && item.drewOutside) movedInside.push(key);
     if (item.leaf || item.kind !== "el" || item.el!.tag === "svg") return;
     const counts = new Map<string, number>();
     const keyed = item.kids.map((kid, dom) => {
@@ -1065,6 +1150,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
     images: ctx.images.filter((i) => keptKeys.has(i.key)),
     rasters: ctx.rasters.filter((r) => keptKeys.has(r.key)),
     notes: [...ctx.notes],
+    movedInside,
   };
 }
 

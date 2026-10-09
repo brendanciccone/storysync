@@ -231,6 +231,82 @@ test("buildTree: what is hidden, cut to a pixel, out of the flow drawing nothing
   assert.deepEqual(buildTree(tree(el("div", [0, 0, 100, 40], {}, [glow]))).nodes.map((n) => [n.k, n.sh]), [["", undefined], ["div", [[0, 1, 3, 0, "#0000001a"]]]]);
 });
 
+/** A capture with every box under the root's child `slot` moved by `dx`, as the page would have read it there. */
+function moved(capture: RawTreeCapture, slot: string, dx: number): RawTreeCapture {
+  const out = JSON.parse(JSON.stringify(capture)) as RawTreeCapture;
+  const shift = (item: RawTreeItem) => {
+    if (item.k === "e" || item.k === "p") item.box[0] += dx;
+    if (item.k === "t") for (const r of item.rects) r[0] += dx;
+    if (item.k === "e") item.kids.forEach(shift);
+  };
+  shift(out.root.kids.find((k) => k.k === "e" && k.slot === slot)!);
+  return out;
+}
+
+test("buildTree: an element placed against the window or page, drawn outside the root, is measured inside the root's box", () => {
+  // shadcn's Sidebar at side=right: its container is `fixed` at `right-0`,
+  // so in snap's 1280px window it drew 1024px right of its 256px root,
+  // and the Figma component held it off to its side.
+  const left = buildTree(raw("sidebar"));
+  const right = buildTree(moved(raw("sidebar"), "sidebar-container", 1024));
+  assert.deepEqual(byKey(left.nodes).get("sidebar-container")!.box, [0, 0, 256, 720]);
+  assert.deepEqual(byKey(right.nodes).get("sidebar-container")!.box, [0, 0, 256, 720]);
+  // Everything in it is where it was in it: the same tree as at side=left.
+  assert.equal(canonicalJson(right.nodes), canonicalJson(left.nodes));
+  // Recorded, not warned about: there is nothing to fix.
+  assert.deepEqual([left.notes, left.movedInside], [[], []]);
+  assert.deepEqual([right.notes, right.movedInside], [[], ["sidebar-container"]]);
+
+  // Such elements move together, only as far as it takes: a window-wide
+  // overlay stays at the root's corner, and the panel keeps its place on it.
+  const overlay = el("div", [-40, -10, 1280, 720], { position: "fixed", "background-color": "rgba(0, 0, 0, 0.5)" });
+  const panel = el("div", [880, -10, 360, 720], { position: "fixed", "background-color": "rgb(255, 255, 255)" });
+  const sheet = buildTree(tree(el("div", [0, 0, 100, 40], {}, [el("button", [0, 0, 100, 40], BORDER), overlay, panel])));
+  assert.deepEqual(sheet.nodes.map((n) => [n.k, n.box]), [["", [0, 0, 100, 40]], ["button", [0, 0, 100, 40]], ["div", [0, 0, 1280, 720]], ["div:2", [920, 0, 360, 720]]]);
+  assert.deepEqual(sheet.movedInside, ["div", "div:2"]);
+  // One inside the box that moves only along with one outside it is not recorded as drawing outside.
+  const dot = (box: RawBox) => el("span", box, { position: "fixed", "background-color": "rgb(255, 0, 0)" });
+  const along = buildTree(tree(el("div", [0, 0, 100, 40], {}, [dot([-20, 0, 10, 10]), dot([50, 10, 10, 10])])));
+  assert.deepEqual([along.nodes.map((n) => n.box), along.movedInside], [[[0, 0, 100, 40], [0, 0, 10, 10], [70, 10, 10, 10]], ["span"]]);
+
+  // Placed by something in the tree, it stays where it drew, inside the box or out.
+  const badge = (cs: Record<string, string>) => el("span", [0, 0, 40, 40], cs, [el("span", [36, -6, 10, 10], { position: "absolute", "background-color": "rgb(255, 0, 0)" })]);
+  for (const holder of [{ position: "relative" }, { transform: "matrix(1, 0, 0, 1, 0, 0.5)" }] as Record<string, string>[]) {
+    assert.deepEqual(buildTree(tree(badge(holder))).nodes[1].box, [36, -6, 10, 10], JSON.stringify(holder));
+  }
+  // An absolute one placed by nothing in the tree moves in, as a fixed one does.
+  const loose = buildTree(tree(badge({})));
+  assert.deepEqual([loose.nodes[1].box, loose.notes, loose.movedInside], [[30, 0, 10, 10], [], ["span"]]);
+  // A fixed one in a transformed element is placed by it.
+  const inTransform = el("div", [0, 0, 40, 40], { transform: "matrix(1, 0, 0, 1, 0, 0.5)" }, [el("span", [600, 0, 10, 10], { position: "fixed", "background-color": "rgb(255, 0, 0)" })]);
+  assert.deepEqual(buildTree(tree(inTransform)).nodes[1].box, [600, 0, 10, 10]);
+});
+
+test("buildTree: a fixed or absolute element in one that translate, will-change, containment and the like make its containing block stays where it drew", () => {
+  // Base UI's Slider: the thumb is at `translate: -50% -50%`, its input
+  // `fixed` at the thumb's corner, where Chrome draws it. Read as placed
+  // against the window, the input moved 5px down, with a warning.
+  const slider = buildTree(raw("slider"));
+  assert.deepEqual(byKey(slider.nodes).get("div/slider-thumb/input")!.box, [0, 0, 14, 14]);
+  assert.deepEqual([slider.notes, slider.movedInside], [[], []]);
+
+  // What Chromium 154 draws a fixed and an absolute element in as their
+  // containing block, and what it doesn't, each checked in the browser.
+  const holds: Record<string, string>[] = [
+    { translate: "-50% -50%" }, { translate: "0px" }, { rotate: "0deg" }, { scale: "1" }, { perspective: "100px" }, { "offset-path": 'path("M 0 0")' },
+    { "will-change": "transform" }, { "will-change": "opacity, filter" }, { "will-change": "contain" }, { "will-change": "transform-style" },
+    { contain: "paint" }, { contain: "layout" }, { contain: "content" }, { contain: "strict" }, { contain: "inline-size layout" },
+    { "content-visibility": "auto" }, { "content-visibility": "hidden" }, { "transform-style": "preserve-3d" },
+  ];
+  const not: Record<string, string>[] = [{ "will-change": "opacity" }, { "will-change": "top" }, { contain: "size" }, { contain: "style" }, { isolation: "isolate" }, { "clip-path": "inset(0px)" }];
+  for (const position of ["fixed", "absolute"]) {
+    const holder = (cs: Record<string, string>) =>
+      tree(el("span", [0, 0, 40, 40], cs, [el("span", [36, -6, 10, 10], { position, "background-color": "rgb(255, 0, 0)" })]));
+    for (const cs of holds) assert.deepEqual(buildTree(holder(cs)).nodes[1].box, [36, -6, 10, 10], `${position} in ${JSON.stringify(cs)}`);
+    for (const cs of not) assert.deepEqual(buildTree(holder(cs)).nodes[1].box, [30, 0, 10, 10], `${position} in ${JSON.stringify(cs)}`);
+  }
+});
+
 test("buildTree: an input laid over what draws, transparent and drawing nothing, is left out; one showing text is kept", () => {
   const overlay = el("input", [0, 0, 100, 40], { position: "absolute" }, [], {
     text: { ...TEXT, color: "rgba(0, 0, 0, 0)" }, input: { type: "text", value: "", placeholder: "", advance: 0 },

@@ -772,8 +772,8 @@ export function imageSize(bytes: Uint8Array): { width: number; height: number } 
 
 // A GROUP comes only from an imported SVG's <g>. As in Figma, it has no
 // coordinates of its own: its children's x and y, and its own, are in the
-// frame around it, and its box is what its children cover. It has no fills,
-// strokes or effects here.
+// frame around it, and its box is what its children cover. It has no fills
+// or strokes; it has effects, as Figma's groups do, which the build reads.
 type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GROUP" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON";
 
 const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP"]);
@@ -1490,7 +1490,7 @@ const PROPS: Record<string, Prop> = {
   blendMode: { types: SCENE, get: (n) => n.blendMode, set: (n, v) => { n.blendMode = oneOf("blendMode", v, BLEND_MODES); } },
   isMask: { types: SCENE, get: () => false },
   effects: {
-    types: GEOMETRY,
+    types: new Set<Kind>([...GEOMETRY, "GROUP"]),
     get: (n) => frozenCopy(n.effects),
     set: (n, v) => {
       if (!Array.isArray(v)) invalid("effects", "Expected array");

@@ -477,7 +477,11 @@ If snap stops before it finishes, it writes nothing: `styles.json`, `meta.json` 
 - **A layout wrapper:** an element holding several others and drawing nothing itself, such as a story's `<div className="flex gap-2"><Switch /><Label /></div>`. An element with a `role`, `dir`, `data-orientation` or `aria-label`, or a list, form or table, is taken for a component's root instead.
 - **A closed trigger:** a dialog, popover, menu or tooltip renders its content only while open, usually in a portal. snap measures the open content when the story renders it open and the content carries the `-content` slot (`dialog-content`) or the trigger's `aria-controls` names it.
 
-Each measured variant records the element as `element`, like `span[data-slot="switch"]`.
+A story can also render an overlay open with no trigger, as a dialog with `open: true` does, so nothing in the story's root draws. When the story's root shows nothing that draws, or only a closed trigger, snap measures open overlay content in a portal: an element with the role `dialog`, `alertdialog`, `tooltip` or `menu`, a `-content` slot, or what Radix's popper places.
+
+Each measured variant records the element as `element`, like `span[data-slot="switch"]`, and `portal: true` when it was measured in a portal outside the story's root.
+
+An element placed against the browser window (`position: fixed`), or against the page (`position: absolute` with nothing positioned around it), is drawn where the window puts it, not where the component does: shadcn's Sidebar at `side="right"` draws at the window's right edge, far from its own root. An element in the component with a transform, a translate, a filter or containment holds such an element in place, and snap leaves it there. Otherwise snap measures it moved inside the root's box, as far as it takes, and lists it in the variant's `movedInside`. There is nothing in the story to fix, so this is not a warning.
 
 **Strict modes.** `--strict` fails on anything that couldn't be measured, on a variant whose args snap couldn't check (below), on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI. That includes the warnings above about which element was measured, and one about a prop whose values all measure the same, so a closed dialog's story fails it until the story renders the dialog open.
 

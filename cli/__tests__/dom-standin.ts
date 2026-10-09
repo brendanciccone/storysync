@@ -57,6 +57,8 @@ const FAKE_DEFAULTS: Record<string, string> = {
   fill: "rgb(0, 0, 0)", "fill-opacity": "1", stroke: "none", "stroke-opacity": "1", "stroke-width": "1px", "stroke-linecap": "butt",
   "stroke-linejoin": "miter", "fill-rule": "nonzero", "clip-rule": "nonzero", "stroke-dasharray": "none", "stroke-dashoffset": "0px",
   "vector-effect": "none", mask: "none", isolation: "auto", width: "auto", height: "auto", left: "auto", top: "auto",
+  translate: "none", rotate: "none", scale: "none", perspective: "none", "offset-path": "none", "will-change": "auto",
+  contain: "none", "content-visibility": "visible", "transform-style": "flat",
 };
 
 const camel = (name: string) => name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());

@@ -7,7 +7,7 @@ import { textSizesItself } from "../figma-map.js";
 import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
-import { SHADCN_TOKENS, boxDrift, codeFor, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
+import { SHADCN_TOKENS, boxDrift, codeFor, drawnInSet, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
 import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
@@ -921,4 +921,144 @@ test("build: a call refused for one of its sets changes none of them", async () 
   const run = await mock.run(coded.code(call));
   assert.match(run.text, /The page has COMPONENT_SET "Toggle" .*, COMPONENT_SET "Toggle" .*: ask the user which to update/);
   assert.equal(JSON.stringify(mock.pages()), before, "Switch, first in the call, wasn't built either");
+});
+
+test("build: the set's grid gives each variant the room it draws in: a label past its icon button, a shadow, overlap nothing", async () => {
+  // push3's base Button: at size icon the button is 36 by 36 and its icon
+  // and label, centered, overflow it on both sides, as the browser draws
+  // them. Laid out by their boxes, the label covered the next column's
+  // button. Raised adds shadow-2xl, 63px below the button.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [
+    { name: "variant", type: "VARIANT", values: ["default", "raised"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["default", "icon"], defaultValue: "default" },
+  ];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const icon = {
+    delta: { gap: null, width: 36, padding: { top: 0, right: 0, bottom: 0, left: 0 } },
+    treeDelta: { set: { "": { L: { ai: "center", d: "inline-flex", jc: "center" }, box: [0, 0, 36, 36] }, svg: { box: [-71.39, 10, 16, 16] }, "#text": { box: [-47.39, 7.5, 154.8, 20] } } },
+  };
+  const shadow = { boxShadow: [{ offsetX: 0, offsetY: 25, blur: 50, spread: -12, color: "#00000040", inset: false }] };
+  c.variants = [
+    { ...base, combination: { variant: "default", size: "default" }, slug: "variant-default--size-default" },
+    { ...base, ...icon, combination: { variant: "default", size: "icon" }, slug: "variant-default--size-icon", boundingBox: { width: 36, height: 36 } },
+    { ...base, delta: shadow, treeDelta: {}, combination: { variant: "raised", size: "default" }, slug: "variant-raised--size-default" },
+    { ...base, ...icon, delta: { ...icon.delta, ...shadow }, combination: { variant: "raised", size: "icon" }, slug: "variant-raised--size-icon", boundingBox: { width: 36, height: 36 } },
+  ] as typeof c.variants;
+  for (const [fonts, options] of [["the browser's widths", {}], ["Figma's fonts", { measure: figmaFonts() }]] as const) {
+    const { mock, results } = await buildAll(fixture, options);
+    assert.deepEqual([results[0].sets[0].variants, results[0].sets[0].absoluteContainers], [4, []]);
+    const set = mock.nodes("COMPONENT_SET")[0];
+    const drawn = set.children!.map((v) => ({ name: v.name, box: drawnInSet(mock, v) }));
+    for (const [i, a] of drawn.entries()) {
+      assert.ok(a.box[0] >= 0 && a.box[1] >= 0 && a.box[2] <= set.width && a.box[3] <= set.height, `${a.name} draws past the set: ${a.box}`);
+      for (const b of drawn.slice(i + 1)) {
+        const apart = a.box[2] <= b.box[0] || b.box[2] <= a.box[0] || a.box[3] <= b.box[1] || b.box[3] <= a.box[1];
+        assert.ok(apart, `${a.name} (${a.box.map(Math.round)}) draws over ${b.name} (${b.box.map(Math.round)}), in ${fonts}`);
+      }
+    }
+    // The icon button's label, wider than it, keeps GAP from the button before it.
+    const at = (name: string) => drawn.find((d) => d.name === name)!.box;
+    assert.ok(at("variant=default, size=icon")[0] - at("variant=default, size=default")[2] >= 20);
+    assert.ok(at("variant=raised, size=default")[1] - at("variant=default, size=default")[3] >= 20);
+  }
+});
+
+test("build: the set's grid keeps each row's boxes on one top edge and each column's on one left, the default top-left, whatever draws past them", async () => {
+  // Only the default variant has a shadow, shadow-2xl, reaching 63px below
+  // it and 38px every other way. Placed where its own drawn bounds start,
+  // it sat lower and further right than its neighbors, and Figma takes the
+  // set's default from the top-left variant.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [
+    { name: "variant", type: "VARIANT", values: ["default", "outline"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["default", "sm", "lg"], defaultValue: "default" },
+  ];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const shadow = [{ offsetX: 0, offsetY: 25, blur: 50, spread: -12, color: "#00000040", inset: false }];
+  // The base's delta is its own styles, so the shadow goes on them; every other variant takes it off.
+  base.delta = {};
+  const styles = (c.base as unknown as { styles: Record<string, unknown> }).styles;
+  styles.boxShadow = shadow;
+  c.variants = (["default", "outline"] as const).flatMap((variant) => (["default", "sm", "lg"] as const).map((size) => {
+    const slug = `variant-${variant}--size-${size}`;
+    const own = variant === "default" && size === "default";
+    return { ...base, combination: { variant, size }, slug, delta: own ? {} : { boxShadow: [] }, treeDelta: own ? base.treeDelta : {} };
+  })) as typeof c.variants;
+  const { mock, results } = await buildAll(fixture);
+  assert.equal(results[0].sets[0].variants, 6);
+  const set = mock.nodes("COMPONENT_SET")[0];
+  const at = new Map(set.children!.map((v) => [v.name, v]));
+  const cell = (variant: string, size: string) => at.get(`variant=${variant}, size=${size}`)!;
+  const def = cell("default", "default");
+  for (const v of set.children!) {
+    if (v !== def) assert.ok(v.x > def.x && v.y >= def.y || v.y > def.y && v.x >= def.x, `${v.name} at ${v.x},${v.y} is not right of or below the default at ${def.x},${def.y}`);
+  }
+  for (const variant of ["default", "outline"]) {
+    assert.deepEqual(new Set(["default", "sm", "lg"].map((size) => cell(variant, size).y)).size, 1, `row ${variant} shares a top edge`);
+  }
+  for (const size of ["default", "sm", "lg"]) assert.equal(cell("default", size).x, cell("outline", size).x, `column ${size} shares a left edge`);
+  // The shadow's room is kept: 38px left of and above the default, GAP past that.
+  assert.ok(def.x >= 20 + 38 && def.y >= 20 + 38, `${def.x},${def.y}`);
+  const drawn = set.children!.map((v) => ({ name: v.name, box: drawnInSet(mock, v) }));
+  for (const [i, a] of drawn.entries()) {
+    for (const b of drawn.slice(i + 1)) {
+      assert.ok(a.box[2] <= b.box[0] || b.box[2] <= a.box[0] || a.box[3] <= b.box[1] || b.box[3] <= a.box[1], `${a.name} draws over ${b.name}`);
+    }
+  }
+});
+
+test("drawnInSet: a group's shapes draw where the frame around the group puts them, as in Figma", async () => {
+  // An imported icon, its frame not clipping, its <g> moved 30px left of
+  // the frame: the group's x and its shape's are both in the frame's
+  // coordinates, so the shape draws at the frame's x less 30, once.
+  const mock = new MockFigma();
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g><rect x="0" y="0" width="4" height="4"/></g></svg>';
+  const run = await mock.run(`const v = figma.createComponent(); v.resize(40, 40); v.x = 100; v.y = 50; v.clipsContent = false;
+    const f = figma.createNodeFromSvg(${JSON.stringify(markup)}); v.appendChild(f); f.x = 10; f.y = 20; f.clipsContent = false;
+    const g = f.children[0]; g.x = -30; g.y = -40;
+    return [g.x, g.y, g.children[0].x, g.children[0].y];`);
+  assert.ok(run.ok, run.text);
+  assert.deepEqual(run.value, [-30, -40, -30, -40]);
+  const variant = mock.nodes("COMPONENT")[0];
+  // The frame draws to 134 by 94; the shape at 110 - 30 and 70 - 40.
+  assert.deepEqual(drawnInSet(mock, variant), [80, 30, 140, 94]);
+});
+
+test("build: the set's grid gives room to an outside stroke and a layer blur, which draw past a box too", async () => {
+  // A badge over the corner with a 30px border it keeps its fill inside,
+  // built as a frame its fill's size with an OUTSIDE stroke, and an icon
+  // blurred by 40px: each draws further past its frame than GAP, so laid
+  // out by boxes and shadows alone, the variants drew over each other.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [{ name: "look", type: "VARIANT", values: ["plain", "ring", "blur"], defaultValue: "plain" }];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const keys = c.tree!.base.map((n) => n.k);
+  const ring = { k: "ring", t: "F", el: "span", box: [150, -40, 100, 110], abs: 1, bg: "#ffffff", bgc: "padding-box", bd: { w: 30, s: "solid", c: "#ff0000" } };
+  Object.assign(c.base!, { combination: { look: "plain" }, slug: "look-plain" });
+  c.variants = [
+    { ...base, combination: { look: "plain" }, slug: "look-plain" },
+    { ...base, combination: { look: "ring" }, slug: "look-ring", delta: {}, treeDelta: { keys: [...keys, "ring"], set: { ring } } },
+    { ...base, combination: { look: "blur" }, slug: "look-blur", delta: {}, treeDelta: { set: { svg: { fl: "blur(40px)" } } } },
+  ] as typeof c.variants;
+  const { mock, results } = await buildAll(fixture);
+  assert.deepEqual([results[0].sets[0].variants, results[0].fallbacks], [3, []]);
+  const set = mock.nodes("COMPONENT_SET")[0];
+  const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
+  const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
+  // The stroke draws the badge's border box, 40px above the button's and
+  // 70 down, the button's frame being inside its own 1px border; the blur
+  // 40px round the icon at 9 down.
+  assert.deepEqual([at.get("look=ring")![1] - own.get("look=ring")![1], at.get("look=ring")![3] - own.get("look=ring")![1]], [-41, 69]);
+  assert.equal(at.get("look=blur")![1] - own.get("look=blur")![1], 9 - 40);
+  const drawn = [...at.entries()];
+  for (const [i, [name, a]] of drawn.entries()) {
+    assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);
+    for (const [other, b] of drawn.slice(i + 1)) {
+      assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `${name} (${a.map(Math.round)}) draws over ${other} (${b.map(Math.round)})`);
+    }
+  }
 });

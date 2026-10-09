@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
+import { drawnInSet } from "./figma-build-harness.js";
 import { parseReadResult } from "../figma-results.js";
 import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
@@ -287,6 +288,39 @@ for (const name of treeFixtureNames()) {
     }
   });
 }
+
+/**
+ * A live snap's base Button (its with-icon story) at its default and icon
+ * sizes, whose label draws far past the icon buttons, and its Sidebar at
+ * side left and right, the floating ones with shadows: what the third live
+ * push laid over each other, and, for side=right, built off to the side.
+ */
+const LAYOUT_FIXTURE = fileURLToPath(new URL("../../../cli/__tests__/fixtures/layout/drawn.json", import.meta.url));
+
+test("tree e2e: variants that draw past their boxes are laid out apart, each where it draws, and verify at 100%", async () => {
+  const p = await push(JSON.parse(readFileSync(LAYOUT_FIXTURE, "utf8")) as SnapResult);
+  try {
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    const sets = p.mock.nodes("COMPONENT_SET");
+    assert.deepEqual(sets.map((s) => [s.name, s.children!.length]), [["Button", 8], ["Sidebar", 4]]);
+    for (const set of sets) {
+      const drawn = set.children!.map((v) => ({ name: v.name, box: drawnInSet(p.mock, v), own: [v.x, v.y, v.x + v.width, v.y + v.height] }));
+      for (const [i, a] of drawn.entries()) {
+        assert.ok(a.box[0] >= 0 && a.box[1] >= 0 && a.box[2] <= set.width && a.box[3] <= set.height, `${set.name} ${a.name} draws past the set`);
+        for (const b of drawn.slice(i + 1)) {
+          assert.ok(a.box[2] <= b.box[0] || b.box[2] <= a.box[0] || a.box[3] <= b.box[1] || b.box[3] <= a.box[1], `${set.name}: ${a.name} draws over ${b.name}`);
+        }
+        // An icon button's label draws far past it; anything else only by a shadow, a sidebar at either side included.
+        const past = Math.max(a.own[0] - a.box[0], a.own[1] - a.box[1], a.box[2] - a.own[2], a.box[3] - a.own[3]);
+        assert.ok(/size=icon/.test(a.name) ? past > 50 : past <= 4, `${a.name} draws ${past}px past its box`);
+      }
+    }
+  } finally {
+    cleanup(p);
+  }
+});
 
 for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture in one push packs several components a call, and all of it verifies under --strict, with text as wide as ${fonts === "figma" ? "Figma sets it" : "the browser drew it"}`, async () => {
   const all = treeFixtureNames().map((n) => asSnap(loadTreeFixture(n)));

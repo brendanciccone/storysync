@@ -841,8 +841,10 @@ test("describeMeasurementNotes: a closed trigger names the content slots snap ta
   // TooltipContent's own slot is already its content's: it was told to add
   // data-slot="tooltip-content-content".
   const [tooltip] = describeMeasurementNotes("TooltipContent", trigger, 1, "ui/base/Tooltip");
-  assert.match(tooltip, /carries data-slot="tooltip-content" or that/);
+  assert.match(tooltip, /carries data-slot="tooltip-content", that/);
   assert.doesNotMatch(tooltip, /content-content/);
+  // Or any open overlay's content in a portal, which needs no slot.
+  assert.match(tooltip, /that the trigger's aria-controls names, or that is a dialog, alert dialog, tooltip or menu in a portal\.$/);
   // A component named apart from its title is matched by both.
   const [demo] = describeMeasurementNotes("DialogDemo", trigger, 1, "Overlays/Dialog");
   assert.match(demo, /data-slot="dialog-demo-content" or "dialog-content"/);
@@ -1713,6 +1715,34 @@ test("runSnap: each variant's element tree, the base whole and the rest as delta
     const meta = readJson(join(dir, "meta.json"));
     assert.equal(meta.platform, `${process.platform}-${process.arch}`);
     assert.equal(meta.browser, "154.0.0.0");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: an element placed against the window, measured moved inside the root, is recorded on its variant, not warned about", async () => {
+  // shadcn's Sidebar at side=right: its container, `fixed` at `right-0`,
+  // drew 1024px right of its 256px root. A warning there failed
+  // --strict-warnings on a stock Sidebar, with nothing to fix.
+  const right = (): RawTreeCapture => {
+    const capture = rawCapture("sidebar");
+    const shift = (item: RawTreeCapture["root"]["kids"][number]) => {
+      if (item.k === "e" || item.k === "p") item.box[0] += 1024;
+      if (item.k === "t") for (const r of item.rects) r[0] += 1024;
+      if (item.k === "e") item.kids.forEach(shift);
+    };
+    shift(capture.root.kids.find((k) => k.k === "e" && k.slot === "sidebar-container")!);
+    return capture;
+  };
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: (args) => (args.size === "sm" ? right() : rawCapture("sidebar")), argTypes: { size: { options: ["default", "sm"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=sidebar]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variants.map((v) => [v.slug, v.movedInside]), [["size-default", undefined], ["size-sm", ["sidebar-container"]]]);
+    assert.deepEqual(Object.keys(component.variants[1]), ["combination", "slug", "status", "error", "boundingBox", "element", "movedInside", "delta", "treeDelta"]);
+    assert.deepEqual(component.warnings.filter((w) => /sidebar-container|placed against|inside the box/.test(w)), []);
+    assert.deepEqual(readJson(join(dir, "styles.json")).components[0].variants[1].movedInside, ["sidebar-container"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

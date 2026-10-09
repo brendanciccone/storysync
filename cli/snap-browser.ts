@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request, Response } from "playwright-core";
 import {
-  CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
+  CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS, OVERLAY_SELECTOR,
   chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
 } from "./snap-normalize.js";
 import type { RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
@@ -249,6 +249,8 @@ export interface CaptureResult {
    * instead (section 6.1 of the design).
    */
   climbedFrom?: string;
+  /** True when the element measured is content the story renders into a portal, outside its root. */
+  portal?: true;
 }
 
 export interface CaptureOptions {
@@ -367,7 +369,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // Under a tree, an element that draws nothing and holds nothing that
     // does is no root to build: the nearest one around it that draws is.
     const climbedFrom = opts.tree === "tree" && !opts.selector ? await climbToDrawing(located) : null;
-    const { target, element, notes, matchedSelector } = located;
+    const { target, element, notes, matchedSelector, portal } = located;
 
     // Read before the styles and again after the picture: markup that
     // changes in between, a story that animates, is no evidence either way.
@@ -412,6 +414,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args,
       ...(standIns.length ? { standIns } : {}),
       ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
+      ...(portal ? { portal } : {}),
     };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
@@ -599,8 +602,9 @@ async function drawStandIns(page: Page, ms: number): Promise<number> {
 /**
  * What waitForStory waits for, unless --selector names something else: a
  * child of the story's root that can draw, the component's own `data-slot`
- * or its `-content` slot anywhere, so content rendered only into a portal
- * counts, or Storybook's error display.
+ * or its `-content` slot anywhere, or an open overlay's content
+ * (OVERLAY_SELECTOR), so content rendered only into a portal counts, or
+ * Storybook's error display.
  *
  * One selector, so one wait: a story that never renders costs one --timeout,
  * where waiting on each root in turn cost one per root, and `#root` never
@@ -610,6 +614,7 @@ export function storyReadySelector(slots: readonly string[]): string {
   return [
     ...ROOT_CONTAINERS.map((container) => `${container} > :not(${NON_RENDERED_TAGS.join(", ")})`),
     ...[...new Set([...slots, ...contentSlots(slots)])].map((slot) => `[data-slot="${slot}"]`),
+    OVERLAY_SELECTOR,
     ...STORYBOOK_ERROR_SELECTORS,
   ].join(", ");
 }
@@ -698,6 +703,8 @@ interface Located {
   element: string;
   notes: MeasurementNote[];
   matchedSelector: string | null;
+  /** Content in a portal outside the story's root. */
+  portal?: true;
 }
 
 /**
@@ -725,15 +732,17 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
   const tree = container
     ? await container.evaluate(readStoryTreeInPage, { props: WRAPPER_PROPERTIES, ...TREE_LIMITS })
     : null;
-  const portalsHandle = await page.evaluateHandle(findPortalsInPage, { container, slots: [...new Set([...slots, ...contentSlots(slots)])] });
+  const portalsHandle = await page.evaluateHandle(findPortalsInPage, { container, slots: [...new Set([...slots, ...contentSlots(slots)])], overlay: OVERLAY_SELECTOR });
   try {
-    const portals: PortalNode[] = await portalsHandle.evaluate((elements) => elements.map((el) => ({
+    const portals: PortalNode[] = await portalsHandle.evaluate((elements, overlay) => elements.map((el) => ({
       tag: el.tagName.toLowerCase(),
       slot: el.getAttribute("data-slot"),
       role: el.getAttribute("role"),
       id: el.id || null,
       rendered: el.getClientRects().length > 0,
-    })));
+      // The content, not something in it matching too: Radix's tooltip holds a hidden copy of its text as role=tooltip.
+      overlay: el.matches(overlay) && !el.parentElement?.closest(overlay),
+    })), OVERLAY_SELECTOR);
     const choice = chooseMeasuredElement(tree, portals, slots);
     if (choice.kind === "none") return { error: choice.error };
 
@@ -750,6 +759,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       element: choice.element,
       notes: choice.notes,
       matchedSelector: choice.kind === "portal" ? `portal ${choice.element}` : containerSelector,
+      ...(choice.kind === "portal" ? { portal: true as const } : {}),
     };
   } finally {
     await portalsHandle.dispose();
@@ -760,7 +770,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
  * Runs in the page: the story's container and everything under it, as
  * StoryNodes, cut short past `maxDepth` levels or `maxNodes` elements.
  */
-function readStoryTreeInPage(
+export function readStoryTreeInPage(
   container: Element,
   args: { props: readonly string[]; maxDepth: number; maxNodes: number },
 ): StoryNode {
@@ -784,9 +794,21 @@ function readStoryTreeInPage(
       label: el.getAttribute("aria-label") ?? el.getAttribute("aria-labelledby"),
       position: cs.position,
       rendered: el.getClientRects().length > 0,
+      text: Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim() !== ""),
       styles,
       children: [],
     };
+    // An icon font's glyph, or a dot, drawn by a pseudo-element alone.
+    const pseudos: NonNullable<StoryNode["pseudos"]> = [];
+    for (const which of ["::before", "::after"]) {
+      const ps = getComputedStyle(el, which);
+      const content = ps.getPropertyValue("content");
+      if (content === "none" || content === "normal" || content === "") continue;
+      const own: Record<string, string> = {};
+      for (const p of args.props) own[p] = ps.getPropertyValue(p);
+      pseudos.push({ content, styles: own });
+    }
+    if (pseudos.length) node.pseudos = pseudos;
     if (depth < args.maxDepth) {
       for (const child of Array.from(el.children)) {
         if (budget <= 0) break;
@@ -801,21 +823,22 @@ function readStoryTreeInPage(
 /**
  * Runs in the page: elements outside the story's container that may be its
  * content in a portal, in document order. One carrying one of `slots`, the
- * component's own and its content's, or one an element in the container
- * names in `aria-controls`. Storybook's own error and loading screens are
- * left out.
+ * component's own and its content's, one an element in the container names
+ * in `aria-controls`, or an open overlay's content, as `overlay`
+ * (OVERLAY_SELECTOR) finds it. Storybook's own error and loading screens
+ * are left out.
  */
-function findPortalsInPage(args: { container: Element | null; slots: string[] }): Element[] {
+function findPortalsInPage(args: { container: Element | null; slots: string[]; overlay: string }): Element[] {
   const wanted = new Set(args.slots);
   const controlled = new Set<string>();
   for (const el of Array.from(args.container?.querySelectorAll("[aria-controls]") ?? [])) {
     for (const id of (el.getAttribute("aria-controls") ?? "").split(/\s+/)) if (id) controlled.add(id);
   }
   const storybook = "#storybook-docs, .sb-errordisplay, .sb-nopreview, .sb-preparing-story, .sb-preparing-docs";
-  return Array.from(document.body.querySelectorAll("[data-slot], [id]")).filter((el) =>
+  return Array.from(document.body.querySelectorAll(`[data-slot], [id], ${args.overlay}`)).filter((el) =>
     !(args.container?.contains(el) ?? false) &&
     !el.closest(storybook) &&
-    (wanted.has(el.getAttribute("data-slot") ?? "") || controlled.has(el.id)));
+    (wanted.has(el.getAttribute("data-slot") ?? "") || controlled.has(el.id) || el.matches(args.overlay)));
 }
 
 /**
@@ -1790,6 +1813,8 @@ export interface CapturedTree {
   /** Each image by asset id: what its thumbnail is made from. */
   images: Record<string, CapturedImage>;
   notes: string[];
+  /** BuiltTree's: elements placed against the window or page, measured moved inside the root's box. */
+  movedInside: string[];
   /** How long reading the tree took, its images' bytes and screenshots included, in ms. */
   ms: number;
 }
@@ -1988,6 +2013,7 @@ export async function captureTree(
     svg: built.svg,
     images,
     notes: built.notes,
+    movedInside: built.movedInside,
     ms: Date.now() - started,
   };
 }

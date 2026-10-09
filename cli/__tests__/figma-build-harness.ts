@@ -142,3 +142,39 @@ export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], 
   }
   return drift;
 }
+
+/**
+ * Where a built variant draws in its set, read off the mock: its box, and
+ * each visible layer's that no frame around it clips, with the reach on
+ * each side of its stroke (all of an OUTSIDE one's weight, half a CENTER
+ * one's), its drop shadows, and its layer blur's radius.
+ */
+export function drawnInSet(mock: MockFigma, variant: NodeView): [number, number, number, number] {
+  const out: [number, number, number, number] = [variant.x, variant.y, variant.x + variant.width, variant.y + variant.height];
+  type Shadow = { type: string; visible: boolean; radius: number; spread?: number; offset: { x: number; y: number } };
+  type Stroked = { strokes: { visible?: boolean }[]; strokeAlign: string; strokeWeight: number | symbol; strokeTopWeight: number; strokeRightWeight: number; strokeBottomWeight: number; strokeLeftWeight: number };
+  // `origin` is where the frame n's own x and y are in sits: a group's children's are in that frame too, not the group.
+  const visit = (n: NodeView, x: number, y: number, origin: [number, number]) => {
+    const h = mock.handle(n.id) as { visible: boolean; effects: Shadow[]; clipsContent?: boolean; type: string };
+    if (!h.visible) return;
+    const reach = [[0, 0, 0, 0], ...h.effects.filter((e) => e.visible && e.type === "DROP_SHADOW").map((e) => {
+      const r = e.radius + (e.spread ?? 0);
+      return [r - e.offset.x, r - e.offset.y, r + e.offset.x, r + e.offset.y];
+    })];
+    const blur = Math.max(0, ...h.effects.filter((e) => e.visible && e.type === "LAYER_BLUR").map((e) => e.radius));
+    // Left, top, right, bottom, as the shadows' reach is.
+    let stroke = [0, 0, 0, 0];
+    if ("strokes" in h) {
+      const s = h as unknown as Stroked;
+      const share = s.strokes.some((p) => p.visible !== false) ? ({ OUTSIDE: 1, CENTER: 0.5 } as Record<string, number>)[s.strokeAlign] ?? 0 : 0;
+      const [top, right, bottom, left] = typeof s.strokeWeight === "number" ? Array<number>(4).fill(s.strokeWeight) : [s.strokeTopWeight, s.strokeRightWeight, s.strokeBottomWeight, s.strokeLeftWeight];
+      stroke = [left, top, right, bottom].map((w) => w * share);
+    }
+    const [l, t, r, b] = [0, 1, 2, 3].map((i) => stroke[i] + Math.max(...reach.map((s) => s[i])) + blur);
+    [x - l, y - t, x + n.width + r, y + n.height + b].forEach((v, i) => { out[i] = i < 2 ? Math.min(out[i], v) : Math.max(out[i], v); });
+    const at: [number, number] = h.type === "GROUP" ? origin : [x, y];
+    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, at[0] + c.x, at[1] + c.y, at);
+  };
+  visit(variant, variant.x, variant.y, [0, 0]);
+  return out;
+}

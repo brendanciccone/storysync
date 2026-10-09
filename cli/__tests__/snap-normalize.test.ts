@@ -1088,6 +1088,58 @@ test("chooseMeasuredElement: without slots, an open trigger's aria-controls name
   assert.equal(chooseMeasuredElement(root(closed), portals, ["dropdown"]).kind, "tree");
 });
 
+test("chooseMeasuredElement: an open overlay in a portal is measured where the story's root shows nothing that draws, or only a closed trigger", () => {
+  // coder's ConfirmDialog: Radix's Dialog with no trigger, rendered open into
+  // the body, its content role=dialog with no data-slot, beside its backdrop.
+  const portals = [portal({ id: "radix-1" }), portal({ tag: "div" }), portal({ role: "dialog", id: "radix-2", overlay: true })];
+  const dialog = { kind: "portal", index: 2, element: 'div[role="dialog"]', notes: [] };
+  assert.deepEqual(chooseMeasuredElement(root(), portals, ["confirm-dialog"]), dialog);
+  // A decorator's wrapper that draws nothing, holding nothing that does, is no story to measure either.
+  const empty = node("div", { text: false }, [node("div", { text: false, styles: { display: "flex" } })]);
+  assert.deepEqual(chooseMeasuredElement(root(empty), portals, ["confirm-dialog"]), dialog);
+  // A closed trigger, as one an `open` arg bypasses, gives way to the content too.
+  const trigger = node("button", { hasPopup: "dialog", expanded: "false", text: true });
+  assert.deepEqual(chooseMeasuredElement(root(trigger), portals, []), dialog);
+  // What the root shows that draws is measured, as before: text, a fill, an icon.
+  for (const shown of [node("p", { text: true }), node("div", { text: false, styles: FILLED }), node("div", { text: false }, [node("svg", { text: false })])]) {
+    assert.deepEqual(chooseMeasuredElement(root(shown), portals, []).kind, "tree", JSON.stringify(shown));
+  }
+  // Text the page didn't read for counts as drawing.
+  assert.equal(chooseMeasuredElement(root(node("p")), portals, []).kind, "tree");
+  // No overlay open: as before.
+  assert.equal(chooseMeasuredElement(root(), portals.slice(0, 2), []).kind, "none");
+  assert.deepEqual(chooseMeasuredElement(root(trigger), [], []), { kind: "tree", path: [0], element: "button", notes: [{ kind: "closed-trigger", element: "button" }] });
+  // Content with no box is not measured.
+  assert.equal(chooseMeasuredElement(root(), [portal({ role: "dialog", overlay: true, rendered: false })], []).kind, "none");
+});
+
+test("chooseMeasuredElement: a root that draws only a meter, an outline or a pseudo-element's glyph is measured, not an open overlay", () => {
+  const portals = [portal({ role: "dialog", id: "radix-2", overlay: true })];
+  const glyph = { content: '"★"', styles: { ...DRAWS_NOTHING, display: "inline" } };
+  const outline = { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" };
+  for (const shown of [
+    node("progress", { text: false }), node("meter", { text: false }), node("iframe", { text: false }),
+    node("div", { text: false, styles: outline }),
+    node("span", { text: false, pseudos: [glyph] }),
+    // A dot drawn by an empty ::before with a fill.
+    node("span", { text: false, pseudos: [{ content: '""', styles: { ...DRAWS_NOTHING, "background-color": "rgb(34, 197, 94)" } }] }),
+  ]) {
+    assert.equal(chooseMeasuredElement(root(shown), portals, []).kind, "tree", JSON.stringify(shown));
+  }
+  // What draws nothing still gives way to the overlay: an outline of no
+  // width, a transparent one, an empty ::before with nothing to paint, a
+  // glyph that isn't displayed.
+  for (const hidden of [
+    node("div", { text: false, styles: { ...outline, "outline-width": "0px" } }),
+    node("div", { text: false, styles: { ...outline, "outline-color": "rgba(0, 0, 0, 0)" } }),
+    node("div", { text: false, styles: { ...outline, "outline-style": "none" } }),
+    node("span", { text: false, pseudos: [{ content: '""', styles: DRAWS_NOTHING }] }),
+    node("span", { text: false, pseudos: [{ content: '"★"', styles: { ...DRAWS_NOTHING, display: "none" } }] }),
+  ]) {
+    assert.equal(chooseMeasuredElement(root(hidden), portals, []).kind, "portal", JSON.stringify(hidden));
+  }
+});
+
 test("chooseMeasuredElement: the component's slot in the story's root wins over a portal", () => {
   const choice = chooseMeasuredElement(root(node("div", { slot: "popover", styles: FILLED })), [portal({ slot: "popover-content" })], ["popover"]);
   assert.deepEqual(choice.kind === "tree" && choice.path, [0]);

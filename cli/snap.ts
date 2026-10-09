@@ -97,6 +97,20 @@ export interface SnapVariant {
    */
   element?: string;
   /**
+   * True when `element` is content the story renders into a portal, outside
+   * its root: an open dialog's, say, where nothing in the root draws.
+   */
+  portal?: true;
+  /**
+   * Keys of the tree's elements placed against the browser window
+   * (`position: fixed`) or the page (`position: absolute` with nothing
+   * positioned around it) that drew outside the root's box, which the tree
+   * holds moved inside it: shadcn's Sidebar container at side=right, say.
+   * Where the window put them is no part of the component, and there is
+   * nothing to fix, so it is recorded here rather than warned about.
+   */
+  movedInside?: string[];
+  /**
    * Values of the combination Storybook didn't give the story from its URL,
    * and why: see snap-args.ts. With `appliedVia`, snap applied them through
    * Storybook's preview and measured the result; with status
@@ -608,7 +622,8 @@ export function describeMeasurementNotes(
         `only while open, usually in a portal outside the story's root, so the Figma component would be the ` +
         `trigger. To measure the content, have the story snap renders (the Default story, or else the first) ` +
         `render ${name} open, with defaultOpen for example: snap measures open content that carries ` +
-        `data-slot=${content} or that the trigger's aria-controls names.`
+        `data-slot=${content}, that the trigger's aria-controls names, or that is a dialog, alert dialog, ` +
+        `tooltip or menu in a portal.`
       );
     }
     return (
@@ -1363,6 +1378,8 @@ async function snapComponent(
         combination, slug, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },
         ...(captured.element ? { element: captured.element } : {}),
+        ...(captured.portal ? { portal: captured.portal } : {}),
+        ...(captured.tree?.movedInside?.length ? { movedInside: captured.tree.movedInside } : {}),
         ...argsRecord,
       };
       for (const note of captured.notes) notes.push({ slug, note });

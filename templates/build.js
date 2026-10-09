@@ -522,6 +522,30 @@ const checkLayout = (nodes, recs, slug, absolute) => {
   }
 };
 
+// Where a variant draws, relative to it: its box, and each visible layer's
+// box, stroke, drop shadows and blur that no frame around the layer clips. A
+// label wider than its icon button draws past it, as the browser draws it,
+// and so do a shadow and an absolute badge; the set's grid gives each
+// variant this room. A stroke reaches past the box by its weight OUTSIDE,
+// half of it CENTER (an imported vector's), its widest side's; a shadow by
+// its radius, spread and both offsets; a blur by its radius. Each is taken
+// on every side, and they add up, which is more than draws. A designer's
+// slice has none of them, nor a group strokes.
+const drawn = (v) => {
+  const d = [0, 0, 0, 0];
+  const reach = (n, type, f) => Math.max(0, ...(n.effects || []).map((e) => (e.visible && e.type === type ? f(e) : 0)));
+  const add = (n, x, y) => {
+    const s = 'strokes' in n && n.strokes.some((p) => p.visible !== false) ? { OUTSIDE: 1, CENTER: 0.5 }[n.strokeAlign] || 0 : 0;
+    const o = (s && s * (typeof n.strokeWeight === 'number' ? n.strokeWeight : Math.max(n.strokeTopWeight, n.strokeRightWeight, n.strokeBottomWeight, n.strokeLeftWeight)))
+      + reach(n, 'DROP_SHADOW', (e) => e.radius + (e.spread || 0) + Math.abs(e.offset.x) + Math.abs(e.offset.y))
+      + reach(n, 'LAYER_BLUR', (e) => e.radius);
+    [x - o, y - o, x + n.width + o, y + n.height + o].map((t, i) => (d[i] = Math[i < 2 ? 'min' : 'max'](d[i], t)));
+    if (isFrame(n) && !n.clipsContent) for (const c of n.children) if (c.visible) add(c, x + c.x, y + c.y);
+  };
+  add(v, 0, 0);
+  return d;
+};
+
 // A variant's records: the base's, changed as its delta says.
 const recordsOf = (base, delta) => {
   if (!Array.isArray(delta)) return delta.r;
@@ -648,7 +672,11 @@ for (const [s, set] of DATA.sets.entries()) {
   results.push(out);
   if (want === 'COMPONENT') continue;
 
-  // Lays the whole set out by its properties, as 0.4.0 did, and checks it.
+  // Lays the whole set out by its properties, as 0.4.0 did, and checks it,
+  // each variant by where it draws: GAP apart, none over another or past the
+  // set. A row's boxes share their top edge and a column's their left, the
+  // row as tall as its most above them and below, the column as wide, so the
+  // default variant stays top-left, where Figma takes the default from.
   const GAP = 20;
   const axes = set.props.map((p) => [p.name + '=', p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']]);
   const byId = (a, b) => (a.node.id > b.node.id) - (a.node.id < b.node.id);
@@ -661,7 +689,7 @@ for (const [s, set] of DATA.sets.entries()) {
   for (const n of node.children) {
     const pairs = n.name.split(', ');
     const pos = pairs.length === axes.length ? pairs.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
-    (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join() });
+    (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join(), d: drawn(n) });
   }
   cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));
   const grid = [];
@@ -674,30 +702,36 @@ for (const [s, set] of DATA.sets.entries()) {
   const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((p) => p.slice(1).join());
   const rowOf = new Map(rows.map((r, i) => [r, i]));
   const columnOf = new Map(columns.map((key, i) => [key, i]));
-  const widths = columns.map(() => 0);
-  const heights = rows.map(() => 0);
+  // Each column's reach left of its boxes and right of their left edge; each row's above and below its top.
+  const lefts = columns.map(() => 0);
+  const rights = columns.map(() => 0);
+  const tops = rows.map(() => 0);
+  const bottoms = rows.map(() => 0);
   for (const c of grid) {
     c.row = rowOf.get(c.at[0]);
     c.column = columnOf.get(c.key);
-    widths[c.column] = Math.max(widths[c.column], c.node.width);
-    heights[c.row] = Math.max(heights[c.row], c.node.height);
+    lefts[c.column] = Math.max(lefts[c.column], -c.d[0]);
+    rights[c.column] = Math.max(rights[c.column], c.d[2]);
+    tops[c.row] = Math.max(tops[c.row], -c.d[1]);
+    bottoms[c.row] = Math.max(bottoms[c.row], c.d[3]);
   }
   const xs = [GAP];
   const ys = [GAP];
-  widths.forEach((w, i) => xs.push(xs[i] + w + GAP));
-  heights.forEach((h, i) => ys.push(ys[i] + h + GAP));
+  lefts.forEach((l, i) => xs.push(xs[i] + l + rights[i] + GAP));
+  tops.forEach((t, i) => ys.push(ys[i] + t + bottoms[i] + GAP));
   for (const c of grid) {
-    c.x = xs[c.column];
-    c.y = ys[c.row];
+    c.x = xs[c.column] + lefts[c.column];
+    c.y = ys[c.row] + tops[c.row];
   }
   let across = GAP;
   let bottom = ys[rows.length];
+  const top = Math.max(0, ...extra.map((c) => -c.d[1]));
   for (const c of extra) {
-    c.x = across;
-    c.y = bottom;
-    across += c.node.width + GAP;
+    c.x = across - c.d[0];
+    c.y = bottom + top;
+    across += c.d[2] - c.d[0] + GAP;
   }
-  if (extra.length) bottom += Math.max(...extra.map((c) => c.node.height)) + GAP;
+  if (extra.length) bottom += top + Math.max(...extra.map((c) => c.d[3])) + GAP;
   const order = [...grid, ...extra];
   for (const c of order) {
     c.node.x = c.x;
@@ -719,7 +753,7 @@ for (const [s, set] of DATA.sets.entries()) {
   for (const c of order) {
     if (Math.abs(c.node.x - c.x) > 0.5 || Math.abs(c.node.y - c.y) > 0.5) throw new Error('Variant "' + c.node.name + '" is not where the layout put it');
   }
-  const boxes = kids.map((n) => ({ name: n.name, x: n.x, y: n.y, r: n.x + n.width, b: n.y + n.height }));
+  const boxes = order.map(({ node: n, d }) => ({ name: n.name, x: n.x + d[0], y: n.y + d[1], r: n.x + d[2], b: n.y + d[3] }));
   boxes.forEach((a, i) => {
     if (a.x < 0 || a.y < 0 || a.r > node.width || a.b > node.height) throw new Error('Variant "' + a.name + '" lies outside the set');
     for (const b of boxes.slice(i + 1)) {
