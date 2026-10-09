@@ -148,6 +148,10 @@ interface Findings {
  */
 function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWithTree, binder: Binder, findings: Findings, spike: Spike) {
   const tree = component.tree!;
+  if (!variant.treeDelta && variant.slug !== component.base!.slug) {
+    // Without one it would be built as the base variant's tree, under its own name.
+    throw new Error(`${componentKey(component)} ${variant.slug} was measured, but has no treeDelta: snap writes one for every measured variant but the base`);
+  }
   const nodes = expandTree(tree, variant.treeDelta);
   const styles = applyDelta(component.base!.styles, variant.delta ?? {});
   // The root's paint lives in its styles: both the build and verify digest
@@ -301,23 +305,28 @@ function compilePlaceholder(component: SnapComponentWithTree, variant: SnapVaria
     ["", -1, "F", 0, 0, w, h, { f: [], s: { w: 1, p: "#a1a1a1", d: [3, 3] }, r: 0, c: 1 }],
     ["#unmeasured", 0, "T", 4, 4, round2(Math.max(1, w - 8)), 13, { f: ["#737373"], t: { c: text, f: "Inter", w: 400, z: 11, l: 0, ar: "H" } }],
   ];
-  return { name: variantName(variant.combination), slug: variant.slug, i: index, src: 0, digest: "", records, images: [], read: 700 + 3 * variant.slug.length };
+  return { name: variantName(variant.combination), slug: variant.slug, i: index, src: 0, digest: "", records, images: [], read: READ_ENTRY + 2 * variant.slug.length + 2 * READ_RECORD.F + text.length };
 }
 
 // --- Readback prediction ----------------------------------------------------
 
-/** The 13 v1 root fields, boxShadow, name, source, tpl, built, readAt, checksum and designerLayers of one entry. */
-const READ_ENTRY = 640;
-/** A record's fixed fields, by kind, with its node id. */
+/**
+ * One entry's 13 v1 root fields, readAt and checksum (push2's 0.4.0
+ * entries ran 330 to 403 characters), with v2's boxShadow, name, source,
+ * tpl, built and designerLayers.
+ */
+const READ_ENTRY = 520;
+/** A record's fixed fields, by kind, with its node id (section 9.2). */
 const READ_RECORD = { F: 80, T: 130, V: 55, I: 100 } as const;
 
 /**
- * About how many characters a variant's readback entry takes (section 9.2's
- * records): generous, since the readback template returns `more` and
- * continues where a slice runs over rather than failing.
+ * About how many characters a variant's readback entry takes, from section
+ * 9.2's records: on the generous side of the prototypes' measurements,
+ * since the readback template returns `more` and continues where a slice
+ * runs over, while a call predicted too large only costs another call.
  */
 export function predictRead(nodes: TreeNode[], slug: string): number {
-  let total = READ_ENTRY + 3 * slug.length;
+  let total = READ_ENTRY + 2 * slug.length;
   for (const node of nodes) {
     total += READ_RECORD[node.t] + node.k.length;
     if (node.bg || node.bgi) total += 26;

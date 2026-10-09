@@ -80,7 +80,8 @@ test("figma code: every call is at most --max-chars and --max-nodes, and no vari
   const snap = copy(loadTreeFixture("sidebar"));
   const component = snap.components[0];
   component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 60 }, (_, i) => String(i)), defaultValue: "0" }];
-  component.variants = Array.from({ length: 60 }, (_, i) => ({ ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}` }));
+  component.variants = Array.from({ length: 60 }, (_, i) => ({ ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`, ...(i ? { treeDelta: {} } : {}) }));
+  component.base!.slug = "n-0";
   for (const [maxChars, maxNodes] of [[45_000, 400], [25_000, 400], [45_000, 100]]) {
     const coded = await codeFor(snap, { maxChars, maxNodes });
     const builds = coded.plan.calls.filter((c) => c.kind === "build");
@@ -137,7 +138,7 @@ test("predictRead: an entry grows with its nodes, keys, text and shapes", () => 
   const card = loadTreeFixture("card").components[0];
   const nodes = expandTree(card.tree, undefined);
   const size = predictRead(nodes, "size-default");
-  assert.ok(size > 640 + 23 * 55 && size < 6000, `card predicts ${size}`);
+  assert.ok(size > 520 + 23 * 55 && size < 6000, `card predicts ${size}`);
   assert.ok(predictRead(nodes.slice(0, 2), "size-default") < size);
 });
 
@@ -271,4 +272,10 @@ test("figma code: a snap's tree without an asset it names is refused, rather tha
   const snap = copy(loadTreeFixture("toggle"));
   snap.components[0].tree.assets.svg = {};
   await assert.rejects(codeFor(snap), /is a vector whose svg asset svg:3a1614af is not in the tree's assets/);
+});
+
+test("figma code: a measured variant without its tree delta is refused, rather than built as the base", async () => {
+  const snap = copy(loadTreeFixture("switch"));
+  delete (snap.components[0].variants[1] as { treeDelta?: unknown }).treeDelta;
+  await assert.rejects(codeFor(snap), /ui\/base\/Switch size-sm was measured, but has no treeDelta/);
 });
