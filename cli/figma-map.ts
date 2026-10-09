@@ -103,7 +103,12 @@ export interface MapContext {
   binder: Binder;
   notBuilt: NotBuilt[];
   unbound: Unbound[];
-  /** The parent's classes, for a text run's color: a `#text` run has none of its own. */
+  /**
+   * The parent's classes, for the color of a `#text` or `#value` run that
+   * carries none of its own. snap writes the `text-*` class a run inherits on
+   * the run itself, from whichever ancestor set it, and none on a parent that
+   * paints nothing; a run without any reads its parent's.
+   */
   parentCls?: string[];
   /** The spike's answers; SPIKE's when absent. */
   spike?: Pick<Spike, "svgStrokesScale">;
@@ -410,7 +415,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
   if (kind === "T") {
     style.t = textOf(node, ctx);
     const color = node.tx!.col;
-    const cls = node.el.startsWith("#") ? ctx.parentCls : node.cls;
+    const cls = node.el.startsWith("#") ? node.cls ?? ctx.parentCls : node.cls;
     style.f = color ? [solidPaint(color, "text", cls, node.k, "color", ctx)] : [];
     return style;
   }

@@ -144,9 +144,18 @@ test("nodeStyle: a text's properties, sizing and truncation", () => {
   assert.equal(nodeStyle(text({}), ctx()).n, undefined);
 });
 
-test("nodeStyle: a #text run's color is named by its parent element's classes", () => {
+test("nodeStyle: a #text run's color is named by its own classes, else its parent element's", () => {
   const c = { ...ctx(new Binder(SHADCN_TOKENS)), parentCls: ["bg-primary", "text-primary-foreground"] };
   assert.deepEqual(nodeStyle(text({ col: "#fafafa" }), c).f, [["#fafafa", 1, "primary/foreground"]]);
+  // The class it inherits from a grandparent, under a wrapper that paints nothing and so has none.
+  const run = { ...text({}), cls: ["text-card-foreground"] };
+  const bare = ctx(new Binder(SHADCN_TOKENS));
+  assert.deepEqual(nodeStyle(run, bare).f, [["#0a0a0a", 1, "card/foreground"]]);
+  assert.equal(bare.unbound.length, 0);
+  assert.deepEqual(nodeStyle({ ...run, el: "#value" }, { ...bare, parentCls: ["text-foreground"] }).f, [["#0a0a0a", 1, "card/foreground"]]);
+  // Without either, #0a0a0a stays as measured, listed with the four tokens that have it.
+  nodeStyle(text({}), bare);
+  assert.deepEqual(bare.unbound.map((u) => u.candidates.length), [4]);
 });
 
 const MAIL = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="2"><path d="m22 7-10 6L2 7"/></svg>';
