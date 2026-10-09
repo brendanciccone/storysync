@@ -21,7 +21,7 @@ import type { FigmaVariantProperty } from "./mapper.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS, buildTree, countInnerElements } from "./snap-tree.js";
 import type { PendingImage, RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
 import {
-  SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS,
+  SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS,
   decodeDataUrl, imageAssetId, imageCrop, pngSize, sniffImageType, thumbnailSize,
 } from "./snap-assets.js";
 import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
@@ -1278,6 +1278,7 @@ interface TreeInPageArgs {
   svgShapes: readonly string[];
   svgGeometry: readonly string[];
   svgPaint: readonly string[];
+  svgGroup: readonly string[];
   svgDropped: readonly string[];
   nonRendered: readonly string[];
 }
@@ -1427,7 +1428,13 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
         const v = el.getAttribute(a);
         if (v !== null) attrs[a] = v;
       }
-      if (tag === "g") return { tag, attrs, kids: Array.from(el.children).map(visit).filter((k): k is RawSvgNode => k !== null) };
+      if (tag === "g") {
+        // What a group does to its shapes as one, which their own computed style doesn't show.
+        const cs = getComputedStyle(el);
+        const paint: Record<string, string> = {};
+        for (const p of args.svgGroup) paint[p] = cs.getPropertyValue(p);
+        return { tag, attrs, paint, kids: Array.from(el.children).map(visit).filter((k): k is RawSvgNode => k !== null) };
+      }
       if (args.svgShapes.includes(tag)) {
         const cs = getComputedStyle(el);
         if (cs.display === "none") return null;
@@ -1659,6 +1666,7 @@ function treeInPageArgs(mode: "tree" | "count"): TreeInPageArgs {
     svgShapes: SVG_SHAPE_TAGS,
     svgGeometry: SVG_GEOMETRY,
     svgPaint: SVG_PAINT_PROPERTIES,
+    svgGroup: SVG_GROUP_PROPERTIES,
     svgDropped: SVG_DROPPED_TAGS,
     nonRendered: NON_RENDERED_TAGS,
   };

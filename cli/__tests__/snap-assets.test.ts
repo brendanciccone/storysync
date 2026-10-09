@@ -27,6 +27,9 @@ test("serializeSvg: a lucide icon as computed, its shared paint on the root in h
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
     '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/><rect x="2" y="4" width="20" height="16" rx="2"/></svg>');
   assert.deepEqual(flags, []);
+  // How the drawing fits its box, where it says, goes with it.
+  assert.match(serializeSvg({ ...mail, attrs: { viewBox: "0 0 24 12", preserveAspectRatio: "xMinYMid meet" } }, [0, 0, 16, 16]).markup,
+    /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg" width="16" height="16" viewBox="0 0 24 12" preserveAspectRatio="xMinYMid meet" fill="none"/);
   // Package T's fixture holds this icon, in white, under the same id.
   const white = serializeSvg({ ...mail, kids: mail.kids!.map((k) => ({ ...k, paint: { ...LUCIDE_PAINT, stroke: "rgb(250, 250, 250)" } })) }, [11, 10, 16, 16]);
   assert.equal(svgAssetId(white.markup), "svg:75dee6f9");
@@ -45,6 +48,37 @@ test("serializeSvg: alpha moves into an opacity, a shape's own paint stays on it
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">' +
     '<circle r="10" cx="12" cy="12" fill="#df2225" fill-opacity="0.3" opacity="0.5"/>' +
     '<path d="M0 0h4" stroke="#000000" stroke-opacity="0.5" stroke-width="1.5"/></svg>');
+  // Every shape at half opacity: still each its own, never the icon's as one layer.
+  const faded = serializeSvg({ tag: "svg", attrs: {}, kids: [shape("path", { d: "M0 0" }, { ...LUCIDE_PAINT, opacity: "0.5" }), shape("path", { d: "M1 1" }, { ...LUCIDE_PAINT, opacity: "0.5" })] }, [0, 0, 8, 8]);
+  assert.equal(faded.markup,
+    '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" fill="none" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M0 0" opacity="0.5"/><path d="M1 1" opacity="0.5"/></svg>');
+});
+
+test("serializeSvg: a group's opacity and effects are kept on it; dashes and vector-effect on their shapes", () => {
+  const icon: RawSvgNode = {
+    tag: "svg", attrs: { viewBox: "0 0 24 24" },
+    kids: [
+      // A group fading two shapes as one; a shape's own fill inherits from it, as computed.
+      { tag: "g", attrs: {}, paint: { opacity: "0.3", "clip-path": "none", mask: "none", filter: "none" }, kids: [
+        shape("path", { d: "M0 0h4" }, { fill: "rgb(255, 0, 0)", stroke: "none" }),
+        shape("path", { d: "M0 4h4" }, { fill: "rgb(255, 0, 0)", stroke: "none" }),
+      ] },
+      { tag: "g", attrs: { transform: "rotate(45)" }, paint: { opacity: "1", "clip-path": 'url("#c")', mask: "none", filter: "none" }, kids: [
+        shape("circle", { cx: "12", cy: "12", r: "4" }, { ...LUCIDE_PAINT, "stroke-dasharray": "4px, 2px", "stroke-dashoffset": "1px", "vector-effect": "non-scaling-stroke" }),
+      ] },
+      // A group that does nothing is no group: its shape takes its place.
+      { tag: "g", attrs: {}, paint: { opacity: "1", "clip-path": "none", mask: "none", filter: "none" }, kids: [shape("rect", { width: "2", height: "2" }, { fill: "none", stroke: "none", "stroke-dasharray": "4px" })] },
+    ],
+  };
+  const { markup, flags } = serializeSvg(icon, [0, 0, 24, 24]);
+  assert.equal(markup,
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">' +
+    '<g opacity="0.3"><path d="M0 0h4" fill="#ff0000"/><path d="M0 4h4" fill="#ff0000"/></g>' +
+    '<g transform="rotate(45)" clip-path="url(#c)"><circle r="4" cx="12" cy="12" fill="none" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+    'stroke-dasharray="4 2" stroke-dashoffset="1" vector-effect="non-scaling-stroke"/></g>' +
+    '<rect width="2" height="2" fill="none"/></svg>');
+  assert.deepEqual(flags, ["clip-path"]);
 });
 
 test("serializeSvg: a group's transform is kept around its shapes; definitions and text are kept as written, and named", () => {

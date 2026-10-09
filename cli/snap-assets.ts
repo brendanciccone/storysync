@@ -45,25 +45,57 @@ export const SVG_GEOMETRY: readonly string[] = [
 /** Attributes the root `<svg>` keeps besides its size. */
 const SVG_ROOT_ATTRS = ["viewBox", "preserveAspectRatio"] as const;
 
+/**
+ * What doesn't inherit and applies to a group as much as a shape: its
+ * opacity, and a clip path, mask or filter, by reference. The page reads
+ * these off a `<g>` too, where its shapes' computed style can't show them.
+ */
+export const SVG_GROUP_PROPERTIES: readonly string[] = ["opacity", "clip-path", "mask", "filter"];
+
 /** Paint the page reads off each shape, as computed style property names. */
 export const SVG_PAINT_PROPERTIES: readonly string[] = [
-  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity", "fill-rule", "clip-rule",
+  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
+  "opacity", "fill-rule", "clip-rule", "vector-effect", "clip-path", "mask", "filter",
 ];
 
 /**
  * Paint attributes in the order they're written, and their SVG defaults,
- * which are left out. Of these, every one but `opacity` inherits, so one that
- * every shape shares moves to the root `<svg>`, where each shape inherits it:
- * a lucide icon's stroke, width and caps are written once. `opacity` doesn't
- * inherit, and on the root it would fade the icon as one layer rather than
- * each shape, so it stays on its shapes.
+ * which are left out. Of these, all but `opacity`, `vector-effect` and the
+ * effects inherit, so one that every shape shares moves to the root
+ * `<svg>`, where each shape inherits it: a lucide icon's stroke, width and
+ * caps are written once. `opacity` on the root would fade the icon as one
+ * layer rather than each shape, so it, like the others that don't
+ * inherit, stays on its shapes.
  */
-const PAINT_ORDER = ["fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity", "fill-rule", "clip-rule"] as const;
+const PAINT_ORDER = [
+  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
+  "opacity", "fill-rule", "clip-rule", "vector-effect", "clip-path", "mask", "filter",
+] as const;
 const PAINT_DEFAULTS: Record<string, string> = {
   fill: "#000000", "fill-opacity": "1", stroke: "none", "stroke-opacity": "1", "stroke-width": "1",
-  "stroke-linecap": "butt", "stroke-linejoin": "miter", opacity: "1", "fill-rule": "nonzero", "clip-rule": "nonzero",
+  "stroke-linecap": "butt", "stroke-linejoin": "miter", "stroke-dasharray": "none", "stroke-dashoffset": "0", opacity: "1",
+  "fill-rule": "nonzero", "clip-rule": "nonzero", "vector-effect": "none", "clip-path": "none", mask: "none", filter: "none",
 };
-const HOISTED = new Set(["fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "fill-rule", "clip-rule"]);
+const HOISTED = new Set([
+  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset", "fill-rule", "clip-rule",
+]);
+
+/** A lengths list as SVG writes it: `4px, 2px` as `4 2`. */
+function lengths(value: string): string {
+  return value.split(/[\s,]+/).filter(Boolean).map((v) => num(v.replace(/px$/, ""))).join(" ");
+}
+
+/**
+ * A clip path, mask or filter that isn't `none`: kept as written, a
+ * `url()`'s quotes dropped, and named in `flags`, as createNodeFromSvg may
+ * not import what it points at.
+ */
+function effect(name: string, value: string, flags: string[]): string {
+  const v = value.trim();
+  if (v === "none" || v === "") return "none";
+  flags.push(name);
+  return v.replace(/url\(\s*"?([^")]*)"?\s*\)/g, "url($1)");
+}
 
 /** A number as the markup writes it: rounded to 0.01, no trailing zeros. */
 function num(value: string): string {
@@ -110,13 +142,17 @@ function shapePaint(raw: Record<string, string>, flags: string[]): Record<string
     }
     if (Number.isFinite(opacity) && opacity !== 1) paint[opacityName] = String(r2(opacity));
   }
-  for (const name of ["stroke-width", "stroke-linecap", "stroke-linejoin", "opacity", "fill-rule", "clip-rule"]) {
+  for (const name of PAINT_ORDER.filter((n) => !/^(fill|stroke)(-opacity)?$/.test(n))) {
     const value = raw[name];
     if (value === undefined || value === "") continue;
-    paint[name] = name === "stroke-width" ? num(value.replace(/px$/, "")) : name === "opacity" ? num(value) : value.trim();
+    if (name === "stroke-width" || name === "stroke-dashoffset") paint[name] = num(value.replace(/px$/, ""));
+    else if (name === "stroke-dasharray") paint[name] = value.trim() === "none" ? "none" : lengths(value);
+    else if (name === "opacity") paint[name] = num(value);
+    else if (name === "clip-path" || name === "mask" || name === "filter") paint[name] = effect(name, value, flags);
+    else paint[name] = value.trim();
   }
   if (paint.stroke === "none") {
-    for (const name of ["stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-opacity"]) delete paint[name];
+    for (const name of ["stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-opacity", "stroke-dasharray", "stroke-dashoffset"]) delete paint[name];
   }
   for (const [name, value] of Object.entries(paint)) if (PAINT_DEFAULTS[name] === value) delete paint[name];
   return paint;
@@ -138,6 +174,7 @@ interface Shape { tag: string; geometry: [string, string][]; paint: Record<strin
  */
 export function serializeSvg(root: RawSvgNode, box: Box): { markup: string; flags: string[] } {
   const flags: string[] = [];
+  const attrs = (pairs: [string, string][]) => pairs.map(([k, v]) => ` ${k}="${escapeAttr(v)}"`).join("");
   // Markup in order, a shape's left until the paint shared by all is known.
   const pieces: (string | Shape)[] = [];
   const shapes: Shape[] = [];
@@ -149,10 +186,20 @@ export function serializeSvg(root: RawSvgNode, box: Box): { markup: string; flag
       return;
     }
     if (node.tag === "g") {
-      const geometry = SVG_GEOMETRY.filter((a) => node.attrs[a] !== undefined).map((a) => `${a}="${escapeAttr(node.attrs[a])}"`);
-      if (geometry.length) pieces.push(`<g ${geometry.join(" ")}>`);
+      // Kept for what it does to its shapes as one: a transform, an
+      // opacity fading them together, an effect. Their inherited paint is
+      // on each shape already, as the page computed it.
+      const own: [string, string][] = SVG_GEOMETRY.filter((a) => node.attrs[a] !== undefined).map((a) => [a, node.attrs[a]]);
+      const paint = node.paint ?? {};
+      const opacity = num(paint.opacity ?? "1");
+      if (opacity !== "1") own.push(["opacity", opacity]);
+      for (const name of ["clip-path", "mask", "filter"]) {
+        const value = effect(name, paint[name] ?? "none", flags);
+        if (value !== "none") own.push([name, value]);
+      }
+      if (own.length) pieces.push(`<g${attrs(own)}>`);
       for (const kid of node.kids ?? []) visit(kid);
-      if (geometry.length) pieces.push("</g>");
+      if (own.length) pieces.push("</g>");
       return;
     }
     if (SVG_SHAPE_TAGS.includes(node.tag)) {
@@ -180,7 +227,6 @@ export function serializeSvg(root: RawSvgNode, box: Box): { markup: string; flag
     for (const shape of shapes) delete shape.paint[name];
   }
 
-  const attrs = (pairs: [string, string][]) => pairs.map(([k, v]) => ` ${k}="${escapeAttr(v)}"`).join("");
   const rootAttrs: [string, string][] = [["xmlns", "http://www.w3.org/2000/svg"], ["width", String(r2(box[2]))], ["height", String(r2(box[3]))]];
   for (const name of SVG_ROOT_ATTRS) if (root.attrs[name] !== undefined) rootAttrs.push([name, root.attrs[name]]);
   for (const name of PAINT_ORDER) if (hoisted[name] !== undefined) rootAttrs.push([name, hoisted[name]]);

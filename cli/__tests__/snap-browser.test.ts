@@ -12,7 +12,7 @@ import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
   captureTree, captureTreeInPage, drawingElementInPage,
 } from "../snap-browser.js";
-import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, imageAssetId } from "../snap-assets.js";
+import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
 import { NON_RENDERED_TAGS } from "../snap-normalize.js";
@@ -508,7 +508,7 @@ test("captureStory: with a tree, a variant whose tree can't be read is not measu
 /** captureTreeInPage's arguments, as captureTree passes them. */
 const TREE_ARGS: Parameters<typeof captureTreeInPage>[1] = {
   mode: "tree", defaults: { ...TREE_PROPERTY_DEFAULTS }, textProperties: TEXT_TREE_PROPERTIES, ...RAW_TREE_LIMITS,
-  svgShapes: SVG_SHAPE_TAGS, svgGeometry: SVG_GEOMETRY, svgPaint: SVG_PAINT_PROPERTIES, svgDropped: SVG_DROPPED_TAGS, nonRendered: NON_RENDERED_TAGS,
+  svgShapes: SVG_SHAPE_TAGS, svgGeometry: SVG_GEOMETRY, svgPaint: SVG_PAINT_PROPERTIES, svgGroup: SVG_GROUP_PROPERTIES, svgDropped: SVG_DROPPED_TAGS, nonRendered: NON_RENDERED_TAGS,
 };
 
 const readTree = (root: FakeElementSpec, args: Partial<typeof TREE_ARGS> = {}, moves: Parameters<typeof inFakePage>[2] = []) =>
@@ -596,20 +596,23 @@ test("captureTreeInPage: stops reading at its limits, saying where", () => {
 test("captureTreeInPage: an SVG as structure and computed paint, its painted shapes' boxes, or its size when too big", () => {
   const path: FakeElementSpec = { tag: "path", svg: true, attrs: { d: "M0 0h4", class: "x" }, rect: [12, 12, 8, 0], style: { stroke: "currentcolor", color: "rgb(10, 10, 10)", fill: "none" } };
   const hidden: FakeElementSpec = { tag: "path", svg: true, attrs: { d: "M1 1" }, rect: [10, 10, 1, 1], style: { fill: "none" } };
+  const group: FakeElementSpec = { tag: "g", svg: true, attrs: { transform: "translate(1 1)" }, rect: [0, 0, 0, 0], style: { opacity: "0.3" } };
   const svg: FakeElementSpec = {
     tag: "svg", svg: true, attrs: { viewBox: "0 0 24 24", class: "lucide lucide-x size-4", width: "24" }, rect: [10, 10, 16, 16],
-    kids: [{ tag: "title", svg: true, rect: [0, 0, 0, 0] }, path, hidden, { tag: "defs", svg: true, rect: [0, 0, 0, 0] }],
+    kids: [{ tag: "title", svg: true, rect: [0, 0, 0, 0] }, path, hidden, { tag: "defs", svg: true, rect: [0, 0, 0, 0] }, group],
   };
   const raw = readTree({ tag: "button", rect: [0, 0, 36, 36], kids: [svg] });
   const icon = raw.root.kids[0] as RawTreeElement;
   assert.equal(icon.lucide, "lucide-x");
   assert.deepEqual(icon.svg!.attrs, { viewBox: "0 0 24 24" });
-  assert.deepEqual(icon.svg!.kids!.map((k) => [k.tag, k.raw === undefined]), [["path", true], ["path", true], ["defs", false]]);
+  assert.deepEqual(icon.svg!.kids!.map((k) => [k.tag, k.raw === undefined]), [["path", true], ["path", true], ["defs", false], ["g", true]]);
+  // A group's own opacity and effects, which its shapes' computed style can't show.
+  assert.deepEqual(icon.svg!.kids![3], { tag: "g", attrs: { transform: "translate(1 1)" }, paint: { opacity: "0.3", "clip-path": "none", mask: "none", filter: "none" }, kids: [] });
   assert.equal(icon.svg!.kids![0].paint!.stroke, "rgb(10, 10, 10)");
   // Only what paints, relative to the svg's box.
   assert.deepEqual(icon.shapes, [[2, 2, 8, 0]]);
   const big = readTree({ tag: "div", rect: [0, 0, 36, 36], kids: [svg] }, { maxSvgElements: 2 });
-  assert.equal((big.root.kids[0] as RawTreeElement).svgElements, 4);
+  assert.equal((big.root.kids[0] as RawTreeElement).svgElements, 5);
 });
 
 test("captureTreeInPage: an input's value or placeholder, with how wide it draws; an image's source", () => {
