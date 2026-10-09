@@ -64,6 +64,23 @@ test("CLI: tokens --strict exits 1 when no tokens found", () => {
   }
 });
 
+test("CLI: every command's --help lists each of its options, the element-tree ones included", () => {
+  const options: Record<string, string[]> = {
+    snap: ["--root-only", "--no-channel-args", "--stories <pairs>", "--merge", "--exclude-props <names>", "--strict-warnings"],
+    verify: ["--plan <path>", "--min-fidelity <pct>", "--allow-designer-layers", "--roots-only", "--strict", "--strict-age", "--strict-measured", "--skip <names>"],
+    "figma code": ["--snap <path>", "--tokens <path>", "--components <names>", "--skip <names>", "--out <dir>", "--max-chars <n>", "--max-nodes <n>", "--read-limit <n>", "--no-minify", "--json"],
+    "figma upload": ["--plan <path>", "--seq <n>", "--json"],
+    "figma next": ["--plan <path>", "--seq <n>", "--json"],
+  };
+  for (const [command, flags] of Object.entries(options)) {
+    const help = run(...command.split(" "), "--help");
+    for (const flag of flags) assert.ok(help.includes(flag), `${command} --help doesn't list ${flag}`);
+  }
+  const figma = run("figma", "--help");
+  for (const sub of ["code", "upload", "next"]) assert.match(figma, new RegExp(`\\n  ${sub} \\[options\\]`));
+  assert.match(run("--help"), /\n  figma +Write the use_figma calls/);
+});
+
 test("CLI: snap refuses a --stories pair it can't read before connecting to Storybook", () => {
   // Port 9 has nothing listening: the refusal must come first, as JSON under --json.
   for (const [value, why] of [["ui-base-button", /component=storyId pairs/], ["a=b,A=c", /names "A" twice/], ["=story", /component=storyId pairs/]] as const) {

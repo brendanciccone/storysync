@@ -13,7 +13,7 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
-import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures } from "./verify.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
 import { DEFAULT_READ_LIMIT, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
@@ -233,10 +233,30 @@ function parseStories(values: string[] | undefined): Record<string, string> | un
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * Parses --min-fidelity, a percentage from 0 to 100, with or without its
+ * `%`: exits with a clear message on anything else, as a threshold that
+ * can't be read must not pass every run.
+ */
+function parseMinFidelity(value: unknown): number {
+  const text = String(value).trim().replace(/%$/, "");
+  const pct = text === "" ? NaN : Number(text);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+    console.error(chalk.red(`--min-fidelity must be a percentage from 0 to 100, such as 99 or 99.5, received "${value}"`));
+    process.exit(1);
+  }
+  return pct;
+}
+
 /** A path as the user would type it: relative to where they are, unless it is somewhere else entirely. */
 function shownPath(path: string): string {
   const rel = relative(process.cwd(), path);
   return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
+}
+
+/** A share as a percentage, with as many decimals as it takes to tell it from a threshold beside it. */
+function exactPercent(share: number): string {
+  return `${Number((share * 100).toFixed(3))}%`;
 }
 
 program
@@ -505,8 +525,11 @@ program
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out of the score, such as ones not pushed; the output names them")
+  .option("--roots-only", "Score each variant by its outer element alone, as 0.4.0 did, for comparison with an element-tree score")
+  .option("--min-fidelity <pct>", "Exit with code 1 when the score is below this percentage: element fidelity where snap measured element trees, else the share of properties; a run that scored nothing fails it too")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read has no result saved, or the snap recorded a component failure or lacks a component the readback has")
+  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read has no result saved, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
+  .option("--allow-designer-layers", "With --strict, pass the layers a designer added inside variants, which verify still lists")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on anything not measured: variants inferred from source or with no recorded provenance, placeholders for variants snap couldn't measure, variants measured without snap checking Storybook gave them their values, and variants in Figma that snap never measured or no read covered")
   .action(async (opts, command: Command) => {
@@ -522,6 +545,7 @@ program
       console.error(chalk.red(`--max-age must be a duration like 30m, 2h or 7d, received "${opts.maxAge}"`));
       process.exit(1);
     }
+    const minFidelity = opts.minFidelity === undefined ? null : parseMinFidelity(opts.minFidelity);
 
     try {
       let snapPath = opts.snap as string;
@@ -559,7 +583,9 @@ program
       const result = verify(snap, readback, tolerance, {
         ...(snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {}),
         skip,
+        ...(opts.rootsOnly ? { rootsOnly: true } : {}),
         ...(assembled ? { notRead: assembled.notRead } : {}),
+        allowDesignerLayers: !!opts.allowDesignerLayers,
       });
       result.snapAge = snapAge;
       // What --plan found assembling the readback, beside the score: a read
@@ -570,6 +596,8 @@ program
         problems: assembled.problems,
         ...(assembled.snapChanged ? { snapChanged: true } : {}),
       };
+      const headline = headlineFidelity(result);
+      const belowMinimum = minFidelity !== null && (headline === null || headline < minFidelity / 100 - 1e-9);
 
       if (json) {
         console.log(JSON.stringify(plan ? { ...result, plan } : result));
@@ -770,6 +798,14 @@ program
           const line = `  Snap age unknown: ${age.reason}`;
           console.log(opts.strictAge ? chalk.red(line) : chalk.dim(line));
         }
+
+        // Last, so it is the line a CI log ends on when it is why the run failed.
+        if (belowMinimum) {
+          const scored = result.elementFidelity !== undefined ? "element fidelity" : "the share of properties";
+          console.log(chalk.red(headline === null
+            ? `  ! Nothing was scored, so there is no score to hold to --min-fidelity ${minFidelity}%`
+            : `  ! The score, ${scored}, is ${exactPercent(headline)}: below --min-fidelity ${minFidelity}%`));
+        }
       }
 
       const strict = !!opts.strict || !!opts.strictAge || !!opts.strictMeasured;
@@ -809,7 +845,7 @@ program
       // determinism guarantee is designed to enable.
       const ageFailsStrict = !!opts.strictAge && (!result.snapAge?.known || result.snapAge.stale);
 
-      if ((strict && hasDrift) || ageFailsStrict || (opts.strictMeasured && notMeasured)) {
+      if ((strict && hasDrift) || ageFailsStrict || (opts.strictMeasured && notMeasured) || belowMinimum) {
         process.exitCode = 1;
       }
     } catch (err) {

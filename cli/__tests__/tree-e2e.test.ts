@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MockFigma, TREE_FIXTURES_DIR, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
-import type { TreeFixture } from "./mock-figma.js";
+import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
@@ -188,6 +188,16 @@ async function push(snap: SnapResult, { codeArgs = [], edit }: { codeArgs?: stri
   return { dir, snapPath, planPath, plan, mock, reads };
 }
 
+/** Sends a push's read calls again, as the skill has the agent do after a change in Figma. */
+async function readAgain(p: Push): Promise<void> {
+  for (const call of p.plan.calls.filter((c) => c.kind === "read")) {
+    const out = dirname(p.planPath);
+    const run = await p.mock.run(readFileSync(join(out, call.file), "utf8"));
+    assert.ok(run.ok, run.text);
+    writeFileSync(join(out, call.result), run.text);
+  }
+}
+
 async function verifyPlan(p: Push, ...flags: string[]): Promise<{ status: number; json: Record<string, unknown>; text: CliRun }> {
   const json = await cli(["verify", "--plan", p.planPath, "--json", ...flags]);
   const text = await cli(["verify", "--plan", p.planPath, ...flags]);
@@ -199,6 +209,29 @@ type Elements = { measured: number; verified: number; drifted: number; missing: 
 
 function elementsOf(json: Record<string, unknown>): Elements {
   return (json.summary as { elements: Elements }).elements;
+}
+
+/** A keyed layer of a variant in the mock, by the variant's slug and the node's key. */
+function layerOf(mock: MockFigma, slug: string, key: string): NodeView {
+  const variant = mock.nodes("COMPONENT").find((v) => v.data["storysync.slug"] === slug);
+  assert.ok(variant, `no variant ${slug} in Figma`);
+  const walk = (view: NodeView): NodeView | null => {
+    if (view.data["storysync.k"] === key) return view;
+    for (const child of view.children ?? []) {
+      const found = walk(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const found = key === "" ? variant : (variant.children ?? []).map(walk).find(Boolean);
+  assert.ok(found, `no layer ${key} in ${slug}`);
+  return found;
+}
+
+/** Runs plugin code in the mock between calls, as a person editing the file would. */
+async function editInFigma(mock: MockFigma, code: string): Promise<void> {
+  const run = await mock.run(`${code}\nreturn { kind: "edit" };`);
+  assert.ok(run.ok, run.text);
 }
 
 const cleanup = (p: Push) => rmSync(p.dir, { recursive: true, force: true });
@@ -234,7 +267,7 @@ test("tree e2e: every fixture in one push packs several components a call, and a
   try {
     const builds = p.plan.calls.filter((c) => c.kind === "build");
     assert.ok(builds.some((c) => c.components.length > 1), "no build call packed two components");
-    const { status, json, text } = await verifyPlan(p, "--strict");
+    const { status, json, text } = await verifyPlan(p, "--strict", "--min-fidelity", "100");
     assert.equal(status, 0, `${text.stdout}${text.stderr}`);
     const e = elementsOf(json);
     assert.equal(json.elementFidelity, 1);
@@ -321,6 +354,69 @@ test("verify --plan: writes the readback where --readback says, and scores the s
     cleanup(p);
   }
 });
+
+test("verify --min-fidelity: holds the element score to a percentage, with or without --strict, and fails a run that scored nothing", async () => {
+  const p = await push(asSnap(loadTreeFixture("card")));
+  try {
+    assert.equal((await verifyPlan(p, "--min-fidelity", "100")).status, 0);
+    // A title deleted in Figma by hand: one element of 46 missing in one variant.
+    const slug = loadTreeFixture("card").components[0].variants[0].slug;
+    const title = layerOf(p.mock, slug, "card-header/card-title");
+    await editInFigma(p.mock, `(await figma.getNodeByIdAsync(${JSON.stringify(title.id)})).remove();`);
+    await readAgain(p);
+    const below = await verifyPlan(p, "--min-fidelity", "99");
+    assert.equal(below.status, 1, "an element score under the minimum passed");
+    assert.ok((below.json.elementFidelity as number) < 0.99 && (below.json.elementFidelity as number) > 0.9);
+    assert.match(below.text.stdout, /The score, element fidelity, is [\d.]+%: below --min-fidelity 99%/);
+    assert.equal((await verifyPlan(p, "--min-fidelity", "90%")).status, 0);
+    // With every component skipped nothing is scored, which is no pass.
+    const none = await cli(["verify", "--plan", p.planPath, "--skip", "ui-base-card", "--min-fidelity", "0"]);
+    assert.equal(none.status, 1, `${none.stdout}${none.stderr}`);
+    assert.match(none.stdout, /Nothing was scored/);
+    const bad = await cli(["verify", "--plan", p.planPath, "--min-fidelity", "high"]);
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /--min-fidelity must be a percentage/);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("verify --allow-designer-layers: a layer a designer added inside a variant is listed, fails --strict, and passes with the flag", async () => {
+  const p = await push(asSnap(loadTreeFixture("toggle")));
+  try {
+    const slug = loadTreeFixture("toggle").components[0].variants[0].slug;
+    const variant = layerOf(p.mock, slug, "");
+    await editInFigma(p.mock, `const v = await figma.getNodeByIdAsync(${JSON.stringify(variant.id)}); const r = figma.createRectangle(); r.name = "Sticker"; v.appendChild(r); r.layoutPositioning = "ABSOLUTE"; r.resize(4, 4);`);
+    await readAgain(p);
+    const strict = await verifyPlan(p, "--strict");
+    assert.equal(strict.status, 1);
+    assert.equal(elementsOf(strict.json).designerLayers, 1);
+    assert.match(strict.text.stdout, /"Sticker" \(RECTANGLE, node [^)]+\): a designer's, not scored/);
+    const allowed = await verifyPlan(p, "--strict", "--allow-designer-layers");
+    assert.equal(allowed.status, 0, `${allowed.text.stdout}${allowed.text.stderr}`);
+    assert.equal(allowed.json.elementFidelity, 1);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("verify --roots-only: scores each variant's outer element alone, as 0.4.0 did, beside the element score", async () => {
+  const p = await push(asSnap(loadTreeFixture("attachment")));
+  try {
+    const roots = await verifyPlan(p, "--roots-only", "--strict");
+    assert.equal(roots.status, 0, `${roots.text.stdout}${roots.text.stderr}`);
+    assert.equal(roots.json.elementFidelity, undefined);
+    assert.equal(roots.json.fidelity, 1);
+    assert.ok((roots.json.caveats as { kind: string }[]).some((c) => c.kind === "root-only"));
+    assert.match(roots.text.stdout, /Only the outer element was measured and compared/);
+    const full = await verifyPlan(p);
+    assert.ok((full.json.summary as { propertiesCompared: number }).propertiesCompared > (roots.json.summary as { propertiesCompared: number }).propertiesCompared);
+  } finally {
+    cleanup(p);
+  }
+});
+
+// --- figma code and upload ----------------------------------------------------
 
 test("figma code: prints the calls it planned and where, and refuses a snap without element trees, naming --root-only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-tree-e2e-"));
