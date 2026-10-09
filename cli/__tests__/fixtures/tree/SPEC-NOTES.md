@@ -123,10 +123,11 @@ gives the same output on every run.
       the column hugs it with the rest (16 + 688 + 16 = 720). A child filling
       across a hugging column takes its widest sibling's width (120), or
       keeps its own alone. FILL on a hugging label turns it to HEIGHT, at the
-      row's width in a fixed row and at its own in a hugging one. The mock no
-      longer refuses the first two, and does all three as Figma did. The
-      proposed rule stands, since in CSS a grower takes the room its parent
-      leaves rather than growing the parent.
+      row's width in a fixed row and at its own in a hugging one. The mock
+      does all three as Figma did. It still refuses what the spike didn't
+      try: layoutGrow alone on a hugging text, or FILL on a text's height.
+      The proposed rule stands, since in CSS a grower takes the room its
+      parent leaves rather than growing the parent.
 20. **B's acceptance conflicts with section 8.4.** It expects 0 fallbacks for
     Attachment, horizontal and vertical. But the Attachment root has
     `flex-wrap: wrap` (`L.wrap: 1`), and its `relative` media tile paints after
@@ -544,6 +545,7 @@ fixtures/figma-spike.json.
 | 4, absolute children | an ABSOLUTE child stayed at 3,4 under an included INSIDE stroke | `absoluteInsetByStroke: false`, x and y from the frame's corner |
 | 4, strokes in auto layout | only an INSIDE stroke took room; CENTER and OUTSIDE didn't | `outsideStrokeTakesSpace: false`; the build includes strokes only where it builds them INSIDE |
 | 5, clone and plugin data | kept on the copy and its children; a copy of a variant or of anything nested lands on the page | the copy is moved into its set beside its original, and no longer has its keys copied onto it |
+| 6, findAllWithCriteria | found nodes by a shared plugin data key, by any of several, and by namespace alone | the build and images calls find images by `img`, and the readback and label calls now find sets by `id` |
 | 7, return shape | an object, written as JSON | the parser reads it, as it would a string or an envelope |
 | 8, time | 400 frames 3.2 s, 100 labels 1.4 s | `maxNodes: 400` records (item 31) |
 | 10, image bytes | the same bytes back, hashed by their SHA-1, the hash reusable on another node | the images call reuses hashes; verify proves content by bytes (C25) |
@@ -618,8 +620,9 @@ C8. **The 0.4.0 root fields are in the browser's terms**, like the records:
    bg-clip-padding Button.
 C9. **C's size test is a proxy, and B's budget test leaves readback out.**
    - C has no minifier. Its test holds the template, stripped of comments
-     and indentation, to 11,800 characters: 11,630 now, which terser takes
-     to 7,865 with B's options.
+     and indentation, to 11,800 characters: 11,681 now, which terser takes
+     to 7,908 with B's options (7,865 before it found sets by their id key,
+     item 6 of the spike).
    - B's `templates.test.ts` BUDGETS has no `readback` entry ("checked once
      it is"). On merge, add `readback: 8_000` there.
 

@@ -4,12 +4,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
-import type { TreeDelta } from "../tree-types.js";
+import type { TreeDelta, TreeNode } from "../tree-types.js";
+import { verify } from "../verify.js";
 import { STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
-import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
+import { loadTreeFixture, svgShapeBoxes, treeFixtureNames } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -287,6 +289,40 @@ test("figma code: with the readback template shipped, every call of every fixtur
     const runs = await runPlan(mockFor([fixture]), coded);
     assert.deepEqual(runs.map((r) => (r.value as { kind: string }).kind), coded.plan.calls.map((c) => c.kind), name);
   }
+});
+
+test("figma code: an icon that keeps a <g>, which Figma imports as a GROUP, is built and read back whole", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  // snap keeps a <g> with a transform (A15), and the spike saw Figma import one as a GROUP (item 1).
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="2">'
+    + '<g transform="translate(0 4)"><path d="M4 4h16"/><path d="M4 12h10"/></g><path d="M12 2v4"/></svg>';
+  const snap = copy(loadTreeFixture("example-button"));
+  const component = snap.components[0];
+  const nodes: TreeNode[] = [
+    { k: "", t: "F", el: "span", box: [0, 0, 16, 16] },
+    { k: "svg", t: "V", el: "svg.lucide-list", box: [0, 0, 16, 16], svg: "svg:list", shapes: svgShapeBoxes(markup) },
+  ];
+  Object.assign(component, {
+    id: "test-list", name: "List", title: "test/List", category: "test", variantProperties: [], warnings: [],
+    base: { combination: {}, slug: "default", styles: { ...component.base!.styles, width: 16, height: 16, display: "block" } },
+    variants: [{ combination: {}, slug: "default", status: "ok", error: null, delta: {} }],
+    tree: { version: 1, base: nodes, assets: { svg: { "svg:list": markup }, img: {} } },
+  });
+  const coded = await codeFor(snap, { templates: {} });
+  const mock = mockFor([snap]);
+  for (const call of coded.plan.calls) {
+    const run = await mock.run(coded.code(call));
+    assert.ok(run.ok, `${call.file}: ${run.text}`);
+    mkdirSync(join(coded.out, "results"), { recursive: true });
+    writeFileSync(join(coded.out, call.result), run.text);
+  }
+  const icon = mock.nodes("FRAME").find((n) => n.data["storysync.k"] === "svg")!;
+  assert.deepEqual(icon.children!.map((c) => [c.type, c.children?.length ?? 0]), [["GROUP", 2], ["VECTOR", 0]]);
+  const { readback, notRead, problems } = loadPlanResults(join(coded.out, "plan.json"));
+  assert.deepEqual([notRead, problems], [[], []]);
+  const result = verify(JSON.parse(readFileSync(coded.snapPath, "utf8")), readback, 0.5, { notRead });
+  // Every element verified, the icon's shapes and paints found through the group.
+  assert.deepEqual(result.variants[0].nodes ?? [], []);
+  assert.deepEqual([result.elementFidelity, result.summary.elements?.verified, result.summary.elements?.measured], [1, 2, 2]);
 });
 
 test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {

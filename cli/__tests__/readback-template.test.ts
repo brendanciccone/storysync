@@ -51,8 +51,8 @@ test("template: stays small enough to minify under 8,000 characters", () => {
   // Design 9.1's limit is on the minified template, which `storysync figma
   // code` sends (scripts/build-templates.mjs, terser, checked by the
   // templates test beside it). Stripped of comments and indentation, it is
-  // 11,630 characters, which minify to 7,865: about 0.68 of it. So 11,800
-  // stripped is about 7,980 minified, and this fails on growth that would
+  // 11,681 characters, which minify to 7,908: about 0.68 of it. So 11,800
+  // stripped is about 7,990 minified, and this fails on growth that would
   // near the limit without terser to measure it.
   assert.ok(stripped(READBACK_TEMPLATE).length <= 11_800, `${stripped(READBACK_TEMPLATE).length} characters stripped`);
 });
