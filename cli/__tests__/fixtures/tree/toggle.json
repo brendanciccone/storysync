@@ -9,7 +9,8 @@
       "agents/push2/styles.json (0.4.0 snap of the same story: slugs; root styles checked equal)"
     ],
     "notes": [
-      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them."
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them.",
+      "No prototype captured this icon's lucide class, so its `el` is `svg`."
     ]
   },
   "version": 1,

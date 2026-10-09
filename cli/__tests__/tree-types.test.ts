@@ -515,7 +515,7 @@ test("fixtures: keys are unique, parents come before children, and each kind car
         for (const segment of node.k ? node.k.split("/") : []) assert.match(segment, /^(?:[\w∕-]+|#text|#value|::before|::after)(?::\d+)?$/, `${at}: segment ${segment}`);
         for (const [field, value] of Object.entries(node)) assert.notEqual(value, null, `${at} ${node.k}: ${field} is null`);
         if (node.t === "T") assert.ok(node.tx && node.tx.n >= 1 && node.tx.ink.length === 4, `${at} ${node.k}: text facts`);
-        if (node.t === "V") assert.ok(node.svg && node.shapes?.length, `${at} ${node.k}: vector facts`);
+        if (node.t === "V") assert.ok(node.svg && node.shapes?.length && /^svg(?:\.lucide-[a-z0-9-]+)?$/.test(node.el), `${at} ${node.k}: vector facts`);
         if (node.t === "I") assert.ok(node.img, `${at} ${node.k}: image facts`);
         if (node.t !== "T") assert.equal(node.tx, undefined, `${at} ${node.k}`);
       }
@@ -610,6 +610,12 @@ test("fixtures: hold the facts the design's acceptance names for each component"
   assert.ok(Object.values(toggle).every((m) => m.length <= 1000 && !/oklch/.test(m)));
   // Button with an icon: the button, its icon and its label.
   assert.equal(count("button-icon"), 3);
+  // Icons are named by their lucide class where a capture recorded it, for B to name the vector layer.
+  assert.equal(nodeIn("button-icon", null, "svg").el, "svg.lucide-mail");
+  assert.equal(nodeIn("card", null, "card-content/div:2/svg").el, "svg.lucide-bell-ring");
+  assert.deepEqual(["attachment-media/svg", "attachment-action/svg"].map((k) => nodeIn("attachment", "size-default--orientation-horizontal--state-error", k).el),
+    ["svg.lucide-file-text", "svg.lucide-x"]);
+  assert.equal(nodeIn("toggle", null, "svg").el, "svg", "no capture named Toggle's icon");
   // The example Button has no data-slot: tags and #text key it.
   assert.deepEqual(fixtureVariants(loadTreeFixture("example-button"))[0].nodes.map((n) => n.k), ["", "#text"]);
 });
@@ -617,7 +623,10 @@ test("fixtures: hold the facts the design's acceptance names for each component"
 test("fixtures: a variant Storybook hid an arg of is kept unmeasured, with what hid it", () => {
   const component = loadTreeFixture("button-icon").components[0];
   const hidden = component.variants.filter((v) => (v.status as string) === "args_hidden");
-  assert.ok(hidden.length >= 1);
+  assert.deepEqual(hidden.map((v) => v.slug), ["variant-link--size-xs", "variant-link--size-sm"]);
+  // Every combination of the properties it lists is there, measured or not, as snap writes them.
+  const [variant, size] = component.variantProperties;
+  assert.equal(component.variants.length, variant.values.length * size.values.length);
   for (const v of hidden) {
     assert.equal(v.combination.variant, "link");
     assert.equal((v as { delta?: unknown }).delta, undefined);
