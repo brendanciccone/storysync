@@ -29,7 +29,7 @@ const wanted = new Set(DATA.pages.map(pageKey));
 const found = {};
 for (const p of figma.root.children.filter((p) => wanted.has(pageKey(p.name)))) {
   await p.loadAsync();
-  for (const n of p.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })) {
+  for (const n of p.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'], sharedPluginData: { namespace: NS, keys: ['id'] } })) {
     const id = n.getSharedPluginData(NS, 'id');
     if (id && n.parent.type !== 'COMPONENT_SET') (found[id] = found[id] || []).push(n);
   }

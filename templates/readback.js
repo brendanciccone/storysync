@@ -289,8 +289,9 @@ const pageKey = (name) => name.toLowerCase().replace(/[ /_-]+/g, '');
 const page = figma.root.children.find((p) => pageKey(p.name) === pageKey(PAGE));
 if (!page) throw new Error('No page named "' + PAGE + '"');
 await figma.setCurrentPageAsync(page);
-// Sets, and plain components not inside one, by their storysync id.
-const owners = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
+// Sets, and plain components not inside one, that carry a storysync id:
+// found by it, as the spike saw findAllWithCriteria find shared plugin data.
+const owners = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'], sharedPluginData: { namespace: NS, keys: ['id'] } })
   .filter((n) => n.type === 'COMPONENT_SET' || !n.parent || n.parent.type !== 'COMPONENT_SET');
 
 const out = { kind: 'read', tpl: TPL, page: page.name, sets: [] };
