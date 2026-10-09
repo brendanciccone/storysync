@@ -693,17 +693,22 @@ interface Ctx {
 
 /**
  * The `text-*` evidence a text or icon inherits its color by: from the
- * nearest element up the tree that sets one always, as a card sets its
+ * nearest element up the DOM that sets one always, as a card sets its
  * title's; failing that, from the nearest that sets one in some state
- * (`hover:text-accent-foreground`).
+ * (`hover:text-accent-foreground`). The DOM's elements are each item's
+ * own and then the wrappers collapsed into it, innermost first, which sat
+ * between it and its parent: a wrapper's `text-muted-foreground` is
+ * nearer than the card's.
  */
 function inheritedTextEvidence(item: Item): string[] {
-  const colors = (at: Item, prefixed: boolean) => [...new Set(evidenceOf(at.el?.cls ?? [])
+  const colors = (el: RawTreeElement, prefixed: boolean) => [...new Set(evidenceOf(el.cls ?? [])
     .filter((e) => e.prefixed === prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name)).map((e) => e.name))].sort();
   for (const prefixed of [false, true]) {
     for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) {
-      const found = colors(at, prefixed);
-      if (found.length) return found.slice(0, 8);
+      for (const el of [at.el, ...at.wrappers]) {
+        const found = el ? colors(el, prefixed) : [];
+        if (found.length) return found.slice(0, 8);
+      }
     }
   }
   return [];
@@ -858,7 +863,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     let cls = classEvidence(el.cls ?? []);
     const setsColor = evidenceOf(el.cls ?? []).some((e) => !e.prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name));
     if ((kind === "T" || kind === "V") && !setsColor) {
-      cls = [...new Set([...cls, ...inheritedTextEvidence(item.parent ?? item)])].sort().slice(0, 8);
+      cls = [...new Set([...cls, ...inheritedTextEvidence(item)])].sort().slice(0, 8);
     }
     if (cls.length) node.cls = cls;
   }

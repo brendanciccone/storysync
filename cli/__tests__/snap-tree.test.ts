@@ -478,6 +478,19 @@ test("lineBox and lineCount: a run's line box from its glyphs, and its lines cou
   assert.equal(lineCount([]), 1);
 });
 
+test("buildTree: a text or icon takes the text color class of the nearest element around it, a wrapper collapsed away included", () => {
+  // card (text-card-foreground) > div (text-muted-foreground, collapsed) > p (padded) > text
+  const p = el("p", [0, 0, 200, 40], { "padding-top": "10px" }, [run("Muted", [[0, 11.5, 40, 17]])], { text: TEXT });
+  const muted = el("div", [0, 0, 200, 40], {}, [p], { cls: ["text-muted-foreground", "text-sm"] });
+  const icon = el("svg", [0, 0, 16, 16], {}, [], { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [] });
+  const iconWrapper = el("span", [0, 0, 16, 16], {}, [icon], { cls: ["hover:text-accent-foreground", "text-destructive"] });
+  const card = el("div", [0, 0, 200, 80], { display: "flex" }, [muted, iconWrapper], { cls: ["text-card-foreground"] });
+  const nodes = byKey(buildTree(tree(card)).nodes);
+  assert.deepEqual(nodes.get("p/#text")!.cls, ["text-muted-foreground"]);
+  // The icon's own wrapper sets its color always; its state class only names a state.
+  assert.deepEqual(nodes.get("svg")!.cls, ["text-destructive"]);
+});
+
 test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, at most 8", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x"]),
