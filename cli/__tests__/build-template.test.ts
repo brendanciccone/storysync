@@ -520,6 +520,51 @@ test("build: a root icon Figma won't import is tried again next time", async () 
   assert.ok(result(again).fallbacks.length > 0, "the import is tried again");
 });
 
+/** Adds a designer's text, in a font no build uses, to the layer keyed `key` (or the variant) of the built variant `slug`. */
+async function designerText(mock: MockFigma, slug: string, key = ""): Promise<void> {
+  const variant = variantsBySlug(mock).get(slug)!;
+  const target = key ? keyed(variant, key)! : variant;
+  const run = await mock.run(`
+    const page = figma.root.children.find((p) => p.name === 'ui/base');
+    await figma.setCurrentPageAsync(page);
+    await figma.loadFontAsync({ family: 'Roboto Mono', style: 'Regular' });
+    const t = figma.createText();
+    t.fontName = { family: 'Roboto Mono', style: 'Regular' };
+    t.characters = 'note';
+    page.findOne((n) => n.id === ${JSON.stringify(target.id)}).appendChild(t);
+  `);
+  assert.ok(run.ok, run.text);
+}
+
+test("build: a layer that moves is moved with every font in it loaded, a designer's text's included", async () => {
+  const row = (a: number, b: number) => synthetic("Row", [
+    { k: "", t: "F", el: "div", box: [0, 0, 100, 20], L: { d: "flex" } },
+    { k: "a", t: "F", el: "span", box: [a, 0, 50, 20], bg: "#eeeeee" },
+    { k: "b", t: "F", el: "span", box: [b, 0, 50, 20], bg: "#dddddd" },
+  ], { width: 100, height: 20, display: "flex", backgroundColor: "#ffffff" }, {}, { category: "ui/base" });
+  const mock = mockFor([row(0, 50)]);
+  await runPlan(mock, await codeFor(row(0, 50)), ["build"]);
+  await designerText(mock, "default", "a");
+  // b now flows first: a, with the designer's text in Roboto Mono, moves after it.
+  const [build] = await runPlan(mock, await codeFor(row(50, 0)), ["build"]);
+  assert.equal(result(build).sets[0].designerLayers, 1);
+  assert.deepEqual(variantsBySlug(mock).get("default")!.children!.map((c) => c.data["storysync.k"]), ["b", "a"]);
+});
+
+test("build: a variant another call built is moved in the set's grid with its fonts loaded", async () => {
+  const fixture = loadTreeFixture("switch");
+  // One variant a call: the second call lays out the set, moving the first variant.
+  const coded = await codeFor(fixture, { maxNodes: 1 });
+  const mock = mockFor([fixture]);
+  const [first, second] = coded.plan.calls.filter((c) => c.kind === "build");
+  const one = await mock.run(coded.code(first));
+  assert.ok(one.ok, one.text);
+  await designerText(mock, "size-default");
+  const two = await mock.run(coded.code(second));
+  assert.ok(two.ok, two.text);
+  assert.deepEqual(result(two).sets[0].variants, 2);
+});
+
 test("build: a call refused for one of its sets changes none of them", async () => {
   const snap = copy(loadTreeFixture("switch"));
   snap.components.push(copy(loadTreeFixture("toggle").components[0]));

@@ -52,10 +52,14 @@ export async function codeFor(snap: object, options: Partial<FigmaCodeOptions> =
   return { dir, snapPath, out, plan, warnings, code: (call) => readFileSync(join(out, call.file), "utf8") };
 }
 
-/** A mock that measures text as the fixture's browser did, at `factor` times its width. */
+/**
+ * A mock that measures text as the fixture's browser did, and refuses to
+ * move a layer holding a text whose font the call hasn't loaded, as Figma
+ * does: the build moves layers it didn't make.
+ */
 export function mockFor(fixtures: TreeFixture[], options: MockFigmaOptions = {}): MockFigma {
   const trees = fixtures.flatMap((f) => fixtureVariants(f).map((v) => v.nodes));
-  return new MockFigma({ measure: measureFromTrees(trees), ...options });
+  return new MockFigma({ measure: measureFromTrees(trees), moveNeedsFonts: true, ...options });
 }
 
 /** Runs a plan's calls in order, `kinds` only when given; throws on a call that fails. */

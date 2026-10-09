@@ -182,11 +182,20 @@ const make = (kind, st) => {
   n.fills = [];
   return n;
 };
-// The fonts a text has now, its own or its ranges', as figma-use's text recipe loads them.
-const loadCurrent = async (n) => {
-  const now = n.fontName === figma.mixed ? n.getStyledTextSegments(['fontName']).map((s) => s.fontName) : [n.fontName];
-  for (const f of now) await figma.loadFontAsync(f).catch(() => {});
+// Loads the fonts texts have now, their own or their ranges', as
+// figma-use's text recipe does, each once a call. Figma refuses to restyle
+// a text whose font isn't loaded, or to move a layer that holds one, a
+// designer's text included.
+const loaded = {};
+const loadFonts = async (texts) => {
+  for (const n of texts) {
+    for (const f of n.fontName === figma.mixed ? n.getStyledTextSegments(['fontName']).map((s) => s.fontName) : [n.fontName]) {
+      const id = f.family + NL + f.style;
+      await (loaded[id] = loaded[id] || figma.loadFontAsync(f).catch(() => {}));
+    }
+  }
 };
+const textsIn = (n) => (n.type === 'TEXT' ? [n] : n.findAllWithCriteria({ types: ['TEXT'] }));
 const fits = (n, kind, st) => (kind === 'T' ? n.type === 'TEXT' : n.type === 'FRAME' && (kind === 'V' ? get(n, 'svg') === st.id : !get(n, 'svg')));
 const isFrame = (n) => n.type === 'FRAME' || n.type === 'COMPONENT';
 const SIZING = { X: 'FIXED', H: 'HUG', L: 'FILL' };
@@ -215,7 +224,7 @@ const style = async (n, rec, parent, root) => {
   if (kind === 'T') {
     const t = st.t;
     const font = await loadFont(t.f, t.w, t.i);
-    await loadCurrent(n);
+    await loadFonts([n]);
     n.fontName = font;
     n.characters = t.c;
     n.fontSize = t.z;
@@ -312,6 +321,8 @@ const hexOf = (c) => '#' + [c.r, c.g, c.b].map((v) => Math.round(v * 255).toStri
 // keyed children in record order after its designer layers, and styles every
 // node. Returns the nodes by record index, and the designer layers counted.
 const converge = async (root, recs) => {
+  // Every font the variant's texts have now, before anything moves.
+  await loadFonts(textsIn(root));
   const have = new Map();
   const walk = (n) => {
     for (const c of n.children) {
@@ -350,9 +361,7 @@ const converge = async (root, recs) => {
     }
     walk(root);
   }
-  // Figma refuses to move or restyle a text whose font isn't loaded: load
-  // every font the variant's texts have now, and will have, first.
-  for (const n of have.values()) if (n.type === 'TEXT') await loadCurrent(n);
+  // And every font they will have.
   for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t.f, S[rec[7]].t.w, S[rec[7]].t.i);
   const nodes = [root];
   for (let i = 1; i < recs.length; i++) {
@@ -373,6 +382,8 @@ const converge = async (root, recs) => {
     nodes[i] = n;
   }
   for (const n of have.values()) if (!n.removed) n.remove();
+  // A new text's default font, before it moves into place.
+  await loadFonts(nodes.filter((n) => n.type === 'TEXT'));
   for (let i = 0; i < recs.length; i++) {
     const kids = [];
     for (let j = i + 1; j < recs.length; j++) if (recs[j][1] === i) kids.push(nodes[j]);
@@ -630,7 +641,11 @@ for (const [s, set] of DATA.sets.entries()) {
   const before = node.children;
   let kept = 0;
   while (kept < before.length && before[kept].id === target[kept].id) kept++;
-  for (const n of target.slice(kept)) node.appendChild(n);
+  for (const n of target.slice(kept)) {
+    // A variant another call built holds texts in fonts this one hasn't loaded.
+    await loadFonts(textsIn(n));
+    node.appendChild(n);
+  }
   const kids = node.children;
   if (kids.length !== order.length || kids.some((n, i) => n.id !== target[i].id)) throw new Error("The set's layers are not in the order it was laid out in");
   for (const c of order) {
