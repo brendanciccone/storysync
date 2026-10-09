@@ -1153,12 +1153,16 @@ export function verify(
       }
       const measured = measuredVariants.get(slug);
       if (!measured) continue;
-      const issue = figma != null ? unverified.get(JSON.stringify([component, slug])) : undefined;
+      // Read, whole or in parts: a variant whose first part is missing has
+      // the others, which say it was read, and the issue that it wasn't
+      // read whole.
+      const parts = partsOf(figmaComponent?.variants, slug);
+      const issue = parts.length ? unverified.get(JSON.stringify([component, slug])) : undefined;
       if (issue) {
         // Nothing in it scored; parts that don't add up said as such.
         verdicts.push(issue.problem !== "parts_missing"
           ? unverifiedVerdict(component, slug, figma)
-          : { ...unverifiedVerdict(component, slug, figma), status: "parts_missing" });
+          : { ...unverifiedVerdict(component, slug, parts[0]), status: "parts_missing" });
         continue;
       }
       if (!extended) {
@@ -1373,13 +1377,17 @@ function sourceOf(entry: ReadbackStyles | undefined): VariantVerdict["source"] {
   return declared === "measured" || declared === "inferred" || declared === "unmeasured" ? declared : "unrecorded";
 }
 
-/** A variant's records, its parts' in order of their first node. */
-function recordsOf(entries: Record<string, ReadbackStyles>, slug: string): ReadRecord[] {
-  return Object.entries(entries)
+/** The entries a variant was read in, whole or in parts, in order of their first node. */
+function partsOf(entries: Record<string, ReadbackStyles> | undefined, slug: string): ReadbackStyles[] {
+  return Object.entries(entries ?? {})
     .filter(([key]) => key === slug || slugOfKey(key) === slug)
     .map(([, entry]) => entry)
-    .sort((a, b) => (a.part?.[0] ?? 0) - (b.part?.[0] ?? 0))
-    .flatMap((entry) => entry.tree ?? []);
+    .sort((a, b) => (a.part?.[0] ?? 0) - (b.part?.[0] ?? 0));
+}
+
+/** A variant's records, its parts' in order. */
+function recordsOf(entries: Record<string, ReadbackStyles>, slug: string): ReadRecord[] {
+  return partsOf(entries, slug).flatMap((entry) => entry.tree ?? []);
 }
 
 function addUnscorable(into: Map<string, UnscorableProperty & { component: string; variants: number }>, component: string, u: UnscorableProperty): void {

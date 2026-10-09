@@ -264,13 +264,19 @@ test("integrity: a variant read in parts with one dropped is parts_missing, and 
   assert.ok(keys.some((k) => k.includes("#")));
   const whole = verify(fixture, readback, 0.5);
   assert.equal(whole.elementFidelity, 1, "read in parts, it still scores whole");
-  const dropped = edited(readback, component, keys[1], () => undefined);
-  delete dropped.components[component].variants[keys[1]];
-  const result = verify(fixture, dropped, 0.5);
-  assert.deepEqual(result.readbackIssues.map((i) => i.problem), ["parts_missing"]);
-  assert.equal(result.variants[0].status, "parts_missing");
-  assert.equal(result.summary.partsMissing, 1);
-  assert.equal(result.summary.elements!.measured, 0);
+  assert.deepEqual(whole.unmeasuredInFigma, [], "a later part is no variant of its own");
+  // The first part, one in the middle, or the last: each leaves the parts
+  // short, and the variant unscored.
+  for (const key of [keys[0], keys[1], keys[keys.length - 1]]) {
+    const dropped = edited(readback, component, key, () => undefined);
+    delete dropped.components[component].variants[key];
+    const result = verify(fixture, dropped, 0.5);
+    assert.deepEqual(result.readbackIssues.map((i) => i.problem), ["parts_missing"], key);
+    assert.deepEqual(result.variants.map((v) => v.status), ["parts_missing"], key);
+    assert.equal(result.summary.partsMissing, 1, key);
+    assert.equal(result.summary.elements!.measured, 0, key);
+    assert.deepEqual(result.unmeasuredInFigma, [], key);
+  }
 });
 
 test("integrity: a record of the wrong length is incomplete", async () => {
