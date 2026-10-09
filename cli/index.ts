@@ -576,7 +576,8 @@ program
           // to prevent.
           const allMeasured = result.summary.inferred === 0
             && result.summary.unrecorded === 0
-            && result.summary.unmeasured === 0;
+            && result.summary.unmeasured === 0
+            && (result.summary.unread ?? 0) === 0;
           const kind = allMeasured ? "measured" : "expected";
           console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ")}.`));
         }
@@ -585,11 +586,13 @@ program
         // than one measured a while ago, and this is the line that separates
         // "produced a result" from "produced a measured result".
         const { inferred, unrecorded, unmeasured } = result.summary;
-        if (inferred > 0 || unrecorded > 0 || unmeasured > 0) {
+        const unread = result.summary.unread ?? 0;
+        if (inferred > 0 || unrecorded > 0 || unmeasured > 0 || unread > 0) {
           const parts: string[] = [];
           if (inferred > 0) parts.push(`${inferred} inferred from source rather than measured`);
           if (unrecorded > 0) parts.push(`${unrecorded} with no recorded provenance`);
           if (unmeasured > 0) parts.push(`${unmeasured} in Figma that snap never measured`);
+          if (unread > 0) parts.push(`${unread} in Figma's sets that no read covered`);
           const line = `  Provenance: ${parts.join(", ")}`;
           console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
           for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
@@ -597,6 +600,13 @@ program
           }
           for (const u of result.unmeasuredInFigma) {
             console.log(chalk.dim(`      ${u.component} ${u.slug} [unmeasured — written to Figma but never scored]`));
+          }
+          for (const u of result.unreadInFigma ?? []) {
+            for (const name of u.unbuilt) console.log(chalk.dim(`      ${u.component} ${name} [not built by storysync — in Figma's set but never scored]`));
+            if (u.uncovered > 0) {
+              const one = u.uncovered === 1;
+              console.log(chalk.dim(`      ${u.component}: ${u.uncovered} ${one ? "variant carries a slug" : "variants carry slugs"} no read covered [built by an earlier push for ${one ? "a variant" : "variants"} snap no longer measures — never scored]`));
+            }
           }
         }
 
@@ -661,7 +671,8 @@ program
         || result.summary.unrecorded > 0
         || result.summary.unmeasured > 0
         || result.caveats.some((c) => c.kind === "args-unchecked")
-        || (result.summary.notMeasured ?? 0) > 0;
+        || (result.summary.notMeasured ?? 0) > 0
+        || (result.summary.unread ?? 0) > 0;
       // An age that cannot be established is not a pass. `meta.json` is the
       // file most likely to be gitignored, so failing open here would make
       // --strict-age succeed unconditionally in exactly the CI setup the

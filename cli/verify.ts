@@ -150,6 +150,16 @@ export interface ReadbackFile {
   components: Record<string, {
     /** The component set's id, which every entry's checksum is sealed under. */
     nodeId?: string;
+    /**
+     * From the element-tree readback's read calls (figma-results.ts):
+     * every variant in Figma's set, read or not, and the names of those
+     * without a slug, which storysync's element-tree build didn't make (a
+     * designer's, or one an earlier storysync built). Not sealed, since
+     * nothing is scored from them: verify lists, from them, the variants
+     * in Figma it couldn't read. See VerifyResult.unreadInFigma.
+     */
+    total?: number;
+    unbuilt?: string[];
     /** Keyed by the variant slug `snap` emitted. */
     variants: Record<string, ReadbackStyles>;
   }>;
@@ -363,6 +373,8 @@ export interface VerifyResult {
     notMeasured?: number;
     /** Variants read in parts that don't add up, so nothing in them was scored. */
     partsMissing?: number;
+    /** Variants in Figma's sets verify couldn't read: see VerifyResult.unreadInFigma. A --strict-measured failure. */
+    unread?: number;
     /** Elements across the variants scored: see VariantVerdict.elements. */
     elements?: {
       measured: number;
@@ -435,6 +447,18 @@ export interface VerifyResult {
    * back to inferring it wholesale.
    */
   unmeasuredInFigma: { component: string; slug: string }[];
+  /**
+   * Where an element-tree readback says what else a component's set in
+   * Figma holds (ReadbackFile `total` and `unbuilt`): variants it couldn't
+   * read, which are written to Figma but unscored, as unmeasuredInFigma
+   * are. `unbuilt`, by name, have no slug: storysync's element-tree build
+   * didn't make them, a designer or an earlier storysync did. `uncovered`
+   * counts those with a slug no read call covered: one an earlier push
+   * built for a variant this snap no longer measures. Not counted while a
+   * planned read has no result (`notRead`), which leaves variants unread
+   * already. A --strict-measured failure.
+   */
+  unreadInFigma?: { component: string; unbuilt: string[]; uncovered: number }[];
   /** What the readback says of variable bindings: see bindingReport. */
   bindings: BindingReport;
   /**
@@ -1255,6 +1279,15 @@ export function verify(
       if (!measured?.has(slug)) unmeasuredInFigma.push({ component, slug });
     }
   }
+  // And what the sets hold beyond what was read, where the readback says.
+  const unreadInFigma: { component: string; unbuilt: string[]; uncovered: number }[] = [];
+  for (const [component, entry] of Object.entries(readbackComponents)) {
+    if (!Number.isInteger(entry?.total)) continue;
+    const unbuilt = Array.isArray(entry.unbuilt) ? entry.unbuilt.map(String) : [];
+    const read = new Set(Object.keys(entry.variants ?? {}).map(slugOfKey)).size;
+    const uncovered = options.notRead?.length ? 0 : Math.max(0, entry.total! - unbuilt.length - read);
+    if (unbuilt.length || uncovered) unreadInFigma.push({ component, unbuilt, uncovered });
+  }
   // Of those, whole components the snap never mentions: what a snap re-run
   // for some components, without --merge, leaves out of a push it scores.
   const inSnap = new Set((snap.components ?? []).map((c) => componentKey(c)));
@@ -1346,6 +1379,7 @@ export function verify(
       ...(extended ? {
         notMeasured: verdicts.filter((v) => v.status === "not_measured").length,
         partsMissing: verdicts.filter((v) => v.status === "parts_missing").length,
+        unread: unreadInFigma.reduce((n, u) => n + u.unbuilt.length + u.uncovered, 0),
       } : {}),
       ...(treeMode ? { elements } : {}),
     },
@@ -1357,6 +1391,7 @@ export function verify(
     componentsNotInSnap,
     skipped,
     unmeasuredInFigma,
+    ...(extended ? { unreadInFigma } : {}),
     readbackIssues,
     variants: verdicts,
     ...(treeMode ? {

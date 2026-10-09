@@ -122,8 +122,10 @@ export function parseReadResult(text: string): ReadResult | null {
 /**
  * Adds a read result's entries to `readback`, as they were sealed: under
  * each set's title (else its Storybook id), the key verify scores a
- * component by, with the set's id as `nodeId`. Returns what it couldn't add:
- * a set read from two sets in different calls, or an entry read twice.
+ * component by, with the set's id as `nodeId`; and, beside them, the set's
+ * `total` and `unbuilt`, for verify to list the variants no read covered.
+ * Returns what it couldn't add: a set read from two sets in different
+ * calls, or an entry read twice.
  */
 export function addReadResult(readback: ReadbackFile, result: ReadResult, from = "a result"): string[] {
   const problems: string[] = [];
@@ -134,6 +136,11 @@ export function addReadResult(readback: ReadbackFile, result: ReadResult, from =
       problems.push(`${from} reads ${key} from the set ${set.id}, another call from ${component.nodeId}: two sets carry its id`);
       continue;
     }
+    // Each call counts the whole set, so any one call's list is all of it:
+    // the longest, should a variant have been added between calls, names
+    // in order, two variants of one name twice.
+    if (Number.isInteger(set.total)) component.total = Math.max(component.total ?? 0, set.total);
+    if (Array.isArray(set.unbuilt) && set.unbuilt.length >= (component.unbuilt?.length ?? 0)) component.unbuilt = set.unbuilt.map(String).sort();
     for (const [slug, entry] of Object.entries(set.entries ?? {})) {
       if (component.variants[slug] !== undefined) {
         problems.push(`${from} reads ${key} ${slug} again; the first reading is kept`);
@@ -200,12 +207,17 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   const sorted: ReadbackFile = {
     version: readback.version,
     components: Object.fromEntries(Object.keys(readback.components).sort().map((key) => {
-      const { nodeId, variants } = readback.components[key];
-      return [key, { nodeId, variants: Object.fromEntries(Object.keys(variants).sort().map((slug) => [slug, variants[slug]])) }];
+      const { nodeId, total, unbuilt, variants } = readback.components[key];
+      return [key, {
+        nodeId,
+        ...(total !== undefined ? { total } : {}),
+        ...(unbuilt !== undefined ? { unbuilt } : {}),
+        variants: Object.fromEntries(Object.keys(variants).sort().map((slug) => [slug, variants[slug]])),
+      }];
     })),
   };
   const written = out ?? join(base, "..", "figma-readback.json");
   mkdirSync(dirname(written), { recursive: true });
   writeFileSync(written, `${JSON.stringify(sorted, null, 2)}\n`);
-  return { readback: sorted, notRead: [...new Set(notRead)], written, problems };
+  return { readback: sorted, notRead, written, problems };
 }

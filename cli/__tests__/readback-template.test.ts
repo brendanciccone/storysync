@@ -199,6 +199,9 @@ test("template: refuses a variant duplicated in Figma, and lists the variants it
   assert.deepEqual([result.sets[0].unbuilt, result.sets[0].absent, result.sets[0].total, Object.keys(result.sets[0].entries)], [["size=xl"], [1], 2, ["size-default"]]);
   const missing = verify(fixture, assemble([result]), 0.5);
   assert.equal(missing.variants[1].status, "missing_from_figma");
+  // The designer's variant, listed by name: in Figma, never scored.
+  assert.deepEqual(missing.unreadInFigma, [{ component: "ui/base/Card", unbuilt: ["size=xl"], uncovered: 0 }]);
+  assert.equal(missing.summary.unread, 1);
 
   await figma.run(`const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)}); await figma.setCurrentPageAsync(page);
     const v = await figma.getNodeByIdAsync(${JSON.stringify(built.variants[0].id)}); const copy = v.clone(); (await figma.getNodeByIdAsync(${JSON.stringify(built.id)})).appendChild(copy);`);
@@ -228,6 +231,24 @@ test("template: two variants of one index with other slugs are both read, in slu
   const scored = verify(resnap, assemble([result]), 0.5);
   assert.deepEqual(scored.variants.map((v) => [v.slug, v.status]), [["size-sm", "verified"]]);
   assert.deepEqual(scored.unmeasuredInFigma, [{ component: "ui/base/Switch", slug: "size-default" }]);
+});
+
+test("template: a variant a re-snap dropped, past the indexes read, is counted as in Figma and unread", async () => {
+  // snap measures size-default alone now, so the plan reads index 0, and
+  // size-sm, index 1, stays in the set.
+  const figma = newFigma();
+  const fixture = loadTreeFixture("switch");
+  const built = await buildFixture(figma, fixture);
+  const resnap = JSON.parse(JSON.stringify(fixture)) as typeof fixture;
+  resnap.components[0].variants = resnap.components[0].variants.filter((v) => v.slug === "size-default");
+  const readback = assemble(await readBack(figma, [[built.component, 0, 0, 0]]));
+  assert.deepEqual([readback.components["ui/base/Switch"].total, readback.components["ui/base/Switch"].unbuilt], [2, []]);
+  const result = verify(resnap, readback, 0.5);
+  assert.deepEqual(result.unreadInFigma, [{ component: "ui/base/Switch", unbuilt: [], uncovered: 1 }]);
+  assert.equal(result.summary.unread, 1);
+  assert.equal(result.elementFidelity, 1, "scored on what was read");
+  // While a planned read has no result, its variants are unread for that reason, said already.
+  assert.deepEqual(verify(resnap, readback, 0.5, { notRead: [3] }).unreadInFigma, []);
 });
 
 test("template: a call that stops among variants of one index continues at the right one, at the right node", async () => {
