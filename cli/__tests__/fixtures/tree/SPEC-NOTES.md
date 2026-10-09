@@ -891,3 +891,81 @@ D24. **`verify --json` adds `minFidelity: { min, score, passed }`** with
 D25. **`figma next` writes a continuation from the template its call was
    written with**: readable where the call holds the readable template,
    after `figma code --no-minify`.
+
+# Layout after the third live push
+
+The third live push (Figma file UPmguLPQ7w1ESdOZsq6vlw, agents/push3)
+built real components, but laid icon buttons' labels over their
+neighbors and built Sidebar's side=right variants off to the side. These
+notes are numbered L1 on.
+
+L1. **The set's grid spaces variants by where they draw** (section 8.2,
+   step 5, says the 0.4.0 grid code is kept unchanged).
+   - A variant's drawn bounds, measured in Figma: its box, each visible
+     layer's box that no frame around it clips, and the reach of each
+     drop shadow, its radius, spread and both offsets taken on every
+     side, which is more than it draws. A designer's layers count.
+   - Rows and columns are as wide and tall as the largest drawn bounds,
+     GAP apart, each variant placed where its drawn bounds start, the
+     set's order and default-first rule kept.
+   - The template's checks (past the set, over another variant) read
+     the drawn bounds, so a build whose variants overlap fails.
+   - On push3's snap, base Button had 48 pairs of variants drawing over
+     each other (at the icon sizes the label draws about 71px past each
+     side of a 36px button, as the browser draws it) and radix Button
+     6; now none, at width factor 1.045 too.
+   - The minified build is 16,112 characters, so `templates.test.ts`
+     allows the build 17,000 rather than 16,000. figma code packs a
+     call by its whole length, template included, so this only leaves a
+     call a little less room for DATA.
+L2. **The mock's groups have effects**, as Figma's GroupNode does
+   (BlendMixin). The drawn bounds read them on an icon root's shapes;
+   the mock threw.
+L3. **An element placed against the window or page is measured inside
+   its root's box** (section 6.9, positioning, extended).
+   - Such an element is `fixed` with no transform or filter in the tree
+     to hold it, or `absolute` with nothing positioned around it in the
+     tree, it or the outermost wrapper collapsed into it. Where it draws
+     depends on the window, not the component: shadcn's Sidebar
+     container, `fixed` at `right-0` for side=right, drew 1024px right
+     of its own 256px root in snap's 1280px window.
+   - Where such elements draw outside the root's box, snap moves them,
+     together, as far as it takes and no further: what they cover then
+     starts inside the box, or at its corner when larger. What is inside
+     them keeps its place in them. The right sidebar now measures the
+     same tree as the left one but for its border's side.
+   - A component warning names each element moved. No `approx` is set:
+     the build puts the element where snap now records it, and verify
+     scores it there as any other.
+   - Not read: `perspective`, `contain` and `will-change`, which also
+     hold fixed elements. A transform or filter on an ancestor outside
+     the root is not seen either.
+L4. **Open overlay content in a portal is measured when the story's root
+   shows nothing that draws, or only a closed trigger** (section 6.1;
+   chooseMeasuredElement gains a step).
+   - coder's ConfirmDialog and DeleteDialog render Radix's Dialog with
+     `open: true` and no trigger, into the body, with no `data-slot`:
+     every variant was element_not_found (10 of 10, against coder's
+     Storybook with the base build). Now, with `--exclude-props
+     open,isOpen`, all 8 measure as `div[role="dialog"]`. Without it,
+     the variants with `open` or `isOpen` false render nothing and stay
+     element_not_found, as they should.
+   - `OVERLAY_SELECTOR` (`cli/snap-normalize.ts`) is what open overlay
+     content is: role `dialog`, `alertdialog`, `tooltip` or `menu`, a
+     `-content` slot, or Radix's popper wrapper's child. The outermost
+     match outside the story's root is a candidate, first in document
+     order: Radix's tooltip holds a hidden copy of its text as
+     role=tooltip, inside the content.
+   - The wait for a story ends on it too, so such a story no longer
+     waits out `--timeout`.
+   - Whether the root draws is read off the story's elements as
+     chooseMeasuredElement already reads them, with `text`, whether an
+     element holds text of its own, added. A StoryNode without `text`
+     counts as drawing, so no older caller changes.
+   - The variant records `portal: true` beside `element`, for this and
+     for content found by its slot or `aria-controls` as before.
+     `matchedSelector` already said `portal ...`, but styles.json didn't
+     keep it.
+   - The shadcn registry has no story that renders a dialog, sheet or
+     popover open: each opens in a play function. Their Default stories
+     still measure the closed trigger, with the warning as before.
