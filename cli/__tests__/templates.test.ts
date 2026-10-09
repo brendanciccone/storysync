@@ -2,8 +2,11 @@
 // every call must keep.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { test } from "node:test";
-import { loadTemplate } from "../figma-code.js";
+import { fileURLToPath } from "node:url";
+import { CALL_CONSTANTS, loadTemplate } from "../figma-code.js";
+import type { TemplateName } from "../figma-code.js";
 
 /**
  * Most characters each minified template may take (section 8.2 sets the
@@ -21,14 +24,19 @@ test("templates: each minified template is within its budget", () => {
   }
 });
 
+/** Every template this checkout has: the readback template is package C's, checked here once it is. */
+const PRESENT = (Object.keys(CALL_CONSTANTS) as TemplateName[]).filter((name) => existsSync(fileURLToPath(new URL(`../../../templates/${name}.js`, import.meta.url))));
+
 test("templates: each is a function body use_figma can run, reading only the constants its call puts before it", () => {
-  for (const name of Object.keys(BUDGETS)) {
+  assert.deepEqual(PRESENT.filter((n) => n !== "readback"), Object.keys(BUDGETS));
+  for (const name of PRESENT) {
     for (const minify of [true, false]) {
-      const code = loadTemplate(name as keyof typeof BUDGETS, minify);
-      // Compiles as use_figma runs it: an async function of `figma`, after the call's constants.
-      assert.doesNotThrow(() => new AsyncFunction("figma", `const DATA = {}; const PAGE = "";\n${code}`), name);
+      const code = loadTemplate(name, minify);
+      // Compiles as use_figma runs it: an async function of `figma`, after exactly the constants its call writes.
+      const prefix = CALL_CONSTANTS[name].map((c) => `const ${c} = undefined;\n`).join("");
+      assert.doesNotThrow(() => new AsyncFunction("figma", `${prefix}${code}`), name);
       const statements = code.replace(/^\s*\/\/.*$/gm, "");
-      assert.doesNotMatch(statements, /\b(?:const|let|var)\s+(?:DATA|PAGE)\b/, `${name} declares no constant its call gives`);
+      assert.doesNotMatch(statements, new RegExp(`\\b(?:const|let|var)\\s+(?:${CALL_CONSTANTS[name].join("|")})\\b`), `${name} declares no constant its call gives`);
     }
   }
 });

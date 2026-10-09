@@ -61,6 +61,37 @@ export interface FigmaCodeOptions {
 
 export type TemplateName = "build" | "images" | "label" | "readback";
 
+/** The readback template a read call is written for (section 9.1), which refuses a call written for another. */
+export const READBACK_TPL = 2;
+
+/**
+ * The constants each kind of call writes before its template, which the
+ * template reads and must not declare itself: declared twice, every call of
+ * that kind is a SyntaxError in Figma.
+ */
+export const CALL_CONSTANTS: Record<TemplateName, readonly string[]> = {
+  build: ["DATA"],
+  images: ["PAGE"],
+  label: ["DATA"],
+  readback: ["PAGE", "SLICES", "LIMIT", "TPL"],
+};
+
+/** use_figma runs a call's code as the body of an async function. */
+const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
+
+/**
+ * Refuses a call that isn't JavaScript use_figma can run, before any is
+ * sent: compiled, not run. A template that declares what its call writes
+ * would otherwise fail in Figma on every call of its kind.
+ */
+export function assertCompiles(code: string, file: string): void {
+  try {
+    new AsyncFunction("figma", code);
+  } catch (e) {
+    throw new Error(`${file} is not code use_figma can run (${(e as Error).message}): a template must not declare the constants its call writes before it`);
+  }
+}
+
 export const DEFAULT_READ_LIMIT = 14_000;
 
 /** The readback template's own limit sits this far above what each call is predicted to return. */
@@ -479,7 +510,7 @@ type Slice = [string, number, number];
 
 function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string): string {
   const full = slices.map((s) => (s.length === 4 ? s : [...s, 0]));
-  return `${header(seq, "read back", page)}const PAGE = ${JSON.stringify(page)};\nconst SLICES = ${JSON.stringify(full)};\nconst LIMIT = ${limit};\nconst TPL = 2;\n${template}\n`;
+  return `${header(seq, "read back", page)}const PAGE = ${JSON.stringify(page)};\nconst SLICES = ${JSON.stringify(full)};\nconst LIMIT = ${limit};\nconst TPL = ${READBACK_TPL};\n${template}\n`;
 }
 
 // --- figma code -------------------------------------------------------------
@@ -541,9 +572,11 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const add = (call: Omit<PlanCall, "seq" | "file" | "result" | "chars">, code: (seq: number) => string) => {
     const seq = calls.length + 1;
     const text = code(seq);
+    const file = `calls/${pad(seq)}-${call.kind}${call.page ? `-${pageSlug(call.page)}` : ""}.js`;
+    assertCompiles(text, file);
     calls.push({
       seq, kind: call.kind, page: call.page, components: call.components,
-      file: `calls/${pad(seq)}-${call.kind}${call.page ? `-${pageSlug(call.page)}` : ""}.js`, result: `results/${pad(seq)}.json`,
+      file, result: `results/${pad(seq)}.json`,
       description: call.description, chars: text.length,
       ...(call.nodes !== undefined ? { nodes: call.nodes } : {}),
       ...(call.slices ? { slices: call.slices } : {}),
@@ -755,7 +788,9 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
-    writeFileSync(join(dir, file), readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`));
+    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
+    assertCompiles(code, file);
+    writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description };
   }
 }

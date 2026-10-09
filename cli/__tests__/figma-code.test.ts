@@ -125,13 +125,24 @@ test("figma code: reads slice each page's variants in order, each call predicted
       assert.ok(call.predicted! <= readLimit || call.slices!.length === 1 && call.slices![0][1] === call.slices![0][2], `${call.file} predicts ${call.predicted}`);
       const code = coded.code(call);
       assert.match(code, new RegExp(`\\nconst PAGE = ${JSON.stringify(call.page).replace(/\//g, "\\/")};\\nconst SLICES = `));
-      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 2;\\n`));
+      // The constants the readback template reads, and none it declares.
+      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 2;\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n$`));
+      assert.deepEqual([...code.matchAll(/^const (\w+) = /gm)].map((m) => m[1]), ["PAGE", "SLICES", "LIMIT", "TPL"]);
       for (const [id, first, last] of call.slices!) seen.set(id, [...(seen.get(id) ?? []), ...Array.from({ length: last - first + 1 }, (_, i) => first + i)]);
     }
     for (const component of snap.components) {
       assert.deepEqual(seen.get(component.id ?? component.title!), component.variants.map((_, i) => i), `${component.title} read once each`);
     }
   }
+});
+
+test("figma code: refuses a template that declares a constant its call writes, before writing any call", async () => {
+  // As package C's readback template once declared the TPL figma code also writes: a SyntaxError in Figma on every read.
+  for (const readback of ["const TPL = 2;\nreturn { kind: 'read' };", "const PAGE = 'x', SLICES = [];\nreturn {};"]) {
+    const out = await codeFor(loadTreeFixture("switch"), { templates: { readback } }).catch((e: Error) => e.message);
+    assert.match(String(out), /^calls\/03-read-ui-base\.js is not code use_figma can run \(.*has already been declared\): a template must not declare the constants its call writes before it$/);
+  }
+  await assert.rejects(codeFor(loadTreeFixture("switch"), { templates: { readback: STUB_READBACK, build: "return {" } }), /^Error: calls\/01-build-ui-base\.js is not code use_figma can run/);
 });
 
 test("predictRead: an entry grows with its nodes, keys, text and shapes", () => {
