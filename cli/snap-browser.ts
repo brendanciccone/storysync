@@ -1488,6 +1488,17 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
         h += px(pcs.paddingTop) + px(pcs.paddingBottom) + px(pcs.borderTopWidth) + px(pcs.borderBottomWidth);
       }
       out.box = [rect.left - R.left + px(elCs.borderLeftWidth) + px(pcs.left), rect.top - R.top + px(elCs.borderTopWidth) + px(pcs.top), w, h];
+      // Its transform moves it from where its insets put it, as shadcn's
+      // `after:-translate-x-1/2` centers a handle on its line. A matrix's
+      // last terms are that move, which about the default centered origin
+      // is also where a rotation or scale leaves its middle; snap-tree.ts
+      // flags those.
+      const matrix = /^matrix(3d)?\((.*)\)$/.exec(pcs.transform);
+      if (matrix) {
+        const terms = matrix[2].split(",").map(Number);
+        const [tx, ty] = matrix[1] ? [terms[12], terms[13]] : [terms[4], terms[5]];
+        if (Number.isFinite(tx) && Number.isFinite(ty)) out.box = [out.box[0] + tx, out.box[1] + ty, w, h];
+      }
       out.how = "abs";
       if (elCs.position === "static" || pcs.position === "fixed") out.unanchored = true;
       // Its radii resolve against its own size.

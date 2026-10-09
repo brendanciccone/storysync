@@ -538,6 +538,22 @@ test("captureTreeInPage: a pseudo-element that draws, though its color's last ch
   assert.equal(readTree({ tag: "div", rect: [0, 0, 1, 1], after: { content: '""', "background-color": "oklab(0 0 0 / 0)" } }).root.kids.length, 0);
 });
 
+test("captureTreeInPage: an absolute pseudo-element is where its transform moves it", () => {
+  // after:left-1/2 after:w-2.5 after:-translate-x-1/2 in a 40px box draws at 15, not 20.
+  const at = (transform: string) => {
+    const raw = readTree({
+      tag: "div", rect: [0, 0, 40, 10], style: { position: "relative" },
+      after: { content: '""', position: "absolute", "background-color": "rgb(255, 0, 0)", left: "20px", top: "0px", width: "10px", height: "10px", "box-sizing": "border-box", transform },
+    });
+    const after = raw.root.kids[0] as RawTreePseudo;
+    return [after.box, after.cs.transform];
+  };
+  assert.deepEqual(at("matrix(1, 0, 0, 1, -5, 0)"), [[15, 0, 10, 10], "matrix(1, 0, 0, 1, -5, 0)"]);
+  assert.deepEqual(at("matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -5, 2, 0, 1)"), [[15, 2, 10, 10], "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -5, 2, 0, 1)"]);
+  // Turned about its middle: where its insets put it, its transform kept for snap-tree.ts.
+  assert.deepEqual(at("matrix(0, 1, -1, 0, 0, 0)"), [[20, 0, 10, 10], "matrix(0, 1, -1, 0, 0, 0)"]);
+});
+
 test("captureTreeInPage: a pseudo-element in the flow is measured on a stand-in, which is gone after, and says when it moved a sibling", () => {
   const sibling: FakeElementSpec = { tag: "b", rect: [10, 0, 20, 20] };
   const root: FakeElementSpec = {

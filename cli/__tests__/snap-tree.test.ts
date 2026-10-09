@@ -389,6 +389,12 @@ test("buildTree: a pseudo-element's box as the page found it, flagged where it c
   const arrow = buildTree(tree(el("div", [0, 0, 20, 20], {}, [text]))).nodes[1];
   assert.equal(arrow.t, "T");
   assert.equal(arrow.tx!.c, "→");
+  // Turned, it says so, as an element does; moved, its box says where.
+  const turned: RawTreePseudo = { k: "p", which: "after", cs: { position: "absolute", ...BORDER, transform: "matrix(0, 1, -1, 0, 0, 0)" }, content: "", box: [5, 0, 10, 10], how: "abs" };
+  const moved: RawTreePseudo = { ...turned, which: "before", cs: { ...turned.cs, transform: "matrix(1, 0, 0, 1, -5, 0)" } };
+  const [, before, after] = buildTree(tree(el("div", [0, 0, 20, 20], { position: "relative" }, [moved, turned]))).nodes;
+  assert.deepEqual([after.tf, after.approx], ["matrix(0, 1, -1, 0, 0, 0)", "transform"]);
+  assert.deepEqual([before.tf, before.approx, before.box], [undefined, undefined, [5, 0, 10, 10]]);
 });
 
 test("buildTree: an SVG past the markup limit, or too big to read, is kept as a picture", () => {

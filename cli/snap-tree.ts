@@ -727,13 +727,19 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     const paints = paintsOwnBox(p.cs);
     const node: TreeNode = { k: key, t: paints || !content ? "F" : "T", el: `::${p.which}`, box: rel(item.box) };
     if (p.how === "abs") node.abs = 1;
+    // A translation is in its box already; a rotation or scale is not one
+    // a box can hold, as on an element.
+    const transform = shapeTransform(css("transform"));
+    if (transform) node.tf = transform;
     applyPaint(node, p.cs, p.box, css);
     applyEffects(node, css, false);
     if (node.t === "T") {
       node.tx = textFacts(p.text ?? {}, css, content, null, item.box, ctx.fonts);
       node.tx.ink = [0, 0, item.box[2], item.box[3]];
     }
-    const approx = [p.unanchored ? "containing-block" : null, p.moved ? "pseudo-stand-in" : null, paints && content ? "pseudo-text" : null].filter(Boolean);
+    const approx = [
+      p.unanchored ? "containing-block" : null, p.moved ? "pseudo-stand-in" : null, paints && content ? "pseudo-text" : null, transform ? "transform" : null,
+    ].filter(Boolean);
     if (approx.length) node.approx = approx.join(",");
     return node;
   }
