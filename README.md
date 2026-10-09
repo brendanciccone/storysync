@@ -543,7 +543,7 @@ storysync figma next --plan <path> --seq <n> [--json]
 What the build does:
 
 - Each component's set goes on the page of its Storybook category, named by the last segment of its title, as earlier pushes placed it. A set an earlier push made is found by its name, or by the Storybook ID stored on it, and restyled in place.
-- Each element snap measured becomes a layer that carries its key. On the next push the layer is found by that key and restyled, so node ids, and the instances built on them, survive. A layer a designer added without a key is left alone.
+- Each element snap measured becomes a layer that carries its key. On the next push the layer is found by that key and restyled, so node ids, and the instances built on them, survive. An icon is imported again instead, under a new node id, where its shapes were recolored or changed in Figma, since the build sets an icon's shapes only by importing them. A layer a designer added without a key is left alone.
 - Frames get auto layout where a model of Figma's auto layout puts every child where the browser did, and the build checks it again in Figma. Elsewhere, such as a flex row that wraps, children are placed at their measured positions, and `figma code` says which frames.
 - Text gets its family, weight, size, line height, letter spacing, case and color, and fits its box as the browser fitted it: on one line, wrapped at its width, or cut off with an ellipsis. Figma's plugin context has only Google Fonts, so a font it lacks is drawn in a stand-in at the measured weight, which the build's response names.
 - Icons are imported from their SVG at their measured size. Pictures are left for `upload_assets`, below.

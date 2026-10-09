@@ -602,6 +602,63 @@ test("build: a component whose root is an icon holds the icon's shapes itself, r
   assert.equal(variantsBySlug(mock).get("default")!.children!.length, 1, "the old icon's shapes went with it");
 });
 
+/** Every layer under a view, depth first. */
+const under = (view: NodeView): NodeView[] => (view.children ?? []).flatMap((c) => [c, ...under(c)]);
+
+/** The paints of an icon's shapes, the layers under `view` with any. */
+function shapePaints(mock: MockFigma, view: NodeView): string {
+  return JSON.stringify(under(view).map((v) => mock.handle(v.id) as { fills?: unknown; strokes?: unknown }).map((h) => [h.fills, h.strokes]));
+}
+
+/** A designer's recolor: every paint of every shape under `view` made magenta. */
+function recolor(mock: MockFigma, view: NodeView): void {
+  const magenta = [{ type: "SOLID", color: { r: 1, g: 0, b: 1 } }];
+  for (const v of under(view)) {
+    const h = mock.handle(v.id) as { fills?: unknown[]; strokes?: unknown[] };
+    if (h.fills?.length) h.fills = magenta;
+    if (h.strokes?.length) h.strokes = magenta;
+  }
+}
+
+test("build: an icon a designer recolored is imported again as measured, and the build after that keeps it", async () => {
+  // The build sets an icon's shapes only by importing them, so it kept a
+  // recolored icon as it was, and a repair by sending the build again left
+  // the designer's colors for verify to report as a limit of the mapping.
+  const fixture = loadTreeFixture("attachment");
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture]);
+  await runPlan(mock, coded, ["build"]);
+  const key = "attachment-media/svg";
+  const [slug] = [...variantsBySlug(mock)].find(([, v]) => keyed(v, key))!;
+  const icon = () => keyed(variantsBySlug(mock).get(slug)!, key)!;
+  const built = icon();
+  const measured = shapePaints(mock, built);
+  recolor(mock, built);
+  assert.notEqual(shapePaints(mock, icon()), measured);
+  await runPlan(mock, coded, ["build"]);
+  assert.equal(shapePaints(mock, icon()), measured, "the recolored icon was kept");
+  assert.notEqual(icon().id, built.id, "imported again, as the build makes an icon");
+  const repaired = icon().id;
+  const [again] = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual([again.created, again.removed], [0, 0], "an icon as the build left it is imported again");
+  assert.equal(icon().id, repaired);
+});
+
+test("build: a root icon a designer recolored is imported again as measured", async () => {
+  const fixture = spinners();
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture]);
+  await runPlan(mock, coded, ["build"]);
+  const root = () => variantsBySlug(mock).get("size-sm")!;
+  const measured = shapePaints(mock, root());
+  recolor(mock, root());
+  await runPlan(mock, coded, ["build"]);
+  assert.equal(shapePaints(mock, root()), measured, "the recolored root icon was kept");
+  assert.deepEqual(root().children!.map((c) => [c.type, c.data["storysync.vs"]]), [["VECTOR", "1"]], "the old shapes stayed beside the new");
+  const [again] = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual([again.created, again.removed], [0, 0]);
+});
+
 const RING = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
 
 /** A two-variant component whose root is an icon, as shadcn's Spinner, the second a size larger. */
