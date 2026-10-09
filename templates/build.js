@@ -309,19 +309,31 @@ const converge = async (root, recs) => {
     }
   };
   const [, , rootKind, , , , , rootStyle] = recs[0];
-  if (rootKind === 'V' && get(root, 'svg') !== S[rootStyle].id) {
+  at[2] = '';
+  if (rootKind === 'V') {
     // A component whose root is an icon holds the icon's shapes itself,
     // marked so the next icon replaces them and nothing a designer added.
-    for (const c of root.children) if (get(c, 'vs')) c.remove();
-    const icon = vector(S[rootStyle]);
-    for (const c of [...icon.children]) {
-      put(c, 'vs', '1');
-      root.appendChild(c);
+    // It has no keyed layers: any are from when its root was a frame.
+    for (const c of root.children) if (get(c, 'k')) c.remove();
+    if (get(root, 'svg') !== S[rootStyle].id) {
+      for (const c of root.children) if (get(c, 'vs')) c.remove();
+      const icon = vector(S[rootStyle]);
+      for (const c of [...icon.children]) {
+        put(c, 'vs', '1');
+        root.appendChild(c);
+      }
+      // A failed import is tried again next time, as for any icon.
+      put(root, 'svg', get(icon, 'svg') === 'failed' ? 'failed' : S[rootStyle].id);
+      icon.remove();
     }
-    icon.remove();
-    put(root, 'svg', S[rootStyle].id);
+  } else {
+    // No longer an icon: its shapes go with it.
+    if (get(root, 'svg')) {
+      for (const c of root.children) if (get(c, 'vs')) c.remove();
+      put(root, 'svg', '');
+    }
+    walk(root);
   }
-  if (rootKind !== 'V') walk(root);
   // Figma refuses to move or restyle a text whose font isn't loaded: load
   // every font the variant's texts have now, and will have, first.
   for (const n of have.values()) if (n.type === 'TEXT') await loadCurrent(n);
@@ -478,16 +490,20 @@ for (const [s, set] of DATA.sets.entries()) {
       if (!variant && first) {
         // A new variant starts as a copy of one already converged, its keys
         // copied explicitly (SPIKE(5)) and the copy's designer layers dropped.
+        // An icon root's shapes are kept, and its `svg` with them, or the copy
+        // would keep the asset id with no shapes, and never import them.
         variant = first.clone();
         const copy = (from, to) => {
           const a = from.children;
           const b = to.children;
           a.forEach((c, i) => {
+            if (get(c, 'vs')) return put(b[i], 'vs', '1');
             if (!get(c, 'k')) return b[i].remove();
             for (const k of ['k', 'svg', 'img']) put(b[i], k, get(c, k));
             if (c.type === 'FRAME' && !get(c, 'svg')) copy(c, b[i]);
           });
         };
+        put(variant, 'svg', get(first, 'svg'));
         copy(first, variant);
         created.push(variant);
       } else if (!variant) {

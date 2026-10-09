@@ -370,6 +370,76 @@ test("build: a component whose root is an icon holds the icon's shapes itself, r
   assert.equal(variantsBySlug(mock).get("default")!.children!.length, 1, "the old icon's shapes went with it");
 });
 
+const RING = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+
+/** A two-variant component whose root is an icon, as shadcn's Spinner, the second a size larger. */
+function spinners(): TreeFixture {
+  const fixture = synthetic("Spinner", [
+    { k: "", t: "V", el: "svg.lucide-loader-circle", box: [0, 0, 16, 16], svg: "svg:ring", shapes: [[2, 2, 12, 12]] },
+  ], { width: 16, height: 16, display: "block" }, { "svg:ring": RING });
+  const component = fixture.components[0];
+  component.variantProperties = [{ name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" }];
+  component.base = { ...component.base!, combination: { size: "sm" }, slug: "size-sm" };
+  component.variants = [
+    { combination: { size: "sm" }, slug: "size-sm", status: "ok", error: null, delta: {} },
+    { combination: { size: "lg" }, slug: "size-lg", status: "ok", error: null, delta: { width: 24, height: 24 }, treeDelta: { set: { "": { box: [0, 0, 24, 24], shapes: [[3, 3, 18, 18]] } } } } as never,
+  ];
+  return fixture;
+}
+
+test("build: a variant copied from an icon-root variant keeps the icon's shapes, whether or not clone() keeps plugin data", async () => {
+  for (const clonePluginData of [true, false]) {
+    const fixture = spinners();
+    const coded = await codeFor(fixture);
+    const mock = mockFor([fixture], { clonePluginData });
+    const [build] = await runPlan(mock, coded, ["build"]);
+    assert.equal(result(build).sets[0].designerLayers, 0, `clonePluginData ${clonePluginData}`);
+    for (const [slug, size] of [["size-sm", 16], ["size-lg", 24]] as const) {
+      const variant = variantsBySlug(mock).get(slug)!;
+      assert.deepEqual(variant.children!.map((c) => [c.type, c.data["storysync.vs"]]), [["VECTOR", "1"]], `${slug}, clonePluginData ${clonePluginData}`);
+      assert.deepEqual([variant.data["storysync.svg"], variant.width], ["svg:ring", size]);
+    }
+    const again = await runPlan(mock, coded, ["build"]);
+    assert.deepEqual([again[0].created, again[0].removed], [0, 0]);
+  }
+});
+
+test("build: a root that changes kind between snaps leaves nothing of what it was", async () => {
+  const icon = spinners();
+  icon.components[0].variants = icon.components[0].variants.slice(0, 1);
+  const frame = synthetic("Spinner", [
+    { k: "", t: "F", el: "span", box: [0, 0, 16, 16], L: { d: "block" } },
+    { k: "svg", t: "V", el: "svg.lucide-loader-circle", box: [0, 0, 16, 16], svg: "svg:ring", shapes: [[2, 2, 12, 12]] },
+  ], { width: 16, height: 16, display: "block" }, { "svg:ring": RING });
+  const mock = mockFor([icon, frame]);
+  const shape = () => {
+    const root = variantsBySlug(mock).get("default") ?? variantsBySlug(mock).get("size-sm")!;
+    return [root.data["storysync.svg"] ?? "", root.children!.map((c) => [c.type, c.data["storysync.k"] ?? "", c.data["storysync.vs"] ?? ""])];
+  };
+  await runPlan(mock, await codeFor(frame), ["build"]);
+  assert.deepEqual(shape(), ["", [["FRAME", "svg", ""]]]);
+  // A COMPONENT, so found by its name and rebuilt in place: from a frame with an icon to the icon itself, and back.
+  const iconOnly = copy(icon);
+  iconOnly.components[0].variantProperties = [];
+  iconOnly.components[0].variants[0].combination = {};
+  iconOnly.components[0].base!.combination = {};
+  await runPlan(mock, await codeFor(iconOnly), ["build"]);
+  assert.deepEqual(shape(), ["svg:ring", [["VECTOR", "", "1"]]]);
+  await runPlan(mock, await codeFor(frame), ["build"]);
+  assert.deepEqual(shape(), ["", [["FRAME", "svg", ""]]]);
+});
+
+test("build: a root icon Figma won't import is tried again next time", async () => {
+  const fixture = spinners();
+  fixture.components[0].tree.assets.svg["svg:ring"] = "<svg-not-really/>";
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture]);
+  await runPlan(mock, coded, ["build"]);
+  assert.equal(variantsBySlug(mock).get("size-sm")!.data["storysync.svg"], "failed");
+  const [again] = await runPlan(mock, coded, ["build"]);
+  assert.ok(result(again).fallbacks.length > 0, "the import is tried again");
+});
+
 test("build: a call refused for one of its sets changes none of them", async () => {
   const snap = copy(loadTreeFixture("switch"));
   snap.components.push(copy(loadTreeFixture("toggle").components[0]));
