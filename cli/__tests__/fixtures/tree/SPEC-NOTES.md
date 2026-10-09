@@ -891,3 +891,26 @@ D24. **`verify --json` adds `minFidelity: { min, score, passed }`** with
 D25. **`figma next` writes a continuation from the template its call was
    written with**: readable where the call holds the readable template,
    after `figma code --no-minify`.
+
+# After the third live push: verify's caveats and the request limit
+
+Notes LC1 on, from the CLI fixes after the third live push (Figma file
+UPmguLPQ7w1ESdOZsq6vlw).
+
+LC1. **verify says every warning snap wrote about a scored component**
+   (section 5.4 extended). The element-tree snap writes warnings verify
+   had no caveat kind for, so that push's verify printed none of them and
+   its `--json` had `caveats: []`, although snap warned that Attachment's
+   and Sidebar's values measured alike and that Badge's and Button's were
+   set through the preview. New kinds: `identical-values` (as `prop=value`),
+   `no-op-properties` and `font-stand-in`, read from snap's own words
+   (`parseSnapWarning` in snap.ts, tested against each function that writes
+   them); `preview-set`, from the variants' `appliedVia` and the reasons a
+   story change fixes, as snap's warning is; and `snap-warning`, any other
+   warning, as written (`unsaidWarnings`), so none is dropped. A warning
+   whose caveat the measurements don't bear out is said as written too.
+   The shared-key warning is left to `snapIssues`. `snapWarnings` keeps its
+   meaning, variants not measured. A 0.4.0 snap's warnings are all of kinds
+   it had, so the push2 replay's JSON is unchanged. The caveats print
+   right under the score's lines, before the element drift, which on that
+   push filled 40 lines between them.

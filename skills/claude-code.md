@@ -238,7 +238,7 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
    - `but snap no longer measures it`: a layer an earlier push built for an element the code no longer renders. Sending the component's build call removes it.
    - `not measured, so Figma holds a placeholder for it`: a variant snap couldn't measure (step 3). Not scored, and `--strict-measured` fails on it.
    - `made this plan from it`: the snap was taken again after the plan was written. Run `figma code` again and send its calls.
-   - What snap warned about the measurement, under the score (a closed trigger, variants that measured alike, values Storybook wouldn't take, args snap couldn't check): report it, as step 3 says.
+   - What snap warned about the measurement, under the score (a closed trigger, variants or values that measured alike, values Storybook wouldn't take or took only through its preview, args snap couldn't check, a font the browser couldn't render, and any other warning, which it quotes as snap wrote it): report it, as step 3 says. With `--json`, these are its `caveats`.
    - `! snap recorded a failure`: the measurement itself is incomplete, not Figma. Where it names a component's error, measure that component again (step 3, with `--merge`); where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again.
    - `Variables:` the element-tree readback doesn't read variable bindings yet, so a token detached in Figma at the same value can't be seen. Say so in the summary.
 

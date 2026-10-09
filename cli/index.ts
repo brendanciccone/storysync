@@ -176,6 +176,29 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const one = count === 1;
       return `snap couldn't check that Storybook gave the story the values of ${one ? "variant" : `${count} variants,`} ${nameSlugs(caveat.slugs ?? [])}, so ${one ? "it" : "they"} may have scored the story's default under ${one ? "its name" : "their names"}; measure the component again`;
     }
+    case "identical-values": {
+      const values = caveat.values ?? [];
+      const ticked = values.map((v) => `\`${v}\``);
+      const list = ticked.length > 1 ? `${ticked.slice(0, -1).join(", ")} and ${ticked[ticked.length - 1]}` : ticked.join("");
+      const property = values[0]?.split("=")[0] ?? "";
+      return `${list} measured the same, so their variants in Figma look alike; if the code draws them differently, the story may not pass \`${property}\` through for them`;
+    }
+    case "no-op-properties": {
+      const names = caveat.properties ?? [];
+      const one = names.length === 1;
+      return `every value of ${names.map((n) => `\`${n}\``).join(", ")} measured the same, so ${one ? "its" : "their"} variants in Figma look alike; if ${one ? "it changes" : "they change"} only behavior, \`--exclude-props ${names.join(",")}\` leaves ${one ? "it" : "them"} out`;
+    }
+    case "preview-set": {
+      const count = caveat.variants ?? 0;
+      const it = (caveat.values ?? []).length === 1 ? "it" : "them";
+      return `the story's URL wouldn't take ${nameSlugs(caveat.values ?? [])}, so snap set ${it} through Storybook's preview and measured ${count} ${count === 1 ? "variant" : "variants"} as the component renders ${it}; snap's warning names the story change that lets the URL take ${it}`;
+    }
+    case "font-stand-in": {
+      const fonts = (caveat.fonts ?? []).map((f) => `"${f}"`).join(", ");
+      return `the browser couldn't render ${fonts}, so snap measured the font it drew instead, and Figma was built from that; load the font in Storybook and measure again`;
+    }
+    case "snap-warning":
+      return caveat.warning ?? "";
     case "root-only": {
       const inner = caveat.innerElements;
       return `only the outer element was measured and compared${inner !== undefined ? ` (${inner} inner ${inner === 1 ? "element" : "elements"} not measured)` : ""}`;
@@ -617,19 +640,24 @@ program
         const excludedNote = excluded > 0
           ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`)
           : "";
-        // Elements first where snap measured them (cli/verify.ts formatElementReport).
-        const elementReport = formatElementReport(result);
-        if (elementReport.length) for (const line of elementReport) console.log(line);
-        else console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        // Beside the score, before the element report's drift: Figma can
+        // match a measurement of the wrong element exactly, so the score
+        // alone would read as a faithful one.
+        const beside: string[] = [];
         if (result.skipped.length > 0) {
-          console.log(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
+          beside.push(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }
-        // Beside the score: Figma can match a measurement of the wrong
-        // element exactly, so the score alone would read as a faithful one.
         const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind));
         if (snapCaveats.length > 0) {
-          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
-          for (const caveat of snapCaveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+          beside.push(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
+          for (const caveat of snapCaveats) beside.push(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        }
+        // Elements first where snap measured them (cli/verify.ts formatElementReport).
+        const elementReport = formatElementReport(result, beside);
+        if (elementReport.length) for (const line of elementReport) console.log(line);
+        else {
+          console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+          for (const line of beside) console.log(line);
         }
         // And what verify itself found the score covers: the components
         // compared by their outer element alone on one line, which on a

@@ -46,7 +46,7 @@ export type ArgRejectionReason =
 const REASON_ORDER: ArgRejectionReason[] = ["url-unsafe", "not-in-options", "not-in-argtypes", "number-in-url", "hidden-by-if", "not-applied"];
 
 /** Reasons no change to the story fixes: the URL can't carry the value, and only the preview can set it. */
-const NO_STORY_FIX: ReadonlySet<ArgRejectionReason> = new Set(["url-unsafe", "number-in-url"]);
+export const NO_STORY_FIX: ReadonlySet<ArgRejectionReason> = new Set(["url-unsafe", "number-in-url"]);
 
 /** What Storybook's URL parser reads as a number rather than a string. */
 const URL_NUMBER = /^-?[0-9]+(\.[0-9]+)?$/;
