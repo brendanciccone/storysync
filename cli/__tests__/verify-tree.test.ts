@@ -375,6 +375,29 @@ test("positions and sizes: a container grows across its flow by its tallest chil
   assert.deepEqual(findings(await grow(6)), ["default input-otp-group: h", ...slots]);
 });
 
+test("positions and sizes: a child deleted or hidden in a hugging frame costs itself, not its frame's size or its siblings' places", async () => {
+  // Figma's auto layout gives a missing or hidden layer no room: the frame
+  // hugging it shrinks, and the layers after it move up. Both follow from
+  // the one change, which is the one finding.
+  const deleted = await falsified("switch", ({ figma, built }) => {
+    node(figma, layers(built, "switch-thumb")[0].id).remove();
+  }, { autoLayout: true });
+  assert.deepEqual(findings(deleted), ["size-default switch-thumb: missing"]);
+  const hidden = await falsified("inputotp", ({ figma, built }) => {
+    node(figma, built.variants[0].layers["input-otp-group/input-otp-slot:3"]).visible = false;
+  }, { autoLayout: true });
+  assert.deepEqual(findings(hidden), ["default input-otp-group/input-otp-slot:3: visible"]);
+  // A frame that shrinks by more than the child it lost still drifts.
+  const shrunk = await falsified("inputotp", ({ figma, built }) => {
+    const v = built.variants[0];
+    node(figma, v.layers["input-otp-group/input-otp-slot:3"]).visible = false;
+    const group = node(figma, v.layers["input-otp-group"]);
+    group.layoutMode = "NONE";
+    group.resize(group.width - 60, group.height);
+  }, { autoLayout: true });
+  assert.ok(findings(shrunk).includes("default input-otp-group: w"), findings(shrunk).join("; "));
+});
+
 test("positions and sizes: an approximate node's geometry is scored within 2px, and past that listed, not scored", async () => {
   const fixture = loadTreeFixture("card");
   const footer = fixture.components[0].tree.base.find((n) => n.k === "card-footer/button")!;

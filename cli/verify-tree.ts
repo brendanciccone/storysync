@@ -476,7 +476,10 @@ export function scoreTree(input: TreeInput): TreeScore {
     const parent = snap.get(p)!;
     const snapFlow = flowOf(parent, children);
     const figmaParent = figmaNode(parent);
-    const present = children.map(figmaNode).filter((c): c is TreeNode => c !== null);
+    // Figma's flow runs on past a layer hidden there, which its auto layout
+    // gives no room, as it does past a missing one: the next is anchored to
+    // the one before, so a hidden layer costs itself alone.
+    const present = children.filter((c) => !hiddenInFigma(c, records)).map(figmaNode).filter((c): c is TreeNode => c !== null);
     flows.set(p, { snap: snapFlow, figma: figmaParent ? flowOf(figmaParent, present, snapFlow) : null });
   }
 
@@ -612,23 +615,32 @@ function positionMatches(n: TreeNode, figma: Box, axis: "x" | "y", flows: Map<st
   return want !== undefined && got !== undefined && Math.abs(want - got) <= limit;
 }
 
+/** A layer snap measured visible that Figma has hidden, which its auto layout gives no room. */
+function hiddenInFigma(n: TreeNode, records: Map<string, Rec>): boolean {
+  return n.vis !== 0 && records.get(n.k)?.visible === 0;
+}
+
 /**
  * How much a container may differ in size on one axis beyond its own
  * tolerance: what its in-flow children differ by there, as Figma's hugging
  * frame grows with them. Along the flow, the sum of the children's
- * differences; across it, the largest. Each child's own difference is scored
+ * differences; across it, the largest. A child missing from Figma, or
+ * hidden there, takes no room, so it differs by all of its size, and along
+ * a flex flow by the gap it took too. Each child's own difference is scored
  * on the child, so a label 5% wider in a stand-in font costs the label, if
- * anything, and not the button around it.
+ * anything, and not the button around it, and a deleted or hidden child
+ * costs itself, not its parent too.
  */
 function contentAllowance(n: TreeNode, axis: "w" | "h", kids: Map<string, TreeNode[]>, flows: Map<string, { snap: Flow; figma: Flow | null }>, records: Map<string, Rec>): number {
   const flow = flows.get(n.k)?.snap;
   if (!flow?.axis) return 0;
   const i = axis === "w" ? 2 : 3;
-  const diffs = (kids.get(n.k) ?? [])
-    .filter((c) => flow.inflow.includes(c.k) && records.has(c.k))
-    .map((c) => records.get(c.k)!.box[i] - c.box[i]);
+  const along = (flow.axis === "x") === (axis === "w");
+  const inflow = (kids.get(n.k) ?? []).filter((c) => flow.inflow.includes(c.k));
+  const gap = along && inflow.length > 1 && (n.L?.d ?? "").includes("flex") ? (n.L?.gap?.[flow.axis === "x" ? 1 : 0] ?? 0) : 0;
+  const diffs = inflow.map((c) => (!records.has(c.k) || hiddenInFigma(c, records) ? -(c.box[i] + gap) : records.get(c.k)!.box[i] - c.box[i]));
   if (!diffs.length) return 0;
-  return (flow.axis === "x") === (axis === "w") ? Math.abs(diffs.reduce((a, b) => a + b, 0)) : Math.max(...diffs.map(Math.abs));
+  return along ? Math.abs(diffs.reduce((a, b) => a + b, 0)) : Math.max(...diffs.map(Math.abs));
 }
 
 type Check = (property: string, ok: boolean, measured: unknown, figma: unknown) => void;

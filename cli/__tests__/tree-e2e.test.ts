@@ -370,6 +370,101 @@ test("tree e2e: figma next says when a read has nothing left, and refuses a call
   }
 });
 
+// --- Falsification (design section 17) ------------------------------------------
+
+/** A keyed layer of one component's variant in the mock: the set by its storysync id, then the variant by slug. */
+function layerIn(mock: MockFigma, component: string, slug: string, key: string): NodeView {
+  const owner = mock.nodes().find((n) => n.data["storysync.id"] === component);
+  assert.ok(owner, `no set for ${component} in Figma`);
+  const variant = owner.type === "COMPONENT" ? owner : (owner.children ?? []).find((v) => v.data["storysync.slug"] === slug);
+  assert.ok(variant, `no variant ${slug} of ${component}`);
+  if (key === "") return variant;
+  const walk = (view: NodeView): NodeView | null => {
+    if (view.data["storysync.k"] === key) return view;
+    for (const child of view.children ?? []) {
+      const found = walk(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const found = (variant.children ?? []).map(walk).find(Boolean);
+  assert.ok(found, `no layer ${key} in ${component} ${slug}`);
+  return found;
+}
+
+/** What verify found, as `component slug key: status`, with a gate or the properties that differ. */
+function findingsOf(json: Record<string, unknown>): string[] {
+  type Found = { component: string; slug: string; nodes?: { key: string; status: string; gate?: string; figmaId?: string; differences: { property: string }[] }[] };
+  return (json.variants as Found[]).flatMap((v) => (v.nodes ?? []).map((n) => `${v.component} ${v.slug} ${n.key}: ${n.status}${n.gate ? ` [${n.gate}]` : n.differences.length ? ` ${n.differences.map((d) => d.property).join(",")}` : ""}${n.figmaId ? " (id)" : ""}`)).sort();
+}
+
+test("tree e2e: each of the spec's hand edits is reported as exactly that element, and sending the build calls again undoes the rest", async () => {
+  // Section 17's edits, but the move: a layer in auto layout can't move
+  // without leaving the flow, which moves its neighbors and its parent's
+  // size with it (SPEC-NOTES). Each must be exactly one finding, by key and
+  // node id, and nothing else may change.
+  const names = ["switch", "attachment", "card", "inputotp", "toggle"];
+  const all = names.map((n) => asSnap(loadTreeFixture(n)));
+  const snap = { ...all[0], components: all.flatMap((s) => s.components) } as SnapResult;
+  const p = await push(snap);
+  try {
+    const base = await verifyPlan(p, "--strict");
+    assert.equal(base.status, 0, `${base.text.stdout}${base.text.stderr}`);
+    const baseline = readFileSync(join(p.dir, "figma-readback.json"), "utf8");
+    const attachment = (snap.components as TreeComponent[]).find((c) => c.id === "ui-base-attachment")!;
+    const iconSlug = attachment.variants.find((v) => v.status === "ok" && expandTree(attachment.tree, (v as { treeDelta?: TreeDelta }).treeDelta).some((n) => n.k === "attachment-media/svg"))!.slug;
+    const thumb = layerIn(p.mock, "ui-base-switch", "size-sm", "switch-thumb");
+    const icon = layerIn(p.mock, "ui-base-attachment", iconSlug, "attachment-media/svg");
+    const title = layerIn(p.mock, "ui-base-card", "size-default", "card-header/card-title");
+    const slot = layerIn(p.mock, "ui-base-inputotp", "default", "input-otp-group/input-otp-slot:3");
+    const toggle = layerIn(p.mock, "ui-base-toggle", loadTreeFixture("toggle").components[0].variants[0].slug, "");
+    const titleText = (p.mock.handle(title.id) as { characters: string }).characters;
+    await editInFigma(p.mock, `
+      const g = (id) => figma.getNodeByIdAsync(id);
+      (await g(${JSON.stringify(thumb.id)})).remove();
+      for (const v of (await g(${JSON.stringify(icon.id)})).findAll(() => true)) {
+        if (v.strokes && v.strokes.length) v.strokes = [{ type: "SOLID", color: { r: 1, g: 0, b: 1 } }];
+        if (v.fills && v.fills.length) v.fills = [{ type: "SOLID", color: { r: 1, g: 0, b: 1 } }];
+      }
+      const t = await g(${JSON.stringify(title.id)}); await figma.loadFontAsync(t.fontName); t.characters = "Edited title";
+      (await g(${JSON.stringify(slot.id)})).visible = false;
+      const r = figma.createRectangle(); r.name = "Sticker"; (await g(${JSON.stringify(toggle.id)})).appendChild(r); r.layoutPositioning = "ABSOLUTE"; r.resize(4, 4);
+    `);
+    await readAgain(p);
+    const edited = await verifyPlan(p, "--strict");
+    assert.equal(edited.status, 1);
+    assert.deepEqual(findingsOf(edited.json), [
+      `ui/base/Attachment ${iconSlug} attachment-media/svg: drifted paint (id)`,
+      "ui/base/Card size-default card-header/card-title: drifted [chars] (id)",
+      "ui/base/InputOTP default input-otp-group/input-otp-slot:3: drifted [visible] (id)",
+      "ui/base/Switch size-sm switch-thumb: missing",
+    ]);
+    assert.equal(elementsOf(edited.json).designerLayers, 1);
+    assert.match(edited.text.stdout, /"Sticker" \(RECTANGLE, node [^)]+\): a designer's, not scored/);
+
+    // Undone: what can be by hand, and the rest by sending the build calls again, as the skill's repair does.
+    await editInFigma(p.mock, `
+      const g = (id) => figma.getNodeByIdAsync(id);
+      const t = await g(${JSON.stringify(title.id)}); await figma.loadFontAsync(t.fontName); t.characters = ${JSON.stringify(titleText)};
+      (await g(${JSON.stringify(slot.id)})).visible = true;
+      for (const c of (await g(${JSON.stringify(toggle.id)})).children.filter((c) => c.name === "Sticker")) c.remove();
+    `);
+    const out = dirname(p.planPath);
+    for (const call of p.plan.calls.filter((c) => c.kind === "build")) {
+      const run = await p.mock.run(readFileSync(join(out, call.file), "utf8"));
+      assert.ok(run.ok, run.text);
+    }
+    await readAgain(p);
+    const undone = await verifyPlan(p, "--strict", "--min-fidelity", "100");
+    assert.equal(undone.status, 0, `${undone.text.stdout}${undone.text.stderr}`);
+    // The readback is the baseline's, but for when it was read, its seals, and the two layers built again.
+    const plain = (text: string) => JSON.stringify(JSON.parse(text), (k, v) => (k === "readAt" || k === "checksum" ? undefined : typeof v === "string" && /^\d+:\d+$/.test(v) ? "id" : v));
+    assert.equal(plain(readFileSync(join(p.dir, "figma-readback.json"), "utf8")), plain(baseline));
+  } finally {
+    cleanup(p);
+  }
+});
+
 // --- verify's flags -----------------------------------------------------------
 
 test("verify --plan: a read call with no result saved is named, its variants not read rather than missing, and fails --strict alone", async () => {
