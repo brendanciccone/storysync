@@ -523,7 +523,7 @@ export interface ScoreCaveat {
    * `identical-variants` has it.
    */
   kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
-    | "identical-values" | "no-op-properties" | "preview-set" | "font-stand-in" | "snap-warning"
+    | "identical-values" | "no-op-properties" | "preview-set" | "font-not-rendered" | "snap-warning"
     | "root-only" | "truncated-tree" | "built-from-other-measurement";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
@@ -542,7 +542,12 @@ export interface ScoreCaveat {
    */
   values?: string[];
   variants?: number;
-  /** For `font-stand-in`: the fonts the browser couldn't render, so it drew another. */
+  /**
+   * For `font-not-rendered`: the fonts the browser couldn't render, so it
+   * drew another. Named `font-stand-in` until snap drew text in stand-ins
+   * of its own, Figma's fonts, which a component's `fontStandIns` lists:
+   * nothing reads a caveat back, so no file holds the old name to read.
+   */
   fonts?: string[];
   /** For `snap-warning`: a warning of snap's no other kind stands for, as snap wrote it. */
   warning?: string;
@@ -1709,7 +1714,7 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     const note = parseSnapWarning(warning);
     if (note?.kind === "identical-values") caveats.push({ component: key, kind: "identical-values", values: note.values });
     else if (note?.kind === "no-op-properties") caveats.push({ component: key, kind: "no-op-properties", properties: note.properties });
-    else if (note?.kind === "font-stand-in") caveats.push({ component: key, kind: "font-stand-in", fonts: note.fonts });
+    else if (note?.kind === "font-not-rendered") caveats.push({ component: key, kind: "font-not-rendered", fonts: note.fonts });
   }
   return caveats;
 }

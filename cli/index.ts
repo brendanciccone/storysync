@@ -212,7 +212,7 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const it = (caveat.values ?? []).length === 1 ? "it" : "them";
       return `the story's URL wouldn't take ${nameSlugs(caveat.values ?? [])}, so snap set ${it} through Storybook's preview and measured ${count} ${count === 1 ? "variant" : "variants"} as the component renders ${it}; snap's warning names the story change that lets the URL take ${it}`;
     }
-    case "font-stand-in": {
+    case "font-not-rendered": {
       const fonts = (caveat.fonts ?? []).map((f) => `"${f}"`).join(", ");
       return `the browser couldn't render ${fonts}, so snap measured the font it drew instead, and Figma was built from that; load the font in Storybook and measure again`;
     }

@@ -1218,7 +1218,8 @@ LC1. **verify says every warning snap wrote about a scored component**
    its `--json` had `caveats: []`, although snap warned that Attachment's
    and Sidebar's values measured alike and that Badge's and Button's were
    set through the preview. New kinds: `identical-values` (as `prop=value`),
-   `no-op-properties` and `font-stand-in`, read from snap's own words
+   `no-op-properties` and `font-not-rendered` (first named `font-stand-in`,
+   BV4), read from snap's own words
    (`parseSnapWarning` in snap.ts, tested against each function that writes
    them); `preview-set`, from the variants' `appliedVia` and the reasons a
    story change fixes, as snap's warning is; and `snap-warning`, any other
@@ -1329,3 +1330,10 @@ BV3. **The readback says whether Figma cuts each text short, and verify
      on this, and tree-e2e, whose build widens what it can (T14), drifts
      exactly the texts its build responses name `cut short`: Attachment's
      2 horizontal titles. Those tests hold both counts.
+BV4. **The caveat for a font the browser couldn't render is
+   `font-not-rendered`**, first named `font-stand-in` (LC1). Since T10,
+   `fontStandIns` names the stand-ins snap draws text in on purpose,
+   Figma's fonts, which are no caveat at all, and the two read as one.
+   Nothing persists a caveat to read back: verify draws it each run from
+   the warning snap wrote in styles.json, whose words are unchanged, so a
+   styles.json from before gives the new kind, and no old name is kept.

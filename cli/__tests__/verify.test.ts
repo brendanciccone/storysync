@@ -1407,7 +1407,7 @@ test("verify: what snap warned is carried beside the score as caveats, each of i
     { component: "Forms/Button", kind: "preview-set", values: ["variant=link"], variants: 1 },
     { component: "Forms/Button", kind: "identical-values", values: ["state=done", "state=uploading", "state=processing"] },
     { component: "Forms/Button", kind: "no-op-properties", properties: ["asChild"] },
-    { component: "Forms/Button", kind: "font-stand-in", fonts: ["Geist"] },
+    { component: "Forms/Button", kind: "font-not-rendered", fonts: ["Geist"] },
     { component: "Forms/Button", kind: "root-only" },
     { component: "Forms/Button", kind: "snap-warning", warning: climbed },
   ]);
