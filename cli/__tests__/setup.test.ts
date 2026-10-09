@@ -1390,12 +1390,12 @@ test("verify requires exactly the fields the Claude template returns on every va
   }
 });
 
-/** Each push instruction setup installs, as [path, text]: the three skills and the push command. */
 /** The push texts' root-only parts: the skills, whose root-only section keeps 0.4.0's templates. */
 function installedSkillTexts(): [string, string][] {
   return installedPushTexts().filter(([path]) => !path.endsWith("storysync-push.md"));
 }
 
+/** Each push instruction setup installs, as [path, text]: the three skills and the push command. */
 function installedPushTexts(): [string, string][] {
   const project = tempProject();
   try {
@@ -1569,6 +1569,12 @@ test("every push builds with generated calls and CLI commands alone: no styling 
     }
     for (const word of ["applyStyles", "setPaints", "loadFont", "SPEC", "BIND", "VARIANTS", "PROPERTIES", "SLUG_BY_NAME", "SOURCE_BY_SLUG"]) {
       assert.doesNotMatch(outside, new RegExp(`\\b${word}\\b`), `${path} names ${word} outside the root-only section`);
+    }
+    // A variant snap couldn't measure is a placeholder; styling one from the
+    // source is the root-only push's alone, and the guidelines say so.
+    assert.doesNotMatch(outside, /fall back to reading the component's source|read the component source/, `${path} styles from source outside the root-only section`);
+    if (skill) {
+      assert.match(outside, /In a push through `figma code`, a variant snap couldn't measure is built as a placeholder[^\n]*Only a root-only push[^\n]*falls back to the source/, `${path}'s guidelines forbid the root-only section's fallback without excepting it`);
     }
     for (const command of ["npx storysync tokens --json --project . > .storysync/tokens.json", "npx storysync figma code", "npx storysync figma upload --plan", "npx storysync figma next --plan", "npx storysync verify --plan"]) {
       assert.ok(outside.includes(command), `${path}'s push never runs \`${command}\``);
