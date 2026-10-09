@@ -91,6 +91,31 @@ function figmaX(figma: ReturnType<typeof newFigma>, id: string): number {
   return figma.node(id)!.x;
 }
 
+test("template: counts what it returns in bytes, as use_figma does, so text outside ASCII stops a call at LIMIT, not past 20kb", async () => {
+  const figma = newFigma();
+  const label = "読み込み中".repeat(58);
+  const run = await figma.run(`
+    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+    const variants = [];
+    for (let i = 0; i < 24; i++) {
+      const c = figma.createComponent();
+      c.name = 'n=' + i;
+      c.resize(100, 20);
+      const t = figma.createText(); c.appendChild(t);
+      t.characters = ${JSON.stringify(label)};
+      t.setSharedPluginData('storysync', 'k', 't');
+      for (const [k, v] of [['slug', 'n-' + i], ['i', String(i)], ['src', 'measured']]) c.setSharedPluginData('storysync', k, v);
+      variants.push(c);
+    }
+    const set = figma.combineAsVariants(variants, figma.currentPage);
+    set.setSharedPluginData('storysync', 'id', 'wide');`);
+  assert.ok(run.ok, run.text);
+  const results = await readBack(figma, [["wide", 0, 23, 0]], { page: "Page 1" });
+  assert.ok(results.length >= 2, "more than one call's worth");
+  for (const r of figma.runs.slice(-results.length)) assert.ok(r.ok && r.bytes <= 15_000 + 100, `${r.bytes} bytes`);
+  assert.equal(results.flatMap((r) => Object.keys(r.sets[0].entries)).length, 24);
+});
+
 test("template: a read over LIMIT returns more, and the calls after it cover the rest once each", async () => {
   const figma = newFigma();
   const fixture = loadTreeFixture("card");

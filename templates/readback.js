@@ -23,10 +23,10 @@
 // storysync id, the first and last variant index `i` to read, and the node
 // to start at: 0, or where a part before it stopped, counting the records
 // of the variants at the first index in slug order as one run. LIMIT is
-// the characters of entries to return: when the next entry would pass it,
-// the call stops and returns `more`, the slices left, from which
-// `storysync figma next` writes the next call. TPL is the template the CLI
-// pairs the call with, this one, 2; any other refuses to run.
+// the bytes of the response: when the next entry would pass it, the call
+// stops and returns `more`, the slices left, from which `storysync figma
+// next` writes the next call. TPL is the template the CLI pairs the call
+// with, this one, 2; any other refuses to run.
 //
 // It returns, for each set read, its entries by slug, each sealed with the
 // checksum verify recomputes (FNV-1a over canonical JSON under the set's id
@@ -285,7 +285,13 @@ const owners = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] 
   .filter((n) => n.type === 'COMPONENT_SET' || !n.parent || n.parent.type !== 'COMPONENT_SET');
 
 const out = { kind: 'read', tpl: TPL, page: page.name, sets: [] };
-const size = (v) => JSON.stringify(v).length + 1;
+// What use_figma's 20kb counts: UTF-8 bytes (a character outside ASCII
+// counted as three, at most), of the JSON or, with RETURN_TEXT, of that
+// as a string. LIMIT and the guard below count the same.
+const size = (v) => {
+  const t = JSON.stringify(v);
+  return (RETURN_TEXT ? JSON.stringify(t) : t).length + (t.match(/[^\x00-\x7f]/g) || []).length * 2 + 1;
+};
 let used = size(out);
 for (let s = 0; s < SLICES.length && !out.more; s++) {
   const [id, from, to, start] = SLICES[s];
@@ -370,9 +376,8 @@ for (let s = 0; s < SLICES.length && !out.more; s++) {
   }
 }
 
-// use_figma returns at most 20kb. Fail rather than return a read the limit
-// would cut short; a character outside ASCII counted as up to three bytes.
-const text = JSON.stringify(out);
-const bytes = (RETURN_TEXT ? JSON.stringify(text) : text).length + (text.match(/[^\x00-\x7f]/g) || []).length * 2;
+// use_figma returns at most 20kb: fail rather than return a read the
+// limit would cut short.
+const bytes = size(out);
 if (bytes > 19000) throw new Error('This read returns ' + bytes + ' bytes, too near 20kb: lower LIMIT');
-return RETURN_TEXT ? text : out;
+return RETURN_TEXT ? JSON.stringify(out) : out;
