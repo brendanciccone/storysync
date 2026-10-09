@@ -548,6 +548,7 @@ test("verify CLI: placeholders for variants snap couldn't measure fail --strict-
   const built = await buildFixture(figma, fixture);
   const readback = assemble(await readBack(figma, [[built.component, 0, fixture.components[0].variants.length - 1, 0]]));
   const strict = verify(fixture, readback, "--strict");
+  assert.equal(strict.status, 0, strict.out);
   assert.match(strict.out, /not measured 2/);
   assert.match(strict.out, /\? ui\/base\/Button variant=link, size=xs: not measured, so Figma holds a placeholder for it/);
   assert.match(strict.out, /\d+ verified, 0 drifted, 0 missing from Figma, 2 not measured, across \d+ variants/);

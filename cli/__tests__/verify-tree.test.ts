@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
+import type { TreeFixture } from "./mock-figma.js";
 import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
 import { readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import type { ReadbackFile, ReadbackStyles, VerifyResult } from "../verify.js";
@@ -55,13 +56,20 @@ test("faithful build: the same font drawn 4.5% wider costs each label its width,
 });
 
 test("faithful build: every fixture's elements are all scored, not passed by default", async () => {
+  // Elements measured, elements verified, and properties compared: every
+  // element of every variant, each on its kind's properties (design 10.2).
+  // A property left uncompared, or an element passed without its record,
+  // changes the count.
   const counts: Record<string, [number, number, number]> = {};
   for (const name of treeFixtureNames()) {
     const { fixture, readback } = await buildAndRead(name, { autoLayout: true });
     const result = verify(fixture, readback, 0.5);
     counts[name] = [result.summary.elements!.measured, result.summary.elements!.verified, result.summary.propertiesCompared];
   }
-  console.log(JSON.stringify(counts));
+  assert.deepEqual(counts, {
+    attachment: [32, 32, 396], avatar: [9, 9, 93], "button-icon": [30, 30, 360], card: [46, 46, 648], "example-button": [24, 24, 312],
+    inputotp: [8, 8, 94], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102],
+  });
 });
 
 // --- Falsification (design section 15, package C) ------------------------------------
@@ -78,9 +86,9 @@ function layers(built: Awaited<ReturnType<typeof buildAndRead>>["built"], key: s
   return built.variants.filter((v) => v.layers[key]).map((v) => ({ slug: v.slug, id: v.layers[key] }));
 }
 
-async function falsified(name: string, change: (ctx: Awaited<ReturnType<typeof buildAndRead>>) => void, options: { autoLayout?: boolean } = {}): Promise<VerifyResult> {
+async function falsified(name: string | TreeFixture, change: (ctx: Awaited<ReturnType<typeof buildAndRead>>) => void | Promise<void>, options: { autoLayout?: boolean } = {}): Promise<VerifyResult> {
   const ctx = await buildAndRead(name, options);
-  change(ctx);
+  await change(ctx);
   return verify(ctx.fixture, await reread(ctx.figma, ctx.fixture, ctx.built), 0.5);
 }
 
@@ -98,6 +106,11 @@ test("falsify: a Switch without its thumb scores 50%", async () => {
   });
   near(result.elementFidelity, 50, "Switch without its thumb");
   assert.deepEqual(findings(result), ["size-default switch-thumb: missing", "size-sm switch-thumb: missing"]);
+  // And in the share of properties, every property of the thumb's kind, unmatched.
+  const { fixture, readback } = await buildAndRead("switch");
+  const whole = verify(fixture, readback, 0.5).summary;
+  assert.equal(result.summary.propertiesCompared, whole.propertiesCompared);
+  assert.equal(result.summary.propertiesMatched, whole.propertiesMatched - 2 * 12, "x, y, w, h, fills, stroke, radius, effects, opacity, blend, clip and visible, twice");
 });
 
 test("falsify: a thumb moved from x 1 to 15 drifts on x alone", async () => {
@@ -204,6 +217,139 @@ test("falsify: a vertical Attachment built as its root and an untruncated title 
   assert.deepEqual(vertical.nodes!.find((n) => n.key.endsWith("attachment-title"))!.differences.map((d) => d.property), ["x", "y", "w", "truncation"]);
 });
 
+// --- Each property, scored -------------------------------------------------------------
+//
+// One change in Figma per property a node's kind is scored on (design
+// 10.2), on a faithful build: each must cost that property on that node,
+// and nothing else; a gate's, the whole node.
+
+/** A solid paint of `hex` (#rrggbb). */
+const paint = (hex: string) => ({ type: "SOLID", color: { r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 } });
+
+/** A text layer, sized as it is, so a change to its style changes nothing else about it. */
+function textOf(ctx: Awaited<ReturnType<typeof buildAndRead>>, key: string): Handle {
+  const text = node(ctx.figma, ctx.built.variants[0].layers[key]);
+  text.textAutoResize = "NONE";
+  return text;
+}
+
+const PROPERTY_CASES: { property: string; fixture: string; key: string; change: (ctx: Awaited<ReturnType<typeof buildAndRead>>) => void; finding: string }[] = [
+  // A frame: fills (above, on the thumb), stroke, radius, effects, opacity, blend, clip, order, size.
+  { property: "stroke color", fixture: "inputotp", key: "input-otp-group/input-otp-slot", finding: "stroke", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["input-otp-group/input-otp-slot"]).strokes = [paint("#ff0000")]; } },
+  { property: "stroke style", fixture: "inputotp", key: "input-otp-group/input-otp-slot", finding: "stroke", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["input-otp-group/input-otp-slot"]).dashPattern = [3, 3]; } },
+  { property: "stroke align", fixture: "inputotp", key: "input-otp-group/input-otp-slot", finding: "stroke", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["input-otp-group/input-otp-slot"]).strokeAlign = "CENTER"; } },
+  { property: "radius", fixture: "card", key: "", finding: "radius", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].id).cornerRadius = 18; } },
+  {
+    property: "shadow color", fixture: "inputotp", key: "input-otp-group/input-otp-slot", finding: "effects", change: (ctx) => {
+      const slot = node(ctx.figma, ctx.built.variants[0].layers["input-otp-group/input-otp-slot"]);
+      slot.effects = slot.effects.map((e: Record<string, unknown>) => ({ ...e, color: { r: 1, g: 0, b: 0, a: 0.05 } }));
+    },
+  },
+  {
+    property: "an effect snap didn't measure", fixture: "switch", key: "switch-thumb", finding: "effects", change: (ctx) => {
+      node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).effects = [{ type: "LAYER_BLUR", radius: 4, visible: true }];
+    },
+  },
+  { property: "opacity", fixture: "switch", key: "switch-thumb", finding: "opacity", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).opacity = 0.5; } },
+  { property: "blend, measured normal", fixture: "switch", key: "switch-thumb", finding: "blend", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).blendMode = "MULTIPLY"; } },
+  { property: "blend, measured darken", fixture: "avatar", key: "::after", finding: "blend", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["::after"]).blendMode = "MULTIPLY"; } },
+  { property: "clip", fixture: "switch", key: "switch-thumb", finding: "clip", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).clipsContent = true; } },
+  {
+    property: "order", fixture: "card", key: "", finding: "order", change: (ctx) => {
+      node(ctx.figma, ctx.built.variants[0].id).insertChild(0, node(ctx.figma, ctx.built.variants[0].layers["card-content"]));
+    },
+  },
+  { property: "width", fixture: "switch", key: "switch-thumb", finding: "w", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["switch-thumb"]).resize(20, 16); } },
+  // A text: each property of its style, its lines and opacity.
+  { property: "family", fixture: "example-button", key: "#text", finding: "family", change: (ctx) => { textOf(ctx, "#text").fontName = { family: "Roboto Mono", style: "SemiBold" }; } },
+  { property: "weight", fixture: "button-icon", key: "#text", finding: "weight", change: (ctx) => { textOf(ctx, "#text").fontName = { family: "Inter", style: "Bold" }; } },
+  { property: "italic", fixture: "button-icon", key: "#text", finding: "italic", change: (ctx) => { textOf(ctx, "#text").fontName = { family: "Inter", style: "Medium Italic" }; } },
+  { property: "font size", fixture: "button-icon", key: "#text", finding: "size", change: (ctx) => { textOf(ctx, "#text").fontSize = 16; } },
+  { property: "line height", fixture: "button-icon", key: "#text", finding: "lineHeight", change: (ctx) => { textOf(ctx, "#text").lineHeight = { unit: "PIXELS", value: 24 }; } },
+  { property: "letter spacing", fixture: "button-icon", key: "#text", finding: "letterSpacing", change: (ctx) => { textOf(ctx, "#text").letterSpacing = { unit: "PIXELS", value: 1 }; } },
+  { property: "text color", fixture: "button-icon", key: "#text", finding: "color", change: (ctx) => { textOf(ctx, "#text").fills = [paint("#ff0000")]; } },
+  { property: "case", fixture: "button-icon", key: "#text", finding: "case", change: (ctx) => { textOf(ctx, "#text").textCase = "UPPER"; } },
+  { property: "decoration", fixture: "button-icon", key: "#text", finding: "decoration", change: (ctx) => { textOf(ctx, "#text").textDecoration = "UNDERLINE"; } },
+  { property: "align", fixture: "button-icon", key: "#text", finding: "align", change: (ctx) => { textOf(ctx, "#text").textAlignHorizontal = "LEFT"; } },
+  {
+    property: "lines", fixture: "button-icon", key: "#text", finding: "h,lines", change: (ctx) => {
+      const text = textOf(ctx, "#text");
+      text.resize(text.width, 40);
+    },
+  },
+  { property: "text opacity", fixture: "button-icon", key: "#text", finding: "opacity", change: (ctx) => { textOf(ctx, "#text").opacity = 0.5; } },
+  {
+    // In a stand-in font a text may be 6% wider than the browser drew it, not 10%.
+    property: "stand-in width", fixture: "button-icon", key: "#text", finding: "w", change: (ctx) => {
+      const text = textOf(ctx, "#text");
+      text.resize(text.width * 1.1, text.height);
+    },
+  },
+  // A vector: its shapes' paint and its opacity; an image: its radius and clip.
+  { property: "shape paint", fixture: "toggle", key: "svg", finding: "paint", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers.svg).children[0].strokes = [paint("#ff0000")]; } },
+  { property: "vector opacity", fixture: "toggle", key: "svg", finding: "opacity", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers.svg).opacity = 0.5; } },
+  { property: "image radius", fixture: "avatar", key: "avatar-image", finding: "radius", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["avatar-image"]).cornerRadius = 0; } },
+  { property: "image clip", fixture: "avatar", key: "avatar-image", finding: "clip", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers["avatar-image"]).clipsContent = false; } },
+];
+
+for (const c of PROPERTY_CASES) {
+  test(`property: ${c.property} wrong in Figma drifts on that alone, on that node alone`, async () => {
+    const result = await falsified(c.fixture, c.change);
+    const slug = loadTreeFixture(c.fixture).components[0].variants[0].slug;
+    assert.deepEqual(findings(result), [`${slug} ${c.key}: ${c.finding}`]);
+    const verdict = result.variants[0].nodes![0];
+    assert.equal(verdict.gate, undefined);
+    assert.ok(verdict.score > 0 && verdict.score < 1, `${verdict.score}`);
+  });
+}
+
+const GATE_CASES: { gate: string; fixture: string; key: string; change: (ctx: Awaited<ReturnType<typeof buildAndRead>>) => void }[] = [
+  { gate: "chars", fixture: "button-icon", key: "#text", change: (ctx) => { textOf(ctx, "#text").characters = "Logout"; } },
+  { gate: "shapes", fixture: "button-icon", key: "svg", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers.svg).children[0].remove(); } },
+  // A shape 1px out of place in a 16px icon, past its 0.5px.
+  { gate: "shapes", fixture: "toggle", key: "svg", change: (ctx) => { node(ctx.figma, ctx.built.variants[0].layers.svg).children[0].x += 1; } },
+];
+
+for (const c of GATE_CASES) {
+  test(`gate: wrong ${c.gate} in Figma scores the node 0, as another node`, async () => {
+    const result = await falsified(c.fixture, c.change);
+    const nodes = result.variants.flatMap((v) => v.nodes ?? []);
+    assert.equal(nodes.length, 1, findings(result).join("\n"));
+    assert.deepEqual([nodes[0].key, nodes[0].gate, nodes[0].score], [c.key, c.gate, 0]);
+  });
+}
+
+test("positions and sizes: a container grows across its flow by its tallest child's growth, and no more", async () => {
+  // Two of InputOTP's slots 4px taller, which a hugging row grows by 4,
+  // not by both.
+  const grow = (dh: number) => falsified("inputotp", ({ figma, built }) => {
+    const v = built.variants[0];
+    for (const key of ["input-otp-group/input-otp-slot", "input-otp-group/input-otp-slot:2"]) {
+      const layer = node(figma, v.layers[key]);
+      layer.resize(layer.width, layer.height + 4);
+    }
+    const group = node(figma, v.layers["input-otp-group"]);
+    group.resize(group.width, group.height + dh);
+  });
+  const slots = ["default input-otp-group/input-otp-slot: h", "default input-otp-group/input-otp-slot:2: h"];
+  assert.deepEqual(findings(await grow(4)), slots);
+  assert.deepEqual(findings(await grow(6)), ["default input-otp-group: h", ...slots]);
+});
+
+test("positions and sizes: an approximate node's geometry is scored within 2px, and past that listed, not scored", async () => {
+  const fixture = loadTreeFixture("card");
+  const footer = fixture.components[0].tree.base.find((n) => n.k === "card-footer/button")!;
+  footer.approx = "a transform snap measured by its box";
+  const move = (dx: number) => falsified(JSON.parse(JSON.stringify(fixture)) as TreeFixture, ({ figma, built }) => {
+    node(figma, built.variants[0].layers["card-footer/button"]).x += dx;
+  });
+  const near2 = await move(1.5);
+  assert.deepEqual(findings(near2), []);
+  const far = await move(4);
+  assert.deepEqual(findings(far), []);
+  assert.ok(far.unscorable!.some((u) => u.key === "card-footer/button" && u.property === "x" && /approximate geometry/.test(u.reason)), JSON.stringify(far.unscorable));
+});
+
 test("linear gradients: a gradient built faithfully verifies, transparent stops too, and one turned 10 degrees drifts on its fills", async () => {
   const fixture = loadTreeFixture("switch");
   const thumb = fixture.components[0].tree.base.find((n) => n.k === "switch-thumb")!;
@@ -245,17 +391,31 @@ test("integrity: a hidden layer scores 0, by the visibility gate", async () => {
   assert.equal(result.variants[0].nodes![0].gate, "visible");
 });
 
+test("strict: drifted, missing and extra elements and reads with no result each fail --strict, and say so", async () => {
+  const drifted = await falsified("switch", ({ figma, built }) => {
+    node(figma, layers(built, "switch-thumb")[0].id).opacity = 0.5;
+  });
+  assert.deepEqual(treeStrictFailures(drifted), ["1 element drifted"]);
+  const missing = await falsified("switch", ({ figma, built }) => {
+    for (const { id } of layers(built, "switch-thumb")) node(figma, id).remove();
+  });
+  assert.deepEqual(treeStrictFailures(missing), ["2 elements are missing from Figma"]);
+  const { fixture, readback } = await buildAndRead("switch");
+  const unread = verify(fixture, readback, 0.5, { notRead: [7, 9] });
+  assert.deepEqual(treeStrictFailures(unread), ["planned read calls 7, 9 have no result saved"]);
+  assert.deepEqual(treeStrictFailures(verify(fixture, readback, 0.5)), []);
+});
+
 test("integrity: a keyed layer snap doesn't measure is an extra element scoring 0", async () => {
-  const result = await falsified("switch", ({ figma, built }) => {
-    const root = node(figma, built.variants[0].id);
-    const copy = node(figma, built.variants[0].layers["switch-thumb"]);
+  const result = await falsified("switch", async ({ figma, built }) => {
     // As a designer's duplicate of a layer keeps its plugin data, under another key here.
-    void figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(root.id)}); const f = figma.createFrame(); v.appendChild(f); f.resize(4, 4); f.setSharedPluginData('storysync', 'k', 'switch-thumb:2'); return f.id;`);
-    void copy;
+    const run = await figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(built.variants[0].id)}); const f = figma.createFrame(); v.appendChild(f); f.resize(4, 4); f.setSharedPluginData('storysync', 'k', 'switch-thumb:2'); return f.id;`);
+    assert.ok(run.ok, run.text);
   });
   assert.equal(result.summary.elements!.extra, 1);
   near(result.elementFidelity, 80, "four elements and one extra");
   assert.deepEqual(findings(result), ["size-default switch-thumb:2: extra"]);
+  assert.deepEqual(treeStrictFailures(result), ["1 keyed layer in Figma snap no longer measures"]);
 });
 
 test("integrity: a designer's layer is listed, not scored, and fails --strict unless allowed", async () => {
@@ -303,6 +463,46 @@ test("integrity: a variant read in parts with one dropped is parts_missing, and 
   }
 });
 
+/** The readback with `key`'s entry changed by `edit` and sealed again, as a template that read it so would have. */
+function resealed(readback: ReadbackFile, component: string, key: string, edit: (entry: ReadbackStyles) => void): ReadbackFile {
+  const copy = edited(readback, component, key, edit);
+  const { checksum: _checksum, ...rest } = copy.components[component].variants[key];
+  copy.components[component].variants[key] = { ...rest, checksum: readbackChecksum(copy.components[component].nodeId!, key, rest) };
+  return copy;
+}
+
+test("integrity: parts that say the wrong count, total or first node are parts_missing, sealed as they are", async () => {
+  const { fixture, readback } = await buildAndRead("sidebar", { limit: 1500 });
+  const component = Object.keys(readback.components)[0];
+  const keys = Object.keys(readback.components[component].variants).sort((a, b) => (readback.components[component].variants[a].part?.[0] ?? 0) - (readback.components[component].variants[b].part?.[0] ?? 0));
+  const second = keys[1];
+  const cases: [string, (e: ReadbackStyles) => void][] = [
+    ["a count that isn't its records'", (e) => { e.part = [e.part![0], e.part![1] + 1, e.part![2]]; }],
+    ["a total other parts don't give", (e) => { e.part = [e.part![0], e.part![1], e.part![2] + 1]; }],
+    ["a first node its key doesn't give", (e) => { e.part = [e.part![0] + 1, e.part![1], e.part![2]]; }],
+  ];
+  for (const [what, edit] of cases) {
+    const result = verify(fixture, resealed(readback, component, second, edit), 0.5);
+    assert.deepEqual(result.readbackIssues.map((i) => i.problem), ["parts_missing"], what);
+  }
+  // A part under a key its first node doesn't give, its count and place
+  // right, sealed under that key.
+  const rekeyed = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+  const variants = rekeyed.components[component].variants;
+  const { checksum: _checksum, ...moved } = variants[second];
+  delete variants[second];
+  variants[`${second}0`] = { ...moved, checksum: readbackChecksum(rekeyed.components[component].nodeId!, `${second}0`, moved) };
+  assert.deepEqual(verify(fixture, rekeyed, 0.5).readbackIssues.map((i) => i.problem), ["parts_missing"], "a key its first node doesn't give");
+  // Every part saying one more record than there are: no gap, but no end.
+  let longer = readback;
+  for (const key of keys) longer = resealed(longer, component, key, (e) => { e.part = [e.part![0], e.part![1], e.part![2] + 1]; });
+  assert.deepEqual(verify(fixture, longer, 0.5).readbackIssues.map((i) => i.problem), ["parts_missing"]);
+  // And the last saying it holds that record too, which it doesn't: each
+  // count is held to the records its part has.
+  const counted = resealed(longer, component, keys[keys.length - 1], (e) => { e.part = [e.part![0], e.part![1] + 1, e.part![2]]; });
+  assert.deepEqual(verify(fixture, counted, 0.5).readbackIssues.map((i) => i.problem), ["parts_missing"]);
+});
+
 test("integrity: a record of the wrong length is incomplete", async () => {
   const cut = READBACK_TEMPLATE.replace("n.opacity, n.blendMode, n.clipsContent ? 1 : 0, ...tail.slice(1)];", "n.opacity, n.blendMode, ...tail.slice(1)];");
   assert.notEqual(cut, READBACK_TEMPLATE);
@@ -329,6 +529,22 @@ test("integrity: a variant built from another snap is a caveat, and still scored
   });
   assert.equal(result.elementFidelity, 1);
   assert.deepEqual(result.caveats.filter((c) => c.kind === "built-from-other-measurement").map((c) => c.slugs), [["size-default"]]);
+  // A snap since that changed only the root's paint, which its styles hold.
+  const { fixture, readback } = await buildAndRead("switch");
+  const resnap = JSON.parse(JSON.stringify(fixture)) as TreeFixture;
+  resnap.components[0].base!.styles.backgroundColor = "#d4d4d4";
+  const repainted = verify(resnap, readback, 0.5);
+  assert.deepEqual(repainted.caveats.filter((c) => c.kind === "built-from-other-measurement").map((c) => c.slugs), [["size-default", "size-sm"]]);
+});
+
+test("integrity: a tree snap cut short says so, and lists what it left out as unscorable", async () => {
+  const fixture = loadTreeFixture("switch");
+  fixture.components[0].tree.truncated = { nodes: 2, at: "switch-thumb/after" };
+  const { readback } = await buildAndRead(JSON.parse(JSON.stringify(fixture)) as TreeFixture);
+  const result = verify(fixture, readback, 0.5);
+  assert.deepEqual(result.caveats.filter((c) => c.kind === "truncated-tree").map((c) => [c.nodes, c.at]), [[2, "switch-thumb/after"]]);
+  assert.deepEqual(result.unscorable!.filter((u) => u.property === "subtree").map((u) => [u.key, u.variants]), [["switch-thumb/after", 2]]);
+  assert.equal(result.elementFidelity, 1);
 });
 
 test("integrity: two reads of an unchanged set differ only in readAt and checksum", async () => {
@@ -374,6 +590,8 @@ test("integrity: a variant missing from Figma costs every element snap measured 
   assert.equal(result.variants[1].status, "missing_from_figma");
   near(result.elementFidelity, 50, "one of two Card variants missing");
   assert.equal(result.summary.elements!.missing, 23);
+  // Its properties are all unmatched in the share of properties too.
+  assert.equal(result.variants[1].mismatched, result.variants[0].matched);
 });
 
 test("unscorable: what can't be scored is listed with its reason, and never counted", async () => {
@@ -382,6 +600,10 @@ test("unscorable: what can't be scored is listed with its reason, and never coun
   const family = result.unscorable!.filter((u) => u.property === "family");
   assert.equal(family.length, 9, "each text node in system-ui, by key");
   assert.ok(family.every((u) => u.variants === 2 && /CSS keyword/.test(u.reason)));
+  // Coverage: the properties scored over those and the ones listed, each
+  // listed once a variant.
+  const listed = result.unscorable!.reduce((n, u) => n + u.variants, 0);
+  assert.equal(result.coverage, result.summary.propertiesCompared / (result.summary.propertiesCompared + listed));
   assert.ok(result.coverage! < 1 && result.coverage! > 0.9);
   assert.equal(result.elementFidelity, 1);
 });

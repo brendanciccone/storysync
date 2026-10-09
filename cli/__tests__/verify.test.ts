@@ -1602,6 +1602,13 @@ test("element report: the headline is element fidelity beside the share of prope
   assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
   assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
   assert.doesNotMatch(report, /coverage/, "a Switch has nothing verify can't score");
+  // A keyed layer snap doesn't measure is an element too, scoring 0: 4 of 5.
+  const extra = await buildAndRead("switch");
+  const added = await extra.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(extra.built.variants[0].id)}); const f = figma.createFrame(); v.appendChild(f); f.setSharedPluginData('storysync', 'k', 'switch-thumb:2'); return f.id;`);
+  assert.ok(added.ok, added.text);
+  const withExtra = formatElementReport(verify(extra.fixture, await reread(extra.figma, extra.fixture, extra.built), 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(withExtra, /Fidelity: 80\.0% of elements \(4 of 5 verified\)/);
+  assert.ok(withExtra.includes(`+ ui/base/Switch size=default › switch-thumb:2: in Figma (node ${String(added.value)}), but snap no longer measures it`), withExtra);
   // Designer layers, 4 in each of Toggle's 6 variants: 20 named, the rest counted.
   const toggle = await buildAndRead("toggle");
   for (const v of toggle.built.variants) {
