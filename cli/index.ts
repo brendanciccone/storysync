@@ -140,10 +140,10 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
   }
 }
 
-/** What a caveat beside verify's score says about its component, as the rest of a line naming it. */
 /** Caveats verify draws from what it compared, rather than from snap's warnings. */
 const VERIFY_CAVEATS = new Set<ScoreCaveat["kind"]>(["root-only", "truncated-tree", "built-from-other-measurement"]);
 
+/** What a caveat beside verify's score says about its component, as the rest of a line naming it. */
 function describeCaveat(caveat: ScoreCaveat): string {
   switch (caveat.kind) {
     case "closed-trigger":
