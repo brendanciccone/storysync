@@ -232,10 +232,9 @@ test("buildTree: an element placed against the window or page, drawn outside the
   assert.deepEqual(byKey(right.nodes).get("sidebar-container")!.box, [0, 0, 256, 720]);
   // Everything in it is where it was in it: the same tree as at side=left.
   assert.equal(canonicalJson(right.nodes), canonicalJson(left.nodes));
-  assert.deepEqual(left.notes, []);
-  assert.deepEqual(right.notes, [
-    "sidebar-container is placed against the browser window (position: fixed) rather than the component, and drew outside the component's box: snap measures it moved inside the box",
-  ]);
+  // Recorded, not warned about: there is nothing to fix.
+  assert.deepEqual([left.notes, left.movedInside], [[], []]);
+  assert.deepEqual([right.notes, right.movedInside], [[], ["sidebar-container"]]);
 
   // Such elements move together, only as far as it takes: a window-wide
   // overlay stays at the root's corner, and the panel keeps its place on it.
@@ -243,6 +242,11 @@ test("buildTree: an element placed against the window or page, drawn outside the
   const panel = el("div", [880, -10, 360, 720], { position: "fixed", "background-color": "rgb(255, 255, 255)" });
   const sheet = buildTree(tree(el("div", [0, 0, 100, 40], {}, [el("button", [0, 0, 100, 40], BORDER), overlay, panel])));
   assert.deepEqual(sheet.nodes.map((n) => [n.k, n.box]), [["", [0, 0, 100, 40]], ["button", [0, 0, 100, 40]], ["div", [0, 0, 1280, 720]], ["div:2", [920, 0, 360, 720]]]);
+  assert.deepEqual(sheet.movedInside, ["div", "div:2"]);
+  // One inside the box that moves only along with one outside it is not recorded as drawing outside.
+  const dot = (box: RawBox) => el("span", box, { position: "fixed", "background-color": "rgb(255, 0, 0)" });
+  const along = buildTree(tree(el("div", [0, 0, 100, 40], {}, [dot([-20, 0, 10, 10]), dot([50, 10, 10, 10])])));
+  assert.deepEqual([along.nodes.map((n) => n.box), along.movedInside], [[[0, 0, 100, 40], [0, 0, 10, 10], [70, 10, 10, 10]], ["span"]]);
 
   // Placed by something in the tree, it stays where it drew, inside the box or out.
   const badge = (cs: Record<string, string>) => el("span", [0, 0, 40, 40], cs, [el("span", [36, -6, 10, 10], { position: "absolute", "background-color": "rgb(255, 0, 0)" })]);
@@ -251,8 +255,7 @@ test("buildTree: an element placed against the window or page, drawn outside the
   }
   // An absolute one placed by nothing in the tree moves in, as a fixed one does.
   const loose = buildTree(tree(badge({})));
-  assert.deepEqual(loose.nodes[1].box, [30, 0, 10, 10]);
-  assert.match(loose.notes[0], /^span is placed against the page \(position: absolute, with nothing positioned around it\)/);
+  assert.deepEqual([loose.nodes[1].box, loose.notes, loose.movedInside], [[30, 0, 10, 10], [], ["span"]]);
   // A fixed one in a transformed element is placed by it.
   const inTransform = el("div", [0, 0, 40, 40], { transform: "matrix(1, 0, 0, 1, 0, 0.5)" }, [el("span", [600, 0, 10, 10], { position: "fixed", "background-color": "rgb(255, 0, 0)" })]);
   assert.deepEqual(buildTree(tree(inTransform)).nodes[1].box, [600, 0, 10, 10]);
@@ -264,7 +267,7 @@ test("buildTree: a fixed or absolute element in one that translate, will-change,
   // against the window, the input moved 5px down, with a warning.
   const slider = buildTree(raw("slider"));
   assert.deepEqual(byKey(slider.nodes).get("div/slider-thumb/input")!.box, [0, 0, 14, 14]);
-  assert.deepEqual(slider.notes, []);
+  assert.deepEqual([slider.notes, slider.movedInside], [[], []]);
 
   // What Chromium 154 draws a fixed and an absolute element in as their
   // containing block, and what it doesn't, each checked in the browser.

@@ -958,9 +958,13 @@ L3. **An element placed against the window or page is measured inside
      starts inside the box, or at its corner when larger. What is inside
      them keeps its place in them. The right sidebar now measures the
      same tree as the left one but for its border's side.
-   - A component warning names each element moved. No `approx` is set:
-     the build puts the element where snap now records it, and verify
-     scores it there as any other.
+   - The variant records the key of each element moved that drew
+     outside the box as `movedInside`, not one that only moved along
+     with it. It was first a component warning, but there is nothing in
+     the story to fix, and every stock shadcn Sidebar with side variants
+     then failed `--strict-warnings`, which the README recommends for
+     CI. No `approx` is set: the build puts the element where snap now
+     records it, and verify scores it there as any other.
    - Not seen: what holds it on an ancestor outside the root.
 L4. **Open overlay content in a portal is measured when the story's root
    shows nothing that draws, or only a closed trigger** (section 6.1;

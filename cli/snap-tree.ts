@@ -185,6 +185,12 @@ export interface BuiltTree {
   rasters: PendingRaster[];
   /** Things worth a warning: a data-slot with a `/` in it, say. */
   notes: string[];
+  /**
+   * Keys of the elements placed against the browser window or the page
+   * that drew outside the root's box, which the tree holds moved inside it
+   * (anchorToRoot). Nothing to fix, so no warning: the variant records it.
+   */
+  movedInside: string[];
 }
 
 export interface TreeBuildOptions {
@@ -294,6 +300,8 @@ interface Item {
   parent?: Item;
   /** How far anchorToRoot moved it, an element placed against something outside the root. */
   shift?: [number, number];
+  /** Of those it moved, one that drew outside the root's box, not only moved along with one that did. */
+  drewOutside?: true;
 }
 
 /**
@@ -469,7 +477,7 @@ const holdsFixed = (css: Css) =>
  * root in snap's 1280px window, where a Figma component would hold it off
  * to its side. They move together, as far as it takes and no further, so
  * they keep their places relative to each other and one already inside the
- * box stays. Each is given its `shift`.
+ * box stays. Each is given its `shift`, and `drewOutside` where it did.
  */
 function anchorToRoot(root: Item): void {
   const outside: Item[] = [];
@@ -496,7 +504,13 @@ function anchorToRoot(root: Item): void {
     const size = Math.max(...outside.map((i) => i.box[a] + i.box[a + 2])) - start;
     return r2(Math.max(0, Math.min(start, root.box[a + 2] - size)) - start);
   }) as [number, number];
-  if (by[0] || by[1]) for (const item of outside) item.shift = by;
+  if (!by[0] && !by[1]) return;
+  const [, , w, h] = root.box;
+  for (const item of outside) {
+    item.shift = by;
+    const [x, y, iw, ih] = item.box;
+    if (x < -0.5 || y < -0.5 || x + iw > w + 0.5 || y + ih > h + 0.5) item.drewOutside = true;
+  }
 }
 
 // --- Keys and paint order ------------------------------------------------------
@@ -1090,6 +1104,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
   anchorToRoot(root);
 
   const nodes: TreeNode[] = [];
+  const movedInside: string[] = [];
   let total = 0;
   let at: string | null = null;
   // The facts of a node are made only when it is kept, so an image past
@@ -1105,13 +1120,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
     const keep = depth <= maxDepth && nodes.length < maxNodes;
     if (!keep && at === null) at = key;
     if (keep) nodes.push(factsOf(item, key, parent, parentBox, ctx));
-    if (keep && item.shift) {
-      const fixed = [item.el!, ...item.wrappers].some((el) => reader(el.cs)("position") === "fixed");
-      ctx.notes.add(
-        `${key} is placed against the ${fixed ? "browser window (position: fixed)" : "page (position: absolute, with nothing positioned around it)"} ` +
-        "rather than the component, and drew outside the component's box: snap measures it moved inside the box",
-      );
-    }
+    if (keep && item.drewOutside) movedInside.push(key);
     if (item.leaf || item.kind !== "el" || item.el!.tag === "svg") return;
     const counts = new Map<string, number>();
     const keyed = item.kids.map((kid, dom) => {
@@ -1134,6 +1143,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
     images: ctx.images.filter((i) => keptKeys.has(i.key)),
     rasters: ctx.rasters.filter((r) => keptKeys.has(r.key)),
     notes: [...ctx.notes],
+    movedInside,
   };
 }
 

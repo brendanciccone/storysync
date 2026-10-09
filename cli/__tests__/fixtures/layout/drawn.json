@@ -753,6 +753,9 @@
             "height": 720
           },
           "element": "div[data-slot=\"sidebar\"]",
+          "movedInside": [
+            "sidebar-container"
+          ],
           "delta": {},
           "treeDelta": {
             "set": {
@@ -775,6 +778,9 @@
             "height": 720
           },
           "element": "div[data-slot=\"sidebar\"]",
+          "movedInside": [
+            "sidebar-container"
+          ],
           "delta": {},
           "treeDelta": {
             "set": {
@@ -795,9 +801,7 @@
           }
         }
       ],
-      "warnings": [
-        "ui/base/Sidebar: sidebar-container is placed against the browser window (position: fixed) rather than the component, and drew outside the component's box: snap measures it moved inside the box."
-      ],
+      "warnings": [],
       "error": null,
       "argTypes": {
         "collapsible": {
@@ -877,7 +881,7 @@
     "rendered": 12,
     "failed": 0,
     "componentsFailed": 0,
-    "componentsWithWarnings": 1,
+    "componentsWithWarnings": 0,
     "componentsCapped": 0
   }
 }

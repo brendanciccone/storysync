@@ -102,6 +102,15 @@ export interface SnapVariant {
    */
   portal?: true;
   /**
+   * Keys of the tree's elements placed against the browser window
+   * (`position: fixed`) or the page (`position: absolute` with nothing
+   * positioned around it) that drew outside the root's box, which the tree
+   * holds moved inside it: shadcn's Sidebar container at side=right, say.
+   * Where the window put them is no part of the component, and there is
+   * nothing to fix, so it is recorded here rather than warned about.
+   */
+  movedInside?: string[];
+  /**
    * Values of the combination Storybook didn't give the story from its URL,
    * and why: see snap-args.ts. With `appliedVia`, snap applied them through
    * Storybook's preview and measured the result; with status
@@ -1346,6 +1355,7 @@ async function snapComponent(
         boundingBox: { width: styles.width, height: styles.height },
         ...(captured.element ? { element: captured.element } : {}),
         ...(captured.portal ? { portal: captured.portal } : {}),
+        ...(captured.tree?.movedInside?.length ? { movedInside: captured.tree.movedInside } : {}),
         ...argsRecord,
       };
       for (const note of captured.notes) notes.push({ slug, note });

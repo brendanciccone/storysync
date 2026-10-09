@@ -1654,6 +1654,8 @@ export interface CapturedTree {
   /** Each image by asset id: what its thumbnail is made from. */
   images: Record<string, CapturedImage>;
   notes: string[];
+  /** BuiltTree's: elements placed against the window or page, measured moved inside the root's box. */
+  movedInside: string[];
   /** How long reading the tree took, its images' bytes and screenshots included, in ms. */
   ms: number;
 }
@@ -1852,6 +1854,7 @@ export async function captureTree(
     svg: built.svg,
     images,
     notes: built.notes,
+    movedInside: built.movedInside,
     ms: Date.now() - started,
   };
 }
