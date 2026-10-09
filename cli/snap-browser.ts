@@ -1340,7 +1340,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
   // Properties that say nothing about an element unless another says so:
   // a side's style and color without its width, an outline's width without
   // its style, a background's layout without a picture, an object's fit
-  // anywhere but an image, a control's appearance anywhere but an input.
+  // anywhere but an image, a control's appearance anywhere but an input or
+  // a select.
   const readCss = (cs: CSSStyleDeclaration, rect: DOMRect | null, tag = ""): Record<string, string> => {
     const out: Record<string, string> = {};
     const outline = cs.getPropertyValue("outline-style") !== "none";
@@ -1351,7 +1352,7 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       if (p.startsWith("outline-") && p !== "outline-style" && !outline) continue;
       if (/^background-(size|position|repeat)$/.test(p) && !picture) continue;
       if (p.startsWith("object-") && tag !== "img") continue;
-      if (p === "appearance" && tag !== "input") continue;
+      if (p === "appearance" && tag !== "input" && tag !== "select") continue;
       let v = cs.getPropertyValue(p);
       if (rect && p.endsWith("-radius") && v !== args.defaults[p]) v = resolveRadius(v, rect);
       if (v !== args.defaults[p]) out[p] = v;
@@ -1599,11 +1600,12 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       return node;
     }
     if (tag === "canvas" || tag === "video") return node;
-    if (tag === "input" || tag === "textarea") {
+    if (tag === "input" || tag === "textarea" || tag === "select") {
       const input = el as HTMLInputElement;
       node.text = readText(cs);
-      const value = input.value ?? "";
-      const placeholder = input.getAttribute("placeholder") ?? "";
+      // A select shows its chosen option's label, not its options, which have no box.
+      const value = tag === "select" ? ((el as HTMLSelectElement).selectedOptions[0]?.label ?? "") : (input.value ?? "");
+      const placeholder = tag === "select" ? "" : (input.getAttribute("placeholder") ?? "");
       const shown = value || placeholder;
       let advance = 0;
       const ctx = document.createElement("canvas").getContext("2d");
@@ -1611,7 +1613,7 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
         ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
         advance = ctx.measureText(input.type === "password" ? "•".repeat(shown.length) : shown).width;
       }
-      node.input = { type: tag === "textarea" ? "textarea" : (input.type || "text"), value, placeholder, advance };
+      node.input = { type: tag === "input" ? (input.type || "text") : tag, value, placeholder, advance };
       if (!value && placeholder) node.input.placeholderColor = getComputedStyle(el, "::placeholder").color;
       return node;
     }

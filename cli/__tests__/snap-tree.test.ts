@@ -231,6 +231,26 @@ test("buildTree: a native checkbox is kept as a picture of itself; one restyled 
   const built = buildTree(tree(el("div", [0, 0, 16, 16], {}, [native])));
   assert.deepEqual(built.nodes[1], { k: "input", t: "I", el: "input", box: [0, 0, 16, 16], raster: 1 });
   assert.deepEqual(built.rasters, [{ key: "input", path: [0], why: "input" }]);
+  // Restyled, it is its box; its value, `on`, is never drawn.
+  const styled = el("input", [0, 0, 16, 16], { appearance: "none", ...BORDER }, [], { path: [0], text: TEXT, input: { type: "checkbox", value: "on", placeholder: "", advance: 14 } });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 16, 16], {}, [styled]))).nodes.slice(1).map((n) => [n.k, n.t]), [["input", "F"]]);
+  // Native, it draws though nothing of its box does: never pruned as empty.
+  const floating = el("input", [0, 0, 16, 16], { appearance: "auto", position: "absolute" }, [], { path: [0], text: TEXT, input: { type: "radio", value: "on", placeholder: "", advance: 0 } });
+  assert.equal(buildTree(tree(el("div", [0, 0, 16, 16], {}, [floating]))).nodes[1]?.raster, 1);
+});
+
+test("buildTree: a select is a picture of itself, or restyled, its chosen option's label; options, which have no box, are never nodes", () => {
+  const select = (cs: Record<string, string>) => el("select", [0, 0, 120, 36], { ...BORDER, "padding-left": "12px", ...cs }, [], {
+    path: [0], text: TEXT, input: { type: "select", value: "Banana", placeholder: "", advance: 42 },
+  });
+  const native = buildTree(tree(el("div", [0, 0, 120, 36], {}, [select({ appearance: "auto" })])));
+  assert.deepEqual(native.nodes.slice(1).map((n) => [n.k, n.t, n.raster]), [["select", "I", 1]]);
+  assert.deepEqual(native.rasters, [{ key: "select", path: [0], why: "select" }]);
+  const styled = buildTree(tree(el("div", [0, 0, 120, 36], {}, [select({})]))).nodes;
+  assert.deepEqual(styled.slice(1).map((n) => [n.k, n.t, n.tx?.c]), [["select", "F", undefined], ["select/#value", "T", "Banana"]]);
+  // Text the page found no line of draws nothing: an element holding only that is no box to keep.
+  const option = el("option", [-4, -4, 0, 0], {}, [run("Banana", [])], { text: TEXT });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 120, 36], {}, [option, el("div", [0, 0, 10, 10], BORDER)]))).nodes.map((n) => n.k), ["", "div"]);
 });
 
 // --- Collapse ----------------------------------------------------------------------

@@ -110,6 +110,12 @@ class FakeElement extends FakeNode {
   get naturalWidth(): number { return this.spec.natural?.[0] ?? 0; }
   get naturalHeight(): number { return this.spec.natural?.[1] ?? 0; }
   get type(): string { return this.attrs.type ?? "text"; }
+  /** A select's chosen option: the one marked `selected`, else the first. */
+  get selectedOptions(): { label: string }[] {
+    const options = this.children.filter((c) => c.tagName === "OPTION");
+    const chosen = options.find((o) => "selected" in o.attrs) ?? options[0];
+    return chosen ? [{ label: chosen.attrs.label ?? chosen.textContent }] : [];
+  }
   get offsetWidth(): number { return this.spec.offset?.[0] ?? this.spec.rect[2]; }
   get offsetHeight(): number { return this.spec.offset?.[1] ?? this.spec.rect[3]; }
   get textContent(): string { return this.childNodes.map((n) => (n instanceof FakeText ? n.textContent : (n as FakeElement).textContent)).join(""); }

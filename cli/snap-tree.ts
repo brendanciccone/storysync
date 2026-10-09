@@ -100,6 +100,7 @@ export interface RawTreeElement {
   /** An `<svg>` too big to read as structure: how many elements it holds. */
   svgElements?: number;
   img?: { src: string; natural: [number, number] };
+  /** An input's, a textarea's or a select's: its value (a select's chosen option's label), placeholder, and how wide the one shown draws. */
   input?: { type: string; value: string; placeholder: string; placeholderColor?: string; advance: number };
 }
 
@@ -290,14 +291,36 @@ interface Item {
   parent?: Item;
 }
 
+/**
+ * Whether an element draws: its own box, what it is, a native control the
+ * browser draws, text that has a line on screen (an `<option>`'s has none),
+ * or an input's value or placeholder.
+ */
 function elementPaints(el: RawTreeElement): boolean {
-  if (paintsOwnBox(el.cs) || DRAWING_TAGS.has(el.tag)) return true;
-  if (el.kids.some((kid) => kid.k === "t")) return true;
-  return !!el.input && !isNativeControl(el) && (el.input.value !== "" || el.input.placeholder !== "");
+  if (paintsOwnBox(el.cs) || DRAWING_TAGS.has(el.tag) || isNativeControl(el)) return true;
+  if (el.kids.some((kid) => kid.k === "t" && kid.rects.length > 0 && kid.text.trim() !== "")) return true;
+  return showsValue(el);
 }
 
+/**
+ * Whether an input, textarea or select shows its value or placeholder as
+ * text: not a native control, which is a picture, nor a checkbox, radio,
+ * range, color or file input restyled, whose value (a checkbox's `on`) is
+ * never drawn.
+ */
+function showsValue(el: RawTreeElement): boolean {
+  if (!el.input || isNativeControl(el) || (el.tag === "input" && NATIVE_INPUTS.has(el.input.type))) return false;
+  return el.input.value !== "" || el.input.placeholder !== "";
+}
+
+/**
+ * A control the browser draws itself, kept as a picture: a checkbox, radio,
+ * range, color or file input, or a `<select>`, unless `appearance: none`
+ * hands it to CSS, as shadcn's NativeSelect does, when its value is text.
+ */
 function isNativeControl(el: RawTreeElement): boolean {
-  return el.tag === "input" && !!el.input && NATIVE_INPUTS.has(el.input.type) && reader(el.cs)("appearance") !== "none";
+  if (!el.input || reader(el.cs)("appearance") === "none") return false;
+  return el.tag === "select" || (el.tag === "input" && NATIVE_INPUTS.has(el.input.type));
 }
 
 const subtreePaints = (item: Item): boolean => item.kind !== "el" || item.paints || item.kids.some(subtreePaints);
@@ -341,7 +364,7 @@ function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
       }
     }
   }
-  if (el.input && !isNativeControl(el) && (el.input.value !== "" || el.input.placeholder !== "")) {
+  if (showsValue(el)) {
     item.kids.push({ kind: "value", box: contentBox(el), kids: [], el, css, wrappers: [], paints: true });
   }
   for (const kid of item.kids) kid.parent = item;

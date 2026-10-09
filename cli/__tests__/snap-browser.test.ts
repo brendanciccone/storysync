@@ -625,6 +625,13 @@ test("captureTreeInPage: an input's value or placeholder, with how wide it draws
   });
   const [input, img] = raw.root.kids as RawTreeElement[];
   assert.deepEqual(input.input, { type: "text", value: "", placeholder: "Email", advance: 35, placeholderColor: "rgb(115, 115, 115)" });
+  // A select: its chosen option's label, its options not walked, its appearance read.
+  const chosen = readTree({
+    tag: "div", rect: [0, 0, 300, 40],
+    kids: [{ tag: "select", rect: [0, 0, 120, 36], kids: [{ tag: "option", rect: [0, 0, 0, 0], kids: [{ text: "Apple", rects: [] }] }, { tag: "option", attrs: { selected: "" }, rect: [0, 0, 0, 0], kids: [{ text: "Banana", rects: [] }] }] }],
+  });
+  const select = chosen.root.kids[0] as RawTreeElement;
+  assert.deepEqual([select.input, select.kids, select.cs.appearance], [{ type: "select", value: "Banana", placeholder: "", advance: 42 }, [], "auto"]);
   assert.equal(input.text?.color, "rgb(0, 0, 0)");
   assert.deepEqual(img.img, { src: "https://example.test/a.png", natural: [80, 80] });
   assert.deepEqual(img.cs, { "box-sizing": "content-box", "object-fit": "cover" });
