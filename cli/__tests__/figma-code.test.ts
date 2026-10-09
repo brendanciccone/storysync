@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { componentKey } from "../storybook.js";
@@ -276,10 +277,22 @@ test("figma code: every planned call runs in the mock, in order", async () => {
   for (const [i, call] of coded.plan.calls.entries()) if (call.kind !== "read") assert.equal(runs[i].switches.length, 1, call.file);
 });
 
+/** Whether this checkout has package C's readback template, which figma code ships once it lands. */
+const READBACK = existsSync(fileURLToPath(new URL("../../../templates/readback.js", import.meta.url)));
+
+test("figma code: with the readback template shipped, every call of every fixture runs in the mock", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  for (const name of treeFixtureNames()) {
+    const fixture = loadTreeFixture(name);
+    const coded = await codeFor(fixture, { templates: {} });
+    const runs = await runPlan(mockFor([fixture]), coded);
+    assert.deepEqual(runs.map((r) => (r.value as { kind: string }).kind), coded.plan.calls.map((c) => c.kind), name);
+  }
+});
+
 test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {
   const min = loadTemplate("build");
   assert.ok(min.length < loadTemplate("build", false).length);
-  assert.throws(() => loadTemplate("readback", false), /templates\/readback\.js is missing/);
+  if (!READBACK) assert.throws(() => loadTemplate("readback", false), /templates\/readback\.js is missing/);
   assert.equal(loadTemplate("readback", true, { readback: " x " }), "x");
 });
 
