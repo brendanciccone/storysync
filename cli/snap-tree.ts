@@ -1023,16 +1023,17 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
   const nodes: TreeNode[] = [];
   let total = 0;
   let at: string | null = null;
-  // Kept keys, so a dropped parent drops its subtree; the facts of a node
-  // are made only when it is kept, so an image past the limit isn't fetched.
-  const visit = (item: Item, key: string, parent: Item | null, parentBox: Box, depth: number, kept: boolean) => {
+  // The facts of a node are made only when it is kept, so an image past
+  // the limit isn't fetched. Both limits only tighten as the walk goes on,
+  // so a node dropped at one drops its subtree too.
+  const visit = (item: Item, key: string, parent: Item | null, parentBox: Box, depth: number) => {
     if (item.kind === "cut") {
       // Where the page stopped reading: everything from here on is unknown.
       at ??= key;
       return;
     }
     total++;
-    const keep = kept && depth <= maxDepth && nodes.length < maxNodes;
+    const keep = depth <= maxDepth && nodes.length < maxNodes;
     if (!keep && at === null) at = key;
     if (keep) nodes.push(factsOf(item, key, parent, parentBox, ctx));
     if (item.leaf || item.kind !== "el" || item.el!.tag === "svg") return;
@@ -1045,9 +1046,9 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
     });
     const lays = /flex|grid/.test(item.css!("display"));
     const box = parent === null ? [0, 0, item.box[2], item.box[3]] as Box : item.box;
-    for (const kid of paintOrder(keyed, lays)) visit(kid.item, kid.key, item, box, depth + 1, keep);
+    for (const kid of paintOrder(keyed, lays)) visit(kid.item, kid.key, item, box, depth + 1);
   };
-  visit(root, "", null, [0, 0, 0, 0], 0, true);
+  visit(root, "", null, [0, 0, 0, 0], 0);
 
   const keptKeys = new Set(nodes.map((n) => n.k));
   return {

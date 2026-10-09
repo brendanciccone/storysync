@@ -426,7 +426,8 @@ test("captureTree: what only a picture can keep is a screenshot of its element, 
   const png = Buffer.from("89504e470d0a1a0a0000000d494844520000000400000002080600000000", "hex");
   const shot: number[][] = [];
   const element = (path: number[]) => ({
-    boundingBox: async () => ({ x: 0, y: 0, width: 2, height: 1 }),
+    // The video, third, has no box to take a picture of by the time it is taken.
+    boundingBox: async () => (path[0] === 2 ? null : { x: 0, y: 0, width: 2, height: 1 }),
     screenshot: async () => { shot.push(path); return png; },
     dispose: async () => {},
   });
@@ -436,6 +437,7 @@ test("captureTree: what only a picture can keep is a screenshot of its element, 
       kids: [
         { k: "e", tag: "canvas", box: [0, 0, 2, 1], cs: {}, kids: [], path: [0] },
         { k: "e", tag: "img", box: [2, 0, 2, 1], cs: {}, kids: [], path: [1], img: { src: "https://example.test/private.png", natural: [10, 5] } },
+        { k: "e", tag: "video", box: [4, 0, 2, 1], cs: {}, kids: [], path: [2] },
       ],
     },
     fonts: {},
@@ -450,7 +452,9 @@ test("captureTree: what only a picture can keep is a screenshot of its element, 
   };
   const tree = await captureTree(page as unknown as Page, target as never, null, 1000);
   const id = imageAssetId(png, "raster:0,0,4,2");
-  assert.deepEqual(tree.nodes.slice(1).map((n) => [n.k, n.t, n.raster, n.img]), [["canvas", "I", 1, id], ["img", "I", 1, id]]);
+  assert.deepEqual(tree.nodes.slice(1).map((n) => [n.k, n.t, n.raster, n.img]), [["canvas", "I", 1, id], ["img", "I", 1, id], ["video", "F", undefined, undefined]]);
+  // Nothing to keep a picture of: a frame its size, saying so.
+  assert.equal(tree.nodes[3].approx, "raster-unavailable");
   assert.deepEqual(shot, [[1], [0]]);
   assert.deepEqual(Object.keys(tree.images), [id]);
   assert.equal(tree.images[id].raster, true);
@@ -501,6 +505,88 @@ test("captureStory: with a tree, a variant whose tree can't be read is not measu
   const result = await captureStory(page, "http://localhost:6006/iframe.html?id=x--y", { ...OPTS, selector: "#storybook-root > div", tree: "tree" });
   assert.equal(result.status, "render_error");
   assert.match(result.error!, /element tree/);
+});
+
+/** A StoryNode as readStoryTreeInPage reads one: `tag` with `slot`, drawn, holding `children`. */
+function storyNode(tag: string, slot: string | null, children: object[] = []) {
+  return {
+    tag, slot, role: null, hasPopup: null, expanded: null, controls: null, state: null, open: false, dir: null, orientation: null, label: null,
+    position: "static", rendered: true, styles: {}, children,
+  };
+}
+
+test("captureStory: with a tree, a root that draws nothing gives way to the nearest one that does, its images' bytes from the page's own responses", async () => {
+  // The Toaster's own element draws nothing and holds nothing that does;
+  // the element around it draws. Its photo answered from another URL,
+  // which the <img> doesn't name.
+  const bytes = Buffer.from("ffd8ffe000104a464946", "hex");
+  const listeners = new Map<string, Set<(payload: unknown) => void>>();
+  const capture = {
+    root: {
+      k: "e", tag: "div", box: [0, 0, 64, 64], cs: { "background-color": "rgb(250, 250, 250)" }, path: [],
+      kids: [{ k: "e", tag: "img", box: [16, 16, 32, 32], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: "https://example.test/photo", natural: [460, 460] } }],
+    },
+    fonts: {},
+  };
+  let described = false;
+  const around = {
+    evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn === captureTreeInPage) return capture;
+      // Whether it is the element it climbed from; then its description; then its font stack.
+      if (arg !== undefined) return false;
+      if (described) return null;
+      described = true;
+      return { tag: "div", slot: "toaster-viewport", role: null };
+    },
+    evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+    boundingBox: async () => ({ x: 0, y: 0, width: 64, height: 64 }),
+  };
+  const own = {
+    evaluateHandle: async (fn: unknown) => {
+      assert.equal(fn, drawingElementInPage);
+      return { asElement: () => around, dispose: async () => {} };
+    },
+  };
+  const container = {
+    evaluate: async (_fn: unknown, arg: unknown) => (Array.isArray(arg) ? true : storyNode("div", null, [storyNode("section", "toaster")])),
+    evaluateHandle: async () => ({ asElement: () => own, dispose: async () => {} }),
+  };
+  const response = {
+    status: () => 200,
+    body: async () => bytes,
+    request: () => ({
+      resourceType: () => "image",
+      url: () => "https://avatars.example.test/u/1",
+      redirectedFrom: () => ({ url: () => "https://example.test/photo", redirectedFrom: () => null }),
+    }),
+  };
+  const page = {
+    on: (event: string, fn: (payload: unknown) => void) => listeners.set(event, (listeners.get(event) ?? new Set()).add(fn)),
+    off: (event: string, fn: (payload: unknown) => void) => listeners.get(event)?.delete(fn),
+    goto: async () => {
+      for (const fn of listeners.get("response") ?? []) fn(response);
+      return null;
+    },
+    waitForSelector: async () => null,
+    addStyleTag: async () => null,
+    $: async (selector: string) => (selector === "#storybook-root" ? container : null),
+    evaluateHandle: async () => ({ evaluate: async () => [], dispose: async () => {} }),
+    // Nothing else reaches the photo: not a request of snap's own, nor a fetch in the page.
+    context: () => ({ request: { get: async () => { throw new Error("offline"); } } }),
+    evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn === storybookErrorInPage) return null;
+      if (typeof arg === "string") throw new Error("TypeError: Failed to fetch");
+      return Array.isArray(arg) && Array.isArray(arg[1]) ? {} : null;
+    },
+  };
+  const result = await captureStory(page as unknown as Page, "http://localhost:6006/iframe.html?id=ui-toaster--default", {
+    ...OPTS, component: { name: "Toaster", title: "ui/Toaster" }, tree: "tree",
+  });
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.climbedFrom, result.element], ['section[data-slot="toaster"]', 'div[data-slot="toaster-viewport"]']);
+  assert.equal(result.tree!.nodes[1].img, imageAssetId(bytes, "0,0,460,460"));
+  // Listening only while it captured.
+  assert.equal(listeners.get("response")?.size, 0);
 });
 
 // --- captureTreeInPage, in a stand-in page ---

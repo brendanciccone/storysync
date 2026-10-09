@@ -1758,6 +1758,11 @@ test("runSnap --merge: a tree snap and a root-only one are not mixed, either way
     await run(true, false);
     await assert.rejects(() => run(false, true), /which were measured root only \(--root-only, or by a storysync that measured no trees\): pass --root-only/);
     await run(true, true);
+    // Trees of another format: not mixed with this one's either.
+    await run(false, false);
+    const path = join(dir, "styles.json");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/\n {2}"treeVersion": 1,\n/, '\n  "treeVersion": 2,\n'));
+    await assert.rejects(() => run(false, true), /which were measured with their element trees: pass no --root-only, or run snap without --merge/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1774,12 +1779,13 @@ test("runSnap: an image is kept as a thumbnail of what its box shows, named by i
   });
   const dir = tempDir();
   try {
-    const { launch, drawn } = treeBrowser({ storyId: "ui-base-switch--default", capture: (args) => photo(args.size === "sm" ? 24 : 32), argTypes: { size: { options: ["default", "sm"] } } });
+    // The base shows it at 24px, a later variant at 32.
+    const { launch, drawn } = treeBrowser({ storyId: "ui-base-switch--default", capture: (args) => photo(args.size === "sm" ? 32 : 24), argTypes: { size: { options: ["default", "sm"] } } });
     const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
     const { tree } = result.components[0];
     const id = imageAssetId(png, "0,0,2,2");
     assert.equal(tree!.base[1].img, id);
-    // Drawn once, at twice the largest box it showed in.
+    // Drawn once, at twice the largest box it showed in, whichever variant that was.
     assert.equal(drawn.length, 1);
     assert.deepEqual((drawn[0] as { size: number[] }).size, [64, 64]);
     const fnv = fnv1a32Bytes(Buffer.from("thumbnail bytes"));
@@ -1787,6 +1793,34 @@ test("runSnap: an image is kept as a thumbnail of what its box shows, named by i
     assert.deepEqual(tree!.assets.img, { [id]: { file, mime: "image/jpeg", size: [64, 64], natural: [2, 2], fnv } });
     assert.equal(readFileSync(join(dir, file), "utf8"), "thumbnail bytes");
     assert.equal(result.components[0].variants[1].treeDelta?.set?.["avatar-image"], undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: an image whose thumbnail can't be drawn is a frame in every variant, saying so, and warned about", async () => {
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000020000000208060000007b", "hex");
+  const photo = (size: number): RawTreeCapture => ({
+    root: {
+      k: "e", tag: "span", box: [0, 0, size, size], cs: { display: "flex" }, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, size, size], cs: { "object-fit": "cover" }, kids: [], path: [0], img: { src: `data:image/png;base64,${png.toString("base64")}`, natural: [2, 2] } }],
+    },
+    fonts: {},
+  });
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: (args) => photo(args.size === "sm" ? 24 : 32), argTypes: { size: { options: ["default", "sm"] } },
+      thumbnail: () => { throw new Error("EncodingError: The source image cannot be decoded."); },
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    const img = component.tree!.base[1];
+    assert.deepEqual([img.t, img.img, img.approx], ["F", undefined, "image-unavailable"]);
+    assert.deepEqual(component.tree!.assets.img, {});
+    // The smaller variant differs only in size, not in what it is.
+    assert.deepEqual(Object.keys(component.variants[1].treeDelta!.set!.img), ["box"]);
+    assert.ok(component.warnings.some((w) => /couldn't draw a thumbnail of img:[0-9a-f]{12}-[0-9a-f]{4} \(EncodingError: The source image cannot be decoded\.\)/.test(w)), JSON.stringify(component.warnings));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1973,6 +2007,8 @@ test("detectIdenticalValues: values that measured the same, root and tree, where
     v("default", "lg", { width: 50 }), v("ghost", "lg", { width: 50, backgroundColor: null }), v("link", "lg", { width: 50, backgroundColor: null }),
   ];
   assert.deepEqual(detectIdenticalValues(props, variants), [{ property: "variant", values: ["ghost", "link"] }]);
+  // A property already named as changing nothing isn't named again.
+  assert.deepEqual(detectIdenticalValues(props, variants, ["variant"]), []);
   // A tree that differs tells them apart.
   variants[5] = v("link", "lg", { width: 50, backgroundColor: null }, { set: { "#text": { tx: { td: "underline" } } } });
   assert.deepEqual(detectIdenticalValues(props, variants), []);

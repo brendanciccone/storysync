@@ -197,12 +197,17 @@ test("buildTree: what is hidden, cut to a pixel, out of the flow drawing nothing
     el("div", [10, 0, 0, 40]),
     // A pseudo-element that draws nothing: Switch's hit area.
     { k: "p", which: "after", cs: { position: "absolute" }, content: "", box: [-12, 0, 124, 40], how: "abs" },
+    // sr-only by a clip path rather than overflow: as hidden.
+    el("span", [0, 0, 1, 1], { position: "absolute", "clip-path": "inset(50%)" }, [run("Open", [[0, 0, 1, 1]])], { text: TEXT }),
     // Kept: in the flow, drawing nothing, but taking room.
     el("div", [20, 0, 30, 40]),
   ]);
   const { nodes } = buildTree(tree(root));
   assert.deepEqual(nodes.map((n) => n.k), ["", "div"]);
   assert.deepEqual(nodes[1].box, [20, 0, 30, 40]);
+  // Out of the flow, drawing only a shadow: it draws.
+  const glow = el("div", [0, 0, 10, 10], { position: "absolute", "box-shadow": "rgba(0, 0, 0, 0.1) 0px 1px 3px 0px" });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 100, 40], {}, [glow]))).nodes.map((n) => [n.k, n.sh]), [["", undefined], ["div", [[0, 1, 3, 0, "#0000001a"]]]]);
 });
 
 test("buildTree: an input laid over what draws, transparent and drawing nothing, is left out; one showing text is kept", () => {
@@ -224,6 +229,14 @@ test("buildTree: an input laid over what draws, transparent and drawing nothing,
   assert.equal(value.tx!.ph, 1);
   assert.equal(value.tx!.col, "#737373");
   assert.deepEqual(value.tx!.ink, [0, 0, 36.5, 34]);
+  // Centered, or at the end, its glyphs are where text-align puts them.
+  for (const [align, x] of [["center", 68.75], ["right", 137.5], ["end", 137.5]] as const) {
+    const aligned = el("input", [0, 0, 200, 36], { ...BORDER, "padding-left": "12px", "padding-right": "12px" }, [], {
+      text: { ...TEXT, "text-align": align }, input: { type: "text", value: "Email", placeholder: "", advance: 36.5 },
+    });
+    const ink = byKey(buildTree(tree(el("div", [0, 0, 200, 36], {}, [aligned]))).nodes).get("input/#value")!.tx!.ink;
+    assert.deepEqual(ink, [x, 0, 36.5, 34], align);
+  }
 });
 
 test("buildTree: a native checkbox is kept as a picture of itself; one restyled with appearance: none is a frame", () => {
@@ -262,12 +275,19 @@ test("buildTree: a wrapper the size of its one child gives way to it, which take
   // No segment for the wrapper; its shrink, as the child set none.
   assert.deepEqual(nodes.map((n) => n.k), ["", "span"]);
   assert.deepEqual(nodes[1].S, { shrink: 0 });
-  // One that clips, pads or fades what it holds stays.
-  const keeping: Record<string, string>[] = [{ "overflow-x": "hidden", "overflow-y": "hidden" }, { "padding-top": "2px" }, { opacity: "0.5" }];
+  // One that clips, pads, fades, turns, blends, filters or isolates what it holds stays.
+  const keeping: Record<string, string>[] = [
+    { "overflow-x": "hidden", "overflow-y": "hidden" }, { "padding-top": "2px" }, { opacity: "0.5" }, { transform: "matrix(0.5, 0, 0, 0.5, 0, 0)" },
+    { "mix-blend-mode": "multiply" }, { filter: "blur(1px)" }, { "backdrop-filter": "blur(1px)" }, { "clip-path": "inset(1px)" }, { isolation: "isolate" },
+    { visibility: "hidden" },
+  ];
   for (const cs of keeping) {
     const kept = el("span", [8, 8, 16, 16], cs, [icon]);
     assert.equal(buildTree(tree(el("div", [0, 0, 32, 32], {}, [kept]))).nodes.length, 3, JSON.stringify(cs));
   }
+  // One bigger than its child, centering it, stays: the child's place in it is a fact.
+  const roomy = el("span", [4, 4, 24, 24], { display: "flex", "justify-content": "center", "align-items": "center" }, [icon]);
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 32, 32], {}, [roomy]))).nodes.map((n) => [n.k, n.box]), [["", [0, 0, 32, 32]], ["span", [4, 4, 24, 24]], ["span/span", [4, 4, 16, 16]]]);
 });
 
 test("buildTree: an element that is only its text becomes the text, sized as the element; one with padding keeps a text inside", () => {
@@ -323,6 +343,11 @@ test("buildTree: a text keeps whitespace where white-space says to, and records 
   const preLine = el("p", [0, 0, 100, 40], {}, [run(" x \n  y\t\tz ", [[0, 0, 10, 20], [0, 20, 30, 20]])], { text: { ...TEXT, "white-space": "pre-line" } });
   const lines = buildTree(tree(el("div", [0, 0, 100, 40], {}, [preLine]))).nodes[1];
   assert.deepEqual([lines.tx!.c, lines.tx!.ws], ["x\ny z", "pre-line"]);
+
+  // Hidden with its element, a text says so too: CSS lets a child show it again.
+  const hidden = el("p", [0, 0, 100, 28], { "padding-top": "4px", visibility: "hidden" }, [run("Hidden", [[0, 5.5, 40, 17]])], { text: TEXT });
+  const hiddenNodes = byKey(buildTree(tree(el("div", [0, 0, 100, 28], {}, [hidden]))).nodes);
+  assert.deepEqual([hiddenNodes.get("p")!.vis, hiddenNodes.get("p/#text")!.vis], [0, 0]);
 
   // A clamp clips, so its text stays a child of the box that clips it.
   const clamped = el("p", [0, 0, 100, 40], { "overflow-x": "hidden", "overflow-y": "hidden" }, [run("long", [[0, 0, 100, 20], [0, 20, 100, 20], [0, 40, 50, 20]])], {
