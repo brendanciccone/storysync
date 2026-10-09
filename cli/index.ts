@@ -193,6 +193,35 @@ function parseMaxCombinations(value: unknown): number {
   return n;
 }
 
+/** Collects a flag given more than once, as `--stories a=x --stories b=y`. */
+const collect = (value: string, previous: string[] = []): string[] => [...previous, value];
+
+/**
+ * Parses --stories: `component=storyId` pairs, comma-separated or given as
+ * the flag more than once. Which component each names, and whether the
+ * story is one of its own, runSnap checks against Storybook's list
+ * (resolveStoryOverrides) before anything is measured; this refuses what
+ * can't be a pair at all, before connecting, rather than measuring the
+ * default story under a typo.
+ */
+function parseStories(values: string[] | undefined): Record<string, string> | undefined {
+  if (!values?.length) return undefined;
+  const out: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const pair of values.flatMap((v) => v.split(",")).map((p) => p.trim()).filter(Boolean)) {
+    const at = pair.indexOf("=");
+    const name = pair.slice(0, at).trim();
+    const story = pair.slice(at + 1).trim();
+    if (at < 0 || !name || !story || story.includes("=")) {
+      throw new Error(`--stories takes component=storyId pairs, such as ui-base-button=ui-base-button--with-icon, received "${pair}"`);
+    }
+    if (seen.has(name.toLowerCase())) throw new Error(`--stories names "${name}" twice: give each component one story`);
+    seen.add(name.toLowerCase());
+    out[name] = story;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
@@ -289,7 +318,7 @@ program
 
 program
   .command("snap")
-  .description("Measure each component variant's rendered styles from a running Storybook")
+  .description("Measure each component variant's rendered styles and element tree from a running Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
   .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .option("--components <names>", "Comma-separated component names, titles or IDs; a name that matches nothing is an error")
@@ -302,6 +331,8 @@ program
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
+  .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
+  .option("--stories <pairs>", "Comma-separated component=storyId pairs: the story to measure each named component from, by its ID or title, in place of the one snap picks (also given more than once)", collect)
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
@@ -325,6 +356,14 @@ program
     // merge refused for its base is, since the push reads the reason there.
     if (opts.merge && !opts.components) {
       reportError(new Error("--merge measures the components --components names and keeps the rest of the snap in --out: name them with --components, or leave out --merge to measure every component"), json);
+      process.exit(1);
+    }
+
+    let stories: Record<string, string> | undefined;
+    try {
+      stories = parseStories(opts.stories as string[] | undefined);
+    } catch (err) {
+      reportError(err, json);
       process.exit(1);
     }
 
@@ -377,6 +416,8 @@ program
           excludeProps: parsePropNames(opts.excludeProps),
           merge: !!opts.merge,
           rootOnly: !!opts.rootOnly,
+          channelArgs: opts.channelArgs !== false,
+          ...(stories ? { stories } : {}),
         },
         {
           storybook,

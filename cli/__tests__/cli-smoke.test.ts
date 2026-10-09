@@ -63,3 +63,21 @@ test("CLI: tokens --strict exits 1 when no tokens found", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("CLI: snap refuses a --stories pair it can't read before connecting to Storybook", () => {
+  // Port 9 has nothing listening: the refusal must come first, as JSON under --json.
+  for (const [value, why] of [["ui-base-button", /component=storyId pairs/], ["a=b,A=c", /names "A" twice/], ["=story", /component=storyId pairs/]] as const) {
+    let out = "";
+    let status = 0;
+    try {
+      run("snap", "--storybook", "http://127.0.0.1:9", "--stories", value, "--json");
+    } catch (err) {
+      status = (err as { status?: number }).status ?? -1;
+      out = String((err as { stdout?: string }).stdout ?? "");
+    }
+    assert.equal(status, 1, value);
+    const error = (JSON.parse(out) as { error?: string }).error ?? "";
+    assert.match(error, why);
+    assert.doesNotMatch(error, /Failed to connect/);
+  }
+});
