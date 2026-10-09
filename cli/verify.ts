@@ -576,7 +576,7 @@ function sameBorder(a: unknown, b: unknown, tolerance: number): boolean {
   return closeEnough(x.width, y.width, tolerance) && sameColor(x.color, y.color) && style(x) === style(y);
 }
 
-function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {
+function sameShadows(a: unknown, b: unknown, tolerance: number, spike: SpikeAssumptions): boolean {
   const xs = (a ?? []) as BoxShadowLayer[];
   const ys = (b ?? []) as BoxShadowLayer[];
   if (xs.length !== ys.length) return false;
@@ -586,7 +586,7 @@ function sameShadows(a: unknown, b: unknown, tolerance: number): boolean {
       && closeEnough(x.offsetY, y.offsetY, tolerance)
       && closeEnough(x.blur, y.blur, tolerance)
       // Unless the spike finds Figma drops a shadow's spread (verify-tree SPIKE).
-      && (!SPIKE.shadowSpreadKept || closeEnough(x.spread, y.spread, tolerance))
+      && (!spike.shadowSpreadKept || closeEnough(x.spread, y.spread, tolerance))
       && sameColor(x.color, y.color)
       // An inset ring built as a drop shadow draws outside the element.
       && Boolean(x.inset) === Boolean(y.inset);
@@ -632,12 +632,15 @@ function sameNumericRecord(a: unknown, b: unknown, tolerance: number): boolean {
  * True when a Figma value matches the measured one. Comparison is per-property
  * because the meaningful notion of equality differs: colors are
  * case-insensitive strings, lengths need a tolerance for sub-pixel rounding.
+ * `spike` is what to assume of Figma where the spike hasn't said (verify-tree
+ * SPIKE): whether a shadow's spread survives, here.
  */
 export function propertyMatches(
   property: ComparableProperty,
   measured: unknown,
   figma: unknown,
   tolerance: number,
+  spike: SpikeAssumptions = SPIKE,
 ): boolean {
   switch (property) {
     case "backgroundColor":
@@ -675,7 +678,7 @@ export function propertyMatches(
     case "borderUniform":
       return sameBorder(measured, figma, tolerance);
     case "boxShadow":
-      return sameShadows(measured, figma, tolerance);
+      return sameShadows(measured, figma, tolerance, spike);
     case "flexDirection":
       return String(measured ?? "").toLowerCase() === String(figma ?? "").toLowerCase();
     case "textLayout":
@@ -704,6 +707,7 @@ export function verifyVariant(
   measured: NormalizedStyles,
   figma: ReadbackStyles | undefined,
   tolerance: number,
+  spike: SpikeAssumptions = SPIKE,
 ): VariantVerdict {
   if (!figma) {
     return {
@@ -768,7 +772,7 @@ export function verifyVariant(
     // Unscored, as `lineHeight: "normal"` is.
     if (!noTextEitherSide && property === "fontFamily" && typeof measuredValue === "string" && isFontKeyword(measuredValue)) continue;
 
-    if (noTextEitherSide || propertyMatches(property, measuredValue, figmaValue, tolerance)) {
+    if (noTextEitherSide || propertyMatches(property, measuredValue, figmaValue, tolerance, spike)) {
       matched++;
     } else {
       mismatched++;
@@ -1037,6 +1041,12 @@ export interface VerifyOptions extends ReadbackCheckOptions {
   notRead?: number[];
   /** What to assume of Figma where the spike hasn't said: see verify-tree SPIKE. */
   spike?: SpikeAssumptions;
+  /**
+   * Whether layers a designer added inside variants pass --strict
+   * (`--allow-designer-layers`). verify lists them either way; this is
+   * read by treeStrictFailures, which takes the same options.
+   */
+  allowDesignerLayers?: boolean;
 }
 
 /**
@@ -1089,6 +1099,7 @@ export function verify(
   options: VerifyOptions = {},
 ): VerifyResult {
   const { snap, readback, skipped } = withoutComponents(snapIn, readbackIn, options.skip);
+  const spike = options.spike ?? SPIKE;
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
   // A readback with no components, {"version":1} say, has read nothing back
@@ -1151,7 +1162,7 @@ export function verify(
         continue;
       }
       if (!extended) {
-        verdicts.push(verifyVariant(component, slug, measured, figma, tolerance));
+        verdicts.push(verifyVariant(component, slug, measured, figma, tolerance, spike));
         continue;
       }
 
@@ -1165,7 +1176,7 @@ export function verify(
       }
       if (nodes && figma != null && isTreeEntry(figma)) {
         const records = recordsOf(figmaComponent!.variants, slug);
-        const scored = scoreTree({ nodes, styles: measured, assets: tree!.assets, records, tolerance, spike: options.spike });
+        const scored = scoreTree({ nodes, styles: measured, assets: tree!.assets, records, tolerance, spike });
         const counted = scored.measured + scored.extra;
         elements.measured += scored.measured;
         elements.verified += scored.verified;
@@ -1197,11 +1208,11 @@ export function verify(
 
       // The root alone: a snap without trees, a component measured
       // without one, or a readback from a template before trees.
-      const verdict = verifyVariant(component, slug, measured, figma, tolerance);
+      const verdict = verifyVariant(component, slug, measured, figma, tolerance, spike);
       if (figma == null) {
         // Missing from Figma: every element snap measured is missing, and
         // where it measured a tree, every property of each.
-        const all = nodes ? scoreTree({ nodes, styles: measured, assets: tree!.assets, records: [], tolerance, spike: options.spike }) : null;
+        const all = nodes ? scoreTree({ nodes, styles: measured, assets: tree!.assets, records: [], tolerance, spike }) : null;
         elements.measured += nodes ? nodes.length : 1;
         elements.missing += nodes ? nodes.length : 1;
         if (all) verdict.mismatched = all.compared;

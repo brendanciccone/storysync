@@ -11,6 +11,7 @@ import type { SnapResult } from "../snap.js";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { headlineFidelity, slugOfKey, formatElementReport } from "../verify.js";
+import { SPIKE } from "../verify-tree.js";
 import { buildAndRead } from "./tree-harness.js";
 import { loadTreeFixture } from "./mock-figma.js";
 import { join } from "node:path";
@@ -143,6 +144,17 @@ test("propertyMatches: shadows compare layer by layer", () => {
   const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring }], 0.5), true);
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, inset: false }], 0.5), false);
+  // A spread Figma dropped drifts, unless the spike found it drops every one.
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, spread: 0 }], 0.5), false);
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, spread: 0 }], 0.5, { ...SPIKE, shadowSpreadKept: false }), true);
+});
+
+test("verify: what to assume of Figma reaches a root's shadows too", () => {
+  const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
+  const s = snapWith([{ slug: "primary", delta: { boxShadow: [ring] } }]);
+  const readback = readbackWith({ primary: { boxShadow: [{ ...ring, spread: 0 }] } });
+  assert.equal(verify(s, readback, 0.5).variants[0].status, "drifted");
+  assert.equal(verify(s, readback, 0.5, { spike: { ...SPIKE, shadowSpreadKept: false } }).variants[0].status, "verified");
 });
 
 test("propertyMatches: borders compare width, color and style", () => {
