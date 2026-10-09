@@ -365,8 +365,10 @@ export interface StorybookClientOptions {
   readIndex?: ((signal: AbortSignal) => Promise<unknown>) | null;
   /** How long to wait for the index once the docs list has answered: 5 seconds unless a test says otherwise. */
   indexGraceMs?: number;
-  /** Each MCP request's limit, --connect-timeout's value: the SDK's 60 seconds by default. */
+  /** Each MCP request's limit once connected, --request-timeout's value: DEFAULT_REQUEST_TIMEOUT_MS by default. */
   requestTimeoutMs?: number;
+  /** The limit on connecting, --connect-timeout's value: requestTimeoutMs unless given. */
+  connectTimeoutMs?: number;
 }
 
 export class StorybookClient {
@@ -375,15 +377,17 @@ export class StorybookClient {
   private url: string;
   private readIndex: ((signal: AbortSignal) => Promise<unknown>) | null | undefined;
   private indexGraceMs: number;
-  // Each request's limit, as --connect-timeout gives it. Left to the SDK, a
-  // docs-show got 60 seconds whatever the flag said.
+  // Each request's limit, as --request-timeout gives it. Left to the SDK, a
+  // docs-show got 60 seconds whatever the flags said.
   private requestTimeoutMs: number;
+  private connectTimeoutMs: number;
 
   constructor(url: string, options: StorybookClientOptions = {}) {
     this.url = url;
     this.readIndex = options.readIndex;
     this.indexGraceMs = options.indexGraceMs ?? INDEX_GRACE_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? this.requestTimeoutMs;
   }
 
   // `transport` is for tests, which connect to an in-memory server. Nothing
@@ -398,7 +402,7 @@ export class StorybookClient {
       return;
     }
 
-    await connectWithFallback(this.client, new URL("/mcp", this.url), "Storybook", this.requestTimeoutMs);
+    await connectWithFallback(this.client, new URL("/mcp", this.url), "Storybook", this.connectTimeoutMs);
   }
 
   async disconnect(): Promise<void> {

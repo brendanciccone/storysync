@@ -341,18 +341,20 @@ const isRateLimit = (reason: string) =>
 export class FigmaClient {
   private client: Client | null = null;
   private url: string;
-  // Each use_figma call's limit, as --connect-timeout gives it, rather than
-  // the SDK's fixed 60 seconds.
+  // Each use_figma call's limit, as --request-timeout gives it, rather than
+  // the SDK's fixed 60 seconds; and connecting's, as --connect-timeout does.
   private requestTimeoutMs: number;
+  private connectTimeoutMs: number;
 
-  constructor(url: string, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  constructor(url: string, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, connectTimeoutMs = requestTimeoutMs) {
     this.url = url;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.connectTimeoutMs = connectTimeoutMs;
   }
 
   async connect(): Promise<void> {
     this.client = new Client({ name: "storysync", version: VERSION }, {});
-    await connectWithFallback(this.client, new URL(this.url), "Figma", this.requestTimeoutMs);
+    await connectWithFallback(this.client, new URL(this.url), "Figma", this.connectTimeoutMs);
   }
 
   async disconnect(): Promise<void> {

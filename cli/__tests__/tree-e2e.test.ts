@@ -29,6 +29,8 @@ import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
 import type { FigmaPlan, TreeDelta, TreeNode } from "../tree-types.js";
 import type { SnapResult } from "../snap.js";
+import { describeClimbed, describeIdenticalValues } from "../snap.js";
+import { describeArgRejections } from "../snap-args.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
@@ -335,6 +337,54 @@ for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture
     assert.equal(json.elementFidelity, 1);
     assert.equal(e.verified, e.measured);
     assert.equal(e.measured, 190);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: what snap warned is said beside the score, before the drift under it, and in --json, failing nothing", async () => {
+  // A third live push's verify printed none of what its snap warned (values
+  // that measured alike, values set through the preview) and its --json
+  // had no caveat: the warnings were written for the element-tree snap and
+  // verify had no kind for them. Each comes back here as snap writes it.
+  const toggle = asSnap(loadTreeFixture("toggle"));
+  const buttons = asSnap(loadTreeFixture("button-icon"));
+  const [alike] = describeIdenticalValues([{ property: "size", values: ["sm", "lg"] }]);
+  const climbed = describeClimbed([{ slug: "variant-default--size-sm", element: "div[data-slot=\"toggle\"]", from: "span" }], 6)!;
+  toggle.components[0].warnings = [alike, climbed];
+  const button = buttons.components[0];
+  const link = button.variants.find((v) => v.slug === "variant-link--size-default")!;
+  link.appliedVia = "preview";
+  link.rejectedArgs = [{ name: "size", value: "default", reasons: ["hidden-by-if"], condition: { arg: "variant", neq: "link" } }];
+  button.warnings = describeArgRejections(button.title!, button.variants, { storyFile: "./button.stories.tsx", id: button.id });
+  assert.equal(button.warnings.length, 1);
+  const p = await push({ ...toggle, components: [...toggle.components, button] } as SnapResult);
+  try {
+    // A drifted element, so the score has drift under it.
+    const label = layerIn(p.mock, "ui-base-toggle", toggle.components[0].variants[0].slug, "");
+    await editInFigma(p.mock, `(await figma.getNodeByIdAsync(${JSON.stringify(label.id)})).opacity = 0.5;`);
+    await readAgain(p);
+    const run = await verifyPlan(p);
+    assert.equal(run.status, 0, `${run.text.stdout}${run.text.stderr}`);
+    assert.deepEqual((run.json.caveats as { kind: string }[]).filter((c) => !["root-only"].includes(c.kind)), [
+      { component: "ui/base/Toggle", kind: "identical-values", values: ["size=sm", "size=lg"] },
+      { component: "ui/base/Toggle", kind: "snap-warning", warning: climbed },
+      { component: "ui/base/Button", kind: "preview-set", values: ["size=default"], variants: 1 },
+    ]);
+    const lines = run.text.stdout.split("\n");
+    const at = lines.findIndex((line) => line.startsWith("  ! The score compares Figma with what snap measured"));
+    assert.ok(at > 0, run.text.stdout);
+    assert.match(lines[at - 1], /^ {2}(missing \d+ ·|coverage )/, "right under the score's lines");
+    assert.deepEqual(lines.slice(at + 1, at + 4), [
+      "      ui/base/Toggle: `size=sm` and `size=lg` measured the same, so their variants in Figma look alike; if the code draws them differently, the story may not pass `size` through for them",
+      `      ui/base/Toggle: ${climbed}`,
+      "      ui/base/Button: the story's URL wouldn't take size=default, so snap set it through Storybook's preview and measured 1 variant as the component renders it; snap's warning names the story change that lets the URL take it",
+    ]);
+    assert.ok(lines.findIndex((line) => line.startsWith("  ~ ")) > at + 3, "before the drift");
+    // And --strict fails on the drift alone.
+    const strict = await verifyPlan(p, "--strict");
+    assert.equal(strict.status, 1);
+    assert.deepEqual(strict.json.caveats, run.json.caveats);
   } finally {
     cleanup(p);
   }

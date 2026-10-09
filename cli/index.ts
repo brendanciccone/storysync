@@ -7,6 +7,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { StorybookClient, selectComponents, findComponent } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
+import { DEFAULT_REQUEST_TIMEOUT_MS, requestLimit } from "./mcp-connect.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
@@ -32,15 +33,19 @@ import type { TokenDiffEntry, ComponentDiffEntry, CodeComponent } from "./diff.j
 import type { ComponentEntry } from "./storybook.js";
 
 /**
- * How long to wait for an MCP server to answer before giving up on it, as
- * --connect-timeout's default: to connect, and then for each request. It is
- * the 60 seconds the MCP SDK gives a request, so a server that answered
- * before still does. A Storybook that is still starting refuses connections
- * until it listens, which fails at once rather than waiting, and the
- * example's Storybook 10.6 answered initialize within 25ms of its port
- * opening.
+ * How long to wait to connect to an MCP server before giving up on it, as
+ * --connect-timeout's default. It is the 60 seconds the MCP SDK gives a
+ * request, so a server that answered before still does. A Storybook that is
+ * still starting refuses connections until it listens, which fails at once
+ * rather than waiting, and the example's Storybook 10.6 answered initialize
+ * within 25ms of its port opening. Each request once connected has
+ * --request-timeout, DEFAULT_REQUEST_TIMEOUT_MS by default.
  */
 const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
+
+/** --request-timeout's help, for the server or servers a command reads. */
+const requestTimeoutHelp = (servers: string) =>
+  `How long each request to ${servers} may take once connected, in milliseconds (default: ${DEFAULT_REQUEST_TIMEOUT_MS}, or --connect-timeout's when that is longer)`;
 
 /**
  * Connects to a Storybook or Figma MCP server, or ends the run with exit code
@@ -83,28 +88,42 @@ async function connectMcp<T extends { connect(): Promise<void> }>(client: T, ser
   }
 }
 
-// The same limit holds each request once connected: a docs-show that never
+// Each request once connected has its own limit: a docs-show that never
 // answers fails that component, naming the flag, rather than waiting on the
-// SDK's own 60 seconds whatever --connect-timeout said.
-function connectStorybook(url: string, json: boolean, timeoutMs: number): Promise<StorybookClient> {
-  return connectMcp(new StorybookClient(url, { requestTimeoutMs: timeoutMs }), "Storybook MCP", url, json, timeoutMs);
+// SDK's own 60 seconds whatever the flags said.
+function connectStorybook(url: string, json: boolean, { connectMs, requestMs }: McpTimeouts): Promise<StorybookClient> {
+  return connectMcp(new StorybookClient(url, { requestTimeoutMs: requestMs, connectTimeoutMs: connectMs }), "Storybook MCP", url, json, connectMs);
 }
 
-/** Parses --connect-timeout, exiting with a clear message on anything but a positive number of milliseconds. */
 const MAX_TIMER_MS = 2_147_483_647;
 
-function parseConnectTimeout(value: unknown): number {
+/** Parses a flag that takes milliseconds, exiting with a clear message on anything but a positive number of them. */
+function parseTimeout(value: unknown, flag: string): number {
   const ms = Number(value);
   if (!Number.isFinite(ms) || ms <= 0) {
-    console.error(chalk.red(`--connect-timeout must be a positive number of milliseconds, received "${value}"`));
+    console.error(chalk.red(`${flag} must be a positive number of milliseconds, received "${value}"`));
     process.exit(1);
   }
   // Node fires any longer timer after 1ms, which would fail every connect.
   if (ms > MAX_TIMER_MS) {
-    console.error(chalk.red(`--connect-timeout can be at most ${MAX_TIMER_MS} milliseconds (about 24 days), received "${value}"`));
+    console.error(chalk.red(`${flag} can be at most ${MAX_TIMER_MS} milliseconds (about 24 days), received "${value}"`));
     process.exit(1);
   }
   return ms;
+}
+
+interface McpTimeouts {
+  /** --connect-timeout: how long connecting may take. */
+  connectMs: number;
+  /** --request-timeout: how long each request may take once connected. */
+  requestMs: number;
+}
+
+/** Parses --connect-timeout and --request-timeout, a request's limit as requestLimit gives it. */
+function parseTimeouts(opts: { connectTimeout?: unknown; requestTimeout?: unknown }): McpTimeouts {
+  const connectMs = parseTimeout(opts.connectTimeout, "--connect-timeout");
+  const requested = opts.requestTimeout === undefined ? undefined : parseTimeout(opts.requestTimeout, "--request-timeout");
+  return { connectMs, requestMs: requestLimit(connectMs, requested) };
 }
 
 // Before any spinner starts: ora loops forever on a terminal reporting 0 columns.
@@ -176,6 +195,29 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const one = count === 1;
       return `snap couldn't check that Storybook gave the story the values of ${one ? "variant" : `${count} variants,`} ${nameSlugs(caveat.slugs ?? [])}, so ${one ? "it" : "they"} may have scored the story's default under ${one ? "its name" : "their names"}; measure the component again`;
     }
+    case "identical-values": {
+      const values = caveat.values ?? [];
+      const ticked = values.map((v) => `\`${v}\``);
+      const list = ticked.length > 1 ? `${ticked.slice(0, -1).join(", ")} and ${ticked[ticked.length - 1]}` : ticked.join("");
+      const property = values[0]?.split("=")[0] ?? "";
+      return `${list} measured the same, so their variants in Figma look alike; if the code draws them differently, the story may not pass \`${property}\` through for them`;
+    }
+    case "no-op-properties": {
+      const names = caveat.properties ?? [];
+      const one = names.length === 1;
+      return `every value of ${names.map((n) => `\`${n}\``).join(", ")} measured the same, so ${one ? "its" : "their"} variants in Figma look alike; if ${one ? "it changes" : "they change"} only behavior, \`--exclude-props ${names.join(",")}\` leaves ${one ? "it" : "them"} out`;
+    }
+    case "preview-set": {
+      const count = caveat.variants ?? 0;
+      const it = (caveat.values ?? []).length === 1 ? "it" : "them";
+      return `the story's URL wouldn't take ${nameSlugs(caveat.values ?? [])}, so snap set ${it} through Storybook's preview and measured ${count} ${count === 1 ? "variant" : "variants"} as the component renders ${it}; snap's warning names the story change that lets the URL take ${it}`;
+    }
+    case "font-stand-in": {
+      const fonts = (caveat.fonts ?? []).map((f) => `"${f}"`).join(", ");
+      return `the browser couldn't render ${fonts}, so snap measured the font it drew instead, and Figma was built from that; load the font in Storybook and measure again`;
+    }
+    case "snap-warning":
+      return caveat.warning ?? "";
     case "root-only": {
       const inner = caveat.innerElements;
       return `only the outer element was measured and compared${inner !== undefined ? ` (${inner} inner ${inner === 1 ? "element" : "elements"} not measured)` : ""}`;
@@ -263,7 +305,8 @@ program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--connect-timeout <ms>", "How long to wait to connect to Storybook MCP before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--request-timeout <ms>", requestTimeoutHelp("Storybook MCP"))
   .option("--components <names>", "Comma-separated component names, titles or IDs; a name that matches nothing is an error")
   .option("--json", "Output JSON instead of formatted text")
   .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
@@ -273,7 +316,7 @@ program
     const json = !!opts.json;
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
     const excludeProps = parsePropNames(opts.excludeProps);
-    const storybook = await connectStorybook(opts.storybook, json, parseConnectTimeout(opts.connectTimeout));
+    const storybook = await connectStorybook(opts.storybook, json, parseTimeouts(opts));
     try {
       const spinner = json ? null : ora("Reading components...").start();
       let entries: ComponentEntry[];
@@ -357,7 +400,8 @@ program
   .command("snap")
   .description("Measure each component variant's rendered styles and element tree from a running Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--connect-timeout <ms>", "How long to wait to connect to Storybook MCP before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--request-timeout <ms>", requestTimeoutHelp("Storybook MCP"))
   .option("--components <names>", "Comma-separated component names, titles or IDs; a name that matches nothing is an error")
   .option("--out <dir>", "Output directory", ".storysync/snaps")
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
@@ -387,7 +431,7 @@ program
       process.exit(1);
     }
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
-    const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
+    const timeouts = parseTimeouts(opts);
     // Without --components there is nothing to merge: the run measures
     // every component, which is the whole snap. As JSON under --json, as a
     // merge refused for its base is, since the push reads the reason there.
@@ -411,7 +455,7 @@ program
     // session, wrote that over the last styles.json and exited 0. So a CI job
     // canceled, or an agent's command timed out, replaced a good snap with a
     // broken one. Stop instead, at once, writing nothing: not after a docs
-    // request or a story still in flight, which can take --connect-timeout
+    // request or a story still in flight, which can take --request-timeout
     // or --timeout. Exiting runs Playwright's exit handler, which kills the
     // browser, and removes the screenshots staged so far. These are the
     // run's only signal handlers, and come before Playwright's, so Ctrl-C
@@ -437,7 +481,7 @@ program
     for (const [signal, handler] of handlers) process.on(signal, handler);
     const unlisten = () => { for (const [signal, handler] of handlers) process.off(signal, handler); };
 
-    const storybook = await connectStorybook(opts.storybook, json, connectTimeoutMs);
+    const storybook = await connectStorybook(opts.storybook, json, timeouts);
     try {
       const result = await runSnap(
         {
@@ -619,19 +663,24 @@ program
         const excludedNote = excluded > 0
           ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`)
           : "";
-        // Elements first where snap measured them (cli/verify.ts formatElementReport).
-        const elementReport = formatElementReport(result);
-        if (elementReport.length) for (const line of elementReport) console.log(line);
-        else console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        // Beside the score, before the element report's drift: Figma can
+        // match a measurement of the wrong element exactly, so the score
+        // alone would read as a faithful one.
+        const beside: string[] = [];
         if (result.skipped.length > 0) {
-          console.log(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
+          beside.push(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }
-        // Beside the score: Figma can match a measurement of the wrong
-        // element exactly, so the score alone would read as a faithful one.
         const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind));
         if (snapCaveats.length > 0) {
-          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
-          for (const caveat of snapCaveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+          beside.push(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
+          for (const caveat of snapCaveats) beside.push(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        }
+        // Elements first where snap measured them (cli/verify.ts formatElementReport).
+        const elementReport = formatElementReport(result, beside);
+        if (elementReport.length) for (const line of elementReport) console.log(line);
+        else {
+          console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+          for (const line of beside) console.log(line);
         }
         // And what verify itself found the score covers: the components
         // compared by their outer element alone on one line, which on a
@@ -983,11 +1032,12 @@ program
   .command("list")
   .description("List components in Storybook")
   .requiredOption("--storybook <url>", "Storybook URL")
-  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--connect-timeout <ms>", "How long to wait to connect to Storybook MCP before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--request-timeout <ms>", requestTimeoutHelp("Storybook MCP"))
   .option("--json", "Output JSON instead of formatted text")
   .action(async (opts) => {
     const json = !!opts.json;
-    const storybook = await connectStorybook(opts.storybook, json, parseConnectTimeout(opts.connectTimeout));
+    const storybook = await connectStorybook(opts.storybook, json, parseTimeouts(opts));
     try {
       const entries = await storybook.listComponents();
       if (json) {
@@ -1196,9 +1246,10 @@ program
   .description("Show how a component's props map to Figma variants")
   .requiredOption("--storybook <url>", "Storybook URL")
   .requiredOption("--component <name>", "Component name, title or ID; a name that matches nothing, or several, is an error")
-  .option("--connect-timeout <ms>", "How long to wait for Storybook MCP to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--connect-timeout <ms>", "How long to wait to connect to Storybook MCP before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--request-timeout <ms>", requestTimeoutHelp("Storybook MCP"))
   .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook, false, parseConnectTimeout(opts.connectTimeout));
+    const storybook = await connectStorybook(opts.storybook, false, parseTimeouts(opts));
     try {
       // A name that matches nothing fails here, naming what exists, before
       // asking Storybook for the documentation of a component it never listed.
@@ -1233,7 +1284,8 @@ program
   .requiredOption("--figma <url>", "Figma MCP server URL")
   .requiredOption("--file-key <key>", "Figma file key")
   .option("--storybook <url>", "Storybook URL (enables component diff)")
-  .option("--connect-timeout <ms>", "How long to wait for Figma MCP, and Storybook MCP, to answer before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--connect-timeout <ms>", "How long to wait to connect to Figma MCP, and Storybook MCP, before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
+  .option("--request-timeout <ms>", requestTimeoutHelp("Figma MCP and Storybook MCP"))
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
@@ -1263,14 +1315,14 @@ program
       process.exitCode = 1;
       return;
     }
-    const connectTimeoutMs = parseConnectTimeout(opts.connectTimeout);
+    const timeouts = parseTimeouts(opts);
 
-    const figma = await connectMcp(new FigmaClient(opts.figma as string, connectTimeoutMs), "Figma MCP", opts.figma as string, json, connectTimeoutMs);
+    const figma = await connectMcp(new FigmaClient(opts.figma as string, timeouts.requestMs, timeouts.connectMs), "Figma MCP", opts.figma as string, json, timeouts.connectMs);
 
     // Optionally connect to Storybook MCP
     let storybook: StorybookClient | null = null;
     if (opts.storybook) {
-      storybook = await connectStorybook(opts.storybook as string, json, connectTimeoutMs);
+      storybook = await connectStorybook(opts.storybook as string, json, timeouts);
     }
 
     let figmaReadFailed = false;

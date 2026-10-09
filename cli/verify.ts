@@ -18,7 +18,8 @@ import type { ComponentTree, TreeDelta, TreeNode } from "./tree-types.js";
 import { SPIKE, recordProblem, scoreTree } from "./verify-tree.js";
 import type { NodeVerdict, ReadRecord, SpikeAssumptions, UnscorableProperty } from "./verify-tree.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
-import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
+import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning, parseSnapWarning } from "./snap.js";
+import { NO_STORY_FIX } from "./snap-args.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
@@ -430,6 +431,10 @@ export interface VerifyResult {
    * wrapper rather than the component, its variants all measured the same,
    * or a VARIANT property's default is assumed. Figma can match such a measurement
    * exactly, so 100% on a dialog's trigger is not a faithful dialog.
+   * Also some of its values or properties measuring the same, values set
+   * through Storybook's preview, a font the browser couldn't render, and,
+   * as `snap-warning`, every other warning snap wrote about it, as written,
+   * so none is dropped (unsaidWarnings).
    * Reported beside the score; not a --strict failure.
    */
   caveats: ScoreCaveat[];
@@ -517,17 +522,29 @@ export interface ScoreCaveat {
    * `identical-variants` has it.
    */
   kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
+    | "identical-values" | "no-op-properties" | "preview-set" | "font-stand-in" | "snap-warning"
     | "root-only" | "truncated-tree" | "built-from-other-measurement";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
-  /** The properties whose default is assumed, for `default-assumed`, or that change nothing measured, for `behavior-only`. */
+  /**
+   * The properties whose default is assumed, for `default-assumed`, that
+   * change nothing measured, for `behavior-only`, or whose every value
+   * measured the same, for `no-op-properties`.
+   */
   properties?: string[];
   /**
    * For `args-rejected`: the values Storybook wouldn't give the story, as
-   * `prop=value`, and how many variants snap therefore didn't measure.
+   * `prop=value`, and how many variants snap therefore didn't measure. For
+   * `preview-set`: the values the story's URL wouldn't take, which snap set
+   * through Storybook's preview, and how many variants it measured so. For
+   * `identical-values`: values of one property that measured the same.
    */
   values?: string[];
   variants?: number;
+  /** For `font-stand-in`: the fonts the browser couldn't render, so it drew another. */
+  fonts?: string[];
+  /** For `snap-warning`: a warning of snap's no other kind stands for, as snap wrote it. */
+  warning?: string;
   /**
    * For `args-unchecked`: the variants snap measured without being able to
    * check that Storybook gave the story their values, so any of them may
@@ -1363,10 +1380,13 @@ export function verify(
 
   const caveats = (snap.components ?? [])
     .filter((component) => readbackComponents[componentKey(component)] != null)
-    .flatMap((component) => [
-      ...scoreCaveats(component),
-      ...treeCaveats(component, { treeMode, builtElsewhere: builtElsewhere.get(componentKey(component)) }),
-    ]);
+    .flatMap((component) => {
+      const own = [
+        ...scoreCaveats(component),
+        ...treeCaveats(component, { treeMode, builtElsewhere: builtElsewhere.get(componentKey(component)) }),
+      ];
+      return [...own, ...unsaidWarnings(component, own)];
+    });
   const bindings = bindingReport(readbackComponents, new Set(unverified.keys()));
   const uncompared = new Map<string, { component: string; property: string; variants: number }>();
   for (const verdict of verdicts) {
@@ -1671,7 +1691,53 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
   // given their values: any of them may be the default under their name.
   const unchecked = (component.variants ?? []).filter((v) => v.status === "ok" && v.argsChecked === false).map((v) => v.slug);
   if (unchecked.length) caveats.push({ component: key, kind: "args-unchecked", slugs: unchecked, variants: unchecked.length });
+  // Values the story's URL wouldn't take, measured as the component renders
+  // them once snap set them through the preview: right, but the story needs
+  // the change snap's warning names. Those no story change lets a URL carry
+  // snap doesn't warn of, so neither does this.
+  const viaPreview = (component.variants ?? []).filter((v) => v.status === "ok" && v.appliedVia === "preview")
+    .map((v) => (v.rejectedArgs ?? []).filter((r) => r.reasons.some((reason) => !NO_STORY_FIX.has(reason))))
+    .filter((fixable) => fixable.length);
+  if (viaPreview.length) {
+    const values = [...new Set(viaPreview.flat().map((r) => `${r.name}=${r.value}`))];
+    caveats.push({ component: key, kind: "preview-set", values, variants: viaPreview.length });
+  }
+  // What snap's warnings alone say: values or properties that measured the
+  // same, and a font the browser couldn't render.
+  for (const warning of component.warnings ?? []) {
+    const note = parseSnapWarning(warning);
+    if (note?.kind === "identical-values") caveats.push({ component: key, kind: "identical-values", values: note.values });
+    else if (note?.kind === "no-op-properties") caveats.push({ component: key, kind: "no-op-properties", properties: note.properties });
+    else if (note?.kind === "font-stand-in") caveats.push({ component: key, kind: "font-stand-in", fonts: note.fonts });
+  }
   return caveats;
+}
+
+/**
+ * The warnings snap wrote about a component that none of `caveats` stands
+ * for, as `snap-warning` caveats, so verify drops none of them: one of a
+ * kind it has no caveat of, as a measurement climbed to an element that
+ * draws, or one whose caveat the measurements didn't bear out. Not the
+ * one about a shared key, which snapIssues says.
+ */
+export function unsaidWarnings(component: SnapComponent, caveats: readonly ScoreCaveat[]): ScoreCaveat[] {
+  const key = componentKey(component);
+  const has = (...kinds: ScoreCaveat["kind"][]) => caveats.some((c) => c.component === key && kinds.includes(c.kind));
+  return (component.warnings ?? []).filter((warning) => {
+    const note = parseSnapWarning(warning);
+    if (!note) return true;
+    switch (note.kind) {
+      case "shared-key":
+        return false;
+      case "identical-variants":
+        return !has("identical-variants", "behavior-only");
+      // Under roots alone, the root-only caveat says the tree went unscored.
+      case "truncated-tree":
+        return !has("truncated-tree", "root-only");
+      default:
+        return !has(note.kind);
+    }
+  }).map((warning) => ({ component: key, kind: "snap-warning" as const, warning }));
 }
 
 // --- Loading -----------------------------------------------------------------
@@ -1794,12 +1860,13 @@ function shown(value: unknown): string {
 /**
  * verify's report where it scored elements (design section 10.6): the
  * headline, element fidelity beside the share of properties; the worst
- * component; the counts; coverage; then each element missing, extra or
+ * component; the counts; coverage; `beside`, what the caller says beside
+ * the score; then each element missing, extra or
  * drifted, by component, variant and key, with its Figma node id; the
  * layers designers added; and the variants not measured. Lines to print,
  * colored. Nothing for a run that scored no elements.
  */
-export function formatElementReport(result: VerifyResult): string[] {
+export function formatElementReport(result: VerifyResult, beside: readonly string[] = []): string[] {
   if (result.elementFidelity === undefined) return [];
   const lines: string[] = [];
   const { summary } = result;
@@ -1840,6 +1907,8 @@ export function formatElementReport(result: VerifyResult): string[] {
     const more = unscorable.length > 3 ? `, and ${unscorable.length - 3} more (--json lists them)` : "";
     lines.push(chalk.dim(`  coverage ${percent(result.coverage)}: not scored: ${named.join("; ")}${more}`));
   }
+  // What the caller says beside the score, such as what snap warned, before the drift under it.
+  lines.push(...beside);
 
   // Missing first, then extra, then drifted, each by key and Figma node id.
   const drift: { order: number; text: string }[] = [];

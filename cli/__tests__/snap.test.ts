@@ -12,8 +12,9 @@ import {
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
-  describeTruncatedTrees, describeClimbed, describeFontStandIns,
+  describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
 } from "../snap.js";
+import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
@@ -876,6 +877,45 @@ test("parseMeasurementWarning: reads back the element a measurement warning name
   assert.deepEqual(parseMeasurementWarning(wrapper), { kind: "layout-wrapper", element: "div", children: 3 });
   assert.equal(parseMeasurementWarning(describeNoOpProperties(["asChild"])!), null);
   assert.equal(parseMeasurementWarning("the browser could not render \"Inter\""), null);
+});
+
+test("parseSnapWarning: names each warning snap writes as it writes it, so verify can say it beside the score", () => {
+  // A third live push's verify said nothing of what snap had warned: values
+  // alike on Attachment and Sidebar, values set through the preview on
+  // Badge and Button. Each warning is read back from the function that
+  // writes it, so a change to its words can't leave verify blind to it.
+  const [trigger] = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);
+  const [wrapper] = describeMeasurementNotes("Switch", [{ slug: "a", note: { kind: "layout-wrapper", element: "div", children: 3 } }], 1);
+  const property: FigmaVariantProperty = { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" };
+  const same = [{ slug: "a", status: "ok", combination: { size: "sm" }, delta: {} }, { slug: "b", status: "ok", combination: { size: "lg" }, delta: {} }] as unknown as SnapVariant[];
+  const identical = describeIdenticalVariants(same, [property], [null, null])!;
+  const [values] = describeIdenticalValues([{ property: "state", values: ["done", "uploading", "processing"] }]);
+  const [pair] = describeIdenticalValues([{ property: "collapsible", values: ["offcanvas", "icon"] }]);
+  const rejection = { name: "variant", value: "link", reasons: ["not-in-options" as const], options: ["default"] };
+  const [preview] = describeArgRejections("ui/base/Badge", [{ combination: { variant: "link" }, status: "ok", appliedVia: "preview", rejectedArgs: [rejection] }]);
+  const [rejected] = describeArgRejections("ui/base/Badge", [{ combination: { variant: "link" }, status: "arg_rejected", rejectedArgs: [rejection] }]);
+  const unchecked = describeUncheckedArgs("ui/base/Badge", ["a"], 2)!;
+  const truncated = describeTruncatedTrees([{ slug: "a", truncated: { nodes: 900, at: "list/item" } }], 1)!;
+  const font = detectFontSubstitution(componentWithFonts(false))!;
+  const shared = `2 components share the key "Forms/Button", which identifies a component in the readback and during verification — their variants will collide and only one will be scored. Give them distinct Storybook titles.`;
+  assert.deepEqual(
+    [trigger, wrapper, identical, values, pair, describeNoOpProperties(["asChild", "modal"])!, preview, rejected, unchecked, truncated, font, shared].map(parseSnapWarning),
+    [
+      { kind: "closed-trigger" }, { kind: "layout-wrapper" }, { kind: "identical-variants" },
+      { kind: "identical-values", values: ["state=done", "state=uploading", "state=processing"] },
+      { kind: "identical-values", values: ["collapsible=offcanvas", "collapsible=icon"] },
+      { kind: "no-op-properties", properties: ["asChild", "modal"] },
+      { kind: "preview-set" }, { kind: "args-rejected" }, { kind: "args-unchecked" }, { kind: "truncated-tree" },
+      { kind: "font-stand-in", fonts: ["Inter"] }, { kind: "shared-key" },
+    ],
+  );
+  // The rest verify says as snap wrote them.
+  const climbed = describeClimbed([{ slug: "a", element: "div[data-slot=\"card\"]", from: "span" }], 1)!;
+  const cap = describeCap("Forms/Button", { totalPossible: 300, maxCombinations: 256, generated: 256, wasCapped: true } as never);
+  const collided = describeSlugCollisions([{ combination: { size: "Sm" }, slug: "size-sm-2", base: "size-sm" }] as never)!;
+  for (const warning of [climbed, cap, collided, "ui/base/Avatar: snap couldn't draw a thumbnail of img:1 (boom), so the nodes showing it are kept as frames without it."]) {
+    assert.equal(parseSnapWarning(warning), null, warning);
+  }
 });
 
 // --- a run that is stopped ---

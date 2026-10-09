@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import {
   verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize,
   canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS, scoreCaveats, bindingReport,
+  unsaidWarnings,
 } from "../verify.js";
-import { describeMeasurementNotes, describeIdenticalVariants } from "../snap.js";
+import { describeMeasurementNotes, describeIdenticalVariants, describeNoOpProperties } from "../snap.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
@@ -1383,6 +1384,55 @@ test("verify: caveats are given for the components the readback scored, and fail
   // A snap without trees: only the outer element was compared, which is said too.
   assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }, { component: "Forms/Button", kind: "root-only" }]);
   assert.equal(result.fidelity, 1);
+});
+
+// What a third live push's snap warned, word for word, which its verify
+// left out: caveats [] and nothing under the score.
+const PUSH3_ALIKE = "`state=done`, `state=uploading` and `state=processing` render identically: everything snap measures, the root and the elements in it, is the same wherever they were measured. If the code draws them differently, the story may not pass state through for these values; if it doesn't, they could be one Figma variant.";
+const PUSH3_PREVIEW = "Storybook wouldn't take some of ui/base/Badge's values from the story URL, and would have rendered those 2 variants without them, as its default: `variant` link, ghost: the story's argTypes options for it are 'default', 'secondary', 'destructive', 'outline'. snap set them through Storybook's preview instead and measured what the component renders with them, so the measurements are right. To let the story take them as well, add 'link', 'ghost' to argTypes.variant.options in ./registry/ui/badge-story/badge-base.stories.tsx.";
+
+test("verify: what snap warned is carried beside the score as caveats, each of its kind, and a warning of no kind as snap wrote it", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#ffffff" } }, { slug: "c", delta: { backgroundColor: "#000000" } }]);
+  const component = snap.components[0];
+  const options = ["default", "secondary", "destructive", "outline"];
+  component.variants[1].appliedVia = "preview";
+  component.variants[1].rejectedArgs = [{ name: "variant", value: "link", reasons: ["not-in-options"], options }];
+  // A value no story change lets the URL carry: snap doesn't warn of it, so neither does verify.
+  component.variants[2].appliedVia = "preview";
+  component.variants[2].rejectedArgs = [{ name: "cols", value: "2", reasons: ["number-in-url"] }];
+  const climbed = "snap measured div[data-slot=\"card\"] rather than span: span draws nothing and holds nothing that does, so its tree would be empty, and div[data-slot=\"card\"] is the nearest element around it that draws.";
+  component.warnings = [PUSH3_ALIKE, PUSH3_PREVIEW, describeNoOpProperties(["asChild"])!, "the browser could not render \"Geist\", so the measurements describe a substituted typeface. Load the font in Storybook.", climbed];
+  const result = verify(snap, readbackWith({ a: {}, b: { backgroundColor: "#ffffff" }, c: { backgroundColor: "#000000" } }), 0.5);
+  assert.deepEqual(result.caveats, [
+    { component: "Forms/Button", kind: "preview-set", values: ["variant=link"], variants: 1 },
+    { component: "Forms/Button", kind: "identical-values", values: ["state=done", "state=uploading", "state=processing"] },
+    { component: "Forms/Button", kind: "no-op-properties", properties: ["asChild"] },
+    { component: "Forms/Button", kind: "font-stand-in", fonts: ["Geist"] },
+    { component: "Forms/Button", kind: "root-only" },
+    { component: "Forms/Button", kind: "snap-warning", warning: climbed },
+  ]);
+  // Said, and failing nothing.
+  assert.equal(result.fidelity, 1);
+  assert.equal(result.summary.drifted, 0);
+});
+
+test("unsaidWarnings: a warning whose caveat the measurements don't bear out is said as written; one said elsewhere is not said twice", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#ffffff" } }]);
+  const component = snap.components[0];
+  const identical = describeIdenticalVariants([
+    { slug: "a", status: "ok", combination: {}, delta: {}, error: null }, { slug: "b", status: "ok", combination: {}, delta: {}, error: null },
+  ] as never, [], [])!;
+  const shared = "2 components share the key \"Forms/Button\", which identifies a component in the readback and during verification — their variants will collide and only one will be scored. Give them distinct Storybook titles.";
+  const truncated = "the element tree of every variant holds more than snap keeps (600 elements, 24 levels deep): up to 900 elements, so everything from `list/item` on was left out, and verify lists it as not measured.";
+  component.warnings = [identical, shared, truncated];
+  // This snap's variants measured differently, so no identical-variants
+  // caveat stands for the warning; the shared key is a snap issue; and
+  // the root-only caveat says the tree went unscored.
+  const own = scoreCaveats(component);
+  assert.deepEqual(own, []);
+  assert.deepEqual(unsaidWarnings(component, [...own, { component: "Forms/Button", kind: "root-only" }]), [{ component: "Forms/Button", kind: "snap-warning", warning: identical }]);
+  // A component's caveats stand for its own warnings only.
+  assert.deepEqual(unsaidWarnings(component, [{ component: "Forms/Other", kind: "root-only" }]).map((c) => c.warning), [identical, truncated]);
 });
 
 test("readSnapAge: carries a merged snap's time for each component, leaving out any that isn't a time", () => {

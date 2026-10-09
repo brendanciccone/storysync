@@ -650,6 +650,39 @@ export function parseMeasurementWarning(warning: string): MeasurementNote | null
 }
 
 /**
+ * Which of snap's warnings `warning` is, so verify can say each beside its
+ * score, and what it names where verify says it from the warning alone:
+ * the values describeIdenticalValues found alike, as `prop=value`; the
+ * properties describeNoOpProperties named; the fonts
+ * detectFontSubstitution found the browser couldn't render. Null for a
+ * warning of no kind here, which verify says as snap wrote it.
+ */
+export type SnapWarningNote =
+  | { kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "preview-set" | "args-rejected" | "args-unchecked" | "truncated-tree" | "shared-key" }
+  | { kind: "identical-values"; values: string[] }
+  | { kind: "no-op-properties"; properties: string[] }
+  | { kind: "font-stand-in"; fonts: string[] };
+
+export function parseSnapWarning(warning: string): SnapWarningNote | null {
+  const ticked = (list: string) => [...list.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const measurement = parseMeasurementWarning(warning);
+  if (measurement) return { kind: measurement.kind };
+  if (/^all \d+ rendered variants measured identically/.test(warning)) return { kind: "identical-variants" };
+  const alike = /^((?:`[^`]+`(?:, | and ))+`[^`]+`) render identically: /.exec(warning);
+  if (alike) return { kind: "identical-values", values: ticked(alike[1]) };
+  const noOp = /^(`[^`]+`(?:, `[^`]+`)*): every value measured the same/.exec(warning);
+  if (noOp) return { kind: "no-op-properties", properties: ticked(noOp[1]) };
+  if (/^Storybook wouldn't take some of .+'s values from the story URL/.test(warning)) return { kind: "preview-set" };
+  if (/^Storybook wouldn't render \d+ of .+'s variants with the values asked for/.test(warning)) return { kind: "args-rejected" };
+  if (/^snap couldn't read Storybook's preview to confirm /.test(warning)) return { kind: "args-unchecked" };
+  if (/^the element tree of .+ holds more than snap keeps/.test(warning)) return { kind: "truncated-tree" };
+  if (SHARED_KEY_WARNING.test(warning)) return { kind: "shared-key" };
+  const fonts = /^the browser could not render (.+?), so the measurements describe a substituted typeface/.exec(warning);
+  if (fonts) return { kind: "font-stand-in", fonts: [...fonts[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]) };
+  return null;
+}
+
+/**
  * Thrown when the browser goes away part-way through a run. runSnap launches
  * it once more on the first; on a second, the run stops with this before
  * anything is written, so an earlier styles.json, meta.json and screenshots

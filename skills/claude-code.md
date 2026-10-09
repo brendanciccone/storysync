@@ -105,7 +105,7 @@ The `title` is the component's Storybook title, and `category` its place in Stor
 
    Step 3 reads each component's docs and renders every variant in a browser, which takes several seconds a component, and more on a busy Storybook: 134 components took about 17 minutes. **If there are more than about 20 components, stop and ask the user what to push before measuring anything:** all of them, some categories (name each with how many components it has), or some components. Pass what they choose to step 3 as `--components`, by ID. With 20 or fewer, push them all.
 
-   If a command fails because Storybook didn't answer in time (an error naming `--connect-timeout`), a busy or shared Storybook is slow rather than down: run it again with `--connect-timeout 180000`.
+   If a command fails because Storybook didn't answer in time, a busy or shared Storybook is slow rather than down: run it again with the flag its error names raised, `--request-timeout 900000` for a request, which has five minutes by default, or `--connect-timeout 180000` for connecting.
 
 2. **Inspect individual components** — for detailed prop-to-variant mapping of a specific component:
 
@@ -129,7 +129,7 @@ STORYSYNC_PROGRESS=1 npx storysync snap --storybook http://localhost:6006 --vari
    **Run it in the background, and check how it ended before building.** An agent's shell stops a command after a few minutes (Claude Code's Bash tool after 2 by default, and 10 at most), and snap stopped part-way writes nothing. So start the command above in the background (`run_in_background` in Claude Code, or wrapped in `( ... ) &` elsewhere), as any storysync command that may take more than a minute or two. `STORYSYNC_PROGRESS=1` makes it log a line per component and variant, such as `snap 12/134 UI Base/Command, variant 3/32`: check on it with `tail -n 1 .storysync/snap-progress.log` until the last line is its `exit` code. Claude Code also tells you when a background command ends, so there you can wait for that, then read the last line.
 
    - `exit 0`: it finished, and wrote `.storysync/snaps/styles.json` and `meta.json`.
-   - `exit 1`: it failed, with the reason as `{"error": ...}` in `.storysync/snap-out.json`: Storybook unreachable or too slow (raise `--connect-timeout`, as step 1 says), a `--components` name that matches nothing, a `--merge` it refused (below), or the browser closing twice. An option it can't take, such as a `--timeout` that isn't a number, is said in the progress log instead.
+   - `exit 1`: it failed, with the reason as `{"error": ...}` in `.storysync/snap-out.json`: Storybook unreachable or too slow (raise the flag its error names, as step 1 says), a `--components` name that matches nothing, a `--merge` it refused (below), or the browser closing twice. An option it can't take, such as a `--timeout` that isn't a number, is said in the progress log instead.
    - `exit 130`, `143` or `129`: it was stopped, by Ctrl-C, SIGTERM (a command timeout, say) or SIGHUP, and the log says so.
 
    After any exit but 0, the `styles.json` and `meta.json` in `.storysync/snaps` are an earlier run's: never build from them. Deal with what it said, and run it again in the background. After `exit 0`, check too that `meta.json` is this run's: its `measuredAt` is after you started it, or, after a `--merge`, which keeps `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is. Read what it recorded from `.storysync/snaps/styles.json` on disk, a component at a time (with `jq` or `node`, say): `snap-out.json` holds the same JSON on one line, which tools cut short.
@@ -238,7 +238,7 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
    - `but snap no longer measures it`: a layer an earlier push built for an element the code no longer renders. Sending the component's build call removes it.
    - `not measured, so Figma holds a placeholder for it`: a variant snap couldn't measure (step 3). Not scored, and `--strict-measured` fails on it.
    - `made this plan from it`: the snap was taken again after the plan was written. Run `figma code` again and send its calls.
-   - What snap warned about the measurement, under the score (a closed trigger, variants that measured alike, values Storybook wouldn't take, args snap couldn't check): report it, as step 3 says.
+   - What snap warned about the measurement, under the score (a closed trigger, variants or values that measured alike, values Storybook wouldn't take or took only through its preview, args snap couldn't check, a font the browser couldn't render, and any other warning, which it quotes as snap wrote it): report it, as step 3 says. With `--json`, these are its `caveats`.
    - `! snap recorded a failure`: the measurement itself is incomplete, not Figma. Where it names a component's error, measure that component again (step 3, with `--merge`); where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again.
    - `Variables:` the element-tree readback doesn't read variable bindings yet, so a token detached in Figma at the same value can't be seen. Say so in the summary.
 

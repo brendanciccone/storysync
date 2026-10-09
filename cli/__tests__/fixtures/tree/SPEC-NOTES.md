@@ -1205,3 +1205,46 @@ L4. **Open overlay content in a portal is measured when the story's root
    - The shadcn registry has no story that renders a dialog, sheet or
      popover open: each opens in a play function. Their Default stories
      still measure the closed trigger, with the warning as before.
+
+# After the third live push: verify's caveats and the request limit
+
+Notes LC1 on, from the CLI fixes after the third live push (Figma file
+UPmguLPQ7w1ESdOZsq6vlw).
+
+LC1. **verify says every warning snap wrote about a scored component**
+   (section 5.4 extended). The element-tree snap writes warnings verify
+   had no caveat kind for, so that push's verify printed none of them and
+   its `--json` had `caveats: []`, although snap warned that Attachment's
+   and Sidebar's values measured alike and that Badge's and Button's were
+   set through the preview. New kinds: `identical-values` (as `prop=value`),
+   `no-op-properties` and `font-stand-in`, read from snap's own words
+   (`parseSnapWarning` in snap.ts, tested against each function that writes
+   them); `preview-set`, from the variants' `appliedVia` and the reasons a
+   story change fixes, as snap's warning is; and `snap-warning`, any other
+   warning, as written (`unsaidWarnings`), so none is dropped. A warning
+   whose caveat the measurements don't bear out is said as written too.
+   The shared-key warning is left to `snapIssues`. `snapWarnings` keeps its
+   meaning, variants not measured. A 0.4.0 snap's warnings are all of kinds
+   it had, so the push2 replay's JSON is unchanged. The caveats print
+   right under the score's lines, before the element drift, which on that
+   push filled 40 lines between them.
+LC2. **Each MCP request has `--request-timeout`, five minutes by default**
+   (no section; 0.4.0's `--connect-timeout` held connecting and every
+   request alike, at 60 seconds). coder's Storybook, which Vite builds as
+   each component's docs are asked for, took 30 to 70 seconds a docs
+   request, so runs on it failed unless the user knew to raise the flag.
+   `--connect-timeout` now holds connecting alone, and `list`, `map`,
+   `inspect`, `snap` and `diff` take `--request-timeout`, named in the
+   error when a request runs out (`requestTimeoutError`). Without it a
+   request has five minutes, or `--connect-timeout`'s limit where that is
+   longer (`requestLimit`), so a run that raised `--connect-timeout` for a
+   slow Storybook, as the skills said to, keeps its limit. A
+   `--connect-timeout` shorter than a slow request no longer fails it.
+   Node's fetch has limits of its own, five minutes for an answer's
+   headers and five between parts of its body, which held every request
+   to five minutes whatever the flag said: a stand-in answering after
+   310 seconds failed as "fetch failed" at 301 seconds, or, streaming as
+   addon-mcp does, had its answer cut off and timed out at the flag's
+   600. The MCP transports now fetch through a dispatcher of Node's own
+   kind with those limits off (`untimedFetch`), and cli-connect's test
+   shortens Node's limits to 400ms to hold that.

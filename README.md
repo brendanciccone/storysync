@@ -340,7 +340,7 @@ The CLI handles setup (`init`, `setup`) and gives deterministic output you can c
 
 A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it. When the server answers with an HTTP error, the message gives the status and what to do about it, such as running `storysync init` when Storybook has no `/mcp`.
 
-`--connect-timeout` also limits each request once connected. A component whose docs don't come back in time fails on its own, and `--strict` catches it.
+Once connected, each request has `--request-timeout` (default 300000 ms, five minutes). A large Storybook can take more than a minute to answer one, since it builds each component's docs when they're asked for. A component whose docs don't come back in time fails on its own, with an error that names the flag, and `--strict` catches it. A `--connect-timeout` longer than five minutes raises the request limit too, as it did before `--request-timeout`.
 
 `map`, `snap`, and `diff` read components one at a time, which can take minutes for a large library. On a terminal they show which component they're on, on stderr, so `--json` output stays clean. Piped or in CI, they print nothing extra, unless you set `STORYSYNC_PROGRESS=1`, which prints a line per component (and per snap variant) to stderr. That lets you follow a run in the background from its stderr file. `STORYSYNC_PROGRESS=0` turns the terminal line off.
 
@@ -409,7 +409,8 @@ Maps every component to Figma variant definitions. Each one has its Storybook `i
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
   --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --max-combinations <n> Most combinations to generate per component before capping (default: 256)
@@ -427,7 +428,8 @@ Renders each component variant in a headless browser and records its computed st
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
   --components <names>   Comma-separated component names, titles or IDs (default: all);
                          a name that matches nothing is an error
   --out <dir>            Output directory (default: ".storysync/snaps")
@@ -632,11 +634,12 @@ Each difference names its component, variant, element key and Figma node id, mis
 
 **Root-only snaps.** A snap taken with `--root-only`, or by Storysync 0.4.0 or earlier, is scored as before, by each variant's outer element, and `verify` says under the score that only the outer element was compared, with how many inner elements weren't measured. `--roots-only` scores an element-tree snap that way too, for comparison. A tree snap scored against a readback of roots alone fails `--strict`: its elements were never read back.
 
-**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, saying whether its args reached it, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`. It also lists a component with variants Storybook wouldn't render with their values (`arg_rejected`), built as placeholders and not scored, and one with variants snap measured without checking that the story took their values (`argsChecked: false`), which fail `--strict-measured`.
+**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, saying whether its args reached it, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`. It also lists a component with variants Storybook wouldn't render with their values (`arg_rejected`), built as placeholders and not scored, and one with variants snap measured without checking that the story took their values (`argsChecked: false`), which fail `--strict-measured`. And it lists the rest of what snap warned about a scored component: some of its values, or every value of a prop, that measured the same, values snap set through Storybook's preview because the story's URL wouldn't take them, a font the browser couldn't render, and any other warning, word for word. These don't fail `--strict` either. With `--json`, each is in `caveats`, by its `kind`.
 
 ```text
-  ! The score compares Figma with what snap measured, and snap warned about that for this component:
+  ! The score compares Figma with what snap measured, and snap warned about that for these components:
       ui/base/Dialog: snap measured button[data-slot="dialog-trigger"], a closed trigger, so this scores the trigger, not what it opens
+      ui/base/Attachment: `state=done`, `state=uploading` and `state=processing` measured the same, so their variants in Figma look alike; if the code draws them differently, the story may not pass `state` through for them
 ```
 
 A component in the readback that the snap doesn't have at all fails `--strict`. That's what a snap run again with `--components` and without `--merge` leaves out.
@@ -676,7 +679,8 @@ Lists the components in Storybook, each by its title and ID, either of which `--
 ```text
 Options:
   --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
   --json                 Output JSON instead of formatted text
 ```
 
@@ -691,8 +695,10 @@ Options:
   --figma <url>          Figma MCP server URL (required)
   --file-key <key>       Figma file key (required)
   --storybook <url>      Storybook URL (enables component diff)
-  --connect-timeout <ms> How long to wait for Figma MCP, and Storybook MCP, to answer
+  --connect-timeout <ms> How long to wait to connect to Figma MCP, and Storybook MCP
                          (default: 60000)
+  --request-timeout <ms> How long each request to either may take once connected
+                         (default: 300000)
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
@@ -733,7 +739,8 @@ Options:
   --storybook <url>      URL of the running Storybook instance (required)
   --component <name>     Component name, title or ID to inspect (required);
                          a name that matches nothing, or several, is an error
-  --connect-timeout <ms> How long to wait for Storybook MCP to answer (default: 60000)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
 ```
 
 ## Limitations
