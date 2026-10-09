@@ -1421,6 +1421,7 @@ test("every push instruction names the @theme tokens an Unresolved: warning says
   for (const [path, text] of installedPushTexts()) {
     assert.match(text, /any token a `tokens` warning starting `Unresolved:` names/, `${path} doesn't leave out unresolved tokens`);
     assert.match(text, /not read from `@theme`[^\n]*out of the output already/, `${path} doesn't name the @theme tokens tokens left out`);
+    assert.match(text, /`Skipped dynamic value:`[^\n]*name them too/, `${path} doesn't name the tokens a Skipped dynamic value: warning left out`);
   }
 });
 
@@ -1487,7 +1488,7 @@ test("every audit says what its token counts don't cover: other modes, the dark 
       const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
       assert.match(audit, /every mode of a Figma collection but its first/, `${path} doesn't name the modes it didn't compare`);
       assert.match(audit, /`Only the light theme is read`/, `${path} doesn't name the dark theme tokens doesn't read`);
-      assert.match(audit, /`Unresolved:`, `Not read from @theme`, `Uncategorized:`/, `${path} doesn't name the tokens tokens didn't read`);
+      assert.match(audit, /`Unresolved:`, `Skipped dynamic value:`, `Not read from @theme`, `Uncategorized:`/, `${path} doesn't name the tokens tokens didn't read`);
       assert.match(audit, /Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract/, `${path} doesn't name Tailwind's default scales`);
       assert.match(audit, /Beside the token counts, say what they cover and what they don't/, `${path}'s summary gives the counts alone`);
       assert.match(audit, /modes/, `${path} never reads each collection's modes`);
