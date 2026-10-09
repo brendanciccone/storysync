@@ -1606,6 +1606,8 @@ test("every audit can score how the sets look, reading Figma and changing nothin
       const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
       // A snap of its own, so the push's snap and readback stay as they were.
       assert.match(audit, /npx storysync snap [^`\n]*--variants all[^`\n]*--out \.storysync\/audit\/snaps/, `${path} snaps over the push's snap`);
+      // From the story the push measured each component from, which styles.json records.
+      assert.match(audit, /the push's `--exclude-props`, and the push's `--stories`[^\n]*`storyId`[^\n]*\.storysync\/snaps\/styles\.json/, `${path} snaps the audit from the default stories, not the push's`);
       assert.match(audit, /npx storysync figma code --snap \.storysync\/audit\/snaps\/styles\.json --out \.storysync\/audit\/figma/, `${path} writes its calls over the push's`);
       assert.match(audit, /only the plan's `read` calls[^\n]*[Nn]ever[^\n]*`build`, `images` or `label` calls/, `${path} lets the audit send calls that change the file`);
       assert.match(audit, /npx storysync figma next --plan \.storysync\/audit\/figma\/plan\.json/, `${path} never continues a read that stopped`);
