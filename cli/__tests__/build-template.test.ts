@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleReorder } from "../figma-layout.js";
-import { absoluteBoxes, parentKey } from "../tree-types.js";
+import { applyDelta } from "../snap-normalize.js";
+import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
 import { MockFigma, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
@@ -24,6 +25,16 @@ function keyed(view: NodeView, key: string): NodeView | undefined {
     if (found) return found;
   }
   return undefined;
+}
+
+/** The layers of a built variant that carry no key, an icon's own shapes aside: none, unless a designer added them. */
+function unkeyed(view: NodeView): string[] {
+  const out: string[] = [];
+  for (const child of view.children ?? []) {
+    if (!child.data["storysync.k"] && !child.data["storysync.vs"]) out.push(`${child.type} ${child.name}`);
+    else if (!child.data["storysync.svg"]) out.push(...unkeyed(child));
+  }
+  return out;
 }
 
 async function buildAll(fixture: TreeFixture, mockOptions: MockFigmaOptions = {}, codeOptions = {}) {
@@ -58,6 +69,11 @@ test("build: a faithful build puts every keyed layer where snap measured it, wit
       }
       assert.equal(node.data["storysync.src"], "measured");
       assert.equal(node.data["storysync.tpl"], "2");
+      // The digest verify checks the variant against: of its facts, the root's paint from its styles included.
+      const component = fixture.components[0];
+      const styles = applyDelta(component.base!.styles, component.variants.find((v) => v.slug === variant.slug)!.delta ?? {});
+      assert.equal(node.data["storysync.d"], treeDigest([rootWithStyles(variant.nodes[0], styles), ...variant.nodes.slice(1)]), `${name} ${variant.slug}`);
+      assert.deepEqual(unkeyed(node), [], `${name} ${variant.slug}`);
     }
   }
 });
@@ -119,6 +135,72 @@ test("build: Figma's layer order differs from snap's paint order only between si
   assert.equal(reordered, 4, "Attachment's root, in each of its 4 variants");
 });
 
+test("build: a text's alignment, truncation and line count, and a hidden layer, are built as snap measured them", async () => {
+  const fixture = synthetic("Texts", [
+    { k: "", t: "F", el: "div", box: [0, 0, 120, 100], L: { d: "block" } },
+    { k: "center", t: "T", el: "p", box: [0, 0, 120, 20], tx: { c: "Centered", f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ta: "center", ink: [33, 1.5, 54, 17] } },
+    { k: "cut", t: "T", el: "p", box: [0, 20, 120, 20], tx: { c: "A title that runs past its box", f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, el: 1, ink: [0, 1.5, 120, 17] } },
+    { k: "clamp", t: "T", el: "p", box: [0, 40, 120, 40], tx: { c: "Two lines of text, then the rest cut off at the second", f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 2, cl: 2, ink: [0, 1.5, 118, 37] } },
+    { k: "gone", t: "F", el: "span", box: [0, 80, 120, 20], bg: "#eeeeee", vis: 0, abs: 1 },
+  ], { width: 120, height: 100, display: "block" });
+  const { mock } = await buildAll(fixture);
+  const variant = variantsBySlug(mock).get("default")!;
+  const props = (key: string, names: string[]) => names.map((p) => mock.handle(keyed(variant, key)!.id)[p]);
+  const text = ["textAlignHorizontal", "textTruncation", "maxLines", "textAutoResize"];
+  assert.deepEqual(props("center", text), ["CENTER", "DISABLED", null, "HEIGHT"]);
+  assert.deepEqual(props("cut", text), ["LEFT", "ENDING", 1, "HEIGHT"]);
+  assert.deepEqual(props("clamp", text), ["LEFT", "ENDING", 2, "HEIGHT"]);
+  assert.deepEqual(props("gone", ["visible"]), [false]);
+  assert.deepEqual(props("center", ["visible"]), [true]);
+});
+
+test("build: a frame Figma lays out otherwise than planned is built without auto layout, each child where snap measured it", async () => {
+  for (const [name, tweak] of [
+    ["button-icon", (L: { g: number }) => { L.g += 12; }],
+    ["card", (L: { p: number[] }) => { L.p = L.p.map((p) => p + 5); }],
+    ["attachment", (L: { ca: string }) => { L.ca = L.ca === "CENTER" ? "MAX" : "CENTER"; }],
+  ] as const) {
+    const fixture = loadTreeFixture(name);
+    const coded = await codeFor(fixture);
+    const mock = mockFor([fixture]);
+    const code = coded.code(coded.plan.calls[0]);
+    const data = JSON.parse(/\nconst DATA = (.*);\n/.exec(code)![1]) as { S: unknown[] };
+    // The first auto layout style the call has, wrong as Figma might take it.
+    const at = data.S.findIndex((st) => typeof st === "object" && st !== null && "L" in st);
+    (tweak as (L: unknown) => void)((data.S[at] as { L: unknown }).L);
+    const run = await mock.run(code.replace(/\nconst DATA = .*;\n/, () => `\nconst DATA = ${JSON.stringify(data)};\n`));
+    assert.ok(run.ok, run.text);
+    const absolute = result(run).sets[0].absoluteContainers as [string, string, string][];
+    assert.ok(absolute.length > 0, name);
+    for (const [slug, key, why] of absolute) {
+      assert.match(why, /lands -?[\d.]+px off (along|across) the flow$/);
+      const built = variantsBySlug(mock).get(slug)!;
+      assert.equal(mock.handle((key ? keyed(built, key)! : built).id).layoutMode, "NONE", `${name} ${slug} ${key}`);
+    }
+    for (const variant of fixtureVariants(fixture)) {
+      assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], `${name} ${variant.slug}`);
+    }
+  }
+});
+
+test("build: a keyed layer duplicated in Figma is removed, the first of them kept", async () => {
+  const fixture = loadTreeFixture("switch");
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture]);
+  await runPlan(mock, coded, ["build"]);
+  const thumb = keyed(variantsBySlug(mock).get("size-default")!, "switch-thumb")!;
+  await mock.run(`
+    const page = figma.root.children.find((p) => p.name === 'ui/base');
+    await figma.setCurrentPageAsync(page);
+    const thumb = page.findOne((n) => n.id === ${JSON.stringify(thumb.id)});
+    thumb.parent.appendChild(thumb.clone());
+  `);
+  assert.equal(variantsBySlug(mock).get("size-default")!.children!.length, 2);
+  const [again] = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual([again.created, again.removed], [0, 1]);
+  assert.deepEqual(variantsBySlug(mock).get("size-default")!.children!.map((c) => c.id), [thumb.id]);
+});
+
 test("build: a sibling after a label moves by as much as a wider stand-in widens the label", async () => {
   const fixture = synthetic("Next", [
     { k: "", t: "F", el: "button", box: [0, 0, 86, 24], L: { d: "inline-flex", ai: "center", gap: [4, 4], pad: [0, 8, 0, 8] } },
@@ -150,11 +232,15 @@ test("build: where clone() drops plugin data (spike item 5), keys are copied and
   const fixture = loadTreeFixture("attachment");
   const coded = await codeFor(fixture);
   const mock = mockFor([fixture], { clonePluginData: false });
-  await runPlan(mock, coded, ["build"]);
+  const [first] = await runPlan(mock, coded, ["build"]);
+  // No copy is left beside the layers converge keyed: the clone's own are those.
+  assert.equal(result(first).sets[0].designerLayers, 0);
   const again = await runPlan(mock, coded, ["build"]);
   assert.deepEqual([again[0].created, again[0].removed], [0, 0]);
   for (const variant of fixtureVariants(fixture)) {
-    assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), []);
+    const built = variantsBySlug(mock).get(variant.slug)!;
+    assert.deepEqual(unkeyed(built), [], variant.slug);
+    assert.deepEqual(boxDrift(mock, built, variant.nodes, absoluteBoxes(variant.nodes)), []);
   }
 });
 
@@ -307,6 +393,8 @@ test("bindings: paints, text colors and radii bind to the variables their classe
     const mock = mockFor([fixture]);
     const vars: Record<string, string> = {};
     for (const [name, hex] of [["primary", "#171717"], ["primary/foreground", "#fafafa"], ["destructive", "#df2225"]]) vars[name] = mock.addVariable(name, "COLOR", hex).id;
+    // A spacing step named like the radius: the one in a radius collection binds.
+    mock.addVariable("md", "FLOAT", 12, "Spacing");
     vars.md = mock.addVariable("md", "FLOAT", 8, "Radius").id;
     const [build] = await runPlan(mock, recoded, ["build"]);
     (check as (m: MockFigma, v: Record<string, string>, r: BuildResult) => void)(mock, vars, result(build));

@@ -70,6 +70,17 @@ test("planLayout: a reorder that would show is built absolute, and says why", ()
   assert.equal(planLayout(parent({ size: [100, 40], L: { d: "flex" } }), [kid("a", [40, 0, 60, 40]), kid("b", [0, 0, 40, 40])]).mode, "HORIZONTAL");
 });
 
+test("planLayout: where several alignments across the flow fit, the one CSS declares wins", () => {
+  // Every child as tall as the content box: MIN, CENTER and MAX all place them.
+  const kids = [kid("a", [0, 0, 20, 40]), kid("b", [20, 0, 20, 40])];
+  const counter = (ai?: string) => planLayout(parent({ L: { d: "flex", ...(ai ? { ai } : {}) } }), kids).counter;
+  assert.equal(counter("center"), "CENTER");
+  assert.equal(counter("flex-end"), "MAX");
+  assert.equal(counter("flex-start"), "MIN");
+  // Stretched by default, they fill across instead.
+  assert.deepEqual(planLayout(parent({ L: { d: "flex" } }), kids).fill, { a: [false, true], b: [false, true] });
+});
+
 test("planLayout: a frame with nothing in its flow has no auto layout, and no reason to give", () => {
   const plan = planLayout(parent(), [kid("a", [0, 0, 10, 10], { abs: true })]);
   assert.deepEqual([plan.mode, plan.why], ["NONE", undefined]);

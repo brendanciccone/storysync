@@ -124,6 +124,34 @@ test("figma code: a variant too big for any one call is left out and said, and e
   }
 });
 
+test("figma code: a build call lists at most 60 images to upload, as many URLs as upload_assets hands out", async () => {
+  // Avatar as 61 variants, each its own photo: the images, not the nodes, split the calls.
+  const snap = copy(loadTreeFixture("avatar"));
+  const component = snap.components[0];
+  const asset = Object.values(component.tree.assets.img)[0];
+  component.tree.assets.img = Object.fromEntries(Array.from({ length: 61 }, (_, i) => [`img:${String(i).padStart(12, "0")}-0000`, asset]));
+  component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 61 }, (_, i) => String(i)), defaultValue: "0" }];
+  component.variants = Array.from({ length: 61 }, (_, i) => ({
+    ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`,
+    ...(i ? { treeDelta: { set: { "avatar-image": { img: `img:${String(i).padStart(12, "0")}-0000` } } } } : {}),
+  }));
+  component.tree.base.find((n) => n.k === "avatar-image")!.img = "img:000000000000-0000";
+  component.base = { ...component.base!, combination: { n: "0" }, slug: "n-0" };
+  const coded = await codeFor(snap);
+  const builds = coded.plan.calls.filter((c) => c.kind === "build");
+  const images = builds.map((call) => new Set((dataOf(coded.code(call)) as { S: { im?: string }[] }).S.map((st) => st?.im).filter(Boolean)).size);
+  assert.deepEqual(images, [60, 1]);
+});
+
+test("figma next: a continuation reads with the limit its call was written with", async () => {
+  const coded = await codeFor(loadTreeFixture("card"), { readLimit: 4_000 });
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  assert.match(coded.code(read), /\nconst LIMIT = 5000;\n/);
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq, templates: { readback: STUB_READBACK } });
+  assert.match(readFileSync(next!.file, "utf8"), /\nconst LIMIT = 5000;\n/);
+});
+
 test("figma code: a variant over --max-nodes gets a call of its own, and a warning", async () => {
   const coded = await codeFor(loadTreeFixture("sidebar"), { maxNodes: 10 });
   assert.equal(coded.plan.calls.filter((c) => c.kind === "build").length, 1);
