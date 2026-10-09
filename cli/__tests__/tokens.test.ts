@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, TOKEN_SOURCES } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES } from "../tokens.js";
 import type { TokenBaseline } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -1133,6 +1133,709 @@ test("unresolved: the warning tells a loop from a variable set only in terms of 
       "Unresolved: colors brand = var(--brand) (--brand isn't set in the theme file)",
     ]);
   } finally { cleanup(theme); }
+});
+
+// --- :root in a selector list ---
+
+/** As tokens --json writes it, which leaves out a Tailwind token's undefined group. */
+function asJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+test("Tailwind: :root's variables are read from a selector list such as `:root, .light` in @layer base, and a theme class's aren't", () => {
+  // coder's index.css declares its palette as `:root, .light { ... }`, with
+  // .dark and colorblind classes after it. Only a `:root {` was read, and
+  // its one held a scroll setting, so none of its 55 colors had a hex.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+  darkMode: ["selector"],
+  theme: {
+    extend: {
+      fontSize: {
+        tiny: ["0.6875rem", "1rem"],
+        body: ["0.9375rem", { lineHeight: "1.4rem", fontWeight: "450" }],
+      },
+      borderRadius: { lg: "var(--corner)", md: "calc(var(--corner) - 3px)" },
+      colors: {
+        ink: { strong: "hsl(var(--ink-strong))", soft: "hsl(var(--ink-soft))" },
+        paper: { base: "hsl(var(--paper-base))", raised: { top: "hsl(var(--paper-raised-top))" } },
+        accent: "hsl(var(--accent))",
+        scrim: "hsla(var(--scrim))",
+      },
+    },
+  },
+  plugins: [],
+};`,
+    "src/main.css": `@layer base {
+  :root,
+  .theme-day {
+    --ink-strong: 220 20% 12%;
+    --ink-soft: 220 10% 40%;
+    --paper-base: 0 0% 100%;
+    --paper-raised-top: 40 30% 97%;
+    --link-blue: 210 90% 45%;
+    --accent: var(--link-blue);
+    --scrim: 220 20% 12% / 60%;
+    --corner: 0.625rem;
+  }
+  .theme-night {
+    --ink-strong: 0 0% 98%;
+    --paper-base: 220 20% 8%;
+  }
+  .theme-day-deuteranopia {
+    --link-blue: 30 90% 45%;
+  }
+}
+
+@layer base {
+  :root { scroll-behavior: smooth; }
+}
+`,
+  });
+  try {
+    const result = extractTokens(dir);
+    const hex = (v: string) => tokenColorToHex(v);
+    assert.deepEqual(asJson(result.collections.map((c) => [c.category, c.tokens])), [
+      ["colors", [
+        { name: "ink/strong", value: "hsl(220 20% 12%)", group: "ink", hex: hex("hsl(220 20% 12%)") },
+        { name: "ink/soft", value: "hsl(220 10% 40%)", group: "ink", hex: hex("hsl(220 10% 40%)") },
+        { name: "paper/base", value: "hsl(0 0% 100%)", group: "paper", hex: "#ffffff" },
+        { name: "paper/raised/top", value: "hsl(40 30% 97%)", group: "paper/raised", hex: hex("hsl(40 30% 97%)") },
+        // A var() chain resolves to the default theme's value.
+        { name: "accent", value: "hsl(210 90% 45%)", hex: hex("hsl(210 90% 45%)") },
+        { name: "scrim", value: "hsla(220 20% 12% / 60%)", hex: hex("hsla(220 20% 12% / 60%)") },
+      ]],
+      ["radius", [{ name: "lg", value: "0.625rem", px: 10 }, { name: "md", value: "calc(0.625rem - 3px)", px: 7 }]],
+      ["typography", [{ name: "tiny", value: "0.6875rem", px: 11 }, { name: "body", value: "0.9375rem", px: 15 }]],
+    ]);
+    assert.ok(!result.warnings.some((w) => w.startsWith("Unresolved:")), result.warnings.join("\n"));
+
+    // CSS mode reads the same list, and not the theme classes.
+    const css = new Map(extractTokens(dir, "css").collections.flatMap((c) => c.tokens.map((t) => [t.name, t.value])));
+    assert.equal(css.get("ink/strong"), "220 20% 12%");
+    assert.equal(css.get("paper/base"), "0 0% 100%");
+    assert.equal(css.get("accent"), "210 90% 45%");
+  } finally { cleanup(dir); }
+});
+
+test("CSS: a rule counts when its selector list holds a bare :root, not when it scopes :root to a theme, nests in one, or is the dark scheme's", () => {
+  // valbuild/val declares its palette under `:host, :root, *[data-mode="light"]`.
+  const dir = makeProject({
+    "src/theme.css": `:host, :root, *[data-mode="light"] {
+  --color-surface: #fafafa;
+  --color-text: #111111;
+}
+:root { --color-text: #222222; }
+[data-mode="dark"]:root { --color-surface: #000001; }
+:root[data-theme="dark"] { --color-surface: #000002; }
+.dark, [data-mode="dark"] { --color-surface: #000003; }
+:root {
+  &.dark { --color-surface: #000004; }
+  @media (prefers-color-scheme: dark) { --color-text: #000005; }
+  @media (min-width: 40rem) { --color-accent: #3355ff; }
+}
+.quote::before { content: "}"; }
+:root { --color-border: #dddddd; }
+`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(dir, "css")), [
+      ["colors", [["color/surface", "#fafafa"], ["color/text", "#222222"], ["color/accent", "#3355ff"], ["color/border", "#dddddd"]]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("CSS: html:root, *:root and :root:root are :root, as earlier versions read them, and html alone isn't", () => {
+  const alone = makeProject({ "src/app.css": `html:root { --color-ink: #111111; --radius: 4px; }` });
+  try {
+    assert.deepEqual(detectTokenSource(alone), { type: "css", path: join(alone, "src", "app.css") });
+    assert.deepEqual(tokenTable(extractTokens(alone)), [["colors", [["color/ink", "#111111"]]], ["radius", [["DEFAULT", "4px"]]]]);
+  } finally { cleanup(alone); }
+
+  const mixed = makeProject({
+    "src/app.css": `:root { --color-paper: #ffffff; }
+HTML:root { --color-ink: #111111; }
+html { --color-rule: #222222; }
+*:root, .light { --color-link: #0000ee; }
+:root:root { --color-mark: #ffff00; }`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(mixed, "css")), [
+      ["colors", [["color/paper", "#ffffff"], ["color/ink", "#111111"], ["color/link", "#0000ee"], ["color/mark", "#ffff00"]]],
+    ]);
+  } finally { cleanup(mixed); }
+});
+
+test("CSS: Tailwind v4's compiled :root, :host theme in a build is not the project's :root", () => {
+  // A Storybook build, or Tailwind CLI output, holds Tailwind's default
+  // theme in `@layer theme { :root, :host { } }`, in a folder storysync
+  // walks: read as :root, Tailwind's red-500 and font-sans became tokens.
+  const globals = `@import "tailwindcss";
+:root { --radius: 0.625rem; --background: oklch(1 0 0); }
+@theme inline { --color-background: var(--background); --radius-sm: calc(var(--radius) - 4px); }`;
+  const compiled = `@layer properties;
+@layer theme, base, components, utilities;
+@layer theme {
+  :root, :host {
+    --font-sans: ui-sans-serif, system-ui, sans-serif;
+    --color-red-500: oklch(63.7% 0.237 25.331);
+    --spacing: 0.25rem;
+    --text-sm: 0.875rem;
+  }
+}
+@layer base {
+  html, :host { line-height: 1.5; }
+}
+:root { --radius: 0.625rem; --background: oklch(1 0 0); }
+@layer properties {
+  @supports (-webkit-hyphens: none) {
+    :root, :host { --glow: #ff00ff; }
+    *, ::before, ::after { --tw-border-style: solid; }
+  }
+}`;
+  const minified = compiled.replace(/\s*\n\s*/g, "").replace(/, /g, ",").replace(/ \{/g, "{");
+  const plain = makeProject({ "app/globals.css": globals });
+  try {
+    const expected = extractTokens(plain);
+    assert.deepEqual(tokenTable(expected), [
+      ["colors", [["background", "oklch(1 0 0)"]]],
+      ["radius", [["DEFAULT", "0.625rem"], ["sm", "calc(0.625rem - 4px)"]]],
+    ]);
+    for (const [path, css] of [["storybook-static/assets/iframe-abc.css", compiled], ["src/output.css", minified]]) {
+      const built = makeProject({ "app/globals.css": globals, [path]: css });
+      try {
+        assert.deepEqual(tokenTable(extractTokens(built)), tokenTable(expected), path);
+        assert.deepEqual(tokenTable(extractTokens(built, "css")), tokenTable(expected), path);
+      } finally { cleanup(built); }
+    }
+  } finally { cleanup(plain); }
+
+  // A :root, :host list a project writes itself, outside those layers, is read.
+  const own = makeProject({ "src/app.css": `:root, :host { --color-ink: #111111; }\n@layer theme { :root { --color-paper: #ffffff; } }` });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(own)), [["colors", [["color/ink", "#111111"], ["color/paper", "#ffffff"]]]]);
+  } finally { cleanup(own); }
+});
+
+test("CSS: a Storybook build or a .min.css is read as earlier versions read it, without its selector lists", () => {
+  // A build bundles the stylesheets of the packages a project imports, and
+  // a vendored kit is minified: their `:root, .light` lists are a
+  // package's palette, which no earlier version read.
+  const dir = makeProject({
+    "src/app.css": `:root { --color-brand: #ff0000; }`,
+    "storybook-static/assets/iframe-1.css": `:root, .light, .light-theme { --gray-1: #fcfcfc; }
+.light, :root { --color-surface: #fafafa; }
+:root { --color-brand: #ff0000; }`,
+    "public/vendor/kit.min.css": `:root,[data-kit-theme=light]{--kit-blue:#0d6efd}:root{--color-line:#dddddd}`,
+    "src/themes.css": `:root, .light { --color-ink: #111111; }`,
+  });
+  try {
+    for (const source of [undefined, "css"] as const) {
+      assert.deepEqual(tokenTable(extractTokens(dir, source)), [
+        ["colors", [["color/brand", "#ff0000"], ["color/ink", "#111111"], ["color/line", "#dddddd"], ["color/surface", "#fafafa"]]],
+      ]);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("CSS: an escaped quote in a class name, or a bare backtick, hides no :root rule after it", () => {
+  // Tailwind compiles `after:content-['']` to the class below. Its \\' was
+  // read as the start of a string, which swallowed the rest of the file,
+  // the comment included, so the file had no :root at all.
+  const dir = makeProject({
+    "src/app.css": `.after\\:content-\\[\\'\\'\\]::after { content: ''; }
+.say\\"hi { color: red; }
+/* Don't read this: :root { --color-old: #999999; } */
+:root { --color-ink: #111111; --tick: \`; }
+:root, .light { --color-paper: #ffffff; }
+:root { --color-link: #0000ee; }
+.odd\\{name, :root { --color-mark: #ffff00; }`,
+  });
+  try {
+    assert.deepEqual(detectTokenSource(dir)?.type, "css");
+    assert.deepEqual(tokenTable(extractTokens(dir)), [
+      ["colors", [["color/ink", "#111111"], ["color/paper", "#ffffff"], ["color/link", "#0000ee"], ["color/mark", "#ffff00"]]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: a stylesheet whose :root is only in a selector list is CSS, after @theme and a theme file", () => {
+  // `.light, :root {` was read already, as it ends in `:root {`.
+  const listed = `:root, .light { --color-brand: #ff0000; }`;
+  const alone = makeProject({ "src/vars.css": listed });
+  try {
+    assert.deepEqual(detectTokenSource(alone), { type: "css", path: join(alone, "src", "vars.css") });
+    assert.deepEqual(tokenTable(extractTokens(alone)), [["colors", [["color/brand", "#ff0000"]]]]);
+  } finally { cleanup(alone); }
+
+  // storysync read no such list before, so a project with @theme or a theme
+  // file keeps the source, and the baseline, it had.
+  const v4 = makeProject({ "src/app.css": `@theme { --color-brand: #0000ff; }`, "src/vars.css": listed });
+  try {
+    assert.equal(detectTokenSource(v4)?.type, "tailwind");
+    assert.deepEqual(tokenTable(extractTokens(v4)), [["colors", [["brand", "#0000ff"]]]]);
+  } finally { cleanup(v4); }
+  const themed = makeProject({ "src/tokens.ts": `export const colors = { brand: "#00ff00" };`, "src/vars.css": listed });
+  try {
+    assert.equal(detectTokenSource(themed)?.type, "theme");
+  } finally { cleanup(themed); }
+});
+
+// --- var() fallbacks ---
+
+test("resolveTailwindCssRefs: a fallback holding parentheses is read whole, leaving no stray )", () => {
+  // quary's `--border: var(--vscode-input-border, hsl(...))` came out as
+  // `#cecece)` once --vscode-input-border resolved, and had no hex.
+  const vars = new Map([["--line", "#cccccc"], ["--thin", "1px"]]);
+  assert.equal(resolveTailwindCssRefs("var(--line, hsl(0 0% 80%))", vars), "#cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--line, var(--thin))", vars), "#cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--missing, hsl(0 0% 80%))", vars), "hsl(0 0% 80%)");
+  assert.equal(resolveTailwindCssRefs("var(--missing, var(--line))", vars), "#cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--missing, var(--gone, rgb(1 2 3)))", vars), "rgb(1 2 3)");
+  assert.equal(resolveTailwindCssRefs("0 0 0 var(--thin, calc(1px + 1px)) var(--line)", vars), "0 0 0 1px #cccccc");
+  assert.equal(resolveTailwindCssRefs("var(--missing)", vars), "var(--missing)");
+});
+
+test("Tailwind: a var() with an empty fallback and nothing set stays as written, with its warning", () => {
+  assert.equal(resolveTailwindCssRefs("var(--missing,)", new Map()), "var(--missing,)");
+  assert.equal(resolveTailwindCssRefs("var(--missing, )", new Map()), "var(--missing, )");
+  assert.equal(resolveTailwindCssRefs("var(--set,)", new Map([["--set", "#123456"]])), "#123456");
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { haze: "var(--haze,)", ink: "var(--ink)" } } } }`,
+    "src/app.css": `:root { --ink: #111111; }`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [["colors", [["haze", "var(--haze,)"], ["ink", "#111111"]]]]);
+    assert.ok(result.warnings.includes("Unresolved: colors haze = var(--haze,) (--haze isn't set in :root)"), result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind and CSS: a var() whose fallback holds parentheses resolves, so the color gets its hex", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { theme: { extend: { colors: { edge: "var(--edge)" } } } }`,
+    "src/app.css": `:root {
+  --vendor-edge: #c0c0c0;
+  --edge: var(--vendor-edge, hsl(0 0% 80%));
+  --color-rule: var(--vendor-edge, rgb(0 0 0));
+}`,
+  });
+  try {
+    assert.deepEqual(asJson(extractTokens(dir).collections[0].tokens), [{ name: "edge", value: "#c0c0c0", hex: "#c0c0c0" }]);
+    // CSS mode keeps a value with a var() as written, and gives its hex.
+    const rule = extractTokens(dir, "css").collections[0].tokens.find((t) => t.name === "color/rule");
+    assert.deepEqual(rule, { name: "color/rule", value: "var(--vendor-edge, rgb(0 0 0))", hex: "#c0c0c0" });
+  } finally { cleanup(dir); }
+});
+
+// --- Template literals ---
+
+test("Tailwind: a template literal is read as a string, and one with ${...} is skipped with a warning naming the token", () => {
+  // langflow and ever-teams write their radius scale in backticks, which
+  // were kept in the value, so it had no px.
+  const dir = makeProject({
+    "tailwind.config.mjs": `const base = 4;
+export default {
+  theme: {
+    extend: {
+      borderRadius: { lg: \`var(--corner)\`, md: \`calc(var(--corner) - 2px)\`, xl: \`\${base * 3}px\` },
+      fontSize: { lead: [\`1.125rem\`, { lineHeight: "1.6" }], huge: \`\${base}rem\` },
+      colors: { brand: \`#0f62fe\`, tint: \`\${"#0f62fe"}33\` },
+    },
+  },
+};`,
+    "src/app.css": `:root { --corner: 0.75rem; }`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(asJson(result.collections.map((c) => [c.category, c.tokens])), [
+      ["colors", [{ name: "brand", value: "#0f62fe", hex: "#0f62fe" }]],
+      ["radius", [{ name: "lg", value: "0.75rem", px: 12 }, { name: "md", value: "calc(0.75rem - 2px)", px: 10 }]],
+      ["typography", [{ name: "lead", value: "1.125rem", px: 18 }]],
+    ]);
+    for (const warning of [
+      "Skipped dynamic value: colors tint = `${\"#0f62fe\"}33`",
+      "Skipped dynamic value: borderRadius xl = `${base * 3}px`",
+      "Skipped dynamic value: fontSize huge = `${base}rem`",
+    ]) assert.ok(result.warnings.includes(warning), `${warning}\n${result.warnings.join("\n")}`);
+  } finally { cleanup(dir); }
+});
+
+// --- Tailwind config file names ---
+
+test("detectTokenSource: finds tailwind.config.mts and .cts after every source earlier versions found, and names one passed over", () => {
+  // edu-design-system's config is tailwind.config.mts, which wasn't found.
+  const config = `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`;
+  for (const name of ["tailwind.config.mts", "tailwind.config.cts"]) {
+    const alone = makeProject({ [name]: config });
+    try {
+      assert.deepEqual(detectTokenSource(alone), { type: "tailwind", path: join(alone, name) });
+      const result = extractTokens(alone);
+      assert.deepEqual(tokenTable(result), [["colors", [["brand", "#ff0000"]]]]);
+      assert.deepEqual(result.warnings, []);
+    } finally { cleanup(alone); }
+
+    // A project that has a source an earlier version read keeps it, and
+    // its baseline, and is told of the config. --source tailwind reads it.
+    const earlier: [Record<string, string>, string, string][] = [
+      [{ "src/app.css": `:root { --color-brand: #000000; }` }, "css", "src/app.css"],
+      [{ "src/app.css": `@theme { --color-brand: #0000ff; }` }, "tailwind", "src/app.css"],
+      [{ "src/tokens.ts": `export const colors = { brand: "#00ff00" };` }, "theme", "src/tokens.ts"],
+    ];
+    for (const [files, type, path] of earlier) {
+      const dir = makeProject({ [name]: config, ...files });
+      try {
+        assert.deepEqual(detectTokenSource(dir), { type, path: join(dir, path) });
+        assert.ok(extractTokens(dir).warnings.includes(
+          `Read ${join(dir, path)}, as earlier versions of storysync did, rather than ${join(dir, name)}, which they didn't find. Pass --source tailwind to read the config`,
+        ));
+        assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")), [["colors", [["brand", "#ff0000"]]]]);
+      } finally { cleanup(dir); }
+    }
+
+    // One ahead of a stylesheet no earlier version read.
+    const listed = makeProject({ [name]: config, "src/app.css": `:root, .light { --color-brand: #000000; }` });
+    try {
+      assert.deepEqual(detectTokenSource(listed), { type: "tailwind", path: join(listed, name) });
+    } finally { cleanup(listed); }
+  }
+
+  const both = makeProject({
+    "tailwind.config.mts": `export default { theme: { extend: { colors: { brand: "#ff0000" } } } }`,
+    "tailwind.config.ts": `export default { theme: { extend: { colors: { brand: "#00ff00" } } } }`,
+  });
+  try {
+    assert.equal(detectTokenSource(both)?.path, join(both, "tailwind.config.ts"));
+    assert.equal(extractTokens(both, "tailwind").sourcePath, join(both, "tailwind.config.ts"));
+  } finally { cleanup(both); }
+});
+
+// --- Presets, re-exports and wrappers ---
+
+test("Tailwind: a preset in a relative file is read as the config is, and the config wins a name they share", () => {
+  // sameera/quantum's config is only `presets: [require("./tailwind.preset.js")]`,
+  // which read as no tokens at all.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+  presets: [require("./config/brand-preset")],
+  content: ["./src/**/*.tsx"],
+  theme: { extend: { colors: { accent: "#ff5500" } } },
+};`,
+    "config/brand-preset.js": `module.exports = {
+  theme: {
+    extend: {
+      colors: { accent: "#0055ff", surface: "hsl(var(--surface))" },
+      borderRadius: { card: "var(--card-radius)" },
+    },
+  },
+};`,
+    "src/app.css": `:root { --surface: 0 0% 98%; --card-radius: 12px; }`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [
+      ["colors", [["surface", "hsl(0 0% 98%)"], ["accent", "#ff5500"]]],
+      ["radius", [["card", "12px"]]],
+    ]);
+    assert.ok(!result.warnings.some((w) => w.includes("statically") || w.includes("Unresolved")), result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind: a config's theme key replaces a preset's, and every extend adds to it, as Tailwind merges them", () => {
+  const preset = `module.exports = {
+  theme: {
+    colors: { canvas: "#aaaaaa", line: "#000000" },
+    extend: { spacing: { gutter: "1rem" }, colors: { glow: "#ff00ff" } },
+  },
+};`;
+  const cases: [string, string[][]][] = [
+    // theme.colors replaces the preset's theme.colors, but its extend stays.
+    [`theme: { colors: { ink: "#111111" } }`, [["ink", "#111111"], ["glow", "#ff00ff"]]],
+    // theme.extend.colors adds to them, and wins a name.
+    [`theme: { extend: { colors: { ink: "#111111", line: "#222222" } } }`, [["canvas", "#aaaaaa"], ["glow", "#ff00ff"], ["ink", "#111111"], ["line", "#222222"]]],
+    // Both: the config's theme.colors, then each extend on top.
+    [`theme: { colors: { ink: "#111111" }, extend: { colors: { mark: "#ffff00" } } }`, [["ink", "#111111"], ["glow", "#ff00ff"], ["mark", "#ffff00"]]],
+  ];
+  for (const [theme, colors] of cases) {
+    const dir = makeProject({
+      "tailwind.config.js": `module.exports = { presets: [require("./preset.js")], ${theme} };`,
+      "preset.js": preset,
+    });
+    try {
+      assert.deepEqual(tokenTable(extractTokens(dir)), [["colors", colors], ["spacing", [["gutter", "1rem"]]]], theme);
+    } finally { cleanup(dir); }
+  }
+
+  // A later preset's theme key replaces an earlier one's.
+  const two = makeProject({
+    "tailwind.config.js": `module.exports = { presets: [require("./preset.js"), require("./later.js")] };`,
+    "preset.js": preset,
+    "later.js": `module.exports = { theme: { colors: { paper: "#ffffff" } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(two)), [["colors", [["paper", "#ffffff"], ["glow", "#ff00ff"]]], ["spacing", [["gutter", "1rem"]]]]);
+  } finally { cleanup(two); }
+});
+
+test("Tailwind: a preset declared above the config in its own file leaves the config's theme its own", () => {
+  // JavaScript runs a preset declared in the file only above the config,
+  // where its theme was the first in the file, read as the config's.
+  const dir = makeProject({
+    "tailwind.config.js": `const base = {
+  theme: { extend: { colors: { canvas: "#aaaaaa", line: "#000000" } } },
+};
+
+module.exports = {
+  presets: [base],
+  content: [],
+  theme: { extend: { colors: { ink: "#bbbbbb", line: "#111111" } } },
+};`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(tokenTable(result), [["colors", [["canvas", "#aaaaaa"], ["ink", "#bbbbbb"], ["line", "#111111"]]]]);
+    assert.ok(!result.warnings.some((w) => w.includes("statically")), result.warnings.join("\n"));
+  } finally { cleanup(dir); }
+
+  // Through a const, as a typed config is exported.
+  const typed = makeProject({
+    "tailwind.config.ts": `const base = { theme: { colors: { canvas: "#aaaaaa" } } };
+const config: Config = { presets: [base], theme: { extend: { spacing: { gutter: "1rem" } } } };
+export default config;`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(typed)), [["colors", [["canvas", "#aaaaaa"]]], ["spacing", [["gutter", "1rem"]]]]);
+  } finally { cleanup(typed); }
+
+  // With no theme of the config's own, the local preset's is the first in
+  // the file, but it is still a preset: a later one's theme.colors wins.
+  const ranked = makeProject({
+    "tailwind.config.js": `const base = { theme: { colors: { canvas: "#aaaaaa" }, extend: { spacing: { gutter: "1rem" } } } };
+module.exports = { presets: [base, require("./brand.js")], content: [] };`,
+    "brand.js": `module.exports = { theme: { colors: { ink: "#111111" } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(ranked)), [["colors", [["ink", "#111111"]]], ["spacing", [["gutter", "1rem"]]]]);
+  } finally { cleanup(ranked); }
+});
+
+test("Tailwind: a preset imported by name from a TypeScript file is that export, not another in the file", () => {
+  const dir = makeProject({
+    "tailwind.config.ts": `import type { Config } from "tailwindcss";
+import { studioPreset } from "./src/theme/preset";
+
+export default { presets: [studioPreset], content: [] } satisfies Config;`,
+    "src/theme/preset.ts": `import type { Config } from "tailwindcss";
+
+export const unrelated = { theme: { colors: { wrong: "#000000" } } };
+
+export const studioPreset = {
+  theme: { extend: { spacing: { gutter: "1.5rem" }, colors: { brand: { 500: "#7c3aed" } } } },
+} satisfies Partial<Config>;`,
+  });
+  try {
+    assert.deepEqual(asJson(extractTokens(dir).collections.map((c) => [c.category, c.tokens])), [
+      ["colors", [{ name: "brand/500", value: "#7c3aed", group: "brand", hex: "#7c3aed" }]],
+      ["spacing", [{ name: "gutter", value: "1.5rem", px: 24 }]],
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("Tailwind: a preset storysync can't read is named in a warning, never read as silently empty", () => {
+  // zenkigen's and medusa's presets are packages, and Sundsvall's is built
+  // by preset(): each gave no tokens and no warning.
+  const dir = makeProject({
+    "tailwind.config.js": `import shared from "@acme/tailwind-config";
+import makePreset from "./preset-factory";
+const legacy = require("@acme/legacy-preset");
+
+module.exports = {
+  presets: [shared, makePreset({ dense: true }), legacy, require("./missing-preset")],
+  content: [],
+};`,
+    "preset-factory.js": `export default function makePreset() { return { theme: {} }; }`,
+  });
+  const config = join(dir, "tailwind.config.js");
+  try {
+    const result = extractTokens(dir);
+    assert.deepEqual(result.collections, []);
+    assert.deepEqual(result.warnings.filter((w) => w.startsWith(config)), [
+      `${config} takes the preset shared, from the package @acme/tailwind-config, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset makePreset(), from ./preset-factory, built by a function call, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset legacy, from the package @acme/legacy-preset, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset require("./missing-preset"), but storysync can't find ./missing-preset, so the tokens it declares are missing`,
+    ]);
+  } finally { cleanup(dir); }
+
+  // A preset's own presets are named, not followed.
+  const nested = makeProject({
+    "tailwind.config.cjs": `module.exports = { presets: [require("./base.cjs")] };`,
+    "base.cjs": `module.exports = { presets: [require("./deeper.cjs")], theme: { extend: { colors: { brand: "#123456" } } } };`,
+  });
+  try {
+    const result = extractTokens(nested);
+    assert.deepEqual(tokenTable(result), [["colors", [["brand", "#123456"]]]]);
+    assert.ok(result.warnings.includes(`${join(nested, "base.cjs")} takes presets of its own, require("./deeper.cjs"), which storysync doesn't follow, so the tokens they declare are missing`), result.warnings.join("\n"));
+  } finally { cleanup(nested); }
+});
+
+test("Tailwind: a config that re-exports another is read through it when it is relative, and a wrapper is named", () => {
+  const relative = makeProject({
+    "tailwind.config.js": `module.exports = require("./tailwind.base.cjs");`,
+    "tailwind.base.cjs": `module.exports = { theme: { extend: { colors: { brand: "#123456" } } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(relative)), [["colors", [["brand", "#123456"]]]]);
+  } finally { cleanup(relative); }
+
+  const cases: [Record<string, string>, (config: string) => string][] = [
+    // snowball-tech's config is this one line.
+    [{ "tailwind.config.ts": `export { default } from "@acme/design-tokens/tailwind";` },
+      (config) => `${config} re-exports its config from @acme/design-tokens/tailwind, a package, which storysync can't read statically, so the tokens it declares are missing`],
+    // The theme passed to a wrapper is read; what the wrapper adds isn't.
+    [{ "tailwind.config.js": `module.exports = withBrand({ content: [], theme: { extend: { colors: { brand: "#123456" } } } });` },
+      (config) => `${config} passes its config through withBrand(), which storysync can't read statically: the theme passed to it is read, but any tokens the function adds are missing`],
+    [{ "tailwind.config.js": `const config = withBrand(base);\nmodule.exports = config;` },
+      (config) => `${config} builds its config with withBrand(), which storysync can't read statically, so the tokens it adds are missing`],
+    // A wrapper passed no theme gives every token.
+    [{ "tailwind.config.js": `module.exports = withBrand({ content: [], plugins: [] });` },
+      (config) => `${config} builds its config with withBrand(), which storysync can't read statically, so the tokens it adds are missing`],
+    [{ "tailwind.config.js": `const config = require("@acme/ui/tailwind")("docs");\nconfig.content = [];\nmodule.exports = config;` },
+      (config) => `${config} builds its config with require("@acme/ui/tailwind")(), which storysync can't read statically, so the tokens it adds are missing`],
+  ];
+  for (const [files, warning] of cases) {
+    const dir = makeProject(files);
+    try {
+      const result = extractTokens(dir);
+      const expected = warning(join(dir, Object.keys(files)[0]));
+      assert.ok(result.warnings.includes(expected), `${expected}\n${result.warnings.join("\n")}`);
+    } finally { cleanup(dir); }
+  }
+});
+
+test("Tailwind: a config spread in at the top of the exported one is read when relative, and named when not", () => {
+  // A monorepo app's config is often its shared config spread in, with
+  // its own content globs: that read as empty, and the warning blamed
+  // Tailwind's default theme.
+  const base = `module.exports = { theme: { extend: { colors: { brand: "#123456" } } } };`;
+  const required = makeProject({
+    "apps/web/tailwind.config.js": `module.exports = { ...require("../../packages/ui/tailwind.base.js"), content: ["./src/**/*.tsx"] };`,
+    "packages/ui/tailwind.base.js": base,
+  });
+  try {
+    const result = extractTokens(join(required, "apps", "web"));
+    assert.deepEqual(tokenTable(result), [["colors", [["brand", "#123456"]]]]);
+    assert.ok(!result.warnings.some((w) => w.startsWith("Read no colors")), result.warnings.join("\n"));
+  } finally { cleanup(required); }
+
+  const imported = makeProject({
+    "tailwind.config.ts": `import base from "./tailwind.base";
+export default { ...base, content: [] };`,
+    "tailwind.base.ts": `export default { theme: { extend: { colors: { brand: "#123456" } } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(imported)), [["colors", [["brand", "#123456"]]]]);
+  } finally { cleanup(imported); }
+
+  // A theme after the spread replaces the spread's, as in JavaScript.
+  const replaced = makeProject({
+    "tailwind.config.js": `const base = require("./tailwind.base.js");
+module.exports = { ...base, theme: { extend: { colors: { ink: "#111111" } } } };`,
+    "tailwind.base.js": base,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(replaced)), [["colors", [["ink", "#111111"]]]]);
+  } finally { cleanup(replaced); }
+
+  const packaged = makeProject({
+    "tailwind.config.js": `const shared = require("@acme/tailwind-config");
+module.exports = { ...shared, content: [] };`,
+  });
+  const config = join(packaged, "tailwind.config.js");
+  try {
+    const result = extractTokens(packaged);
+    assert.ok(result.warnings.includes(
+      `${config} spreads in shared, from the package @acme/tailwind-config, which storysync can't read statically, so the tokens it declares are missing`,
+    ), result.warnings.join("\n"));
+    assert.ok(!result.warnings.some((w) => w.startsWith("Read no colors")), result.warnings.join("\n"));
+  } finally { cleanup(packaged); }
+});
+
+test("Tailwind: a preset built by a call, or required from a path worked out at run time, is named as such", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `const path = require("path");
+function makePreset() { return { theme: {} }; }
+module.exports = {
+  presets: [makePreset(), require(path.join(__dirname, "preset")), require(\`./\${"preset"}\`)],
+  content: [],
+};`,
+  });
+  const config = join(dir, "tailwind.config.js");
+  try {
+    assert.deepEqual(extractTokens(dir).warnings.filter((w) => w.startsWith(config)), [
+      `${config} takes the preset makePreset(), built by a function call, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset require(path.join(__dirname, "preset")), whose path is worked out when the config runs, which storysync can't read statically, so the tokens it declares are missing`,
+      `${config} takes the preset require(\`./\${"preset"}\`), whose path is worked out when the config runs, which storysync can't read statically, so the tokens it declares are missing`,
+    ]);
+  } finally { cleanup(dir); }
+
+  // The theme passed to a wrapper such as defineConfig() is read.
+  const wrapped = makeProject({
+    "tailwind.config.ts": `export default defineConfig({ theme: { extend: { colors: { brand: "#123456" } } } });`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(wrapped)), [["colors", [["brand", "#123456"]]]]);
+  } finally { cleanup(wrapped); }
+});
+
+test("Tailwind: a config with no theme storysync reads says so, and a theme exported on its own is read", () => {
+  const empty = makeProject({ "tailwind.config.js": `module.exports = { content: [], plugins: [require("some-palette-plugin")] };` });
+  try {
+    assert.ok(extractTokens(empty).warnings.includes(
+      `Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${join(empty, "tailwind.config.js")}. Tailwind's default theme isn't read, nor what a plugin adds`,
+    ));
+  } finally { cleanup(empty); }
+
+  // An ES module config can export its keys one by one.
+  const named = makeProject({
+    "tailwind.config.js": `export const content = ["./src/**/*.tsx"];
+export const theme = { extend: { colors: { brand: "#0f62fe" } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(named)), [["colors", [["brand", "#0f62fe"]]]]);
+  } finally { cleanup(named); }
+
+  // edu-design-system's theme is `{ ...applyTailwindConfig(edsTokens) }`.
+  const spread = makeProject({ "tailwind.config.ts": `export default { theme: { ...buildTheme(tokens) } };` });
+  try {
+    assert.ok(extractTokens(spread).warnings.includes(
+      `The theme in ${join(spread, "tailwind.config.ts")} spreads in buildTheme(tokens), which storysync can't read statically, so the tokens it adds are missing`,
+    ));
+  } finally { cleanup(spread); }
+});
+
+// --- Config warnings ---
+
+test("Tailwind: a plugin's require() doesn't warn that values may be missing, and one elsewhere does", () => {
+  // Every shadcn/ui v3 config, and coder's, requires its plugins, so the
+  // warning was on nearly every config, where it pointed at nothing missing.
+  const plugins = makeProject({
+    "tailwind.config.js": `module.exports = {
+  theme: { extend: { colors: { brand: "#123456" } } },
+  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
+};`,
+  });
+  try {
+    assert.deepEqual(extractTokens(plugins).warnings, []);
+  } finally { cleanup(plugins); }
+
+  const palette = makeProject({
+    "tailwind.config.js": `const palette = require("./palette");
+module.exports = { theme: { extend: { colors: { brand: "#123456" } } } };`,
+  });
+  try {
+    assert.deepEqual(extractTokens(palette).warnings, ["Config uses require() - some values may not be extracted"]);
+  } finally { cleanup(palette); }
 });
 
 // --- Drift detection ---

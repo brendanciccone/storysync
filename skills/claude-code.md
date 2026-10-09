@@ -42,7 +42,7 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
 }
 ```
 
-If the command returns no collections, skip to Components.
+If a `warnings` entry says storysync can't read or find part of the Tailwind config, or doesn't follow it, such as a preset from a package, a config built by a function, or a file it names, or that it read no theme from the config, tell the user what it names: those tokens are missing from the output, so they won't reach Figma. If one says it read another source rather than a `tailwind.config.mts` or `.cts`, tell the user, who can pass `--source tailwind` to read the config. If the command returns no collections, skip to Components.
 
 2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) to show a human-readable preview, or `npx storysync tokens --project . --all` to show every token.
 
@@ -984,6 +984,8 @@ use_figma({
 ```bash
 npx storysync tokens --json --project .
 ```
+
+   If its `warnings` say storysync can't read or find part of the Tailwind config, or doesn't follow it, or read no theme from it, code is missing the tokens that part declares. In step 5, report a Figma variable that code lacks as possibly coming from what the warning names, not as orphaned, and name the warning in the report.
 
 4. **Map code components** — run storysync to get the code-side component mappings:
 

@@ -1,7 +1,7 @@
 // Design token extraction from project source files.
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { colorToHex } from "./color.js";
 
 /** The token sources `--source` takes. Leaving it out, or `auto`, detects one. */
@@ -77,10 +77,20 @@ interface DetectedSource {
   path: string;
 }
 
+/** The names of a Tailwind config storysync has always read, in the order that decides between two. */
 const TAILWIND_CONFIGS = ["tailwind.config.ts", "tailwind.config.js", "tailwind.config.mjs", "tailwind.config.cjs"];
 
-function findTailwindConfig(projectPath: string): string | null {
-  for (const name of TAILWIND_CONFIGS) {
+/**
+ * The names Tailwind v3 also finds a config by, which storysync missed, so
+ * edu-design-system's tailwind.config.mts was never read. `--source
+ * tailwind` reads one; detection comes to one only after every source an
+ * earlier version found, so a project that has one keeps the source, and
+ * the baseline, it had.
+ */
+const LATE_TAILWIND_CONFIGS = ["tailwind.config.mts", "tailwind.config.cts"];
+
+function findTailwindConfig(projectPath: string, names = [...TAILWIND_CONFIGS, ...LATE_TAILWIND_CONFIGS]): string | null {
+  for (const name of names) {
     const p = join(projectPath, name);
     if (existsSync(p)) return p;
   }
@@ -93,13 +103,21 @@ function findTailwindConfig(projectPath: string): string | null {
  * that has both, as shadcn/ui's v4 globals.css does, keeps the tokens, names
  * and baselines it had before `@theme` was read; `@theme` is for a CSS-first
  * project that declares its palette nowhere else.
+ *
+ * What earlier versions didn't find comes after all of these, so a project
+ * keeps the source, and the baseline, it had: a `tailwind.config.mts` or
+ * `.cts`, then a stylesheet that sets its variables only in a selector list,
+ * as `:root, .light { }`, with no `:root {` of its own.
  */
 export function detectTokenSource(projectPath: string): DetectedSource | null {
-  const config = findTailwindConfig(projectPath);
+  const config = findTailwindConfig(projectPath, TAILWIND_CONFIGS);
   if (config) return { type: "tailwind", path: config };
 
   const cssFiles = findCSSWithCustomProperties(projectPath);
-  if (cssFiles.length) return { type: "css", path: cssFiles[0] };
+  const plainRoot = cssFiles.find((file) => {
+    try { return /:root\s*\{/.test(readCss(file)); } catch { return false; }
+  });
+  if (plainRoot) return { type: "css", path: cssFiles[0] };
 
   const themeCss = findTailwindThemeCSS(projectPath);
   if (themeCss.length) return { type: "tailwind", path: themeCss[0] };
@@ -107,11 +125,31 @@ export function detectTokenSource(projectPath: string): DetectedSource | null {
   const themeFile = findThemeFile(projectPath);
   if (themeFile) return { type: "theme", path: themeFile };
 
+  const lateConfig = findTailwindConfig(projectPath, LATE_TAILWIND_CONFIGS);
+  if (lateConfig) return { type: "tailwind", path: lateConfig };
+
+  if (cssFiles.length) return { type: "css", path: cssFiles[0] };
+
   return null;
 }
 
+/** Stylesheets that declare a custom property for the default theme, as rootDeclarations reads it. */
 function findCSSWithCustomProperties(projectPath: string): string[] {
-  return findCSS(projectPath, (css) => /:root\s*\{/.test(css) && /--[\w-]+\s*:/.test(css));
+  return findCSS(projectPath, (css, file) => rootDeclarations(css, isBundled(file)).length > 0);
+}
+
+/**
+ * Whether a stylesheet bundles other packages' styles rather than being
+ * the project's own: a Storybook build in storybook-static/, which
+ * storysync walks, or a minified `.min.css`, as a vendored Bootstrap is.
+ * Their selector lists, as Bootstrap's `:root, [data-bs-theme=light]` and
+ * Radix Colors' `:root, .light, .light-theme`, hold no project tokens, and
+ * no earlier version read them, so they aren't read there: read, they
+ * added a package's palette to a project's tokens whenever a build was
+ * present.
+ */
+function isBundled(file: string): boolean {
+  return file.endsWith(".min.css") || file.split(/[\\/]/).includes("storybook-static");
 }
 
 /** Stylesheets with a Tailwind v4 `@theme` block that declares a variable. */
@@ -120,7 +158,7 @@ function findTailwindThemeCSS(projectPath: string): string[] {
 }
 
 /** The project's stylesheets, CSS modules aside, whose text without comments passes `test`. */
-function findCSS(projectPath: string, test: (css: string) => boolean): string[] {
+function findCSS(projectPath: string, test: (css: string, file: string) => boolean): string[] {
   const results: string[] = [];
   const srcDir = join(projectPath, "src");
   const appDir = join(projectPath, "app");
@@ -133,7 +171,7 @@ function findCSS(projectPath: string, test: (css: string) => boolean): string[] 
   return results;
 }
 
-function walkCSS(dir: string, results: string[], test: (css: string) => boolean, depth: number): void {
+function walkCSS(dir: string, results: string[], test: (css: string, file: string) => boolean, depth: number): void {
   if (depth > 5) return;
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
@@ -147,7 +185,7 @@ function walkCSS(dir: string, results: string[], test: (css: string) => boolean,
       walkCSS(full, results, test, depth + 1);
     } else if (entry.endsWith(".css") && !entry.endsWith(".module.css")) {
       try {
-        if (test(readCss(full))) results.push(full);
+        if (test(readCss(full), full)) results.push(full);
       } catch { /* skip unreadable */ }
     }
   }
@@ -179,7 +217,10 @@ function findThemeFile(projectPath: string): string | null {
  *
  * Quotes are tracked, so the `/*` in a content glob or the `//` in a URL
  * survives when it is in a string. `lineComments` is false for CSS, which
- * has only block comments: there `//` can start an unquoted `url(//cdn...)`.
+ * has only block comments: there `//` can start an unquoted `url(//cdn...)`,
+ * and a backslash escapes the character after it, so the `'` in Tailwind's
+ * `.after\:content-\[\'\'\]` starts no string that keeps the
+ * comments after it.
  */
 function stripComments(src: string, lineComments = true): string {
   let out = "";
@@ -190,6 +231,8 @@ function stripComments(src: string, lineComments = true): string {
       out += ch;
       if (ch === "\\") out += src[++i] ?? "";
       else if (ch === quote) quote = null;
+    } else if (ch === "\\" && !lineComments) {
+      out += ch + (src[++i] ?? "");
     } else if (ch === "'" || ch === '"' || ch === "`") {
       quote = ch;
       out += ch;
@@ -284,7 +327,7 @@ function varRefs(value: string): string[] {
 /**
  * Why a variable left in a resolved value didn't resolve. Resolution goes
  * as deep as it can, so one that is set is in a loop, or past what it
- * follows: eight var()s deep, or a var() in a var()'s fallback.
+ * follows: eight var()s deep.
  */
 function whyUnresolved(name: string, written: Map<string, string> | undefined, where: string): string {
   const value = written?.get(name);
@@ -331,6 +374,17 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): E
     return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No token source detected"] };
   }
 
+  const extraction = extractDetected(detected, projectPath);
+  // A tailwind.config.mts or .cts that detection passed over is named, so
+  // the user can choose it.
+  const passedOver = findTailwindConfig(projectPath, LATE_TAILWIND_CONFIGS);
+  if (passedOver && passedOver !== detected.path) {
+    extraction.warnings.push(`Read ${detected.path}, as earlier versions of storysync did, rather than ${passedOver}, which they didn't find. Pass --source tailwind to read the config`);
+  }
+  return extraction;
+}
+
+function extractDetected(detected: DetectedSource, projectPath: string): Extraction {
   switch (detected.type) {
     case "tailwind":
       return detected.path.endsWith(".css")
@@ -346,32 +400,61 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): E
 function extractFromTailwind(configPath: string, projectRoot?: string): Extraction {
   const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
-  const collections: TokenCollection[] = [];
 
-  if (/require\s*\(/.test(content)) {
+  // A preset's require() is named on its own below, and a plugin's, as
+  // every shadcn/ui v3 config's `require("tailwindcss-animate")`, is no
+  // value storysync misses: the warning was on nearly every config.
+  if (/require\s*\(/.test(withoutArrays(content, ["plugins", "presets"]))) {
     warnings.push("Config uses require() - some values may not be extracted");
   }
   if (/\.\.\./.test(content)) {
     warnings.push("Config uses spread syntax - some values may not be extracted");
   }
 
-  // Extract theme.extend and theme objects
-  const themeBlocks = extractThemeBlocks(content);
+  // What the config gets from elsewhere: the config it re-exports or
+  // spreads in, or its presets, each read below as the config is, and
+  // merged by withLayers as Tailwind merges them.
+  const exported = exportedObject(content, "default");
+  const imports = configImports(content);
+  const presets = presetRefs(exported ?? content, imports);
+  const spreads = spreadRefs(exported, imports);
+  const locals = [...presets, ...spreads].flatMap((ref) => (ref.local && exportedObject(content, ref.local)) || []);
 
-  const colorTokens = extractTailwindColors(themeBlocks, warnings);
-  if (colorTokens.length) collections.push({ category: "colors", tokens: colorTokens });
+  // Extract theme.extend and theme objects, from the object the config
+  // exports when it holds them.
+  const themeBlocks = ownThemeBlocks(content, exported, locals);
+  const own = themeCollections(themeBlocks, warnings);
+  // The warnings from here on name what storysync can't read.
+  const unread = warnings.length;
+  warnOfSpreads(themeBlocks, configPath, warnings);
 
-  const spacingTokens = extractTailwindFlat(themeBlocks, "spacing");
-  if (spacingTokens.length) collections.push({ category: "spacing", tokens: spacingTokens });
-
-  const radiusTokens = extractTailwindFlat(themeBlocks, "borderRadius");
-  if (radiusTokens.length) collections.push({ category: "radius", tokens: radiusTokens });
-
-  const fontTokens = extractTailwindTypography(themeBlocks);
-  if (fontTokens.length) collections.push({ category: "typography", tokens: fontTokens });
-
-  const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow");
-  if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
+  const layers: ThemeLayer[] = [];
+  const reexport = reexportRef(content, imports);
+  if (reexport) {
+    const layer = readConfigRef(reexport, configPath, content, `${configPath} re-exports its config from ${reexport.spec}`, warnings);
+    if (layer) layers.push(layer);
+  }
+  for (const ref of presets) {
+    const layer = readConfigRef(ref, configPath, content, `${configPath} takes the preset ${ref.label}`, warnings);
+    if (layer) layers.push(layer);
+  }
+  for (const ref of spreads) {
+    const layer = readConfigRef(ref, configPath, content, `${configPath} spreads in ${ref.label}`, warnings);
+    if (layer) layers.push(layer);
+  }
+  const wrapper = reexport ? null : wrapperCall(content, imports);
+  if (wrapper && own.length) {
+    // As `defineConfig({ theme })`, which may add nothing.
+    warnings.push(`${configPath} passes its config through ${wrapper}, which storysync can't read statically: the theme passed to it is read, but any tokens the function adds are missing`);
+  } else if (wrapper) {
+    warnings.push(`${configPath} builds its config with ${wrapper}, which storysync can't read statically, so the tokens it adds are missing`);
+  }
+  // The own theme's warnings were given as it was read.
+  const collections = withLayers(layers, own, themeLayer(themeBlocks, []));
+  if (!collections.length && warnings.length === unread) {
+    const plugins = /\bplugins\s*:\s*\[\s*[^\]\s]/.test(content) ? ", nor what a plugin adds" : "";
+    warnings.push(`Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${configPath}. Tailwind's default theme isn't read${plugins}`);
+  }
 
   // Resolve any `var(--name)` refs in token values against the project's :root CSS vars.
   // Common in shadcn/ui: `colors: { background: "hsl(var(--background))" }` with the actual
@@ -408,49 +491,571 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
 }
 
 /**
- * Where a stylesheet's `@media (prefers-color-scheme: dark)` blocks start
- * and end. The `:root` in one holds the dark values, as create-next-app's
- * globals.css does: read in order with the rest, it overrode the light ones,
- * so its background was extracted as #0a0a0a. `@media not ...` is light.
+ * A config's own theme: the one in `exported`, the object it exports, when
+ * that holds one, or else the first in the file, as storysync always read
+ * it. A preset a config declares above itself, as `const base = { theme:
+ * {...} }`, holds the first `theme:` in the file, so the config's own were
+ * lost. A config that exports no object literal, or one with no theme of
+ * its own, is read as before, unless the first theme in the file is one of
+ * `locals`, the objects it takes as presets or spreads in: those are read
+ * as such, and read as its own too, a local preset outranked every other.
  */
-function darkSchemeRanges(css: string): [number, number][] {
-  const ranges: [number, number][] = [];
-  const start = /@media\b([^{;]*)\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = start.exec(css)) !== null) {
-    if (!/prefers-color-scheme\s*:\s*dark/i.test(m[1]) || /\bnot\b/i.test(m[1])) continue;
-    let depth = 1;
-    let i = start.lastIndex;
-    while (i < css.length && depth > 0) {
-      if (css[i] === "{") depth++;
-      else if (css[i] === "}") depth--;
-      i++;
-    }
-    ranges.push([m.index, i]);
-  }
-  return ranges;
+function ownThemeBlocks(content: string, exported: string | null, locals: string[]): ThemeBlocks {
+  const blocks = exported ? extractThemeBlocks(exported) : null;
+  if (blocks?.root) return blocks;
+  const first = extractThemeBlocks(content);
+  return first.root && locals.some((local) => local.includes(first.root)) ? { root: "", extend: "" } : first;
+}
+
+/** `content` without the `key: [...]` array of each key, the first of each. */
+function withoutArrays(content: string, keys: string[]): string {
+  return keys.reduce((text, key) => {
+    const m = new RegExp(`\\b${key}\\s*:\\s*\\[`).exec(text);
+    return m ? text.slice(0, m.index) + text.slice(closingIndex(text, m.index + m[0].length - 1)) : text;
+  }, content);
+}
+
+/** A theme's tokens, by category, in the order a Tailwind config's are listed. */
+function themeCollections(themeBlocks: ThemeBlocks, warnings: string[]): TokenCollection[] {
+  const collections: TokenCollection[] = [];
+
+  const colorTokens = extractTailwindColors(themeBlocks, warnings);
+  if (colorTokens.length) collections.push({ category: "colors", tokens: colorTokens });
+
+  const spacingTokens = extractTailwindFlat(themeBlocks, "spacing", warnings);
+  if (spacingTokens.length) collections.push({ category: "spacing", tokens: spacingTokens });
+
+  const radiusTokens = extractTailwindFlat(themeBlocks, "borderRadius", warnings);
+  if (radiusTokens.length) collections.push({ category: "radius", tokens: radiusTokens });
+
+  const fontTokens = extractTailwindTypography(themeBlocks, warnings);
+  if (fontTokens.length) collections.push({ category: "typography", tokens: fontTokens });
+
+  const shadowTokens = extractTailwindFlat(themeBlocks, "boxShadow", warnings);
+  if (shadowTokens.length) collections.push({ category: "shadows", tokens: shadowTokens });
+
+  return collections;
+}
+
+const CATEGORY_ORDER: TokenCategory[] = ["colors", "spacing", "radius", "typography", "shadows"];
+
+/** The theme key each category is read from. */
+const CATEGORY_KEYS: [TokenCategory, string][] = [
+  ["colors", "colors"], ["spacing", "spacing"], ["radius", "borderRadius"], ["typography", "fontSize"], ["shadows", "boxShadow"],
+];
+
+/**
+ * A config's theme, or a preset's, as Tailwind merges it with others: the
+ * tokens under `theme` itself and under `theme.extend` apart, and the
+ * categories whose key `theme` itself sets.
+ */
+interface ThemeLayer {
+  root: TokenCollection[];
+  extend: TokenCollection[];
+  sets: Set<TokenCategory>;
+}
+
+/** A theme's ThemeLayer, its dynamic values named in `warnings`. */
+function themeLayer(blocks: ThemeBlocks, warnings: string[]): ThemeLayer {
+  const entries = blocks.root ? splitTopLevel(blocks.root.slice(1, -1), ",") : [];
+  const keyOf = (entry: string) => /^\s*(['"]?)([\w$]+)\1\s*(?::|$)/.exec(entry)?.[2];
+  const root = `{ ${entries.filter((entry) => keyOf(entry) !== "extend").join(",")} }`;
+  const keys = new Set(entries.map(keyOf));
+  return {
+    root: themeCollections({ root, extend: "" }, warnings),
+    extend: themeCollections({ root: "", extend: blocks.extend }, warnings),
+    sets: new Set(CATEGORY_KEYS.filter(([, key]) => keys.has(key)).map(([category]) => category)),
+  };
 }
 
 /**
- * The custom properties of the stylesheets' `:root` blocks, as written, a
- * later declaration winning, leaving out a `:root` for the dark color
- * scheme. A file that can't be read is skipped, and named in `warnings`
- * when there are any.
+ * The tokens of a config and the layers it takes a theme from, presets and
+ * the like, merged as Tailwind merges them. A category is the `theme` one
+ * of the last layer that sets it there, the config's own last of all, and
+ * then each layer's `theme.extend` on top in turn, a later one winning a
+ * name: Tailwind applies every extend over the theme. So a config's
+ * `theme.colors` replaces a preset's, and its `theme.extend.colors` adds to
+ * them. With no layers, `own`, the config's tokens as storysync has always
+ * read them, as they are.
+ */
+function withLayers(layers: ThemeLayer[], own: TokenCollection[], ownLayer: ThemeLayer): TokenCollection[] {
+  if (!layers.length) return own;
+  const all = [...layers, ownLayer];
+  const tokensIn = (collections: TokenCollection[], category: TokenCategory) =>
+    collections.filter((c) => c.category === category).flatMap((c) => c.tokens);
+  return CATEGORY_ORDER.map((category) => {
+    const top = [...all].reverse().find((layer) => layer.sets.has(category));
+    let tokens = top ? tokensIn(top.root, category) : [];
+    for (const layer of all) {
+      const over = tokensIn(layer.extend, category);
+      const names = new Set(over.map((t) => t.name));
+      tokens = [...tokens.filter((t) => !names.has(t.name)), ...over];
+    }
+    return { category, tokens };
+  }).filter((c) => c.tokens.length);
+}
+
+/**
+ * Where a config gets a theme from outside itself: a preset, or the config
+ * it re-exports.
+ */
+interface ConfigRef {
+  /** As the config writes it, for a warning: `preset`, `require("./preset")`, `preset()`. */
+  label: string;
+  /** The module it comes from, when the config names one. */
+  spec?: string;
+  /** The export it is: `default`, or a named export's name. */
+  name?: string;
+  /** Built by a function call, so known only when the config runs. */
+  call?: boolean;
+  /** A require() of a path worked out when the config runs, as `require(path.join(__dirname, "preset"))`. */
+  computed?: boolean;
+  /** An object the config itself declares under this name. */
+  local?: string;
+}
+
+/** An imported name's module and export, and whether a call builds it. */
+interface ConfigImport { spec: string; name: string; call?: boolean }
+
+/**
+ * What each name a config imports or requires refers to: `import preset
+ * from "./preset"`, `import { a, b as c } from "m"`, `import * as m from
+ * "m"`, `const preset = require("./preset")` and `const { a } = require("m")`.
+ */
+function configImports(content: string): Map<string, ConfigImport> {
+  const imports = new Map<string, ConfigImport>();
+  const named = (list: string, spec: string, as: RegExp) => {
+    for (const part of list.split(",")) {
+      const m = as.exec(part.trim());
+      if (m) imports.set(m[2] ?? m[1], { spec, name: m[1] });
+    }
+  };
+  for (const m of content.matchAll(/\bimport\s+([\w$]+)\s*(?:,\s*\{([^}]*)\})?\s*from\s*(['"])([^'"]+)\3/g)) {
+    if (m[1] === "type") continue;
+    imports.set(m[1], { spec: m[4], name: "default" });
+    if (m[2]) named(m[2], m[4], /^(?:type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+  }
+  for (const m of content.matchAll(/\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/g)) {
+    named(m[1], m[3], /^(?:type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+  }
+  for (const m of content.matchAll(/\bimport\s+\*\s+as\s+([\w$]+)\s+from\s*(['"])([^'"]+)\2/g)) {
+    imports.set(m[1], { spec: m[3], name: "*" });
+  }
+  for (const m of content.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*require\(\s*(['"`])([^'"`]+)\2\s*\)(?:\.([\w$]+))?(\s*\()?/g)) {
+    imports.set(m[1], { spec: m[3], name: m[4] ?? "default", call: !!m[5] });
+  }
+  for (const m of content.matchAll(/\b(?:const|let|var)\s+\{([^}]*)\}\s*=\s*require\(\s*(['"`])([^'"`]+)\2\s*\)/g)) {
+    named(m[1], m[3], /^([\w$]+)(?:\s*:\s*([\w$]+))?$/);
+  }
+  return imports;
+}
+
+/** A config expression's ConfigRef: a require(), an imported name, or a call. */
+function configRef(expr: string, imports: Map<string, ConfigImport>): ConfigRef {
+  const label = expr.replace(/\s+/g, " ");
+  // A path that is no string literal, or a template literal that interpolates.
+  if (/^require\s*\(/.test(expr) && (!/^require\(\s*(['"`])[^'"`]+\1\s*\)/.test(expr) || /^require\(\s*`[^`]*\$\{/.test(expr))) {
+    return { label, computed: true };
+  }
+  const required = /^require\(\s*(['"`])([^'"`]+)\1\s*\)(?:\.([\w$]+))?$/.exec(expr);
+  if (required) return { label, spec: required[2], name: required[3] ?? "default" };
+  const id = /^([\w$]+)(?:\.([\w$]+))?$/.exec(expr);
+  if (id) {
+    const imported = imports.get(id[1]);
+    if (!imported) return id[2] ? { label } : { label, local: id[1] };
+    if (imported.call) return { label, spec: imported.spec, call: true };
+    if (!id[2] || id[2] === "default") return { label, spec: imported.spec, name: imported.name };
+    // A namespace's member is its named export; another member, a property
+    // of an export, isn't read.
+    return imported.name === "*" ? { label, spec: imported.spec, name: id[2] } : { label, spec: imported.spec, call: true };
+  }
+  const call = /^(require\(\s*(['"`])([^'"`]+)\2\s*\)|[\w$.]+)\s*\(/.exec(expr);
+  if (call) {
+    const callee = call[3] ? `require("${call[3]}")` : call[1];
+    return { label: `${callee}()`, spec: call[3] ?? imports.get(call[1].split(".")[0])?.spec, call: true };
+  }
+  return { label };
+}
+
+/** The entries of a config's `presets: [...]`, as ConfigRefs. */
+function presetRefs(content: string, imports: Map<string, ConfigImport>): ConfigRef[] {
+  const m = /\bpresets\s*:\s*\[/.exec(content);
+  if (!m) return [];
+  const open = m.index + m[0].length - 1;
+  const list = content.slice(open + 1, closingIndex(content, open) - 1);
+  return splitTopLevel(list, ",").map((entry) => entry.trim()).filter(Boolean).map((entry) => configRef(entry, imports));
+}
+
+/**
+ * The configs spread in at the top of the object a config exports, as a
+ * monorepo's `module.exports = { ...require("./base"), content }` or
+ * `export default { ...base, content }` does, as ConfigRefs. These were
+ * neither read nor named: the config read as empty, with a warning that
+ * blamed Tailwind's default theme. One that a `theme` key after it
+ * replaces is left out, as JavaScript leaves out its theme.
+ */
+function spreadRefs(exported: string | null, imports: Map<string, ConfigImport>): ConfigRef[] {
+  if (!exported) return [];
+  const entries = splitTopLevel(exported.slice(1, -1), ",");
+  const refs: ConfigRef[] = [];
+  entries.forEach((entry, i) => {
+    const spread = /^\s*\.\.\.\s*([\s\S]+?)\s*$/.exec(entry);
+    if (!spread) return;
+    if (entries.slice(i + 1).some((later) => /^\s*(['"]?)theme\1\s*(?::|$)/.test(later))) return;
+    refs.push(configRef(spread[1], imports));
+  });
+  return refs;
+}
+
+/** The expression a config exports, `module.exports = ...` or `export default ...`. */
+const EXPORTED = /(?:\bmodule\.exports\s*=|\bexport\s+default\b)\s*/;
+
+/**
+ * The config a config re-exports, as snowball-tech's `export { default }
+ * from "@snowball-tech/design-tokens/..."` does, or `module.exports =
+ * require("./base")`, or `export default` an imported name. Null when it
+ * exports a config of its own.
+ */
+function reexportRef(content: string, imports: Map<string, ConfigImport>): ConfigRef | null {
+  const from = /\bexport\s*\{\s*(?:default|([\w$]+)\s+as\s+default)\s*\}\s*from\s*(['"])([^'"]+)\2/.exec(content);
+  if (from) return { label: `export { ${from[1] ? `${from[1]} as ` : ""}default } from "${from[3]}"`, spec: from[3], name: from[1] ?? "default" };
+  const exported = new RegExp(EXPORTED.source + /(require\(\s*(['"`])[^'"`]+\2\s*\)(?:\.[\w$]+)?|[\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
+  if (!exported) return null;
+  if (exported[1].startsWith("require(")) return configRef(exported[1], imports);
+  // An imported call, as `require("x")("docs")`, is wrapperCall's.
+  const imported = imports.get(exported[1]);
+  return imported && !imported.call ? configRef(exported[1], imports) : null;
+}
+
+/**
+ * The function a config's export is built by, as `module.exports =
+ * withTW({ ... })` or `const config = require("@inmediam/ui/tailwind")("docs")`
+ * then `module.exports = config`, for a warning that what it adds isn't
+ * read. Null when the export is no call.
+ */
+function wrapperCall(content: string, imports: Map<string, ConfigImport>): string | null {
+  const direct = new RegExp(EXPORTED.source + /([\w$.]+)\s*\(/.source).exec(content);
+  if (direct && direct[1] !== "require" && direct[1] !== "function") return `${direct[1]}()`;
+  const required = new RegExp(EXPORTED.source + /require\(\s*(['"`])([^'"`]+)\1\s*\)(?:\.[\w$]+)?\s*\(/.source).exec(content);
+  if (required) return `require("${required[2]}")()`;
+  const id = new RegExp(EXPORTED.source + /([\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
+  if (!id) return null;
+  const imported = imports.get(id[1]);
+  if (imported?.call) return `require("${imported.spec}")()`;
+  const assigned = new RegExp(`\\b(?:const|let|var)\\s+${id[1].replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*([\\w$.]+)\\s*\\(`).exec(content);
+  return assigned && assigned[1] !== "require" ? `${assigned[1]}()` : null;
+}
+
+/**
+ * The object literal `name` is in a module: for `default`, what
+ * `module.exports` or `export default` is, directly or through a const; for
+ * another name, the const of that name, or `exports.name`. Null when it is
+ * no object literal, as when a function builds it.
+ */
+function exportedObject(content: string, name: string): string | null {
+  const objectAfter = (pattern: RegExp) => {
+    const m = pattern.exec(content);
+    if (!m) return null;
+    const open = m.index + m[0].length - 1;
+    return content.slice(open, closingIndex(content, open));
+  };
+  const local = (id: string) => objectAfter(new RegExp(`\\b(?:const|let|var)\\s+${id.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*\\{`));
+  if (name === "default" || name === "*") {
+    const direct = objectAfter(new RegExp(EXPORTED.source + "\\{"));
+    if (direct) return direct;
+    const id = new RegExp(EXPORTED.source + /([\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
+    return id ? local(id[1]) : null;
+  }
+  return local(name) ?? objectAfter(new RegExp(`\\b(?:module\\.)?exports\\.${name.replace(/\$/g, "\\$")}\\s*=\\s*\\{`));
+}
+
+/** The file a relative import names, with the extensions a Tailwind config's imports can leave out. */
+function resolveModule(from: string, spec: string): string | null {
+  const base = resolve(from, spec);
+  const extensions = [".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"];
+  // TypeScript's ESM imports name a .ts file by its .js.
+  const swapped = /\.[cm]?js$/.test(base) ? [".ts", ".cts", ".mts"].map((ext) => base.replace(/\.[cm]?js$/, ext)) : [];
+  const candidates = [base, ...extensions.map((ext) => base + ext), ...swapped, ...extensions.map((ext) => join(base, `index${ext}`))];
+  return candidates.find((p) => existsSync(p) && statSync(p).isFile()) ?? null;
+}
+
+/**
+ * The tokens of a preset, or of a config re-exported, read as the config
+ * is: an object literal in a relative file, or in the config itself, one
+ * level deep. Anything else, a package, a call, or a file storysync can't
+ * find, is named in a warning that starts with `subject`, and is null.
+ * zenkigen's config is `presets: [componentConfig]` from a package, and
+ * sameera/quantum's `presets: [require("./tailwind.preset.js")]`: each read
+ * as no tokens at all, with no warning to say why.
+ */
+function readConfigRef(ref: ConfigRef, configPath: string, content: string, subject: string, warnings: string[]): ThemeLayer | null {
+  const missing = "so the tokens it declares are missing";
+  const from = ref.spec && !subject.endsWith(ref.spec) ? `, from ${ref.spec},` : "";
+  let file = configPath;
+  let object: string | null = null;
+  if (ref.call) {
+    warnings.push(`${subject}${from || ","} built by a function call, which storysync can't read statically, ${missing}`);
+    return null;
+  }
+  if (ref.computed) {
+    warnings.push(`${subject}, whose path is worked out when the config runs, which storysync can't read statically, ${missing}`);
+    return null;
+  }
+  if (ref.local) {
+    object = exportedObject(content, ref.local);
+  } else if (!ref.spec) {
+    warnings.push(`${subject}, which storysync can't read statically, ${missing}`);
+    return null;
+  } else if (!ref.spec.startsWith(".")) {
+    warnings.push(`${subject}${from ? `, from the package ${ref.spec},` : ", a package,"} which storysync can't read statically, ${missing}`);
+    return null;
+  } else {
+    const found = resolveModule(dirname(configPath), ref.spec);
+    if (!found) {
+      warnings.push(`${subject}, but storysync can't find ${ref.spec}, ${missing}`);
+      return null;
+    }
+    // Shown as the config's path is, relative when it is.
+    file = join(dirname(configPath), relative(resolve(dirname(configPath)), found));
+    try {
+      content = stripComments(readFileSync(file, "utf8"));
+    } catch {
+      warnings.push(`${subject}, but storysync can't read ${file}, ${missing}`);
+      return null;
+    }
+    object = exportedObject(content, ref.name ?? "default");
+  }
+  if (!object) {
+    warnings.push(`${subject}, which ${file} builds in a way storysync can't read statically, ${missing}`);
+    return null;
+  }
+  const nested = presetRefs(object, configImports(content));
+  if (nested.length) {
+    warnings.push(`${file} takes presets of its own, ${nested.map((r) => r.label).join(", ")}, which storysync doesn't follow, so the tokens they declare are missing`);
+  }
+  const blocks = extractThemeBlocks(object);
+  warnOfSpreads(blocks, file, warnings);
+  return themeLayer(blocks, warnings);
+}
+
+/**
+ * Names, in a warning, what a theme or its extend spreads in at the top,
+ * as edu-design-system's `theme: { ...applyTailwindConfig(edsTokens) }`
+ * does: storysync can't run it, so it read the theme as empty, saying only
+ * that the config used spread syntax.
+ */
+function warnOfSpreads(blocks: ThemeBlocks, path: string, warnings: string[]): void {
+  const spreads: string[] = [];
+  for (const block of [blocks.root, blocks.extend]) {
+    if (!block) continue;
+    for (const entry of splitTopLevel(block.slice(1, -1), ",")) {
+      const m = /^\s*\.\.\.\s*([\s\S]+?)\s*$/.exec(entry);
+      if (m) spreads.push(m[1].replace(/\s+/g, " "));
+    }
+  }
+  if (spreads.length) {
+    warnings.push(`The theme in ${path} spreads in ${spreads.join(", ")}, which storysync can't read statically, so the tokens it adds are missing`);
+  }
+}
+
+/**
+ * `text` split at each `separator` outside brackets, parentheses, braces
+ * and quotes, so `:is(.a, .b), :root` is two selectors and
+ * `require("a"), preset({ b, c })` two presets. A backslash escapes the
+ * character after it, so the `\{` in a selector such as `.a\{b, :root`
+ * opens nothing, and its `:root` is a selector of its own.
+ */
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "\\") i++;
+    else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+    else if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    else if (ch === separator && depth === 0) {
+      parts.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  parts.push(text.slice(from));
+  return parts;
+}
+
+/**
+ * The index just past the bracket that closes the one at `open`, `{` or
+ * `[`, skipping quoted text and escaped characters, or the text's length
+ * when it isn't closed. In `css`, a backtick is no quote. A backslash
+ * escapes what follows it outside quotes too: in CSS, as Tailwind's
+ * `.after\:content-\[\'\'\]` class does, and in a config's regex.
+ * Read as the start of a string, that `'` hid every rule after it.
+ */
+function closingIndex(text: string, open: number, css = false): number {
+  const [opener, closer] = text[open] === "[" ? ["[", "]"] : ["{", "}"];
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "\\") i++;
+    else if (ch === "'" || ch === '"' || (ch === "`" && !css)) quote = ch;
+    else if (ch === opener) depth++;
+    else if (ch === closer && --depth === 0) return i + 1;
+  }
+  return text.length;
+}
+
+/**
+ * Whether an at-rule is `@media` for the dark color scheme. The `:root` in
+ * one holds the dark values, as create-next-app's globals.css does: read in
+ * order with the rest, it overrode the light ones, so its background was
+ * extracted as #0a0a0a. `@media not ...` is light.
+ */
+function isDarkScheme(atRule: string): boolean {
+  return /^@media\b/i.test(atRule) && /prefers-color-scheme\s*:\s*dark/i.test(atRule) && !/\bnot\b/i.test(atRule);
+}
+
+/** A style rule, as styleRules reads it. */
+interface StyleRule {
+  /** Its selector list, as written. */
+  selector: string;
+  /** Its own declarations' text, without the rules nested in it. */
+  declarations: string;
+  /** The at-rules it is in, outermost first. */
+  atRules: string[];
+  /** Nested in another style rule, as CSS nesting writes `&.dark { }`. */
+  nested: boolean;
+}
+
+/**
+ * A stylesheet's style rules, in order, each with the at-rules it is in,
+ * `@layer` and `@media` included. A rule's declarations in an at-rule nested
+ * in it, as in `:root { @media print { --x: 1 } }`, are listed as the rule
+ * again inside that at-rule, after it. Quoted text is skipped, so a `}` in
+ * a `content` string ends no block.
+ */
+function styleRules(css: string): StyleRule[] {
+  const rules: StyleRule[] = [];
+  // Reads the block from `start` to `end`, listing its rules, and returns its
+  // own declarations' text. `parent` is the style rule it is in, if any.
+  const walk = (start: number, end: number, atRules: string[], parent: StyleRule | null): string => {
+    let own = "";
+    let from = start;
+    let prelude = start;
+    let quote: string | null = null;
+    for (let i = start; i < end; i++) {
+      const ch = css[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = null;
+      } else if (ch === "\\") i++;
+      else if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === ";" || ch === "}") prelude = i + 1;
+      else if (ch === "{") {
+        const close = closingIndex(css, i, true);
+        const head = css.slice(prelude, i).trim();
+        own += css.slice(from, prelude);
+        if (head.startsWith("@")) {
+          const inner = [...atRules, head];
+          const rule = parent && { ...parent, declarations: "", atRules: inner };
+          if (rule) rules.push(rule);
+          const declarations = walk(i + 1, close - 1, inner, parent);
+          if (rule) rule.declarations = declarations;
+        } else {
+          const rule: StyleRule = { selector: head, declarations: "", atRules, nested: parent !== null };
+          rules.push(rule);
+          rule.declarations = walk(i + 1, close - 1, atRules, rule);
+        }
+        i = close - 1;
+        from = prelude = close;
+      }
+    }
+    return own + css.slice(from, end);
+  };
+  walk(0, css.length, [], null);
+  return rules;
+}
+
+/**
+ * A selector for the root element alone: `:root`, or `html:root`, `*:root`
+ * and `:root:root`, which select the same element and which storysync read
+ * before selector lists were. A rule that sets `html:root { }` alone lost
+ * every token when only a bare `:root` counted.
+ */
+const ROOT_SELECTOR = /^(?:html|\*)?(?::root)+$/i;
+
+/**
+ * Whether a rule sets the default theme: its selector list holds `:root`,
+ * as `:root { }`, `html:root { }` and `:root, .light { }` do, and it is no
+ * rule nested in another, nor in `@media` for the dark color scheme. A rule
+ * that only names a theme, as `.dark`, `.light`, `[data-theme="dark"]` or
+ * `:root.dark` do, sets that theme's values, not the default's. `html` is
+ * left out: `:root` outranks it whatever their order, so its values
+ * couldn't be read in turn with `:root`'s, and storysync never read it.
+ * In a `bundled` stylesheet, only a list that ends in `:root` counts, as
+ * earlier versions read it.
+ */
+function setsDefaultTheme(rule: StyleRule, bundled = false): boolean {
+  const selectors = splitTopLevel(rule.selector, ",").map((selector) => selector.trim());
+  return !rule.nested &&
+    !rule.atRules.some(isDarkScheme) &&
+    !isCompiledTailwindTheme(rule) &&
+    (bundled ? ROOT_SELECTOR.test(selectors[selectors.length - 1]) : selectors.some((selector) => ROOT_SELECTOR.test(selector)));
+}
+
+/**
+ * Whether a rule is Tailwind v4's compiled output of its own theme: the
+ * `:root, :host` it writes in `@layer theme`, holding Tailwind's default
+ * palette, fonts and scales, and in `@layer properties`, holding
+ * `@property` fallbacks. A Storybook build in storybook-static/, or the
+ * src/output.css of Tailwind's CLI docs, has one, and storysync walks
+ * those folders: read as the default theme, Tailwind's red-500, font-sans
+ * and text-sm became the project's tokens. No earlier version read a list
+ * that doesn't end in `:root`, so leaving this one out keeps what they
+ * read.
+ */
+function isCompiledTailwindTheme(rule: StyleRule): boolean {
+  return /^:root\s*,\s*:host$/i.test(rule.selector) &&
+    rule.atRules.some((atRule) => /^@layer\s+(?:theme|properties)$/i.test(atRule));
+}
+
+/**
+ * The custom properties a stylesheet declares for the default theme, as
+ * written, in order. coder's index.css declares its palette in
+ * `@layer base { :root, .light { ... } }`: only a `:root {` was read,
+ * and its one was a scrollbar-color, so none of its 55 colors resolved.
+ * `bundled` is isBundled's.
+ */
+function rootDeclarations(css: string, bundled = false): [string, string][] {
+  const declarations: [string, string][] = [];
+  for (const rule of styleRules(css)) {
+    if (!setsDefaultTheme(rule, bundled)) continue;
+    for (const decl of rule.declarations.matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g)) {
+      declarations.push([decl[1].trim(), decl[2].trim()]);
+    }
+  }
+  return declarations;
+}
+
+/**
+ * The custom properties the stylesheets declare for the default theme, as
+ * written, a later declaration winning: those of each rule whose selector
+ * list holds `:root`, leaving out the dark color scheme's. A file that
+ * can't be read is skipped, and named in `warnings` when there are any.
  */
 function readRootDeclarations(files: string[], warnings?: string[]): Map<string, string> {
   const declared = new Map<string, string>();
   for (const file of files) {
     try {
-      const content = readCss(file);
-      const dark = darkSchemeRanges(content);
-      const rootBlocks = content.matchAll(/:root\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g);
-      for (const block of rootBlocks) {
-        if (dark.some(([from, to]) => block.index >= from && block.index < to)) continue;
-        const declarations = block[1].matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g);
-        for (const decl of declarations) {
-          declared.set(decl[1].trim(), decl[2].trim());
-        }
-      }
+      for (const [name, value] of rootDeclarations(readCss(file), isBundled(file))) declared.set(name, value);
     } catch {
       warnings?.push(`Could not read ${file}`);
     }
@@ -471,6 +1076,43 @@ function resolveRootVars(declared: Map<string, string>): Map<string, string> {
   return allVars;
 }
 
+/**
+ * `value` with each var() in it replaced by what `replace` returns for its
+ * name and fallback, or kept when that is undefined. A fallback runs to its
+ * var()'s own `)`, so one that holds parentheses, as `var(--a, rgb(0 0 0))`
+ * and `var(--a, var(--b))` do, is read whole. A regex that ended it at the
+ * first `)` left the second behind once `--a` resolved, so quary's
+ * `var(--vscode-input-border, hsl(...))` came out as `#cecece)`, no color.
+ */
+function replaceVars(value: string, replace: (name: string, fallback: string | undefined) => string | undefined): string {
+  let out = "";
+  let from = 0;
+  const start = /var\(\s*(--[\w-]+)\s*/g;
+  let m: RegExpExecArray | null;
+  while ((m = start.exec(value)) !== null) {
+    let depth = 1;
+    let comma = -1;
+    let i = start.lastIndex;
+    for (; i < value.length; i++) {
+      const ch = value[i];
+      if (ch === "(") depth++;
+      else if (ch === ")" && --depth === 0) break;
+      else if (ch === "," && depth === 1 && comma === -1) comma = i;
+    }
+    // Not closed: the rest is left as written.
+    if (i === value.length) break;
+    // Anything but a comma after the name makes it no var() to resolve.
+    if (value.slice(start.lastIndex, comma === -1 ? i : comma).trim()) continue;
+    const replacement = replace(m[1], comma === -1 ? undefined : value.slice(comma + 1, i));
+    if (replacement !== undefined) {
+      out += value.slice(from, m.index) + replacement;
+      from = i + 1;
+    }
+    start.lastIndex = i + 1;
+  }
+  return out + value.slice(from);
+}
+
 // Replace `var(--name)` and `var(--name, fallback)` inside a Tailwind token value.
 // Also strips Tailwind's `<alpha-value>` opacity placeholder.
 export function resolveTailwindCssRefs(value: string, cssVars: Map<string, string>): string {
@@ -478,13 +1120,11 @@ export function resolveTailwindCssRefs(value: string, cssVars: Map<string, strin
   let s = value.replace(/\s*\/\s*<alpha-value>\s*/g, "");
 
   // Replace each var(--name) or var(--name, fallback) with its resolved CSS value (depth-guarded).
+  // An empty fallback, as in `var(--unset,)`, leaves the var() as written,
+  // with its Unresolved warning, as earlier versions left it: replaced, it
+  // made a token with no value and no warning.
   for (let depth = 0; depth < 8 && /var\(\s*--/.test(s); depth++) {
-    s = s.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)/g, (_match, name: string, fallback?: string) => {
-      const resolved = cssVars.get(name);
-      if (resolved != null) return resolved;
-      if (fallback != null) return fallback.trim();
-      return _match;
-    });
+    s = replaceVars(s, (name, fallback) => cssVars.get(name) ?? (fallback?.trim() || undefined));
   }
   return s.trim();
 }
@@ -494,8 +1134,14 @@ interface ThemeBlocks {
   root: string;
 }
 
+/**
+ * A config's theme, and its extend. An ES module config can export its
+ * keys one by one, as `export const theme = { ... }`, which Tailwind reads
+ * as it does `theme: { ... }`; it was read as no theme at all.
+ */
 function extractThemeBlocks(content: string): ThemeBlocks {
-  const rootMatch = findBalancedBlock(content, /theme\s*:\s*\{/);
+  const rootMatch = findBalancedBlock(content, /theme\s*:\s*\{/) ??
+    findBalancedBlock(content, /\bexport\s+(?:const|let|var)\s+theme\s*(?::[^=]+)?=\s*\{/);
   const extendBlock = rootMatch ? findPropertyBlock(rootMatch, "extend") : null;
   return {
     extend: extendBlock ? `{${extendBlock}}` : "",
@@ -534,19 +1180,19 @@ function extractTailwindColors(blocks: ThemeBlocks, warnings: string[]): TokenVa
   return tokens;
 }
 
-function extractTailwindFlat(blocks: ThemeBlocks, key: string): TokenValue[] {
+function extractTailwindFlat(blocks: ThemeBlocks, key: string, warnings: string[]): TokenValue[] {
   const tokens: TokenValue[] = [];
   for (const block of [blocks.extend, blocks.root]) {
     if (!block) continue;
     const propBlock = findPropertyBlock(block, key);
     if (!propBlock) continue;
-    flattenObject(propBlock, "", tokens, key, []);
+    flattenObject(propBlock, "", tokens, key, warnings);
     if (tokens.length) break;
   }
   return tokens;
 }
 
-function extractTailwindTypography(blocks: ThemeBlocks): TokenValue[] {
+function extractTailwindTypography(blocks: ThemeBlocks, warnings: string[]): TokenValue[] {
   const tokens: TokenValue[] = [];
   for (const block of [blocks.extend, blocks.root]) {
     if (!block) continue;
@@ -556,6 +1202,14 @@ function extractTailwindTypography(blocks: ThemeBlocks): TokenValue[] {
     // fontSize can be { sm: '0.875rem' } or { sm: ['0.875rem', { lineHeight: '1.25rem' }] }
     const pairs = extractKeyValuePairs(propBlock);
     for (const [name, value] of pairs) {
+      // A size in a template literal, alone or first in its array.
+      const literal = /^\[?\s*(`[^`]*`)/.exec(value);
+      if (literal) {
+        const size = templateString(literal[1]);
+        if (size === null) warnings.push(`Skipped dynamic value: fontSize ${name} = ${literal[1]}`);
+        else tokens.push({ name, value: size });
+        continue;
+      }
       // Handle array values - take just the size
       const sizeMatch = value.match(/^\[?\s*['"]?([^'"[\],]+)/);
       const resolved = sizeMatch ? sizeMatch[1].trim() : value;
@@ -584,7 +1238,18 @@ function findPropertyBlock(block: string, key: string): string | null {
   return block.slice(braceStart + 1, i - 1);
 }
 
-function flattenObject(block: string, prefix: string, tokens: TokenValue[], _context: string, warnings: string[]): void {
+/**
+ * A template literal's text, as a quoted string's is read: langflow and
+ * ever-teams write their radius scale `calc(var(--radius) - 2px)` in
+ * backticks, which were kept, so it had no px. Null when it interpolates
+ * `${...}`, whose value is known only when the config runs.
+ */
+function templateString(literal: string): string | null {
+  const text = literal.slice(1, -1);
+  return text.includes("${") ? null : text.trim();
+}
+
+function flattenObject(block: string, prefix: string, tokens: TokenValue[], context: string, warnings: string[]): void {
   const pairs = extractKeyValuePairs(block);
 
   for (const [key, value] of pairs) {
@@ -592,14 +1257,19 @@ function flattenObject(block: string, prefix: string, tokens: TokenValue[], _con
 
     if (value.trim().startsWith("{")) {
       // Nested object - recurse
-      flattenObject(value.slice(1, -1), name, tokens, _context, warnings);
+      flattenObject(value.slice(1, -1), name, tokens, context, warnings);
     } else {
-      const cleaned = value.replace(/^['"]|['"]$/g, "").trim();
+      const literal = /^`[^`]*`$/.test(value.trim()) ? templateString(value.trim()) : undefined;
+      if (literal === null) {
+        warnings.push(`Skipped dynamic value: ${context} ${name} = ${value.trim()}`);
+        continue;
+      }
+      const cleaned = literal ?? value.replace(/^['"]|['"]$/g, "").trim();
       if (cleaned && cleaned !== "...") {
         // Skip dynamic calls like theme() or require(), but allow CSS values that contain parentheses like rgb()
         const isDynamicCall = /(?:theme|require|resolve|fn)\s*\(/.test(cleaned);
         if (isDynamicCall) {
-          warnings.push(`Skipped dynamic value: ${name} = ${cleaned}`);
+          warnings.push(`Skipped dynamic value: ${context} ${name} = ${cleaned}`);
         } else {
           tokens.push({ name, value: cleaned, group: prefix || undefined });
         }

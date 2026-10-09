@@ -225,9 +225,11 @@ Storysync reads design tokens from your codebase and previews the Figma variable
 
 | Source | What it reads |
 |---|---|
-| **Tailwind** | `tailwind.config.ts/js` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
-| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`. |
+| **Tailwind** | `tailwind.config.ts`, `.js`, `.mjs`, `.cjs`, `.mts`, or `.cts` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`, and those of a preset in a relative file, [see below](#tailwind-presets-and-configs-built-by-code)), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
+| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`. |
 | **Theme files** | `tokens.ts`, `theme.ts`, and similar: exported objects with `colors`, `spacing`, and so on |
+
+Detection takes the first of these a project has: a `tailwind.config.ts`, `.js`, `.mjs`, or `.cjs`; a stylesheet with a `:root { }` rule; a Tailwind v4 `@theme` block; a theme file; a `tailwind.config.mts` or `.cts`; and last, a stylesheet whose variables are only in a selector list such as `:root, .light { }`. Earlier versions found neither of the last two, so they come after every source those versions read, and a project keeps the source its baseline was written from. A warning names a `.mts` or `.cts` config passed over this way. Pass `--source tailwind` to read it.
 
 Token categories are **colors**, **spacing**, **typography**, **radius**, and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped.
 
@@ -267,9 +269,19 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 
 - Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)` → `hsl(0 0% 100%)`)
 - Nested variable chains (`--brand: var(--blue-500)`)
-- Fallback values (`var(--missing, 200 50% 50%)`)
+- Fallback values (`var(--missing, 200 50% 50%)`), including ones with parentheses (`var(--missing, var(--border))`, `var(--missing, rgb(0 0 0))`)
 
-A reference with no matching variable and no fallback is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
+A reference with no matching variable and no fallback, or an empty one as in `var(--x,)`, is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
+
+Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, a rule nested in `:root` such as `&.dark { }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. Earlier versions read `.dark:root { }` as the default theme, and read a `&.dark { }` nested in `:root` as part of it, dropping the declarations after it, so a baseline one of them wrote lists those tokens as changed, and the dropped ones as added. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A Storybook build in `storybook-static/` and a minified `.min.css` bundle other packages' styles, such as Bootstrap's `:root, [data-bs-theme=light] { }`, so in those a selector list is read only when it ends in `:root`, as earlier versions read it.
+
+### Tailwind presets and configs built by code
+
+Storysync reads a Tailwind config as text and never runs it. A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, or in an object the config file declares, is read the same way, one level deep. They merge as in Tailwind: a key set in `theme` itself, such as `theme.colors`, replaces a preset's, one in `theme.extend` adds to it, and the config's own tokens win over a preset's of the same name, as a later preset's do over an earlier one's. Earlier versions didn't read presets, so a baseline one of them wrote lists a preset's tokens as added. A config that re-exports another relative file, or spreads one in at the top of the object it exports, as `{ ...require("./base"), content }` does, is read through it. A `theme` key after the spread replaces the spread's theme, as in JavaScript.
+
+Anything Storysync can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, or anything spread in at the top of `theme` or `theme.extend`, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too, since Tailwind's default theme and what a plugin adds aren't read. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
+
+Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is skipped with a warning naming the token, since its value is known only when the config runs. Earlier versions kept the backticks, so a baseline one of them wrote lists a backticked token as changed, and one that interpolates as removed.
 
 ### Tailwind v4 `@theme`
 
@@ -287,7 +299,7 @@ A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead o
 }
 ```
 
-With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has `:root` custom properties, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, so a category can hold `:root`'s `radius/md` next to `@theme`'s `sm`, and a baseline from an earlier version lists them as added. `@theme` colors aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead.
+With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has a stylesheet with a `:root { }` rule, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, so a category can hold `:root`'s `radius/md` next to `@theme`'s `sm`, and a baseline from an earlier version lists them as added. `@theme` colors aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead. A stylesheet whose variables are only in a selector list, such as `:root, .light { }`, doesn't make `:root` the source, so `@theme` is read.
 
 | Namespace | Category | Token name |
 |---|---|---|
@@ -619,7 +631,7 @@ Options:
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
 - **Component names:** a component set without a Storybook ID stored on it, as an earlier push left it, is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
 - **Wide-gamut color tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
-- **Dark mode:** only `:root` values are read. Overrides like `.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
+- **Dark mode:** only the default theme's values are read, from rules whose selector list includes `:root`. Overrides like `.dark { ... }` or `:root.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
 
 ### Code → Figma: `snap`, the push, and `verify`
 
