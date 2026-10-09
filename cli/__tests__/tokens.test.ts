@@ -1606,6 +1606,17 @@ export default config;`,
   try {
     assert.deepEqual(tokenTable(extractTokens(typed)), [["colors", [["canvas", "#aaaaaa"]]], ["spacing", [["gutter", "1rem"]]]]);
   } finally { cleanup(typed); }
+
+  // With no theme of the config's own, the local preset's is the first in
+  // the file, but it is still a preset: a later one's theme.colors wins.
+  const ranked = makeProject({
+    "tailwind.config.js": `const base = { theme: { colors: { canvas: "#aaaaaa" }, extend: { spacing: { gutter: "1rem" } } } };
+module.exports = { presets: [base, require("./brand.js")], content: [] };`,
+    "brand.js": `module.exports = { theme: { colors: { ink: "#111111" } } };`,
+  });
+  try {
+    assert.deepEqual(tokenTable(extractTokens(ranked)), [["colors", [["ink", "#111111"]]], ["spacing", [["gutter", "1rem"]]]]);
+  } finally { cleanup(ranked); }
 });
 
 test("Tailwind: a preset imported by name from a TypeScript file is that export, not another in the file", () => {

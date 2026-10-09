@@ -411,30 +411,34 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
     warnings.push("Config uses spread syntax - some values may not be extracted");
   }
 
+  // What the config gets from elsewhere: the config it re-exports or
+  // spreads in, or its presets, each read below as the config is, and
+  // merged by withLayers as Tailwind merges them.
+  const exported = exportedObject(content, "default");
+  const imports = configImports(content);
+  const presets = presetRefs(exported ?? content, imports);
+  const spreads = spreadRefs(exported, imports);
+  const locals = [...presets, ...spreads].flatMap((ref) => (ref.local && exportedObject(content, ref.local)) || []);
+
   // Extract theme.extend and theme objects, from the object the config
   // exports when it holds them.
-  const exported = exportedObject(content, "default");
-  const themeBlocks = ownThemeBlocks(content, exported);
+  const themeBlocks = ownThemeBlocks(content, exported, locals);
   const own = themeCollections(themeBlocks, warnings);
   // The warnings from here on name what storysync can't read.
   const unread = warnings.length;
   warnOfSpreads(themeBlocks, configPath, warnings);
 
-  // What the config gets from elsewhere: the config it re-exports or
-  // spreads in, or its presets, read the same way, and merged by
-  // withLayers as Tailwind merges them.
-  const imports = configImports(content);
   const layers: ThemeLayer[] = [];
   const reexport = reexportRef(content, imports);
   if (reexport) {
     const layer = readConfigRef(reexport, configPath, content, `${configPath} re-exports its config from ${reexport.spec}`, warnings);
     if (layer) layers.push(layer);
   }
-  for (const ref of presetRefs(exported ?? content, imports)) {
+  for (const ref of presets) {
     const layer = readConfigRef(ref, configPath, content, `${configPath} takes the preset ${ref.label}`, warnings);
     if (layer) layers.push(layer);
   }
-  for (const ref of spreadRefs(exported, imports)) {
+  for (const ref of spreads) {
     const layer = readConfigRef(ref, configPath, content, `${configPath} spreads in ${ref.label}`, warnings);
     if (layer) layers.push(layer);
   }
@@ -492,11 +496,15 @@ function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {
  * it. A preset a config declares above itself, as `const base = { theme:
  * {...} }`, holds the first `theme:` in the file, so the config's own were
  * lost. A config that exports no object literal, or one with no theme of
- * its own, is read as before.
+ * its own, is read as before, unless the first theme in the file is one of
+ * `locals`, the objects it takes as presets or spreads in: those are read
+ * as such, and read as its own too, a local preset outranked every other.
  */
-function ownThemeBlocks(content: string, exported: string | null): ThemeBlocks {
+function ownThemeBlocks(content: string, exported: string | null, locals: string[]): ThemeBlocks {
   const blocks = exported ? extractThemeBlocks(exported) : null;
-  return blocks?.root ? blocks : extractThemeBlocks(content);
+  if (blocks?.root) return blocks;
+  const first = extractThemeBlocks(content);
+  return first.root && locals.some((local) => local.includes(first.root)) ? { root: "", extend: "" } : first;
 }
 
 /** `content` without the `key: [...]` array of each key, the first of each. */
