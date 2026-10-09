@@ -12,11 +12,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonicalJson, fnv1a32 } from "./checksum.js";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
+import { expandTree } from "./tree-types.js";
+import type { ComponentTree, TreeDelta } from "./tree-types.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
 import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning } from "./snap.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
-import type { SnapComponent, SnapResult } from "./snap.js";
+import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
+
+/**
+ * A snap's component and variant with the element-tree fields snap writes
+ * (design section 7.2), as verify reads them: a component's `tree`, a
+ * variant's `treeDelta` against it, and `innerElements`, the inner elements
+ * `snap --root-only` counted without measuring.
+ */
+type TreeComponent = SnapComponent & { tree?: ComponentTree };
+type TreeVariant = SnapVariant & { treeDelta?: TreeDelta; innerElements?: number };
+const treeOf = (component: SnapComponent): ComponentTree | undefined => (component as TreeComponent).tree;
 
 export const READBACK_SCHEMA_VERSION = 1;
 
@@ -399,7 +411,8 @@ export interface ScoreCaveat {
    * change nothing snap measures, rather than the story dropping them, as
    * `identical-variants` has it.
    */
-  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked";
+  kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
+    | "root-only";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
   /** The properties whose default is assumed, for `default-assumed`, or that change nothing measured, for `behavior-only`. */
@@ -416,6 +429,12 @@ export interface ScoreCaveat {
    * have scored the story's default. `variants` counts them.
    */
   slugs?: string[];
+  /**
+   * For `root-only`: snap measured only the component's outer element, so
+   * only it was compared, and this many inner elements went unmeasured,
+   * where snap counted them.
+   */
+  innerElements?: number;
 }
 
 export interface ReadbackIssue {
@@ -1026,7 +1045,7 @@ export function verify(
 
   const caveats = (snap.components ?? [])
     .filter((component) => readbackComponents[componentKey(component)] != null)
-    .flatMap(scoreCaveats);
+    .flatMap((component) => [...scoreCaveats(component), ...rootOnlyCaveats(component)]);
   const bindings = bindingReport(readbackComponents, unverified);
   const uncompared = new Map<string, { component: string; property: string; variants: number }>();
   for (const verdict of verdicts) {
@@ -1148,6 +1167,30 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
   const unchecked = (component.variants ?? []).filter((v) => v.status === "ok" && v.argsChecked === false).map((v) => v.slug);
   if (unchecked.length) caveats.push({ component: key, kind: "args-unchecked", slugs: unchecked, variants: unchecked.length });
   return caveats;
+}
+
+/**
+ * `root-only`: verify compared the component's outer element and nothing
+ * under it, which a score of 100% doesn't say. A Switch built as a pill
+ * with no thumb scored 100% that way. With the inner elements snap counted,
+ * `snap --root-only`'s `innerElements` or its tree's nodes, where it
+ * counted any; none where it counted none.
+ */
+function rootOnlyCaveats(component: SnapComponent): ScoreCaveat[] {
+  const tree = treeOf(component);
+  const counts = (component.variants ?? []).map((v: TreeVariant) => {
+    if (tree && v.status === "ok") {
+      try {
+        return expandTree(tree, v.treeDelta).length - 1;
+      } catch {
+        return undefined;
+      }
+    }
+    return typeof v.innerElements === "number" ? v.innerElements : undefined;
+  }).filter((n): n is number => n !== undefined);
+  const inner = counts.length ? Math.max(...counts) : undefined;
+  if (inner === 0) return [];
+  return [{ component: componentKey(component), kind: "root-only", ...(inner !== undefined ? { innerElements: inner } : {}) }];
 }
 
 // --- Loading -----------------------------------------------------------------

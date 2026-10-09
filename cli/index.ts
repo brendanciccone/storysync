@@ -163,6 +163,10 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const one = count === 1;
       return `snap couldn't check that Storybook gave the story the values of ${one ? "variant" : `${count} variants,`} ${nameSlugs(caveat.slugs ?? [])}, so ${one ? "it" : "they"} may have scored the story's default under ${one ? "its name" : "their names"}; measure the component again`;
     }
+    case "root-only": {
+      const inner = caveat.innerElements;
+      return `only the outer element was measured and compared${inner !== undefined ? ` (${inner} inner ${inner === 1 ? "element" : "elements"} not measured)` : ""}`;
+    }
   }
 }
 

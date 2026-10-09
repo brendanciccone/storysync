@@ -8,7 +8,8 @@ import { describeMeasurementNotes, describeIdenticalVariants } from "../snap.js"
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1364,7 +1365,8 @@ test("verify: caveats are given for the components the readback scored, and fail
   const trigger = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);
   const withTrigger = { ...snap, components: [{ ...snap.components[0], warnings: trigger }, { ...snap.components[0], title: "Forms/Other", warnings: trigger }] } as SnapResult;
   const result = verify(withTrigger, readbackWith({ a: {} }), 0.5);
-  assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }]);
+  // A snap without trees: only the outer element was compared, which is said too.
+  assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }, { component: "Forms/Button", kind: "root-only" }]);
   assert.equal(result.fidelity, 1);
 });
 
@@ -1473,4 +1475,42 @@ test("verify: bindings are reported beside the score and fail nothing, and a rea
   const older = verify(snap, readbackWith({ a: {}, b: {} }), 0.5);
   assert.equal(older.fidelity, 1);
   assert.deepEqual(older.bindings, { read: 0, bound: 0, unbound: [] });
+});
+
+// --- Element trees: what changes for snaps and readbacks from before them ------------
+
+const PUSH2 = fileURLToPath(new URL("../../../cli/__tests__/fixtures/push2/", import.meta.url));
+const push2 = (file: string) => JSON.parse(readFileSync(`${PUSH2}${file}`, "utf8"));
+
+test("push2 replay: a root-only snap and readback score as 0.4.0 did, 99.9%, plus a root-only caveat per component", () => {
+  const snap = push2("styles.json") as SnapResult;
+  const meta = push2("meta.json") as { measuredAt: string };
+  const result = verify(snap, push2("figma-readback.json") as ReadbackFile, 0.5, { measuredAt: meta.measuredAt });
+  assert.equal(result.summary.propertiesMatched, 1653);
+  assert.equal(result.summary.propertiesCompared, 1654);
+  const rootOnly = result.caveats.filter((c) => c.kind === "root-only");
+  assert.equal(rootOnly.length, 14);
+  assert.deepEqual(rootOnly[0], { component: "ui/base/Attachment", kind: "root-only" });
+  // Byte for byte the JSON 0.4.0 wrote, but for the caveats added, and the
+  // binding and textLayout fields 0.4.0's later readback work added.
+  const before = push2("verify-0.4.0.json") as Record<string, unknown>;
+  delete before.snapAge;
+  const now = JSON.parse(JSON.stringify(result)) as Record<string, unknown> & { caveats: { kind: string }[] };
+  assert.deepEqual(now.bindings, { read: 0, bound: 0, unbound: [] });
+  assert.deepEqual(now.uncompared, []);
+  delete now.bindings;
+  delete now.uncompared;
+  now.caveats = now.caveats.filter((c) => c.kind !== "root-only");
+  assert.deepEqual(now, before);
+  assert.equal(JSON.stringify(now), JSON.stringify(before), "in the same order, too");
+});
+
+test("root-only: the caveat counts the inner elements snap --root-only found, and leaves out a component with none", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  (snap.components[0].variants[0] as { innerElements?: number }).innerElements = 22;
+  (snap.components[0].variants[1] as { innerElements?: number }).innerElements = 20;
+  const readback = readbackWith({ a: {}, b: {} });
+  assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), [{ component: "Forms/Button", kind: "root-only", innerElements: 22 }]);
+  for (const v of snap.components[0].variants) (v as { innerElements?: number }).innerElements = 0;
+  assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), []);
 });
