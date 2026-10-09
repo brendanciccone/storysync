@@ -891,3 +891,171 @@ D24. **`verify --json` adds `minFidelity: { min, score, passed }`** with
 D25. **`figma next` writes a continuation from the template its call was
    written with**: readable where the call holds the readable template,
    after `figma code --no-minify`.
+
+# Text: Figma's font, one line, truncation that sticks (after the third live push)
+
+The third live push (Figma file UPmguLPQ7w1ESdOZsq6vlw) built every
+truncated label with truncation off, so Sidebar's menu labels wrapped
+("Hom" over "e") and Attachment's titles took two or three lines: 170
+elements drifted, all of them Sidebar's and Attachment's.
+
+## The live text probe (2026-10-09)
+
+Three use_figma calls in that file, on a page of their own, "storysync probe
+2", which the first creates and marks and the others check: the calls are
+`spikes/figma-text-probe-1.js`, `-2.js` and `-3.js`, sent as written, and
+their responses `fixtures/figma-text-probe.json`, unchanged. A test in
+`mock-figma.test.ts` runs the three calls in the mock and holds it to them.
+
+T1. **Any write of textAutoResize turns truncation off and clears
+    maxLines**, HEIGHT over HEIGHT included. resize() on a hugging text
+    makes it NONE, which reads TRUNCATE with ENDING. So the build, which set
+    truncation before resize() and textAutoResize, lost it every time; the
+    spike set them the other way round, which is why item 3 held there. A
+    write of fontName, characters, fontSize or lineHeight keeps it, and so
+    do layoutSizingHorizontal FIXED, FILL and HUG (HUG makes the text
+    WIDTH_AND_HEIGHT, ENDING kept), layoutGrow and layoutAlign STRETCH.
+    layoutSizingVertical FIXED makes it TRUNCATE, maxLines reading null,
+    and HUG gives it back as HEIGHT with its maxLines.
+T2. **ENDING on a text that sizes itself, with no maxLines, sets maxLines
+    to 1**; DISABLED clears it. A NONE text inside an auto layout reads no
+    maxLines.
+T3. **Figma's Inter is Inter 3.19** (axes slnt and wght). Chrome with
+    @fontsource-variable/inter 5.0.18 sets each of the probe's 35 Inter
+    strings exactly as wide as Figma did, rounded up to a pixel; with 5.3.0,
+    Inter 4, 13 of 35. Roboto Mono and Noto Serif at 5.3.0 matched 2 of 2
+    each. The spike's "158 against Chrome's 154.8" was Inter against the
+    Mac's system-ui, 2.1% wider; short words run up to 10%.
+T4. **Sizes round up to a pixel.** A hugging text is as wide as its advance
+    rounded up ("Home" 39.04 came out 40), and a text that grows in height
+    as tall as its lines rounded up (one line of 17.5 came out 18), except
+    where ENDING cuts it at maxLines: exactly that many lines (17.5).
+    AUTO line height is each font's ascent and descent to a whole pixel:
+    Inter 1.21em, Roboto Mono 1.319 (18 at 14px), Noto Serif 1.362 (22 at
+    16px).
+T5. **Figma keeps a line whole a little narrower than its advance**: by
+    0.13 to 1.22px for the probe's eight strings (call 2's thresholds), and
+    always at Chrome's width, 0.004 under it, and rounded to 0.01. A word
+    wider than its box breaks between characters.
+T6. **Figma's plugin context lacks** Segoe UI, Helvetica, Helvetica Neue,
+    Arial, Menlo, Monaco, Consolas, Courier New, SF Mono, SF Pro Text, Georgia,
+    Times New Roman, Verdana, Tahoma and the other faces `PLATFORM_FACES`
+    lists (call 3). It has SF Pro, Roboto, Ubuntu, Cantarell, Noto Sans,
+    Arimo, Tinos and Cascadia Code. The skills' root-only section still says
+    it has no SF Pro: D8 keeps that section as 0.4.0 wrote it.
+
+## snap draws text in Figma's font (`cli/fonts.ts`)
+
+T7. **One mapping for snap and the build.** `standInFor` is the template's
+    old pair of patterns: Roboto Mono for a monospace family, Noto Serif for
+    a serif, Inter for any other. figma code passes the build each text's
+    stand-in as `a` in its style, and the template no longer holds the
+    patterns.
+T8. **Which text.** An element whose computed font stack opens with a CSS
+    keyword or alias (`system-ui`, `ui-sans-serif`, `-apple-system`,
+    `monospace` and the rest) or a face in `PLATFORM_FACES` gets the
+    stand-in ahead of its stack, as `"storysync Inter", <stack>`, inline
+    and important, after the story settles and before anything is measured
+    or chosen by its box. A child that inherits the stack inherits the
+    stand-in. A stack that opens with any other family, a font the project
+    loads such as Geist or the example's Inter, is left alone, and so is
+    one whose own font failed to load (`fa: 0`, as before). An element's
+    pseudo-element with a keyword stack of its own isn't changed.
+T9. **The faces** come from the npm packages, every unicode-range subset of
+    the weight axis, upright and, for Roboto Mono and Noto Serif, italic,
+    added with the FontFace API under the family `storysync <stand-in>`, so
+    a project's own Inter keeps its faces; Chrome slants Inter's upright for
+    italic, as wide as Figma's Inter Italic. Only the stand-ins a page uses
+    are sent to it: about 220 KB for Inter.
+T10. **What snap records.** The stand-in is what the browser drew, so a
+    text's `f` is the Figma family, `Inter`, with `fs`, the family the code
+    asked for as resolveFontFamily would have recorded it (`system-ui`, or
+    `Menlo` for Tailwind's mono stack on a Mac), and no `fk`. The root's
+    and its text's `fontFamily` are `Inter` too, `fontAvailable` true. Each
+    component's `fontStandIns` lists its `[asked, drawn]` pairs, and the
+    run's `fontStandIns` all of them; `snap` prints one line a run saying
+    what it drew in what, and `--json` carries the lists. `standIns: false`
+    in captureStory's options measures as before, for a test.
+T11. **verify scores the family of a stood-in text**, `Inter` against
+    Figma's `Inter`, and its width within 3%, not the 6% a text Figma draws
+    in another font than snap measured is allowed. A snap from before, with
+    `system-ui` and `fk`, builds and verifies as it did.
+T12. **Package size.** The fonts are runtime dependencies, pinned exactly:
+    @fontsource-variable/inter 5.0.18 (0.9 MB installed),
+    @fontsource-variable/roboto-mono 5.3.0 (0.35 MB) and
+    @fontsource-variable/noto-serif 5.3.0 (4.6 MB), about 5.9 MB in all,
+    against playwright-core's 13 MB; storysync's own tarball doesn't change.
+    Each is under the SIL Open Font License, shipped in the package.
+    renovate.json keeps Inter at 5.0.18, and `fonts.test.ts` fails when an
+    installed version is not the one `fixtures/figma-fonts.json` was
+    measured from.
+
+## The build (`templates/build.js`)
+
+T13. **Truncation is set last**: the size, then textAutoResize, then
+    textTruncation and maxLines (T1). A build sent again resets and sets it
+    again, which Figma keeps (the probe's `rerunSpike`).
+T14. **A label the browser drew whole on one line stays so (`o`).**
+    figma-map marks a one-line text set at its box's width (HEIGHT) whose
+    glyphs fit inside its box. Once a variant is converged, `keepLines`
+    takes each such text's line limit off and reads its height: one that
+    would wrap, or be cut short, at that width is set to Figma's own width
+    instead, WIDTH_AND_HEIGHT, and a truncated one then fixed at that width
+    with its truncation set again, so it still truncates should it shrink.
+    Each goes in `fallbacks` as `kept on one line: Figma sets it wider`. A
+    text that fills its parent keeps FILL and its wrapping or truncation:
+    one that truncates is named `cut short`, as verify can't see an
+    ellipsis (T21), and one that wraps isn't, as verify scores its lines. A
+    snap that drew stand-ins gives none: the widths match (T3, T5).
+T15. **loadFont takes the text's style**, `f`, `w`, `i` and `a`, to fit
+    the template's budget: the minified build is 15,980 characters, of
+    16,000.
+
+## The mock (`cli/__tests__/mock-figma.ts`)
+
+T16. **Text as Figma sets it.** The default measure is `figmaFonts()`:
+    Inter, Roboto Mono and Noto Serif from `fixtures/figma-fonts.json`, each
+    character's advance and each kerning pair among printable ASCII, in em,
+    which `scripts/figma-font-metrics.mjs` measures in Chrome from the
+    installed packages (`--check`, which acceptance runs, fails when they
+    differ). It sets all 39 of the probe's strings as wide as Figma did.
+    `measureFromTrees` still gives the widths snap measured, for a faithful
+    build; `figmaFonts(fallback)` measures other families by `fallback`.
+T17. **The uniform `textWidthFactor` (1.045) is gone.** The fixtures were
+    measured in system-ui, so with figmaFonts the mock sets their text in
+    Inter as Figma does, a few percent wider and by each word's own width,
+    which is what wrapped the third push's labels. tree-e2e pushes every
+    fixture this way, and holds each to 100%; one test there stays at the
+    browser's widths, where a designer's changed text would stretch the line
+    under it past its tolerance.
+T18. **Text sizes, wrapping and truncation follow T1 to T5**, except the
+    wrap threshold: the mock wraps a line wider than its box, so it may
+    wrap where Figma wouldn't, never the other way round. Lines break after
+    a space or a hyphen, and a word wider than its box between characters.
+T19. **The test harness's own build** (`tree-harness.ts`) set truncation
+    first too, and lost it in the mock as soon as the mock did what Figma
+    does.
+
+## On the third push's data
+
+T20. figma code on the third push's styles.json, Sidebar and Attachment,
+    into the mock with Figma's fonts, read back and verified:
+    - with 0.4.0's build: 508 of 678 elements verified, 170 drifted, the
+      same 170 the live verify reported: every Sidebar label on two lines,
+      and Attachment's titles on two lines in its default horizontal
+      variants and its small vertical tiles, on three in its default
+      vertical ones;
+    - with this build: 678 of 678; every Sidebar label whole on one line, 40
+      wide for "Home" where it was measured 38.25, each named `kept on one
+      line`; every Attachment title on one line, ending in an ellipsis where
+      the browser's did (the vertical tiles, 94, 98 and 102 wide), and in
+      the five default horizontal variants, where the browser's didn't,
+      since the title fills its row: named `cut short`;
+    - a snap taken again with the stand-ins (Sidebar and Attachment, 48
+      variants, live): 678 of 678, no fallbacks, every Sidebar label and
+      every horizontal Attachment title whole on one line, and the vertical
+      tiles' titles cut where the browser cut them.
+T21. **What verify can't see**: Figma doesn't say whether a text is cut
+    short, so an ellipsis Figma draws where the browser drew none scores
+    as truncation that matches. The build names it (`cut short`), and a
+    snap that draws stand-ins doesn't give one.
