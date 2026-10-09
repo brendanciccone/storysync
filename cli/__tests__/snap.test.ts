@@ -1623,6 +1623,8 @@ function treeBrowser(opts: {
   thumbnail?: (arg: { size: [number, number] }) => Buffer;
   /** How many loads time out before any loads, as a cold Storybook's first story may. */
   timeouts?: number;
+  /** The story's markup checksum, as readMarkup reads it, for the args it was given; unread by default. */
+  markup?: (args: Record<string, unknown>) => string;
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
@@ -1663,6 +1665,8 @@ function treeBrowser(opts: {
         const bytes = opts.thumbnail ? opts.thumbnail(arg as { size: [number, number] }) : Buffer.from("thumbnail bytes");
         return { mime: "image/jpeg", base64: bytes.toString("base64") };
       }
+      // readMarkup, given the story's root containers.
+      if (opts.markup && Array.isArray(arg) && arg[0] === "#storybook-root") return opts.markup(given());
       if (Array.isArray(arg) && Array.isArray(arg[1])) return { display: "flex", "background-color": "rgb(229, 229, 229)" };
       return arg ? {} : null;
     },
@@ -1990,6 +1994,21 @@ test("runSnap: values the options add past --max-combinations start a capped pla
     const [component] = result.components;
     assert.deepEqual(component.variants.map((v) => v.slug), ["size-default--tone-a", "size-sm--tone-a", "size-lg--tone-a", "size-default--tone-b"]);
     assert.deepEqual([component.cap!.totalPossible, component.cap!.generated, component.cap!.uncovered], [6, 4, []]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a tree snap whose variants measure alike though their markup changed names a state or an animation as what it didn't measure", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: () => rawCapture("switch"), argTypes: { size: { options: ["default", "sm"] } },
+      markup: (args) => `markup-${String(args.size)}`,
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const warning = result.components[0].warnings.find((w) => parseBehaviorOnlyWarning(w));
+    assert.match(warning ?? "", /something it doesn't measure, such as a hover or focus state, or an animation\./);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

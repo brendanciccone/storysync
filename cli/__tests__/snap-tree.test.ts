@@ -508,8 +508,9 @@ test("buildTree: any other url() background is a screenshot of its box, or, on a
   const icon = box({ "background-image": svg, "background-repeat": "no-repeat", "background-size": "16px 16px", "background-position": "50% 50%" });
   assert.equal(icon.node.t, "I");
   assert.deepEqual(icon.images.map((i) => [i.src, i.fit]), [["data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><rect fill='rgb(255,0,0)' width='10' height='10'/></svg>", "16px 16px"]]);
-  // Covering the box, its tiling never shows: tailwind's bg-cover without bg-no-repeat.
-  assert.equal(box({ "background-image": 'url("a.png")', "background-size": "cover" }).node.t, "I");
+  // Covering the box, its tiling never shows: Tailwind's bg-cover without bg-no-repeat is a picture, not a screenshot.
+  const cover = box({ "background-image": 'url("a.png")', "background-repeat": "repeat", "background-size": "cover" });
+  assert.deepEqual([cover.node.t, cover.node.raster, cover.images.map((i) => i.src), cover.rasters], ["I", undefined, ["a.png"], []]);
   // Tiled, or one of several layers: a screenshot of the box.
   for (const cs of [
     { "background-image": 'url("a.png")', "background-repeat": "repeat", "background-size": "16px 16px" },
