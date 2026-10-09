@@ -1,10 +1,56 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { variantLayouts } from "../figma-code.js";
 import { planLayout } from "../figma-layout.js";
 import type { LayoutChild, LayoutParent } from "../figma-layout.js";
+import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
 
 const parent = (fields: Partial<LayoutParent> = {}): LayoutParent => ({ k: "", size: [100, 40], inset: [0, 0, 0, 0], ...fields });
 const kid = (k: string, box: LayoutChild["box"], fields: Partial<LayoutChild> = {}): LayoutChild => ({ k, kind: "F", box, ...fields });
+
+test("planLayout: every variant of every fixture gets auto layout, with no frame left absolute", () => {
+  // Section 15's acceptance names Switch, Toggle, Avatar, InputOTP, Card,
+  // Attachment (horizontal and vertical), Button with icon and the example
+  // Button; Sidebar holds too.
+  for (const name of treeFixtureNames()) {
+    const component = loadTreeFixture(name).components[0];
+    for (const variant of component.variants.filter((v) => v.status === "ok")) {
+      for (const [key, plan] of variantLayouts(component, variant)) {
+        assert.equal(plan.why, undefined, `${name} ${variant.slug} › ${key || "(root)"}: ${plan.why}`);
+      }
+    }
+  }
+});
+
+test("planLayout: the fixtures' frames are planned as the browser laid them out", () => {
+  const card = loadTreeFixture("card").components[0];
+  const plans = variantLayouts(card, card.variants[0]);
+  const root = plans.get("")!;
+  assert.deepEqual([root.mode, root.spacing, root.padding, root.hug], ["VERTICAL", 24, [24, 0, 24, 0], [false, true]]);
+  assert.deepEqual(root.fill["card-header"], [true, false], "a block in a column stretches across it");
+  const row = plans.get("card-content/div")!;
+  assert.deepEqual([row.mode, row.spacing, row.primary, row.counter, row.hug], ["HORIZONTAL", 16, "MIN", "CENTER", [false, true]]);
+  const button = plans.get("card-footer/button")!;
+  assert.deepEqual([button.mode, button.primary, button.counter, button.hug], ["HORIZONTAL", "CENTER", "CENTER", [true, false]]);
+
+  const icon = loadTreeFixture("button-icon").components[0];
+  const withIcon = variantLayouts(icon, icon.variants[0]).get("")!;
+  // gap-1.5 plus the icon's mr-2: the measured gap, not the CSS one.
+  assert.equal(withIcon.spacing, 14);
+  assert.deepEqual(withIcon.hug, [true, false]);
+});
+
+test("planLayout: Attachment's media tile, painted after the content it precedes, is laid out first", () => {
+  const attachment = loadTreeFixture("attachment").components[0];
+  const horizontal = variantLayouts(attachment, attachment.variants[0]).get("")!;
+  assert.deepEqual(horizontal.order, ["attachment-media", "attachment-content", "attachment-action"]);
+  assert.equal(horizontal.mode, "HORIZONTAL", "its flex-wrap fits on one line");
+  assert.deepEqual(horizontal.fill["attachment-content"], [true, false], "flex-1 fills along the row");
+  assert.deepEqual(horizontal.hug, [false, true], "a frame a child grows in is fixed along the flow");
+  const vertical = variantLayouts(attachment, attachment.variants[2]).get("")!;
+  assert.deepEqual(vertical.order, ["attachment-media", "attachment-content", "attachment-action"], "the absolute X button stays last, on top");
+  assert.equal(vertical.mode, "VERTICAL");
+});
 
 test("planLayout: a frame with nothing in its flow has no auto layout, and no reason to give", () => {
   const plan = planLayout(parent(), [kid("a", [0, 0, 10, 10], { abs: true })]);
