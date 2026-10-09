@@ -905,16 +905,25 @@ L1. **The set's grid spaces variants by where they draw** (section 8.2,
      layer's box that no frame around it clips, and the reach of each
      drop shadow, its radius, spread and both offsets taken on every
      side, which is more than it draws. A designer's layers count.
-   - Rows and columns are as wide and tall as the largest drawn bounds,
-     GAP apart, each variant placed where its drawn bounds start, the
-     set's order and default-first rule kept.
+   - A row's boxes share their top edge and a column's their left edge,
+     as in 0.4.0's grid. A row is as tall as the most any of its
+     variants draws above that edge plus the most below it, a column as
+     wide as the most left of its edge plus the most right of it; rows
+     and columns are GAP apart, the set's order and default-first rule
+     kept. So the default variant is still the one top-left, where
+     Figma takes the set's default from, however far another variant
+     draws past its box. Each variant placed where its own drawn bounds
+     start, as first written, put a default with a shadow below and
+     right of its neighbors, and left push3's Toggle columns ragged.
+   - Variants that fit no grid cell, in a row below, share a top edge
+     the same way.
    - The template's checks (past the set, over another variant) read
      the drawn bounds, so a build whose variants overlap fails.
    - On push3's snap, base Button had 48 pairs of variants drawing over
      each other (at the icon sizes the label draws about 71px past each
      side of a 36px button, as the browser draws it) and radix Button
      6; now none, at width factor 1.045 too.
-   - The minified build is 16,112 characters, so `templates.test.ts`
+   - The minified build is 16,254 characters, so `templates.test.ts`
      allows the build 17,000 rather than 16,000. figma code packs a
      call by its whole length, template included, so this only leaves a
      call a little less room for DATA.

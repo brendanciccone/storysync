@@ -844,3 +844,48 @@ test("build: the set's grid gives each variant the room it draws in: a label pas
     assert.ok(at("variant=raised, size=default")[1] - at("variant=default, size=default")[3] >= 20);
   }
 });
+
+test("build: the set's grid keeps each row's boxes on one top edge and each column's on one left, the default top-left, whatever draws past them", async () => {
+  // Only the default variant has a shadow, shadow-2xl, reaching 63px below
+  // it and 38px every other way. Placed where its own drawn bounds start,
+  // it sat lower and further right than its neighbors, and Figma takes the
+  // set's default from the top-left variant.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [
+    { name: "variant", type: "VARIANT", values: ["default", "outline"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["default", "sm", "lg"], defaultValue: "default" },
+  ];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const shadow = [{ offsetX: 0, offsetY: 25, blur: 50, spread: -12, color: "#00000040", inset: false }];
+  // The base's delta is its own styles, so the shadow goes on them; every other variant takes it off.
+  base.delta = {};
+  const styles = (c.base as unknown as { styles: Record<string, unknown> }).styles;
+  styles.boxShadow = shadow;
+  c.variants = (["default", "outline"] as const).flatMap((variant) => (["default", "sm", "lg"] as const).map((size) => {
+    const slug = `variant-${variant}--size-${size}`;
+    const own = variant === "default" && size === "default";
+    return { ...base, combination: { variant, size }, slug, delta: own ? {} : { boxShadow: [] }, treeDelta: own ? base.treeDelta : {} };
+  })) as typeof c.variants;
+  const { mock, results } = await buildAll(fixture);
+  assert.equal(results[0].sets[0].variants, 6);
+  const set = mock.nodes("COMPONENT_SET")[0];
+  const at = new Map(set.children!.map((v) => [v.name, v]));
+  const cell = (variant: string, size: string) => at.get(`variant=${variant}, size=${size}`)!;
+  const def = cell("default", "default");
+  for (const v of set.children!) {
+    if (v !== def) assert.ok(v.x > def.x && v.y >= def.y || v.y > def.y && v.x >= def.x, `${v.name} at ${v.x},${v.y} is not right of or below the default at ${def.x},${def.y}`);
+  }
+  for (const variant of ["default", "outline"]) {
+    assert.deepEqual(new Set(["default", "sm", "lg"].map((size) => cell(variant, size).y)).size, 1, `row ${variant} shares a top edge`);
+  }
+  for (const size of ["default", "sm", "lg"]) assert.equal(cell("default", size).x, cell("outline", size).x, `column ${size} shares a left edge`);
+  // The shadow's room is kept: 38px left of and above the default, GAP past that.
+  assert.ok(def.x >= 20 + 38 && def.y >= 20 + 38, `${def.x},${def.y}`);
+  const drawn = set.children!.map((v) => ({ name: v.name, box: drawnInSet(mock, v) }));
+  for (const [i, a] of drawn.entries()) {
+    for (const b of drawn.slice(i + 1)) {
+      assert.ok(a.box[2] <= b.box[0] || b.box[2] <= a.box[0] || a.box[3] <= b.box[1] || b.box[3] <= a.box[1], `${a.name} draws over ${b.name}`);
+    }
+  }
+});

@@ -619,7 +619,10 @@ for (const [s, set] of DATA.sets.entries()) {
   if (want === 'COMPONENT') continue;
 
   // Lays the whole set out by its properties, as 0.4.0 did, and checks it,
-  // each variant by where it draws: GAP apart, none over another or past the set.
+  // each variant by where it draws: GAP apart, none over another or past the
+  // set. A row's boxes share their top edge and a column's their left, the
+  // row as tall as its most above them and below, the column as wide, so the
+  // default variant stays top-left, where Figma takes the default from.
   const GAP = 20;
   const axes = set.props.map((p) => [p.name + '=', p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']]);
   const byId = (a, b) => (a.node.id > b.node.id) - (a.node.id < b.node.id);
@@ -645,30 +648,36 @@ for (const [s, set] of DATA.sets.entries()) {
   const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((p) => p.slice(1).join());
   const rowOf = new Map(rows.map((r, i) => [r, i]));
   const columnOf = new Map(columns.map((key, i) => [key, i]));
-  const widths = columns.map(() => 0);
-  const heights = rows.map(() => 0);
+  // Each column's reach left of its boxes and right of their left edge; each row's above and below its top.
+  const lefts = columns.map(() => 0);
+  const rights = columns.map(() => 0);
+  const tops = rows.map(() => 0);
+  const bottoms = rows.map(() => 0);
   for (const c of grid) {
     c.row = rowOf.get(c.at[0]);
     c.column = columnOf.get(c.key);
-    widths[c.column] = Math.max(widths[c.column], c.d[2] - c.d[0]);
-    heights[c.row] = Math.max(heights[c.row], c.d[3] - c.d[1]);
+    lefts[c.column] = Math.max(lefts[c.column], -c.d[0]);
+    rights[c.column] = Math.max(rights[c.column], c.d[2]);
+    tops[c.row] = Math.max(tops[c.row], -c.d[1]);
+    bottoms[c.row] = Math.max(bottoms[c.row], c.d[3]);
   }
   const xs = [GAP];
   const ys = [GAP];
-  widths.forEach((w, i) => xs.push(xs[i] + w + GAP));
-  heights.forEach((h, i) => ys.push(ys[i] + h + GAP));
+  lefts.forEach((l, i) => xs.push(xs[i] + l + rights[i] + GAP));
+  tops.forEach((t, i) => ys.push(ys[i] + t + bottoms[i] + GAP));
   for (const c of grid) {
-    c.x = xs[c.column] - c.d[0];
-    c.y = ys[c.row] - c.d[1];
+    c.x = xs[c.column] + lefts[c.column];
+    c.y = ys[c.row] + tops[c.row];
   }
   let across = GAP;
   let bottom = ys[rows.length];
+  const top = Math.max(0, ...extra.map((c) => -c.d[1]));
   for (const c of extra) {
     c.x = across - c.d[0];
-    c.y = bottom - c.d[1];
+    c.y = bottom + top;
     across += c.d[2] - c.d[0] + GAP;
   }
-  if (extra.length) bottom += Math.max(...extra.map((c) => c.d[3] - c.d[1])) + GAP;
+  if (extra.length) bottom += top + Math.max(...extra.map((c) => c.d[3])) + GAP;
   const order = [...grid, ...extra];
   for (const c of order) {
     c.node.x = c.x;
