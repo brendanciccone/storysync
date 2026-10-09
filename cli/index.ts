@@ -528,7 +528,7 @@ program
   .option("--roots-only", "Score each variant by its outer element alone, as 0.4.0 did, for comparison with an element-tree score")
   .option("--min-fidelity <pct>", "Exit with code 1 when the score is below this percentage: element fidelity where snap measured element trees, else the share of properties; a run that scored nothing fails it too")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read has no result saved, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
+  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
   .option("--allow-designer-layers", "With --strict, pass the layers a designer added inside variants, which verify still lists")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on anything not measured: variants inferred from source or with no recorded provenance, placeholders for variants snap couldn't measure, variants measured without snap checking Storybook gave them their values, and variants in Figma that snap never measured or no read covered")
@@ -555,7 +555,7 @@ program
       // and otherwise beside the plan's directory, so a plan made with
       // `figma code --out` elsewhere doesn't overwrite the push's readback.
       // The snap is the one the plan was made from, unless --snap says.
-      let assembled: { readback: ReadbackFile; notRead: number[]; written: string; problems: string[]; snapChanged: boolean; planPath: string } | null = null;
+      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; snapChanged: boolean; planPath: string } | null = null;
       if (opts.plan) {
         const planPath = opts.plan as string;
         const given = (name: string) => command.getOptionValueSource(name) === "cli";
@@ -565,7 +565,9 @@ program
         // A snap taken again since the plan: the calls built and read what
         // the older one measured, so what it has since added wasn't read.
         const snapChanged = existsSync(snapPath) && fnv1a32Bytes(readFileSync(snapPath)) !== plan.snap.digest;
-        assembled = { ...loaded, snapChanged, planPath };
+        // What the calls not read whole were to read: their variants are not read, not missing.
+        const notReadSlices = plan.calls.filter((c) => c.kind === "read" && loaded.notRead.includes(c.seq)).flatMap((c) => c.slices ?? []);
+        assembled = { ...loaded, notReadSlices, snapChanged, planPath };
       }
       const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
       // A readback or meta.json passed as --snap, or a failed `snap --json`
@@ -584,7 +586,7 @@ program
         ...(snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {}),
         skip,
         ...(opts.rootsOnly ? { rootsOnly: true } : {}),
-        ...(assembled ? { notRead: assembled.notRead } : {}),
+        ...(assembled ? { notRead: assembled.notRead, notReadSlices: assembled.notReadSlices } : {}),
         allowDesignerLayers: !!opts.allowDesignerLayers,
       });
       result.snapAge = snapAge;
@@ -650,7 +652,8 @@ program
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
         const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
         const notMeasuredNote = (summary.notMeasured ?? 0) > 0 ? `, ${summary.notMeasured} not measured` : "";
-        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}${notMeasuredNote}, across ${summary.variants} variants\n`);
+        const notReadNote = (summary.notRead ?? 0) > 0 ? `, ${summary.notRead} not read` : "";
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}${notMeasuredNote}${notReadNote}, across ${summary.variants} variants\n`);
 
         for (const issue of result.snapIssues ?? []) {
           console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
@@ -693,7 +696,8 @@ program
         for (const variant of result.variants) {
           // A variant scored element by element is in the element report,
           // and one whose readback has an issue is above, with the issue.
-          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.status === "parts_missing" || variant.elements || variant.status === "not_measured") continue;
+          // One not read is under the plan's problems, by its call.
+          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.status === "parts_missing" || variant.elements || variant.status === "not_measured" || variant.status === "not_read") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
             continue;
@@ -747,7 +751,7 @@ program
           if (unread > 0) parts.push(`${unread} in Figma's sets that no read covered`);
           const line = `  Provenance: ${parts.join(", ")}`;
           console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
-          for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
+          for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma" && x.status !== "not_read")) {
             console.log(chalk.dim(`      ${v.component} ${v.slug} [${v.source}]`));
           }
           for (const u of result.unmeasuredInFigma) {

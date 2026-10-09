@@ -161,8 +161,7 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
 
    What else it can say, and what to do:
 
-   - `planned read call N has no result saved`: send that read call, save its response, and run `verify` again. A missing result fails `--strict`.
-   - `… was read before …, which it continues`: a read call was sent again without its continuations. Run `figma next` for it, as above, and send what it asks for. It fails `--strict` until then, and what that continuation reads isn't scored.
+   - `planned read call N wasn't read whole`: the plan's lines below the score say why. `call N: no result saved at …`: send that read call, or the continuation `figma next` asks for, and save its response. `… holds no read result`: the call failed, and its response is the error; deal with it as step 5 says. `… was read before …, which it continues`: a read call was sent again without its continuations; run `figma next` for it, as above, and send what it asks for. Then run `verify` again. The variants the call didn't read are counted as `not read`, never as missing from Figma, and aren't scored, and the run fails `--strict` until they are read.
    - A readback entry that `does not match its checksum`: a saved response was changed after Figma returned it. Send that read call again, save its response unchanged, and run `verify` again. Never edit a saved response to make it pass. An entry that `is incomplete`, `is stale`, read before the snap, or is a part that doesn't add up, is read again the same way, now.
    - An entry sealed under another name than the variant snap measured: a variant renamed in Figma. Report it.
    - `read back without its tree, so only its root was compared`: those entries were read with the root-only readback. Send this plan's read calls.

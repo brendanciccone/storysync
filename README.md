@@ -585,9 +585,9 @@ Options:
                          a keyed layer is in Figma that snap no longer measures, a variant reported
                          nothing comparable or was read back without its element tree, a readback
                          entry is not what Figma returned, is incomplete or was read before the snap,
-                         a text's layout snap measured wasn't read back, a planned read has no result
-                         saved, a layer a designer added is inside a variant, or the snap recorded a
-                         component failure or lacks a component the readback has
+                         a text's layout snap measured wasn't read back, a planned read call wasn't
+                         read whole, a layer a designer added is inside a variant, or the snap recorded
+                         a component failure or lacks a component the readback has
   --allow-designer-layers
                          With --strict, pass the layers a designer added inside variants, which verify
                          still lists
@@ -600,7 +600,7 @@ Options:
 
 | Flag | Fails on |
 |---|---|
-| `--strict` | Elements and properties that disagree, elements or variants missing from Figma, layers for elements snap no longer measures, a variant read back without its tree, readback entries that fail their checks (below), read calls with no result saved, designer layers, snap failures, and components in the readback that the snap doesn't have |
+| `--strict` | Elements and properties that disagree, elements or variants missing from Figma, layers for elements snap no longer measures, a variant read back without its tree, readback entries that fail their checks (below), read calls not read whole, designer layers, snap failures, and components in the readback that the snap doesn't have |
 | `--allow-designer-layers` | With `--strict`, passes the layers a designer added inside variants. They are still listed. |
 | `--strict-age` | A snap older than `--max-age`, or one whose age is unknown |
 | `--strict-measured` | Variants that weren't measured: placeholders for variants snap couldn't measure, variants inferred from source by a root-only push, and variants snap measured without checking that the story took their values. This is the one to use in CI. |
@@ -654,7 +654,7 @@ Entries that fail aren't scored and fail `--strict`. Without `--strict` the run 
 Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
 ```
 
-With `--plan`, a planned read call with no response saved is named, and fails `--strict`. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
+With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
 
 The checksum isn't a signature, though (see [Limitations](#limitations)).
 

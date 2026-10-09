@@ -441,7 +441,8 @@ test("strict: drifted, missing and extra elements and reads with no result each 
   assert.deepEqual(treeStrictFailures(missing), ["2 elements are missing from Figma"]);
   const { fixture, readback } = await buildAndRead("switch");
   const unread = verify(fixture, readback, 0.5, { notRead: [7, 9] });
-  assert.deepEqual(treeStrictFailures(unread), ["planned read calls 7, 9 have no result saved"]);
+  assert.deepEqual(treeStrictFailures(unread), ["planned read calls 7, 9 not read whole"]);
+  assert.deepEqual(treeStrictFailures(verify(fixture, readback, 0.5, { notRead: [7] })), ["planned read call 7 not read whole"]);
   assert.deepEqual(treeStrictFailures(verify(fixture, readback, 0.5)), []);
 });
 

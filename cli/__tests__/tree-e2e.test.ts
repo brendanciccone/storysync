@@ -333,6 +333,10 @@ test("tree e2e: a read call sent again after a change in Figma has its continuat
     const stale = await verifyPlan(p, "--strict-age");
     assert.equal(stale.status, 1, "a continuation from before the change was scored as Figma now");
     assert.deepEqual(stale.json.notRead, [seq]);
+    // What only its stale continuations held is not read, and nothing is said to be missing from Figma.
+    const staleSummary = stale.json.summary as { missingFromFigma: number; notRead: number };
+    assert.equal(staleSummary.missingFromFigma, 0);
+    assert.ok(staleSummary.notRead > 0, JSON.stringify(staleSummary));
     assert.match((stale.json.plan as { problems: string[] }).problems.join("\n"), new RegExp(`call ${seq}: \\S+b\\.json was read before results/${String(seq).padStart(2, "0")}\\.json, which it continues`));
 
     // As the skill says: figma next after the read call, until nothing is left.
@@ -368,7 +372,7 @@ test("tree e2e: figma next says when a read has nothing left, and refuses a call
 
 // --- verify's flags -----------------------------------------------------------
 
-test("verify --plan: a read call with no result saved is named, unscored, and fails --strict alone", async () => {
+test("verify --plan: a read call with no result saved is named, its variants not read rather than missing, and fails --strict alone", async () => {
   const p = await push(asSnap(loadTreeFixture("toggle")));
   try {
     const read = p.plan.calls.find((c) => c.kind === "read")!;
@@ -378,6 +382,15 @@ test("verify --plan: a read call with no result saved is named, unscored, and fa
     assert.deepEqual(loose.json.notRead, [read.seq]);
     assert.match((loose.json.plan as { problems: string[] }).problems.join("\n"), new RegExp(`call ${read.seq}: no result saved`));
     assert.match(loose.text.stdout, new RegExp(`call ${read.seq}: no result saved`));
+    // Nothing read them, so none is said to be missing from Figma, and none is scored.
+    const variants = loadTreeFixture("toggle").components[0].variants.length;
+    const summary = loose.json.summary as { missingFromFigma: number; notRead: number; elements: Elements };
+    assert.deepEqual((loose.json.variants as { status: string }[]).map((v) => v.status), Array(variants).fill("not_read"));
+    assert.deepEqual([summary.missingFromFigma, summary.notRead, summary.elements.measured, summary.elements.missing], [0, variants, 0, 0]);
+    assert.equal(loose.json.elementFidelity, null);
+    assert.doesNotMatch(loose.text.stdout, /not found in Figma/);
+    assert.match(loose.text.stdout, new RegExp(`; ${variants} variants not read, not scored`));
+    assert.match(loose.text.stdout, new RegExp(`planned read call ${read.seq} wasn't read whole`));
     const strict = await verifyPlan(p, "--strict");
     assert.equal(strict.status, 1);
   } finally {
