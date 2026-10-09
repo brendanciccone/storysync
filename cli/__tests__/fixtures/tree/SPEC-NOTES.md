@@ -827,3 +827,67 @@ D15. **Acceptance pushes the example's tree snap into the unit tests' mock
    `pnpm build` compiles beside the CLI; `--no-channel-args` and
    `--stories` are checked against the live Storybook.
 
+
+## After review
+
+D16. **A continuation read before what it continues is sent again**
+   (sections 9.4 and 12 say nothing of a read call sent twice). A read call
+   sent again after a change in Figma left the continuations saved the
+   time before, and figma next and verify --plan took them as read. A
+   continuation is always sent after what it continues, so one whose
+   earliest entry `readAt` is before the latest of the results it
+   continues is from an earlier reading: `figma next` writes it again with
+   `again: true`, and loadPlanResults leaves it, and what it reads, out of
+   the readback, as a problem, its call in `notRead`. The entries' `readAt`
+   decide it, not file times, which a checkout resets.
+D17. **Variants a planned read didn't read are `not_read`**, a verdict
+   status section 10.6 lacks, beside `not_measured` and `parts_missing`:
+   plan.json's slices of each call not read whole go to verify as
+   `notReadSlices`, and a variant in one with no entry is neither missing
+   from Figma nor scored (as an unverified entry is left out), counted in
+   `summary.notRead` and said on the score's line. verify says a call
+   "wasn't read whole" rather than "has no result saved", since a failed
+   result or a continuation from before is that too.
+D18. **`--stories` pairs are resolved against every component Storybook
+   lists** (A's snap.ts, small hunks). One for a component a run doesn't
+   measure, under `--components`, is checked and left out, so the push can
+   pass its pairs to every snap, re-measures included, as the skill says;
+   and under `--merge` a component keeps the story the snap measured it
+   from where `--stories` names none. A name no component has, or a story
+   not the component's, is still refused before anything is measured.
+D19. **The audit snaps from the push's stories** (D12): `--stories` with
+   each component's `storyId` from the push's styles.json, which the push's
+   summary now names too.
+D20. **The build imports an icon again when its shapes changed** (B's
+   build.js). Section 12's repair, "resend that component's build calls
+   once", assumes the build restores what it sets, and an icon's shapes it
+   set only by importing them. Each icon, and a root icon, keeps `ink`,
+   its shapes' paints and stroke weights as the build left them; one that
+   no longer matches is imported again, under a new node id. An icon built
+   before has none and is kept. The minified build is 15,694 characters.
+D21. **A child missing or hidden in Figma costs itself alone** (C's
+   verify-tree.ts, two hunks; section 10.4 extended). Figma's auto layout
+   gives either no room, so a container may differ by such an in-flow
+   child's whole size, and along a flex flow its gap, and Figma's flow
+   anchors the next layer past a hidden one as past a missing one. Hidden
+   counts only where snap measured the layer visible.
+D22. **Section 17's "move card-title 6px right" can't be made inside auto
+   layout**: x is ignored there, and made ABSOLUTE the title leaves the
+   flow, so card-header shrinks and card-description moves up, which verify
+   reports, as Figma has them; a record doesn't say a layer is ABSOLUTE.
+   tree-e2e makes the other five edits and pins exactly those findings.
+   Step 4's undo can't be Figma's Ctrl+Z in the mock: what can't be undone
+   by hand (the deleted thumb, the recolor) is undone by sending the build
+   calls again, and the readback then equals the baseline but for `readAt`,
+   checksums and the node ids of the two rebuilt layers. The README's
+   falsification test no longer suggests a move, and says why.
+D23. **`meta.json` records `"channelArgs": false`** for a snap taken with
+   `--no-channel-args` (A's snap.ts), absent otherwise: a condition of the
+   measurement, as `variantSelection` is, and what lets a CLI test see the
+   flag reach the run without a browser.
+D24. **`verify --json` adds `minFidelity: { min, score, passed }`** with
+   `--min-fidelity`, both from 0 to 1, so a CI can tell that failure from
+   a `--strict` one.
+D25. **`figma next` writes a continuation from the template its call was
+   written with**: readable where the call holds the readable template,
+   after `figma code --no-minify`.
