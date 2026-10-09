@@ -1010,18 +1010,25 @@ T13. **Truncation is set last**: the size, then textAutoResize, then
 T14. **A label the browser drew whole on one line stays so (`o`).**
     figma-map marks a one-line text set at its box's width (HEIGHT) whose
     glyphs fit inside its box. Once a variant is converged, `keepLines`
-    takes each such text's line limit off and reads its height: one that
-    would wrap, or be cut short, at that width is set to Figma's own width
-    instead, WIDTH_AND_HEIGHT, and a truncated one then fixed at that width
-    with its truncation set again, so it still truncates should it shrink.
-    Each goes in `fallbacks` as `kept on one line: Figma sets it wider`. A
+    takes each such text's line limit off and reads its height: one taller
+    than a line and a half in Figma, its line height or, for AUTO, 1.27em
+    (Figma's AUTO lines are 1.21em to 1.36em, whole lines rounded up to a
+    pixel, T4), would wrap, or be cut short, at that width. Not the box
+    measured: a row that stretches its items makes a label's box taller
+    than its line, and a box can be 0 tall. Such a text is set to Figma's
+    own width instead, WIDTH_AND_HEIGHT, and a truncated one then fixed at
+    that width with its truncation set again, so it still truncates should
+    it shrink; where checkLayout then builds its frame without auto layout,
+    it keeps that width rather than the one measured. Each goes in
+    `fallbacks` as `kept on one line: Figma sets it wider`. A
     text that fills its parent keeps FILL and its wrapping or truncation:
     one that truncates is named `cut short`, as verify can't see an
     ellipsis (T21), and one that wraps isn't, as verify scores its lines. A
     snap that drew stand-ins gives none: the widths match (T3, T5).
-T15. **loadFont takes the text's style**, `f`, `w`, `i` and `a`, to fit
-    the template's budget: the minified build is 15,980 characters, of
-    16,000.
+T15. **loadFont takes the text's style**, `f`, `w`, `i` and `a`, and one
+    helper sets a text's size, autoResize and truncation in that order for
+    style() and keepLines, to fit the template's budget: the minified build
+    is 15,969 characters, of 16,000.
 
 ## The mock (`cli/__tests__/mock-figma.ts`)
 

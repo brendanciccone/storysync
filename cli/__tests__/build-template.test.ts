@@ -224,6 +224,56 @@ test("build: a one-line label in a box Figma's font overflows is set to its own 
   ]);
 });
 
+/** A one-line text as a snap from before the stand-ins measured it, in system-ui with a 20px line. */
+const systemText = (c: string, ink: [number, number, number, number], extra: object = {}) =>
+  ({ c, f: "system-ui", fk: 1 as const, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ink, ...extra });
+
+test("build: whether a one-line label wraps in Figma is told by Figma's line, not by the box measured, taller or flat", async () => {
+  // A row stretches its items: the label's box is the row's 40px, two of
+  // its 20px lines. Whole in its 36px in system-ui, cut short in Inter's 39.05.
+  const stretched = synthetic("Stretched", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 40], L: { d: "flex" } },
+    { k: "label", t: "T", el: "span", box: [0, 0, 36, 40], tx: systemText("Home", [0, 11, 36, 17], { el: 1, ws: "nowrap" }) },
+    { k: "after", t: "F", el: "i", box: [36, 0, 20, 40], bg: "#ff0000" },
+  ], { width: 200, height: 40, display: "flex" });
+  const wide = await buildAll(stretched, { measure: figmaFonts() });
+  const [label] = texts(wide.mock, /^label$/);
+  assert.deepEqual([label.w, label.h, label.ar, label.tr, label.max], [40, 20, "HEIGHT", "ENDING", 1]);
+  assert.deepEqual(wide.results[0].fallbacks.map(([, key, what]) => `${key} ${what}`), ["label kept on one line: Figma sets it wider"]);
+  // A box with no height, which a line in Figma always overtops: whole in
+  // Inter too, it is left as built, and nothing is named.
+  const flat = synthetic("Flat", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 40], L: { d: "block" } },
+    { k: "label", t: "T", el: "span", box: [0, 10, 44, 0], tx: systemText("Home", [0, -8.5, 38.25, 17]) },
+  ], { width: 200, height: 40, display: "block" });
+  const kept = await buildAll(flat, { measure: figmaFonts() });
+  const [whole] = texts(kept.mock, /^label$/);
+  assert.deepEqual([whole.w, whole.h, whole.ar, whole.tr], [44, 20, "HEIGHT", "DISABLED"]);
+  assert.deepEqual(kept.results[0].fallbacks, []);
+});
+
+test("build: a label set wider than measured stays so in a frame built without auto layout", async () => {
+  const fixture = synthetic("Row", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 20], L: { d: "flex", ai: "center", gap: [8, 8] } },
+    { k: "label", t: "T", el: "span", box: [0, 0, 36, 20], tx: systemText("Home", [0, 1.5, 36, 17], { el: 1, ws: "nowrap" }) },
+    { k: "after", t: "F", el: "i", box: [44, 2, 16, 16], bg: "#ff0000" },
+  ], { width: 200, height: 20, display: "flex" });
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture], { measure: figmaFonts() });
+  const code = coded.code(coded.plan.calls[0]);
+  const data = JSON.parse(/\nconst DATA = (.*);\n/.exec(code)![1]) as { S: unknown[] };
+  // The row's gap, wrong as Figma might take it: the frame falls back to absolute.
+  const at = data.S.findIndex((st) => typeof st === "object" && st !== null && "L" in st);
+  (data.S[at] as { L: { g: number } }).L.g += 12;
+  const run = await mock.run(code.replace(/\nconst DATA = .*;\n/, () => `\nconst DATA = ${JSON.stringify(data)};\n`));
+  assert.ok(run.ok, run.text);
+  assert.deepEqual((result(run).sets[0].absoluteContainers as string[][]).map(([, key]) => key), [""]);
+  // At Inter's width still, whole, not cut back to its 36px and an ellipsis.
+  const [label] = texts(mock, /^label$/);
+  assert.deepEqual([label.w, label.h, label.ar, label.tr, label.max], [40, 20, "HEIGHT", "ENDING", 1]);
+  assert.deepEqual(result(run).fallbacks.map(([, key, what]) => `${key} ${what}`), ["label kept on one line: Figma sets it wider"]);
+});
+
 test("build: a frame Figma lays out otherwise than planned is built without auto layout, each child where snap measured it", async () => {
   for (const [name, tweak] of [
     ["button-icon", (L: { g: number }) => { L.g += 12; }],

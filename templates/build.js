@@ -96,6 +96,8 @@ const unbound = [];
 // variants it happened in.
 const fallbacks = [];
 const seen = {};
+// The texts keepLines set wider than measured, which checkLayout leaves so.
+const widened = new Set();
 let at = [];
 const fallback = (what, e) => {
   const entry = [at[0], at[2] || '', what + ': ' + String((e && e.message) || e).slice(0, 80), 0];
@@ -215,6 +217,20 @@ const inked = (n) => !get(n, 'ink') || get(n, 'ink') === ink(n);
 const fits = (n, kind, st) => (kind === 'T' ? n.type === 'TEXT' : n.type === 'FRAME' && (kind === 'V' ? get(n, 'svg') === st.id && inked(n) : !get(n, 'svg')));
 const isFrame = (n) => n.type === 'FRAME' || n.type === 'COMPONENT';
 const SIZING = { X: 'FIXED', H: 'HUG', L: 'FILL' };
+// A text's size first, then textAutoResize, then truncation: Figma turns
+// truncation off and clears maxLines on any write of textAutoResize, HEIGHT
+// over HEIGHT too, and resize() turns a hugging text NONE (the live text
+// probe, 2026-10-09). Set the other way round, every truncated label of the
+// third live push came out DISABLED and wrapped.
+const setLines = (n, t, w, h) => {
+  if (t.ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
+  else {
+    n.resize(w, h);
+    n.textAutoResize = 'HEIGHT';
+  }
+  n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
+  n.maxLines = t.tr || null;
+};
 
 // Styles one node from its record. Parents come before their children, so a
 // child's auto layout parent is set up before the child fills it.
@@ -251,19 +267,8 @@ const style = async (n, rec, parent, root) => {
     n.textDecoration = t.td || 'NONE';
     n.textAlignHorizontal = t.ta || 'LEFT';
     await setPaints(n, 'fills', st.f || [], 'color');
-    // The size first, then textAutoResize, then truncation: Figma turns
-    // truncation off and clears maxLines on any write of textAutoResize,
-    // HEIGHT over HEIGHT too, and resize() turns a hugging text NONE (the
-    // live text probe, 2026-10-09). Set the other way round, every truncated
-    // label of the third live push came out DISABLED and wrapped.
-    if (t.ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
-    else {
-      n.resize(w, h);
-      n.textAutoResize = 'HEIGHT';
-    }
     try {
-      n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
-      n.maxLines = t.tr || null;
+      setLines(n, t, w, h);
     } catch (e) {
       // SPIKE(3): truncation Figma refuses is built as a box of the measured
       // size. The spike saw ENDING and maxLines taken on a fixed width.
@@ -438,8 +443,12 @@ const keepLines = (nodes, recs) => {
     if (!t || !t.o) continue;
     const n = nodes[i];
     // Without its line limit a truncated text wraps where it would be cut.
+    // It wraps where it is taller than a line and a half in Figma: its line
+    // height, or Figma's own for the font, 1.21em for Inter to 1.36em for
+    // Noto Serif, whole lines rounded up to a pixel. Not the box measured,
+    // which a row that stretches its items makes taller than the text.
     n.maxLines = null;
-    const wraps = n.height >= 1.5 * recs[i][6];
+    const wraps = n.height > 1.5 * (t.l || 1.27 * t.z);
     n.maxLines = t.tr || null;
     if (!wraps) continue;
     at[2] = S[recs[i][0]];
@@ -447,12 +456,8 @@ const keepLines = (nodes, recs) => {
     if (fills && !t.tr) continue;
     if (!fills) {
       n.textAutoResize = 'WIDTH_AND_HEIGHT';
-      if (t.tr) {
-        n.resize(n.width, n.height);
-        n.textAutoResize = 'HEIGHT';
-        n.textTruncation = 'ENDING';
-        n.maxLines = t.tr;
-      }
+      if (t.tr) setLines(n, t, n.width, n.height);
+      widened.add(n);
     }
     fallback(fills ? 'cut short' : 'kept on one line', 'Figma sets it wider');
   }
@@ -512,7 +517,7 @@ const checkLayout = (nodes, recs, slug, absolute) => {
       const c = nodes[j];
       c.x = recs[j][3];
       c.y = recs[j][4];
-      if (c.type !== 'TEXT' || c.textAutoResize !== 'WIDTH_AND_HEIGHT') c.resize(recs[j][5], recs[j][6]);
+      if (!widened.has(c) && (c.type !== 'TEXT' || c.textAutoResize !== 'WIDTH_AND_HEIGHT')) c.resize(recs[j][5], recs[j][6]);
     }
   }
 };
