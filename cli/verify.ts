@@ -1138,11 +1138,13 @@ export function verify(
 
   const readbackIssues = checkReadback(readback, options);
   if (treeRead) readbackIssues.push(...checkTreeReadback(snap, readback, readbackIssues));
-  // An issue on any part of a variant read in parts is the variant's.
+  // An issue on any part of a variant read in parts is the variant's, the
+  // first one: checkTreeReadback adds parts_missing or name_mismatch only
+  // to a variant with none yet.
   const unverified = new Map<string, ReadbackIssue>();
   for (const issue of readbackIssues) {
     const key = JSON.stringify([issue.component, slugOfKey(issue.slug)]);
-    if (!unverified.has(key) || issue.problem === "parts_missing") unverified.set(key, issue);
+    if (!unverified.has(key)) unverified.set(key, issue);
   }
 
   // The component each key scores, the last of two with one key, as
