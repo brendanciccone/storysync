@@ -26,7 +26,7 @@ No tokens or config required. Free and open source.
 - `pnpm dev` — incremental compile in watch mode
 - `pnpm lint` — type-check without emitting
 - `pnpm test` — build and run the node test runner suite
-- `pnpm acceptance` — end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm storybook`). It drives the real CLI and runs the skill's readback and audit templates against simulated Figma nodes, so it catches regressions the unit tests can't; it is not run in CI.
+- `pnpm acceptance` — end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm storybook`). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
 
 ## Submitting changes
 
