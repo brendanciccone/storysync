@@ -20,7 +20,8 @@
 //   loadAllPagesAsync: images arrive only through `uploadAssets`, this
 //   file's stand-in for the upload_assets tool;
 // - fonts load per call, and a text property written in a font not loaded
-//   throws, as Figma does;
+//   throws, as Figma does (and, with `moveNeedsFonts`, so does moving a
+//   node that holds such a text);
 // - paints are validated as Figma validates them: a SOLID color is
 //   `{ r, g, b }` in 0-1 with no `a`, a shadow needs `visible` and
 //   `blendMode`, and the arrays a node hands out are frozen.
@@ -107,6 +108,22 @@ export interface MockFigmaOptions {
    * refused (see the file's header).
    */
   fillAcrossHug?: "stretch" | "refuse";
+  /**
+   * Spike items 2 and 3, for a build's fallbacks: "refuse" throws on a
+   * shadow with a spread on a node that doesn't clip its content, and on
+   * textTruncation ENDING, as Figma would if it doesn't take them. Default
+   * "keep", the expected answer.
+   */
+  shadowSpread?: "keep" | "refuse";
+  textTruncation?: "keep" | "refuse";
+  /**
+   * Whether appendChild and insertChild throw on a node holding a text whose
+   * font this call hasn't loaded, as the figma-use skill documents Figma
+   * doing for any operation on such a node. Default false, so code that
+   * only moves frames needn't load fonts; true for a template that moves
+   * layers it didn't make.
+   */
+  moveNeedsFonts?: boolean;
 }
 
 /**
@@ -692,8 +709,10 @@ class Doc {
     for (const name of pages) this.addPage(name);
   }
 
+  private pageIds = 1;
+
   addPage(name: string): Node {
-    const page = new Node(this, "PAGE", name, `0:${this.pages.length + 1}`);
+    const page = new Node(this, "PAGE", name, `0:${this.pageIds++}`);
     this.pages.push(page);
     page.parent = this.root;
     this.root.kids.push(page);
@@ -1025,12 +1044,12 @@ function requireFont(n: Node, prop: string, font = n.fontName): void {
   }
 }
 
-const textProp = (key: keyof Node, check: (value: unknown) => unknown, after?: (n: Node) => void): Prop => ({
+const textProp = (key: keyof Node, check: (value: unknown, n: Node) => unknown, after?: (n: Node) => void): Prop => ({
   types: new Set(["TEXT"]),
   get: (n) => frozenCopy(n[key]),
   set: (n, value) => {
     requireFont(n, key);
-    (n as unknown as Record<string, unknown>)[key] = check(value);
+    (n as unknown as Record<string, unknown>)[key] = check(value, n);
     after?.(n);
     n.doc.dirty = true;
   },
@@ -1305,7 +1324,11 @@ const PROPS: Record<string, Prop> = {
     get: (n) => frozenCopy(n.effects),
     set: (n, v) => {
       if (!Array.isArray(v)) invalid("effects", "Expected array");
-      n.effects = v.map(effect);
+      const effects = v.map(effect);
+      if (n.doc.options.shadowSpread === "refuse" && !(FRAMES.has(n.type) && n.clipsContent) && effects.some((e) => e.spread)) {
+        invalid("effects", "spread is only supported on frames that clip their content (mock-figma shadowSpread 'refuse')");
+      }
+      n.effects = effects;
     },
   },
   fills: { types: GEOMETRY, get: (n) => frozenCopy(n.fills), set: paintsSetter("fills") },
@@ -1453,15 +1476,31 @@ const PROPS: Record<string, Prop> = {
   textAlignHorizontal: textProp("textAlignHorizontal", (v) => oneOf("textAlignHorizontal", v, ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"])),
   textAlignVertical: textProp("textAlignVertical", (v) => oneOf("textAlignVertical", v, ["TOP", "CENTER", "BOTTOM"])),
   textAutoResize: textProp("textAutoResize", (v) => oneOf("textAutoResize", v, ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"])),
-  textTruncation: textProp("textTruncation", (v) => oneOf("textTruncation", v, ["DISABLED", "ENDING"])),
+  textTruncation: textProp("textTruncation", (v, n) => {
+    const value = oneOf("textTruncation", v, ["DISABLED", "ENDING"]);
+    if (value === "ENDING" && n.doc.options.textTruncation === "refuse") invalid("textTruncation", "not supported (mock-figma textTruncation 'refuse')");
+    return value;
+  }),
   maxLines: textProp("maxLines", (v) => (v === null ? null : finite("maxLines", v, 1))),
   hasMissingFont: { types: new Set(["TEXT"]), get: () => false },
 };
 
+/** Throws, under moveNeedsFonts, when a node about to move holds a text whose font this call hasn't loaded. */
+function requireFontsToMove(n: Node, method: string): void {
+  if (!n.doc.options.moveNeedsFonts) return;
+  for (const text of [n, ...n.descendants()].filter((d) => d.type === "TEXT")) requireFont(text, method);
+}
+
 const METHODS: Record<string, Method> = {
   remove: {
-    types: SCENE,
+    types: new Set([...SCENE, "PAGE"]),
     fn: (n) => {
+      if (n.type === "PAGE") {
+        // As Figma: a document keeps a page, and the page a call is on stays.
+        if (n.doc.pages.length === 1) throw new Error("in remove: Cannot remove the only page of a document");
+        if (n.doc.call?.current === n) throw new Error("in remove: Cannot remove the current page");
+        n.doc.pages.splice(n.doc.pages.indexOf(n), 1);
+      }
       if (n.parent) n.parent.kids.splice(n.parent.kids.indexOf(n), 1);
       changed(n);
       for (const gone of [n, ...n.descendants()]) {
@@ -1483,8 +1522,8 @@ const METHODS: Record<string, Method> = {
   },
   getPluginData: { fn: () => { throw new Error("getPluginData is not supported in use_figma: use getSharedPluginData"); } },
   setPluginData: { fn: () => { throw new Error("setPluginData is not supported in use_figma: use setSharedPluginData"); } },
-  appendChild: { types: CONTAINERS, fn: (n, child) => { attach(n, unwrap(child)); } },
-  insertChild: { types: CONTAINERS, fn: (n, index, child) => { attach(n, unwrap(child), finite("insertChild", index, 0)); } },
+  appendChild: { types: CONTAINERS, fn: (n, child) => { requireFontsToMove(unwrap(child), "appendChild"); attach(n, unwrap(child)); } },
+  insertChild: { types: CONTAINERS, fn: (n, index, child) => { requireFontsToMove(unwrap(child), "insertChild"); attach(n, unwrap(child), finite("insertChild", index, 0)); } },
   findAll: { types: CONTAINERS, fn: (n, test) => handles(searchable(n)).filter((h) => (test ? (test as (h: unknown) => boolean)(h) : true)) },
   findOne: { types: CONTAINERS, fn: (n, test) => handles(searchable(n)).find((h) => (test ? (test as (h: unknown) => boolean)(h) : true)) ?? null },
   findChildren: { types: CONTAINERS, fn: (n, test) => handles(loadedChildren(n)).filter((h) => (test ? (test as (h: unknown) => boolean)(h) : true)) },
@@ -1805,6 +1844,9 @@ export class MockFigma {
       clonePluginData: options.clonePluginData ?? true,
       svgStrokeScales: options.svgStrokeScales ?? true,
       fillAcrossHug: options.fillAcrossHug ?? "stretch",
+      shadowSpread: options.shadowSpread ?? "keep",
+      textTruncation: options.textTruncation ?? "keep",
+      moveNeedsFonts: options.moveNeedsFonts ?? false,
       reencodeImage: options.reencodeImage,
     }, options.pages ?? ["Page 1"]);
   }

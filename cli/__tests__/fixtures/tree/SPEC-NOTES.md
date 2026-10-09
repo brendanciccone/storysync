@@ -342,3 +342,159 @@ A31. **T's fixtures are not regenerated**: the Avatar photo isn't covered by the
     raw captures (`fixtures/raw`) and compares them. They match except for what
     the prototypes didn't capture: `cls`, `S.basis`, the Toggle icon's lucide
     `el`, and the Avatar image id, which needs the photo's bytes.
+
+# Package B: where `storysync figma code` departs from the spec
+
+Each item is also explained in a code comment where it acts, and in the
+commit that made it.
+
+## Layout (section 8.4)
+
+23. **Layer order versus paint order: B takes item 20's first option.**
+    Sections 6.9 and 8.4.6 send a frame whose paint order differs from its
+    flow to NONE, but section 15 asks for Attachment with auto layout, and
+    its `relative` media tile paints after the content it flows before.
+    - Figma's layer order is both its paint order and its auto layout flow.
+      Where the two differ, B lays the children out in flow order when no
+      pair whose order changed overlaps, since the paint order then shows
+      nowhere. Otherwise the frame goes NONE with a named reason.
+    - The rule is one function, `visibleReorder(painted, layers)` in
+      `cli/figma-layout.ts`, which planLayout uses. It compares border
+      boxes, so a stroke built outside a frame counts as what it paints
+      over, and siblings overlapping by 0.5px or less keep apart.
+    - **C must score `order` with it.** Section 10.2's `order` compares the
+      whole sequence, so every Attachment variant drifts on `order`. In
+      `cli/verify-tree.ts`, the check becomes
+      `check("order", visibleReorder(children, got) === null, want, got)`.
+      With that one change, C's verify scores every fixture at 100% in the
+      mock, Attachment included.
+    - To take the spec as written instead, set `REORDER_NON_OVERLAPPING` to
+      false in `cli/figma-layout.ts`. Only Attachment's root loses auto
+      layout: 4 of 85 fixture frames, and 30 of 359 on A's live snap.
+24. **A wrapping flex whose children fit on one line is laid out as one
+    line.** This is item 20's other half. A wrap onto several lines is still
+    NONE.
+25. **Sizing departs from 8.4.7, as item 19 proposes.**
+    - A frame is FIXED on any axis a child fills, along it (a grower) or
+      across it (a stretch), while `SPIKE.fillAcrossHug` is false.
+    - A grower fills only where filling gives it its measured size.
+    - A text fills only its width, across a column, and only when it is laid
+      out at a fixed width (HEIGHT).
+    - Vectors and images never fill.
+
+## Calls and the plan (sections 8.1, 8.2)
+
+26. **figma code removes only an earlier plan's files under `--out`.** 8.1
+    says nothing about it. It removes `NN-<kind>-<page>.js` and `NNb…`
+    continuations under `calls/`, and `NN.json`, `NNb.json` and
+    `NN.upload.json` under `results/`, so a stale response can't be read as
+    the new plan's. Every other file stays.
+27. **A variant too big for one call is left out, not fatal.** Section 8
+    doesn't say what happens when a variant alone needs more than
+    use_figma's 50,000 characters. TREE_LIMITS allows 400 nodes a variant,
+    and trees with lucide icons run about 300 characters a node. Such a
+    variant is left out with a warning naming its size, and is not filled,
+    labeled or read back, so verify reports it missing from Figma. Every
+    other variant and component is planned.
+28. **A build call's base is its part's first variant**, not the
+    component's: a variant alone in a call carries only its own records.
+29. **A new variant is a copy of the first only when they share at least
+    half their keys.** Section 8.2.3 always clones. Sidebar's
+    `collapsible="none"` variants share no key with the others, and copying
+    them meant removing nearly every copied layer.
+30. **Every call figma code writes is compiled before any is written.**
+    `CALL_CONSTANTS` names what each kind of call writes before its
+    template: DATA for build and label, PAGE for images, and PAGE, SLICES,
+    LIMIT and TPL for reads, as section 9.1 has it. A template must not
+    declare them. C's readback template now leaves TPL to the call and
+    checks it.
+31. **`nodes` and `--max-nodes` count records.** Each record is a layer the
+    build sets 20 to 30 properties on. Figma also makes layers natively:
+    a clone's copies, an icon import's shapes, and a changed icon imported
+    again. On A's live snap that ran 1.5 to 2.2 layers a record.
+    `cli/figma-spike.ts` says so beside `SPIKE.maxNodes`, so the spike's
+    timing (item 8) can be compared with real calls.
+32. **A build call lists at most 60 uploads**, since upload_assets hands
+    out at most 60 URLs.
+33. **Read prediction is a calibrated heuristic**: 520 characters an entry
+    plus per-record constants from section 9.2. With C's template it runs
+    0.5 to 15% high, never low.
+34. **plan.json's `snap.path` is relative to the plan's directory.**
+35. **Extra optional parameters**, beyond the fixed signatures D stubs:
+    `runFigmaCode` takes `templates` and `spike`, `runFigmaNext` takes
+    `minify` and `templates`, and `runFigmaUpload` takes `fetch`.
+
+## The build template (section 8.2)
+
+36. **The result has more than 8.2 lists, and is kept under 20kb.**
+    - `page`, the page it built on.
+    - `fallbacks`: `[component, key, what, variants]`, once per component,
+      key and kind of fallback, with the first 80 characters of Figma's
+      message and the number of variants it happened in.
+    - `unbound`: `[component, key, property, "name: why"]`, deduplicated,
+      without a slug.
+    - `omitted`: how many entries went. Before returning, `unbound`,
+      `fallbacks` and each set's `absoluteContainers` are halved, longest
+      first, until the response is under 16,000 characters, since
+      use_figma refuses one over 20kb while the call's changes stand.
+      `uploads` and the per-set counts are never cut.
+37. **Fonts are loaded before anything moves.** The figma-use skill
+    documents that moving a node holding a text in an unloaded font throws.
+    The build loads every font in a variant before converging it (a
+    designer's texts included), a new text's default font before it moves
+    into place, and a variant's fonts before the set's layout moves it.
+38. **An icon root.** A component whose root is an `<svg>` holds the
+    icon's shapes itself, marked `vs`. A copied variant keeps them and the
+    root's `svg`. A root that turns from a frame into an icon, or back,
+    loses what it was. A root icon Figma won't import is marked `failed`
+    and tried again.
+39. **A placeholder's text is a keyed `#unmeasured` TEXT, colored
+    `#737373`.** Section 8.10 gives neither. The readback reads it as any
+    keyed layer, and the variant's `src` says it is a placeholder.
+40. **Bindings (section 8.9).**
+    - A `#text` or `#value` run binds with its own `cls`, which A writes
+      from the ancestor it inherits its color from, and with its parent's
+      only when it has none.
+    - A vector's paints also accept `text-*` classes, since lucide draws in
+      `currentColor`.
+    - A radius is not bound when its border is built OUTSIDE, because the
+      inner radius matches no token.
+41. **Label call (section 8.11).** DATA is `{ pages, sets: [[id, line]] }`,
+    because the template loads only those pages. It returns
+    `{ kind, changed, missing, pageOne }` and switches page at most once,
+    only to remove an empty Page 1. Its line reads "measured from its closed
+    trigger, <element>, not the open <Name>", or the layout-wrapper wording.
+42. **Refusals.** figma code refuses a root-only snap, pointing to
+    `--root-only` and the skill's root-only templates, and a measured
+    variant without a `treeDelta`. A component with no Storybook id (the
+    0.3.0 example) gets its title as the storysync id on its set.
+
+## Package T's mock (shared file, small hunks in their own commits)
+
+43. Options `shadowSpread` and `textTruncation` (`"keep"`, the default, or
+    `"refuse"`), for spike items 2 and 3.
+44. Option `moveNeedsFonts` (default false): appendChild and insertChild
+    throw on a node holding a text whose font the call hasn't loaded. B's
+    tests turn it on.
+45. A page has `remove()`. It refuses the only page and the call's current
+    page, which is an assumption until someone checks Figma. Page ids no
+    longer repeat after one goes.
+
+## What waits on the spike
+
+Every spike-dependent constant is in `SPIKE` in `cli/figma-spike.ts`, with
+where it acts. The template's run-time fallbacks are marked `SPIKE(n)` in
+`templates/build.js`.
+
+| Item | Fallback used now | How to switch |
+|---|---|---|
+| 1, SVG stroke scaling | `svgStrokesScale: false`: import at the viewBox's size and rescale, right either way | true once import scales strokes |
+| 2, shadow spread | try, and on refusal spread 0, listed | nothing to switch |
+| 3, textTruncation | try, and on refusal a fixed text box of the measured size, listed | nothing to switch |
+| 4, absolute children | `absoluteInsetByStroke: false`: x and y from the frame's corner | true if Figma insets by included strokes |
+| 4, OUTSIDE strokes in auto layout | `outsideStrokeTakesSpace: false`: plan from frame boxes | true if they take space |
+| 5, clone and plugin data | keys copied along a parallel walk, either way | nothing to switch |
+| 7, return shape | an object; the parser reads an object, a JSON string or an envelope | nothing to switch |
+| 8, time limit | `maxNodes: 400` records (item 31) | lower after the spike |
+| 10, image bytes | the images call reuses hashes either way | C's scoring only |
+| 11, fill across a hugging parent | `fillAcrossHug: false`: FIXED where a child fills | true if Figma hugs the other children |

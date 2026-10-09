@@ -1,0 +1,366 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { MAX_CALL_CHARS } from "../figma-spike.js";
+import { componentKey } from "../storybook.js";
+import { expandTree } from "../tree-types.js";
+import type { TreeDelta } from "../tree-types.js";
+import { STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
+import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
+import type { TreeFixture } from "./mock-figma.js";
+
+const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/** Every fixture's component in one snap, ordered by key as snap writes several. */
+function allFixtures(): TreeFixture {
+  const fixtures = treeFixtureNames().map(loadTreeFixture);
+  const snap = copy(fixtures[0]);
+  snap.components = fixtures.flatMap((f) => f.components).sort((a, b) => componentKey(a).localeCompare(componentKey(b)));
+  return snap;
+}
+
+/** A variant's records, from its part's base and its delta, as the build template expands them. */
+function recordsOf(base: unknown[][], delta: unknown): unknown[][] {
+  if (!Array.isArray(delta)) return (delta as { r: unknown[][] }).r;
+  const records = base.map((r) => [...r]);
+  for (const [i, box, style] of delta as [number, number[] | 0, number][]) {
+    if (box) records[i].splice(3, 4, ...box);
+    if (style >= 0) records[i][7] = style;
+  }
+  return records;
+}
+
+/** The DATA a call carries. */
+const dataOf = (code: string) => JSON.parse(/\nconst DATA = (.*);\n/.exec(code)![1]) as Record<string, unknown>;
+
+/** Every file under a directory, by path, with its text. */
+function files(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (at: string, rel: string) => {
+    for (const entry of readdirSync(at, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(at, entry.name), `${rel}${entry.name}/`);
+      else out[`${rel}${entry.name}`] = readFileSync(join(at, entry.name), "utf8");
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+test("figma code: builds by page, then images, one label, then reads, each file and result named by its order", async () => {
+  const coded = await codeFor(allFixtures());
+  const calls = coded.plan.calls;
+  const order = calls.map((c) => `${c.kind} ${c.page}`).join(", ");
+  assert.match(order, /^build Forms, (build ui\/base, )+images ui\/base, label , read Forms, (read ui\/base, )*read ui\/base$/);
+  assert.deepEqual(calls.map((c) => c.seq), calls.map((_, i) => i + 1));
+  assert.deepEqual(calls.slice(0, 2).map((c) => [c.file, c.result]), [["calls/01-build-forms.js", "results/01.json"], ["calls/02-build-ui-base.js", "results/02.json"]]);
+  const label = calls.find((c) => c.kind === "label")!;
+  assert.equal(label.file, `calls/${String(label.seq).padStart(2, "0")}-label.js`);
+  assert.equal(coded.plan.version, 1);
+  assert.equal(coded.plan.snap.path, "../snaps/styles.json");
+  assert.match(coded.plan.snap.digest, /^[0-9a-f]{8}$/);
+  for (const call of calls) {
+    const code = coded.code(call);
+    assert.equal(code.length, call.chars, `${call.file}: chars is the file's length`);
+    assert.ok(code.length <= MAX_CALL_CHARS, `${call.file} is ${code.length} characters`);
+    assert.ok(code.startsWith(`// storysync figma code, call ${String(call.seq).padStart(2, "0")}:`));
+  }
+  assert.ok(existsSync(join(coded.out, "results")));
+});
+
+test("figma code: two runs over the same snap write the same bytes", async () => {
+  const snap = allFixtures();
+  const a = await codeFor(snap);
+  const b = await codeFor(snap);
+  assert.deepEqual(files(b.out), files(a.out));
+});
+
+test("figma code: every call is at most --max-chars and --max-nodes, and no variant is split", async () => {
+  // Sidebar, its one variant 25 nodes, as 60 variants of one component.
+  const snap = copy(loadTreeFixture("sidebar"));
+  const component = snap.components[0];
+  component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 60 }, (_, i) => String(i)), defaultValue: "0" }];
+  component.variants = Array.from({ length: 60 }, (_, i) => ({ ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`, ...(i ? { treeDelta: {} } : {}) }));
+  component.base!.slug = "n-0";
+  for (const [maxChars, maxNodes] of [[45_000, 400], [25_000, 400], [45_000, 100]]) {
+    const coded = await codeFor(snap, { maxChars, maxNodes });
+    const builds = coded.plan.calls.filter((c) => c.kind === "build");
+    assert.ok(builds.length > 1, `${maxChars}/${maxNodes} packs into ${builds.length} calls`);
+    const slugs: string[] = [];
+    for (const call of builds) {
+      assert.ok(call.chars <= maxChars, `${call.file}: ${call.chars} characters`);
+      assert.ok(call.nodes! <= maxNodes, `${call.file}: ${call.nodes} nodes`);
+      const data = dataOf(coded.code(call)) as { sets: { v: [string, string][] }[] };
+      for (const set of data.sets) slugs.push(...set.v.map((v) => v[1]));
+    }
+    assert.deepEqual(slugs, component.variants.map((v) => v.slug), "every variant once, in snap order");
+  }
+});
+
+test("figma code: a variant too big for any one call is left out and said, and everything else is planned", async () => {
+  for (const big of [1, 0]) {
+    const snap = copy(loadTreeFixture("card"));
+    snap.components.push(copy(loadTreeFixture("switch").components[0]));
+    const card = snap.components[0];
+    const variants = card.variants as (typeof card.variants[number] & { treeDelta?: TreeDelta })[];
+    // A title of 60,000 characters: more code than use_figma takes in one call.
+    const title = expandTree(card.tree, variants[big].treeDelta).find((n) => n.k === "card-header/card-title")!;
+    const delta = variants[big].treeDelta ?? {};
+    delta.set = { ...delta.set, "card-header/card-title": { ...delta.set?.["card-header/card-title"], tx: { ...title.tx!, c: "x".repeat(60_000) } } };
+    if (big) variants[big].treeDelta = delta;
+    else card.tree.base.find((n) => n.k === "card-header/card-title")!.tx!.c = "x".repeat(60_000);
+    const coded = await codeFor(snap);
+    const slug = card.variants[big].slug;
+    assert.equal(coded.warnings.length, 1);
+    assert.match(coded.warnings[0], new RegExp(`^ui/base/Card ${slug}: not built: its 23 nodes need \\d+ characters of code, more than one use_figma call takes \\(50000\\), and a variant is never split across calls$`));
+    const kept = card.variants[1 - big].slug;
+    const builds = coded.plan.calls.filter((c) => c.kind === "build");
+    assert.deepEqual(builds.flatMap((c) => (dataOf(coded.code(c)) as { sets: { v: string[][] }[] }).sets.flatMap((s) => s.v.map((v) => v[1]))), [kept, "size-default", "size-sm"]);
+    assert.deepEqual(builds[0].description, `Create or update Card (variant ${2 - big} of 2), Switch (2 variants) on page "ui/base"`);
+    assert.deepEqual(coded.plan.calls.filter((c) => c.kind === "read").flatMap((c) => c.slices), [["ui-base-card", 1 - big, 1 - big], ["ui-base-switch", 0, 1]]);
+    const mock = mockFor([loadTreeFixture("card"), loadTreeFixture("switch")]);
+    await runPlan(mock, coded);
+  }
+});
+
+test("figma code: a build call lists at most 60 images to upload, as many URLs as upload_assets hands out", async () => {
+  // Avatar as 61 variants, each its own photo: the images, not the nodes, split the calls.
+  const snap = copy(loadTreeFixture("avatar"));
+  const component = snap.components[0];
+  const asset = Object.values(component.tree.assets.img)[0];
+  component.tree.assets.img = Object.fromEntries(Array.from({ length: 61 }, (_, i) => [`img:${String(i).padStart(12, "0")}-0000`, asset]));
+  component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 61 }, (_, i) => String(i)), defaultValue: "0" }];
+  component.variants = Array.from({ length: 61 }, (_, i) => ({
+    ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`,
+    ...(i ? { treeDelta: { set: { "avatar-image": { img: `img:${String(i).padStart(12, "0")}-0000` } } } } : {}),
+  }));
+  component.tree.base.find((n) => n.k === "avatar-image")!.img = "img:000000000000-0000";
+  component.base = { ...component.base!, combination: { n: "0" }, slug: "n-0" };
+  const coded = await codeFor(snap);
+  const builds = coded.plan.calls.filter((c) => c.kind === "build");
+  const images = builds.map((call) => new Set((dataOf(coded.code(call)) as { S: { im?: string }[] }).S.map((st) => st?.im).filter(Boolean)).size);
+  assert.deepEqual(images, [60, 1]);
+});
+
+test("figma next: a continuation reads with the limit its call was written with", async () => {
+  const coded = await codeFor(loadTreeFixture("card"), { readLimit: 4_000 });
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  assert.match(coded.code(read), /\nconst LIMIT = 5000;\n/);
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq, templates: { readback: STUB_READBACK } });
+  assert.match(readFileSync(next!.file, "utf8"), /\nconst LIMIT = 5000;\n/);
+});
+
+test("figma code: a variant over --max-nodes gets a call of its own, and a warning", async () => {
+  const coded = await codeFor(loadTreeFixture("sidebar"), { maxNodes: 10 });
+  assert.equal(coded.plan.calls.filter((c) => c.kind === "build").length, 1);
+  assert.deepEqual(coded.warnings, ["call 01 holds one variant of 25 nodes, over --max-nodes 10"]);
+});
+
+test("figma code: a call's variants share their base's records and styles, each sent once", async () => {
+  const coded = await codeFor(loadTreeFixture("toggle"));
+  const data = dataOf(coded.code(coded.plan.calls[0])) as { S: unknown[]; sets: { base: unknown[][]; v: unknown[][] }[] };
+  const [set] = data.sets;
+  assert.equal(set.v.length, 6);
+  assert.deepEqual(set.v[0][5], [], "the base itself changes nothing");
+  // size=sm moves its icon and pads less: two records change, by box and style.
+  assert.deepEqual((set.v[1][5] as unknown[]).map((d) => (d as unknown[])[0]), [0, 1]);
+  const markups = data.S.filter((s) => typeof s === "string" && s.startsWith("<svg"));
+  assert.equal(markups.length, 1, "the icon's markup is in the table once");
+});
+
+test("figma code: reads slice each page's variants in order, each call predicted under --read-limit", async () => {
+  const snap = allFixtures();
+  for (const readLimit of [DEFAULT_READ_LIMIT, 4_000]) {
+    const coded = await codeFor(snap, { readLimit });
+    const reads = coded.plan.calls.filter((c) => c.kind === "read");
+    const seen = new Map<string, number[]>();
+    for (const call of reads) {
+      assert.ok(call.predicted! <= readLimit || call.slices!.length === 1 && call.slices![0][1] === call.slices![0][2], `${call.file} predicts ${call.predicted}`);
+      const code = coded.code(call);
+      assert.match(code, new RegExp(`\\nconst PAGE = ${JSON.stringify(call.page).replace(/\//g, "\\/")};\\nconst SLICES = `));
+      // The constants the readback template reads, and none it declares.
+      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 2;\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n$`));
+      assert.deepEqual([...code.matchAll(/^const (\w+) = /gm)].map((m) => m[1]), ["PAGE", "SLICES", "LIMIT", "TPL"]);
+      for (const [id, first, last] of call.slices!) seen.set(id, [...(seen.get(id) ?? []), ...Array.from({ length: last - first + 1 }, (_, i) => first + i)]);
+    }
+    for (const component of snap.components) {
+      assert.deepEqual(seen.get(component.id ?? component.title!), component.variants.map((_, i) => i), `${component.title} read once each`);
+    }
+  }
+});
+
+test("figma code: refuses a template that declares a constant its call writes, before writing any call", async () => {
+  // As package C's readback template once declared the TPL figma code also writes: a SyntaxError in Figma on every read.
+  for (const readback of ["const TPL = 2;\nreturn { kind: 'read' };", "const PAGE = 'x', SLICES = [];\nreturn {};"]) {
+    const out = await codeFor(loadTreeFixture("switch"), { templates: { readback } }).catch((e: Error) => e.message);
+    assert.match(String(out), /^calls\/03-read-ui-base\.js is not code use_figma can run \(.*has already been declared\): a template must not declare the constants its call writes before it$/);
+  }
+  await assert.rejects(codeFor(loadTreeFixture("switch"), { templates: { readback: STUB_READBACK, build: "return {" } }), /^Error: calls\/01-build-ui-base\.js is not code use_figma can run/);
+});
+
+test("predictRead: an entry grows with its nodes, keys, text and shapes", () => {
+  const card = loadTreeFixture("card").components[0];
+  const nodes = expandTree(card.tree, undefined);
+  const size = predictRead(nodes, "size-default");
+  assert.ok(size > 520 + 23 * 55 && size < 6000, `card predicts ${size}`);
+  assert.ok(predictRead(nodes.slice(0, 2), "size-default") < size);
+});
+
+test("figma code: the label call carries a line for a set measured from a closed trigger, without quotes", async () => {
+  const snap = allFixtures();
+  snap.components.find((c) => c.name === "Switch")!.warnings = ['snap measured button[data-slot="dialog-trigger"], a closed trigger, rather than Switch. Have it render open.'];
+  const coded = await codeFor(snap);
+  const data = dataOf(coded.code(coded.plan.calls.find((c) => c.kind === "label")!)) as { pages: string[]; sets: [string, string][] };
+  assert.deepEqual(data.pages, ["Forms", "ui/base"]);
+  assert.deepEqual(data.sets.find(([id]) => id === "ui-base-switch"), ["ui-base-switch", "measured from its closed trigger, button[data-slot=dialog-trigger], not the open Switch"]);
+  assert.deepEqual(data.sets.find(([id]) => id === "ui-base-card"), ["ui-base-card", ""]);
+  // The example's 0.3.0 snap has no Storybook id: its title stands in, as verify keys it.
+  assert.ok(data.sets.some(([id]) => id === "Forms/Button"));
+});
+
+test("figma code: --components and --skip pick what to build, matched as snap and verify match them", async () => {
+  const coded = await codeFor(allFixtures(), { components: ["ui-base-card", "switch", "Forms/Button"], skip: ["Button"] });
+  assert.deepEqual([...new Set(coded.plan.calls.flatMap((c) => c.components))], ["ui/base/Card", "ui/base/Switch"]);
+  await assert.rejects(codeFor(allFixtures(), { components: ["Nope"] }), /--components matched no component named "Nope"/);
+});
+
+test("figma code: refuses a snap without element trees, pointing to --root-only and the skill's templates", async () => {
+  const snap = copy(loadTreeFixture("switch")) as unknown as { components: { tree?: unknown }[] };
+  delete snap.components[0].tree;
+  await assert.rejects(codeFor(snap), /no element tree for ui\/base\/Switch: it was taken with --root-only.*skill's root-only templates/);
+});
+
+test("figma code: a component that failed is left out and said; variants snap couldn't measure are said", async () => {
+  const snap = allFixtures();
+  snap.components.find((c) => c.name === "Switch")!.error = "Story failed to render";
+  const coded = await codeFor(snap);
+  assert.ok(!coded.plan.calls.some((c) => c.components.includes("ui/base/Switch")));
+  assert.ok(coded.warnings.includes("ui/base/Switch: not built: Story failed to render"));
+  assert.ok(coded.warnings.includes('ui/base/Button: 2 variants built as a "Not measured" placeholder, since snap couldn\'t measure them'));
+});
+
+test("figma code: what it can't build, and values several tokens share with no class to pick, are said per component", async () => {
+  const snap = copy(loadTreeFixture("sidebar"));
+  snap.components[0].tree.base[1].bf = "blur(8px) saturate(1.8)";
+  const dir = await codeFor(snap, {}, { collections: [{ category: "colors", tokens: [{ name: "a", value: "", hex: "#fafafa" }, { name: "b", value: "", hex: "#fafafa" }] }] });
+  assert.deepEqual(dir.warnings, [
+    "ui/base/Sidebar › sidebar-container: backdrop-filter blur(8px) saturate(1.8) is not built",
+    "ui/base/Sidebar: fill #fafafa left unbound: it matches a, b, and no class names one",
+  ]);
+  const without = await codeFor(loadTreeFixture("switch"), { tokens: "/nonexistent/tokens.json" });
+  assert.deepEqual(without.warnings, ["no tokens at /nonexistent/tokens.json, so nothing is bound to a variable: save them first with `npx storysync tokens --json > /nonexistent/tokens.json`"]);
+});
+
+test("figma code: a new plan clears the last plan's calls and results, and leaves every other file", async () => {
+  const coded = await codeFor(allFixtures());
+  const old = ["results/05.json", "results/07b.json", "results/03.upload.json", "calls/99-build-old.js", "calls/07b-read-ui-base.js"];
+  // --out may be a directory with folders of these names: what a plan didn't write stays.
+  const foreign = ["results/quarterly.csv", "results/notes.json", "results/05.json.bak", "calls/notes.md", "calls/build.js", "plan-notes.txt"];
+  for (const file of [...old, ...foreign]) writeFileSync(join(coded.out, file), "{}");
+  mkdirSync(join(coded.out, "results", "06.json"));
+  await runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: { readback: STUB_READBACK } });
+  for (const file of old) assert.ok(!existsSync(join(coded.out, file)), `${file} is removed`);
+  for (const file of [...foreign, "results/06.json"]) assert.ok(existsSync(join(coded.out, file)), `${file} is kept`);
+  assert.deepEqual(readdirSync(join(coded.out, "calls")).filter((f) => !foreign.includes(`calls/${f}`)), coded.plan.calls.map((c) => c.file.slice(6)));
+});
+
+test("figma code: every planned call runs in the mock, in order", async () => {
+  const snap = allFixtures();
+  const coded = await codeFor(snap);
+  const mock = mockFor(treeFixtureNames().map(loadTreeFixture), { pages: ["Page 1"] });
+  const runs = await runPlan(mock, coded);
+  assert.deepEqual(runs.map((r) => (r.value as { kind: string }).kind), coded.plan.calls.map((c) => c.kind));
+  // One page switch per call, as use_figma allows.
+  for (const [i, call] of coded.plan.calls.entries()) if (call.kind !== "read") assert.equal(runs[i].switches.length, 1, call.file);
+});
+
+/** Whether this checkout has package C's readback template, which figma code ships once it lands. */
+const READBACK = existsSync(fileURLToPath(new URL("../../../templates/readback.js", import.meta.url)));
+
+test("figma code: with the readback template shipped, every call of every fixture runs in the mock", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  for (const name of treeFixtureNames()) {
+    const fixture = loadTreeFixture(name);
+    const coded = await codeFor(fixture, { templates: {} });
+    const runs = await runPlan(mockFor([fixture]), coded);
+    assert.deepEqual(runs.map((r) => (r.value as { kind: string }).kind), coded.plan.calls.map((c) => c.kind), name);
+  }
+});
+
+test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {
+  const min = loadTemplate("build");
+  assert.ok(min.length < loadTemplate("build", false).length);
+  if (!READBACK) assert.throws(() => loadTemplate("readback", false), /templates\/readback\.js is missing/);
+  assert.equal(loadTemplate("readback", true, { readback: " x " }), "x");
+});
+
+test("parseCallResult: a returned object, as JSON, as a JSON string, in an MCP envelope or in prose", () => {
+  const value = { kind: "read", more: { slices: [["a", 3, 9, 0]] } };
+  const json = JSON.stringify(value);
+  for (const text of [json, JSON.stringify(json), JSON.stringify({ content: [{ type: "text", text: json }] }), `Result: ${json} (done)`, JSON.stringify([{ type: "text", text: json }])]) {
+    assert.deepEqual(parseCallResult(text), value, text);
+  }
+  assert.equal(parseCallResult("Error: Script exceeded time limit"), null);
+  assert.equal(parseCallResult('{"id": "1:2"}'), null);
+});
+
+test("figma next: a read result with `more` gets its continuation, b then c; without it, none", async () => {
+  const coded = await codeFor(loadTreeFixture("card"));
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  const nn = String(read.seq).padStart(2, "0");
+  const planPath = join(coded.out, "plan.json");
+  const opts = { plan: planPath, seq: read.seq, templates: { readback: STUB_READBACK } };
+  await assert.rejects(runFigmaNext(opts), new RegExp(`results/${nn}\\.json is missing`));
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", sets: [] }));
+  assert.equal(await runFigmaNext(opts), null);
+  writeFileSync(join(coded.out, read.result), JSON.stringify(JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } })));
+  const next = await runFigmaNext(opts);
+  assert.deepEqual(next, {
+    file: join(coded.out, `calls/${nn}b-read-ui-base.js`), result: join(coded.out, `results/${nn}b.json`),
+    description: `Continue reading back ui-base-card on page "ui/base" (call ${nn}b)`,
+  });
+  const code = readFileSync(next!.file, "utf8");
+  assert.ok(code.startsWith(`// storysync figma code, call ${nn}b: read back on page "ui/base"`));
+  assert.match(code, /\nconst SLICES = \[\["ui-base-card",1,1,12\]\];\nconst LIMIT = 15000;\n/);
+  assert.deepEqual(await runFigmaNext(opts), next, "until its result is saved, the same file");
+  writeFileSync(join(coded.out, `results/${nn}b.json`), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 20]] } }));
+  assert.equal((await runFigmaNext(opts))!.file, join(coded.out, `calls/${nn}c-read-ui-base.js`));
+  writeFileSync(join(coded.out, `results/${nn}c.json`), JSON.stringify({ kind: "read", more: {} }));
+  await assert.rejects(runFigmaNext(opts), new RegExp(`^Error: results/${nn}c\\.json has a "more" without the slices to continue from$`));
+  writeFileSync(join(coded.out, `results/${nn}c.json`), JSON.stringify({ kind: "read", sets: [] }));
+  assert.equal(await runFigmaNext(opts), null);
+  await assert.rejects(runFigmaNext({ ...opts, seq: 1 }), /call 01 is a build call: only a read call continues/);
+});
+
+test("figma code: the spike's absolute-inset answer moves an absolute child by its parent's included stroke", async () => {
+  const xOf = async (absoluteInsetByStroke: boolean) => {
+    const coded = await codeFor(loadTreeFixture("attachment"), { spike: { absoluteInsetByStroke } });
+    const data = dataOf(coded.code(coded.plan.calls[0])) as { S: unknown[]; sets: { base: unknown[][]; v: unknown[][] }[] };
+    const vertical = data.sets[0].v.find((v) => v[1] === "size-default--orientation-vertical--state-done")!;
+    return recordsOf(data.sets[0].base, vertical[5]).find((r) => data.S[r[0] as number] === "attachment-action")!.slice(3, 5);
+  };
+  assert.deepEqual(await xOf(false), [83, 13]);
+  assert.deepEqual(await xOf(true), [82, 12]);
+});
+
+test("figma code: images go in one call per page whose sets show one; a page with none has no images call", async () => {
+  const coded = await codeFor(loadTreeFixture("switch"));
+  assert.deepEqual(coded.plan.calls.map((c) => c.kind), ["build", "label", "read"]);
+  const avatar = await codeFor(loadTreeFixture("avatar"));
+  const images = avatar.plan.calls.find((c) => c.kind === "images")!;
+  assert.match(avatar.code(images), /\nconst PAGE = "ui\/base";\n/);
+});
+
+test("figma code: a snap's tree without an asset it names is refused, rather than built wrong", async () => {
+  const snap = copy(loadTreeFixture("toggle"));
+  snap.components[0].tree.assets.svg = {};
+  await assert.rejects(codeFor(snap), /is a vector whose svg asset svg:3a1614af is not in the tree's assets/);
+});
+
+test("figma code: a measured variant without its tree delta is refused, rather than built as the base", async () => {
+  const snap = copy(loadTreeFixture("switch"));
+  delete (snap.components[0].variants[1] as { treeDelta?: unknown }).treeDelta;
+  await assert.rejects(codeFor(snap), /ui\/base\/Switch size-sm was measured, but has no treeDelta/);
+});

@@ -14,12 +14,12 @@
     "storysync": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-templates.mjs",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "lint": "tsc --noEmit",
-    "test": "pnpm clean && tsc && node --test dist/cli/__tests__/*.test.js",
-    "prepublishOnly": "pnpm clean && tsc && node --test dist/cli/__tests__/*.test.js",
+    "test": "pnpm clean && pnpm build && node --test dist/cli/__tests__/*.test.js",
+    "prepublishOnly": "pnpm clean && pnpm build && node --test dist/cli/__tests__/*.test.js",
     "clean": "rm -rf dist",
     "acceptance": "node scripts/acceptance.mjs"
   },
@@ -46,6 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
+    "terser": "5.51.2",
     "typescript": "^5.7.0"
   },
   "engines": {
@@ -57,6 +58,8 @@
   "files": [
     "dist/cli/*.js",
     "dist/cli/*.d.ts",
+    "dist/templates",
+    "templates",
     "skills",
     "commands",
     "action",
