@@ -21,9 +21,10 @@
 //
 // PAGE is the page the sets are on, switched to once. Each slice is a set's
 // storysync id, the first and last variant index `i` to read, and the node
-// to start the first variant at (0, or where a part before it stopped).
-// LIMIT is the characters of entries to return: when the next entry would
-// pass it, the call stops and returns `more`, the slices left, from which
+// to start at: 0, or where a part before it stopped, counting the records
+// of the variants at the first index in slug order as one run. LIMIT is
+// the characters of entries to return: when the next entry would pass it,
+// the call stops and returns `more`, the slices left, from which
 // `storysync figma next` writes the next call. TPL is the template the CLI
 // pairs the call with, this one, 2; any other refuses to run.
 //
@@ -302,61 +303,70 @@ for (let s = 0; s < SLICES.length && !out.more; s++) {
       continue;
     }
     // A variant duplicated in Figma keeps the original's plugin data.
-    const twin = bySlug[slug] || byIndex[get(v, 'i')];
-    if (twin) throw new Error('Variants ' + twin.id + ' and ' + v.id + ' of "' + set.name + '" carry one slug or index: one was duplicated');
-    bySlug[slug] = byIndex[get(v, 'i')] = v;
+    if (bySlug[slug]) throw new Error('Variants ' + bySlug[slug].id + ' and ' + v.id + ' of "' + set.name + '" carry the slug ' + slug + ': one was duplicated');
+    bySlug[slug] = v;
+    // Two of one index, with other slugs, are both read, in slug order: a
+    // variant a re-snap dropped keeps the index it had, which the build
+    // gives another, and verify lists it as one snap doesn't measure.
+    (byIndex[get(v, 'i')] = byIndex[get(v, 'i')] || []).push(v);
   }
   out.sets.push(read);
   used += size(read);
+  // The records already read at the first index, where a call before
+  // stopped part way.
+  let skip = start || 0;
   for (let i = from; i <= to && !out.more; i++) {
-    const v = byIndex[i];
-    if (!v) {
-      read.absent.push(i);
-      continue;
-    }
-    const slug = get(v, 'slug');
-    const { records, designer } = await walk(v);
-    const first = i === from ? start || 0 : 0;
-    // The entry for records [first, last): the first part carries the root
-    // fields, every part what it is a part of.
-    const entry = (last) => {
-      const key = first ? slug + '#' + first : slug;
-      const fields = first ? {} : rootFields(v);
-      Object.assign(fields, { name: v === set ? '' : v.name, source: get(v, 'src') || 'inferred', tpl: TPL, built: get(v, 'd') || null });
-      if (first || last < records.length) fields.part = [first, last - first, records.length];
-      fields.tree = records.slice(first, last);
-      if (!first) fields.designerLayers = designer;
-      const sealed = seal(set.id, key, fields);
-      return { key, sealed, chars: size(key) + size(sealed) };
-    };
-    let last = records.length;
-    let made = entry(last);
-    if (used + made.chars > LIMIT) {
-      const anything = out.sets.some((r) => Object.keys(r.entries).length);
-      // Too big for what is left: the next call reads it, unless nothing
-      // is in this one, when it is split into parts at node boundaries,
-      // this call taking as many records as fit.
-      if (!anything) {
-        let lo = 0;
-        let hi = records.length - first;
-        while (lo < hi) {
-          const mid = Math.ceil((lo + hi) / 2);
-          if (used + entry(first + mid).chars <= LIMIT) lo = mid;
-          else hi = mid - 1;
+    const group = (byIndex[i] || []).sort((a, b) => (get(a, 'slug') < get(b, 'slug') ? -1 : 1));
+    if (!group.length) read.absent.push(i);
+    let at = 0;
+    for (const v of group) {
+      const slug = get(v, 'slug');
+      const { records, designer } = await walk(v);
+      const base = at;
+      at += records.length;
+      const first = Math.max(skip - base, 0);
+      if (first >= records.length) continue;
+      // The entry for records [first, last): the first part carries the
+      // root fields, every part what it is a part of.
+      const entry = (last) => {
+        const key = first ? slug + '#' + first : slug;
+        const fields = first ? {} : rootFields(v);
+        Object.assign(fields, { name: v === set ? '' : v.name, source: get(v, 'src') || 'inferred', tpl: TPL, built: get(v, 'd') || null });
+        if (first || last < records.length) fields.part = [first, last - first, records.length];
+        fields.tree = records.slice(first, last);
+        if (!first) fields.designerLayers = designer;
+        const sealed = seal(set.id, key, fields);
+        return { key, sealed, chars: size(key) + size(sealed) };
+      };
+      let last = records.length;
+      let made = entry(last);
+      if (used + made.chars > LIMIT) {
+        // Too big for what is left: the next call reads it, unless nothing
+        // is in this one, when it is split into parts at node boundaries,
+        // this call taking as many records as fit.
+        if (!out.sets.some((r) => Object.keys(r.entries).length)) {
+          let lo = 0;
+          let hi = records.length - first;
+          while (lo < hi) {
+            const mid = Math.ceil((lo + hi) / 2);
+            if (used + entry(first + mid).chars <= LIMIT) lo = mid;
+            else hi = mid - 1;
+          }
+          if (!lo) throw new Error('A layer of ' + slug + ' passes LIMIT on its own');
+          last = first + lo;
+          made = entry(last);
+        } else last = first;
+        if (last > first) {
+          read.entries[made.key] = made.sealed;
+          used += made.chars;
         }
-        if (!lo) throw new Error('A layer of ' + slug + ' passes LIMIT on its own');
-        last = first + lo;
-        made = entry(last);
-      } else last = first;
-      if (last > first) {
-        read.entries[made.key] = made.sealed;
-        used += made.chars;
+        out.more = { slices: [[id, i, to, base + last], ...SLICES.slice(s + 1)] };
+        break;
       }
-      out.more = { slices: [[id, i, to, last], ...SLICES.slice(s + 1)] };
-      break;
+      read.entries[made.key] = made.sealed;
+      used += made.chars;
     }
-    read.entries[made.key] = made.sealed;
-    used += made.chars;
+    skip = 0;
   }
 }
 

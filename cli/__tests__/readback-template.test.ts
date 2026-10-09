@@ -163,7 +163,56 @@ test("template: refuses a variant duplicated in Figma, and lists the variants it
 
   await figma.run(`const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)}); await figma.setCurrentPageAsync(page);
     const v = await figma.getNodeByIdAsync(${JSON.stringify(built.variants[0].id)}); const copy = v.clone(); (await figma.getNodeByIdAsync(${JSON.stringify(built.id)})).appendChild(copy);`);
-  await assert.rejects(readBack(figma, [[built.component, 0, 1, 0]]), /carry one slug or index: one was duplicated/);
+  await assert.rejects(readBack(figma, [[built.component, 0, 1, 0]]), /carry the slug size-default: one was duplicated/);
+});
+
+/** Gives the variant `id` the index `i`, as the build gives a variant whose index a re-snap changed. */
+async function setIndex(figma: ReturnType<typeof newFigma>, id: string, i: number): Promise<void> {
+  const run = await figma.run(`(await figma.getNodeByIdAsync(${JSON.stringify(id)})).setSharedPluginData('storysync', 'i', '${i}');`);
+  assert.ok(run.ok, run.text);
+}
+
+test("template: two variants of one index with other slugs are both read, in slug order, the one snap doesn't measure listed as such", async () => {
+  // A re-snap dropped size-default: the build gave size-sm index 0 and left
+  // size-default, which keeps its plugin data and its index 0.
+  const figma = newFigma();
+  const fixture = loadTreeFixture("switch");
+  const built = await buildFixture(figma, fixture);
+  await setIndex(figma, built.variants[1].id, 0);
+  // First in the set, which doesn't change the order they are read in.
+  const moved = await figma.run(`(await figma.getNodeByIdAsync(${JSON.stringify(built.id)})).insertChild(0, await figma.getNodeByIdAsync(${JSON.stringify(built.variants[1].id)}));`);
+  assert.ok(moved.ok, moved.text);
+  const [result] = await readBack(figma, [[built.component, 0, 0, 0]]);
+  assert.deepEqual(Object.keys(result.sets[0].entries), ["size-default", "size-sm"]);
+  const resnap = JSON.parse(JSON.stringify(fixture)) as typeof fixture;
+  resnap.components[0].variants = resnap.components[0].variants.filter((v) => v.slug === "size-sm");
+  const scored = verify(resnap, assemble([result]), 0.5);
+  assert.deepEqual(scored.variants.map((v) => [v.slug, v.status]), [["size-sm", "verified"]]);
+  assert.deepEqual(scored.unmeasuredInFigma, [{ component: "ui/base/Switch", slug: "size-default" }]);
+});
+
+test("template: a call that stops among variants of one index continues at the right one, at the right node", async () => {
+  const figma = newFigma();
+  const fixture = loadTreeFixture("card");
+  const built = await buildFixture(figma, fixture);
+  await setIndex(figma, built.variants[1].id, 0);
+  const whole = assemble(await readBack(figma, [[built.component, 0, 0, 0]]));
+  const records = (file: ReturnType<typeof assemble>, slug: string) => Object.entries(file.components["ui/base/Card"].variants)
+    .filter(([key]) => key === slug || key.startsWith(`${slug}#`))
+    .sort((a, b) => (a[1].part?.[0] ?? 0) - (b[1].part?.[0] ?? 0))
+    .flatMap(([, e]) => e.tree!);
+  // One variant a call: the second at index 0 is the next call's, from its first node.
+  const one = await readBack(figma, [[built.component, 0, 0, 0]], { limit: 5000 });
+  assert.equal(one.length, 2);
+  const firstCount = whole.components["ui/base/Card"].variants["size-default"].tree!.length;
+  assert.deepEqual(one[0].more, { slices: [[built.component, 0, 0, firstCount]] });
+  assert.deepEqual(one.map((r) => Object.keys(r.sets[0].entries)), [["size-default"], ["size-sm"]]);
+  // Less than a variant a call: parts, through both, each record once.
+  const parts = await readBack(figma, [[built.component, 0, 0, 0]], { limit: 2500 });
+  assert.ok(parts.length > 3);
+  const inParts = assemble(parts);
+  for (const slug of ["size-default", "size-sm"]) assert.deepEqual(records(inParts, slug), records(whole, slug), slug);
+  assert.equal(verify(fixture, inParts, 0.5).elementFidelity, 1);
 });
 
 test("template: returned as a JSON string, should use_figma need one, it reads back the same", async () => {
