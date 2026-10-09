@@ -474,6 +474,19 @@ export class FigmaClient {
  * JSON-encoded again as a string, or the first object in text around it.
  */
 function parseSlice<T>(texts: string[], label: string): Slice<T> {
+  const value = findToolValue(texts, isSlice);
+  if (value !== undefined) return value as Slice<T>;
+  throw new Error(`Failed to parse Figma ${label} response. The use_figma tool may not return plugin code's return value. Got: ${texts.join("\n").trim().slice(0, 200)}`);
+}
+
+/**
+ * The value plugin code returned, in use_figma's text parts, that `accept`
+ * takes: a whole part as JSON, the same JSON-encoded again as a string, or
+ * the first object in text around it. Undefined when no part holds one.
+ * Exported for the results a push saves from use_figma (figma-results.ts),
+ * which are the same text.
+ */
+export function findToolValue(texts: string[], accept: (value: unknown) => boolean): unknown {
   const parts = texts.map((t) => t.trim());
   const found = parts.map(extractFirstBalancedObject).filter((f): f is string => f !== null && !parts.includes(f));
   for (const candidate of [...parts, ...found]) {
@@ -484,9 +497,9 @@ function parseSlice<T>(texts: string[], label: string): Slice<T> {
     } catch {
       continue;
     }
-    if (isSlice(value)) return value as Slice<T>;
+    if (accept(value)) return value;
   }
-  throw new Error(`Failed to parse Figma ${label} response. The use_figma tool may not return plugin code's return value. Got: ${texts.join("\n").trim().slice(0, 200)}`);
+  return undefined;
 }
 
 function isSlice(value: unknown): boolean {

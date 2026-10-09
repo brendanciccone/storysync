@@ -8,7 +8,12 @@ import { describeMeasurementNotes, describeIdenticalVariants } from "../snap.js"
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { headlineFidelity, slugOfKey, formatElementReport } from "../verify.js";
+import { SPIKE } from "../verify-tree.js";
+import { buildAndRead, reread } from "./tree-harness.js";
+import { loadTreeFixture } from "./mock-figma.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -139,6 +144,17 @@ test("propertyMatches: shadows compare layer by layer", () => {
   const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring }], 0.5), true);
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, inset: false }], 0.5), false);
+  // A spread Figma dropped drifts, unless the spike found it drops every one.
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, spread: 0 }], 0.5), false);
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, spread: 0 }], 0.5, { ...SPIKE, shadowSpreadKept: false }), true);
+});
+
+test("verify: what to assume of Figma reaches a root's shadows too", () => {
+  const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
+  const s = snapWith([{ slug: "primary", delta: { boxShadow: [ring] } }]);
+  const readback = readbackWith({ primary: { boxShadow: [{ ...ring, spread: 0 }] } });
+  assert.equal(verify(s, readback, 0.5).variants[0].status, "drifted");
+  assert.equal(verify(s, readback, 0.5, { spike: { ...SPIKE, shadowSpreadKept: false } }).variants[0].status, "verified");
 });
 
 test("propertyMatches: borders compare width, color and style", () => {
@@ -1364,7 +1380,8 @@ test("verify: caveats are given for the components the readback scored, and fail
   const trigger = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);
   const withTrigger = { ...snap, components: [{ ...snap.components[0], warnings: trigger }, { ...snap.components[0], title: "Forms/Other", warnings: trigger }] } as SnapResult;
   const result = verify(withTrigger, readbackWith({ a: {} }), 0.5);
-  assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }]);
+  // A snap without trees: only the outer element was compared, which is said too.
+  assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }, { component: "Forms/Button", kind: "root-only" }]);
   assert.equal(result.fidelity, 1);
 });
 
@@ -1473,4 +1490,133 @@ test("verify: bindings are reported beside the score and fail nothing, and a rea
   const older = verify(snap, readbackWith({ a: {}, b: {} }), 0.5);
   assert.equal(older.fidelity, 1);
   assert.deepEqual(older.bindings, { read: 0, bound: 0, unbound: [] });
+});
+
+
+// --- Element trees: what changes for snaps and readbacks from before them ------------
+
+const PUSH2 = fileURLToPath(new URL("../../../cli/__tests__/fixtures/push2/", import.meta.url));
+const push2 = (file: string) => JSON.parse(readFileSync(`${PUSH2}${file}`, "utf8"));
+
+test("push2 replay: a root-only snap and readback score as 0.4.0 did, 99.9%, plus a root-only caveat per component", () => {
+  const snap = push2("styles.json") as SnapResult;
+  const meta = push2("meta.json") as { measuredAt: string };
+  const result = verify(snap, push2("figma-readback.json") as ReadbackFile, 0.5, { measuredAt: meta.measuredAt });
+  assert.equal(result.summary.propertiesMatched, 1653);
+  assert.equal(result.summary.propertiesCompared, 1654);
+  assert.equal(result.elementFidelity, undefined, "no element score without trees");
+  const rootOnly = result.caveats.filter((c) => c.kind === "root-only");
+  assert.equal(rootOnly.length, 14);
+  assert.deepEqual(rootOnly[0], { component: "ui/base/Attachment", kind: "root-only" });
+  // Byte for byte the JSON 0.4.0 wrote, but for the caveats added, and the
+  // binding and textLayout fields 0.4.0's later readback work added.
+  const before = push2("verify-0.4.0.json") as Record<string, unknown>;
+  delete before.snapAge;
+  const now = JSON.parse(JSON.stringify(result)) as Record<string, unknown> & { caveats: { kind: string }[] };
+  assert.deepEqual(now.bindings, { read: 0, bound: 0, unbound: [] });
+  assert.deepEqual(now.uncompared, []);
+  delete now.bindings;
+  delete now.uncompared;
+  now.caveats = now.caveats.filter((c) => c.kind !== "root-only");
+  assert.deepEqual(now, before);
+  assert.equal(JSON.stringify(now), JSON.stringify(before), "in the same order, too");
+});
+
+test("root-only: the caveat counts the inner elements snap --root-only found, and leaves out a component with none", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  (snap.components[0].variants[0] as { innerElements?: number }).innerElements = 22;
+  (snap.components[0].variants[1] as { innerElements?: number }).innerElements = 20;
+  const readback = readbackWith({ a: {}, b: {} });
+  assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), [{ component: "Forms/Button", kind: "root-only", innerElements: 22 }]);
+  for (const v of snap.components[0].variants) (v as { innerElements?: number }).innerElements = 0;
+  assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), []);
+});
+
+test("roots-only: a tree snap scored by its roots alone scores as 0.4.0 would, and says how much it left out", async () => {
+  const { fixture, readback } = await buildAndRead("card");
+  const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
+  assert.equal(roots.elementFidelity, undefined);
+  assert.equal(roots.summary.elements, undefined);
+  assert.ok(roots.variants.every((v) => v.elements === undefined));
+  assert.deepEqual(roots.caveats.filter((c) => c.kind === "root-only"), [{ component: "ui/base/Card", kind: "root-only", innerElements: 22 }]);
+  const full = verify(fixture, readback, 0.5);
+  assert.equal(headlineFidelity(full), full.elementFidelity);
+  assert.equal(headlineFidelity(roots), roots.fidelity);
+});
+
+test("roots-only: an element-tree build's roots score their radius in the browser's terms, and not the padding and gap its children's places stand for", async () => {
+  // button-icon's root has its border outside its fill (padding-box),
+  // built as an OUTSIDE stroke with the radius less the border; its
+  // children are placed, absolutely or in auto layout spaced by their
+  // margins too.
+  for (const autoLayout of [false, true]) {
+    const { fixture, readback } = await buildAndRead("button-icon", { autoLayout });
+    const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
+    assert.deepEqual(roots.variants.flatMap((v) => v.differences.map((d) => `${v.slug} ${d.property}`)), [], autoLayout ? "auto layout" : "absolute");
+    assert.equal(roots.fidelity, 1);
+  }
+});
+
+test("root-only snap, element readback: roots scored from the root fields, boxShadow among them, the records left alone", async () => {
+  const { fixture, readback } = await buildAndRead("inputotp");
+  const snap = JSON.parse(JSON.stringify(fixture)) as SnapResult & { components: Record<string, unknown>[] };
+  for (const c of snap.components) delete c.tree;
+  const result = verify(snap, readback, 0.5);
+  assert.equal(result.elementFidelity, undefined);
+  assert.deepEqual(result.readbackIssues, []);
+  assert.equal(result.variants[0].status, "verified");
+  assert.equal(result.summary.notMeasured, 0, "an element readback says what it couldn't measure, even here");
+  // A shadow the root fields didn't carry before trees is compared now.
+  const shadowed = JSON.parse(JSON.stringify(snap)) as SnapResult;
+  shadowed.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 1, blur: 2, spread: 0, color: "#0000000d", inset: false }];
+  const drifted = verify(shadowed, readback, 0.5);
+  assert.deepEqual(drifted.variants[0].differences.map((d) => d.property), ["boxShadow"]);
+});
+
+test("element readback: a later part needs only its part's fields, every other entry the tree fields too", () => {
+  const part = { name: "a=b", source: "measured", tpl: 2, built: null, part: [5, 2, 7], tree: [] };
+  assert.deepEqual(missingReadbackFields(part), []);
+  assert.deepEqual(missingReadbackFields({ ...part, part: [0, 5, 7] }), [...READBACK_FIELDS.filter((f) => f !== "source"), "boxShadow", "designerLayers"]);
+  assert.deepEqual(missingReadbackFields({ ...part, tree: [["k", "T", 0, 0, 1, 1]] }), ["tree[0], a T record of 6 fields, not 23"]);
+  assert.deepEqual(missingReadbackFields({ ...part, tree: "nodes" }), ["tree, as a list of records"]);
+  assert.equal(slugOfKey("size-sm#12"), "size-sm");
+  assert.equal(slugOfKey("size-sm"), "size-sm");
+  assert.equal(slugOfKey("#text"), "#text");
+});
+
+test("element report: the headline is element fidelity beside the share of properties, then what drifted by key and node", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const clean = formatElementReport(verify(fixture, readback, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(clean, /^\nFidelity: 100\.0% of elements \(4 of 4 verified\), 100\.0% of properties \(\d+\/\d+\)$/m);
+  assert.match(clean, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
+  const thumb = readback.components["ui/base/Switch"].variants["size-sm"].tree![1] as unknown[];
+  const tampered = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+  const entry = tampered.components["ui/base/Switch"].variants["size-sm"];
+  (entry.tree![1] as unknown[])[6] = ["#f5f5f5"];
+  const { checksum: _c, ...rest } = entry;
+  entry.checksum = readbackChecksum(tampered.components["ui/base/Switch"].nodeId!, "size-sm", rest);
+  const report = formatElementReport(verify(fixture, tampered, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  // The thumb's fill alone wrong: it scores most of one element, and the
+  // count beside the percentage is of the elements right on everything.
+  assert.match(report, /Fidelity: 97\.9% of elements \(3 of 4 verified\)/);
+  assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
+  assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
+  assert.doesNotMatch(report, /coverage/, "a Switch has nothing verify can't score");
+  // A keyed layer snap doesn't measure is an element too, scoring 0: 4 of 5.
+  const extra = await buildAndRead("switch");
+  const added = await extra.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(extra.built.variants[0].id)}); const f = figma.createFrame(); v.appendChild(f); f.setSharedPluginData('storysync', 'k', 'switch-thumb:2'); return f.id;`);
+  assert.ok(added.ok, added.text);
+  const withExtra = formatElementReport(verify(extra.fixture, await reread(extra.figma, extra.fixture, extra.built), 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(withExtra, /Fidelity: 80\.0% of elements \(4 of 5 verified\)/);
+  assert.ok(withExtra.includes(`+ ui/base/Switch size=default › switch-thumb:2: in Figma (node ${String(added.value)}), but snap no longer measures it`), withExtra);
+  // Designer layers, 4 in each of Toggle's 6 variants: 20 named, the rest counted.
+  const toggle = await buildAndRead("toggle");
+  for (const v of toggle.built.variants) {
+    const run = await toggle.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(v.id)}); for (let i = 0; i < 4; i++) { const r = figma.createRectangle(); r.name = 'Note ' + i; v.appendChild(r); }`);
+    assert.ok(run.ok, run.text);
+  }
+  const noted = formatElementReport(verify(toggle.fixture, await reread(toggle.figma, toggle.fixture, toggle.built), 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.equal(noted.match(/a layer nothing keyed/g)?.length, 20);
+  assert.match(noted, /… and 4 more \(--json lists every one\)/);
+  assert.deepEqual(formatElementReport(verify(loadTreeFixture("switch"), readback, 0.5, { rootsOnly: true })), []);
 });

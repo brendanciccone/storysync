@@ -12,7 +12,7 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
-import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures } from "./verify.js";
 import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
@@ -133,8 +133,15 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
       if (issue.readAt == null) return "is stale: it has no readAt, so when Figma read it is unknown";
       if (!Number.isFinite(Date.parse(issue.readAt))) return `is stale: its readAt (${issue.readAt}) is not a time, so when Figma read it is unknown`;
       return `is stale: Figma read it at ${issue.readAt}, before the snap was measured${issue.measuredAt ? ` at ${issue.measuredAt}` : snapAge.known ? ` at ${snapAge.measuredAt}` : ""}, so it is from an earlier run`;
+    case "parts_missing":
+      return "is one of the parts a variant was read in, and they don't add up: one is missing, repeated or out of order";
+    case "name_mismatch":
+      return `is sealed under the name "${issue.name}", not "${issue.expected}", the variant snap measured under this slug: a variant was renamed, or its slug moved onto another`;
   }
 }
+
+/** Caveats verify draws from what it compared, rather than from snap's warnings. */
+const VERIFY_CAVEATS = new Set<ScoreCaveat["kind"]>(["root-only", "truncated-tree", "built-from-other-measurement"]);
 
 /** What a caveat beside verify's score says about its component, as the rest of a line naming it. */
 function describeCaveat(caveat: ScoreCaveat): string {
@@ -162,6 +169,16 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const count = caveat.variants ?? 0;
       const one = count === 1;
       return `snap couldn't check that Storybook gave the story the values of ${one ? "variant" : `${count} variants,`} ${nameSlugs(caveat.slugs ?? [])}, so ${one ? "it" : "they"} may have scored the story's default under ${one ? "its name" : "their names"}; measure the component again`;
+    }
+    case "root-only": {
+      const inner = caveat.innerElements;
+      return `only the outer element was measured and compared${inner !== undefined ? ` (${inner} inner ${inner === 1 ? "element" : "elements"} not measured)` : ""}`;
+    }
+    case "truncated-tree":
+      return `snap stopped at ${caveat.nodes} elements, leaving out ${caveat.at} and what follows it, so those weren't measured or compared`;
+    case "built-from-other-measurement": {
+      const one = (caveat.variants ?? 0) === 1;
+      return `Figma says ${one ? "variant" : `${caveat.variants} variants,`} ${nameSlugs(caveat.slugs ?? [])}, ${one ? "was" : "were"} built from other measurements than this snap's: the score says what Figma has, and re-sending the build calls brings ${one ? "it" : "them"} up to date`;
     }
   }
 }
@@ -284,6 +301,7 @@ program
   .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
+  .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
@@ -358,6 +376,7 @@ program
           maxCombinations,
           excludeProps: parsePropNames(opts.excludeProps),
           merge: !!opts.merge,
+          rootOnly: !!opts.rootOnly,
         },
         {
           storybook,
@@ -477,15 +496,30 @@ program
         const excludedNote = excluded > 0
           ? chalk.red(`; ${excluded} ${excluded === 1 ? "entry" : "entries"} unverified, not scored`)
           : "";
-        console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
+        // Elements first where snap measured them (cli/verify.ts formatElementReport).
+        const elementReport = formatElementReport(result);
+        if (elementReport.length) for (const line of elementReport) console.log(line);
+        else console.log(`\nFidelity: ${chalk.bold(formatFidelity(result.fidelity))}${scope} ${chalk.dim(`(${summary.propertiesMatched}/${summary.propertiesCompared} properties)`)}${excludedNote}`);
         if (result.skipped.length > 0) {
           console.log(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }
         // Beside the score: Figma can match a measurement of the wrong
         // element exactly, so the score alone would read as a faithful one.
-        if (result.caveats.length > 0) {
-          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(result.caveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
-          for (const caveat of result.caveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind));
+        if (snapCaveats.length > 0) {
+          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
+          for (const caveat of snapCaveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        }
+        // And what verify itself found the score covers: the components
+        // compared by their outer element alone on one line, which on a
+        // snap without trees is every one of them.
+        const rootOnly = result.caveats.filter((c) => c.kind === "root-only");
+        if (rootOnly.length > 0) {
+          const names = rootOnly.map((c) => `${c.component}${c.innerElements ? ` (${c.innerElements} inner ${c.innerElements === 1 ? "element" : "elements"} not measured)` : ""}`);
+          console.log(chalk.yellow(`  ! Only the outer element was measured and compared, for ${rootOnly.length === 1 ? "" : `${rootOnly.length} components: `}${names.join(", ")}`));
+        }
+        for (const caveat of result.caveats.filter((c) => VERIFY_CAVEATS.has(c.kind) && c.kind !== "root-only")) {
+          console.log(chalk.yellow(`  ! ${caveat.component}: ${describeCaveat(caveat)}`));
         }
         // Beside the score too: a property snap measured and the readback
         // has no field for was never compared, and a title that runs past
@@ -499,7 +533,8 @@ program
         }
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
         const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
-        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}, across ${summary.variants} variants\n`);
+        const notMeasuredNote = (summary.notMeasured ?? 0) > 0 ? `, ${summary.notMeasured} not measured` : "";
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}${notMeasuredNote}, across ${summary.variants} variants\n`);
 
         for (const issue of result.snapIssues ?? []) {
           console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
@@ -524,7 +559,9 @@ program
         }
 
         for (const variant of result.variants) {
-          if (variant.status === "verified" || variant.status === "unverified_readback") continue;
+          // A variant scored element by element is in the element report,
+          // and one whose readback has an issue is above, with the issue.
+          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.status === "parts_missing" || variant.elements || variant.status === "not_measured") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
             continue;
@@ -545,6 +582,7 @@ program
           && (result.snapIssues?.length ?? 0) === 0
           && result.componentsNotInSnap.length === 0
           && readbackIssues.length === 0
+          && treeStrictFailures(result, { allowDesignerLayers: true }).length === 0
           && result.summary.propertiesCompared > 0;
         // Not of a component with something measured left uncompared.
         const uncomparedComponents = new Set(result.uncompared.map((u) => u.component));
@@ -557,7 +595,8 @@ program
           // to prevent.
           const allMeasured = result.summary.inferred === 0
             && result.summary.unrecorded === 0
-            && result.summary.unmeasured === 0;
+            && result.summary.unmeasured === 0
+            && (result.summary.unread ?? 0) === 0;
           const kind = allMeasured ? "measured" : "expected";
           console.log(chalk.green(`  Figma matches the ${kind} styles for ${names.join(", ")}.`));
         }
@@ -566,11 +605,13 @@ program
         // than one measured a while ago, and this is the line that separates
         // "produced a result" from "produced a measured result".
         const { inferred, unrecorded, unmeasured } = result.summary;
-        if (inferred > 0 || unrecorded > 0 || unmeasured > 0) {
+        const unread = result.summary.unread ?? 0;
+        if (inferred > 0 || unrecorded > 0 || unmeasured > 0 || unread > 0) {
           const parts: string[] = [];
           if (inferred > 0) parts.push(`${inferred} inferred from source rather than measured`);
           if (unrecorded > 0) parts.push(`${unrecorded} with no recorded provenance`);
           if (unmeasured > 0) parts.push(`${unmeasured} in Figma that snap never measured`);
+          if (unread > 0) parts.push(`${unread} in Figma's sets that no read covered`);
           const line = `  Provenance: ${parts.join(", ")}`;
           console.log(opts.strictMeasured ? chalk.red(line) : chalk.yellow(line));
           for (const v of result.variants.filter((x) => x.source !== "measured" && x.status !== "missing_from_figma")) {
@@ -578,6 +619,13 @@ program
           }
           for (const u of result.unmeasuredInFigma) {
             console.log(chalk.dim(`      ${u.component} ${u.slug} [unmeasured — written to Figma but never scored]`));
+          }
+          for (const u of result.unreadInFigma ?? []) {
+            for (const name of u.unbuilt) console.log(chalk.dim(`      ${u.component} ${name} [not built by storysync — in Figma's set but never scored]`));
+            if (u.uncovered > 0) {
+              const one = u.uncovered === 1;
+              console.log(chalk.dim(`      ${u.component}: ${u.uncovered} ${one ? "variant carries a slug" : "variants carry slugs"} no read covered [built by an earlier push for ${one ? "a variant" : "variants"} snap no longer measures — never scored]`));
+            }
           }
         }
 
@@ -595,7 +643,12 @@ program
             }
           }
         } else if (scored > 0) {
-          console.log(chalk.dim("  Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen. Read it back with the skill's template as it is now."));
+          // The element-tree readback (templates/readback.js) reads no
+          // bindings yet; an older template's would, read again as it is now.
+          const elementRead = Object.values(readback.components ?? {}).some((c) => Object.values(c?.variants ?? {}).some((e) => e?.tpl !== undefined));
+          console.log(chalk.dim(elementRead
+            ? "  Variables: the element-tree readback doesn't read variable bindings yet, so a token detached in Figma at the same value can't be seen."
+            : "  Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen. Read it back with the skill's template as it is now."));
         }
 
         const age = result.snapAge;
@@ -632,7 +685,8 @@ program
         || (result.snapIssues?.length ?? 0) > 0
         || result.componentsNotInSnap.length > 0
         || (result.readbackIssues?.length ?? 0) > 0
-        || result.uncompared.length > 0;
+        || result.uncompared.length > 0
+        || treeStrictFailures(result, { allowDesignerLayers: !!opts.allowDesignerLayers }).length > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one. So
       // does a variant snap measured without knowing the story was given its
@@ -640,7 +694,9 @@ program
       const notMeasured = result.summary.inferred > 0
         || result.summary.unrecorded > 0
         || result.summary.unmeasured > 0
-        || result.caveats.some((c) => c.kind === "args-unchecked");
+        || result.caveats.some((c) => c.kind === "args-unchecked")
+        || (result.summary.notMeasured ?? 0) > 0
+        || (result.summary.unread ?? 0) > 0;
       // An age that cannot be established is not a pass. `meta.json` is the
       // file most likely to be gitignored, so failing open here would make
       // --strict-age succeed unconditionally in exactly the CI setup the

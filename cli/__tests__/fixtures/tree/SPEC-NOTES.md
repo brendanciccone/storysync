@@ -498,3 +498,176 @@ where it acts. The template's run-time fallbacks are marked `SPIKE(n)` in
 | 8, time limit | `maxNodes: 400` records (item 31) | lower after the spike |
 | 10, image bytes | the images call reuses hashes either way | C's scoring only |
 | 11, fill across a hugging parent | `fillAcrossHug: false`: FIXED where a child fills | true if Figma hugs the other children |
+
+# Package C: where the readback and verify depart from the spec
+
+Package C reads back (`templates/readback.js`), assembles the results
+(`cli/figma-results.ts`) and scores them (`cli/verify.ts`,
+`cli/verify-tree.ts`). Its notes are numbered C1 on, so they don't collide
+with the other packages'. "Spec problem" marks a rule the spec gets wrong or
+leaves open, for the owner and for B and D.
+
+## The read call and the template (section 9.1)
+
+C1. **The CLI writes all four header lines, TPL included, as 9.1 has them.**
+   - The template declares none of PAGE, SLICES, LIMIT and TPL, and refuses
+     a TPL other than 2.
+   - `readbackHeader` writes them one a line, as B's `figma code` does, so
+     `figma next` finds a call's LIMIT again by its line.
+   - LIMIT defaults to 15,000 (`READ_LIMIT`): B packs reads to a predicted
+     14,000 and adds its 1,000 margin.
+C2. **LIMIT and the 19,000 guard count UTF-8 bytes**, where 9.1 says
+   "encoded characters". use_figma's 20kb counts bytes, so labels outside
+   ASCII could pass it under a character LIMIT. A UTF-16 unit outside ASCII
+   counts as 3 bytes, an upper bound. With RETURN_TEXT, the size is the
+   returned string's.
+C3. **Spec problem: two variants of one index.** 9.1 refuses only a slug
+   held twice, and that still throws. But a re-snap that drops a variant
+   leaves its Figma variant in the set with its plugin data (B's `extra`),
+   and its `i` is one B gives another variant.
+   - The template reads both, in slug order within the index. A call that
+     stops part way continues by a node count across that index's run.
+   - verify lists the stale one in `unmeasuredInFigma`.
+C4. **Spec problem: where `unbuilt`, `absent` and `total` go.** 9.1 returns
+   them, and 9.4 says nothing about them.
+   - figma-results keeps each set's `total` (the largest any call saw) and
+     `unbuilt` (sorted) beside its variants in figma-readback.json. They are
+     not sealed: they say what the set holds, not what a variant is.
+   - verify lists, in `unreadInFigma`, the unbuilt variants by name and the
+     count of slugged variants no read covered (`total - unbuilt - read`).
+     Both count in `summary.unread`, and fail `--strict-measured`, as
+     variants in Figma snap never measured do.
+   - While a planned read has no result, nothing is counted as uncovered:
+     `notRead` says so already.
+   - `absent` is not carried. verify reports those variants as missing from
+     Figma already.
+C5. **Image paints carry their size**, `img:<fnv>:<scaleMode>:<w>x<h>`, with
+   `?` for what can't be read, so the spike's fallback (an image there, at
+   the thumbnail's size) can be scored. An image the sandbox can't find
+   reads as unreadable, and the read goes on.
+C6. **A gradient's transparent stops are kept** as `#rrggbb00`, as snap
+   writes them. A paint whose own color draws nothing is still left out of
+   `fills`. The RGB of an alpha-0 stop is compared too, since snap records it
+   and B builds it.
+C7. **Owner decision pending: no variable bindings, and no textLayout, in
+   element-tree entries.**
+   - r3/small's binding report reads `bound` and `unbound` from root-only
+     entries. T's records have no field for bindings, and the template
+     minifies to 7,865 of its 8,000 characters.
+   - textLayout repeats what the T records hold.
+   - So the binding report covers root-only entries alone, and verify says
+     the element-tree readback reads no bindings yet. The options: root-level
+     `bound`/`unbound` in a variant's first part, with a larger budget; or a
+     small separate bindings read call that B plans.
+C8. **The 0.4.0 root fields are in the browser's terms**, like the records:
+   `borderRadiusUniform`, `width` and `height` include the stroke outside
+   the box. 0.4.0's template read the raw cornerRadius, which for B's
+   padding-box border (OUTSIDE, radius r - w) reads 1px short on every
+   bg-clip-padding Button.
+C9. **C's size test is a proxy, and B's budget test leaves readback out.**
+   - C has no minifier. Its test holds the template, stripped of comments
+     and indentation, to 11,800 characters: 11,630 now, which terser takes
+     to 7,865 with B's options.
+   - B's `templates.test.ts` BUDGETS has no `readback` entry ("checked once
+     it is"). On merge, add `readback: 8_000` there.
+
+## Assembling the results (section 9.4)
+
+C10. **loadPlanResults** takes an optional `{ out }`, and returns `problems`
+   beside section 15's `{ readback, notRead, written }`: a call with no
+   result, a result that holds no read, one component read from two sets,
+   and an entry read twice (the first reading is kept). Continuations
+   follow `NN.json`, `NNb.json`, `NNc.json` (`continuationResult`). The
+   readback file stays version 1, and its entries carry `tpl`.
+
+## Scoring (section 10)
+
+C11. **Spec problem: the root's v1 properties (10.2).** With trees, the root
+   is scored as an F node from its record: fills, stroke, radius, effects,
+   opacity, blend, clip, order, and w and h under 10.4's container rule.
+   - v1's padding and gap are how Figma lays children out. An element-tree
+     build places children itself (D2), absolute with no padding or in auto
+     layout with spacing that takes in their margins, and the children's
+     places are scored instead.
+   - v1's text fields are scored on the T nodes.
+C12. **Spec problem: rows 2 and 5 of the back-compat matrix (10.7).** Scored
+   by roots alone (a root-only snap, or `--roots-only`), an element-tree
+   entry's padding and gap are left out, as in C11. Compared, a faithful
+   build drifted on them: Attachment 80%, Button with icon 75%. 0.4.0's
+   verify reading an element-tree readback also reports each `slug#n` part
+   as `incomplete`, not only as a variant snap never measured.
+C13. **`order` drifts only where it shows (10.2).** 10.2 compares the whole
+   sequence. B lays children out in flow order where the reordered ones
+   don't overlap (B's note 23), and verify scores `order` by the same rule:
+   a pair of keyed siblings in the other order whose border boxes in snap
+   overlap by more than 0.5px. C writes the rule again in verify-tree.ts
+   (`visibleReorder`) rather than take B's (design D9), and a test holds it
+   to the cases B's test holds the build's to.
+C14. **The container allowance across the flow (10.4)** is the largest
+   in-flow child's difference, as a hugging frame grows by its tallest
+   child. 10.4 defines it along the flow only.
+C15. **`children_not_read_back` is a verdict flag** (`childrenNotReadBack`,
+   counted in `summary.elements.notReadBack`), not a ReadbackIssue. 10.1
+   still scores the root, and an issue would leave it unscored. It fails
+   `--strict` through `treeStrictFailures`.
+C16. **What section 10 leaves open:**
+   - effects are matched one for one, whatever their order;
+   - `order` is compared only when 2 or more keyed children are in Figma;
+   - `designerLayers` travel on a variant's first part only;
+   - a tree delta that can't be expanded throws, as a broken styles.json.
+C17. **A variant missing from Figma, with a tree,** counts every element as
+   missing and every property of each as mismatched, in the property share
+   too. A missing root-only variant still counts no properties, as in 0.4.0.
+C18. **A variant read in parts with any part missing**, the first included,
+   is `parts_missing`, with nothing in it scored. Each part's count, total
+   and first node are checked against the records it holds.
+C19. **`not_measured`** is the verdict for an element-tree placeholder. A
+   root-only entry for a variant snap didn't measure stays in
+   `unmeasuredInFigma`, as in 0.4.0.
+C20. **Caveat names follow r3/args**, as the owner decided: there are no
+   `args-hidden` or `args-dropped` caveats. `args-rejected` and
+   `args-unchecked` cover those variants, and their placeholders are
+   `not_measured`.
+C21. **The headline (10.6)** reads `Fidelity: 99.3% of elements (287 of 289
+   verified), …`. The percentage sums node scores, so the count beside it
+   says what it counts rather than reading as the same ratio.
+C22. **verify's options.** `VerifyOptions` carries `rootsOnly`, `notRead`,
+   `spike` and `allowDesignerLayers`, which section 15's signature adds.
+   `treeStrictFailures(result, { allowDesignerLayers })` is what `--strict`
+   reads. `headlineFidelity` returns null when nothing was scored, which
+   `--min-fidelity` must treat as a failure.
+
+## Acceptance figures (section 15, package C)
+
+C23. **Spec problem: "100% at width factor 1.045" for example-button.** It
+   draws Inter in both worlds, so 10.5 gives its labels 3%, not 6%. At 1.045
+   its 12 labels drift on their width and nothing else, and every other
+   fixture still scores 100%.
+C24. **Spec problem: Attachment vertical untruncated scores 22.2%, not
+   20%,** on T's 8-node fixture: the root, and the title on x, y, w and
+   truncation of its 18 properties, (1 + 14/18) / 8. The 20% came from a
+   prototype with 9 nodes.
+
+## The spike (section 14)
+
+C25. **One place a side.**
+   - verify's assumptions are `SPIKE` in cli/verify-tree.ts
+     (`imageBytesKept`, `shadowSpreadKept`, `textTruncation`), each the
+     spec's expected answer, overridable per call through
+     `VerifyOptions.spike`. The root-only boxShadow comparison reads the
+     same.
+   - The template's one switch is `RETURN_TEXT` (item 7).
+   - Assumed with no spike item: Figma's blur radius equals CSS blur().
+   - ABSOLUTE children with per-side strokes are not a switch in C. The
+     template reads where a child is, its x and y from the parent's frame
+     plus the parent's stroke outside it, so how Figma places an absolute
+     child changes what is read, not how it is read.
+
+## Ownership (C and D)
+
+C26. **D wires the flags**: `--plan` (loadPlanResults, then verify with
+   `notRead`, printing its `problems`), `--roots-only`,
+   `--allow-designer-layers` (until then, designer layers fail `--strict`)
+   and `--min-fidelity` (headlineFidelity). C changed cli/index.ts only in
+   small hunks: the new caveat and issue texts, the element report, and what
+   `--strict` and `--strict-measured` fail on.

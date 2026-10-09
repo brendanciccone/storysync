@@ -10,9 +10,10 @@ import type { TemplateName } from "../figma-code.js";
 
 /**
  * Most characters each minified template may take (section 8.2 sets the
- * build's): every call carries one, under use_figma's 50,000.
+ * build's, section 9.1 the readback's): every call carries one, under
+ * use_figma's 50,000.
  */
-const BUDGETS = { build: 16_000, images: 2_000, label: 3_000 } as const;
+const BUDGETS = { build: 16_000, images: 2_000, label: 3_000, readback: 8_000 } as const;
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 
@@ -24,11 +25,11 @@ test("templates: each minified template is within its budget", () => {
   }
 });
 
-/** Every template this checkout has: the readback template is package C's, checked here once it is. */
+/** Every template this checkout has, which must be every one figma code writes a call for. */
 const PRESENT = (Object.keys(CALL_CONSTANTS) as TemplateName[]).filter((name) => existsSync(fileURLToPath(new URL(`../../../templates/${name}.js`, import.meta.url))));
 
 test("templates: each is a function body use_figma can run, reading only the constants its call puts before it", () => {
-  assert.deepEqual(PRESENT.filter((n) => n !== "readback"), Object.keys(BUDGETS));
+  assert.deepEqual(PRESENT, Object.keys(BUDGETS));
   for (const name of PRESENT) {
     for (const minify of [true, false]) {
       const code = loadTemplate(name, minify);

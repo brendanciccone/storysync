@@ -2426,7 +2426,12 @@ async function main() {
   heading("Measurement");
 
   await check("snap measures every variant of the example", () => {
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all"]);
+    // Root only: every check after this pushes through the skill's shipped
+    // templates, which build and read back each variant's outer element. A
+    // snap with element trees, scored against a readback of roots alone,
+    // fails --strict, as design section 10.7 has it; the tree snap is
+    // checked on its own below.
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all", "--root-only"]);
     assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
     const snap = readJson(join(snapDir, "styles.json"));
     const byName = Object.fromEntries(snap.components.map((c) => [c.name, c]));
@@ -2434,6 +2439,36 @@ async function main() {
     assert(snap.summary.rendered === snap.summary.variants && snap.summary.failed === 0,
       `rendered ${snap.summary.rendered}/${snap.summary.variants}, ${snap.summary.failed} failed`);
     return `${snap.summary.rendered}/${snap.summary.variants} variants across ${snap.summary.components} components`;
+  });
+
+  await check("snap measures each variant's element tree, the same twice, around the roots --root-only measures", () => {
+    // Without --root-only, snap measures the elements under each root as
+    // well (design section 6). The roots are the same measurement either way
+    // (section 7.5): --root-only adds only how many elements it left out.
+    const texts = ["tree", "tree-again"].map((name) => {
+      const out = join(WORK, name);
+      const r = cli(["snap", "--storybook", STORYBOOK, "--out", out, "--variants", "all"]);
+      assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
+      return readFileSync(join(out, "styles.json"), "utf8");
+    });
+    assert(texts[0] === texts[1], "two snaps of the same code measured different element trees");
+    const tree = JSON.parse(texts[0]);
+    const roots = readJson(join(snapDir, "styles.json"));
+    assert(tree.treeVersion === 1 && roots.treeVersion === undefined, `treeVersion ${tree.treeVersion}, and ${roots.treeVersion} with --root-only`);
+    const plain = ({ screenshot: _s, treeDelta: _t, innerElements: _i, ...rest }) => JSON.stringify(rest);
+    let nodes = 0;
+    for (const [i, component] of tree.components.entries()) {
+      const root = roots.components[i];
+      assert(component.name === root?.name, `component ${i}: ${component.name}, and ${root?.name} with --root-only`);
+      assert(component.tree?.base?.length > 0 && root.tree === undefined, `${component.name}: ${component.tree?.base?.length ?? "no"} tree nodes, and ${root.tree ? "a tree" : "none"} with --root-only`);
+      nodes += component.tree.base.length;
+      assert(JSON.stringify(component.base) === JSON.stringify(root.base), `${component.name}: its base differs from --root-only's`);
+      for (const [j, variant] of component.variants.entries()) {
+        assert(Number.isInteger(root.variants[j].innerElements), `${component.name} ${variant.slug}: --root-only recorded no innerElements`);
+        assert(plain(variant) === plain(root.variants[j]), `${component.name} ${variant.slug}: its root differs from --root-only's`);
+      }
+    }
+    return `${tree.components.length} components, ${nodes} nodes in their base trees, byte-identical twice`;
   });
 
   await check("the push measures every Button combination, with the defaults as the base", () => {
@@ -2972,7 +3007,7 @@ async function main() {
     // meant to be committed and diffed, so neither a rerun nor a different
     // --out (another machine, another checkout) may change a byte of it.
     const again = join(WORK, "elsewhere", "snap-again");
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all"]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all", "--root-only"]);
     assert(r.status === 0, `second snap exited ${r.status}`);
     const first = readFileSync(join(snapDir, "styles.json"), "utf8");
     const second = readFileSync(join(again, "styles.json"), "utf8");
@@ -3031,7 +3066,7 @@ async function main() {
     for (const file of ["styles.json", "meta.json"]) cpSync(join(snapDir, file), join(out, file));
     const before = readJson(join(out, "styles.json"));
     const earlier = readJson(join(out, "meta.json")).measuredAt;
-    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--variants", "all", "--merge", "--out", out]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--variants", "all", "--merge", "--out", out, "--root-only"]);
     assert(r.status === 0, `snap --merge exited ${r.status}\n${r.out.trim()}`);
     const after = readJson(join(out, "styles.json"));
     const key = (c) => c.title ?? c.id ?? c.name;
@@ -3046,7 +3081,7 @@ async function main() {
     assert(meta.measuredAt === earlier, `measuredAt ${meta.measuredAt}, not the oldest component's, ${earlier}`);
 
     // Another --variants would mix two kinds of measurement in one snap.
-    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out]);
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--root-only"]);
     assert(refused.status === 1 && /measured with --variants all: pass the same/.test(refused.out), `--variants representative merged: ${refused.out.trim()}`);
     return "Frozen measured again, Button kept, measuredAt the oldest";
   });
