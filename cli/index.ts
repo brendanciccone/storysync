@@ -141,6 +141,9 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
 }
 
 /** What a caveat beside verify's score says about its component, as the rest of a line naming it. */
+/** Caveats verify draws from what it compared, rather than from snap's warnings. */
+const VERIFY_CAVEATS = new Set<ScoreCaveat["kind"]>(["root-only", "truncated-tree", "built-from-other-measurement"]);
+
 function describeCaveat(caveat: ScoreCaveat): string {
   switch (caveat.kind) {
     case "closed-trigger":
@@ -500,9 +503,21 @@ program
         }
         // Beside the score: Figma can match a measurement of the wrong
         // element exactly, so the score alone would read as a faithful one.
-        if (result.caveats.length > 0) {
-          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(result.caveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
-          for (const caveat of result.caveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind));
+        if (snapCaveats.length > 0) {
+          console.log(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
+          for (const caveat of snapCaveats) console.log(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        }
+        // And what verify itself found the score covers: the components
+        // compared by their outer element alone on one line, which on a
+        // snap without trees is every one of them.
+        const rootOnly = result.caveats.filter((c) => c.kind === "root-only");
+        if (rootOnly.length > 0) {
+          const names = rootOnly.map((c) => `${c.component}${c.innerElements ? ` (${c.innerElements} inner ${c.innerElements === 1 ? "element" : "elements"} not measured)` : ""}`);
+          console.log(chalk.yellow(`  ! Only the outer element was measured and compared, for ${rootOnly.length === 1 ? "" : `${rootOnly.length} components: `}${names.join(", ")}`));
+        }
+        for (const caveat of result.caveats.filter((c) => VERIFY_CAVEATS.has(c.kind) && c.kind !== "root-only")) {
+          console.log(chalk.yellow(`  ! ${caveat.component}: ${describeCaveat(caveat)}`));
         }
         // Beside the score too: a property snap measured and the readback
         // has no field for was never compared, and a title that runs past
@@ -516,7 +531,8 @@ program
         }
         const unscoredNote = summary.unscored > 0 ? `, ${summary.unscored} unscored` : "";
         const unverifiedNote = summary.unverifiedReadback > 0 ? `, ${summary.unverifiedReadback} with an unverified readback` : "";
-        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}, across ${summary.variants} variants\n`);
+        const notMeasuredNote = (summary.notMeasured ?? 0) > 0 ? `, ${summary.notMeasured} not measured` : "";
+        console.log(`${summary.verified} verified, ${summary.drifted} drifted, ${summary.missingFromFigma} missing from Figma${unscoredNote}${unverifiedNote}${notMeasuredNote}, across ${summary.variants} variants\n`);
 
         for (const issue of result.snapIssues ?? []) {
           console.log(`  ${chalk.red("!")} snap recorded a failure: ${issue}`);
@@ -541,8 +557,9 @@ program
         }
 
         for (const variant of result.variants) {
-          // A variant scored element by element is in the element report.
-          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.elements || variant.status === "not_measured") continue;
+          // A variant scored element by element is in the element report,
+          // and one whose readback has an issue is above, with the issue.
+          if (variant.status === "verified" || variant.status === "unverified_readback" || variant.status === "parts_missing" || variant.elements || variant.status === "not_measured") continue;
           if (variant.status === "missing_from_figma") {
             console.log(`  ${chalk.yellow("?")} ${variant.component} ${chalk.dim(variant.slug)} not found in Figma`);
             continue;

@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { headlineFidelity, slugOfKey, formatElementReport } from "../verify.js";
 import { SPIKE } from "../verify-tree.js";
-import { buildAndRead } from "./tree-harness.js";
+import { buildAndRead, reread } from "./tree-harness.js";
 import { loadTreeFixture } from "./mock-figma.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1602,5 +1602,14 @@ test("element report: the headline is element fidelity beside the share of prope
   assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
   assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
   assert.doesNotMatch(report, /coverage/, "a Switch has nothing verify can't score");
+  // Designer layers, 4 in each of Toggle's 6 variants: 20 named, the rest counted.
+  const toggle = await buildAndRead("toggle");
+  for (const v of toggle.built.variants) {
+    const run = await toggle.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(v.id)}); for (let i = 0; i < 4; i++) { const r = figma.createRectangle(); r.name = 'Note ' + i; v.appendChild(r); }`);
+    assert.ok(run.ok, run.text);
+  }
+  const noted = formatElementReport(verify(toggle.fixture, await reread(toggle.figma, toggle.fixture, toggle.built), 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.equal(noted.match(/a layer nothing keyed/g)?.length, 20);
+  assert.match(noted, /… and 4 more \(--json lists every one\)/);
   assert.deepEqual(formatElementReport(verify(loadTreeFixture("switch"), readback, 0.5, { rootsOnly: true })), []);
 });

@@ -549,6 +549,7 @@ test("verify CLI: placeholders for variants snap couldn't measure fail --strict-
   const strict = verify(fixture, readback, "--strict");
   assert.match(strict.out, /not measured 2/);
   assert.match(strict.out, /\? ui\/base\/Button variant=link, size=xs: not measured, so Figma holds a placeholder for it/);
+  assert.match(strict.out, /\d+ verified, 0 drifted, 0 missing from Figma, 2 not measured, across \d+ variants/);
   assert.equal(verify(fixture, readback, "--strict-measured").status, 1);
 });
 
@@ -567,4 +568,22 @@ test("verify CLI: a variant in Figma's set no read covered is named under proven
   assert.match(strict.out, /ui\/base\/Switch: 1 variant carries a slug no read covered \[built by an earlier push for a variant snap no longer measures — never scored\]/);
   assert.match(strict.out, /Figma matches the expected styles/, "not all of it measured, so not \"measured\"");
   assert.equal(verify(resnap, readback, "--strict-measured").status, 1);
+});
+
+test("verify CLI: a variant read in parts, one of them missing, is said once, with its issue", async () => {
+  const { fixture, readback } = await buildAndRead("sidebar", { limit: 1500 });
+  const component = Object.keys(readback.components)[0];
+  const first = Object.keys(readback.components[component].variants).find((k) => !k.includes("#"))!;
+  delete readback.components[component].variants[first];
+  const r = verify(fixture, readback, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /ui\/base\/Sidebar \S+ readback entry is one of the parts a variant was read in, and they don't add up/);
+  assert.doesNotMatch(r.out, /^ {2}~ ui\/base\/Sidebar \S+$/m, "no bare drift line");
+});
+
+test("verify CLI: what verify compared only in part is said on its own, the outer elements alone on one line", () => {
+  const r = verify(snap(), readback(MATCHING), "--strict");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /\n {2}! Only the outer element was measured and compared, for Forms\/Button\n/);
+  assert.doesNotMatch(r.out, /snap warned/);
 });

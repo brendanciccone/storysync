@@ -1755,6 +1755,8 @@ function firstLine(err: unknown): string {
 
 /** How many nodes' drift the report prints before it points at --json for the rest. */
 const REPORT_NODE_LINES = 40;
+/** How many designer layers, and how many variants not measured, it prints. */
+const REPORT_LIST_LINES = 20;
 
 const percent = (n: number | null | undefined) => (n == null ? "n/a" : `${(n * 100).toFixed(1)}%`);
 const count = (n: number) => n.toLocaleString("en-US");
@@ -1830,13 +1832,16 @@ export function formatElementReport(result: VerifyResult): string[] {
   for (const line of drift.slice(0, REPORT_NODE_LINES)) lines.push(line.text);
   if (drift.length > REPORT_NODE_LINES) lines.push(chalk.dim(`  … and ${drift.length - REPORT_NODE_LINES} more (--json lists every one)`));
 
-  for (const v of result.variants) {
-    if (v.childrenNotReadBack) lines.push(chalk.red(`  ! ${v.component} ${v.slug}: read back without its tree, so only its root was compared; read it again with the calls \`storysync figma code\` writes`));
-    for (const [name, type, id] of v.designerLayers ?? []) {
-      lines.push(chalk.yellow(`  ? ${v.component} ${v.name || v.slug}: a layer nothing keyed, "${name}" (${type}, node ${id}): a designer's, not scored`));
-    }
-    if (v.status === "not_measured") lines.push(chalk.yellow(`  ? ${v.component} ${v.name || v.slug}: not measured, so Figma holds a placeholder for it; snap's warning names the story change it needs`));
-  }
+  const capped = (list: string[], color: (text: string) => string) => {
+    for (const line of list.slice(0, REPORT_LIST_LINES)) lines.push(color(line));
+    if (list.length > REPORT_LIST_LINES) lines.push(chalk.dim(`  … and ${list.length - REPORT_LIST_LINES} more (--json lists every one)`));
+  };
+  capped(result.variants.filter((v) => v.childrenNotReadBack)
+    .map((v) => `  ! ${v.component} ${v.slug}: read back without its tree, so only its root was compared; read it again with the calls \`storysync figma code\` writes`), chalk.red);
+  capped(result.variants.flatMap((v) => (v.designerLayers ?? [])
+    .map(([name, type, id]) => `  ? ${v.component} ${v.name || v.slug}: a layer nothing keyed, "${name}" (${type}, node ${id}): a designer's, not scored`)), chalk.yellow);
+  capped(result.variants.filter((v) => v.status === "not_measured")
+    .map((v) => `  ? ${v.component} ${v.name || v.slug}: not measured, so Figma holds a placeholder for it; snap's warning names the story change it needs`), chalk.yellow);
   for (const seq of result.notRead ?? []) lines.push(chalk.red(`  ! planned read call ${seq} has no result saved, so what it reads wasn't scored`));
   return lines;
 }
