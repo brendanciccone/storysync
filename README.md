@@ -69,7 +69,7 @@ You can also just ask in plain English (see [What to say](#what-to-say)).
 
 In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma. Then start Storybook and ask the agent to push or diff.
 
-Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync list`, `map`, `inspect`, and `snap` outside it. Approve them, since they need to reach Storybook.
+Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync list`, `map`, `inspect`, and `snap` outside it, and `figma upload`, which posts pictures to Figma. Approve them, since they need to reach Storybook or Figma.
 
 ### Codex
 
@@ -93,7 +93,7 @@ A few Codex details:
   url = "http://localhost:6006/mcp"
   ```
 
-- Codex's sandbox has network access off, so it asks to run `npx storysync` outside it. Approve it, or accept the rule Codex offers so it stops asking.
+- Codex's sandbox has network access off, so it asks to run `npx storysync` outside it, to reach Storybook, or Figma for `figma upload`. Approve it, or accept the rule Codex offers so it stops asking.
 - Codex gives each MCP call `tool_timeout_sec` seconds (60 or 300 by default, depending on the version). The skill splits large Figma writes across calls, but if one still times out, raise the limit in the table `codex mcp add` wrote to `~/.codex/config.toml`:
 
   ```toml

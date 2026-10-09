@@ -1593,6 +1593,26 @@ test("every push builds with generated calls and CLI commands alone: no styling 
   assert.match(figmaCode, /the skill's root-only templates/, "figma code no longer points a root-only snap to the skill's root-only templates");
 });
 
+test("every message a skill's scoring step quotes is one verify prints, as it prints it", () => {
+  // An agent looks for the words it was told to expect: a quote that
+  // drifted from the CLI's wording, `in Figma, but snap no longer measures
+  // it` for what prints `in Figma (node 1:2), but …`, is never matched.
+  const printed = ["verify.js", "index.js", "figma-results.js"].map((f) => readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), "utf8")).join("\n");
+  for (const [path, text] of installedSkillTexts()) {
+    const start = text.indexOf("\n6. **Score what Figma holds.**");
+    const step = text.slice(start, text.indexOf("\n7. ", start));
+    assert.ok(start > 0, `${path} has no scoring step`);
+    const quotes = [...step.matchAll(/^ {3}- `([^`]+)`/gm)].map((m) => m[1].replace(/^! /, ""));
+    assert.ok(quotes.length >= 6, `${path}: ${quotes.length} quoted messages`);
+    for (const quote of quotes) {
+      // `…`, N and TYPE stand for what each message fills in.
+      for (const piece of quote.split(/…|\bN\b|\bTYPE\b/).map((p) => p.trim()).filter((p) => p.length > 2)) {
+        assert.ok(printed.includes(piece), `${path} quotes "${quote}", and verify never prints "${piece}"`);
+      }
+    }
+  }
+});
+
 test("every audit can score how the sets look, reading Figma and changing nothing in it", () => {
   // The audit compared variant names and token values, so a set with its
   // icon missing or its title misplaced was "in sync". It can now read the
