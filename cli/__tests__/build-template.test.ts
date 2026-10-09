@@ -586,6 +586,9 @@ test("build: a variant copied from an icon-root variant keeps the icon's shapes,
     const mock = mockFor([fixture], { clonePluginData });
     const [build] = await runPlan(mock, coded, ["build"]);
     assert.equal(result(build).sets[0].designerLayers, 0, `clonePluginData ${clonePluginData}`);
+    // The copy keeps the shapes it was made with, rather than importing the icon again:
+    // the one layer removed is the first import's own frame, emptied of its shapes.
+    assert.equal(build.removed, 1, `clonePluginData ${clonePluginData}`);
     for (const [slug, size] of [["size-sm", 16], ["size-lg", 24]] as const) {
       const variant = variantsBySlug(mock).get(slug)!;
       assert.deepEqual(variant.children!.map((c) => [c.type, c.data["storysync.vs"]]), [["VECTOR", "1"]], `${slug}, clonePluginData ${clonePluginData}`);

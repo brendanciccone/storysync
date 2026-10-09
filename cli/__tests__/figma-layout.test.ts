@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { variantLayouts } from "../figma-code.js";
 import { planLayout, visibleReorder } from "../figma-layout.js";
 import type { LayoutChild, LayoutParent } from "../figma-layout.js";
+import type { TreeNode } from "../tree-types.js";
 import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
 
 const parent = (fields: Partial<LayoutParent> = {}): LayoutParent => ({ k: "", size: [100, 40], inset: [0, 0, 0, 0], ...fields });
@@ -79,6 +80,25 @@ test("planLayout: where several alignments across the flow fit, the one CSS decl
   assert.equal(counter("flex-start"), "MIN");
   // Stretched by default, they fill across instead.
   assert.deepEqual(planLayout(parent({ L: { d: "flex" } }), kids).fill, { a: [false, true], b: [false, true] });
+});
+
+test("variantLayouts: a reorder is checked on border boxes, a stroke built outside a frame included", () => {
+  // b paints under a but flows after it; its 2px border, built OUTSIDE (bg-clip-padding), reaches 1px under a.
+  const component = JSON.parse(JSON.stringify(loadTreeFixture("example-button").components[0])) as ReturnType<typeof loadTreeFixture>["components"][number];
+  const tree = (bx: number): TreeNode[] => [
+    { k: "", t: "F", el: "div", box: [0, 0, 100, 20], L: { d: "flex" } },
+    { k: "b", t: "F", el: "span", box: [bx, 0, 60, 20], bg: "#eeeeee", bgc: "padding-box", bd: { w: 2, s: "solid", c: "#000000" } },
+    { k: "a", t: "F", el: "span", box: [0, 0, 41, 20], bg: "#dddddd" },
+  ];
+  const plan = (bx: number) => {
+    component.tree = { version: 1, base: tree(bx), assets: { svg: {}, img: {} } };
+    component.variants = [{ ...component.variants[0], slug: "default", treeDelta: undefined } as never];
+    component.base = { ...component.base!, slug: "default" };
+    return variantLayouts(component, component.variants[0]).get("")!;
+  };
+  assert.deepEqual([plan(40).mode, plan(40).why], ["NONE", "its children paint in another order than they flow, and some of them overlap"]);
+  // 1px further, they keep apart: laid out in flow order.
+  assert.deepEqual([plan(41).mode, plan(41).order], ["HORIZONTAL", ["a", "b"]]);
 });
 
 test("planLayout: a frame with nothing in its flow has no auto layout, and no reason to give", () => {
