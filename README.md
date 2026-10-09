@@ -605,7 +605,7 @@ Options:
 | `--allow-designer-layers` | With `--strict`, passes the layers a designer added inside variants. They are still listed. |
 | `--strict-age` | A snap older than `--max-age`, or one whose age is unknown |
 | `--strict-measured` | Variants that weren't measured: placeholders for variants snap couldn't measure, variants inferred from source by a root-only push, and variants snap measured without checking that the story took their values. This is the one to use in CI. |
-| `--min-fidelity <pct>` | A score below the percentage, with or without `--strict`, or a run that scored nothing |
+| `--min-fidelity <pct>` | A score below the percentage, with or without `--strict`, or a run that scored nothing. With `--json`, `minFidelity` gives the minimum and the score, both from 0 to 1, and whether it passed. |
 
 **Element fidelity.** With a snap of element trees, `verify` scores every element snap measured, by its key. Each element scores the share of its properties that Figma matches: its place and size, fills, strokes, corner radii, shadows, opacity, blend mode and clipping for a frame; its characters, font, size, weight, line height, letter spacing, color, case, alignment and how it fits its box for a text; its shapes and their colors for an icon; and its picture, compared byte for byte, for an image. An element scores 0 when it is missing, of another kind (a frame where snap measured an icon), hidden, or has the wrong characters, shapes or picture. The headline is the elements' scores over their number, and a layer for an element snap no longer measures counts as one more element, scoring 0. The share of properties is beside it, and in `--json` it stays in `fidelity`, as before, with the element score in `elementFidelity`.
 

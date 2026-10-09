@@ -602,7 +602,10 @@ program
       const belowMinimum = minFidelity !== null && (headline === null || headline < minFidelity / 100 - 1e-9);
 
       if (json) {
-        console.log(JSON.stringify(plan ? { ...result, plan } : result));
+        // With --min-fidelity, what it was held to, so a CI reading the JSON
+        // can tell that failure from a --strict one: both 0 to 1, as the score.
+        const held = minFidelity === null ? {} : { minFidelity: { min: minFidelity / 100, score: headline, passed: !belowMinimum } };
+        console.log(JSON.stringify({ ...result, ...(plan ? { plan } : {}), ...held }));
       } else {
         const { summary } = result;
         // Said on the score's own line, in so many words: a score over the

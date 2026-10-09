@@ -521,7 +521,10 @@ test("verify --plan: writes the readback where --readback says, and scores the s
 test("verify --min-fidelity: holds the element score to a percentage, with or without --strict, and fails a run that scored nothing", async () => {
   const p = await push(asSnap(loadTreeFixture("card")));
   try {
-    assert.equal((await verifyPlan(p, "--min-fidelity", "100")).status, 0);
+    const full = await verifyPlan(p, "--min-fidelity", "100");
+    assert.equal(full.status, 0);
+    assert.deepEqual(full.json.minFidelity, { min: 1, score: 1, passed: true });
+    assert.equal((await verifyPlan(p)).json.minFidelity, undefined, "minFidelity without the flag");
     // A title deleted in Figma by hand: one element of 46 missing in one variant.
     const slug = loadTreeFixture("card").components[0].variants[0].slug;
     const title = layerOf(p.mock, slug, "card-header/card-title");
@@ -530,6 +533,8 @@ test("verify --min-fidelity: holds the element score to a percentage, with or wi
     const below = await verifyPlan(p, "--min-fidelity", "99");
     assert.equal(below.status, 1, "an element score under the minimum passed");
     assert.ok((below.json.elementFidelity as number) < 0.99 && (below.json.elementFidelity as number) > 0.9);
+    // Said in the JSON, so a CI reading it can tell this failure from a --strict one.
+    assert.deepEqual(below.json.minFidelity, { min: 0.99, score: below.json.elementFidelity, passed: false });
     assert.match(below.text.stdout, /The score, element fidelity, is [\d.]+%: below --min-fidelity 99%/);
     assert.equal((await verifyPlan(p, "--min-fidelity", "90%")).status, 0);
     // With every component skipped nothing is scored, which is no pass.
