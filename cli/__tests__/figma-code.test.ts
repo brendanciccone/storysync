@@ -155,6 +155,18 @@ test("figma next: a continuation reads with the limit its call was written with"
   assert.match(readFileSync(next!.file, "utf8"), /\nconst LIMIT = 5000;\n/);
 });
 
+test("figma next: a continuation is written from the template its call was, readable after figma code --no-minify", async () => {
+  for (const minify of [true, false]) {
+    const coded = await codeFor(loadTreeFixture("card"), { minify, templates: {} });
+    const read = coded.plan.calls.find((c) => c.kind === "read")!;
+    const readable = (code: string) => code.includes("\n// storysync readback, template");
+    assert.equal(readable(coded.code(read)), !minify);
+    writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+    const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq });
+    assert.equal(readable(readFileSync(next!.file, "utf8")), !minify, `minify ${minify}`);
+  }
+});
+
 test("figma code: a variant over --max-nodes gets a call of its own, and a warning", async () => {
   const coded = await codeFor(loadTreeFixture("sidebar"), { maxNodes: 10 });
   assert.equal(coded.plan.calls.filter((c) => c.kind === "build").length, 1);

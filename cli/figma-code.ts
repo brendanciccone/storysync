@@ -839,9 +839,11 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
         continue;
       }
     }
-    const template = loadTemplate("readback", opts.minify ?? true, opts.templates);
-    // The same limit the call it continues was written with.
-    const written = existsSync(join(dir, call.file)) ? /\nconst LIMIT = (\d+);/.exec(readFileSync(join(dir, call.file), "utf8")) : null;
+    // The template and the limit the call it continues was written with: the
+    // readable template, which keeps its comments, after `figma code --no-minify`.
+    const parent = existsSync(join(dir, call.file)) ? readFileSync(join(dir, call.file), "utf8") : "";
+    const template = loadTemplate("readback", opts.minify ?? !parent.includes("\n// storysync readback, template"), opts.templates);
+    const written = /\nconst LIMIT = (\d+);/.exec(parent);
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
