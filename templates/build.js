@@ -35,8 +35,9 @@
 // snap no longer measures them. Layers without a key are a designer's: left
 // alone and counted. Running a call twice changes nothing the second time.
 //
-// Branches marked SPIKE(n) take whichever way Figma goes on spike item n
-// (cli/figma-spike.ts): each tries the design's choice and falls back.
+// Branches marked SPIKE(n) guard what spike item n (cli/figma-spike.ts)
+// didn't try: each takes the design's choice, which the spike saw Figma
+// take, and falls back should Figma refuse it.
 
 const NS = 'storysync';
 const NL = String.fromCharCode(10);
@@ -157,12 +158,15 @@ const image = (n, id) => {
   }
 };
 
-// Imports a vector. SPIKE(1): the markup's size, or its viewBox's with a
-// rescale, is chosen by emit; an import Figma refuses leaves an empty,
-// keyed frame, which verify scores as the wrong shapes.
+// Imports a vector at the size emit chose: its measured size, since Figma
+// scales the strokes with it, or its viewBox's with a rescale. The import's
+// frame comes with a fill of its own, which an icon doesn't have. SPIKE(1):
+// an import Figma refuses leaves an empty, keyed frame, which verify scores
+// as the wrong shapes.
 const vector = (st) => {
   try {
     const n = figma.createNodeFromSvg(S[st.m]);
+    n.fills = [];
     if (st.rs) n.rescale(st.rs);
     return n;
   } catch (e) {
@@ -207,7 +211,7 @@ const style = async (n, rec, parent, root) => {
   const st = S[si];
   let sizing = st.z || ['X', 'X'];
   if (st.n && !root && get(n, 'svg') !== 'failed') n.name = st.n;
-  // Clipping first: whether a shadow's spread takes can depend on it (SPIKE(2)).
+  // Clipping first, should a spread take only where a frame clips (SPIKE(2)).
   if (kind !== 'T') n.clipsContent = Boolean(st.c);
   n.visible = st.v !== 0;
   n.opacity = st.o === undefined ? 1 : st.o;
@@ -216,7 +220,8 @@ const style = async (n, rec, parent, root) => {
   try {
     n.effects = fx;
   } catch (e) {
-    // SPIKE(2): a shadow's spread Figma refuses on this node is left out.
+    // SPIKE(2): a spread Figma refuses on this node is left out. The spike
+    // saw a frame keep one, clipped or not; it tried no other kind of node.
     if (!fx.some((f) => f.spread)) throw e;
     n.effects = fx.map((f) => Object.assign({}, f, { spread: 0 }));
     fallback('shadow spread left out', e);
@@ -239,7 +244,8 @@ const style = async (n, rec, parent, root) => {
       n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
       n.maxLines = t.tr || null;
     } catch (e) {
-      // SPIKE(3): truncation Figma refuses is built as a box of the measured size.
+      // SPIKE(3): truncation Figma refuses is built as a box of the measured
+      // size. The spike saw ENDING and maxLines taken on a fixed width.
       if (!t.tr) throw e;
       fallback('truncation refused', e);
       n.resize(w, h);
@@ -518,24 +524,22 @@ for (const [s, set] of DATA.sets.entries()) {
       let variant = existing.get(name);
       if (!variant && first && recs.filter((r) => firstKeys.has(r[0])).length * 2 >= recs.length) {
         // A new variant that shares most of its layers with one already
-        // converged starts as a copy of it, its keys copied explicitly
-        // (SPIKE(5)) and the copy's designer layers dropped; one that
-        // doesn't is made afresh, rather than copied and mostly removed.
-        // An icon root's shapes are kept, and its `svg` with them, or the copy
-        // would keep the asset id with no shapes, and never import them.
+        // converged starts as a copy of it; one that doesn't is made
+        // afresh, rather than copied and mostly removed. The copy keeps
+        // each layer's plugin data, as the spike saw clone() do (item 5):
+        // its keys, and an icon root's `svg` with the shapes marked `vs`.
+        // Its designer layers go. Figma puts the copy of a variant on the
+        // page, not in its set, so it goes beside its original here.
         variant = first.clone();
-        const copy = (from, to) => {
-          const a = from.children;
-          const b = to.children;
-          a.forEach((c, i) => {
-            if (get(c, 'vs')) return put(b[i], 'vs', '1');
-            if (!get(c, 'k')) return b[i].remove();
-            for (const k of ['k', 'svg', 'img']) put(b[i], k, get(c, k));
-            if (c.type === 'FRAME' && !get(c, 'svg')) copy(c, b[i]);
-          });
+        first.parent.insertChild(first.parent.children.indexOf(first) + 1, variant);
+        const drop = (n) => {
+          for (const c of [...n.children]) {
+            if (get(c, 'vs')) continue;
+            if (!get(c, 'k')) c.remove();
+            else if (c.type === 'FRAME' && !get(c, 'svg')) drop(c);
+          }
         };
-        put(variant, 'svg', get(first, 'svg'));
-        copy(first, variant);
+        drop(variant);
         created.push(variant);
       } else if (!variant) {
         variant = figma.createComponent();

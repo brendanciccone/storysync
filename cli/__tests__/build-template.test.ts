@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleReorder } from "../figma-layout.js";
+import { textSizesItself } from "../figma-map.js";
 import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
@@ -207,6 +208,44 @@ test("build: a new variant that shares few layers with the first is made afresh,
   }
 });
 
+test("build: an icon's imported frame has no fill, and no label meant to hug is resized", async () => {
+  // Figma gives an imported SVG's frame a fill (spike item 1), and resize()
+  // fixes a hugging text's size (item 3): neither may reach what is built.
+  for (const name of treeFixtureNames()) {
+    const fixture = loadTreeFixture(name);
+    const { mock } = await buildAll(fixture);
+    for (const variant of fixtureVariants(fixture)) {
+      const node = variantsBySlug(mock).get(variant.slug)!;
+      for (const n of variant.nodes) {
+        const view = n.k === "" ? node : keyed(node, n.k)!;
+        const handle = mock.handle(view.id) as { fills: unknown[]; textAutoResize?: string };
+        if (n.t === "V") assert.deepEqual(handle.fills, [], `${name} ${variant.slug} ${n.k}`);
+        if (n.t === "T" && textSizesItself(n)) assert.equal(handle.textAutoResize, "WIDTH_AND_HEIGHT", `${name} ${variant.slug} ${n.k}`);
+      }
+    }
+  }
+});
+
+test("build: a variant copied from one already in its set goes into the set, though clone() puts it on the page", async () => {
+  // clone() lands a variant's copy on the page (spike item 5): the build moves it into its set beside the original.
+  const fixture = loadTreeFixture("switch");
+  const first = copy(fixture);
+  first.components[0].variants = first.components[0].variants.filter((v) => v.slug === first.components[0].base!.slug);
+  const mock = mockFor([fixture]);
+  await runPlan(mock, await codeFor(first), ["build"]);
+  const [build] = await runPlan(mock, await codeFor(fixture), ["build"]);
+  assert.deepEqual([result(build).sets[0].added, result(build).sets[0].updated], [1, 1]);
+  const page = mock.pages().find((p) => p.name === "ui/base")!;
+  assert.deepEqual(page.children!.map((n) => n.type), ["COMPONENT_SET"], "nothing left on the page");
+  for (const variant of fixtureVariants(fixture)) {
+    const built = variantsBySlug(mock).get(variant.slug)!;
+    assert.deepEqual(unkeyed(built), [], variant.slug);
+    assert.deepEqual(boxDrift(mock, built, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+  }
+  const again = await runPlan(mock, await codeFor(fixture), ["build"]);
+  assert.deepEqual([again[0].created, again[0].removed], [0, 0]);
+});
+
 test("build: a keyed layer duplicated in Figma is removed, the first of them kept", async () => {
   const fixture = loadTreeFixture("switch");
   const coded = await codeFor(fixture);
@@ -252,12 +291,12 @@ test("build: running the same calls again creates and removes nothing, and keeps
   }
 });
 
-test("build: where clone() drops plugin data (spike item 5), keys are copied and a rerun still changes nothing", async () => {
+test("build: where clone() drops plugin data, which the spike didn't see, a copy is built afresh and a rerun changes nothing", async () => {
   const fixture = loadTreeFixture("attachment");
   const coded = await codeFor(fixture);
   const mock = mockFor([fixture], { clonePluginData: false });
   const [first] = await runPlan(mock, coded, ["build"]);
-  // No copy is left beside the layers converge keyed: the clone's own are those.
+  // The copy's layers, with no key, went as a designer's would: none is left beside those converge made.
   assert.equal(result(first).sets[0].designerLayers, 0);
   const again = await runPlan(mock, coded, ["build"]);
   assert.deepEqual([again[0].created, again[0].removed], [0, 0]);
@@ -586,9 +625,10 @@ test("build: a variant copied from an icon-root variant keeps the icon's shapes,
     const mock = mockFor([fixture], { clonePluginData });
     const [build] = await runPlan(mock, coded, ["build"]);
     assert.equal(result(build).sets[0].designerLayers, 0, `clonePluginData ${clonePluginData}`);
-    // The copy keeps the shapes it was made with, rather than importing the icon again:
-    // the one layer removed is the first import's own frame, emptied of its shapes.
-    assert.equal(build.removed, 1, `clonePluginData ${clonePluginData}`);
+    // Keeping plugin data, as the spike saw clone() do, the copy keeps the shapes it was made
+    // with: the one layer removed is the first import's own frame, emptied of its shapes.
+    // Without it, the copy's unmarked shapes go too, and the icon is imported again.
+    assert.equal(build.removed, clonePluginData ? 1 : 3, `clonePluginData ${clonePluginData}`);
     for (const [slug, size] of [["size-sm", 16], ["size-lg", 24]] as const) {
       const variant = variantsBySlug(mock).get(slug)!;
       assert.deepEqual(variant.children!.map((c) => [c.type, c.data["storysync.vs"]]), [["VECTOR", "1"]], `${slug}, clonePluginData ${clonePluginData}`);
