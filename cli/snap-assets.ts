@@ -227,10 +227,40 @@ function positionOffset(token: string | undefined, room: number): number {
 }
 
 /**
+ * The size a `background-size` of lengths, percentages of the box and
+ * `auto` draws an image at, or null for a value it can't read. `auto` on
+ * one side keeps the image's shape; on both, its own size.
+ */
+function backgroundSize(value: string, natural: [number, number], box: [number, number]): [number, number] | null {
+  const tokens = value.trim().split(/\s+/);
+  if (tokens.length > 2) return null;
+  const side = (token: string, i: 0 | 1): number | null | undefined => {
+    if (token === "auto") return null;
+    const px = /^(\d*\.?\d+)px$/.exec(token);
+    if (px) return Number(px[1]);
+    const percent = /^(\d*\.?\d+)%$/.exec(token);
+    if (percent) return (Number(percent[1]) / 100) * box[i];
+    return undefined;
+  };
+  const w = side(tokens[0], 0);
+  const h = side(tokens[1] ?? "auto", 1);
+  if (w === undefined || h === undefined) return null;
+  const [W, H] = natural;
+  if (w === null && h === null) return [W, H];
+  if (w === null) return [(h! * W) / H, h!];
+  if (h === null) return [w, (w * H) / W];
+  return [w, h];
+}
+
+/**
  * The part of an image a box of `box` CSS px shows, as `object-fit` and
  * `object-position` place it (`fill`, CSS's initial value, stretches it to
- * the box). Independent of the box's scale: the 24, 32 and 40px Avatar show
- * the same crop, so share one asset.
+ * the box), or a background's `background-size` and `background-position`:
+ * a size given in lengths or `auto` draws it at that size, wherever the
+ * position puts it, `16px 16px` in the middle of a 64px box a quarter of
+ * it. Independent of the box's scale for `fit`'s keywords and
+ * percentages: the 24, 32 and 40px Avatar show the same crop, so share one
+ * asset.
  */
 export function imageCrop(natural: [number, number], box: [number, number], fit: string, position: string): ImageCrop {
   const [W, H] = natural;
@@ -244,7 +274,12 @@ export function imageCrop(natural: [number, number], box: [number, number], fit:
     case "cover": sx = sy = Math.max(bw / W, bh / H); break;
     case "none": sx = sy = 1; break;
     case "scale-down": sx = sy = Math.min(1, bw / W, bh / H); break;
-    default: sx = bw / W; sy = bh / H; break;
+    case "fill": sx = bw / W; sy = bh / H; break;
+    default: {
+      const size = backgroundSize(fit, natural, box);
+      [sx, sy] = size ? [size[0] / W, size[1] / H] : [bw / W, bh / H];
+      break;
+    }
   }
   const rw = W * sx;
   const rh = H * sy;

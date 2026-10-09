@@ -412,6 +412,34 @@ test("buildTree: a box that is only its background picture is an image waiting f
   assert.deepEqual(built.images, [{ key: "div", path: [0], src: "https://example.test/a.png", natural: [0, 0], fit: "cover", position: "50% 0%", content: [64, 64] }]);
 });
 
+test("buildTree: any other url() background is a screenshot of its box, or, on a box with children, a frame that says it left the picture out", () => {
+  const svg = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><rect fill='rgb(255,0,0)' width='10' height='10'/></svg>")`;
+  const box = (cs: Record<string, string>, kids: RawTreeItem[] = []) => {
+    const built = buildTree(tree(el("div", [0, 0, 64, 64], {}, [el("div", [0, 0, 64, 64], cs, kids, { path: [0] })])));
+    return { node: built.nodes[1], images: built.images, rasters: built.rasters };
+  };
+  // A url whose quotes hold parentheses and commas is still one picture,
+  // drawn at the size it is given.
+  const icon = box({ "background-image": svg, "background-repeat": "no-repeat", "background-size": "16px 16px", "background-position": "50% 50%" });
+  assert.equal(icon.node.t, "I");
+  assert.deepEqual(icon.images.map((i) => [i.src, i.fit]), [["data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><rect fill='rgb(255,0,0)' width='10' height='10'/></svg>", "16px 16px"]]);
+  // Covering the box, its tiling never shows: tailwind's bg-cover without bg-no-repeat.
+  assert.equal(box({ "background-image": 'url("a.png")', "background-size": "cover" }).node.t, "I");
+  // Tiled, or one of several layers: a screenshot of the box.
+  for (const cs of [
+    { "background-image": 'url("a.png")', "background-repeat": "repeat", "background-size": "16px 16px" },
+    { "background-image": 'linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0)), url("a.png")', "background-repeat": "no-repeat, no-repeat", "background-size": "cover" },
+  ]) {
+    const tiled = box(cs);
+    assert.deepEqual([tiled.node.t, tiled.node.raster, tiled.node.bgi, tiled.images], ["I", 1, undefined, []], JSON.stringify(cs));
+    assert.deepEqual(tiled.rasters, [{ key: "div", path: [0], why: "background-image" }]);
+  }
+  // Holding children, which a screenshot would bake in: a frame, its
+  // gradient kept, the url() left out and said to be.
+  const holder = box({ "background-image": `linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0)), ${svg}`, "background-repeat": "no-repeat" }, [el("span", [8, 8, 16, 16], BORDER)]);
+  assert.deepEqual([holder.node.t, holder.node.bgi, holder.node.approx, holder.images, holder.rasters], ["F", "linear-gradient(#000000, #00000000)", "background-image", [], []]);
+});
+
 test("lineBox and lineCount: a run's line box from its glyphs, and its lines counted by top", () => {
   assert.deepEqual(lineBox([10, 21.5, 50, 17], 1, 20), [10, 20, 50, 20]);
   // Two lines of 17px glyphs 20px apart cover 37px: the first line's

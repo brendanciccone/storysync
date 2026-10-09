@@ -81,6 +81,10 @@ test("imageCrop: what of an image its box shows, the same at any size", () => {
   assert.equal(imageCrop([400, 200], [100, 50], "fill", "50% 50%").key, "0,0,400,200");
   // Unscaled, placed 10px in: what lands in the box.
   assert.deepEqual(imageCrop([50, 50], [100, 100], "none", "10px 10px").dst, [0.1, 0.1, 0.5, 0.5]);
+  // A background's size: lengths, a share of the box, or the image's own.
+  assert.deepEqual(imageCrop([32, 32], [64, 64], "16px 16px", "50% 50%"), { src: [0, 0, 32, 32], dst: [0.375, 0.375, 0.25, 0.25], key: "0,0,32,32@0.375,0.375,0.25,0.25" });
+  assert.deepEqual(imageCrop([400, 200], [100, 100], "100% auto", "50% 50%").dst, [0, 0.25, 1, 0.5]);
+  assert.deepEqual(imageCrop([50, 50], [100, 100], "auto", "0% 0%").dst, [0, 0, 0.5, 0.5]);
   assert.equal(fnv1a32(avatar.key).slice(0, 4), "262b");
 });
 

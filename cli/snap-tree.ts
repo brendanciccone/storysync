@@ -798,18 +798,29 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       key, path: el.path, src: el.img.src, natural: el.img.natural,
       fit: css("object-fit"), position: css("object-position"), content: [content[2], content[3]],
     });
-  } else if (kind === "F" && !item.kids.length && isPlainImageBackground(css)) {
-    // A box that is only its background picture: one url() layer, drawn once.
-    kind = node.t = "I";
-    delete node.bgi;
-    const src = /^url\(\s*"?([^")]*)"?\s*\)$/.exec(css("background-image").trim())?.[1] ?? "";
-    const content = item.box;
-    const size = css("background-size");
-    ctx.images.push({
-      key, path: el.path, src, natural: [0, 0],
-      fit: size === "cover" || size === "contain" ? size : "fill",
-      position: css("background-position"), content: [content[2], content[3]],
-    });
+  } else if (kind === "F" && backgroundLayers(css("background-image")).some((layer) => layerUrl(layer) !== null)) {
+    // A url() background (section 6.7). One picture drawn once, or covering
+    // the box, in a box holding nothing else, is an image whose bytes snap
+    // keeps; any other in a box holding nothing else, tiled, layered or
+    // under a gradient, is a screenshot of the box. A box with children
+    // can be neither, as a screenshot would bake them in: it is a frame
+    // without the picture, saying so, its url() never written into bgi.
+    const plain = plainImageBackground(css);
+    if (!item.kids.length && plain) {
+      kind = node.t = "I";
+      delete node.bgi;
+      ctx.images.push({
+        key, path: el.path, src: plain, natural: [0, 0],
+        fit: css("background-size"), position: css("background-position"), content: [item.box[2], item.box[3]],
+      });
+    } else if (!item.kids.length) {
+      kind = node.t = "I";
+      node.raster = 1;
+      delete node.bgi;
+      ctx.rasters.push({ key, path: el.path, why: "background-image" });
+    } else {
+      approx.push("background-image");
+    }
   }
 
   // Class evidence, on what draws: its own classes, and for text and icons
@@ -826,18 +837,68 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
   return isRoot ? rootOnly(node) : node;
 }
 
-/** One url() layer, not repeated, sized to cover, contain or a size given: a picture Figma can fill a frame with. */
-function isPlainImageBackground(css: Css): boolean {
-  const image = css("background-image").trim();
-  if (!/^url\([^)]*\)$/.test(image) || splitTopLevel(image).length !== 1) return false;
-  return css("background-repeat") === "no-repeat" && css("background-size") !== "auto";
+/**
+ * A background's layers, split at the commas between them: a quoted url's
+ * own commas and parentheses, as an inline SVG's `rgb(255,0,0)` has, are
+ * left alone, where splitTopLevel would count them.
+ */
+export function backgroundLayers(value: string): string[] {
+  const layers: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let current = "";
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && i + 1 < value.length) current += value[++i];
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      if (current.trim()) layers.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim() && current.trim() !== "none") layers.push(current.trim());
+  return layers;
+}
+
+/** A url() layer's URL, its quotes and CSS escapes undone, or null for any other layer. */
+export function layerUrl(layer: string): string | null {
+  const m = /^url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^"'()\s]*))\s*\)$/s.exec(layer.trim());
+  if (!m) return null;
+  return (m[1] ?? m[2] ?? m[3] ?? "").replace(/\\([0-9a-fA-F]{1,6})\s?|\\(.)/gs, (_, hex: string | undefined, ch: string | undefined) =>
+    hex ? String.fromCodePoint(parseInt(hex, 16)) : ch ?? "");
+}
+
+/**
+ * The URL of a background that is one picture Figma can fill a frame with:
+ * one url() layer, drawn once, or covering the box, which hides any tiling.
+ * Null for anything else.
+ */
+function plainImageBackground(css: Css): string | null {
+  const layers = backgroundLayers(css("background-image"));
+  const url = layers.length === 1 ? layerUrl(layers[0]) : null;
+  if (url === null) return null;
+  return css("background-repeat") === "no-repeat" || css("background-size") === "cover" ? url : null;
+}
+
+/** A background's gradients, with any url() layer left out: what bgi can hold. */
+function backgroundWithoutUrls(value: string): string | null {
+  return normalizeBackgroundImage(backgroundLayers(value).filter((layer) => layerUrl(layer) === null).join(", "));
 }
 
 /** A node's own paint: background, border, radius, shadow and opacity. The root's is its styles'. */
 function applyPaint(node: TreeNode, cs: Record<string, string>, box: RawBox, css: Css): void {
   const bg = normalizeColor(css("background-color"));
   if (bg) node.bg = bg;
-  const bgi = normalizeBackgroundImage(css("background-image"));
+  const bgi = backgroundWithoutUrls(css("background-image"));
   if (bgi) node.bgi = bgi;
   const clip = splitTopLevel(css("background-clip")).pop()?.trim() ?? "border-box";
   if ((bg || bgi) && (clip === "padding-box" || clip === "content-box")) node.bgc = clip;
