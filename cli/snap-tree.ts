@@ -399,17 +399,31 @@ function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
 
   // An element that is only its text becomes the text node, sized as the
   // element. A clip that only cuts the text off with an ellipsis is the
-  // truncation, kept as `el` on the text, so it doesn't stop this.
+  // truncation, kept as `el` on the text, so it doesn't stop this. A flex
+  // or grid container that moves its text off the start, centering it as
+  // a button does, places it where a text the element's size can't say:
+  // it stays a frame, its layout and its text's line box kept.
   const text = el.text ?? {};
   const ellipsisOnly = text["text-overflow"] === "ellipsis" && text["white-space"] === "nowrap";
   if (
     only?.kind === "text" && !paintsOwnBox(el.cs) && !hasPadding(css) && (!clips(css) || ellipsisOnly) &&
-    !DRAWING_TAGS.has(el.tag) && !el.input
+    !DRAWING_TAGS.has(el.tag) && !movesItsContent(css)
   ) {
     item.leaf = only.run;
     item.kids = [];
   }
   return [item];
+}
+
+/**
+ * Whether a flex or grid container puts its one item anywhere but its
+ * start: centered, at the end, or spaced around. Stretched, at the start,
+ * at its baseline, or spaced between, one item sits at the start.
+ */
+function movesItsContent(css: Css): boolean {
+  if (!/flex|grid/.test(css("display"))) return false;
+  return !["normal", "flex-start", "start", "left", "space-between", "stretch"].includes(css("justify-content")) ||
+    !["normal", "stretch", "flex-start", "start", "self-start", "baseline", "first baseline"].includes(css("align-items"));
 }
 
 /** An element's content box, root-relative: its border box less border and padding. */
@@ -561,9 +575,10 @@ function layoutFacts(css: Css): TreeLayout {
 }
 
 /**
- * A node's facts as a flex or grid item: its own, or when it has none, those
- * of the wrappers collapsed into it, outermost first, since the outermost
- * is the one its parent laid out. Its z-index as flowCss finds it.
+ * A node's facts as a flex or grid item of its parent: those of the
+ * outermost wrapper collapsed into it, when there is one, since that is
+ * the element its parent laid out, else its own. Its z-index as flowCss
+ * finds it.
  */
 function selfFacts(item: Item, parentCss: Css): TreeSelf | undefined {
   const flex = parentCss("display").includes("flex");
@@ -579,11 +594,12 @@ function selfFacts(item: Item, parentCss: Css): TreeSelf | undefined {
     if ((flex || grid) && css("order") !== "0") S.order = Number(css("order"));
     return S;
   };
-  let S = of(item.css!);
-  for (const wrapper of [...item.wrappers].reverse()) {
-    if (Object.keys(S).length) break;
-    S = of(reader(wrapper.cs));
-  }
+  // Section 6.2 takes the child's own and a wrapper's only when it has
+  // none, but the child's grow or shrink worked inside the wrapper, which
+  // is what grew or shrank in the parent: a child's shrink-0 under a
+  // wrapper's flex-1 was stored as the item's, and the grow lost.
+  const outer = item.wrappers[item.wrappers.length - 1];
+  const S = of(outer ? reader(outer.cs) : item.css!);
   const z = zOf(item, flex || grid);
   if (z !== null) S.z = z;
   return Object.keys(S).length ? S : undefined;

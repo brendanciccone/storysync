@@ -286,6 +286,14 @@ test("buildTree: an element that is only its text becomes the text, sized as the
   assert.deepEqual(nodes[2].box, [0, 3.5, 40, 20]);
   // The root never becomes its text: its text is a child.
   assert.deepEqual(buildTree(tree(leaf)).nodes.map((n) => n.k), ["", "#text"]);
+  // Centered by its flex or grid layout, not its own box: a frame, keeping
+  // the layout that centers its text. At the start, it is the text.
+  const centered = (cs: Record<string, string>) => buildTree(tree(el("div", [0, 0, 200, 40], {}, [
+    el("span", [0, 0, 200, 40], cs, [run("Go", [[90, 11.5, 20, 17]])], { text: TEXT }),
+  ]))).nodes.slice(1).map((n) => [n.k, n.t, n.L?.jc ?? n.L?.ai]);
+  assert.deepEqual(centered({ display: "flex", "justify-content": "center", "align-items": "center" }), [["span", "F", "center"], ["span/#text", "T", undefined]]);
+  assert.deepEqual(centered({ display: "grid", "align-items": "end" }), [["span", "F", "end"], ["span/#text", "T", undefined]]);
+  assert.deepEqual(centered({ display: "flex", "align-items": "stretch" }), [["span", "T", undefined]]);
 });
 
 test("buildTree: a run that wraps starts where its first line does, whatever its leading and however many lines", () => {
@@ -576,11 +584,12 @@ test("stylesJsonText: each tree node on one line, keys sorted; without trees, JS
   assert.deepEqual(JSON.parse(text), withTree);
 });
 
-test("buildTree: a child with flex facts of its own keeps them under a wrapper; one out of the flow in a wrapper is out of it", () => {
+test("buildTree: under a wrapper, a child's flex facts are the wrapper's, which its parent laid out; one out of the flow in a wrapper is out of it", () => {
+  // The button's shrink-0 worked inside the wrapper; the wrapper is what grew in the row.
   const button = el("button", [8, 8, 24, 24], { ...BORDER, "flex-shrink": "0" });
   const actions = el("div", [8, 8, 24, 24], { position: "relative", "z-index": "20", "flex-grow": "1" }, [button]);
   const [, node] = buildTree(tree(el("div", [0, 0, 40, 40], { display: "flex" }, [actions]))).nodes;
-  assert.deepEqual(node.S, { shrink: 0, z: 20 });
+  assert.deepEqual(node.S, { grow: 1, z: 20 });
   assert.equal(node.abs, undefined);
   const floating = el("div", [8, 8, 24, 24], { position: "absolute" }, [el("span", [8, 8, 24, 24], { ...BORDER, position: "relative" })]);
   assert.equal(buildTree(tree(el("div", [0, 0, 40, 40], {}, [floating]))).nodes[1].abs, 1);
