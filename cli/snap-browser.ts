@@ -26,6 +26,8 @@ import {
 } from "./snap-assets.js";
 import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
 import type { TreeNode } from "./tree-types.js";
+import { STAND_IN_PREFIX, standInFaces, standInStack } from "./fonts.js";
+import type { StandIn } from "./fonts.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -231,6 +233,12 @@ export interface CaptureResult {
    * any it didn't, when `story` was given and the story loaded.
    */
   args: StoryArgsCheck | null;
+  /**
+   * Each family the code asked for that snap drew in a stand-in instead,
+   * `[asked, drawn]`: system-ui in Inter, so Chrome lays the text out as
+   * Figma will (fonts.ts). Absent where none was.
+   */
+  standIns?: [asked: string, drawn: string][];
   /** The element tree under the measured element, when `tree` was "tree". */
   tree?: CapturedTree;
   /** How many elements that tree would hold, when `tree` was "count" (`--root-only`). */
@@ -274,6 +282,8 @@ export interface CaptureOptions {
    * many elements a tree would hold ("count", for `--root-only`), or nothing.
    */
   tree?: "tree" | "count";
+  /** Whether text Figma sets in a stand-in is drawn in it before it is measured. Default true. */
+  standIns?: boolean;
 }
 
 /** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
@@ -349,6 +359,8 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     }
 
     await settle(page, images, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
+    // Before anything is measured, or chosen by its box.
+    if (opts.standIns !== false) await drawStandIns(page, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
 
     const located = opts.selector ? await locateSelector(page, opts.selector) : await locateComponent(page, slots);
     if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
@@ -395,8 +407,10 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       // with no tree delta reads as its base's tree.
       return { status: "render_error", error: `snap couldn't read the element tree: ${firstLine(err)}`, ...empty };
     }
+    const standIns = standInsMeasured(fonts, tree);
     return {
       status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args,
+      ...(standIns.length ? { standIns } : {}),
       ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
     };
   } catch (err) {
@@ -446,6 +460,140 @@ export function storybookErrorInPage(): string | null {
 
 async function readStorybookError(page: Page): Promise<string | null> {
   return page.evaluate(storybookErrorInPage);
+}
+
+// --- Stand-in fonts ---------------------------------------------------------
+//
+// Text Figma sets in a stand-in, Inter for system-ui, is drawn in it before
+// anything is measured, from the same font files (fonts.ts), so Chrome and
+// Figma lay it out alike. An element whose font stack opens with a CSS
+// keyword or a platform face Figma lacks gets the stand-in ahead of its
+// stack, inline; a child that inherits the stack inherits that too.
+
+/**
+ * The distinct computed font stacks of the text the page draws, in document
+ * order: an element's whose text node lays out on screen, a form control's
+ * and a ::before or ::after's with text of its own. A stack no drawn text is
+ * on, html's default Times or that of Storybook's own UI, hidden while a
+ * story shows, needs no stand-in.
+ */
+export function textFontStacksInPage(root: Element = document.documentElement): string[] {
+  const visit = (el: Element, out: Element[]) => {
+    out.push(el);
+    for (const child of Array.from(el.children)) visit(child, out);
+    const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (shadow) for (const child of Array.from(shadow.children)) visit(child, out);
+    return out;
+  };
+  const drawn = (node: Node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return range.getClientRects().length > 0;
+  };
+  const stacks: string[] = [];
+  const add = (stack: string) => {
+    if (stack && !stacks.includes(stack)) stacks.push(stack);
+  };
+  for (const el of visit(root, [])) {
+    const control = /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.getClientRects().length > 0;
+    if (control || Array.from(el.childNodes).some((node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()) && drawn(node))) {
+      add(getComputedStyle(el).fontFamily);
+    }
+    for (const pseudo of ["::before", "::after"]) {
+      const style = getComputedStyle(el, pseudo);
+      // A quoted string with something in it: `""` draws no text.
+      if (/^["'][^"']/.test(style.content) && el.getClientRects().length > 0) add(style.fontFamily);
+    }
+  }
+  return stacks;
+}
+
+/**
+ * Adds the stand-ins' faces to the page and puts each element whose
+ * computed stack `stacks` names on the stand-in's stack instead, inline and
+ * important, so no rule of the story's outranks it. An element is read after
+ * those before it are changed, so one that inherits a changed stack is left
+ * as it is. Returns how many elements it changed.
+ */
+export function standInFontsInPage(
+  args: { stacks: Record<string, string>; faces: { family: string; style: string; weight: string; unicodeRange: string; data: string }[] },
+  root: Element = document.documentElement,
+): number {
+  for (const face of args.faces) {
+    const bytes = Uint8Array.from(atob(face.data), (c) => c.charCodeAt(0));
+    document.fonts.add(new FontFace(face.family, bytes, { style: face.style, weight: face.weight, unicodeRange: face.unicodeRange }));
+  }
+  const visit = (el: Element, out: Element[]) => {
+    out.push(el);
+    for (const child of Array.from(el.children)) visit(child, out);
+    const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (shadow) for (const child of Array.from(shadow.children)) visit(child, out);
+    return out;
+  };
+  let changed = 0;
+  for (const el of visit(root, [])) {
+    const next = args.stacks[getComputedStyle(el).fontFamily];
+    if (next === undefined) continue;
+    (el as HTMLElement).style.setProperty("font-family", next, "important");
+    changed++;
+  }
+  return changed;
+}
+
+/**
+ * Waits, at most `ms`, for the faces snap added (their family starts with
+ * `prefix`) to load, then for two frames, so text is laid out in them. Only
+ * those: a face the project declares and nothing draws in would be fetched
+ * by load(), and one whose request hangs would hold the capture.
+ */
+export async function standInsLoadedInPage(args: { prefix: string; ms: number }): Promise<void> {
+  try {
+    const ours = Array.from(document.fonts).filter((face) => face.family.replace(/^["']|["']$/g, "").startsWith(args.prefix));
+    await Promise.race([
+      Promise.all(ours.map((face) => face.load().catch(() => null))),
+      new Promise((r) => setTimeout(r, args.ms)),
+    ]);
+  } catch {
+    // The fonts API missing is no reason to fail a capture.
+  }
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+}
+
+/** The families a capture measured in a stand-in, `[asked, drawn]`, from its root's and text's fonts and its tree's texts, sorted. */
+export function standInsMeasured(fonts: CaptureResult["fonts"], tree?: { nodes: TreeNode[] }): [string, string][] {
+  const pairs = new Set<string>();
+  for (const probe of [fonts.root, fonts.text]) {
+    const font = probe ? resolveFontFamily(probe) : null;
+    if (font?.asked) pairs.add(JSON.stringify([font.asked, font.family]));
+  }
+  for (const node of tree?.nodes ?? []) if (node.tx?.fs) pairs.add(JSON.stringify([node.tx.fs, node.tx.f]));
+  return [...pairs].sort().map((pair) => JSON.parse(pair) as [string, string]);
+}
+
+/**
+ * Draws the page's text in the stand-ins Figma will set it in (fonts.ts),
+ * waiting at most `ms` for their faces, and returns how many elements it
+ * put on one. Only the stand-ins the page's text needs are sent: none for
+ * a story set in the project's own font.
+ */
+async function drawStandIns(page: Page, ms: number): Promise<number> {
+  const stacks: Record<string, string> = {};
+  const used = new Set<StandIn>();
+  // Called with no argument, each takes the document as its root.
+  const listed: unknown = await page.evaluate(textFontStacksInPage as () => string[]);
+  // Only a stand-in for a page lists none.
+  if (!Array.isArray(listed)) return 0;
+  for (const stack of listed as string[]) {
+    const standIn = standInStack(stack);
+    if (!standIn) continue;
+    stacks[stack] = standIn.stack;
+    used.add(standIn.standIn);
+  }
+  if (!used.size) return 0;
+  const faces = [...used].sort().flatMap((standIn) => standInFaces(standIn));
+  const changed = await page.evaluate(standInFontsInPage, { stacks, faces });
+  await page.evaluate(standInsLoadedInPage, { prefix: STAND_IN_PREFIX, ms });
+  return changed;
 }
 
 /**

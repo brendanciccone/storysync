@@ -126,6 +126,9 @@ test("firstFontFamily: takes the first family and strips quotes", () => {
   assert.equal(firstFontFamily("Helvetica, Arial, sans-serif"), "Helvetica");
   assert.equal(firstFontFamily('"Inter var", sans-serif'), "Inter var");
   assert.equal(firstFontFamily(undefined), "");
+  // A stand-in snap drew (fonts.ts), where no probe of the stack says so, by the name Figma has it under.
+  assert.equal(firstFontFamily('"storysync Inter", ui-sans-serif, system-ui'), "Inter");
+  assert.equal(firstFontFamily("storysync Roboto Mono, monospace"), "Roboto Mono");
 });
 
 // --- Borders ----------------------------------------------------------------
@@ -787,6 +790,23 @@ test("resolveFontFamily: a system stack records the font Chrome drew, not -apple
     applied: [false, true, false, true, null],
   });
   assert.deepEqual(resolved, { family: "system-ui", available: null });
+});
+
+test("resolveFontFamily: a stand-in snap drew is recorded as the family Figma sets, with what the code asked for", () => {
+  // Tailwind's stack, with the stand-in snap puts ahead of it (fonts.ts).
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Inter", "ui-sans-serif", "system-ui", "sans-serif"], applied: [true, false, null, null] }),
+    { family: "Inter", available: true, asked: "system-ui" },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Roboto Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"], applied: [true, false, false, true, null] }),
+    { family: "Roboto Mono", available: true, asked: "Menlo" },
+  );
+  // A stand-in that didn't load drew nothing: the stack is read as before.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Inter", "ui-sans-serif", "system-ui"], applied: [false, false, null] }),
+    { family: "system-ui", available: null },
+  );
 });
 
 test("resolveFontFamily: Tailwind's ui-sans-serif, which only Safari implements, is passed over", () => {

@@ -23,6 +23,7 @@ import {
   normalizeLetterSpacing, normalizeLineHeight, parseBoxShadow, pxToNumber, resolveFontFamily, resolveRadii, splitTopLevel,
 } from "./snap-normalize.js";
 import type { FontProbe } from "./snap-normalize.js";
+import { stackFamilies, standInDrawn } from "./fonts.js";
 import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
 import { ROOT_FIELDS, TREE_LIMITS } from "./tree-types.js";
@@ -623,11 +624,16 @@ function shapeTransform(value: string): string | null {
 }
 
 /** The family a text is drawn in, as resolveFontFamily picks it from the page's probe of its stack. */
-function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { family: string; available: boolean | null } {
+function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { family: string; available: boolean | null; asked?: string } {
   const probe = fonts[stack];
   if (probe) return resolveFontFamily(probe);
   const first = (stack.split(",")[0] ?? "").trim().replace(/^(['"])(.*)\1$/, "$2");
-  return { family: first, available: null };
+  // A stand-in snap drew (fonts.ts), by the name Figma has it under, and
+  // the family after it as asked.
+  const drawn = standInDrawn(first);
+  if (!drawn) return { family: first, available: null };
+  const next = stackFamilies(stack)[1];
+  return { family: drawn, available: null, ...(next ? { asked: next } : {}) };
 }
 
 function textFacts(
@@ -644,6 +650,7 @@ function textFacts(
   const tx: TextFacts = { c: chars, f: font.family, sz: size, wt: normalizeFontWeight(text["font-weight"]), col: null, lh: "normal", n: 1, ink: [0, 0, 0, 0] };
   if (isFontKeyword(font.family)) tx.fk = 1;
   if (font.available === false) tx.fa = 0;
+  if (font.asked) tx.fs = font.asked;
   if (/italic|oblique/.test(text["font-style"] ?? "")) tx.it = 1;
   tx.col = normalizeColor(text["color"]);
   tx.lh = normalizeLineHeight(text["line-height"]);

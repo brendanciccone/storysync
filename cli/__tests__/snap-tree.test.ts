@@ -43,6 +43,27 @@ const BORDER = { "border-top-width": "1px", "border-right-width": "1px", "border
 
 const tree = (root: RawTreeElement, fonts: RawTreeCapture["fonts"] = {}): RawTreeCapture => ({ root, fonts });
 
+test("buildTree: a text snap drew in a stand-in records the family Figma sets it in, and the one the code asked for", () => {
+  const stack = '"storysync Inter", ui-sans-serif, system-ui, sans-serif';
+  const label = el("span", [0, 0, 40, 20], {}, [run("Home", [[0, 1.5, 39.05, 17]])], { text: { ...TEXT, "font-family": stack } });
+  const { nodes } = buildTree(tree(el("div", [0, 0, 40, 20], { display: "flex" }, [label]), {
+    [stack]: { families: ["storysync Inter", "ui-sans-serif", "system-ui", "sans-serif"], applied: [true, false, null, null] },
+  }));
+  const tx = nodes.find((n) => n.tx)!.tx!;
+  assert.deepEqual([tx.f, tx.fs, tx.fk, tx.fa], ["Inter", "system-ui", undefined, undefined]);
+  // As before the stand-ins, where snap drew none.
+  const plain = 'ui-sans-serif, system-ui, sans-serif';
+  const { nodes: before } = buildTree(tree(el("div", [0, 0, 40, 20], { display: "flex" }, [el("span", [0, 0, 40, 20], {}, [run("Home", [[0, 1.5, 38.25, 17]])], { text: { ...TEXT, "font-family": plain } })]), {
+    [plain]: { families: ["ui-sans-serif", "system-ui", "sans-serif"], applied: [false, null, null] },
+  }));
+  const old = before.find((n) => n.tx)!.tx!;
+  assert.deepEqual([old.f, old.fs, old.fk], ["system-ui", undefined, 1]);
+  // And where the page couldn't probe the stack, by the name Figma has the stand-in under, never snap's own.
+  const { nodes: unprobed } = buildTree(tree(el("div", [0, 0, 40, 20], { display: "flex" }, [label])));
+  const bare = unprobed.find((n) => n.tx)!.tx!;
+  assert.deepEqual([bare.f, bare.fs, bare.fk, bare.fa], ["Inter", "ui-sans-serif", undefined, undefined]);
+});
+
 // --- What the registry's stories give ------------------------------------------------
 
 test("buildTree: Switch is its track and its thumb, the thumb a 16px white pill 1px in", () => {

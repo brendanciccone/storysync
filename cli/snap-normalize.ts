@@ -5,6 +5,10 @@
 // module turns them into the normalized shape the Figma writer consumes.
 
 import { colorToHex } from "./color.js";
+import { isFontKeyword, standInDrawn } from "./fonts.js";
+
+// Where they lived before the stand-ins needed them too.
+export { isFontKeyword, isSystemFontAlias } from "./fonts.js";
 import type { FigmaVariantProperty } from "./mapper.js";
 
 // --- Shapes -----------------------------------------------------------------
@@ -256,8 +260,9 @@ export function isFullyTransparent(value: string | undefined): boolean {
 /** First family in a font stack, with quotes stripped. */
 export function firstFontFamily(value: string | undefined): string {
   if (!value) return "";
-  const first = value.split(",")[0]?.trim() ?? "";
-  return first.replace(/^['"]|['"]$/g, "");
+  const first = (value.split(",")[0]?.trim() ?? "").replace(/^['"]|['"]$/g, "");
+  // A stand-in snap drew (fonts.ts), by the name Figma has it under.
+  return standInDrawn(first) ?? first;
 }
 
 // --- Fonts ------------------------------------------------------------------
@@ -271,34 +276,6 @@ export function firstFontFamily(value: string | undefined): string {
 export interface FontProbe {
   families: string[];
   applied: (boolean | null)[];
-}
-
-/** CSS's generic families, each resolving to whatever face the platform maps it to. */
-const GENERIC_FONT_FAMILIES = new Set([
-  "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
-  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong",
-]);
-
-/**
- * A platform's name for its own UI font: Safari's `-apple-system`, Chrome's
- * old `BlinkMacSystemFont`, which Chromium computes to `"system-ui"`, and the
- * `ui-*` keywords only Safari implements. A system font stack lists several
- * so that each browser finds one, so one a browser passes over is not a font
- * that failed to load.
- */
-export function isSystemFontAlias(family: string): boolean {
-  const name = family.trim().toLowerCase();
-  return name.startsWith("-") || name.startsWith("ui-") || name === "system-ui" || name === "blinkmacsystemfont";
-}
-
-/**
- * Whether a family is a CSS keyword rather than a font: a generic family or a
- * platform's alias for its UI font. No font in Figma has that name, so there
- * is nothing to set it to or compare it with.
- */
-export function isFontKeyword(family: string | null | undefined): boolean {
-  const name = (family ?? "").trim().toLowerCase();
-  return GENERIC_FONT_FAMILIES.has(name) || isSystemFontAlias(name);
 }
 
 /**
@@ -322,11 +299,23 @@ export function isFontKeyword(family: string | null | undefined): boolean {
  * on macOS, and SFMono-Regular, which Chrome there doesn't see, is not a font
  * the code failed to load. A keyword is available as null, since there is no
  * font to have been missing.
+ *
+ * Where snap drew the text in a stand-in (fonts.ts), the stand-in is what
+ * was drawn, recorded by the name Figma has it under, and what the rest of
+ * the stack would have drawn is `asked`.
  */
-export function resolveFontFamily(probe: FontProbe): { family: string; available: boolean | null } {
+export function resolveFontFamily(probe: FontProbe): { family: string; available: boolean | null; asked?: string } {
   let platformList = false;
   for (const [index, family] of probe.families.entries()) {
     const applied = probe.applied[index] ?? null;
+    // A stand-in snap put ahead of the stack (fonts.ts): the family Figma
+    // sets the text in, drawn, and what the rest of the stack drew, asked.
+    const drawn = standInDrawn(family);
+    if (drawn) {
+      if (applied === false) continue;
+      const rest = resolveFontFamily({ families: probe.families.slice(index + 1), applied: probe.applied.slice(index + 1) });
+      return { family: drawn, available: true, asked: rest.family };
+    }
     const keyword = isFontKeyword(family);
     if (applied === false && (keyword || platformList)) {
       platformList = true;

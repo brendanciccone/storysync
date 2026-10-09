@@ -20,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MockFigma, TREE_FIXTURES_DIR, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
+import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 import { parseReadResult } from "../figma-results.js";
@@ -118,7 +118,10 @@ interface Push {
  * `edit` changes each call file before it is sent, standing in for a plan
  * whose read predictions ran low.
  */
-async function push(snap: SnapResult, { codeArgs = [], edit }: { codeArgs?: string[]; edit?: (code: string, kind: string) => string } = {}): Promise<Push> {
+async function push(
+  snap: SnapResult,
+  { codeArgs = [], edit, fonts = "figma" }: { codeArgs?: string[]; edit?: (code: string, kind: string) => string; fonts?: "figma" | "browser" } = {},
+): Promise<Push> {
   const dir = mkdtempSync(join(tmpdir(), "storysync-tree-e2e-"));
   const snapPath = join(dir, "snaps", "styles.json");
   mkdirSync(dirname(snapPath), { recursive: true });
@@ -145,7 +148,11 @@ async function push(snap: SnapResult, { codeArgs = [], edit }: { codeArgs?: stri
   const { planPath } = jsonOf(code) as { planPath: string };
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as FigmaPlan;
 
-  const mock = new MockFigma({ measure: measureFromTrees(treesOf(snap)), moveNeedsFonts: true });
+  // Text as wide as Figma sets it in its own fonts, Inter for the system-ui
+  // the fixtures were measured in (figmaFonts), or as wide as the browser
+  // drew it.
+  const browser = measureFromTrees(treesOf(snap));
+  const mock = new MockFigma({ measure: fonts === "figma" ? figmaFonts(browser) : browser, moveNeedsFonts: true });
   for (const t of SHADCN_TOKENS.collections[0].tokens as { name: string; hex: string }[]) mock.addVariable(t.name, "COLOR", t.hex);
   for (const t of SHADCN_TOKENS.collections[1].tokens as { name: string; px: number }[]) mock.addVariable(t.name, "FLOAT", t.px, "Radius");
   mockInUse = mock;
@@ -281,10 +288,10 @@ for (const name of treeFixtureNames()) {
   });
 }
 
-test("tree e2e: every fixture in one push packs several components a call, and all of it verifies under --strict", async () => {
+for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture in one push packs several components a call, and all of it verifies under --strict, with text as wide as ${fonts === "figma" ? "Figma sets it" : "the browser drew it"}`, async () => {
   const all = treeFixtureNames().map((n) => asSnap(loadTreeFixture(n)));
   const snap = { ...all[0], components: all.flatMap((s) => s.components) } as SnapResult;
-  const p = await push(snap);
+  const p = await push(snap, { fonts });
   try {
     const builds = p.plan.calls.filter((c) => c.kind === "build");
     assert.ok(builds.some((c) => c.components.length > 1), "no build call packed two components");
@@ -318,7 +325,10 @@ test("tree e2e: a read that stops at its LIMIT is continued with figma next, and
 
 test("tree e2e: a read call sent again after a change in Figma has its continuations asked for again, so the change is read", async () => {
   const squeeze = (code: string, kind: string) => (kind === "read" ? code.replace(/\nconst LIMIT = \d+;\n/, "\nconst LIMIT = 2500;\n") : code);
-  const p = await push(asSnap(loadTreeFixture("card")), { edit: squeeze });
+  // At the browser's widths, so the changed text, which the line below it
+  // stretches across, keeps that line within its width tolerance: drift on
+  // the changed text alone.
+  const p = await push(asSnap(loadTreeFixture("card")), { edit: squeeze, fonts: "browser" });
   try {
     const out = dirname(p.planPath);
     const [seq, results] = [...p.reads].find(([, r]) => r.length > 1)!;

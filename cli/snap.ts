@@ -163,6 +163,12 @@ export interface SnapComponent {
   capture?: "tree" | "root";
   /** The base variant's element tree, and the assets every variant's draws. */
   tree?: ComponentTree;
+  /**
+   * Each family the code asked for that snap drew in the stand-in Figma sets
+   * it in, `[asked, drawn]`, such as `["system-ui", "Inter"]`, so the text was
+   * measured as Figma lays it out (fonts.ts). Absent where none was.
+   */
+  fontStandIns?: [asked: string, drawn: string][];
 }
 
 export interface SnapResult {
@@ -180,6 +186,8 @@ export interface SnapResult {
   treeVersion?: number;
   /** Where the tree walk stopped: elements, depth, and SVG markup kept as a vector. */
   treeLimits?: typeof TREE_LIMITS;
+  /** Every component's `fontStandIns`, once each: what the run said it drew in a stand-in. */
+  fontStandIns?: [asked: string, drawn: string][];
   components: SnapComponent[];
   summary: {
     components: number;
@@ -812,6 +820,17 @@ export function detectFontSubstitution(component: SnapComponent): string | null 
   );
 }
 
+/**
+ * The line snap says once a run about the stand-ins it drew text in, or null
+ * when it drew none: what each family was measured in, and why.
+ */
+export function describeFontStandIns(pairs: readonly (readonly [string, string])[] | undefined): string | null {
+  if (!pairs?.length) return null;
+  const each = pairs.map(([asked, drawn], i) => (i ? `text in ${asked} in ${drawn}` : `Text in ${asked} was measured in ${drawn}`));
+  const list = each.length === 1 ? each[0] : `${each.slice(0, -1).join(", ")} and ${each[each.length - 1]}`;
+  return `${list}, ${each.length === 1 ? "the font Figma sets it in" : "the fonts Figma sets them in"}, so the browser and Figma lay the text out alike.`;
+}
+
 /** An earlier snap a merge adds to: what is in `outDir` before the run. */
 interface MergeBase {
   result: SnapResult;
@@ -1085,6 +1104,7 @@ function writeSnap(
   }
 
   const allVariants = components.flatMap((c) => c.variants);
+  const standIns = [...new Set(components.flatMap((c) => (c.fontStandIns ?? []).map((pair) => JSON.stringify(pair))))].sort();
   const result: SnapResult = {
     version: SNAP_SCHEMA_VERSION,
     storysyncVersion: VERSION,
@@ -1092,6 +1112,7 @@ function writeSnap(
     variantSelection: opts.variants,
     ...(opts.excludeProps?.length ? { excludeProps: opts.excludeProps } : {}),
     ...(opts.rootOnly ? {} : { treeVersion: TREE_VERSION, treeLimits: { ...TREE_LIMITS } }),
+    ...(standIns.length ? { fontStandIns: standIns.map((pair) => JSON.parse(pair) as [string, string]) } : {}),
     components,
     summary: {
       components: components.length,
@@ -1209,6 +1230,8 @@ async function snapComponent(
   const images = new Map<string, CapturedImage>();
   const treeNotes = new Set<string>();
   const climbed: { slug: string; element: string; from: string }[] = [];
+  // Each [asked, drawn] family a variant was measured in a stand-in for.
+  const standIns = new Set<string>();
   // Whether the story's argTypes options have been read into the variant properties yet.
   let supplemented = false;
   try {
@@ -1283,6 +1306,7 @@ async function snapComponent(
             images.clear();
             treeNotes.clear();
             climbed.length = 0;
+            standIns.clear();
             stage.drop(entry);
             index = -1;
             continue;
@@ -1343,6 +1367,7 @@ async function snapComponent(
       };
       for (const note of captured.notes) notes.push({ slug, note });
       if (captured.climbedFrom) climbed.push({ slug, element: captured.element ?? "", from: captured.climbedFrom });
+      for (const pair of captured.standIns ?? []) standIns.add(JSON.stringify(pair));
       markups.push(captured.markup ?? null);
 
       // The first successful render becomes the reference for every delta.
@@ -1389,6 +1414,7 @@ async function snapComponent(
     await context?.close().catch(() => { /* already gone */ });
   }
 
+  if (standIns.size) shell.fontStandIns = [...standIns].sort().map((pair) => JSON.parse(pair) as [string, string]);
   const collided = describeSlugCollisions(collisions);
   if (collided) shell.warnings.unshift(collided);
   if (shell.cap) shell.warnings.unshift(describeCap(entry.title ?? entry.name, shell.cap));

@@ -358,12 +358,13 @@ const TEXT_SETUP = (resize: string) => `
   ${resize}
   return [t.width, t.height, t.textAutoResize];`;
 
-test("text: a hugging label is as wide as the measure says, times the width factor", async () => {
+test("text: a hugging label is as wide as the measure says, rounded up to a whole pixel as Figma rounds it", async () => {
   const measure = { advance: (chars: string) => (chars === "Login with Email Button" ? 154.8 : 0) };
-  assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("")), [154.8, 20, "WIDTH_AND_HEIGHT"]);
-  assert.deepEqual(await ok(new MockFigma({ measure, textWidthFactor: 1.045 }), TEXT_SETUP("")), [161.77, 20, "WIDTH_AND_HEIGHT"]);
+  assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("")), [155, 20, "WIDTH_AND_HEIGHT"]);
+  // Figma's Inter Medium, as the spike and the text probe saw it set: 157.13 wide, 158 rounded up.
+  assert.deepEqual(await ok(new MockFigma(), TEXT_SETUP("")), [158, 20, "WIDTH_AND_HEIGHT"]);
   // AUTO line height is the font's own, taken as 1.21em, to a whole pixel: 17 at 14px, as the spike's label came out.
-  assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("t.lineHeight = { unit: 'AUTO' };")), [154.8, 17, "WIDTH_AND_HEIGHT"]);
+  assert.deepEqual(await ok(new MockFigma({ measure }), TEXT_SETUP("t.lineHeight = { unit: 'AUTO' };")), [155, 17, "WIDTH_AND_HEIGHT"]);
 });
 
 test("text: a fixed width wraps by words and grows in height; ENDING with maxLines stops at that many", async () => {
@@ -743,4 +744,59 @@ test("spike: the probe runs as one call, only on its own page, and the mock answ
   const other = new MockFigma({ pages: ["storysync spike"] });
   assert.match(await fails(other, PROBE), /exists that this probe did not create/);
   assert.match(await fails(new MockFigma(), PROBE_IMAGE), /Run MODE probe first/);
+});
+
+// --- The live text probe ----------------------------------------------------------
+
+/** The text probe's three calls, as sent to use_figma on 2026-10-09. */
+const TEXT_PROBE = [1, 2, 3].map((i) => readFileSync(`${ROOT}spikes/figma-text-probe-${i}.js`, "utf8"));
+
+type Widths = [chars: string, family: string, style: string, size: number, width: number, height: number, ...rest: unknown[]][];
+/** What Figma answered each call, kept unchanged. */
+const TEXT_LIVE = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-probe.json`, "utf8")) as {
+  call1: { widths: Widths; orders: Record<string, string> };
+  call2: { thresholds: [string, string, number, number, number, number, number, number][]; heights: Record<string, number[]>; orders: Record<string, string> };
+  call3: { has: string[]; lacks: string[] };
+};
+
+test("text probe: the mock sets each string as wide and tall as Figma did, and keeps truncation in the orders Figma did", async () => {
+  const figma = new MockFigma({ pages: ["Page 1", "Components"] });
+  await ok(figma, "const f = figma.createFrame(); f.name = 'mine';");
+  const before = outside(figma, "storysync probe 2");
+  const one = await figma.run(TEXT_PROBE[0]);
+  assert.ok(one.ok, one.text);
+  assert.ok(one.bytes < 20_000);
+  const first = one.value as typeof TEXT_LIVE.call1;
+  // A hugging text's width and height, each as Figma gave it: Inter, Roboto
+  // Mono and Noto Serif at their weights and sizes, rounded up to a pixel.
+  assert.deepEqual(first.widths.map((w) => w.slice(0, 6)), TEXT_LIVE.call1.widths.map((w) => w.slice(0, 6)));
+  // Each sequence of writes leaves the text as Figma did, step by step:
+  // textAutoResize turns truncation off, ENDING on a sizing text limits it
+  // to a line, resize() makes a hugging one fixed, layout sizing keeps it.
+  for (const [name, live] of Object.entries(TEXT_LIVE.call1.orders)) assert.equal(first.orders[name], live, name);
+  assert.deepEqual(Object.keys(first.orders), Object.keys(TEXT_LIVE.call1.orders));
+
+  const two = await figma.run(TEXT_PROBE[1]);
+  assert.ok(two.ok, two.text);
+  const second = two.value as typeof TEXT_LIVE.call2;
+  assert.deepEqual(second.heights, TEXT_LIVE.call2.heights);
+  for (const [name, live] of Object.entries(TEXT_LIVE.call2.orders)) assert.equal(second.orders[name], live, name);
+  for (const [i, live] of TEXT_LIVE.call2.thresholds.entries()) {
+    const got = second.thresholds[i];
+    // One line at Chrome's width, 0.004 under it, and rounded to 0.01, as in
+    // Figma, which keeps a line whole 0.13 to 1.22px narrower still: the
+    // mock wraps sooner, so it never keeps a line whole that Figma wraps.
+    assert.deepEqual(got.slice(5), live.slice(5), live[0]);
+    assert.ok(got[4] >= live[4] && got[4] <= live[3], `${live[0]}: the mock wraps under ${got[4]}, Figma under ${live[4]}, Chrome's width ${live[3]}`);
+  }
+  assert.equal(outside(figma, "storysync probe 2"), before, "nothing outside the probe's page changed");
+
+  // Call 3 reads which faces Figma lacks; the mock has only the stand-ins.
+  const three = await figma.run(TEXT_PROBE[2]);
+  assert.ok(three.ok, three.text);
+  const { has } = three.value as { has: string[] };
+  assert.deepEqual(has, ["Inter", "Roboto Mono", "Noto Serif"]);
+  assert.ok(has.every((f) => TEXT_LIVE.call3.has.includes(f)));
+  // A page of the probe's name it didn't make is refused.
+  assert.match(await fails(new MockFigma({ pages: ["storysync probe 2"] }), TEXT_PROBE[0]), /exists that this probe did not create/);
 });

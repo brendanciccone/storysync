@@ -8,7 +8,7 @@ import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
-import { MockFigma, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
+import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
 type BuildResult = {
@@ -79,19 +79,18 @@ test("build: a faithful build puts every keyed layer where snap measured it, wit
   }
 });
 
-test("build: with a stand-in font 4.5% wider, no container falls back; a hugging root grows by its label's growth", async () => {
+test("build: in Figma's own fonts, Inter where snap measured system-ui, no container falls back; a hugging root grows by its label's growth", async () => {
   for (const name of treeFixtureNames()) {
-    const { results } = await buildAll(loadTreeFixture(name), { textWidthFactor: 1.045 });
+    const { results } = await buildAll(loadTreeFixture(name), { measure: figmaFonts() });
     for (const r of results) for (const set of r.sets) assert.deepEqual(set.absoluteContainers, [], name);
   }
   const fixture = loadTreeFixture("button-icon");
-  const { mock } = await buildAll(fixture, { textWidthFactor: 1.045 });
+  const { mock } = await buildAll(fixture, { measure: figmaFonts() });
   const variant = fixtureVariants(fixture)[0];
   const boxes = readBoxes(mock, variantsBySlug(mock).get(variant.slug)!);
-  const label = boxes.get("#text")!;
-  const grown = label[2] - 154.8;
-  assert.ok(Math.abs(grown - 154.8 * 0.045) < 0.05, `the label grew ${grown}`);
-  assert.ok(Math.abs(boxes.get("")![2] - (206.8 + grown)) < 0.05, "the button hugs its label");
+  // Measured 154.8 in system-ui; Figma set it 158 in Inter Medium, in the spike and in the text probe.
+  assert.equal(boxes.get("#text")![2], 158);
+  assert.equal(boxes.get("")![2], 206.8 + 158 - 154.8, "the button hugs its label");
   assert.deepEqual(boxes.get("svg"), [11, 10, 16, 16], "the icon before it stays");
 });
 
@@ -153,6 +152,126 @@ test("build: a text's alignment, truncation and line count, and a hidden layer, 
   assert.deepEqual(props("clamp", text), ["LEFT", "ENDING", 2, "HEIGHT"]);
   assert.deepEqual(props("gone", ["visible"]), [false]);
   assert.deepEqual(props("center", ["visible"]), [true]);
+});
+
+/** Each text keyed `key` in a mock, with what Figma holds of it. */
+function texts(mock: MockFigma, key: RegExp) {
+  return mock.nodes("TEXT").filter((n) => key.test(n.data["storysync.k"] ?? "")).map((n) => {
+    const h = mock.handle(n.id) as Record<string, unknown>;
+    return { key: n.data["storysync.k"], chars: h.characters as string, w: n.width, h: n.height, ar: h.textAutoResize, tr: h.textTruncation, max: h.maxLines };
+  });
+}
+
+test("build: truncation is set after the size and textAutoResize, which turn it off in Figma, so a cut-off title stays one line, built again too", async () => {
+  // Attachment's titles end in an ellipsis; in its vertical tiles the browser cut them at 94px.
+  const fixture = loadTreeFixture("attachment");
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture], { measure: figmaFonts() });
+  for (const round of [1, 2]) {
+    await runPlan(mock, coded, ["build"]);
+    const cut = texts(mock, /attachment-(title|description)$/);
+    assert.equal(cut.length, 8);
+    for (const t of cut) assert.deepEqual([t.tr, t.max, t.ar], ["ENDING", 1, "HEIGHT"], `${t.key}, build ${round}`);
+    // One line each: 17.5 for the title, Figma's own height where it cuts at maxLines.
+    assert.deepEqual([...new Set(cut.filter((t) => /title$/.test(t.key!)).map((t) => t.h))], [17.5], `build ${round}`);
+  }
+});
+
+test("build: a label the browser drew whole stays whole on one line where Figma's font sets it wider, and is named", async () => {
+  // Sidebar's menu labels were measured in system-ui, which Figma sets in
+  // Inter, wider: "Home" 38.25 in the browser, 39.04 in Inter. At its
+  // measured width it would end in an ellipsis the browser didn't draw.
+  const fixture = loadTreeFixture("sidebar");
+  const { mock, results } = await buildAll(fixture, { measure: figmaFonts() });
+  const spans = texts(mock, /sidebar-menu-button(:\d)?\/span$/);
+  assert.equal(spans.length, 5);
+  const inter = figmaFonts();
+  for (const t of spans) {
+    const own = inter.advance(t.chars, { family: "Inter", style: "Regular", size: 14, letterSpacing: 0 });
+    // At least as wide as Inter sets it, rounded up as Figma rounds a hugging text, so nothing is cut; still truncating, on one line.
+    assert.deepEqual([t.w, t.h, t.tr, t.max, t.ar], [Math.ceil(own), 20, "ENDING", 1, "HEIGHT"], t.key);
+  }
+  assert.deepEqual(results[0].fallbacks.map(([, key, what, n]) => [key.replace(/.*\//, ""), what, n]).filter(([key]) => key === "span"),
+    spans.map(() => ["span", "kept on one line: Figma sets it wider", 1]));
+  // As wide as the browser drew it, it is left as built, and nothing is named.
+  const faithful = await buildAll(fixture);
+  assert.deepEqual(faithful.results[0].fallbacks, []);
+  assert.ok(texts(faithful.mock, /\/span$/).every((t) => t.w < 60 && t.max === 1));
+});
+
+test("build: a one-line label in a box Figma's font overflows is set to its own width instead of wrapping; one that fills its parent is named", async () => {
+  const fixture = synthetic("Labels", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 60], L: { d: "block" } },
+    // In a box 10% wider than its glyphs as the browser drew them, which Inter, wider, doesn't fit.
+    { k: "label", t: "T", el: "p", box: [0, 0, 33, 20], tx: { c: "Home", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ink: [0, 1, 30, 17] } },
+    // Across the block, whole and truncatable in the browser, wider than the block in Inter.
+    { k: "fill", t: "T", el: "span", box: [0, 20, 200, 20], tx: { c: "sales-dashboard.pdf sales-dashboard.pdf", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, el: 1, ws: "nowrap", ink: [0, 1, 190, 17] } },
+    // Across it too, not truncated: it wraps in Figma, as verify's lines see, and isn't named.
+    { k: "wrap", t: "T", el: "p", box: [0, 40, 200, 20], tx: { c: "sales-dashboard.pdf sales-dashboard.pdf", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ink: [0, 1, 150, 17] } },
+  ], { width: 200, height: 60, display: "block" });
+  const { mock, results } = await buildAll(fixture, { measure: figmaFonts() });
+  const [label] = texts(mock, /^label$/);
+  // Inter's 39.04, rounded up as Figma rounds a hugging text: on one line, past its 33px box.
+  assert.deepEqual([label.ar, label.w, label.h, label.tr], ["WIDTH_AND_HEIGHT", 40, 20, "DISABLED"]);
+  // The filling one keeps its width and its truncation, cut short where the browser showed it whole: named.
+  const [fill] = texts(mock, /^fill$/);
+  assert.deepEqual([fill.ar, fill.w, fill.h, fill.tr, fill.max], ["HEIGHT", 200, 20, "ENDING", 1]);
+  const [wrap] = texts(mock, /^wrap$/);
+  assert.deepEqual([wrap.ar, wrap.w, wrap.h, wrap.tr], ["HEIGHT", 200, 40, "DISABLED"]);
+  assert.deepEqual(results[0].fallbacks.map(([, key, what]) => `${key} ${what}`), [
+    "label kept on one line: Figma sets it wider",
+    "fill cut short: Figma sets it wider",
+  ]);
+});
+
+/** A one-line text as a snap from before the stand-ins measured it, in system-ui with a 20px line. */
+const systemText = (c: string, ink: [number, number, number, number], extra: object = {}) =>
+  ({ c, f: "system-ui", fk: 1 as const, sz: 14, wt: 400, col: "#0a0a0a", lh: 20, n: 1, ink, ...extra });
+
+test("build: whether a one-line label wraps in Figma is told by Figma's line, not by the box measured, taller or flat", async () => {
+  // A row stretches its items: the label's box is the row's 40px, two of
+  // its 20px lines. Whole in its 36px in system-ui, cut short in Inter's 39.05.
+  const stretched = synthetic("Stretched", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 40], L: { d: "flex" } },
+    { k: "label", t: "T", el: "span", box: [0, 0, 36, 40], tx: systemText("Home", [0, 11, 36, 17], { el: 1, ws: "nowrap" }) },
+    { k: "after", t: "F", el: "i", box: [36, 0, 20, 40], bg: "#ff0000" },
+  ], { width: 200, height: 40, display: "flex" });
+  const wide = await buildAll(stretched, { measure: figmaFonts() });
+  const [label] = texts(wide.mock, /^label$/);
+  assert.deepEqual([label.w, label.h, label.ar, label.tr, label.max], [40, 20, "HEIGHT", "ENDING", 1]);
+  assert.deepEqual(wide.results[0].fallbacks.map(([, key, what]) => `${key} ${what}`), ["label kept on one line: Figma sets it wider"]);
+  // A box with no height, which a line in Figma always overtops: whole in
+  // Inter too, it is left as built, and nothing is named.
+  const flat = synthetic("Flat", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 40], L: { d: "block" } },
+    { k: "label", t: "T", el: "span", box: [0, 10, 44, 0], tx: systemText("Home", [0, -8.5, 38.25, 17]) },
+  ], { width: 200, height: 40, display: "block" });
+  const kept = await buildAll(flat, { measure: figmaFonts() });
+  const [whole] = texts(kept.mock, /^label$/);
+  assert.deepEqual([whole.w, whole.h, whole.ar, whole.tr], [44, 20, "HEIGHT", "DISABLED"]);
+  assert.deepEqual(kept.results[0].fallbacks, []);
+});
+
+test("build: a label set wider than measured stays so in a frame built without auto layout", async () => {
+  const fixture = synthetic("Row", [
+    { k: "", t: "F", el: "div", box: [0, 0, 200, 20], L: { d: "flex", ai: "center", gap: [8, 8] } },
+    { k: "label", t: "T", el: "span", box: [0, 0, 36, 20], tx: systemText("Home", [0, 1.5, 36, 17], { el: 1, ws: "nowrap" }) },
+    { k: "after", t: "F", el: "i", box: [44, 2, 16, 16], bg: "#ff0000" },
+  ], { width: 200, height: 20, display: "flex" });
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture], { measure: figmaFonts() });
+  const code = coded.code(coded.plan.calls[0]);
+  const data = JSON.parse(/\nconst DATA = (.*);\n/.exec(code)![1]) as { S: unknown[] };
+  // The row's gap, wrong as Figma might take it: the frame falls back to absolute.
+  const at = data.S.findIndex((st) => typeof st === "object" && st !== null && "L" in st);
+  (data.S[at] as { L: { g: number } }).L.g += 12;
+  const run = await mock.run(code.replace(/\nconst DATA = .*;\n/, () => `\nconst DATA = ${JSON.stringify(data)};\n`));
+  assert.ok(run.ok, run.text);
+  assert.deepEqual((result(run).sets[0].absoluteContainers as string[][]).map(([, key]) => key), [""]);
+  // At Inter's width still, whole, not cut back to its 36px and an ellipsis.
+  const [label] = texts(mock, /^label$/);
+  assert.deepEqual([label.w, label.h, label.ar, label.tr, label.max], [40, 20, "HEIGHT", "ENDING", 1]);
+  assert.deepEqual(result(run).fallbacks.map(([, key, what]) => `${key} ${what}`), ["label kept on one line: Figma sets it wider"]);
 });
 
 test("build: a frame Figma lays out otherwise than planned is built without auto layout, each child where snap measured it", async () => {
@@ -264,18 +383,19 @@ test("build: a keyed layer duplicated in Figma is removed, the first of them kep
   assert.deepEqual(variantsBySlug(mock).get("size-default")!.children!.map((c) => c.id), [thumb.id]);
 });
 
-test("build: a sibling after a label moves by as much as a wider stand-in widens the label", async () => {
+test("build: a sibling after a label moves by as much as Figma's font widens the label", async () => {
   const fixture = synthetic("Next", [
     { k: "", t: "F", el: "button", box: [0, 0, 86, 24], L: { d: "inline-flex", ai: "center", gap: [4, 4], pad: [0, 8, 0, 8] } },
-    { k: "#text", t: "T", el: "#text", box: [8, 2, 50, 20], tx: { c: "Next", f: "Inter", sz: 14, wt: 500, col: "#ffffff", lh: 20, n: 1, ink: [0, 1.5, 50, 17] } },
+    { k: "#text", t: "T", el: "#text", box: [8, 2, 50, 20], tx: { c: "Next", f: "system-ui", fk: 1, sz: 14, wt: 500, col: "#ffffff", lh: 20, n: 1, ink: [0, 1.5, 50, 17] } },
     { k: "svg", t: "V", el: "svg.lucide-chevron-right", box: [62, 4, 16, 16], svg: "svg:chevron", shapes: [[6, 4, 4, 8]] },
   ], { width: 86, height: 24, display: "inline-flex" }, { "svg:chevron": CHEVRON });
-  const { mock, results } = await buildAll(fixture, { textWidthFactor: 1.045 });
+  // Figma sets it 52.25 wide, which a hugging text rounds up to 53.
+  const { mock, results } = await buildAll(fixture, { measure: { advance: (chars) => (chars === "Next" ? 52.25 : 0) } });
   assert.deepEqual(results[0].sets[0].absoluteContainers, []);
   const boxes = readBoxes(mock, variantsBySlug(mock).get("default")!);
-  assert.equal(boxes.get("#text")![2], 52.25);
-  assert.equal(boxes.get("svg")![0], 64.25);
-  assert.equal(boxes.get("")![2], 88.25);
+  assert.equal(boxes.get("#text")![2], 53);
+  assert.equal(boxes.get("svg")![0], 65);
+  assert.equal(boxes.get("")![2], 89);
 });
 
 test("build: running the same calls again creates and removes nothing, and keeps every node id", async () => {

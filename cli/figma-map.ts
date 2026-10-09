@@ -13,6 +13,7 @@
 
 import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
+import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
 import { textHugs } from "./tree-types.js";
 import type { Box, Sides, TreeNode } from "./tree-types.js";
@@ -40,6 +41,8 @@ export interface FigmaText {
   c: string;
   /** Family, weight, italic, as measured: loadFont picks a stand-in where Figma lacks them. */
   f: string;
+  /** The stand-in loadFont tries where Figma lacks `f` (fonts.ts), when it isn't Inter, the template's last resort. */
+  a?: string;
   w: number;
   i?: 1;
   z: number;
@@ -53,6 +56,11 @@ export interface FigmaText {
   ar: "W" | "H";
   /** maxLines, with textTruncation ENDING. */
   tr?: number;
+  /**
+   * The browser drew it whole on one line, in a box Figma sets at its width
+   * (H): the build keeps it so where Figma's font sets it wider (textOf).
+   */
+  o?: 1;
 }
 
 /** Everything the template sets on one node besides its place and size. */
@@ -349,9 +357,26 @@ export function textSizesItself(node: TreeNode): boolean {
   return textHugs(node) && tx.n === 1 && !tx.el && !tx.cl;
 }
 
+/**
+ * Whether the browser drew a text whole on one line: one line, its glyphs
+ * inside its box, so nothing an ellipsis or a clip cut off.
+ */
+export function textWhole(node: TreeNode): boolean {
+  const tx = node.tx!;
+  return tx.n === 1 && tx.ink[0] >= -0.5 && tx.ink[0] + tx.ink[2] <= node.box[2] + 0.5;
+}
+
 function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   const tx = node.tx!;
   const out: FigmaText = { c: tx.c, f: tx.f, w: tx.wt, z: tx.sz, l: tx.lh === "normal" ? 0 : tx.lh, ar: textSizesItself(node) ? "W" : "H" };
+  // The stand-in for a family Figma lacks: what snap drew a keyword in, or,
+  // for a snap that drew the keyword's own face, what Figma sets it in.
+  const alt = standInFor(tx.fs ?? tx.f);
+  if (alt !== "Inter" && alt !== tx.f) out.a = alt;
+  // A label Figma's font sets wider than the browser's would wrap in its
+  // measured width, or show an ellipsis the browser didn't: the build checks
+  // each such one once laid out (templates/build.js, keepLines).
+  if (out.ar === "H" && textWhole(node)) out.o = 1;
   if (tx.it) out.i = 1;
   if (tx.ls) out.s = tx.ls;
   if (tx.tt) out.tc = CASES[tx.tt];

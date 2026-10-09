@@ -54,20 +54,21 @@ if (!page) {
 }
 await figma.setCurrentPageAsync(page);
 
-// A text's font: the measured family, else Roboto Mono for a mono one, Noto
-// Serif for a serif, Inter for any other; at the measured weight, else the
+// A text style's font: the measured family, else its stand-in, the style's `a`
+// (Roboto Mono for a mono family, Noto Serif for a serif: cli/fonts.ts, which
+// snap measures with too), else Inter; at the measured weight, else the
 // next toward Regular, in either spelling; italic where the family has it.
 // It never throws, and FONTS, returned, names each stand-in.
 const STYLES = ['Thin', 'Extra Light', 'Light', 'Regular', 'Medium', 'Semi Bold', 'Bold', 'Extra Bold', 'Black'];
 const FONTS = {};
 const fonts = {};
-const loadFont = (family, weight, italic) => {
+const loadFont = (t) => {
+  const { f: family, w: weight, i: italic } = t;
   const id = family + weight + (italic ? 'i' : '');
   return (fonts[id] = fonts[id] || (async () => {
     const i = Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1));
     const d = Math.sign(3 - i);
-    const alt = /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : /^(?!.*sans).*(serif|georgia|times)/i.test(family) ? 'Noto Serif' : 'Inter';
-    for (const f of new Set([family, alt, 'Inter'])) {
+    for (const f of new Set([family, t.a || 'Inter', 'Inter'])) {
       for (const j of new Set([i, i + d, i + 2 * d, 3].filter((j) => (j - 3) * d <= 0))) {
         for (const s of new Set([STYLES[j], STYLES[j].replace(' ', '')])) {
           for (const style of italic ? [j === 3 ? 'Italic' : s + ' Italic', s] : [s]) {
@@ -90,10 +91,13 @@ for (const v of await figma.variables.getLocalVariablesAsync()) (VARS[v.resolved
 let collections = null;
 const unbound = [];
 // Where Figma refused what the design asked for and the build fell back
-// (SPIKE(n)): [component, key, what, variants], once per component, key
-// and what, however many variants it happened in.
+// (SPIKE(n)), or set a text wider than measured (keepLines): [component,
+// key, what, variants], once per component, key and what, however many
+// variants it happened in.
 const fallbacks = [];
 const seen = {};
+// The texts keepLines set wider than measured, which checkLayout leaves so.
+const widened = new Set();
 let at = [];
 const fallback = (what, e) => {
   const entry = [at[0], at[2] || '', what + ': ' + String((e && e.message) || e).slice(0, 80), 0];
@@ -213,6 +217,20 @@ const inked = (n) => !get(n, 'ink') || get(n, 'ink') === ink(n);
 const fits = (n, kind, st) => (kind === 'T' ? n.type === 'TEXT' : n.type === 'FRAME' && (kind === 'V' ? get(n, 'svg') === st.id && inked(n) : !get(n, 'svg')));
 const isFrame = (n) => n.type === 'FRAME' || n.type === 'COMPONENT';
 const SIZING = { X: 'FIXED', H: 'HUG', L: 'FILL' };
+// A text's size first, then textAutoResize, then truncation: Figma turns
+// truncation off and clears maxLines on any write of textAutoResize, HEIGHT
+// over HEIGHT too, and resize() turns a hugging text NONE (the live text
+// probe, 2026-10-09). Set the other way round, every truncated label of the
+// third live push came out DISABLED and wrapped.
+const setLines = (n, t, w, h) => {
+  if (t.ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
+  else {
+    n.resize(w, h);
+    n.textAutoResize = 'HEIGHT';
+  }
+  n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
+  n.maxLines = t.tr || null;
+};
 
 // Styles one node from its record. Parents come before their children, so a
 // child's auto layout parent is set up before the child fills it.
@@ -238,7 +256,7 @@ const style = async (n, rec, parent, root) => {
   }
   if (kind === 'T') {
     const t = st.t;
-    const font = await loadFont(t.f, t.w, t.i);
+    const font = await loadFont(t);
     await loadFonts([n]);
     n.fontName = font;
     n.characters = t.c;
@@ -249,10 +267,8 @@ const style = async (n, rec, parent, root) => {
     n.textDecoration = t.td || 'NONE';
     n.textAlignHorizontal = t.ta || 'LEFT';
     await setPaints(n, 'fills', st.f || [], 'color');
-    let ar = t.ar;
     try {
-      n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
-      n.maxLines = t.tr || null;
+      setLines(n, t, w, h);
     } catch (e) {
       // SPIKE(3): truncation Figma refuses is built as a box of the measured
       // size. The spike saw ENDING and maxLines taken on a fixed width.
@@ -260,13 +276,7 @@ const style = async (n, rec, parent, root) => {
       fallback('truncation refused', e);
       n.resize(w, h);
       n.textAutoResize = 'NONE';
-      ar = '';
       sizing = [sizing[0] === 'L' ? 'L' : 'X', 'X'];
-    }
-    if (ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
-    else if (ar) {
-      n.resize(w, h);
-      n.textAutoResize = 'HEIGHT';
     }
   } else if (kind === 'V') {
     if (Math.abs(n.width - w) > 0.01 || Math.abs(n.height - h) > 0.01) n.resize(w, h);
@@ -379,7 +389,7 @@ const converge = async (root, recs) => {
     walk(root);
   }
   // And every font they will have.
-  for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t.f, S[rec[7]].t.w, S[rec[7]].t.i);
+  for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t);
   const nodes = [root];
   for (let i = 1; i < recs.length; i++) {
     const [ki, , kind, , , , , si] = recs[i];
@@ -415,6 +425,42 @@ const converge = async (root, recs) => {
     if ('children' in nodes[i] && recs[i][2] !== 'V' || i === 0) designer += nodes[i].children.filter((c) => !get(c, 'k') && !get(c, 'vs')).length;
   }
   return { nodes, designer };
+};
+
+// Keeps each text the browser drew whole on one line (`o`) so in Figma,
+// once the variant is laid out. Figma's font can set it wider than the box
+// it was measured in: Inter is wider than the system-ui a snap from before
+// the stand-ins measured, and Figma may one day hold another Inter than
+// snap's. At that width it would wrap, or, truncated, end in an ellipsis
+// the browser didn't draw. Such a text is built at its own width in Figma
+// instead, wider than measured, still truncating should it shrink. One that
+// fills its parent can't take a width of its own: where it truncates it is
+// named, since verify can't see an ellipsis; where it wraps, verify sees it.
+const keepLines = (nodes, recs) => {
+  for (let i = 1; i < recs.length; i++) {
+    const st = S[recs[i][7]];
+    const t = st.t;
+    if (!t || !t.o) continue;
+    const n = nodes[i];
+    // Without its line limit a truncated text wraps where it would be cut.
+    // It wraps where it is taller than a line and a half in Figma: its line
+    // height, or Figma's own for the font, 1.21em for Inter to 1.36em for
+    // Noto Serif, whole lines rounded up to a pixel. Not the box measured,
+    // which a row that stretches its items makes taller than the text.
+    n.maxLines = null;
+    const wraps = n.height > 1.5 * (t.l || 1.27 * t.z);
+    n.maxLines = t.tr || null;
+    if (!wraps) continue;
+    at[2] = S[recs[i][0]];
+    const fills = (st.z || [])[0] === 'L';
+    if (fills && !t.tr) continue;
+    if (!fills) {
+      n.textAutoResize = 'WIDTH_AND_HEIGHT';
+      if (t.tr) setLines(n, t, n.width, n.height);
+      widened.add(n);
+    }
+    fallback(fills ? 'cut short' : 'kept on one line', 'Figma sets it wider');
+  }
 };
 
 // Checks each auto layout frame inside Figma (section 8.5): every child in
@@ -471,7 +517,7 @@ const checkLayout = (nodes, recs, slug, absolute) => {
       const c = nodes[j];
       c.x = recs[j][3];
       c.y = recs[j][4];
-      if (c.type !== 'TEXT' || c.textAutoResize !== 'WIDTH_AND_HEIGHT') c.resize(recs[j][5], recs[j][6]);
+      if (!widened.has(c) && (c.type !== 'TEXT' || c.textAutoResize !== 'WIDTH_AND_HEIGHT')) c.resize(recs[j][5], recs[j][6]);
     }
   }
 };
@@ -569,6 +615,7 @@ for (const [s, set] of DATA.sets.entries()) {
       }
       if (want === 'COMPONENT_SET') variant.name = name;
       const { nodes, designer } = await converge(variant, recs);
+      keepLines(nodes, recs);
       designerLayers += designer;
       if (src) checkLayout(nodes, recs, slug, absoluteContainers);
       put(variant, 'slug', slug);

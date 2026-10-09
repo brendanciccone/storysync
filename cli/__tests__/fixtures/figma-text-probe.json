@@ -1,0 +1,771 @@
+{
+ "about": "The live text probe's three use_figma responses, unchanged: Figma file UPmguLPQ7w1ESdOZsq6vlw, page \"storysync probe 2\", 2026-10-09. The calls are spikes/figma-text-probe-1.js, -2.js and -3.js; each response is as use_figma returned it.",
+ "call1": {
+  "page": "39:2",
+  "fonts": {
+   "Inter": {
+    "axes": [
+     "slnt",
+     "wght"
+    ],
+    "styles": [
+     "Black",
+     "Black Italic",
+     "Bold",
+     "Bold Italic",
+     "Extra Bold",
+     "Extra Bold Italic",
+     "Extra Light",
+     "Extra Light Italic",
+     "Italic",
+     "Light",
+     "Light Italic",
+     "Medium",
+     "Medium Italic",
+     "Regular",
+     "Semi Bold",
+     "Semi Bold Italic",
+     "Thin",
+     "Thin Italic"
+    ]
+   },
+   "Inter Display": {
+    "axes": "error: in getFontFamilyVariationAxes: Font family \"Inter Display\" i",
+    "styles": []
+   },
+   "Roboto Mono": {
+    "axes": [
+     "wght"
+    ],
+    "styles": [
+     "Bold",
+     "Bold Italic",
+     "ExtraLight",
+     "ExtraLight Italic",
+     "Italic",
+     "Light",
+     "Light Italic",
+     "Medium",
+     "Medium Italic",
+     "Regular",
+     "SemiBold",
+     "SemiBold Italic",
+     "Thin",
+     "Thin Italic"
+    ]
+   },
+   "Noto Serif": {
+    "axes": [
+     "CTGR",
+     "wdth",
+     "wght"
+    ],
+    "styles": [
+     "Black",
+     "Bold",
+     "Condensed",
+     "Condensed Black",
+     "Condensed Bold",
+     "Condensed ExtraBold",
+     "Condensed ExtraLight",
+     "Condensed Light",
+     "Condensed Medium",
+     "Condensed SemiBold",
+     "Condensed Thin",
+     "Display Black",
+     "Display Bold",
+     "Display Condensed",
+     "Display Condensed Black",
+     "Display Condensed Bold",
+     "Display Condensed ExtraBold",
+     "Display Condensed ExtraLight",
+     "Display Condensed Light",
+     "Display Condensed Medium",
+     "Display Condensed SemiBold",
+     "Display Condensed Thin",
+     "Display ExtraBold",
+     "Display ExtraCondensed",
+     "Display ExtraCondensed Black",
+     "Display ExtraCondensed Bold",
+     "Display ExtraCondensed ExtraBold",
+     "Display ExtraCondensed ExtraLight",
+     "Display ExtraCondensed Light",
+     "Display ExtraCondensed Medium",
+     "Display ExtraCondensed SemiBold",
+     "Display ExtraCondensed Thin",
+     "Display ExtraLight",
+     "Display Light",
+     "Display Medium",
+     "Display Regular",
+     "Display SemiBold",
+     "Display SemiCondensed",
+     "Display SemiCondensed Black",
+     "Display SemiCondensed Bold",
+     "Display SemiCondensed ExtraBold",
+     "Display SemiCondensed ExtraLight",
+     "Display SemiCondensed Light",
+     "Display SemiCondensed Medium",
+     "Display SemiCondensed SemiBold",
+     "Display SemiCondensed Thin",
+     "Display Thin",
+     "ExtraBold",
+     "ExtraCondensed",
+     "ExtraCondensed Black",
+     "ExtraCondensed Bold",
+     "ExtraCondensed ExtraBold",
+     "ExtraCondensed ExtraLight",
+     "ExtraCondensed Light",
+     "ExtraCondensed Medium",
+     "ExtraCondensed SemiBold",
+     "ExtraCondensed Thin",
+     "ExtraLight",
+     "Light",
+     "Medium",
+     "Regular",
+     "SemiBold",
+     "SemiCondensed",
+     "SemiCondensed Black",
+     "SemiCondensed Bold",
+     "SemiCondensed ExtraBold",
+     "SemiCondensed ExtraLight",
+     "SemiCondensed Light",
+     "SemiCondensed Medium",
+     "SemiCondensed SemiBold",
+     "SemiCondensed Thin",
+     "Thin"
+    ]
+   },
+   "Geist": {
+    "axes": [
+     "wght"
+    ],
+    "styles": [
+     "Black",
+     "Bold",
+     "ExtraBold",
+     "ExtraLight",
+     "Light",
+     "Medium",
+     "Regular",
+     "SemiBold",
+     "Thin"
+    ]
+   },
+   "Geist Mono": {
+    "axes": [
+     "wght"
+    ],
+    "styles": [
+     "Black",
+     "Bold",
+     "ExtraBold",
+     "ExtraLight",
+     "Light",
+     "Medium",
+     "Regular",
+     "SemiBold",
+     "Thin"
+    ]
+   }
+  },
+  "widths": [
+   [
+    "Home",
+    "Inter",
+    "Regular",
+    14,
+    40,
+    17,
+    37.089,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Inbox",
+    "Inter",
+    "Regular",
+    14,
+    37,
+    17,
+    34.356,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Calendar",
+    "Inter",
+    "Regular",
+    14,
+    60,
+    17,
+    58.375,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Search",
+    "Inter",
+    "Regular",
+    14,
+    47,
+    17,
+    44.165,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Settings",
+    "Inter",
+    "Regular",
+    14,
+    55,
+    17,
+    53.118,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Application",
+    "Inter",
+    "Medium",
+    12,
+    65,
+    15,
+    63.537,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "sales-dashboard.pdf",
+    "Inter",
+    "Medium",
+    14,
+    140,
+    17,
+    138.576,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "sales-dashboard.pdf",
+    "Inter",
+    "Medium",
+    12,
+    120,
+    15,
+    118.779,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "PDF · 2.4 MB",
+    "Inter",
+    "Regular",
+    12,
+    74,
+    15,
+    71.728,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Login with Email Button",
+    "Inter",
+    "Medium",
+    14,
+    158,
+    17,
+    155.045,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Login with Email Button",
+    "Inter",
+    "Medium",
+    12,
+    135,
+    15,
+    132.896,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Badge",
+    "Inter",
+    "Medium",
+    12,
+    37,
+    15,
+    35.129,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Button",
+    "Inter",
+    "Medium",
+    12,
+    39,
+    15,
+    36.439,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Button",
+    "Inter",
+    "Medium",
+    14,
+    45,
+    17,
+    42.512,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Close",
+    "Inter",
+    "Medium",
+    14,
+    38,
+    17,
+    36.499,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Notifications",
+    "Inter",
+    "Medium",
+    14,
+    86,
+    17,
+    83.408,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Notifications",
+    "Inter",
+    "Medium",
+    16,
+    98,
+    19,
+    95.324,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "1 hour ago",
+    "Inter",
+    "Regular",
+    14,
+    70,
+    17,
+    67.553,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "2 hours ago",
+    "Inter",
+    "Regular",
+    14,
+    79,
+    17,
+    76.637,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "You have 3 unread messages.",
+    "Inter",
+    "Regular",
+    14,
+    198,
+    17,
+    196.265,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "You have a new message!",
+    "Inter",
+    "Regular",
+    14,
+    172,
+    17,
+    169.624,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Your call has been confirmed.",
+    "Inter",
+    "Regular",
+    14,
+    196,
+    17,
+    194.105,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Your subscription is expiring soon!",
+    "Inter",
+    "Regular",
+    14,
+    227,
+    17,
+    224.914,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Button",
+    "Inter",
+    "Semi Bold",
+    12,
+    39,
+    15,
+    37.216,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Button",
+    "Inter",
+    "Semi Bold",
+    18,
+    59,
+    22,
+    55.823,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Heading text",
+    "Inter",
+    "Semi Bold",
+    24,
+    149,
+    29,
+    145.881,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Heading text",
+    "Inter",
+    "Bold",
+    32,
+    201,
+    39,
+    197.136,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Display heading",
+    "Inter",
+    "Bold",
+    48,
+    375,
+    58,
+    368.945,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "Inter",
+    "Regular",
+    14,
+    194,
+    17,
+    192.527,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "Inter",
+    "Regular",
+    14,
+    245,
+    17,
+    243.533,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "0123456789 .,:;!?-()",
+    "Inter",
+    "Regular",
+    14,
+    132,
+    17,
+    128.785,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "Inter",
+    "Medium",
+    14,
+    198,
+    17,
+    196.163,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "Inter",
+    "Semi Bold",
+    14,
+    252,
+    17,
+    249.906,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Type AV To Wa",
+    "Inter",
+    "Regular",
+    14,
+    100,
+    17,
+    97.309,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Type AV To Wa",
+    "Inter",
+    "Regular",
+    100,
+    708,
+    121,
+    695.064,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "const x = 42;",
+    "Roboto Mono",
+    "Regular",
+    14,
+    110,
+    18,
+    105.588,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "npm run build",
+    "Roboto Mono",
+    "Medium",
+    12,
+    94,
+    16,
+    91.834,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "The quick brown fox",
+    "Noto Serif",
+    "Regular",
+    16,
+    159,
+    22,
+    158.035,
+    "WIDTH_AND_HEIGHT"
+   ],
+   [
+    "Quietly Waving",
+    "Noto Serif",
+    "Bold",
+    20,
+    156,
+    27,
+    153.867,
+    "WIDTH_AND_HEIGHT"
+   ]
+  ],
+  "orders": {
+   "buildNow": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | E -> WE1 283x18 | M1 | R -> TE- 94x17.5 | AH -> HD- 94x88 | SX | VY",
+   "spike": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SX | VY",
+   "truncLast": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | SX | VY | E -> HE1 94x17.5 | M1",
+   "colFillA": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SF | VY",
+   "colFillB": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | SF | VY | E -> HE1 94x17.5 | M1",
+   "rowGrow": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SF -> HE1 300x18 | VY",
+   "hugTrunc": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SH -> WE1 283x18 | VY",
+   "widthAuto": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | AW | E -> WE1 283x18 | M1",
+   "noResize": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | E -> WE1 283x18 | M1 | AH -> HD- 283x18",
+   "resizeOnly": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | E -> WE1 283x18 | M1 | R -> TE- 94x17.5",
+   "resizeAfter": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | R",
+   "rerun": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SX | VY | F | C | Z | L | E | M1 | R | AH -> HD- 94x88 | SX | VY",
+   "rerunSpike": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SX | VY | F | C | Z | L | R | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SX | VY",
+   "none": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AN | E -> TE- 94x17.5 | M1",
+   "noneNoMax": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AN | E -> TE- 94x17.5",
+   "clamp2": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R2 -> ND- 94x35 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M2 -> HE2 94x35 | SX | VY",
+   "fontAfter": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | F | C | Z | L",
+   "measureFirst": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | AW | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SX | VY",
+   "page": "F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | E -> WE1 283x18 | M1 | R -> TE1 94x17.5 | AH -> HD- 94x88",
+   "pageSpike": "F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1"
+  }
+ },
+ "call2": {
+  "thresholds": [
+   [
+    "Home",
+    "Regular",
+    14,
+    39.047,
+    38.25,
+    20,
+    20,
+    20
+   ],
+   [
+    "Inbox",
+    "Regular",
+    14,
+    36.188,
+    35.25,
+    20,
+    20,
+    20
+   ],
+   [
+    "Settings",
+    "Regular",
+    14,
+    54.641,
+    54.5,
+    20,
+    20,
+    20
+   ],
+   [
+    "sales-dashboard.pdf",
+    "Medium",
+    14,
+    139.375,
+    138.25,
+    20,
+    20,
+    20
+   ],
+   [
+    "PDF · 2.4 MB",
+    "Regular",
+    12,
+    73.469,
+    72.25,
+    20,
+    20,
+    20
+   ],
+   [
+    "Login with Email Button",
+    "Medium",
+    14,
+    157.141,
+    156.25,
+    20,
+    20,
+    20
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "Regular",
+    14,
+    194,
+    193,
+    20,
+    20,
+    20
+   ],
+   [
+    "Button",
+    "Semi Bold",
+    18,
+    58.281,
+    57.25,
+    20,
+    20,
+    20
+   ]
+  ],
+  "heights": {
+   "W1": [
+    40,
+    18
+   ],
+   "H1": [
+    80,
+    18
+   ],
+   "H2": [
+    80,
+    53
+   ],
+   "H3": [
+    80,
+    105
+   ],
+   "H3E": [
+    80,
+    17.5,
+    1
+   ],
+   "H3E2": [
+    80,
+    35,
+    2
+   ],
+   "H1E": [
+    80,
+    18,
+    1
+   ]
+  },
+  "orders": {
+   "maxNullBack": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | Mn -> HE- 94x88 | M1 -> HE1 94x17.5",
+   "disabledBack": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | D -> HD- 94x88 | E -> HE1 94x17.5 | M1",
+   "vertFixed": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | VX -> TE- 94x17.5",
+   "vertFixedThenHug": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | VX -> TE- 94x17.5 | VY -> HE1 94x17.5",
+   "growRow": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | G1 -> HE1 300x18",
+   "stretchCol": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | ST",
+   "fillThenHug": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | R -> ND- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1 | SF | SX",
+   "wideNoTrunc": "P | F | Cs -> WD- 30x15 | Z -> WD- 35x17 | L -> WD- 35x18 | R -> ND- 94x17.5 | AH -> HD- 94x18 | E -> HE1 94x18 | M1",
+   "hugToFixed": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | AW | SX -> HD- 283x18",
+   "resizeAuto": "P | F | C -> WD- 243x15 | Z -> WD- 283x17 | L -> WD- 283x18 | AW | E -> WE1 283x18 | M1 | R -> TE- 94x17.5 | AH -> HD- 94x88 | E -> HE1 94x17.5 | M1"
+  }
+ },
+ "call3": {
+  "total": 1938,
+  "has": [
+   "SF Pro",
+   "Arimo",
+   "Courier Prime",
+   "Tinos",
+   "Cascadia Code",
+   "Cascadia Mono",
+   "Ubuntu",
+   "Ubuntu Mono",
+   "Cantarell",
+   "Oxygen",
+   "Roboto",
+   "Noto Sans",
+   "Fira Sans",
+   "Open Sans",
+   "Inter",
+   "Roboto Mono",
+   "Noto Serif",
+   "Noto Color Emoji"
+  ],
+  "lacks": [
+   "SF Pro Text",
+   "SF Pro Display",
+   "SF Mono",
+   "SFMono-Regular",
+   "San Francisco",
+   "Segoe UI",
+   "Segoe UI Variable",
+   "Helvetica Neue",
+   "Helvetica",
+   "Arial",
+   "Menlo",
+   "Monaco",
+   "Consolas",
+   "Courier New",
+   "Courier",
+   "Liberation Mono",
+   "Liberation Sans",
+   "Lucida Grande",
+   "Lucida Console",
+   "DejaVu Sans",
+   "DejaVu Sans Mono",
+   "Georgia",
+   "Times New Roman",
+   "Times",
+   "Verdana",
+   "Tahoma",
+   "Trebuchet MS",
+   "Apple Color Emoji",
+   "Segoe UI Emoji",
+   "system-ui",
+   "sans-serif"
+  ]
+ }
+}

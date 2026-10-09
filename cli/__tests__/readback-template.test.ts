@@ -173,7 +173,8 @@ test("template: reads each field as the header says, in the browser's terms", as
     ["b", "F", 1, 1, 10, 10, ["#ffffff"], [1, ["#000000"], "dashed", "I"], 0, [], 1, "PASS_THROUGH", 1, 0],
     ["t", "T", 1, 1, 100, 15, "Hi", "Inter", 600, 1, 10, 15, 1, "#00ff00", "UPPER", "UNDERLINE", "CENTER", "ENDING", 2, "HEIGHT", 1, 1],
     // AUTO line height at 12px is 15, as Figma sets it (the spike's labels).
-    ["long", "T", 1, 1, 1986.6, 15, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1],
+    // As wide as the measure says, 1986.6, rounded up to a pixel, as Figma sizes a text.
+    ["long", "T", 1, 1, 1987, 15, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1],
     ["v", "V", 1, 1, 10, 10, [[1, 2, 4, 5, "#0000ff", "#00ff00", 1.5]], 1, 1],
   ]);
   assert.deepEqual(designerLayers!.map(([name, type]) => [name, type]), [["Note", "TEXT"], ...Array.from({ length: 19 }, (_, i) => [`D${i}`, "RECTANGLE"])], "the hidden one not, and the first 20 shown");
