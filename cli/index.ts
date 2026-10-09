@@ -9,8 +9,9 @@ import { FigmaClient } from "./figma.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
-import { runSnap } from "./snap.js";
+import { runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
+import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge } from "./verify.js";
 import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
@@ -153,6 +154,15 @@ function describeCaveat(caveat: ScoreCaveat): string {
       const names = (caveat.properties ?? []).map((name) => `\`${name}\``).join(", ");
       return `Storybook's docs give no default for ${names}, so the default variant in Figma is a guess`;
     }
+    case "args-rejected": {
+      const count = caveat.variants ?? 0;
+      return `Storybook wouldn't render ${(caveat.values ?? []).join(", ")}, so snap didn't measure ${count} ${count === 1 ? "variant" : "variants"} and nothing here scored ${count === 1 ? "it" : "them"}; snap's warning names the story change that lets it`;
+    }
+    case "args-unchecked": {
+      const count = caveat.variants ?? 0;
+      const one = count === 1;
+      return `snap couldn't check that Storybook gave the story the values of ${one ? "variant" : `${count} variants,`} ${nameSlugs(caveat.slugs ?? [])}, so ${one ? "it" : "they"} may have scored the story's default under ${one ? "its name" : "their names"}; measure the component again`;
+    }
   }
 }
 
@@ -275,7 +285,7 @@ program
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, or a component was capped")
+  .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
   .action(async (opts) => {
     const json = !!opts.json;
@@ -373,6 +383,12 @@ program
         for (const component of result.components.filter((c) => c.error != null)) {
           console.log(chalk.yellow(`\n  ✗ ${component.title ?? component.name}: ${component.error}`));
         }
+        // Said, not warned: snap still takes variant properties from the docs alone.
+        for (const component of result.components.filter((c) => c.argsNotInDocs?.length)) {
+          const names = component.argsNotInDocs!.map((name) => `\`${name}\``).join(", ");
+          const one = component.argsNotInDocs!.length === 1;
+          console.log(chalk.dim(`\n  i ${component.title ?? component.name}: the story declares ${names}, which Storybook's docs don't list, so ${one ? "it isn't a variant property" : "they aren't variant properties"}`));
+        }
         const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
         if (failed.length) {
           console.log(chalk.yellow(`\n  ${failed.length} variants not measured:`));
@@ -389,15 +405,7 @@ program
       // args is exactly the thing worth failing CI over, so --strict-warnings
       // makes that opt-in.
       const strict = !!opts.strict || !!opts.strictWarnings;
-      // Measuring nothing is a failure, not a clean run: snap still writes a
-      // styles.json and a freshly-stamped meta.json, so downstream freshness
-      // checks would read an empty result as a good one.
-      // A capped component was measured as a subset; building from it as if it
-      // were the whole component is the silent gap --strict exists to stop.
-      const hasFailures = result.summary.failed > 0
-        || result.summary.componentsFailed > 0
-        || result.summary.components === 0
-        || result.summary.componentsCapped > 0;
+      const hasFailures = snapFailsStrict(result);
       const hasWarnings = result.summary.componentsWithWarnings > 0;
 
       if ((strict && hasFailures) || (opts.strictWarnings && hasWarnings)) {
@@ -423,7 +431,7 @@ program
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant drifted, is missing from Figma, or reported nothing comparable, if a readback entry is not what Figma returned, is incomplete or was read before the snap, or has no textLayout where snap measured a text's layout, or if the snap recorded a component failure or lacks a component the readback has")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
-  .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured")
+  .option("--strict-measured", "Implies --strict, and also fails on variants that were inferred rather than measured, or measured without snap checking Storybook gave them their values")
   .action(async (opts) => {
     const json = !!opts.json;
     const tolerance = Number(opts.tolerance);
@@ -626,10 +634,13 @@ program
         || (result.readbackIssues?.length ?? 0) > 0
         || result.uncompared.length > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
-      // counts as stale: the absent state must not read as the good one.
+      // counts as stale: the absent state must not read as the good one. So
+      // does a variant snap measured without knowing the story was given its
+      // values, which may be the story's default under its name.
       const notMeasured = result.summary.inferred > 0
         || result.summary.unrecorded > 0
-        || result.summary.unmeasured > 0;
+        || result.summary.unmeasured > 0
+        || result.caveats.some((c) => c.kind === "args-unchecked");
       // An age that cannot be established is not a pass. `meta.json` is the
       // file most likely to be gitignored, so failing open here would make
       // --strict-age succeed unconditionally in exactly the CI setup the

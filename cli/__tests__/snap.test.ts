@@ -11,11 +11,13 @@ import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
-  parseMeasurementWarning,
+  parseMeasurementWarning, snapFailsStrict,
 } from "../snap.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { StorybookComponent } from "../mapper.js";
+import { storyArgsInPage, applyStoryArgsInPage } from "../snap-browser.js";
+import { fakePreview, inPage, urlArgs } from "./preview-standin.js";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "storysync-snap-"));
@@ -1358,6 +1360,223 @@ test("runSnap --merge: two components sharing a key are warned about across the 
     const merged = await runSnap(options(dir, { components: ["forms-a2"], merge: true }), { storybook: twice as never, launch });
     const shared = merged.components.map((c) => c.warnings.filter((w) => /share the key/.test(w)).length);
     assert.deepEqual(shared, [1, 1, 0]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- Args Storybook rejects ---
+
+/**
+ * A browser whose one page serves a Badge story through a stand-in
+ * Storybook preview that `configure` sets up for each URL's args. The
+ * element's fill is the variant the story was given.
+ */
+function badgeBrowser(configure: (args: Record<string, unknown>) => Omit<Parameters<typeof fakePreview>[0], "url" | "storyId">) {
+  const fill: Record<string, string> = { default: "rgb(23, 23, 23)", secondary: "rgb(245, 245, 245)", ghost: "rgba(0, 0, 0, 0)", "Nav/Primary": "rgb(37, 99, 235)" };
+  let fake = fakePreview({ argTypes: {}, initial: {}, url: {} });
+  // The element's description, then its font stack, which the stand-in can't probe.
+  let described = false;
+  const target = {
+    evaluate: async () => {
+      if (described) return null;
+      described = true;
+      return { tag: "span", slot: "badge", role: null };
+    },
+    evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
+    boundingBox: async () => ({ x: 0, y: 0, width: 55, height: 20 }),
+  };
+  const page = {
+    on: () => {}, off: () => {},
+    goto: async (url: string) => {
+      described = false;
+      const args = urlArgs(url);
+      fake = fakePreview({ storyId: "ui-base-badge--default", url: args, ...configure(args) });
+      return null;
+    },
+    waitForSelector: async () => null,
+    addStyleTag: async () => null,
+    $: async () => target,
+    evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn === storyArgsInPage || fn === applyStoryArgsInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
+      // The element's computed styles.
+      if (Array.isArray(arg) && Array.isArray(arg[1])) {
+        const given = fake.preview.storyStoreValue.getStoryContext().args.variant as string;
+        return { "background-color": fill[given] ?? "rgb(255, 0, 0)" };
+      }
+      return arg ? {} : null;
+    },
+  };
+  return async () => ({
+    via: "stub",
+    browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+  }) as never;
+}
+
+/** The Badge as Storybook's docs describe it, with `props`. */
+function badgeDocs(props: object[]) {
+  return {
+    listComponents: async () => [{ id: "ui-base-badge", name: "Badge", title: "ui/base/Badge" }],
+    getComponent: async () => ({ name: "Badge", props, stories: [{ id: "ui-base-badge--default", name: "Default" }] }),
+  } as never;
+}
+
+const BADGE_VARIANT = { name: "variant", type: { name: "union" }, defaultValue: "default", control: { type: "select", options: ["default", "secondary", "ghost", "link"] } };
+
+test("runSnap: a value the story rejects is measured through the preview, or marked arg_rejected, never measured as the default", async () => {
+  // The docs list four variants; the story's options only two, as shadcn/ui's
+  // Badge story does. Its preview applies ghost and never confirms link.
+  const launch = badgeBrowser((args) => ({
+    argTypes: {
+      variant: { options: ["default", "secondary"], type: { name: "enum" }, control: { type: "select" } },
+      disabled: { type: { name: "boolean" }, control: { type: "boolean" } },
+    },
+    initial: { variant: "default" },
+    silent: args.variant === "link",
+  }));
+  const dir = tempDir();
+  try {
+    const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200 }), {
+      storybook: badgeDocs([BADGE_VARIANT]),
+      launch,
+    });
+    const badge = result.components[0];
+    const by = Object.fromEntries(badge.variants.map((v) => [v.combination.variant, v]));
+    assert.deepEqual(Object.keys(by), ["default", "secondary", "ghost", "link"]);
+    assert.deepEqual([by.default.status, by.secondary.status, by.ghost.status, by.link.status], ["ok", "ok", "ok", "arg_rejected"]);
+
+    // ghost measured as it renders, not as the default, and says how.
+    assert.equal(badge.base?.combination.variant, "default");
+    assert.equal(by.ghost.delta?.backgroundColor, null);
+    assert.equal(by.ghost.appliedVia, "preview");
+    assert.deepEqual(by.ghost.rejectedArgs, [{ name: "variant", value: "ghost", reasons: ["not-in-options"], options: ["default", "secondary"] }]);
+    assert.equal(by.secondary.rejectedArgs, undefined);
+
+    // link measured nothing, and fails the run as an unmeasured variant does.
+    assert.equal(by.link.delta, undefined);
+    assert.equal(by.link.appliedVia, undefined);
+    assert.match(by.link.error!, /^Storybook didn't give the story variant=link \(not-in-options\); through Storybook's preview, Storybook didn't confirm the args/);
+    assert.deepEqual([result.summary.rendered, result.summary.failed], [3, 1]);
+
+    const [applied, refused, ...rest] = badge.warnings;
+    assert.match(applied, /^Storybook wouldn't take some of ui\/base\/Badge's values from the story URL, and would have rendered that variant without them/);
+    assert.match(applied, /add 'ghost' to argTypes\.variant\.options in \.\/badge\.stories\.tsx\.$/);
+    assert.match(refused, /^Storybook wouldn't render 1 of ui\/base\/Badge's variants with the values asked for/);
+    assert.match(refused, /add 'link' to argTypes\.variant\.options in \.\/badge\.stories\.tsx, then measure the component again with --components ui-base-badge --merge\.$/);
+    assert.deepEqual(rest, []);
+
+    // The story's argTypes are recorded, and the choice the docs omit named.
+    assert.deepEqual(badge.argTypes, {
+      disabled: { type: "boolean", control: "boolean" },
+      variant: { type: "enum", control: "select", options: ["default", "secondary"] },
+    });
+    assert.equal(badge.storyFile, "./badge.stories.tsx");
+    assert.deepEqual(badge.argsNotInDocs, ["disabled"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a value the URL can't carry is set through the preview and measured, or args_unsupported if that fails too", async () => {
+  // Nav/Primary is outside the URL's [a-zA-Z0-9 _-], so it is left out of
+  // the URL, and the story renders its default until the preview sets it.
+  const tone = { name: "variant", type: { name: "union" }, defaultValue: "default", control: { type: "select", options: ["default", "Nav/Primary"] } };
+  const run = async (silent: boolean) => {
+    const dir = tempDir();
+    try {
+      const launch = badgeBrowser(() => ({
+        argTypes: { variant: { options: ["default", "Nav/Primary"], type: { name: "enum" } } },
+        initial: { variant: "default" },
+        silent,
+      }));
+      const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200 }), {
+        storybook: badgeDocs([tone]),
+        launch,
+      });
+      return result.components[0];
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const measured = await run(false);
+  const nav = measured.variants.find((v) => v.combination.variant === "Nav/Primary")!;
+  assert.equal(nav.status, "ok", nav.error ?? "");
+  assert.equal(nav.delta?.backgroundColor, "#2563eb");
+  assert.equal(nav.appliedVia, "preview");
+  assert.deepEqual(nav.rejectedArgs, [{ name: "variant", value: "Nav/Primary", reasons: ["url-unsafe"] }]);
+  // Nothing in the story to change, so nothing to warn about.
+  assert.deepEqual(measured.warnings, []);
+
+  const refused = await run(true);
+  const unsupported = refused.variants.find((v) => v.combination.variant === "Nav/Primary")!;
+  assert.equal(unsupported.status, "args_unsupported");
+  assert.equal(unsupported.delta, undefined);
+  assert.equal(unsupported.error,
+    "Storybook cannot receive variant=Nav/Primary through the args URL (outside its allowed character set), and snap couldn't set it through Storybook's preview either (Storybook didn't confirm the args), so this variant was not measured");
+});
+
+test("runSnap: an arg_rejected variant records only the values the story still wasn't given", async () => {
+  // The preview took variant=link, but the story kept hiding size for it.
+  const launch = badgeBrowser(() => ({
+    argTypes: {
+      variant: { options: ["default", "secondary"], type: { name: "enum" } },
+      size: { options: ["sm", "lg"], if: { arg: "variant", neq: "link" }, type: { name: "enum" } },
+    },
+    initial: { variant: "default", size: "sm" },
+    ignoreLift: true,
+  }));
+  const dir = tempDir();
+  try {
+    const size = { name: "size", type: { name: "union" }, defaultValue: "sm", control: { type: "select", options: ["sm", "lg"] } };
+    const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200 }), {
+      storybook: badgeDocs([BADGE_VARIANT, size]),
+      launch,
+    });
+    const link = result.components[0].variants.find((v) => v.slug === "variant-link--size-lg")!;
+    assert.equal(link.status, "arg_rejected");
+    assert.deepEqual(link.rejectedArgs, [{ name: "size", value: "lg", reasons: ["hidden-by-if"], condition: { arg: "variant", neq: "link" } }]);
+    // The other variants of link are rejected for size alone too; ghost's are measured.
+    const statuses = Object.fromEntries(result.components[0].variants.map((v) => [v.slug, v.status]));
+    assert.deepEqual(statuses, {
+      "variant-default--size-sm": "ok", "variant-default--size-lg": "ok", "variant-secondary--size-sm": "ok", "variant-secondary--size-lg": "ok",
+      "variant-ghost--size-sm": "ok", "variant-ghost--size-lg": "ok", "variant-link--size-sm": "arg_rejected", "variant-link--size-lg": "arg_rejected",
+    });
+    assert.match(result.components[0].warnings.find((w) => /arg_rejected/.test(w))!, /`size` sm, lg: its argTypes `if: \{"arg":"variant","neq":"link"\}` hides it/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a variant whose args can't be checked is measured, marked, named and fails --strict", async () => {
+  // A page with no Storybook preview to read: what was given can't be known.
+  const dir = tempDir();
+  try {
+    const page = screenshotPage();
+    const size = { name: "size", type: { name: "union" }, defaultValue: "sm", control: { type: "select", options: ["sm", "lg"] } };
+    const result = await runSnap(options(dir, { selector: "#storybook-root > div" }), {
+      storybook: {
+        listComponents: async () => [{ id: "forms-a", name: "A" }, { id: "forms-b", name: "B" }],
+        getComponent: async (id: string) => ({ name: id, props: id === "forms-a" ? [size] : [], stories: [{ id: `${id}--default`, name: "Default" }] }),
+      } as never,
+      launch: async () => ({
+        via: "stub",
+        browser: { newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+      }) as never,
+    });
+    const [a, b] = result.components;
+    // Measured, and marked: a value the story didn't take would be its default.
+    assert.deepEqual(a.variants.map((v) => [v.slug, v.status, v.argsChecked]), [["size-sm", "ok", false], ["size-lg", "ok", false]]);
+    const [warning, ...rest] = a.warnings.filter((w) => /couldn't read Storybook's preview/.test(w));
+    assert.deepEqual(rest, []);
+    assert.match(warning, /for its variants \(Storybook's preview returned nothing snap can read\)\./);
+    assert.match(warning, /Measure the component again with --components forms-a --merge\.$/);
+    assert.equal(a.argTypes, undefined);
+    // A story asked for nothing can't have refused anything.
+    assert.deepEqual([b.variants.map((v) => v.argsChecked), b.warnings], [[undefined], []]);
+    // The marked variants fail --strict, as a variant that couldn't be measured does.
+    assert.equal(snapFailsStrict(result), true);
+    for (const variant of a.variants) delete variant.argsChecked;
+    assert.equal(snapFailsStrict(result), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

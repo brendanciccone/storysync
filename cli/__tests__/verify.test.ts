@@ -1329,6 +1329,36 @@ test("scoreCaveats: props that reach the component and change nothing measured a
   assert.deepEqual(scoreCaveats(component(["a", "a"])), [{ component: "Forms/Button", kind: "identical-variants" }]);
 });
 
+test("scoreCaveats: names the values Storybook wouldn't render, and how many variants that left unmeasured", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", status: "arg_rejected" }, { slug: "c", status: "arg_rejected" }, { slug: "d", status: "timeout" }]);
+  const rejected = (name: string, value: string) => [{ name, value, reasons: ["not-in-options"], options: ["default"] }];
+  const component = snap.components[0];
+  component.variants[1].rejectedArgs = rejected("variant", "ghost") as never;
+  component.variants[2].rejectedArgs = [...rejected("variant", "ghost"), ...rejected("size", "xs")] as never;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-rejected"), [
+    { component: "Forms/Button", kind: "args-rejected", values: ["variant=ghost", "size=xs"], variants: 2 },
+  ]);
+  // Values applied through the preview were measured: nothing to say.
+  component.variants[1].status = "ok";
+  component.variants[2].status = "ok";
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-rejected"), []);
+});
+
+test("scoreCaveats: names the variants snap measured without checking their args", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }, { slug: "c" }, { slug: "d", status: "timeout" }]);
+  const component = snap.components[0];
+  component.variants[1].argsChecked = false;
+  component.variants[2].argsChecked = false;
+  // One not measured isn't scored, so isn't named here.
+  component.variants[3].argsChecked = false;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-unchecked"), [
+    { component: "Forms/Button", kind: "args-unchecked", slugs: ["b", "c"], variants: 2 },
+  ]);
+  delete component.variants[1].argsChecked;
+  delete component.variants[2].argsChecked;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-unchecked"), []);
+});
+
 test("verify: caveats are given for the components the readback scored, and fail nothing", () => {
   const snap = snapWith([{ slug: "a" }]);
   const trigger = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);

@@ -168,10 +168,10 @@ test("verify CLI: a --snap that is not a snap fails saying so, not with a TypeEr
 });
 
 test("verify CLI: a single unmeasurable variant is reported but does not fail --strict alone", () => {
-  // args_unsupported is expected for values Storybook cannot pass in a URL; the
-  // skill builds those from source and labels them inferred, which
-  // --strict-measured already fails. Failing --strict too would make a correct
-  // run impossible to pass.
+  // args_unsupported is expected for values Storybook cannot pass in a URL or
+  // take through its preview; the skill builds those from source and labels
+  // them inferred, which --strict-measured already fails. Failing --strict
+  // too would make a correct run impossible to pass.
   const r = verify(
     snap({ summary: { components: 1, variants: 2, rendered: 1, failed: 1, componentsFailed: 0, componentsWithWarnings: 0 } }, {
       variants: [
@@ -376,6 +376,51 @@ test("verify CLI: props that reach the component and change nothing measured are
   assert.equal(withWarning.status, 0, withWarning.out);
   assert.match(withWarning.out, /\n {6}Forms\/Button: every variant measured the same though the args reached it: `textAlign` changes nothing snap measures, so its variants in Figma look alike; `--exclude-props textAlign` leaves it out\n/);
   assert.doesNotMatch(withWarning.out, /story may not pass/);
+});
+
+test("verify CLI: variants Storybook wouldn't render are named beside the score as unmeasured, and fail --strict-measured", () => {
+  // Storybook rendered its default for variant=link, as for a value outside
+  // the story's options: snap measured nothing, so nothing may score it.
+  const rejectedArgs = [{ name: "variant", value: "link", reasons: ["not-in-options"], options: ["default"] }];
+  const twoVariants = snap({ summary: { components: 1, variants: 2, rendered: 1, failed: 1, componentsFailed: 0, componentsWithWarnings: 1 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "arg_rejected", error: "Storybook didn't give the story variant=link", rejectedArgs },
+    ],
+  });
+  const figma = readbackOf({ a: MATCHING, b: { ...MATCHING, source: "inferred" } });
+  const r = verify(twoVariants, figma, "--strict");
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.deepEqual(lines.slice(at + 1, at + 3), [
+    "  ! The score compares Figma with what snap measured, and snap warned about that for this component:",
+    "      Forms/Button: Storybook wouldn't render variant=link, so snap didn't measure 1 variant and nothing here scored it; snap's warning names the story change that lets it",
+  ]);
+  assert.match(r.out, /Forms\/Button b \[unmeasured — written to Figma but never scored\]/);
+  assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
+});
+
+test("verify CLI: variants snap measured without checking their args are named beside the score, and fail --strict-measured", () => {
+  // snap couldn't read Storybook's preview for b, so b may be the story's
+  // default under its name: scored, but not as surely measured.
+  const twoVariants = snap({ summary: { components: 1, variants: 2, rendered: 2, failed: 0, componentsFailed: 0, componentsWithWarnings: 1 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "ok", error: null, delta: {}, argsChecked: false },
+    ],
+  });
+  const figma = readbackOf({ a: MATCHING, b: MATCHING });
+  const r = verify(twoVariants, figma, "--strict");
+  assert.equal(r.status, 0, r.out);
+  // Under the score, beside the caveat that a and b measured the same.
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.equal(lines[at + 1], "  ! The score compares Figma with what snap measured, and snap warned about that for this component:");
+  assert.deepEqual(lines.slice(at + 2, at + 4).filter((line) => line.includes("couldn't check")), [
+    "      Forms/Button: snap couldn't check that Storybook gave the story the values of variant b, so it may have scored the story's default under its name; measure the component again",
+  ]);
+  assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
 });
 
 test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {

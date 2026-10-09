@@ -1,17 +1,23 @@
 // The only browser-bound module in storysync.
 //
-// Everything that can be tested without Chromium lives in snap-normalize.ts;
-// this file is limited to launching a browser and reading one story's rendered
-// styles out of the page.
+// Everything that can be tested without Chromium lives in snap-normalize.ts
+// and snap-args.ts; this file is limited to launching a browser, reading one
+// story's rendered styles out of the page, and seeing that Storybook gave the
+// story the args snap asked for.
 
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import type { Browser, BrowserContext, Page, ElementHandle, Request } from "playwright-core";
+import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request } from "playwright-core";
 import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS,
   chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
 } from "./snap-normalize.js";
 import type { RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
+import {
+  compactArgTypes, findRejectedArgs, previewArgUpdate, rejectionsFromWarnings, stillRejected,
+} from "./snap-args.js";
+import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
+import type { FigmaVariantProperty } from "./mapper.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -168,7 +174,12 @@ export async function createContext(browser: Browser): Promise<BrowserContext> {
 
 // --- Capture ----------------------------------------------------------------
 
-export type CaptureStatus = "ok" | "render_error" | "timeout" | "element_not_found";
+/**
+ * `arg_rejected`: Storybook didn't give the story a value its URL asked for,
+ * and snap couldn't apply it through the preview either, so what rendered
+ * is not that variant and was not measured. See snap-args.ts.
+ */
+export type CaptureStatus = "ok" | "render_error" | "timeout" | "element_not_found" | "arg_rejected";
 
 export interface CaptureResult {
   status: CaptureStatus;
@@ -207,6 +218,11 @@ export interface CaptureResult {
    * describeIdenticalVariants.
    */
   markup: string | null;
+  /**
+   * Which of `story.args` Storybook gave the story, and what snap did about
+   * any it didn't, when `story` was given and the story loaded.
+   */
+  args: StoryArgsCheck | null;
 }
 
 export interface CaptureOptions {
@@ -216,6 +232,20 @@ export interface CaptureOptions {
   screenshot: boolean;
   /** The component the story renders, whose `data-slot` marks its root: see chooseMeasuredElement. */
   component?: { name: string; title?: string };
+  /**
+   * The story `url` loads, with the args its URL asks for: snap's
+   * combination, and the component's variant properties, so a boolean is
+   * applied as one. Given, captureStory checks that Storybook gave the story
+   * each of them, applies any it didn't through Storybook's preview, and
+   * fails the capture as `arg_rejected` if that doesn't take either.
+   */
+  story?: {
+    id: string;
+    args: Record<string, string>;
+    properties?: readonly FigmaVariantProperty[];
+    /** Args left out of the URL, which can't carry their values: each is set through the preview. */
+    notInUrl?: readonly string[];
+  };
 }
 
 /** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
@@ -239,15 +269,18 @@ const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
 export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
     retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
-    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, textLayout: null, markup: null,
+    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, textLayout: null, markup: null, args: null,
   };
   const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
   let images: ImageRequests | null = null;
+  let warnings: ArgWarnings | null = null;
   let loaded = false;
 
   try {
     // From before the navigation, so a request the story makes as it renders is seen.
     images = watchImageRequests(page);
+    // Likewise Storybook's warning for a value it rejects, read if its preview can't be.
+    if (opts.story) warnings = watchArgWarnings(page);
     await page.goto(url, { waitUntil: "load", timeout: opts.timeoutMs });
     loaded = true;
 
@@ -267,6 +300,21 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
         ? `no element matched ${opts.selector}`
         : `nothing that draws rendered under ${ROOT_CONTAINERS.join(" or ")}`;
       return { status: "element_not_found", error, ...empty };
+    }
+
+    // Before anything is measured: a value Storybook didn't give the story
+    // leaves its default on screen, under the variant's name. Kept on
+    // `empty`, so a capture that fails after this still says what it found.
+    if (opts.story) {
+      empty.args = await checkStoryArgs(page, opts.story, opts.timeoutMs, warnings?.texts ?? []);
+      if (empty.args.unapplied.length) {
+        return { status: "arg_rejected", error: describeUnapplied(empty.args), ...empty };
+      }
+      if (empty.args.appliedVia) {
+        renderError = await readStorybookError(page);
+        const values = empty.args.rejected.map((r) => `${r.name}=${r.value}`).join(", ");
+        if (renderError) return { status: "render_error", error: `${renderError} (after snap set ${values} through Storybook's preview)`, ...empty };
+      }
     }
 
     await settle(page, images, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
@@ -300,7 +348,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
     const markupAfter = await readMarkup(page);
     const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
-    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup };
+    return { status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
@@ -310,6 +358,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
   } finally {
     images?.stop();
+    warnings?.stop();
   }
 }
 
@@ -844,4 +893,297 @@ async function probeFontStack(handle: ElementHandle<Element>): Promise<FontProbe
       return null;
     }
   });
+}
+
+// --- Args -----------------------------------------------------------------
+//
+// Whether Storybook gave the story the args its URL asked for, and applying
+// through its preview any it didn't: see snap-args.ts for why. Storybook's
+// preview is read as `window.__STORYBOOK_PREVIEW__`, there from Storybook 7,
+// and written to through its channel's `updateStoryArgs` and `forceRemount`
+// events, which its Controls panel and toolbar send.
+
+/** The longest the check waits for Storybook's preview to hold the story's render. */
+const ARGS_WAIT_MS = 5000;
+
+/** Storybook's preview, as much of it as snap reads. */
+interface PreviewInPage {
+  storyRenders?: ({ id?: string; phase?: string; story?: StoryInPage } | undefined)[];
+  storyStoreValue?: {
+    args: { get(storyId: string): Record<string, unknown> };
+    getStoryContext(story: StoryInPage): {
+      args?: Record<string, unknown>;
+      unmappedArgs?: Record<string, unknown>;
+      argsByTarget?: Record<string, Record<string, unknown> | undefined>;
+      globals?: Record<string, unknown>;
+    };
+  };
+  channel?: {
+    on(event: string, listener: (payload: unknown) => void): void;
+    off?(event: string, listener: (payload: unknown) => void): void;
+    removeListener?(event: string, listener: (payload: unknown) => void): void;
+    emit(event: string, payload: unknown): void;
+  };
+}
+
+interface StoryInPage {
+  argTypes?: Record<string, ArgTypeInPage | undefined>;
+  parameters?: { fileName?: unknown };
+}
+
+interface ArgTypeInPage {
+  type?: string | { name?: string };
+  control?: string | false | { type?: string; disable?: boolean };
+  options?: unknown;
+  if?: unknown;
+  mapping?: unknown;
+}
+
+/**
+ * Runs in the page: what Storybook's preview holds for the story, as
+ * snap-args.ts reads it, once it holds a render of it, waiting up to
+ * `waitMs` for one. `{ error }` when there is no preview to read.
+ */
+export async function storyArgsInPage(args: { storyId: string; waitMs: number }): Promise<StoryArgsSnapshot | { error: string }> {
+  try {
+    const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+    if (!preview) return { error: "the page has no window.__STORYBOOK_PREVIEW__" };
+    const deadline = Date.now() + args.waitMs;
+    let story: StoryInPage | undefined;
+    for (;;) {
+      story = preview.storyRenders?.find((r) => r?.id === args.storyId && r.story)?.story;
+      if (story || Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const store = preview.storyStoreValue;
+    if (!story || !store) return { error: `Storybook's preview holds no render of ${args.storyId}` };
+
+    // What crosses back to Node: a value that isn't a string, number,
+    // boolean or null is recorded by its type.
+    const plain = (value: unknown): unknown =>
+      value === null || ["string", "number", "boolean"].includes(typeof value) ? value : { $type: typeof value };
+    const record = (from: Record<string, unknown> | undefined): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(from ?? {})) if (value !== undefined) out[name] = plain(value);
+      return out;
+    };
+
+    const argTypes: Record<string, StoryArgType> = {};
+    const mappings: Record<string, Record<string, unknown>> = {};
+    for (const [name, t] of Object.entries(story.argTypes ?? {})) {
+      if (!t) continue;
+      if (t.mapping && typeof t.mapping === "object") {
+        mappings[name] = {};
+        for (const [key, value] of Object.entries(t.mapping)) mappings[name][key] = plain(value);
+      }
+      const control = t.control === false || (typeof t.control === "object" && t.control?.disable)
+        ? false
+        : typeof t.control === "string" ? t.control : t.control?.type;
+      let condition: Record<string, unknown> | undefined;
+      try {
+        condition = t.if && typeof t.if === "object" ? JSON.parse(JSON.stringify(t.if)) : undefined;
+      } catch {
+        condition = undefined;
+      }
+      argTypes[name] = {
+        type: typeof t.type === "string" ? t.type : t.type?.name,
+        control,
+        options: Array.isArray(t.options) ? t.options.map(plain) : undefined,
+        if: condition,
+        mapping: t.mapping ? true : undefined,
+      };
+    }
+
+    // The args the story is given: those left after argTypes `if`
+    // conditions, and any aimed at another target, which skip them, each by
+    // its value before a `mapping`.
+    const context = store.getStoryContext(story);
+    const values = context.unmappedArgs ?? context.args ?? {};
+    const given = new Set(Object.keys(context.args ?? {}));
+    for (const [target, group] of Object.entries(context.argsByTarget ?? {})) {
+      if (target !== "UNTARGETED") for (const name of Object.keys(group ?? {})) given.add(name);
+    }
+    const rendered: Record<string, unknown> = {};
+    for (const name of given) if (values[name] !== undefined) rendered[name] = plain(values[name]);
+
+    let stored: Record<string, unknown> = {};
+    try {
+      stored = record(store.args.get(args.storyId));
+    } catch {
+      // No args recorded for it: everything the store would hold is in `rendered`.
+    }
+    const fileName = story.parameters?.fileName;
+    return {
+      fileName: typeof fileName === "string" ? fileName : null, argTypes, stored, rendered, globals: record(context.globals),
+      ...(Object.keys(mappings).length ? { mappings } : {}),
+    };
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+}
+
+/**
+ * Runs in the page: gives the story `updates` through Storybook's channel,
+ * as its Controls panel does, after lifting the argTypes `if` of each arg in
+ * `lift`, then remounts it, so it renders from scratch with them as from
+ * its URL. Waits for the render in progress to finish first: Storybook
+ * queues a rerender asked for during one, and reloads the page for a
+ * remount. `{ error }` when it can't, or Storybook doesn't confirm it.
+ */
+export async function applyStoryArgsInPage(args: {
+  storyId: string;
+  updates: Record<string, unknown>;
+  lift: string[];
+  waitMs: number;
+}): Promise<{ ok: true } | { error: string }> {
+  try {
+    const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+    const channel = preview?.channel;
+    const render = preview?.storyRenders?.find((r) => r?.id === args.storyId && r.story);
+    if (!channel || !render?.story) return { error: `Storybook's preview has no channel or no render of ${args.storyId}` };
+    const deadline = Date.now() + args.waitMs;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    // Storybook 8 and later end a render at "finished"; 7 at "completed",
+    // or "played" after a play function.
+    const settled = async (): Promise<boolean> => {
+      let last = render.phase;
+      let since = Date.now();
+      while (Date.now() < deadline) {
+        const phase = render.phase;
+        if (phase !== last) {
+          last = phase;
+          since = Date.now();
+        }
+        if (phase === "finished" || phase === "errored" || phase === "aborted") return true;
+        if ((phase === "completed" || phase === "played") && Date.now() - since >= 300) return true;
+        await sleep(20);
+      }
+      return false;
+    };
+    // The first of `wanted`'s events whose payload matches, or false at the deadline.
+    const once = (wanted: Record<string, (payload: unknown) => boolean>) => new Promise<boolean>((resolve) => {
+      const listeners = Object.entries(wanted).map(([event, matches]) => [event, (payload: unknown) => {
+        if (matches(payload)) done(true);
+      }] as const);
+      const done = (value: boolean) => {
+        clearTimeout(timer);
+        for (const [event, listener] of listeners) (channel.off ?? channel.removeListener)?.call(channel, event, listener);
+        resolve(value);
+      };
+      const timer = setTimeout(() => done(false), Math.max(0, deadline - Date.now()));
+      for (const [event, listener] of listeners) channel.on(event, listener);
+    });
+    const forStory = (payload: unknown) =>
+      payload === args.storyId || (typeof payload === "object" && payload !== null && (payload as { storyId?: unknown }).storyId === args.storyId);
+    const any = () => true;
+
+    if (!(await settled())) return { error: "the story was still rendering" };
+    const argTypes = render.story.argTypes ?? {};
+    for (const name of args.lift) {
+      const argType = argTypes[name];
+      if (argType?.if) argTypes[name] = { ...argType, if: undefined };
+      if (argTypes[name]?.if) return { error: `argTypes.${name}.if couldn't be lifted` };
+    }
+    const updated = once({ storyArgsUpdated: forStory });
+    channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
+    if (!(await updated)) return { error: "Storybook didn't confirm the args" };
+    // Rendered, or threw: a story that can't render the values never says
+    // storyRendered, but shows Storybook's error display, which the capture
+    // reads next, so it is a render error rather than a refusal.
+    const rendered = once({ storyRendered: forStory, storyThrewException: any, storyErrored: any });
+    channel.emit("forceRemount", { storyId: args.storyId });
+    if (!(await rendered)) return { error: "the story didn't render again with them" };
+    if (!(await settled())) return { error: "the story was still rendering with them" };
+    return { ok: true };
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+}
+
+/** A page's console warnings that Storybook rejected an arg value, from now until stop(). */
+interface ArgWarnings {
+  texts: string[];
+  stop(): void;
+}
+
+function watchArgWarnings(page: Page): ArgWarnings {
+  const texts: string[] = [];
+  const listener = (message: ConsoleMessage) => {
+    const text = message.text();
+    if (text.includes("Received illegal value for")) texts.push(text);
+  };
+  page.on("console", listener);
+  return { texts, stop: () => page.off("console", listener) };
+}
+
+/** A value read from the page, as a snapshot, or why it isn't one. */
+function asSnapshot(value: unknown): StoryArgsSnapshot | { error: string } {
+  const read = value as Partial<StoryArgsSnapshot & { error: unknown }> | null;
+  if (typeof read?.error === "string") return { error: read.error };
+  const isRecord = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isRecord(read?.argTypes) || !isRecord(read?.stored) || !isRecord(read?.rendered)) {
+    return { error: "Storybook's preview returned nothing snap can read" };
+  }
+  return {
+    fileName: typeof read!.fileName === "string" ? read!.fileName : null,
+    argTypes: read!.argTypes!,
+    stored: read!.stored!,
+    rendered: read!.rendered!,
+    globals: isRecord(read!.globals) ? read!.globals! : {},
+    ...(isRecord(read!.mappings) ? { mappings: read!.mappings! } : {}),
+  };
+}
+
+/**
+ * Which of the story's requested args Storybook gave it, and, for any it
+ * didn't, the result of applying them through its preview.
+ */
+export async function checkStoryArgs(
+  page: Page,
+  story: NonNullable<CaptureOptions["story"]>,
+  timeoutMs: number,
+  warnings: readonly string[],
+): Promise<StoryArgsCheck> {
+  const read = async () => asSnapshot(await page.evaluate(storyArgsInPage, { storyId: story.id, waitMs: Math.min(timeoutMs, ARGS_WAIT_MS) }));
+  const notInUrl = story.notInUrl ?? [];
+  const first = await read();
+  if ("error" in first) {
+    // A value left out of the URL wasn't given. Storybook's console warning
+    // still names one outside the options.
+    const rejected: ArgRejection[] = [
+      ...notInUrl.map((name): ArgRejection => ({ name, value: story.args[name], reasons: ["url-unsafe"] })),
+      ...rejectionsFromWarnings(story.args, warnings).filter((r) => !notInUrl.includes(r.name)),
+    ];
+    return { checked: false, rejected, unapplied: rejected, error: first.error };
+  }
+
+  const known = { argTypes: compactArgTypes(first.argTypes), ...(first.fileName ? { storyFile: first.fileName } : {}) };
+  const rejected = findRejectedArgs(story.args, first, story.properties, notInUrl);
+  if (!rejected.length) return { checked: true, rejected, unapplied: [], ...known };
+
+  const { updates, lift } = previewArgUpdate(rejected, first, story.properties);
+  let applied: { ok: true } | { error: string };
+  try {
+    applied = await page.evaluate(applyStoryArgsInPage, { storyId: story.id, updates, lift, waitMs: timeoutMs });
+  } catch (err) {
+    // The page went, as a remount Storybook can't do in place reloads it.
+    applied = { error: firstLine(err) };
+  }
+  if ("error" in applied) return { checked: true, rejected, unapplied: rejected, error: applied.error, ...known };
+
+  const after = await read();
+  if ("error" in after) return { checked: true, rejected, unapplied: rejected, error: after.error, ...known };
+  const unapplied = stillRejected(story.args, rejected, after);
+  if (unapplied.length) {
+    return { checked: true, rejected, unapplied, error: "the story still wasn't given them after Storybook's preview took them", ...known };
+  }
+  return { checked: true, rejected, unapplied: [], appliedVia: "preview", ...known };
+}
+
+/** The capture's error for values the story wasn't given. */
+function describeUnapplied(check: StoryArgsCheck): string {
+  const values = check.unapplied.map((r) => `${r.name}=${r.value} (${r.reasons.join(", ")})`).join(", ");
+  const why = check.error ? `; through Storybook's preview, ${check.error}` : "";
+  return `Storybook didn't give the story ${values}${why}, so this variant was not measured`;
 }

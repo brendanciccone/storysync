@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { Page } from "playwright-core";
-import { captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector } from "../snap-browser.js";
+import { fakePreview, inPage } from "./preview-standin.js";
+import type { FakeArgType } from "./preview-standin.js";
+import {
+  captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
+} from "../snap-browser.js";
 
 /** Listening for requests, which captureStory does to wait for images. */
 const LISTENS = { on: () => {}, off: () => {} };
@@ -200,4 +204,210 @@ test("captureStory: an element with no width or height is measured without a scr
   const drawn = await captureStory(page, "http://localhost:6006/iframe.html?id=x", SHOT);
   assert.equal(drawn.status, "ok", drawn.error ?? "");
   assert.equal(drawn.screenshot?.toString(), "png");
+});
+
+// --- Args ---------------------------------------------------------------------
+//
+// Storybook's preview is stood in for by preview-standin.ts.
+
+const BADGE_TYPES: Record<string, FakeArgType> = {
+  variant: { options: ["default", "secondary"], type: { name: "enum" }, control: { type: "select" } },
+  size: { options: ["sm", "lg"], if: { arg: "variant", neq: "link" }, type: { name: "enum" } },
+  children: { type: { name: "string" }, control: { type: "text" } },
+};
+
+test("storyArgsInPage: reads what the store holds, what the story is given, and its argTypes", async () => {
+  const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default", size: "sm", children: "Badge" }, url: { variant: "ghost", size: "lg" } });
+  const snapshot = await inPage(fake.preview, () => storyArgsInPage({ storyId: fake.storyId, waitMs: 100 }));
+  assert.deepEqual(snapshot, {
+    fileName: "./badge.stories.tsx",
+    argTypes: {
+      variant: { type: "enum", control: "select", options: ["default", "secondary"], if: undefined, mapping: undefined },
+      size: { type: "enum", control: undefined, options: ["sm", "lg"], if: { arg: "variant", neq: "link" }, mapping: undefined },
+      children: { type: "string", control: "text", options: undefined, if: undefined, mapping: undefined },
+    },
+    // ghost was dropped, as Storybook drops a value outside the options.
+    stored: { variant: "default", size: "lg", children: "Badge" },
+    rendered: { variant: "default", size: "lg", children: "Badge" },
+    globals: { theme: "light" },
+  });
+  // A hidden arg is in the store and not given to the story.
+  const link = fakePreview({ argTypes: { ...BADGE_TYPES, variant: { options: ["default", "link"] } }, initial: { variant: "default", size: "sm" }, url: { variant: "link", size: "lg" } });
+  const hidden = await inPage(link.preview, () => storyArgsInPage({ storyId: link.storyId, waitMs: 100 }));
+  assert.deepEqual(hidden && "rendered" in hidden ? [hidden.stored, hidden.rendered] : hidden, [{ variant: "link", size: "lg" }, { variant: "link" }]);
+  // Without a preview there is nothing to read, said as such.
+  assert.deepEqual(await inPage(undefined, () => storyArgsInPage({ storyId: "x", waitMs: 0 })), { error: "the page has no window.__STORYBOOK_PREVIEW__" });
+});
+
+test("storyArgsInPage: a mapped arg is read by the value asked for, and one aimed at another target as given", async () => {
+  // Storybook gives the story `icon` mapped, and `label` in argsByTarget,
+  // not in args: both were given, as the URL asked.
+  const argTypes: Record<string, FakeArgType> = {
+    icon: { options: ["star", "heart"], mapping: { star: "★", heart: "♥" }, type: { name: "enum" } },
+    label: { type: { name: "string" }, target: "wrapper" },
+  };
+  const fake = fakePreview({ argTypes, initial: { icon: "heart" }, url: { icon: "star", label: "Hi" } });
+  const snapshot = await inPage(fake.preview, () => storyArgsInPage({ storyId: fake.storyId, waitMs: 100 }));
+  assert.deepEqual(snapshot && "rendered" in snapshot ? snapshot.rendered : snapshot, { icon: "star", label: "Hi" });
+  assert.equal(snapshot && "argTypes" in snapshot ? snapshot.argTypes.icon.mapping : snapshot, true);
+  // Its mapping is read too, for judging an if as Storybook does.
+  assert.deepEqual(snapshot && "mappings" in snapshot ? snapshot.mappings : snapshot, { icon: { star: "★", heart: "♥" } });
+});
+
+test("applyStoryArgsInPage: waits for the render, lifts the if, updates, then remounts", async () => {
+  const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default", size: "sm" }, url: { variant: "link", size: "lg" }, phase: "afterEach" });
+  // The first render is still running its afterEach, as Storybook's a11y
+  // addon's does for seconds: a remount now would reload the page.
+  setTimeout(() => { fake.render.phase = "finished"; }, 30);
+  const result = await inPage(fake.preview, () =>
+    applyStoryArgsInPage({ storyId: fake.storyId, updates: { variant: "link", size: "lg" }, lift: ["size"], waitMs: 2000 }));
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(fake.events, ["updateStoryArgs@finished", "storyArgsUpdated@finished", "forceRemount@finished", "storyRendered@completed"]);
+  assert.equal(fake.story.argTypes.size.if, undefined);
+  const snapshot = await inPage(fake.preview, () => storyArgsInPage({ storyId: fake.storyId, waitMs: 100 }));
+  assert.deepEqual(snapshot && "rendered" in snapshot ? snapshot.rendered : snapshot, { variant: "link", size: "lg" });
+});
+
+test("applyStoryArgsInPage: returns once the remount has finished, its afterEach included, and not before", async () => {
+  // An addon's afterEach, as the a11y addon's, runs after storyRendered:
+  // measured then, the story could still change under it.
+  const slow = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, afterEachMs: 40 });
+  const result = await inPage(slow.preview, () =>
+    applyStoryArgsInPage({ storyId: slow.storyId, updates: { variant: "ghost" }, lift: [], waitMs: 2000 }));
+  assert.deepEqual([result, slow.render.phase], [{ ok: true }, "finished"]);
+  // One that never finishes within the time allowed is an error.
+  const stuck = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, afterEachMs: Infinity });
+  assert.deepEqual(await inPage(stuck.preview, () =>
+    applyStoryArgsInPage({ storyId: stuck.storyId, updates: { variant: "ghost" }, lift: [], waitMs: 200 })),
+  { error: "the story was still rendering with them" });
+});
+
+test("applyStoryArgsInPage: a Storybook 7 render ends at completed, or played after a play function", async () => {
+  for (const sb7 of ["completed", "played"] as const) {
+    const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, sb7 });
+    const result = await inPage(fake.preview, () =>
+      applyStoryArgsInPage({ storyId: fake.storyId, updates: { variant: "ghost" }, lift: [], waitMs: 2000 }));
+    assert.deepEqual(result, { ok: true }, sb7);
+    assert.equal(fake.stored.variant, "ghost");
+  }
+});
+
+test("applyStoryArgsInPage: a preview that never confirms is an error, not a wait forever", async () => {
+  const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, silent: true });
+  const result = await inPage(fake.preview, () =>
+    applyStoryArgsInPage({ storyId: fake.storyId, updates: { variant: "ghost" }, lift: [], waitMs: 50 }));
+  assert.deepEqual(result, { error: "Storybook didn't confirm the args" });
+  const busy = fakePreview({ argTypes: BADGE_TYPES, initial: {}, url: {}, phase: "rendering" });
+  assert.deepEqual(await inPage(busy.preview, () => applyStoryArgsInPage({ storyId: busy.storyId, updates: {}, lift: [], waitMs: 50 })),
+    { error: "the story was still rendering" });
+});
+
+/**
+ * A story page measured through --selector, whose Storybook preview is
+ * `preview`: the page functions run against it, and every other look at
+ * the page finds nothing to report but the error Storybook shows in
+ * `shown`. `warnings` are logged as it loads.
+ */
+function previewPage(preview: unknown, warnings: string[] = [], shown: { error: string | null } = { error: null }) {
+  const { page } = measuredPage({ x: 0, y: 0, width: 40, height: 20 }, async () => Buffer.from("png"));
+  const consoleListeners: ((message: { text(): string }) => void)[] = [];
+  const stand = page as unknown as Record<string, unknown>;
+  const evaluate = stand.evaluate as (fn: unknown, arg?: unknown) => Promise<unknown>;
+  stand.on = (event: string, listener: (message: { text(): string }) => void) => { if (event === "console") consoleListeners.push(listener); };
+  stand.goto = async () => {
+    for (const text of warnings) for (const listener of consoleListeners) listener({ text: () => text });
+    return null;
+  };
+  stand.evaluate = async (fn: unknown, arg?: unknown) =>
+    fn === storyArgsInPage || fn === applyStoryArgsInPage
+      ? inPage(preview, () => (fn as (a: unknown) => Promise<unknown>)(arg))
+      : fn === storybookErrorInPage ? shown.error : evaluate(fn, arg);
+  return page;
+}
+
+const STORY_OPTS = (args: Record<string, string>) => ({ ...SHOT, story: { id: "ui-base-badge--default", args } });
+
+test("captureStory: a value the URL didn't apply is applied through the preview and measured, saying so", async () => {
+  const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default", size: "sm" }, url: { size: "lg" } });
+  const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "ghost", size: "lg" }));
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.equal(result.args?.appliedVia, "preview");
+  assert.deepEqual(result.args?.rejected, [{ name: "variant", value: "ghost", reasons: ["not-in-options"], options: ["default", "secondary"] }]);
+  assert.deepEqual(result.args?.unapplied, []);
+  assert.equal(fake.stored.variant, "ghost");
+  assert.equal(result.args?.storyFile, "./badge.stories.tsx");
+  // A story given everything asked for is measured as it is.
+  const plain = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: { variant: "secondary" } });
+  const taken = await captureStory(previewPage(plain.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "secondary" }));
+  assert.equal(taken.status, "ok");
+  assert.deepEqual([taken.args?.rejected, taken.args?.appliedVia, plain.events], [[], undefined, []]);
+});
+
+test("captureStory: an if on a mapped arg is judged as Storybook judges it, so a value it gave isn't set again", async () => {
+  const argTypes: Record<string, FakeArgType> = {
+    tone: { options: ["a", "b"], mapping: { a: "loud", b: "quiet" }, type: { name: "enum" } },
+    size: { options: ["sm", "lg"], if: { arg: "tone", eq: "loud" }, type: { name: "enum" } },
+  };
+  const fake = fakePreview({ argTypes, initial: { tone: "b", size: "sm" }, url: { tone: "a", size: "lg" } });
+  const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ tone: "a", size: "lg" }));
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.args?.rejected, result.args?.appliedVia, fake.events], [[], undefined, []]);
+});
+
+test("captureStory: a number-like value is set through the preview as the story's options type it", async () => {
+  // The URL gives cols the number 2, which options of strings don't list.
+  const strings = fakePreview({ argTypes: { cols: { options: ["1", "2"], type: { name: "enum" } } }, initial: { cols: "1" }, url: { cols: 2 } });
+  const result = await captureStory(previewPage(strings.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ cols: "2" }));
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.args?.appliedVia, result.args?.rejected.map((r) => r.reasons)], ["preview", [["number-in-url"]]]);
+  assert.equal(strings.stored.cols, "2");
+  // A value numeric options leave out goes as a number, as the component takes it.
+  const numbers = fakePreview({ argTypes: { size: { options: [1, 2, 3], type: { name: "enum" } } }, initial: { size: 1 }, url: { size: 4 } });
+  const four = await captureStory(previewPage(numbers.preview), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ size: "4" }));
+  assert.equal(four.status, "ok", four.error ?? "");
+  assert.equal(numbers.stored.size, 4);
+});
+
+test("captureStory: a value left out of the URL is set through the preview, or rejected unread without a preview", async () => {
+  const argTypes: Record<string, FakeArgType> = { tone: { options: ["plain", "Nav/Primary"], type: { name: "enum" } } };
+  const opts = { ...SHOT, story: { id: "ui-base-badge--default", args: { tone: "Nav/Primary" }, notInUrl: ["tone"] } };
+  const fake = fakePreview({ argTypes, initial: { tone: "plain" }, url: {} });
+  const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", opts);
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.args?.appliedVia, result.args?.rejected.map((r) => r.reasons)], ["preview", [["url-unsafe"]]]);
+  assert.equal(fake.stored.tone, "Nav/Primary");
+  // With no preview to read, it is known not to have been given.
+  const unread = await captureStory(previewPage(undefined), "http://localhost:6006/iframe.html?id=x", opts);
+  assert.equal(unread.status, "arg_rejected");
+  assert.deepEqual(unread.args?.unapplied.map((r) => [r.name, r.reasons]), [["tone", ["url-unsafe"]]]);
+});
+
+test("captureStory: a value the preview won't apply either is arg_rejected, not the default measured as it", async () => {
+  const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, silent: true });
+  const result = await captureStory(previewPage(fake.preview), "http://localhost:6006/iframe.html?id=x", { ...STORY_OPTS({ variant: "ghost" }), timeoutMs: 50 });
+  assert.equal(result.status, "arg_rejected");
+  assert.equal(result.raw, null);
+  assert.equal(result.screenshot, null);
+  assert.equal(result.error, "Storybook didn't give the story variant=ghost (not-in-options); through Storybook's preview, Storybook didn't confirm the args, so this variant was not measured");
+  assert.deepEqual(result.args?.unapplied.map((r) => r.value), ["ghost"]);
+});
+
+test("captureStory: a story that throws on a value set through the preview is a render error, saying how it was set", async () => {
+  const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default" }, url: {}, remountThrows: true });
+  const result = await captureStory(previewPage(fake.preview, [], fake.shown), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "ghost" }));
+  assert.equal(result.status, "render_error");
+  assert.equal(result.error, "TypeError: Cannot read properties of undefined (after snap set variant=ghost through Storybook's preview)");
+  assert.equal(result.raw, null);
+  assert.equal(result.args?.appliedVia, "preview");
+});
+
+test("captureStory: with no preview to read, Storybook's warning still rejects the value it names", async () => {
+  const warning = "Received illegal value for 'variant'. Supported options: 'default', 'secondary'";
+  const rejected = await captureStory(previewPage(undefined, [warning]), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "ghost" }));
+  assert.equal(rejected.status, "arg_rejected");
+  assert.deepEqual([rejected.args?.checked, rejected.args?.error], [false, "the page has no window.__STORYBOOK_PREVIEW__"]);
+  // Without one, it is measured, and the check recorded as not made.
+  const unchecked = await captureStory(previewPage(undefined), "http://localhost:6006/iframe.html?id=x", STORY_OPTS({ variant: "ghost" }));
+  assert.equal(unchecked.status, "ok");
+  assert.deepEqual([unchecked.args?.checked, unchecked.args?.rejected], [false, []]);
 });

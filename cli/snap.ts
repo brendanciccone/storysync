@@ -22,6 +22,8 @@ import {
 import type { MeasurementNote, NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
 import { resolveAndLaunch, createContext, captureStory } from "./snap-browser.js";
 import type { CaptureResult, CaptureStatus } from "./snap-browser.js";
+import { argsNotInDocs, describeArgRejections, describeUncheckedArgs } from "./snap-args.js";
+import type { ArgRejection, StoryArgType } from "./snap-args.js";
 
 export const SNAP_SCHEMA_VERSION = 1;
 
@@ -47,6 +49,11 @@ export interface SnapOptions {
   merge?: boolean;
 }
 
+/**
+ * `args_unsupported`: a value the args URL can't carry, which Storybook's
+ * preview didn't take either. `arg_rejected` (a CaptureStatus): one
+ * Storybook wouldn't apply.
+ */
 export type SnapVariantStatus = CaptureStatus | "args_unsupported";
 
 export interface SnapVariant {
@@ -66,6 +73,21 @@ export interface SnapVariant {
    * seen in the file rather than only in a screenshot.
    */
   element?: string;
+  /**
+   * Values of the combination Storybook didn't give the story from its URL,
+   * and why: see snap-args.ts. With `appliedVia`, snap applied them through
+   * Storybook's preview and measured the result; with status
+   * `arg_rejected`, it couldn't, and measured nothing.
+   */
+  rejectedArgs?: ArgRejection[];
+  /** `preview` when `rejectedArgs` were applied through Storybook's preview, so this was measured with them. */
+  appliedVia?: "preview";
+  /**
+   * False when snap couldn't read Storybook's preview to check that the
+   * story was given this combination, so a value it didn't take would have
+   * been measured as its default. Absent when it checked.
+   */
+  argsChecked?: false;
 }
 
 export interface SnapComponent {
@@ -90,6 +112,20 @@ export interface SnapComponent {
     /** Declared values no measured combination includes, as `prop=value`. */
     uncovered: string[];
   };
+  /**
+   * The argTypes of the story snap rendered, as Storybook's preview holds
+   * them: each arg's type, control, options and `if`. Recorded, not acted
+   * on: variant properties still come from Storybook's docs.
+   */
+  argTypes?: Record<string, StoryArgType>;
+  /** The story's file, as Storybook records it. */
+  storyFile?: string;
+  /**
+   * Args the story declares as a choice (options, or a boolean or select
+   * control) that Storybook's docs don't list, so they are not variant
+   * properties: shadcn/ui Button's `disabled`, say.
+   */
+  argsNotInDocs?: string[];
 }
 
 export interface SnapResult {
@@ -120,6 +156,22 @@ export interface SnapResult {
     /** Components with more combinations than the ceiling, measured as a subset. */
     componentsCapped: number;
   };
+}
+
+/** Whether `snap --strict` fails on `result`. */
+export function snapFailsStrict(result: SnapResult): boolean {
+  // Measuring nothing is a failure, not a clean run: snap still writes a
+  // styles.json and a freshly-stamped meta.json, so downstream freshness
+  // checks would read an empty result as a good one.
+  // A capped component was measured as a subset; building from it as if it
+  // were the whole component is the silent gap --strict exists to stop.
+  // So is a variant measured without knowing Storybook gave the story its
+  // values: one it didn't take leaves the default on screen.
+  return result.summary.failed > 0
+    || result.summary.componentsFailed > 0
+    || result.summary.components === 0
+    || result.summary.componentsCapped > 0
+    || result.components.some((c) => c.variants.some((v) => v.status === "ok" && v.argsChecked === false));
 }
 
 export interface SnapDeps {
@@ -865,6 +917,11 @@ async function snapComponent(
   const notes: { slug: string; note: MeasurementNote }[] = [];
   // Each measured variant's markup checksum, for describeIdenticalVariants.
   const markups: (string | null)[] = [];
+  // Variants whose args couldn't be checked against Storybook's preview, of
+  // those captured, and why.
+  let captures = 0;
+  const unchecked: string[] = [];
+  let uncheckedError: string | undefined;
   try {
     checkpoint();
     context = await createContext(browser);
@@ -873,17 +930,9 @@ async function snapComponent(
     for (const [index, combination] of combinations.entries()) {
       const slug = slugs[index];
       deps.onVariantStart?.(index + 1, combinations.length);
-      const { param, unsupported } = encodeStoryArgs(combination, definition.variantProperties);
-
-      if (unsupported.length) {
-        shell.variants.push({
-          combination, slug, status: "args_unsupported",
-          error:
-            `Storybook cannot receive ${unsupported.join(", ")} through the args URL ` +
-            `(outside its allowed character set), so this variant was not measured`,
-        });
-        continue;
-      }
+      // A value the URL can't carry is left out of it and set through
+      // Storybook's preview once the story loads, as one it refused is.
+      const { param, unsupported, unsupportedNames } = encodeStoryArgs(combination, definition.variantProperties);
 
       const capture = (): Promise<CaptureResult> => {
         checkpoint();
@@ -892,6 +941,7 @@ async function snapComponent(
           selector: opts.selector,
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title },
+          story: { id: storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
         });
       };
       // Once more on a timeout loading the story: a busy Storybook times out
@@ -900,11 +950,46 @@ async function snapComponent(
       // would only take as long again.
       let captured = await capture();
       if (captured.status === "timeout" && captured.retryable) captured = await capture();
+      captures++;
+
+      // What the story's argTypes are, from the first variant that read them.
+      const args = captured.args;
+      if (args?.argTypes && !shell.argTypes) {
+        shell.argTypes = args.argTypes;
+        if (args.storyFile) shell.storyFile = args.storyFile;
+        const undocumented = argsNotInDocs(args.argTypes, component.props.map((p) => p.name));
+        if (undocumented.length) shell.argsNotInDocs = undocumented;
+      }
+      // Of a combination that asks for nothing, nothing can have been refused.
+      const notChecked = !!args && !args.checked && Object.keys(combination).length > 0;
+      if (notChecked) {
+        unchecked.push(slug);
+        uncheckedError ??= args.error;
+      }
+      // For a variant the story still wasn't given values, those values.
+      const rejectedArgs = captured.status === "arg_rejected" ? args?.unapplied : args?.rejected;
+      const argsRecord = {
+        ...(rejectedArgs?.length ? { rejectedArgs, ...(args?.appliedVia ? { appliedVia: args.appliedVia } : {}) } : {}),
+        ...(notChecked ? { argsChecked: false as const } : {}),
+      };
 
       if (captured.status !== "ok" || !captured.raw || !captured.boundingBox) {
         // A failure because the browser went is not this variant's.
         checkpoint();
-        shell.variants.push({ combination, slug, status: captured.status, error: captured.error });
+        // Values the URL can't carry, which the preview didn't take either,
+        // are args_unsupported, as before snap tried the preview.
+        if (captured.status === "arg_rejected" && args?.unapplied.every((r) => r.reasons.includes("url-unsafe"))) {
+          shell.variants.push({
+            combination, slug, status: "args_unsupported",
+            error:
+              `Storybook cannot receive ${unsupported.join(", ")} through the args URL (outside its allowed character set), ` +
+              `and snap couldn't set ${unsupported.length === 1 ? "it" : "them"} through Storybook's preview either` +
+              `${args.error ? ` (${args.error})` : ""}, so this variant was not measured`,
+            ...argsRecord,
+          });
+          continue;
+        }
+        shell.variants.push({ combination, slug, status: captured.status, error: captured.error, ...argsRecord });
         continue;
       }
 
@@ -913,6 +998,7 @@ async function snapComponent(
         combination, slug, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },
         ...(captured.element ? { element: captured.element } : {}),
+        ...argsRecord,
       };
       for (const note of captured.notes) notes.push({ slug, note });
       markups.push(captured.markup ?? null);
@@ -941,6 +1027,10 @@ async function snapComponent(
 
   const measured = shell.variants.filter((v) => v.status === "ok").length;
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
+  const label = entry.title ?? entry.name;
+  shell.warnings.push(...describeArgRejections(label, shell.variants, { storyFile: shell.storyFile, id: entry.id }));
+  const uncheckedWarning = describeUncheckedArgs(label, unchecked, captures, { error: uncheckedError, id: entry.id });
+  if (uncheckedWarning) shell.warnings.push(uncheckedWarning);
 
   const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups);
   if (identical) {
@@ -953,7 +1043,6 @@ async function snapComponent(
   const substituted = detectFontSubstitution(shell);
   if (substituted) shell.warnings.push(substituted);
 
-  const label = entry.title ?? entry.name;
   if (shell.error) {
     progress(`  ✗ ${label}: ${shell.error}`);
     return shell;
