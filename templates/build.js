@@ -476,6 +476,23 @@ const checkLayout = (nodes, recs, slug, absolute) => {
   }
 };
 
+// Where a variant draws, relative to it: its box, and each visible layer's
+// box and drop shadows that no frame around the layer clips. A label wider
+// than its icon button draws past it, as the browser draws it, and so do a
+// shadow and an absolute badge; the set's grid gives each variant this room.
+// A shadow's reach is taken on every side, which is more than it draws. A
+// designer's slice has no effects.
+const drawn = (v) => {
+  const d = [0, 0, 0, 0];
+  const add = (n, x, y) => {
+    const o = Math.max(0, ...(n.effects || []).map((e) => (e.visible && e.type === 'DROP_SHADOW' ? e.radius + (e.spread || 0) + Math.abs(e.offset.x) + Math.abs(e.offset.y) : 0)));
+    [x - o, y - o, x + n.width + o, y + n.height + o].map((t, i) => (d[i] = Math[i < 2 ? 'min' : 'max'](d[i], t)));
+    if (isFrame(n) && !n.clipsContent) for (const c of n.children) if (c.visible) add(c, x + c.x, y + c.y);
+  };
+  add(v, 0, 0);
+  return d;
+};
+
 // A variant's records: the base's, changed as its delta says.
 const recordsOf = (base, delta) => {
   if (!Array.isArray(delta)) return delta.r;
@@ -601,7 +618,8 @@ for (const [s, set] of DATA.sets.entries()) {
   results.push(out);
   if (want === 'COMPONENT') continue;
 
-  // Lays the whole set out by its properties, as 0.4.0 did, and checks it.
+  // Lays the whole set out by its properties, as 0.4.0 did, and checks it,
+  // each variant by where it draws: GAP apart, none over another or past the set.
   const GAP = 20;
   const axes = set.props.map((p) => [p.name + '=', p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']]);
   const byId = (a, b) => (a.node.id > b.node.id) - (a.node.id < b.node.id);
@@ -614,7 +632,7 @@ for (const [s, set] of DATA.sets.entries()) {
   for (const n of node.children) {
     const pairs = n.name.split(', ');
     const pos = pairs.length === axes.length ? pairs.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
-    (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join() });
+    (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join(), d: drawn(n) });
   }
   cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));
   const grid = [];
@@ -632,25 +650,25 @@ for (const [s, set] of DATA.sets.entries()) {
   for (const c of grid) {
     c.row = rowOf.get(c.at[0]);
     c.column = columnOf.get(c.key);
-    widths[c.column] = Math.max(widths[c.column], c.node.width);
-    heights[c.row] = Math.max(heights[c.row], c.node.height);
+    widths[c.column] = Math.max(widths[c.column], c.d[2] - c.d[0]);
+    heights[c.row] = Math.max(heights[c.row], c.d[3] - c.d[1]);
   }
   const xs = [GAP];
   const ys = [GAP];
   widths.forEach((w, i) => xs.push(xs[i] + w + GAP));
   heights.forEach((h, i) => ys.push(ys[i] + h + GAP));
   for (const c of grid) {
-    c.x = xs[c.column];
-    c.y = ys[c.row];
+    c.x = xs[c.column] - c.d[0];
+    c.y = ys[c.row] - c.d[1];
   }
   let across = GAP;
   let bottom = ys[rows.length];
   for (const c of extra) {
-    c.x = across;
-    c.y = bottom;
-    across += c.node.width + GAP;
+    c.x = across - c.d[0];
+    c.y = bottom - c.d[1];
+    across += c.d[2] - c.d[0] + GAP;
   }
-  if (extra.length) bottom += Math.max(...extra.map((c) => c.node.height)) + GAP;
+  if (extra.length) bottom += Math.max(...extra.map((c) => c.d[3] - c.d[1])) + GAP;
   const order = [...grid, ...extra];
   for (const c of order) {
     c.node.x = c.x;
@@ -672,7 +690,7 @@ for (const [s, set] of DATA.sets.entries()) {
   for (const c of order) {
     if (Math.abs(c.node.x - c.x) > 0.5 || Math.abs(c.node.y - c.y) > 0.5) throw new Error('Variant "' + c.node.name + '" is not where the layout put it');
   }
-  const boxes = kids.map((n) => ({ name: n.name, x: n.x, y: n.y, r: n.x + n.width, b: n.y + n.height }));
+  const boxes = order.map(({ node: n, d }) => ({ name: n.name, x: n.x + d[0], y: n.y + d[1], r: n.x + d[2], b: n.y + d[3] }));
   boxes.forEach((a, i) => {
     if (a.x < 0 || a.y < 0 || a.r > node.width || a.b > node.height) throw new Error('Variant "' + a.name + '" lies outside the set');
     for (const b of boxes.slice(i + 1)) {

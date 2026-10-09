@@ -13,7 +13,7 @@ import type { TemplateName } from "../figma-code.js";
  * build's, section 9.1 the readback's): every call carries one, under
  * use_figma's 50,000.
  */
-const BUDGETS = { build: 16_000, images: 2_000, label: 3_000, readback: 8_000 } as const;
+const BUDGETS = { build: 17_000, images: 2_000, label: 3_000, readback: 8_000 } as const;
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 

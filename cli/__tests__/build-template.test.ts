@@ -802,3 +802,68 @@ test("build: a call refused for one of its sets changes none of them", async () 
   assert.match(run.text, /The page has COMPONENT_SET "Toggle" .*, COMPONENT_SET "Toggle" .*: ask the user which to update/);
   assert.equal(JSON.stringify(mock.pages()), before, "Switch, first in the call, wasn't built either");
 });
+
+/**
+ * Where a built variant draws in its set, read off the mock: its box, and
+ * each visible layer's that no frame around it clips, with the reach of its
+ * drop shadows on each side.
+ */
+function drawnInSet(mock: MockFigma, variant: NodeView): [number, number, number, number] {
+  const out: [number, number, number, number] = [variant.x, variant.y, variant.x + variant.width, variant.y + variant.height];
+  type Shadow = { type: string; visible: boolean; radius: number; spread?: number; offset: { x: number; y: number } };
+  const visit = (n: NodeView, x: number, y: number) => {
+    const h = mock.handle(n.id) as { visible: boolean; effects: Shadow[]; clipsContent?: boolean; type: string };
+    if (!h.visible) return;
+    const reach = [[0, 0, 0, 0], ...h.effects.filter((e) => e.visible && e.type === "DROP_SHADOW").map((e) => {
+      const r = e.radius + (e.spread ?? 0);
+      return [r - e.offset.x, r - e.offset.y, r + e.offset.x, r + e.offset.y];
+    })];
+    const [l, t, r, b] = [0, 1, 2, 3].map((i) => Math.max(...reach.map((s) => s[i])));
+    [x - l, y - t, x + n.width + r, y + n.height + b].forEach((v, i) => { out[i] = i < 2 ? Math.min(out[i], v) : Math.max(out[i], v); });
+    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, x + c.x, y + c.y);
+  };
+  visit(variant, variant.x, variant.y);
+  return out;
+}
+
+test("build: the set's grid gives each variant the room it draws in: a label past its icon button, a shadow, overlap nothing", async () => {
+  // push3's base Button: at size icon the button is 36 by 36 and its icon
+  // and label, centered, overflow it on both sides, as the browser draws
+  // them. Laid out by their boxes, the label covered the next column's
+  // button. Raised adds shadow-2xl, 63px below the button.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [
+    { name: "variant", type: "VARIANT", values: ["default", "raised"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["default", "icon"], defaultValue: "default" },
+  ];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const icon = {
+    delta: { gap: null, width: 36, padding: { top: 0, right: 0, bottom: 0, left: 0 } },
+    treeDelta: { set: { "": { L: { ai: "center", d: "inline-flex", jc: "center" }, box: [0, 0, 36, 36] }, svg: { box: [-71.39, 10, 16, 16] }, "#text": { box: [-47.39, 7.5, 154.8, 20] } } },
+  };
+  const shadow = { boxShadow: [{ offsetX: 0, offsetY: 25, blur: 50, spread: -12, color: "#00000040", inset: false }] };
+  c.variants = [
+    { ...base, combination: { variant: "default", size: "default" }, slug: "variant-default--size-default" },
+    { ...base, ...icon, combination: { variant: "default", size: "icon" }, slug: "variant-default--size-icon", boundingBox: { width: 36, height: 36 } },
+    { ...base, delta: shadow, treeDelta: {}, combination: { variant: "raised", size: "default" }, slug: "variant-raised--size-default" },
+    { ...base, ...icon, delta: { ...icon.delta, ...shadow }, combination: { variant: "raised", size: "icon" }, slug: "variant-raised--size-icon", boundingBox: { width: 36, height: 36 } },
+  ] as typeof c.variants;
+  for (const factor of [1, 1.045]) {
+    const { mock, results } = await buildAll(fixture, { textWidthFactor: factor });
+    assert.deepEqual([results[0].sets[0].variants, results[0].sets[0].absoluteContainers], [4, []]);
+    const set = mock.nodes("COMPONENT_SET")[0];
+    const drawn = set.children!.map((v) => ({ name: v.name, box: drawnInSet(mock, v) }));
+    for (const [i, a] of drawn.entries()) {
+      assert.ok(a.box[0] >= 0 && a.box[1] >= 0 && a.box[2] <= set.width && a.box[3] <= set.height, `${a.name} draws past the set: ${a.box}`);
+      for (const b of drawn.slice(i + 1)) {
+        const apart = a.box[2] <= b.box[0] || b.box[2] <= a.box[0] || a.box[3] <= b.box[1] || b.box[3] <= a.box[1];
+        assert.ok(apart, `${a.name} (${a.box.map(Math.round)}) draws over ${b.name} (${b.box.map(Math.round)}), at width factor ${factor}`);
+      }
+    }
+    // The icon button's label, wider than it, keeps GAP from the button before it.
+    const at = (name: string) => drawn.find((d) => d.name === name)!.box;
+    assert.ok(at("variant=default, size=icon")[0] - at("variant=default, size=default")[2] >= 20);
+    assert.ok(at("variant=raised, size=default")[1] - at("variant=default, size=default")[3] >= 20);
+  }
+});
