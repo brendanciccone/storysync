@@ -17,7 +17,7 @@ const PROBE = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-
 };
 
 test("standInFor: Roboto Mono for a monospace family, Noto Serif for a serif, Inter for any other", () => {
-  for (const mono of ["monospace", "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Courier New", "Liberation Mono", "Geist Mono"]) {
+  for (const mono of ["monospace", "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Courier New", "Liberation Mono", "Lucida Console", "Geist Mono"]) {
     assert.equal(standInFor(mono), "Roboto Mono", mono);
   }
   for (const serif of ["serif", "ui-serif", "Georgia", "Times New Roman", "Times"]) assert.equal(standInFor(serif), "Noto Serif", serif);

@@ -948,7 +948,8 @@ T6. **Figma's plugin context lacks** Segoe UI, Helvetica, Helvetica Neue,
 
 T7. **One mapping for snap and the build.** `standInFor` is the template's
     old pair of patterns: Roboto Mono for a monospace family, Noto Serif for
-    a serif, Inter for any other. figma code passes the build each text's
+    a serif, Inter for any other. The monospace pattern also takes Lucida
+    Console, a face Figma lacks (T6) that names no `mono`. figma code passes the build each text's
     stand-in as `a` in its style, and the template no longer holds the
     patterns.
 T8. **Which text.** A font stack text is drawn on, whose first family is a

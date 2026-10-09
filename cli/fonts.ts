@@ -35,7 +35,7 @@ export const STAND_INS: readonly StandIn[] = ["Inter", "Roboto Mono", "Noto Seri
  * held these two patterns itself; figma code now passes it the answer.
  */
 export function standInFor(family: string): StandIn {
-  if (/mono|menlo|monaco|consolas|courier/i.test(family)) return "Roboto Mono";
+  if (/mono|menlo|monaco|consolas|courier|lucida console/i.test(family)) return "Roboto Mono";
   if (/^(?!.*sans).*(serif|georgia|times)/i.test(family)) return "Noto Serif";
   return "Inter";
 }
