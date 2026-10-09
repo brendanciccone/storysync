@@ -10,7 +10,7 @@ import { fakePreview, inPage } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
-  captureTree, captureTreeInPage, drawingElementInPage, thumbnailInPage, fontStacksInPage, standInFontsInPage, standInsMeasured,
+  captureTree, captureTreeInPage, drawingElementInPage, thumbnailInPage, textFontStacksInPage, standInFontsInPage, standInsLoadedInPage, standInsMeasured,
 } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
@@ -794,8 +794,94 @@ const STACKS: FakeElementSpec = {
   ],
 };
 
-test("fontStacksInPage: each computed font stack in the page once, in document order", () => {
-  assert.deepEqual(inFakePage(STACKS, (el) => fontStacksInPage(el)), [SANS, MONO, "Geist, sans-serif"]);
+const SERIF = "ui-serif, Georgia, serif";
+/**
+ * A story's page: html and body in Chrome's default Times, holding no text
+ * of their own; Storybook's error display, hidden while the story shows;
+ * and the story, its button in Tailwind's sans stack, a code sample in its
+ * mono one, a heading in Geist, a field in a serif and a bullet a ::before
+ * draws in a rounded face.
+ */
+const TEXT_PAGE: FakeElementSpec = {
+  tag: "html", rect: [0, 0, 1280, 720], kids: [
+    { tag: "body", rect: [0, 0, 1280, 720], kids: [
+      { tag: "div", attrs: { class: "sb-errordisplay sb-wrapper" }, rect: [0, 0, 0, 0], style: { "font-family": '"Nunito Sans", -apple-system, sans-serif' }, kids: [{ text: "No Preview", rects: [] }] },
+      { tag: "div", attrs: { id: "storybook-root" }, rect: [0, 0, 1280, 140], style: { "font-family": SANS }, kids: [
+        { tag: "button", rect: [0, 0, 80, 20], style: { "font-family": SANS }, kids: [{ text: "Save", rects: [[8, 2, 30, 16]] }] },
+        { tag: "code", rect: [0, 20, 80, 20], style: { "font-family": MONO }, kids: [{ text: "pnpm i", rects: [[0, 22, 40, 16]] }] },
+        { tag: "h1", rect: [0, 40, 80, 20], style: { "font-family": "Geist, sans-serif" }, kids: [{ text: "Title", rects: [[0, 42, 40, 16]] }] },
+        // Whitespace between tags is no text.
+        { tag: "div", rect: [0, 60, 80, 20], style: { "font-family": "Arial" }, kids: [{ text: "\n  ", rects: [[0, 60, 4, 16]] }] },
+        { tag: "input", rect: [0, 80, 80, 20], style: { "font-family": SERIF }, value: "Ada" },
+        { tag: "li", rect: [0, 100, 80, 20], style: { "font-family": SANS }, before: { content: '"•"', "font-family": "ui-rounded, sans-serif" } },
+        // An empty ::before draws nothing.
+        { tag: "i", rect: [0, 120, 80, 20], before: { content: '""', "font-family": "fantasy" } },
+      ] },
+    ] },
+  ],
+};
+
+test("textFontStacksInPage: the stack of each text the page draws, once, in document order; none of a page's that draws no text", () => {
+  assert.deepEqual(inFakePage(TEXT_PAGE, (el) => textFontStacksInPage(el)), [SANS, MONO, "Geist, sans-serif", SERIF, "ui-rounded, sans-serif"]);
+});
+
+test("standInsLoadedInPage: loads only the faces snap added, and waits for them no longer than it is given", { timeout: 10_000 }, async () => {
+  const loads: string[] = [];
+  const face = (family: string, settles: boolean) => ({
+    family, load: () => { loads.push(family); return settles ? Promise.resolve() : new Promise(() => {}); },
+  });
+  const scope = globalThis as Record<string, unknown>;
+  const saved = { document: scope.document, requestAnimationFrame: scope.requestAnimationFrame };
+  scope.requestAnimationFrame = (cb: () => void) => setTimeout(cb, 0);
+  try {
+    // A face the project declares and nothing draws in is not fetched.
+    scope.document = { fonts: [face('"storysync Inter"', true), face("Geist", true), face("storysync Roboto Mono", true)] };
+    await standInsLoadedInPage({ prefix: "storysync ", ms: 100 });
+    assert.deepEqual(loads, ['"storysync Inter"', "storysync Roboto Mono"]);
+    // One that never loads holds the capture only as long as it is given.
+    scope.document = { fonts: [face("storysync Inter", false)] };
+    const started = Date.now();
+    await standInsLoadedInPage({ prefix: "storysync ", ms: 50 });
+    assert.ok(Date.now() - started < 2000, `waited ${Date.now() - started}ms`);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete scope[k];
+      else scope[k] = v;
+    }
+  }
+});
+
+test("captureStory: sends only the stand-ins the story's text needs, none for a story in the project's own font, and waits for them within the image wait", async () => {
+  for (const [stacks, want] of [
+    [["Geist, sans-serif"], []],
+    [[SANS, "Geist, sans-serif"], ["Inter"]],
+    [[MONO, SANS], ["Inter", "Roboto Mono"]],
+  ] as const) {
+    const { page } = measuredPage({ x: 0, y: 0, width: 10, height: 10 }, async () => Buffer.from(""));
+    const stand = page as unknown as { evaluate: (fn: unknown, arg?: unknown) => Promise<unknown> };
+    const evaluate = stand.evaluate;
+    const sent: [unknown, unknown][] = [];
+    stand.evaluate = async (fn, arg) => {
+      if (fn === textFontStacksInPage) return stacks;
+      if (fn === standInFontsInPage || fn === standInsLoadedInPage) {
+        sent.push([fn, arg]);
+        return 1;
+      }
+      return evaluate(fn, arg);
+    };
+    const result = await captureStory(page, "http://localhost:6006/iframe.html?id=x--default", { ...OPTS, timeoutMs: 60_000, selector: "#storybook-root > div" });
+    assert.equal(result.status, "ok", result.error ?? "");
+    if (!want.length) {
+      assert.deepEqual(sent, [], stacks.join(" | "));
+      continue;
+    }
+    const [[drawFn, drawArg], [waitFn, waitArg]] = sent;
+    assert.equal(drawFn, standInFontsInPage);
+    const { faces } = drawArg as { faces: { family: string }[] };
+    assert.deepEqual([...new Set(faces.map((f) => f.family))], want.map((s) => `storysync ${s}`));
+    assert.equal(waitFn, standInsLoadedInPage);
+    assert.deepEqual(waitArg, { prefix: "storysync ", ms: 5000 });
+  }
 });
 
 test("standInFontsInPage: an element on a stack Figma sets in a stand-in gets the stand-in ahead of it, inline and important", () => {

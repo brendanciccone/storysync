@@ -951,22 +951,34 @@ T7. **One mapping for snap and the build.** `standInFor` is the template's
     a serif, Inter for any other. figma code passes the build each text's
     stand-in as `a` in its style, and the template no longer holds the
     patterns.
-T8. **Which text.** An element whose computed font stack opens with a CSS
-    keyword or alias (`system-ui`, `ui-sans-serif`, `-apple-system`,
-    `monospace` and the rest) or a face in `PLATFORM_FACES` gets the
-    stand-in ahead of its stack, as `"storysync Inter", <stack>`, inline
-    and important, after the story settles and before anything is measured
-    or chosen by its box. A child that inherits the stack inherits the
-    stand-in. A stack that opens with any other family, a font the project
-    loads such as Geist or the example's Inter, is left alone, and so is
-    one whose own font failed to load (`fa: 0`, as before). An element's
-    pseudo-element with a keyword stack of its own isn't changed.
+T8. **Which text.** A font stack text is drawn on, whose first family is a
+    CSS keyword or alias (`system-ui`, `ui-sans-serif`, `-apple-system`,
+    `monospace` and the rest) or a face in `PLATFORM_FACES`, gets the
+    stand-in ahead of it, as `"storysync Inter", <stack>`, inline and
+    important, on every element computed on it, so its ancestors' and
+    children's inheritance holds: after the story settles and before
+    anything is measured or chosen by its box. Text is drawn on a stack
+    where an element's text node lays out on screen, a form control is on
+    it, or a ::before or ::after has text of its own. html and body,
+    which hold no text but carry Chrome's default Times, and Storybook's own
+    UI, hidden while a story shows, don't count, so a story set in the
+    project's own font is sent no stand-in at all. A stack that opens with
+    any other family, a font the project loads such as Geist or the
+    example's Inter, is left alone, and so is one whose own font failed to
+    load (`fa: 0`, as before). An element's pseudo-element with a keyword
+    stack of its own isn't changed.
 T9. **The faces** come from the npm packages, every unicode-range subset of
     the weight axis, upright and, for Roboto Mono and Noto Serif, italic,
     added with the FontFace API under the family `storysync <stand-in>`, so
     a project's own Inter keeps its faces; Chrome slants Inter's upright for
-    italic, as wide as Figma's Inter Italic. Only the stand-ins a page uses
-    are sent to it: about 220 KB for Inter.
+    italic, as wide as Figma's Inter Italic. Only the stand-ins the page's
+    text needs are sent to it: about 220 KB for Inter. snap then waits for
+    those faces alone, at most the image wait (5 s, or `--timeout` if
+    shorter): load() on every face the page declared fetched each one the
+    project declares and nothing draws in, and one whose request hung would
+    have held the capture. Sent for every stack in the page, html's Times
+    included, and so loading all three stand-ins and the project's unused
+    faces, it cost the example's 15 variants about 130 ms each.
 T10. **What snap records.** The stand-in is what the browser drew, so a
     text's `f` is the Figma family, `Inter`, with `fs`, the family the code
     asked for as resolveFontFamily would have recorded it (`system-ui`, or
