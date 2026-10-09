@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
@@ -198,13 +198,17 @@ test("figma code: what it can't build, and values several tokens share with no c
   assert.deepEqual(without.warnings, ["no tokens at /nonexistent/tokens.json, so nothing is bound to a variable: save them first with `npx storysync tokens --json > /nonexistent/tokens.json`"]);
 });
 
-test("figma code: a new plan clears the last plan's calls and results", async () => {
+test("figma code: a new plan clears the last plan's calls and results, and leaves every other file", async () => {
   const coded = await codeFor(allFixtures());
-  writeFileSync(join(coded.out, "results", "05.json"), "{}");
-  writeFileSync(join(coded.out, "calls", "99-build-old.js"), "");
+  const old = ["results/05.json", "results/07b.json", "results/03.upload.json", "calls/99-build-old.js", "calls/07b-read-ui-base.js"];
+  // --out may be a directory with folders of these names: what a plan didn't write stays.
+  const foreign = ["results/quarterly.csv", "results/notes.json", "results/05.json.bak", "calls/notes.md", "calls/build.js", "plan-notes.txt"];
+  for (const file of [...old, ...foreign]) writeFileSync(join(coded.out, file), "{}");
+  mkdirSync(join(coded.out, "results", "06.json"));
   await runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: { readback: STUB_READBACK } });
-  assert.deepEqual(readdirSync(join(coded.out, "results")), []);
-  assert.ok(!existsSync(join(coded.out, "calls", "99-build-old.js")));
+  for (const file of old) assert.ok(!existsSync(join(coded.out, file)), `${file} is removed`);
+  for (const file of [...foreign, "results/06.json"]) assert.ok(existsSync(join(coded.out, file)), `${file} is kept`);
+  assert.deepEqual(readdirSync(join(coded.out, "calls")).filter((f) => !foreign.includes(`calls/${f}`)), coded.plan.calls.map((c) => c.file.slice(6)));
 });
 
 test("figma code: every planned call runs in the mock, in order", async () => {

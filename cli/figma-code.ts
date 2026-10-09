@@ -14,7 +14,7 @@
 // the response each is predicted to return. plan.json lists them, with where
 // each response goes, and is what upload, next and verify read.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalJson, fnv1a32Bytes } from "./checksum.js";
@@ -525,10 +525,34 @@ function readTokens(path: string | undefined, warnings: string[]): TokenExtracti
 }
 
 /**
- * Writes plan.json and every call file for a push of `snap`, replacing an
- * earlier plan's calls and results under `out`: a result saved for an earlier
- * plan's call would otherwise be read as this plan's. Two runs over the same
- * inputs write the same bytes.
+ * The files a plan has under calls/ and results/: its calls and their
+ * continuations (`07-read-ui-base.js`, `07b-read-ui-base.js`), and the
+ * responses saved for them (`07.json`, `07b.json`, `03.upload.json`).
+ */
+const PLAN_FILES: Record<"calls" | "results", RegExp> = {
+  calls: /^\d{2,}[b-z]?-(?:build|images|label|read)(?:-[a-z0-9-]+)?\.js$/,
+  results: /^\d{2,}[b-z]?(?:\.upload)?\.json$/,
+};
+
+/**
+ * Removes an earlier plan's calls and results under `out`, and nothing else:
+ * a result saved for an earlier plan's call would otherwise be read as this
+ * plan's, while `out` may be a directory the user keeps other files in.
+ */
+function clearPlanFiles(out: string): void {
+  for (const [dir, pattern] of Object.entries(PLAN_FILES)) {
+    const at = join(out, dir);
+    if (!existsSync(at) || !lstatSync(at).isDirectory()) continue;
+    for (const name of readdirSync(at)) {
+      if (pattern.test(name) && lstatSync(join(at, name)).isFile()) rmSync(join(at, name));
+    }
+  }
+}
+
+/**
+ * Writes plan.json and every call file for a push of `snap`, removing an
+ * earlier plan's calls and results under `out` (clearPlanFiles). Two runs
+ * over the same inputs write the same bytes.
  */
 export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: FigmaPlan; planPath: string; warnings: string[] }> {
   const maxChars = opts.maxChars ?? MAX_CALL_CHARS;
@@ -676,8 +700,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   }
 
   const out = resolve(opts.out);
-  rmSync(join(out, "calls"), { recursive: true, force: true });
-  rmSync(join(out, "results"), { recursive: true, force: true });
+  clearPlanFiles(out);
   mkdirSync(join(out, "calls"), { recursive: true });
   mkdirSync(join(out, "results"), { recursive: true });
   for (const call of calls) writeFileSync(join(out, call.file), call.code);
