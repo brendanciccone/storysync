@@ -166,6 +166,11 @@ const make = (kind, st) => {
   n.fills = [];
   return n;
 };
+// The fonts a text has now, its own or its ranges', as figma-use's text recipe loads them.
+const loadCurrent = async (n) => {
+  const now = n.fontName === figma.mixed ? n.getStyledTextSegments(['fontName']).map((s) => s.fontName) : [n.fontName];
+  for (const f of now) await figma.loadFontAsync(f).catch(() => {});
+};
 const fits = (n, kind, st) => (kind === 'T' ? n.type === 'TEXT' : n.type === 'FRAME' && (kind === 'V' ? get(n, 'svg') === st.id : !get(n, 'svg')));
 const isFrame = (n) => n.type === 'FRAME' || n.type === 'COMPONENT';
 const SIZING = { X: 'FIXED', H: 'HUG', L: 'FILL' };
@@ -194,7 +199,7 @@ const style = async (n, rec, parent, root) => {
   if (kind === 'T') {
     const t = st.t;
     const font = await loadFont(t.f, t.w, t.i);
-    for (const seg of n.getStyledTextSegments(['fontName'])) await figma.loadFontAsync(seg.fontName).catch(() => {});
+    await loadCurrent(n);
     n.fontName = font;
     n.characters = t.c;
     n.fontSize = t.z;
@@ -317,6 +322,10 @@ const converge = async (root, recs) => {
     put(root, 'svg', S[rootStyle].id);
   }
   if (rootKind !== 'V') walk(root);
+  // Figma refuses to move or restyle a text whose font isn't loaded: load
+  // every font the variant's texts have now, and will have, first.
+  for (const n of have.values()) if (n.type === 'TEXT') await loadCurrent(n);
+  for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t.f, S[rec[7]].t.w, S[rec[7]].t.i);
   const nodes = [root];
   for (let i = 1; i < recs.length; i++) {
     const [ki, , kind, , , , , si] = recs[i];
