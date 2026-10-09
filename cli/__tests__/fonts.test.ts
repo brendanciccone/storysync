@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   PLATFORM_FACES, STAND_INS, needsStandIn, stackFamilies, standInDrawn, standInFaces, standInFor, standInStack,
@@ -84,4 +85,17 @@ test("standInFaces: each stand-in's faces from its package, every subset, under 
   // The woff2 bytes, as the package ships them.
   const latin = inter.find((f) => /U\+0000-00FF/.test(f.unicodeRange))!;
   assert.equal(Buffer.from(latin.data, "base64").subarray(0, 4).toString("latin1"), "wOF2");
+});
+
+test("the stand-ins are the font versions Figma has, and the mock's metrics were measured from them", () => {
+  const manifest = JSON.parse(readFileSync(`${ROOT}package.json`, "utf8")) as { dependencies: Record<string, string> };
+  // Inter 3.19: 5.0.20 and later ship Inter 4, which Figma doesn't set as wide (the text probe's call 1).
+  assert.equal(manifest.dependencies["@fontsource-variable/inter"], "5.0.18");
+  const require = createRequire(import.meta.url);
+  const metrics = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-fonts.json`, "utf8")) as { packages: Record<string, string> };
+  for (const [name, version] of Object.entries(metrics.packages)) {
+    assert.equal(manifest.dependencies[name], version, `${name}: pinned as measured`);
+    const installed = JSON.parse(readFileSync(require.resolve(`${name}/package.json`), "utf8")) as { version: string };
+    assert.equal(installed.version, version, `${name}: run scripts/figma-font-metrics.mjs after updating it`);
+  }
 });

@@ -269,9 +269,10 @@ const make = async (s, parent) => {
     n.textDecoration = s.text.decoration;
     n.textAlignHorizontal = s.text.align;
     n.fills = s.text.color ? [{ type: 'SOLID', color: hex(s.text.color), opacity: alpha(s.text.color) }] : [];
-    if (s.text.maxLines) { n.textTruncation = 'ENDING'; n.maxLines = s.text.maxLines; }
+    // Truncation after textAutoResize, which turns it off (the live text probe).
     if (s.text.autoResize === 'WIDTH_AND_HEIGHT') n.textAutoResize = 'WIDTH_AND_HEIGHT';
     else { n.resize(s.w, s.h); n.textAutoResize = 'HEIGHT'; }
+    if (s.text.maxLines) { n.textTruncation = 'ENDING'; n.maxLines = s.text.maxLines; }
   } else if (s.kind === 'V') {
     n = figma.createNodeFromSvg(s.svg.markup);
     n.setSharedPluginData('storysync', 'svg', s.svg.id);

@@ -29,10 +29,14 @@
 // a frame) throws on read and write, and `"children" in node` is false.
 //
 // What it simplifies, each named where it lives: text widths come from a
-// measure the test gives (measureFromTrees learns them from snap's ink boxes,
-// so a faithful build lands where the browser drew, and `textWidthFactor`
-// widens every line to stand in for a wider font); wrapping is greedy by
-// words. Where the design's Figma spike measured Figma live (2026-10-08,
+// measure, by default figmaFonts, Figma's own fonts as wide as Figma sets
+// them, or one the test gives (measureFromTrees learns them from snap's ink
+// boxes, so a faithful build lands where the browser drew); wrapping is
+// greedy by words. Text follows what the live text probe saw Figma do
+// (2026-10-09, fixtures/figma-text-probe.json): any write of textAutoResize
+// turns truncation off and clears maxLines, ENDING on a text that sizes
+// itself limits it to one line, and a text's size comes out rounded up to a
+// whole pixel. Where the design's Figma spike measured Figma live (2026-10-08,
 // fixtures/figma-spike.json), the mock does what Figma did there: an
 // imported SVG's strokes scale with it, its frame clips and has a fill, and a
 // `<g>` comes in as a GROUP; clone() keeps plugin data and lands a copy of a
@@ -80,21 +84,26 @@ export interface MockFont {
 }
 
 /**
- * How wide text is. `advance` is one line's width at width factor 1;
- * `lines`, when it knows better than greedy wrapping, how many lines the
- * text takes wrapped at `width`, else undefined.
+ * How wide text is. `advance` is one line's width; `lines`, when it knows
+ * better than greedy wrapping, how many lines the text takes wrapped at
+ * `width`, else undefined. `words` says `advance` measures any string, its
+ * words included, so wrapping goes by each word's own width rather than its
+ * share of the line's.
  */
 export interface TextMeasure {
   advance(chars: string, font: MockFont): number;
   lines?(chars: string, font: MockFont, width: number): number | undefined;
+  words?: boolean;
 }
 
 export interface MockFigmaOptions {
   /** Families and their style names that loadFontAsync loads. Default FONTS. */
   fonts?: Record<string, readonly string[]>;
-  /** Every line's width is multiplied by this: 1.045 stands in for a font 4.5% wider than Chrome's. */
-  textWidthFactor?: number;
-  /** Text widths; default estimateAdvance, which knows no real font. */
+  /**
+   * Text widths. Default figmaFonts(): Inter, Roboto Mono and Noto Serif as
+   * Figma sets them, and estimateAdvance, which knows no real font, for any
+   * other family. measureFromTrees gives the widths snap measured instead.
+   */
   measure?: TextMeasure;
   /**
    * Whether clone() copies shared plugin data onto the copies. Default true,
@@ -168,6 +177,54 @@ export function weightOfStyle(style: string): number {
 /** A width for text no measure knows: 0.55em a character, plus letter spacing. Deterministic, and no font's. */
 export function estimateAdvance(chars: string, font: MockFont): number {
   return chars.length * (font.size * 0.55 + font.letterSpacing);
+}
+
+/** The fonts storysync draws stand-ins in, as scripts/figma-font-metrics.mjs measured them: each character's advance and the kerning pairs of printable ASCII, in em. */
+interface FontMetrics {
+  chars: string;
+  kerned: number[];
+  lineHeight: Record<string, number>;
+  fonts: Record<string, Record<string, { advance: number[]; kern?: Record<string, number> }>>;
+}
+let fontMetrics: FontMetrics | null = null;
+const metrics = (): FontMetrics =>
+  (fontMetrics ??= JSON.parse(readFileSync(fileURLToPath(new URL("../../../cli/__tests__/fixtures/figma-fonts.json", import.meta.url)), "utf8")) as FontMetrics);
+
+/**
+ * Text as wide as Figma sets it in Inter, Roboto Mono and Noto Serif, the
+ * fonts it has and the stand-ins snap draws in (cli/fonts.ts): each
+ * character's advance with the kerning between them, plus letter spacing,
+ * from fixtures/figma-fonts.json, which matches all 39 widths Figma gave the
+ * live text probe (fixtures/figma-text-probe.json). Another family is
+ * measured by `fallback`. Figma rounds a hugging text's width up to a pixel
+ * (sizeText), and keeps a line whole in a box narrower than this by 0.13 to
+ * 1.22px, which the mock doesn't: it wraps a line wider than its box, so it
+ * may wrap where Figma wouldn't, never the other way round.
+ */
+export function figmaFonts(fallback: TextMeasure = { advance: estimateAdvance }): TextMeasure {
+  const table = metrics();
+  const nearest = (keys: number[], weight: number) => keys.reduce((a, b) => (Math.abs(b - weight) < Math.abs(a - weight) ? b : a));
+  return {
+    words: true,
+    advance(chars, font) {
+      const family = table.fonts[font.family];
+      if (!family) return fallback.advance(chars, font);
+      const weight = weightOfStyle(font.style);
+      const italic = /italic/i.test(font.style) && Object.keys(family).some((k) => k.endsWith("i")) ? "i" : "";
+      const weights = Object.keys(family).filter((k) => k.endsWith("i") === Boolean(italic)).map((k) => parseInt(k, 10));
+      const metrics = family[`${nearest(weights, weight)}${italic}`];
+      const kern = family[`${nearest(table.kerned, weight)}${italic}`]?.kern ?? {};
+      let em = 0;
+      let prev = "";
+      for (const ch of chars) {
+        const at = table.chars.indexOf(ch);
+        em += at >= 0 ? metrics.advance[at] : 0.55;
+        em += kern[prev + ch] ?? 0;
+        prev = ch;
+      }
+      return em * font.size + [...chars].length * font.letterSpacing;
+    },
+  };
 }
 
 const textKey = (chars: string, size: number, weight: number) => `${size}|${weight}|${chars}`;
@@ -921,9 +978,11 @@ function fontOf(n: Node): MockFont {
 function lineHeightOf(n: Node): number {
   if (n.lineHeight.unit === "PIXELS") return n.lineHeight.value ?? 0;
   if (n.lineHeight.unit === "PERCENT") return ((n.lineHeight.value ?? 0) / 100) * n.fontSize;
-  // AUTO: the font's own, which the mock takes as Inter's, 1.21em, to a
-  // whole pixel as the spike's labels came out (12px 15 tall, 14px 17).
-  return Math.round(n.fontSize * 1.21);
+  // AUTO: the font's own, ascent and descent (figma-fonts.json; 1.21em, as
+  // Inter's, for another family), to a whole pixel, as the spike's labels
+  // came out (12px 15 tall, 14px 17) and the text probe's Roboto Mono (14px
+  // 18) and Noto Serif (16px 22).
+  return Math.round(n.fontSize * (metrics().lineHeight[n.fontName.family] ?? 1.21));
 }
 
 /**
@@ -932,54 +991,81 @@ function lineHeightOf(n: Node): number {
  * browser drew it, its case included.
  */
 function textWidth(n: Node): number {
-  const { measure, textWidthFactor } = n.doc.options;
+  const { measure } = n.doc.options;
   const font = fontOf(n);
-  return r2(Math.max(0, ...n.characters.split("\n").map((line) => measure.advance(line, font) * textWidthFactor)));
+  return Math.max(0, ...n.characters.split("\n").map((line) => measure.advance(line, font)));
 }
 
-/** Lines the text takes wrapped at `width`: greedy by words, each word's share of the line's advance. */
+/**
+ * Lines the text takes wrapped at `width`, greedy by words, each breaking
+ * after a space or a hyphen: each word as wide as the measure says where it
+ * measures words, else its characters' share of the line's advance. A line
+ * fits a width it is no wider than; a word wider than a line on its own is
+ * broken between characters, as Figma broke "Home" into "Hom" and "e" in
+ * the third live push.
+ */
 function textLines(n: Node, width: number): number {
-  const { measure, textWidthFactor } = n.doc.options;
+  const { measure } = n.doc.options;
   const font = fontOf(n);
   let lines = 0;
   for (const line of n.characters.split("\n")) {
-    const known = textWidthFactor === 1 ? measure.lines?.(line, font, width) : undefined;
+    const known = measure.lines?.(line, font, width);
     if (known !== undefined) {
       lines += known;
       continue;
     }
-    const advance = measure.advance(line, font) * textWidthFactor;
+    const advance = measure.advance(line, font);
     if (advance <= width + 0.01 || !line.length) {
       lines += 1;
       continue;
     }
     const perChar = advance / line.length;
+    const wide = (text: string) => (measure.words ? measure.advance(text, font) : text.length * perChar);
     let used = 0;
     let count = 1;
-    for (const word of line.split(/(?<=\s)/)) {
-      const w = word.length * perChar;
-      const fit = word.trimEnd().length * perChar;
+    for (const word of line.split(/(?<=[\s-])/)) {
+      const fit = wide(word.trimEnd());
       if (used > 0 && used + fit > width + 0.01) {
         count++;
-        used = w;
-      } else {
-        used += w;
+        used = 0;
       }
+      if (used === 0 && fit > width + 0.01) {
+        for (const ch of word) {
+          const w = wide(ch);
+          if (used > 0 && used + w > width + 0.01 && ch.trim()) {
+            count++;
+            used = 0;
+          }
+          used += w;
+        }
+        continue;
+      }
+      used += wide(word);
     }
     lines += count;
   }
-  if (n.textTruncation === "ENDING" && n.maxLines) lines = Math.min(lines, n.maxLines);
   return Math.max(1, lines);
 }
 
+/** Up to a whole pixel, as Figma sizes a text to its content, past float noise. */
+const ceilPx = (n: number) => Math.ceil(r2(n) - 1e-6);
+
+/**
+ * A text's size as Figma gives it, as the live text probe saw (2026-10-09):
+ * a hugging text as wide as its widest line, up to a whole pixel (Inter
+ * Regular 14 "Home", 39.04 wide, came out 40); a text that grows in height
+ * as tall as its lines, up to a whole pixel (one line of 17.5 came out 18),
+ * except where ENDING cuts it at maxLines, exactly that many lines (17.5).
+ */
 function sizeText(n: Node): void {
   const lh = lineHeightOf(n);
+  const limit = n.textTruncation === "ENDING" && n.maxLines ? n.maxLines : Infinity;
+  const tall = (lines: number) => (lines > limit ? r2(lh * limit) : ceilPx(lh * lines));
   if (n.textAutoResize === "WIDTH_AND_HEIGHT") {
-    n.w = Math.max(textWidth(n), 0.01);
-    const lines = n.characters.split("\n").length;
-    n.h = r2(lh * (n.textTruncation === "ENDING" && n.maxLines ? Math.min(lines, n.maxLines) : lines));
+    n.w = Math.max(ceilPx(textWidth(n)), 0.01);
+    n.h = tall(n.characters.split("\n").length);
   } else if (n.textAutoResize === "HEIGHT") {
-    n.h = r2(lh * textLines(n, n.w));
+    n.h = tall(textLines(n, n.w));
   }
 }
 
@@ -1559,13 +1645,43 @@ const PROPS: Record<string, Prop> = {
   textDecoration: textProp("textDecoration", (v) => oneOf("textDecoration", v, ["NONE", "UNDERLINE", "STRIKETHROUGH"])),
   textAlignHorizontal: textProp("textAlignHorizontal", (v) => oneOf("textAlignHorizontal", v, ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"])),
   textAlignVertical: textProp("textAlignVertical", (v) => oneOf("textAlignVertical", v, ["TOP", "CENTER", "BOTTOM"])),
-  textAutoResize: textProp("textAutoResize", (v) => oneOf("textAutoResize", v, ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"])),
+  // As the live text probe saw (2026-10-09): writing textAutoResize, even
+  // the value it has, turns truncation off and clears maxLines, so a build
+  // that sets truncation first loses it; a fixed-size text with ENDING reads
+  // TRUNCATE, the deprecated name for the two.
+  textAutoResize: {
+    types: new Set(["TEXT"]),
+    get: (n) => (n.textAutoResize === "NONE" && n.textTruncation === "ENDING" ? "TRUNCATE" : n.textAutoResize),
+    set: (n, v) => {
+      requireFont(n, "textAutoResize");
+      const value = oneOf("textAutoResize", v, ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"]);
+      n.textAutoResize = value === "TRUNCATE" ? "NONE" : value;
+      n.textTruncation = value === "TRUNCATE" ? "ENDING" : "DISABLED";
+      n.maxLines = null;
+      changed(n);
+    },
+  },
+  // ENDING on a text that sizes itself, with no maxLines, limits it to one
+  // line; DISABLED clears maxLines (the probe again).
   textTruncation: textProp("textTruncation", (v, n) => {
     const value = oneOf("textTruncation", v, ["DISABLED", "ENDING"]);
     if (value === "ENDING" && n.doc.options.textTruncation === "refuse") invalid("textTruncation", "not supported (mock-figma textTruncation 'refuse')");
     return value;
+  }, (n) => {
+    if (n.textTruncation === "DISABLED") n.maxLines = null;
+    else if (n.maxLines === null && n.textAutoResize !== "NONE") n.maxLines = 1;
   }),
-  maxLines: textProp("maxLines", (v) => (v === null ? null : finite("maxLines", v, 1))),
+  // A fixed-size text in an auto layout reads no maxLines, and gets it back
+  // when it sizes itself again (the probe: FIXED height, then HUG).
+  maxLines: {
+    types: new Set(["TEXT"]),
+    get: (n) => (n.textAutoResize === "NONE" && n.parent?.isAutoLayout() ? null : n.maxLines),
+    set: (n, v) => {
+      requireFont(n, "maxLines");
+      n.maxLines = v === null ? null : finite("maxLines", v, 1);
+      changed(n);
+    },
+  },
   hasMissingFont: { types: new Set(["TEXT"]), get: () => false },
 };
 
@@ -1943,8 +2059,7 @@ export class MockFigma {
   constructor(options: MockFigmaOptions = {}) {
     this.doc = new Doc({
       fonts: options.fonts ?? FONTS,
-      textWidthFactor: options.textWidthFactor ?? 1,
-      measure: options.measure ?? { advance: estimateAdvance },
+      measure: options.measure ?? figmaFonts(),
       clonePluginData: options.clonePluginData ?? true,
       svgStrokeScales: options.svgStrokeScales ?? true,
       fillAcrossHug: options.fillAcrossHug ?? "stretch",

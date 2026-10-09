@@ -8,7 +8,7 @@ import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
-import { MockFigma, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
+import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
 type BuildResult = {
@@ -79,19 +79,18 @@ test("build: a faithful build puts every keyed layer where snap measured it, wit
   }
 });
 
-test("build: with a stand-in font 4.5% wider, no container falls back; a hugging root grows by its label's growth", async () => {
+test("build: in Figma's own fonts, Inter where snap measured system-ui, no container falls back; a hugging root grows by its label's growth", async () => {
   for (const name of treeFixtureNames()) {
-    const { results } = await buildAll(loadTreeFixture(name), { textWidthFactor: 1.045 });
+    const { results } = await buildAll(loadTreeFixture(name), { measure: figmaFonts() });
     for (const r of results) for (const set of r.sets) assert.deepEqual(set.absoluteContainers, [], name);
   }
   const fixture = loadTreeFixture("button-icon");
-  const { mock } = await buildAll(fixture, { textWidthFactor: 1.045 });
+  const { mock } = await buildAll(fixture, { measure: figmaFonts() });
   const variant = fixtureVariants(fixture)[0];
   const boxes = readBoxes(mock, variantsBySlug(mock).get(variant.slug)!);
-  const label = boxes.get("#text")!;
-  const grown = label[2] - 154.8;
-  assert.ok(Math.abs(grown - 154.8 * 0.045) < 0.05, `the label grew ${grown}`);
-  assert.ok(Math.abs(boxes.get("")![2] - (206.8 + grown)) < 0.05, "the button hugs its label");
+  // Measured 154.8 in system-ui; Figma set it 158 in Inter Medium, in the spike and in the text probe.
+  assert.equal(boxes.get("#text")![2], 158);
+  assert.equal(boxes.get("")![2], 206.8 + 158 - 154.8, "the button hugs its label");
   assert.deepEqual(boxes.get("svg"), [11, 10, 16, 16], "the icon before it stays");
 });
 
@@ -153,6 +152,29 @@ test("build: a text's alignment, truncation and line count, and a hidden layer, 
   assert.deepEqual(props("clamp", text), ["LEFT", "ENDING", 2, "HEIGHT"]);
   assert.deepEqual(props("gone", ["visible"]), [false]);
   assert.deepEqual(props("center", ["visible"]), [true]);
+});
+
+/** Each text keyed `key` in a mock, with what Figma holds of it. */
+function texts(mock: MockFigma, key: RegExp) {
+  return mock.nodes("TEXT").filter((n) => key.test(n.data["storysync.k"] ?? "")).map((n) => {
+    const h = mock.handle(n.id) as Record<string, unknown>;
+    return { key: n.data["storysync.k"], chars: h.characters as string, w: n.width, h: n.height, ar: h.textAutoResize, tr: h.textTruncation, max: h.maxLines };
+  });
+}
+
+test("build: truncation is set after the size and textAutoResize, which turn it off in Figma, so a cut-off title stays one line, built again too", async () => {
+  // Attachment's titles end in an ellipsis; in its vertical tiles the browser cut them at 94px.
+  const fixture = loadTreeFixture("attachment");
+  const coded = await codeFor(fixture);
+  const mock = mockFor([fixture], { measure: figmaFonts() });
+  for (const round of [1, 2]) {
+    await runPlan(mock, coded, ["build"]);
+    const cut = texts(mock, /attachment-(title|description)$/);
+    assert.equal(cut.length, 8);
+    for (const t of cut) assert.deepEqual([t.tr, t.max, t.ar], ["ENDING", 1, "HEIGHT"], `${t.key}, build ${round}`);
+    // One line each: 17.5 for the title, Figma's own height where it cuts at maxLines.
+    assert.deepEqual([...new Set(cut.filter((t) => /title$/.test(t.key!)).map((t) => t.h))], [17.5], `build ${round}`);
+  }
 });
 
 test("build: a frame Figma lays out otherwise than planned is built without auto layout, each child where snap measured it", async () => {
@@ -264,18 +286,19 @@ test("build: a keyed layer duplicated in Figma is removed, the first of them kep
   assert.deepEqual(variantsBySlug(mock).get("size-default")!.children!.map((c) => c.id), [thumb.id]);
 });
 
-test("build: a sibling after a label moves by as much as a wider stand-in widens the label", async () => {
+test("build: a sibling after a label moves by as much as Figma's font widens the label", async () => {
   const fixture = synthetic("Next", [
     { k: "", t: "F", el: "button", box: [0, 0, 86, 24], L: { d: "inline-flex", ai: "center", gap: [4, 4], pad: [0, 8, 0, 8] } },
-    { k: "#text", t: "T", el: "#text", box: [8, 2, 50, 20], tx: { c: "Next", f: "Inter", sz: 14, wt: 500, col: "#ffffff", lh: 20, n: 1, ink: [0, 1.5, 50, 17] } },
+    { k: "#text", t: "T", el: "#text", box: [8, 2, 50, 20], tx: { c: "Next", f: "system-ui", fk: 1, sz: 14, wt: 500, col: "#ffffff", lh: 20, n: 1, ink: [0, 1.5, 50, 17] } },
     { k: "svg", t: "V", el: "svg.lucide-chevron-right", box: [62, 4, 16, 16], svg: "svg:chevron", shapes: [[6, 4, 4, 8]] },
   ], { width: 86, height: 24, display: "inline-flex" }, { "svg:chevron": CHEVRON });
-  const { mock, results } = await buildAll(fixture, { textWidthFactor: 1.045 });
+  // Figma sets it 52.25 wide, which a hugging text rounds up to 53.
+  const { mock, results } = await buildAll(fixture, { measure: { advance: (chars) => (chars === "Next" ? 52.25 : 0) } });
   assert.deepEqual(results[0].sets[0].absoluteContainers, []);
   const boxes = readBoxes(mock, variantsBySlug(mock).get("default")!);
-  assert.equal(boxes.get("#text")![2], 52.25);
-  assert.equal(boxes.get("svg")![0], 64.25);
-  assert.equal(boxes.get("")![2], 88.25);
+  assert.equal(boxes.get("#text")![2], 53);
+  assert.equal(boxes.get("svg")![0], 65);
+  assert.equal(boxes.get("")![2], 89);
 });
 
 test("build: running the same calls again creates and removes nothing, and keeps every node id", async () => {

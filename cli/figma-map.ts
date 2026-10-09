@@ -13,6 +13,7 @@
 
 import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
+import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
 import { textHugs } from "./tree-types.js";
 import type { Box, Sides, TreeNode } from "./tree-types.js";
@@ -40,6 +41,8 @@ export interface FigmaText {
   c: string;
   /** Family, weight, italic, as measured: loadFont picks a stand-in where Figma lacks them. */
   f: string;
+  /** The stand-in loadFont tries where Figma lacks `f` (fonts.ts), when it isn't Inter, the template's last resort. */
+  a?: string;
   w: number;
   i?: 1;
   z: number;
@@ -352,6 +355,10 @@ export function textSizesItself(node: TreeNode): boolean {
 function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   const tx = node.tx!;
   const out: FigmaText = { c: tx.c, f: tx.f, w: tx.wt, z: tx.sz, l: tx.lh === "normal" ? 0 : tx.lh, ar: textSizesItself(node) ? "W" : "H" };
+  // The stand-in for a family Figma lacks: what snap drew a keyword in, or,
+  // for a snap that drew the keyword's own face, what Figma sets it in.
+  const alt = standInFor(tx.fs ?? tx.f);
+  if (alt !== "Inter" && alt !== tx.f) out.a = alt;
   if (tx.it) out.i = 1;
   if (tx.ls) out.s = tx.ls;
   if (tx.tt) out.tc = CASES[tx.tt];

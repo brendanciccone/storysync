@@ -2391,7 +2391,9 @@ async function treePush(snapPath, out, { tokens = null, mock: given = null } = {
   const plan = readJson(planPath);
   const snap = readJson(snapPath);
   const trees = snap.components.flatMap((c) => c.variants.filter((v) => v.status === "ok").map((v) => expandTree(c.tree, v.treeDelta)));
-  const mock = given ?? new M.MockFigma({ measure: M.measureFromTrees(trees), moveNeedsFonts: true });
+  // Text as wide as Figma sets it in its own fonts, the widths snap
+  // measured for any other family.
+  const mock = given ?? new M.MockFigma({ measure: M.figmaFonts(M.measureFromTrees(trees)), moveNeedsFonts: true });
   const send = async (file, result) => {
     const code = readFileSync(file, "utf8");
     assert(code.length <= MAX_CALL_CHARS, `${file} is ${code.length} characters, over ${MAX_CALL_CHARS}`);
@@ -2602,6 +2604,15 @@ async function main() {
     const texts = tree.components.flatMap((c) => c.tree.base.filter((n) => n.tx));
     assert(texts.length > 0 && texts.every((n) => n.tx.f === "Inter" && n.tx.fs === undefined), `families: ${[...new Set(texts.map((n) => `${n.tx.f}/${n.tx.fs}`))].join(", ")}`);
     return `${texts.length} texts in Inter, none stood in`;
+  });
+
+  await check("the stand-in fonts snap measures with set text as the mock's Figma metrics say, which match Figma's live widths", () => {
+    // scripts/figma-font-metrics.mjs measures the installed stand-ins in the
+    // browser; the unit tests hold those metrics to the widths Figma gave the
+    // live text probe. A font package updated without them fails here.
+    const r = spawnSync(process.execPath, [join(ROOT, "scripts", "figma-font-metrics.mjs"), "--check"], { encoding: "utf8" });
+    assert(r.status === 0, `${r.stdout}${r.stderr}`.trim());
+    return "cli/__tests__/fixtures/figma-fonts.json matches the installed fonts";
   });
 
   await check("the push measures every Button combination, with the defaults as the base", () => {

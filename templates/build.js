@@ -54,20 +54,21 @@ if (!page) {
 }
 await figma.setCurrentPageAsync(page);
 
-// A text's font: the measured family, else Roboto Mono for a mono one, Noto
-// Serif for a serif, Inter for any other; at the measured weight, else the
+// A text style's font: the measured family, else its stand-in, the style's `a`
+// (Roboto Mono for a mono family, Noto Serif for a serif: cli/fonts.ts, which
+// snap measures with too), else Inter; at the measured weight, else the
 // next toward Regular, in either spelling; italic where the family has it.
 // It never throws, and FONTS, returned, names each stand-in.
 const STYLES = ['Thin', 'Extra Light', 'Light', 'Regular', 'Medium', 'Semi Bold', 'Bold', 'Extra Bold', 'Black'];
 const FONTS = {};
 const fonts = {};
-const loadFont = (family, weight, italic) => {
+const loadFont = (t) => {
+  const { f: family, w: weight, i: italic } = t;
   const id = family + weight + (italic ? 'i' : '');
   return (fonts[id] = fonts[id] || (async () => {
     const i = Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1));
     const d = Math.sign(3 - i);
-    const alt = /mono|menlo|monaco|consolas|courier/i.test(family) ? 'Roboto Mono' : /^(?!.*sans).*(serif|georgia|times)/i.test(family) ? 'Noto Serif' : 'Inter';
-    for (const f of new Set([family, alt, 'Inter'])) {
+    for (const f of new Set([family, t.a || 'Inter', 'Inter'])) {
       for (const j of new Set([i, i + d, i + 2 * d, 3].filter((j) => (j - 3) * d <= 0))) {
         for (const s of new Set([STYLES[j], STYLES[j].replace(' ', '')])) {
           for (const style of italic ? [j === 3 ? 'Italic' : s + ' Italic', s] : [s]) {
@@ -238,7 +239,7 @@ const style = async (n, rec, parent, root) => {
   }
   if (kind === 'T') {
     const t = st.t;
-    const font = await loadFont(t.f, t.w, t.i);
+    const font = await loadFont(t);
     await loadFonts([n]);
     n.fontName = font;
     n.characters = t.c;
@@ -249,7 +250,16 @@ const style = async (n, rec, parent, root) => {
     n.textDecoration = t.td || 'NONE';
     n.textAlignHorizontal = t.ta || 'LEFT';
     await setPaints(n, 'fills', st.f || [], 'color');
-    let ar = t.ar;
+    // The size first, then textAutoResize, then truncation: Figma turns
+    // truncation off and clears maxLines on any write of textAutoResize,
+    // HEIGHT over HEIGHT too, and resize() turns a hugging text NONE (the
+    // live text probe, 2026-10-09). Set the other way round, every truncated
+    // label of the third live push came out DISABLED and wrapped.
+    if (t.ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
+    else {
+      n.resize(w, h);
+      n.textAutoResize = 'HEIGHT';
+    }
     try {
       n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
       n.maxLines = t.tr || null;
@@ -260,13 +270,7 @@ const style = async (n, rec, parent, root) => {
       fallback('truncation refused', e);
       n.resize(w, h);
       n.textAutoResize = 'NONE';
-      ar = '';
       sizing = [sizing[0] === 'L' ? 'L' : 'X', 'X'];
-    }
-    if (ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
-    else if (ar) {
-      n.resize(w, h);
-      n.textAutoResize = 'HEIGHT';
     }
   } else if (kind === 'V') {
     if (Math.abs(n.width - w) > 0.01 || Math.abs(n.height - h) > 0.01) n.resize(w, h);
@@ -379,7 +383,7 @@ const converge = async (root, recs) => {
     walk(root);
   }
   // And every font they will have.
-  for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t.f, S[rec[7]].t.w, S[rec[7]].t.i);
+  for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t);
   const nodes = [root];
   for (let i = 1; i < recs.length; i++) {
     const [ki, , kind, , , , , si] = recs[i];

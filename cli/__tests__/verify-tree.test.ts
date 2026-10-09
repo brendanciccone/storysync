@@ -5,9 +5,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
-import type { TreeFixture } from "./mock-figma.js";
-import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
+import { figmaFonts, loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
+import type { MockFont, TreeFixture } from "./mock-figma.js";
+import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, fixtureMeasure, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
 import { readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import type { ReadbackFile, ReadbackStyles, VerifyResult } from "../verify.js";
 import { SPIKE, cssLinearGradient, svgShapePaints, visibleReorder } from "../verify-tree.js";
@@ -31,23 +31,25 @@ for (const name of treeFixtureNames()) {
 }
 
 // Every fixture but example-button draws its text in system-ui, which Figma
-// sets in a stand-in, Inter: that text's width is allowed 6% (design 10.5).
-// example-button's is Inter in both, so the same font 4.5% wider is drift,
-// on that text alone, below.
+// sets in a stand-in, Inter, a few percent wider: that text's width is
+// allowed 6% (design 10.5). example-button's is Inter in both, so the same
+// font drawn 4.5% wider is drift, on that text alone, below.
 for (const name of treeFixtureNames().filter((n) => n !== "example-button")) {
-  test(`faithful build: ${name} still scores 100% in a stand-in font 4.5% wider, laid out absolute or in auto layout`, async () => {
+  test(`faithful build: ${name} still scores 100% with its text in Figma's Inter, laid out absolute or in auto layout`, async () => {
     for (const autoLayout of [false, true]) {
-      for (const textWidthFactor of [1, 1.045]) {
-        const { fixture, readback } = await buildAndRead(name, { figma: newFigma({ textWidthFactor }), autoLayout });
+      for (const [fonts, measure] of [["the browser's widths", fixtureMeasure()], ["Figma's Inter", figmaFonts()]] as const) {
+        const { fixture, readback } = await buildAndRead(name, { figma: newFigma({ measure }), autoLayout });
         const result = verify(fixture, readback, 0.5);
-        assert.equal(result.elementFidelity, 1, `${autoLayout ? "auto layout" : "absolute"}, ${textWidthFactor}:\n${drift(result)}`);
+        assert.equal(result.elementFidelity, 1, `${autoLayout ? "auto layout" : "absolute"}, ${fonts}:\n${drift(result)}`);
       }
     }
   });
 }
 
 test("faithful build: the same font drawn 4.5% wider costs each label its width, and nothing around it", async () => {
-  const { fixture, readback } = await buildAndRead("example-button", { figma: newFigma({ textWidthFactor: 1.045 }), autoLayout: true });
+  const browser = fixtureMeasure();
+  const wider = { advance: (chars: string, font: MockFont) => browser.advance(chars, font) * 1.045 };
+  const { fixture, readback } = await buildAndRead("example-button", { figma: newFigma({ measure: wider }), autoLayout: true });
   const result = verify(fixture, readback, 0.5);
   const nodes = result.variants.flatMap((v) => v.nodes ?? []);
   assert.equal(nodes.length, 12);
@@ -705,7 +707,12 @@ test("spike: where Figma drops a shadow's spread, spread is left out and listed"
 
 test("spike: where Figma can't truncate text, truncation is left out and listed", async () => {
   const ctx = await buildAndRead("attachment");
-  for (const v of ctx.built.variants) node(ctx.figma, v.layers["attachment-content/attachment-title"]).textTruncation = "DISABLED";
+  // As the build's fallback has it (SPIKE(3)): a box of the measured size, which Figma doesn't truncate.
+  for (const v of ctx.built.variants) {
+    const title = node(ctx.figma, v.layers["attachment-content/attachment-title"]);
+    title.textAutoResize = "NONE";
+    title.resize(title.width as number, 17.5);
+  }
   const readback = await reread(ctx.figma, ctx.fixture, ctx.built);
   assert.ok(findings(verify(ctx.fixture, readback, 0.5)).every((f) => /attachment-title: truncation$/.test(f)));
   const fallback = verify(ctx.fixture, readback, 0.5, { spike: { ...SPIKE, textTruncation: false } });

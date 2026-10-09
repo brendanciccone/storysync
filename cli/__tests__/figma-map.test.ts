@@ -144,6 +144,20 @@ test("nodeStyle: a text's properties, sizing and truncation", () => {
   assert.equal(nodeStyle(text({}), ctx()).n, undefined);
 });
 
+test("nodeStyle: the stand-in a text's family gets in Figma, from the one mapping snap measures with", () => {
+  const alt = (f: string, fs?: string) => nodeStyle(text({ f, ...(fs ? { fs } : {}) }), ctx()).t!.a;
+  // Inter is loadFont's own last resort, so a family that stands in as Inter names none.
+  assert.equal(alt("system-ui"), undefined);
+  assert.equal(alt("Inter", "system-ui"), undefined);
+  assert.equal(alt("Menlo"), "Roboto Mono");
+  assert.equal(alt("ui-monospace"), "Roboto Mono");
+  assert.equal(alt("Georgia"), "Noto Serif");
+  // Drawn in its stand-in already, it names none; a web font Figma may lack gets its kind's.
+  assert.equal(alt("Roboto Mono", "ui-monospace"), undefined);
+  assert.equal(alt("Geist Mono"), "Roboto Mono");
+  assert.equal(alt("Geist"), undefined);
+});
+
 test("nodeStyle: a #text run's color is named by its own classes, else its parent element's", () => {
   const c = { ...ctx(new Binder(SHADCN_TOKENS)), parentCls: ["bg-primary", "text-primary-foreground"] };
   assert.deepEqual(nodeStyle(text({ col: "#fafafa" }), c).f, [["#fafafa", 1, "primary/foreground"]]);
