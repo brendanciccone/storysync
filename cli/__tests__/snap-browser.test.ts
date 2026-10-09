@@ -10,12 +10,12 @@ import { fakePreview, inPage } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
-  captureTree, captureTreeInPage, drawingElementInPage, thumbnailInPage,
+  captureTree, captureTreeInPage, drawingElementInPage, readStoryTreeInPage, thumbnailInPage,
 } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
-import { NON_RENDERED_TAGS, OVERLAY_SELECTOR } from "../snap-normalize.js";
+import { NON_RENDERED_TAGS, OVERLAY_SELECTOR, WRAPPER_PROPERTIES } from "../snap-normalize.js";
 import { inFakePage } from "./dom-standin.js";
 import type { FakeElementSpec } from "./dom-standin.js";
 
@@ -646,6 +646,22 @@ test("captureStory: a story that renders only an open dialog, into a portal, mea
   assert.deepEqual([result.element, result.matchedSelector, result.portal], ['div[role="dialog"]', 'portal div[role="dialog"]', true]);
   assert.deepEqual(found, { container, slots: ["confirm-dialog", "confirm-dialog-content"], overlay: OVERLAY_SELECTOR });
   assert.deepEqual(result.tree!.nodes.map((n) => n.k), [""]);
+});
+
+test("readStoryTreeInPage: reads each element's own text, outline, and the ::before and ::after that have content", () => {
+  // An icon font draws its glyph with ::before alone: the story's root
+  // holds no text and paints nothing else, yet it shows.
+  const read = inFakePage({
+    tag: "div", rect: [0, 0, 100, 40], attrs: { id: "storybook-root" },
+    kids: [
+      { tag: "span", rect: [0, 0, 24, 24], before: { content: '"★"', display: "inline-block" } },
+      { tag: "div", rect: [0, 30, 40, 10], style: { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" }, after: { content: "none" }, kids: [{ text: "  ", rects: [] }] },
+    ],
+  }, (el) => readStoryTreeInPage(el, { props: WRAPPER_PROPERTIES, maxDepth: 12, maxNodes: 600 }));
+  const [glyph, ring] = read.children;
+  assert.deepEqual([glyph.text, glyph.pseudos?.map((p) => [p.content, p.styles.display])], [false, [['"★"', "inline-block"]]]);
+  assert.deepEqual([ring.text, ring.pseudos, ring.styles["outline-style"], ring.styles["outline-width"]], [false, undefined, "solid", "2px"]);
+  assert.equal(read.pseudos, undefined);
 });
 
 // --- captureTreeInPage, in a stand-in page ---

@@ -994,6 +994,17 @@ L4. **Open overlay content in a portal is measured when the story's root
      chooseMeasuredElement already reads them, with `text`, whether an
      element holds text of its own, added. A StoryNode without `text`
      counts as drawing, so no older caller changes.
+   - An element draws by a fill, picture, shadow or border, an outline
+     with a width and a color, its own text, a ::before or ::after with
+     any content but an empty string or with a box that paints (an icon
+     font's glyph, a status dot), or by its tag: `svg`, `img`,
+     `canvas`, `video`, a form field, `progress`, `meter`, `iframe`,
+     `object` or `embed`. The page reads outlines (WRAPPER_PROPERTIES)
+     and the pseudo-elements with content (`pseudos`) for this. Without
+     them, a story root holding only a `<progress>`, an outlined box or
+     an icon-font glyph read as drawing nothing, and an open overlay
+     elsewhere on the page was measured instead (checked in Chromium on
+     static pages).
    - The variant records `portal: true` beside `element`, for this and
      for content found by its slot or `aria-controls` as before.
      `matchedSelector` already said `portal ...`, but styles.json didn't

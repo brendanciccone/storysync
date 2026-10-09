@@ -192,11 +192,16 @@ export const TEXT_PROPERTIES: readonly string[] = [
   "color", "font-family", "font-size", "font-weight", "text-transform", "letter-spacing",
 ];
 
-/** What snap-browser reads off a Storybook wrapper to decide whether to look past it. */
+/**
+ * What snap-browser reads off a Storybook wrapper to decide whether to look
+ * past it, and off the story's elements, and their ::before and ::after, to
+ * decide whether anything in its root draws.
+ */
 export const WRAPPER_PROPERTIES: readonly string[] = [
   "display", "background-color", "background-image", "box-shadow",
   "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
   "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "outline-style", "outline-width", "outline-color",
 ];
 
 // --- Scalar helpers ---------------------------------------------------------
@@ -623,6 +628,12 @@ export interface StoryNode {
    * wasn't read, which counts as text: see subtreeDraws.
    */
   text?: boolean;
+  /**
+   * Its ::before and ::after that have content, `none` and `normal` left
+   * out: the content as computed (`""`, `"★"`, `url(...)`) and their
+   * WRAPPER_PROPERTIES. Absent where none has, or they weren't read.
+   */
+  pseudos?: { content: string; styles: RawComputedStyles }[];
   /** WRAPPER_PROPERTIES, computed. */
   styles: RawComputedStyles;
   /**
@@ -716,17 +727,34 @@ function drawnChildren(node: StoryNode): StoryNode[] {
   return node.children.filter((child) => !isNonRendered(child) && (child.rendered || isDisplayContents(child)));
 }
 
-/** Tags that draw by what they are, or as a form field does. */
-const DRAWING_TAGS: readonly string[] = ["svg", "img", "canvas", "video", "input", "textarea", "select"];
+/** Tags that draw by what they are, as a picture, a meter or an embedded page does, or as a form field does. */
+const DRAWING_TAGS: readonly string[] = [
+  "svg", "img", "canvas", "video", "input", "textarea", "select", "progress", "meter", "iframe", "object", "embed",
+];
 
 /**
- * Whether an element, or anything in it, draws: a fill, picture, shadow or
- * border, text, or what an `<svg>`, `<img>` or form field is. Text the page
- * didn't read for counts, so this says no only where it knows.
+ * Whether an element, or anything in it, draws: a fill, picture, shadow,
+ * border or outline, text, a ::before or ::after that draws, or what an
+ * `<svg>`, `<img>`, `<progress>` or form field is. Text the page didn't
+ * read for counts, so this says no only where it knows.
  */
 function subtreeDraws(node: StoryNode): boolean {
   if (isNonRendered(node) || (!node.rendered && !isDisplayContents(node))) return false;
-  return node.text !== false || !drawsNothing(node.styles) || DRAWING_TAGS.includes(node.tag) || node.children.some(subtreeDraws);
+  return node.text !== false || paints(node.styles) || DRAWING_TAGS.includes(node.tag) ||
+    (node.pseudos ?? []).some(pseudoDraws) || node.children.some(subtreeDraws);
+}
+
+/** Whether an element paints its own box: drawsNothing's fill, picture, shadow or border, or an outline that shows. */
+function paints(styles: RawComputedStyles): boolean {
+  const outline = styles["outline-style"];
+  return !drawsNothing(styles) ||
+    (outline !== undefined && outline !== "none" && parseFloat(styles["outline-width"] ?? "") > 0 && !isFullyTransparent(styles["outline-color"]));
+}
+
+/** Whether a ::before or ::after draws: any content but an empty string, an icon font's glyph say, or a box that paints. */
+function pseudoDraws(pseudo: { content: string; styles: RawComputedStyles }): boolean {
+  if ((pseudo.styles["display"] ?? "").trim() === "none") return false;
+  return pseudo.content !== '""' || paints(pseudo.styles);
 }
 
 /** Whether an element paints nothing itself: no fill, image, shadow or border, whatever its padding. */

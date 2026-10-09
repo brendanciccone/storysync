@@ -622,7 +622,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
  * Runs in the page: the story's container and everything under it, as
  * StoryNodes, cut short past `maxDepth` levels or `maxNodes` elements.
  */
-function readStoryTreeInPage(
+export function readStoryTreeInPage(
   container: Element,
   args: { props: readonly string[]; maxDepth: number; maxNodes: number },
 ): StoryNode {
@@ -650,6 +650,17 @@ function readStoryTreeInPage(
       styles,
       children: [],
     };
+    // An icon font's glyph, or a dot, drawn by a pseudo-element alone.
+    const pseudos: NonNullable<StoryNode["pseudos"]> = [];
+    for (const which of ["::before", "::after"]) {
+      const ps = getComputedStyle(el, which);
+      const content = ps.getPropertyValue("content");
+      if (content === "none" || content === "normal" || content === "") continue;
+      const own: Record<string, string> = {};
+      for (const p of args.props) own[p] = ps.getPropertyValue(p);
+      pseudos.push({ content, styles: own });
+    }
+    if (pseudos.length) node.pseudos = pseudos;
     if (depth < args.maxDepth) {
       for (const child of Array.from(el.children)) {
         if (budget <= 0) break;
