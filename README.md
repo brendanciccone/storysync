@@ -628,7 +628,7 @@ Each difference names its component, variant, element key and Figma node id, mis
 
 **Scores fall from 0.4.0's.** 0.4.0 compared each variant's outer element alone, so a Switch built without its thumb, an Avatar without its picture, or a Card with its title at the wrong place scored 100%. Those numbers were overstated. The same pushes score what they hold now: half of the Switch's elements, a third of the Avatar's. A push from the element-tree calls that matches the code still scores 100%.
 
-**What it can't score** is listed under the score as coverage, never counted as a match: a font named by a CSS keyword such as `system-ui`, where snap measured the platform's own font, a line height of `normal`, filters other than blur, `clip-path`, radial, conic and repeating gradients, blend modes Figma lacks, borders with a different color on each side, `outline`, rotation and scaling (the bounding box is still scored), and elements past where snap stopped measuring a large tree.
+**What it can't score** is listed under the score as coverage, never counted as a match: a font named by a CSS keyword such as `system-ui`, where snap measured the platform's own font, a line height of `normal`, filters other than blur, `clip-path`, radial, conic and repeating gradients, blend modes Figma lacks, borders with a different color on each side, `outline`, rotation and scaling (the bounding box is still scored), and elements past where snap stopped measuring a large tree. Where there is none, the line says `coverage 100.0%: every property was scored`.
 
 **Designer layers.** A layer inside a variant that carries no key, one a designer added, isn't scored. `verify` lists it by name, type and node id, and it fails `--strict` unless you pass `--allow-designer-layers`.
 

@@ -1907,11 +1907,15 @@ export function formatElementReport(result: VerifyResult, beside: readonly strin
   const clean = !e.missing && !e.drifted && !e.extra && !e.notReadBack && !unread;
   lines.push(`  ${(clean ? chalk.dim : chalk.red)(counts.join(" · "))}`);
 
+  // Coverage always, 100% too: the skill has the agent report it, and a
+  // line that only appeared below 100% read as missing.
   const unscorable = result.unscorable ?? [];
   if (unscorable.length) {
     const named = unscorable.slice(0, 3).map((u) => `${u.reason} on ${u.component} › ${u.key || "(root)"}`);
     const more = unscorable.length > 3 ? `, and ${unscorable.length - 3} more (--json lists them)` : "";
     lines.push(chalk.dim(`  coverage ${percent(result.coverage)}: not scored: ${named.join("; ")}${more}`));
+  } else if (result.coverage != null) {
+    lines.push(chalk.dim(`  coverage ${percent(result.coverage)}: every property was scored`));
   }
   // What the caller says beside the score, such as what snap warned, before the drift under it.
   lines.push(...beside);

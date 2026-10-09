@@ -1651,7 +1651,9 @@ test("element report: the headline is element fidelity beside the share of prope
   assert.match(report, /Fidelity: 97\.9% of elements \(3 of 4 verified\)/);
   assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
   assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
-  assert.doesNotMatch(report, /coverage/, "a Switch has nothing verify can't score");
+  // A Switch has nothing verify can't score, and the coverage line says so.
+  assert.match(clean, /^ {2}coverage 100\.0%: every property was scored$/m);
+  assert.match(report, /^ {2}coverage 100\.0%: every property was scored$/m);
   // A keyed layer snap doesn't measure is an element too, scoring 0: 4 of 5.
   const extra = await buildAndRead("switch");
   const added = await extra.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(extra.built.variants[0].id)}); const f = figma.createFrame(); v.appendChild(f); f.setSharedPluginData('storysync', 'k', 'switch-thumb:2'); return f.id;`);

@@ -1337,3 +1337,8 @@ BV4. **The caveat for a font the browser couldn't render is
    Nothing persists a caveat to read back: verify draws it each run from
    the warning snap wrote in styles.json, whose words are unchanged, so a
    styles.json from before gives the new kind, and no old name is kept.
+BV5. **verify prints its coverage line at 100% too** (section 10.6 shows
+   it with something unscored): `coverage 100.0%: every property was
+   scored`. The skill has the agent report coverage, and push4's verify
+   printed none, with nothing unscored. It is left out only where nothing
+   was compared at all.
