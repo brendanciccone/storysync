@@ -791,6 +791,11 @@ test("describeIdenticalVariants: blames the story only where the markup didn't c
   assert.match(behavior, /^all 3 rendered variants measured identically, though their markup changed with the args, so the story passes them through: `textAlign`, `pushPasswordManagerStrategy` change nothing snap measures, likely only behavior/);
   assert.match(behavior, /leave them out of every component with `--exclude-props textAlign,pushPasswordManagerStrategy`/);
   assert.deepEqual(parseBehaviorOnlyWarning(behavior), ["textAlign", "pushPasswordManagerStrategy"]);
+  assert.match(behavior, /something it doesn't measure, such as a child element\./);
+  // With trees, a child element is measured: what isn't is a state or an animation.
+  const treeBehavior = describeIdenticalVariants(variants, OTP_PROPS, ["a", "b", "c"], { tree: true })!;
+  assert.match(treeBehavior, /something it doesn't measure, such as a hover or focus state, or an animation\. If they don't change how it looks/);
+  assert.deepEqual(parseBehaviorOnlyWarning(treeBehavior), ["textAlign", "pushPasswordManagerStrategy"]);
 
   // The same markup on every variant: nothing the args set reached the page.
   const frozen = describeIdenticalVariants(variants, OTP_PROPS, ["a", "a", "a"])!;

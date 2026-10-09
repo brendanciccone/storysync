@@ -365,11 +365,15 @@ export function detectIdenticalVariants(variants: SnapVariant[]): string | null 
  *   that leaves them out;
  * - markup not read on every variant, or one that changed as it was
  *   measured: either, so it says both.
+ *
+ * With `tree`, the elements inside the root were measured too, so what
+ * snap doesn't measure is a state or an animation, not a child element.
  */
 export function describeIdenticalVariants(
   variants: SnapVariant[],
   properties: FigmaVariantProperty[],
   markups: (string | null)[],
+  options: { tree?: boolean } = {},
 ): string | null {
   const identical = detectIdenticalVariants(variants);
   if (!identical) return null;
@@ -388,7 +392,8 @@ export function describeIdenticalVariants(
     return (
       `all ${measured} rendered variants measured identically, though their markup changed with the args, so the story ` +
       `passes them through: ${list} ${change} nothing snap measures, likely only behavior, or something it doesn't measure, ` +
-      `such as a child element. If ${one ? "it doesn't" : "they don't"} change how it looks, leave ${one ? "it" : "them"} out ` +
+      `such as ${options.tree ? "a hover or focus state, or an animation" : "a child element"}. ` +
+      `If ${one ? "it doesn't" : "they don't"} change how it looks, leave ${one ? "it" : "them"} out ` +
       `of every component with ${exclude}, and build it as one variant.`
     );
   }
@@ -1379,7 +1384,7 @@ async function snapComponent(
   const uncheckedWarning = describeUncheckedArgs(label, unchecked, captures, { error: uncheckedError, id: entry.id });
   if (uncheckedWarning) shell.warnings.push(uncheckedWarning);
 
-  const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups);
+  const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups, { tree: trees.length > 0 });
   if (identical) {
     shell.warnings.push(identical);
   } else {
