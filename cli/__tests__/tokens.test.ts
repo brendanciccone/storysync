@@ -1697,6 +1697,9 @@ test("Tailwind: a config that re-exports another is read through it when it is r
       (config) => `${config} passes its config through withBrand(), which storysync can't read statically: the theme passed to it is read, but any tokens the function adds are missing`],
     [{ "tailwind.config.js": `const config = withBrand(base);\nmodule.exports = config;` },
       (config) => `${config} builds its config with withBrand(), which storysync can't read statically, so the tokens it adds are missing`],
+    // A wrapper passed no theme gives every token.
+    [{ "tailwind.config.js": `module.exports = withBrand({ content: [], plugins: [] });` },
+      (config) => `${config} builds its config with withBrand(), which storysync can't read statically, so the tokens it adds are missing`],
     [{ "tailwind.config.js": `const config = require("@acme/ui/tailwind")("docs");\nconfig.content = [];\nmodule.exports = config;` },
       (config) => `${config} builds its config with require("@acme/ui/tailwind")(), which storysync can't read statically, so the tokens it adds are missing`],
   ];

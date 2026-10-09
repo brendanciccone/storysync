@@ -443,11 +443,11 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
     if (layer) layers.push(layer);
   }
   const wrapper = reexport ? null : wrapperCall(content, imports);
-  if (wrapper?.literal) {
-    // As `defineConfig({ ... })`, which may add nothing.
-    warnings.push(`${configPath} passes its config through ${wrapper.label}, which storysync can't read statically: the theme passed to it is read, but any tokens the function adds are missing`);
+  if (wrapper && own.length) {
+    // As `defineConfig({ theme })`, which may add nothing.
+    warnings.push(`${configPath} passes its config through ${wrapper}, which storysync can't read statically: the theme passed to it is read, but any tokens the function adds are missing`);
   } else if (wrapper) {
-    warnings.push(`${configPath} builds its config with ${wrapper.label}, which storysync can't read statically, so the tokens it adds are missing`);
+    warnings.push(`${configPath} builds its config with ${wrapper}, which storysync can't read statically, so the tokens it adds are missing`);
   }
   // The own theme's warnings were given as it was read.
   const collections = withLayers(layers, own, themeLayer(themeBlocks, []));
@@ -727,32 +727,23 @@ function reexportRef(content: string, imports: Map<string, ConfigImport>): Confi
   return imported && !imported.call ? configRef(exported[1], imports) : null;
 }
 
-/** A function a config's export is built by, as wrapperCall finds it. */
-interface WrapperCall {
-  /** As `withTW()`. */
-  label: string;
-  /** Passed an object literal, whose theme storysync reads. */
-  literal: boolean;
-}
-
 /**
  * The function a config's export is built by, as `module.exports =
  * withTW({ ... })` or `const config = require("@inmediam/ui/tailwind")("docs")`
  * then `module.exports = config`, for a warning that what it adds isn't
  * read. Null when the export is no call.
  */
-function wrapperCall(content: string, imports: Map<string, ConfigImport>): WrapperCall | null {
-  const literal = (m: RegExpExecArray) => /^\s*\{/.test(content.slice(m.index + m[0].length));
+function wrapperCall(content: string, imports: Map<string, ConfigImport>): string | null {
   const direct = new RegExp(EXPORTED.source + /([\w$.]+)\s*\(/.source).exec(content);
-  if (direct && direct[1] !== "require" && direct[1] !== "function") return { label: `${direct[1]}()`, literal: literal(direct) };
+  if (direct && direct[1] !== "require" && direct[1] !== "function") return `${direct[1]}()`;
   const required = new RegExp(EXPORTED.source + /require\(\s*(['"`])([^'"`]+)\1\s*\)(?:\.[\w$]+)?\s*\(/.source).exec(content);
-  if (required) return { label: `require("${required[2]}")()`, literal: literal(required) };
+  if (required) return `require("${required[2]}")()`;
   const id = new RegExp(EXPORTED.source + /([\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
   if (!id) return null;
   const imported = imports.get(id[1]);
-  if (imported?.call) return { label: `require("${imported.spec}")()`, literal: false };
+  if (imported?.call) return `require("${imported.spec}")()`;
   const assigned = new RegExp(`\\b(?:const|let|var)\\s+${id[1].replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*([\\w$.]+)\\s*\\(`).exec(content);
-  return assigned && assigned[1] !== "require" ? { label: `${assigned[1]}()`, literal: literal(assigned) } : null;
+  return assigned && assigned[1] !== "require" ? `${assigned[1]}()` : null;
 }
 
 /**
