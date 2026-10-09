@@ -11,7 +11,7 @@ import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
   detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
-  parseMeasurementWarning, snapFailsStrict,
+  parseMeasurementWarning, snapFailsStrict, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed,
 } from "../snap.js";
 import { VERSION } from "../version.js";
@@ -1774,6 +1774,27 @@ test("runSnap: an image is kept as a thumbnail of what its box shows, named by i
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("detectIdenticalValues: values that measured the same, root and tree, wherever both were measured", () => {
+  const props: FigmaVariantProperty[] = [
+    { name: "variant", type: "VARIANT", values: ["default", "ghost", "link"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+  ];
+  const v = (variant: string, size: string, delta: object, treeDelta?: object): SnapVariant =>
+    ({ combination: { variant, size }, slug: `${variant}-${size}`, status: "ok", error: null, delta, ...(treeDelta ? { treeDelta } : {}) }) as SnapVariant;
+  const variants = [
+    v("default", "sm", {}), v("ghost", "sm", { backgroundColor: null }), v("link", "sm", { backgroundColor: null }),
+    v("default", "lg", { width: 50 }), v("ghost", "lg", { width: 50, backgroundColor: null }), v("link", "lg", { width: 50, backgroundColor: null }),
+  ];
+  assert.deepEqual(detectIdenticalValues(props, variants), [{ property: "variant", values: ["ghost", "link"] }]);
+  // A tree that differs tells them apart.
+  variants[5] = v("link", "lg", { width: 50, backgroundColor: null }, { set: { "#text": { tx: { td: "underline" } } } });
+  assert.deepEqual(detectIdenticalValues(props, variants), []);
+  assert.deepEqual(describeIdenticalValues([{ property: "variant", values: ["ghost", "link"] }]), [
+    "`variant=ghost` and `variant=link` render identically: everything snap measures, the root and the elements in it, is the same wherever both were measured. " +
+      "If the code draws them differently, the story may not pass variant through for these values; if it doesn't, they could be one Figma variant.",
+  ]);
 });
 
 test("detectIdenticalVariants and detectNoOpProperties: a change inside the root is a change", () => {

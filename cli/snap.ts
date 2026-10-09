@@ -438,6 +438,78 @@ function measuredAs(variant: SnapVariant): string {
   return canonicalJson({ delta: variant.delta ?? {}, tree: treeChanged(variant) ? variant.treeDelta : {} });
 }
 
+/**
+ * Values of one property that measured the same as each other wherever
+ * both were measured with the other properties held still, root and tree
+ * alike (section 5.3 of the design): `variant=ghost` and `variant=link`
+ * drawing one thing. detectNoOpProperties names a property all of whose
+ * values do; `skip` are those it named, which this leaves out. Each group
+ * lists the values that matched, in the property's order.
+ */
+export function detectIdenticalValues(
+  properties: FigmaVariantProperty[],
+  variants: SnapVariant[],
+  skip: readonly string[] = [],
+): { property: string; values: string[] }[] {
+  const measured = variants.filter((v) => v.status === "ok");
+  const found: { property: string; values: string[] }[] = [];
+  for (const property of properties) {
+    if (skip.includes(property.name)) continue;
+    // For each pair of values: whether every comparison found them equal, and how many there were.
+    const pairs = new Map<string, { same: boolean }>();
+    const groups = new Map<string, Map<string, string>>();
+    for (const variant of measured) {
+      const value = variant.combination[property.name];
+      if (value === undefined) continue;
+      const others = JSON.stringify(Object.entries(variant.combination).filter(([name]) => name !== property.name));
+      const group = groups.get(others) ?? new Map<string, string>();
+      group.set(value, measuredAs(variant));
+      groups.set(others, group);
+    }
+    for (const group of groups.values()) {
+      const values = property.values.filter((v) => group.has(v));
+      for (let i = 0; i < values.length; i++) {
+        for (let j = i + 1; j < values.length; j++) {
+          const key = `${values[i]}\u0000${values[j]}`;
+          const pair = pairs.get(key) ?? { same: true };
+          pair.same &&= group.get(values[i]) === group.get(values[j]);
+          pairs.set(key, pair);
+        }
+      }
+    }
+    // Values joined into groups by the pairs that always matched.
+    const joined = new Map<string, string[]>();
+    for (const [key, { same }] of pairs) {
+      if (!same) continue;
+      const [a, b] = key.split("\u0000");
+      const into = joined.get(a) ?? joined.get(b) ?? [a];
+      for (const v of [a, b]) if (!into.includes(v)) into.push(v);
+      for (const v of into) joined.set(v, into);
+    }
+    const seen = new Set<string[]>();
+    for (const value of property.values) {
+      const group = joined.get(value);
+      if (!group || seen.has(group)) continue;
+      seen.add(group);
+      found.push({ property: property.name, values: property.values.filter((v) => group.includes(v)) });
+    }
+  }
+  return found;
+}
+
+/** Warnings for what detectIdenticalValues found: one per group of values. */
+export function describeIdenticalValues(groups: { property: string; values: string[] }[]): string[] {
+  return groups.map(({ property, values }) => {
+    const named = values.map((v) => `\`${property}=${v}\``);
+    const list = named.length === 2 ? named.join(" and ") : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+    return (
+      `${list} render identically: everything snap measures, the root and the elements in it, is the same wherever ` +
+      `${values.length === 2 ? "both were" : "they were"} measured. If the code draws them differently, the story ` +
+      `may not pass ${property} through for these values; if it doesn't, they could be one Figma variant.`
+    );
+  });
+}
+
 /** Warning for variants whose tree was cut off at TREE_LIMITS, or null. */
 export function describeTruncatedTrees(cut: { slug: string; truncated: { nodes: number; at: string } }[], measured: number): string | null {
   if (!cut.length) return null;
@@ -1209,8 +1281,10 @@ async function snapComponent(
   if (identical) {
     shell.warnings.push(identical);
   } else {
-    const noOps = describeNoOpProperties(detectNoOpProperties(definition.variantProperties, shell.variants));
+    const noOpNames = detectNoOpProperties(definition.variantProperties, shell.variants);
+    const noOps = describeNoOpProperties(noOpNames);
     if (noOps) shell.warnings.push(noOps);
+    shell.warnings.push(...describeIdenticalValues(detectIdenticalValues(definition.variantProperties, shell.variants, noOpNames)));
   }
 
   const truncatedWarning = describeTruncatedTrees(trees.filter((t) => t.truncated).map((t) => ({ slug: t.variant.slug, truncated: t.truncated! })), measured);
