@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { buildTree, classEvidence, countInnerElements, lineBox, lineCount, paintsOwnBox, stylesJsonText } from "../snap-tree.js";
+import { buildTree, classEvidence, countInnerElements, firstLineHeight, lineBox, lineCount, paintsOwnBox, stylesJsonText } from "../snap-tree.js";
 import type { RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
 import type { ComponentTree, TreeDelta, TreeNode } from "../tree-types.js";
@@ -268,6 +268,23 @@ test("buildTree: an element that is only its text becomes the text, sized as the
   assert.deepEqual(buildTree(tree(leaf)).nodes.map((n) => n.k), ["", "#text"]);
 });
 
+test("buildTree: a run that wraps starts where its first line does, whatever its leading and however many lines", () => {
+  // A paragraph padded 10px: its text's line box starts at 10, as the
+  // browser lays it out. Each line's 17px of glyphs sits mid-line.
+  for (const [lh, lines] of [[20, 4], [22.75, 4], [22.75, 7], [28, 7]]) {
+    const half = (lh - 17) / 2;
+    const rects = Array.from({ length: lines }, (_, i): RawBox => [10, 10 + i * lh + half, 180, 17]);
+    const p = el("p", [0, 0, 200, 20 + lh * lines], { "padding-top": "10px", "padding-bottom": "10px", "padding-left": "10px", "padding-right": "10px" },
+      [run("words ".repeat(40), rects)], { text: { ...TEXT, "line-height": `${lh}px` } });
+    const text = byKey(buildTree(tree(el("div", [0, 0, 200, 20 + lh * lines], {}, [p]))).nodes).get("p/#text")!;
+    assert.equal(text.tx!.n, lines);
+    assert.deepEqual(text.box, [10, 10, 180, Math.round(lh * lines * 100) / 100], `${lh}px x ${lines}`);
+  }
+  // A line pushed down by something taller beside it: the first line still says where the box starts.
+  const pushed = el("p", [0, 0, 200, 50], { "padding-top": "10px" }, [run("a b", [[0, 11.5, 50, 17], [0, 35, 50, 17]])], { text: TEXT });
+  assert.equal(byKey(buildTree(tree(el("div", [0, 0, 200, 50], {}, [pushed]))).nodes).get("p/#text")!.box[1], 10);
+});
+
 test("buildTree: a text keeps whitespace where white-space says to, and records how it is cut off", () => {
   const pre = el("pre", [0, 0, 100, 40], {}, [run("a  b\n c", [[0, 0, 30, 20], [0, 20, 20, 20]])], { text: { ...TEXT, "white-space": "pre" } });
   const node = buildTree(tree(el("div", [0, 0, 100, 40], {}, [pre]))).nodes[1];
@@ -397,8 +414,12 @@ test("buildTree: a box that is only its background picture is an image waiting f
 
 test("lineBox and lineCount: a run's line box from its glyphs, and its lines counted by top", () => {
   assert.deepEqual(lineBox([10, 21.5, 50, 17], 1, 20), [10, 20, 50, 20]);
-  assert.deepEqual(lineBox([0, 1, 50, 37], 2, 20), [0, 0.25, 50, 40]);
+  // Two lines of 17px glyphs 20px apart cover 37px: the first line's
+  // half-leading starts 1.5px above them, not 0.75.
+  assert.deepEqual(lineBox([0, 1, 50, 37], 2, 20), [0, -0.5, 50, 40]);
+  assert.deepEqual(lineBox([0, 1, 50, 37], 2, 20, 17), [0, -0.5, 50, 40]);
   assert.deepEqual(lineBox([0, 0, 50, 15], 1, "normal"), [0, 0, 50, 15]);
+  assert.equal(firstLineHeight([[0, 20, 10, 17], [0, 0.5, 30, 18], [30, 0, 10, 17]]), 18);
   assert.equal(lineCount([[0, 0, 10, 17], [10, 0.6, 10, 17], [0, 20, 10, 17]]), 2);
   assert.equal(lineCount([]), 1);
 });

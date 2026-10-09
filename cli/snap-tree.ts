@@ -632,17 +632,29 @@ function inkOf(rects: readonly RawBox[]): RawBox {
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
+/** The height of a run's first line of glyphs: the tallest of its rects at the topmost top, within 1px. */
+export function firstLineHeight(rects: readonly RawBox[]): number {
+  const top = Math.min(...rects.map((r) => r[1]));
+  return Math.max(...rects.filter((r) => r[1] - top <= 1).map((r) => r[3]));
+}
+
 /**
  * A run's line box, which is what Figma's text node is: as wide as its
  * glyphs, as tall as its lines, its top where the first line's half-leading
  * starts. A glyph box is 17px tall for 14px type where the line is 20, and
  * building to it drifted every label by about 3px. At `line-height: normal`
  * the line is the glyphs'.
+ *
+ * `glyph` is one line's glyph height, the first line's (firstLineHeight).
+ * Section 6.4's `inkH / n` is not it: the glyphs' union is n − 1 lines plus
+ * one line's glyphs, so that put every wrapped run (lh − glyph) / 2 × (1 −
+ * 1/n) too low, 1.5px for 4 lines at 20px and 5px for 7 at 28px. Without
+ * rects, it is the union less the lines below the first.
  */
-export function lineBox(ink: RawBox, lines: number, lineHeight: number | "normal"): RawBox {
+export function lineBox(ink: RawBox, lines: number, lineHeight: number | "normal", glyph?: number): RawBox {
   if (lineHeight === "normal") return ink;
-  const perLine = ink[3] / lines;
-  return [ink[0], ink[1] - (lineHeight - perLine) / 2, ink[2], lineHeight * lines];
+  const g = glyph ?? ink[3] - (lines - 1) * lineHeight;
+  return [ink[0], ink[1] - (lineHeight - g) / 2, ink[2], lineHeight * lines];
 }
 
 // --- Build -----------------------------------------------------------------------
@@ -686,7 +698,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       const run = item.run!;
       const ink = inkOf(run.rects);
       const lh = normalizeLineHeight(text["line-height"]);
-      const box = roundBox(lineBox(ink, lineCount(run.rects), lh));
+      const box = roundBox(lineBox(ink, lineCount(run.rects), lh, firstLineHeight(run.rects)));
       const chars = runCharacters(run.text, text["white-space"] ?? "normal");
       node = { k: key, t: "T", el: "#text", box: rel(box), tx: textFacts(text, holder, chars, { rects: run.rects, ink }, box, ctx.fonts) };
     } else {
