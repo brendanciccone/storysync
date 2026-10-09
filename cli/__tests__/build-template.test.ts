@@ -183,6 +183,30 @@ test("build: a frame Figma lays out otherwise than planned is built without auto
   }
 });
 
+test("build: a new variant that shares few layers with the first is made afresh, not copied and mostly removed", async () => {
+  // As Sidebar's collapsible="none" against "offcanvas": one wrapper more, so every key differs.
+  const box = (i: number): TreeNode => ({ k: `item:${i + 1}`.replace(/:1$/, ""), t: "F", el: "div", box: [0, i * 10, 40, 10], bg: "#eeeeee" });
+  const fixture = synthetic("Panel", [{ k: "", t: "F", el: "div", box: [0, 0, 40, 40], L: { d: "block" } }, ...[0, 1, 2, 3].map(box)], { width: 40, height: 40, display: "block" });
+  const component = fixture.components[0];
+  component.variantProperties = [{ name: "wrap", type: "VARIANT", values: ["no", "yes", "same"], defaultValue: "no" }];
+  component.base = { ...component.base!, combination: { wrap: "no" }, slug: "wrap-no" };
+  const inner = [0, 1, 2, 3].map((i) => ({ ...box(i), k: `inner/${box(i).k}` }));
+  component.variants = [
+    { combination: { wrap: "no" }, slug: "wrap-no", status: "ok", error: null, delta: {} },
+    {
+      combination: { wrap: "yes" }, slug: "wrap-yes", status: "ok", error: null, delta: {},
+      treeDelta: { keys: ["", "inner", ...inner.map((n) => n.k)], set: Object.fromEntries([{ k: "inner", t: "F", el: "div", box: [0, 0, 40, 40], L: { d: "block" } }, ...inner].map((n) => [n.k, n])) },
+    },
+    { combination: { wrap: "same" }, slug: "wrap-same", status: "ok", error: null, delta: {}, treeDelta: { set: { item: { bg: "#dddddd" } } } },
+  ] as never;
+  const { mock, runs } = await buildAll(fixture);
+  // The page and the set; 5 layers for the first, 6 for the second, none copied to be removed; the third a copy of the first.
+  assert.deepEqual([runs[0].removed, runs[0].created], [0, 2 + 5 + 6 + 5]);
+  for (const variant of fixtureVariants(fixture)) {
+    assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+  }
+});
+
 test("build: a keyed layer duplicated in Figma is removed, the first of them kept", async () => {
   const fixture = loadTreeFixture("switch");
   const coded = await codeFor(fixture);

@@ -510,13 +510,17 @@ for (const [s, set] of DATA.sets.entries()) {
   let migrated = 0;
   let designerLayers = 0;
   let first = null;
+  let firstKeys = null;
   try {
     for (const [name, slug, index, src, digest, delta] of set.v) {
       at = [set.title || set.name, slug];
+      const recs = recordsOf(set.base, delta);
       let variant = existing.get(name);
-      if (!variant && first) {
-        // A new variant starts as a copy of one already converged, its keys
-        // copied explicitly (SPIKE(5)) and the copy's designer layers dropped.
+      if (!variant && first && recs.filter((r) => firstKeys.has(r[0])).length * 2 >= recs.length) {
+        // A new variant that shares most of its layers with one already
+        // converged starts as a copy of it, its keys copied explicitly
+        // (SPIKE(5)) and the copy's designer layers dropped; one that
+        // doesn't is made afresh, rather than copied and mostly removed.
         // An icon root's shapes are kept, and its `svg` with them, or the copy
         // would keep the asset id with no shapes, and never import them.
         variant = first.clone();
@@ -549,7 +553,6 @@ for (const [s, set] of DATA.sets.entries()) {
         if (gone) migrated++;
       }
       if (want === 'COMPONENT_SET') variant.name = name;
-      const recs = recordsOf(set.base, delta);
       const { nodes, designer } = await converge(variant, recs);
       designerLayers += designer;
       if (src) checkLayout(nodes, recs, slug, absoluteContainers);
@@ -558,7 +561,10 @@ for (const [s, set] of DATA.sets.entries()) {
       put(variant, 'src', src ? 'measured' : 'unmeasured');
       put(variant, 'tpl', '2');
       put(variant, 'd', digest);
-      first = first || variant;
+      if (!first) {
+        first = variant;
+        firstKeys = new Set(recs.map((r) => r[0]));
+      }
     }
   } catch (e) {
     for (const v of created) if (!v.removed) v.remove();

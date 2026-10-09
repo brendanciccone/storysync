@@ -70,6 +70,15 @@ export const SPIKE = {
    * call under about 60% of use_figma's time limit if the spike's 500 nodes
    * time as the prototypes did; the skill lowers it with --max-nodes after a
    * `Script exceeded time limit`.
+   *
+   * It counts records, each a layer the build sets 20 to 30 properties on,
+   * where the spike's nodes get about 4. Figma also makes layers this doesn't
+   * count, each in one call: a new variant cloned from the first copies its
+   * layers, an icon's import makes its shapes, and an icon that changed is
+   * removed and imported again. On package A's live shadcn snap, the mock
+   * made 1.5 layers a record in a call of Sidebars and 2.2 in one of
+   * Attachments, whose icons change with its state. Compare the spike's
+   * time with those, not with the records alone.
    */
   maxNodes: 400,
 } as const;
