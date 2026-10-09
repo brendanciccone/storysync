@@ -111,4 +111,9 @@ test("sniffImageType, pngSize and decodeDataUrl: what bytes are, and what a data
   assert.equal(Buffer.from(svg.bytes).toString(), "<svg/>");
   assert.equal(decodeDataUrl(`data:image/png;base64,${png.toString("base64")}`)!.mime, "image/png");
   assert.equal(decodeDataUrl("https://example.test/a.png"), null);
+  // A `%` that starts no escape is itself, as browsers read it: an inline
+  // SVG's `width='100%'` threw, and failed its variant.
+  const inline = decodeDataUrl("data:image/svg+xml;utf8,<svg width='100%' fill='%23f00'/>")!;
+  assert.equal(Buffer.from(inline.bytes).toString(), "<svg width='100%' fill='#f00'/>");
+  assert.equal(Buffer.from(decodeDataUrl("data:text/plain,50%25 off %zz é")!.bytes).toString(), "50% off %zz é");
 });

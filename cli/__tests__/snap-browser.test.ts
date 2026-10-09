@@ -474,6 +474,27 @@ test("captureTree: an image's bytes from the page's own response, its id from th
   assert.deepEqual({ ...tree.images[id], bytes: undefined }, { bytes: undefined, mime: "image/jpeg", natural: [460, 460], crop: { src: [0, 0, 460, 460], dst: [0, 0, 1, 1], key: "0,0,460,460" }, box: [32, 32] });
 });
 
+test("captureTree: an image whose bytes throw as they are read is a screenshot of it, not a variant that failed", async () => {
+  const png = Buffer.from("89504e470d0a1a0a0000000d494844520000000400000002080600000000", "hex");
+  const capture = {
+    root: {
+      k: "e", tag: "span", box: [0, 0, 32, 32], cs: {}, path: [],
+      kids: [{ k: "e", tag: "img", box: [0, 0, 32, 32], cs: {}, kids: [], path: [0], img: { src: "https://example.test/a.jpg", natural: [460, 460] } }],
+    },
+    fonts: {},
+  };
+  const target = {
+    evaluate: async () => capture,
+    evaluateHandle: async () => ({
+      asElement: () => ({ boundingBox: async () => ({ x: 0, y: 0, width: 4, height: 2 }), screenshot: async () => png, dispose: async () => {} }),
+      dispose: async () => {},
+    }),
+  };
+  const responses = { body: () => { throw new Error("the response went away"); }, stop: () => {} };
+  const tree = await captureTree({} as Page, target as never, responses, 1000);
+  assert.deepEqual([tree.nodes[1].t, tree.nodes[1].raster, tree.nodes[1].img], ["I", 1, imageAssetId(png, "raster:0,0,4,2")]);
+});
+
 test("captureStory: with a tree, a variant whose tree can't be read is not measured, rather than built as its base", async () => {
   // The variant would otherwise have no treeDelta, which reads as the base's tree.
   const { page } = measuredPage({ x: 0, y: 0, width: 10, height: 10 }, async () => Buffer.from("png"));

@@ -324,11 +324,33 @@ export function pngSize(bytes: Uint8Array): [number, number] | null {
   return [view.getUint32(16), view.getUint32(20)];
 }
 
+/**
+ * Percent-decodes as the URL standard does, and browsers with it: each
+ * valid `%XX` is that byte, and anything else, a `%` not followed by two hex
+ * digits included, is its own UTF-8. decodeURIComponent throws on a lone
+ * `%`, which an inline SVG's `width='100%'` is, and failed the variant.
+ */
+function percentDecode(text: string): Buffer {
+  const bytes = Buffer.from(text, "utf8");
+  const out: number[] = [];
+  const isHex = (b: number | undefined) => b !== undefined && ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66));
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0x25 && isHex(bytes[i + 1]) && isHex(bytes[i + 2])) {
+      out.push(parseInt(String.fromCharCode(bytes[i + 1], bytes[i + 2]), 16));
+      i += 2;
+    } else {
+      out.push(bytes[i]);
+    }
+  }
+  return Buffer.from(out);
+}
+
 /** A `data:` URL's bytes and type, or null for any other URL. */
 export function decodeDataUrl(url: string): { bytes: Uint8Array; mime: string } | null {
   const m = /^data:([^;,]*)((?:;[^;,]*)*),(.*)$/s.exec(url);
   if (!m) return null;
   const base64 = /;base64/i.test(m[2]);
-  const bytes = base64 ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]), "utf8");
+  const body = percentDecode(m[3]);
+  const bytes = base64 ? Buffer.from(body.toString("latin1"), "base64") : body;
   return { bytes: new Uint8Array(bytes), mime: m[1] || "text/plain" };
 }

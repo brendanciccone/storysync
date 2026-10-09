@@ -19,7 +19,7 @@ import {
 import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
 import type { FigmaVariantProperty } from "./mapper.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS, buildTree, countInnerElements } from "./snap-tree.js";
-import type { RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
+import type { PendingImage, RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
 import {
   SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS,
   decodeDataUrl, imageAssetId, imageCrop, pngSize, sniffImageType, thumbnailSize,
@@ -1788,17 +1788,15 @@ export async function captureTree(
     images[id] = { bytes: png, mime: "image/png", natural: size, crop, box: [node.box[2], node.box[3]], raster: true };
   };
 
-  for (const pending of built.images) {
+  // An image from its source's bytes, or false to keep a screenshot of it.
+  const image = async (pending: PendingImage): Promise<boolean> => {
     const node = byKey.get(pending.key)!;
     const source = await imageBytes(page, pending.src, responses, timeoutMs);
     let natural = pending.natural;
     if (source && !(natural[0] > 0 && natural[1] > 0)) {
       natural = await page.evaluate(naturalSizeInPage, dataUrl(source.bytes, source.mime)).catch(() => [0, 0] as [number, number]);
     }
-    if (!source || !(natural[0] > 0 && natural[1] > 0) || !(pending.content[0] > 0 && pending.content[1] > 0)) {
-      await raster(pending.key, pending.path);
-      continue;
-    }
+    if (!source || !(natural[0] > 0 && natural[1] > 0) || !(pending.content[0] > 0 && pending.content[1] > 0)) return false;
     const crop = imageCrop(natural, pending.content, pending.fit, pending.position);
     const id = imageAssetId(source.bytes, crop.key);
     node.img = id;
@@ -1807,6 +1805,12 @@ export async function captureTree(
     if (!known || pending.content[0] * pending.content[1] > known.box[0] * known.box[1]) {
       images[id] = { bytes: source.bytes, mime: source.mime, natural, crop, box: pending.content };
     }
+    return true;
+  };
+  for (const pending of built.images) {
+    // One image that can't be read is a screenshot, never the variant failed.
+    const kept = await image(pending).catch(() => false);
+    if (!kept) await raster(pending.key, pending.path);
   }
   for (const pending of built.rasters) await raster(pending.key, pending.path);
   return {
