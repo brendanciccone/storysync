@@ -448,9 +448,10 @@ Options:
   --no-channel-args      Don't set the values Storybook won't take from the story's URL through its
                          preview: leave those variants unmeasured, as arg_rejected (args_unsupported
                          for a value no URL can carry)
-  --stories <pairs>      Comma-separated component=storyId pairs: the story to measure each named
-                         component from, by its ID or title, in place of the one snap picks (also
-                         given more than once)
+  --stories <pairs>      Comma-separated component=storyId pairs, each component by its ID or title
+                         and each story by its ID: the story to measure the component from, in place
+                         of the one snap picks; a pair for a component the run doesn't measure is
+                         checked and left out (also given more than once)
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any variant or component could not be measured, none were,
                          a variant's args could not be checked, or a component was capped
@@ -465,7 +466,7 @@ snap writes `<out>/styles.json`, with full styles for a base variant plus only w
 
 **Take the snaps you compare on one platform.** Text is drawn a little wider or narrower from one operating system and browser build to the next, and the boxes after it move with it, so two machines' snaps of the same code can differ by fractions of a pixel. `meta.json` records the `platform` and `browser` a snap was taken with. Commit snaps taken in one place, such as CI.
 
-**Which story.** snap measures each component from one of its stories. `--stories ui-base-button=ui-base-button--with-icon` measures a component from the story you name instead, by the component's ID or title, and records it as the component's `storyId`. It refuses a story that isn't the component's, before measuring anything.
+**Which story.** snap measures each component from one of its stories. `--stories ui-base-button=ui-base-button--with-icon` measures a component from the story you name instead, by the component's ID or title, and records it as the component's `storyId`. It refuses a story that isn't the component's, or a name no component has, before measuring anything. A pair for a component the run doesn't measure, under `--components`, is checked the same way and left out, so a push can pass the same pairs to every snap it takes. `--merge` measures a component again from the story the snap in `--out` measured it from, unless `--stories` names another.
 
 **Measuring some components again.** `--components` alone writes a `styles.json` of just those components. To measure a few again, such as ones that timed out, and keep the rest, add `--merge`: it replaces those components in the `styles.json` already in `--out` and keeps every other one as it was measured. It refuses, before measuring anything, a snap it can't add to: none there, one with no `meta.json`, or one taken by another Storysync version, with other `--variants` or `--exclude-props`, or from another Storybook. `meta.json` then records when each component was measured, and its `measuredAt` is the oldest of them, so `verify` judges the snap by its oldest part.
 

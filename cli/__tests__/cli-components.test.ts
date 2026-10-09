@@ -717,7 +717,7 @@ async function unreachable(): Promise<string> {
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-test("snap CLI: --stories reaches the run, which refuses a component it doesn't measure, or a story not the component's, before any browser starts", async () => {
+test("snap CLI: --stories reaches the run, which refuses a name no component has, or a story not the component's, before any browser starts", async () => {
   // A story override that names the wrong thing would measure the default
   // story under the component's name, so the run refuses it after listing
   // the components and before launching anything: no browser is needed here.

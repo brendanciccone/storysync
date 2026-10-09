@@ -2719,7 +2719,7 @@ async function main() {
     return "4 outline variants arg_rejected, 8 measured, --strict failed";
   });
 
-  await check("--stories measures a component from the story it names, and refuses a story that isn't the component's", () => {
+  await check("--stories measures a component from the story it names, refuses a story that isn't the component's, and leaves out a pair for a component a re-measure doesn't measure", () => {
     const out = join(WORK, "stories");
     const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
     assert(r.status === 0, `snap --stories exited ${r.status}\n${r.out.trim()}`);
@@ -2729,7 +2729,12 @@ async function main() {
     assert(refused.status === 1 && /--stories gives forms-button the story "forms-frozen--default", which isn't one of its stories: forms-button--default/.test(refused.out),
       `a story of another component was taken:\n${refused.out.trim()}`);
     assert(!existsSync(join(WORK, "stories-refused", "styles.json")), "the refused run wrote a snap");
-    return "measured from forms-button--default; Frozen's story refused";
+    // A re-measure of another component, given the push's same pairs, as the skill says.
+    const merged = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
+    assert(merged.status === 0, `a --merge of Frozen with Button's --stories pair exited ${merged.status}\n${merged.out.trim()}`);
+    const ids = readJson(join(out, "styles.json")).components.map((c) => `${c.id}:${c.storyId}`);
+    assert(ids.join() === "forms-button:forms-button--default,forms-frozen:forms-frozen--default", `after the merge: ${ids.join(", ")}`);
+    return "measured from forms-button--default; Frozen's story refused; Frozen merged in with Button's pair given";
   });
 
   await check("snapshots are stamped with the running version", () => {

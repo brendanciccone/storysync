@@ -873,15 +873,19 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
 /**
  * The story `--stories` names for each component it names, by the
  * component's ID: refused before anything is measured when a name matches
- * no component being measured, or several, or the story isn't one of the
- * component's, so a typo isn't measured as the default story.
+ * no component Storybook lists (`listed`), or several, or the story isn't
+ * one of the component's, so a typo isn't measured as the default story.
+ * A pair for a component Storybook has that this run doesn't measure,
+ * under `--components`, is checked the same way and left out: a push
+ * passes the same pairs to every snap, re-measures of a few included.
  */
-export function resolveStoryOverrides(entries: readonly ComponentEntry[], stories: Record<string, string> | undefined): Map<string, string> {
+export function resolveStoryOverrides(entries: readonly ComponentEntry[], stories: Record<string, string> | undefined, listed: readonly ComponentEntry[] = entries): Map<string, string> {
   const out = new Map<string, string>();
+  const measured = new Set(entries.map((e) => e.id));
   for (const [name, storyId] of Object.entries(stories ?? {})) {
     const key = name.trim().toLowerCase();
-    const exact = entries.filter((e) => e.id.toLowerCase() === key || e.title?.toLowerCase() === key);
-    const named = exact.length ? exact : entries.filter((e) => e.name.toLowerCase() === key || e.title?.split("/").pop()?.toLowerCase() === key);
+    const exact = listed.filter((e) => e.id.toLowerCase() === key || e.title?.toLowerCase() === key);
+    const named = exact.length ? exact : listed.filter((e) => e.name.toLowerCase() === key || e.title?.split("/").pop()?.toLowerCase() === key);
     if (!named.length) {
       throw new Error(`--stories names "${name}", which is none of the components being measured (${entries.map((e) => e.id).join(", ") || "none"}). Name each by its ID or title.`);
     }
@@ -895,7 +899,7 @@ export function resolveStoryOverrides(entries: readonly ComponentEntry[], storie
     if (entry.storyIds?.length && !entry.storyIds.includes(story)) {
       throw new Error(`--stories gives ${entry.id} the story "${story}", which isn't one of its stories: ${entry.storyIds.join(", ")}.`);
     }
-    out.set(entry.id, story);
+    if (measured.has(entry.id)) out.set(entry.id, story);
   }
   return out;
 }
@@ -910,7 +914,14 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   const listed = await deps.storybook.listComponents();
   const entries = selectComponents(listed, opts.components);
   const earlier = opts.merge ? readMergeBase(opts) : null;
-  const stories = resolveStoryOverrides(entries, opts.stories);
+  const stories = resolveStoryOverrides(entries, opts.stories, listed);
+  // A component measured again into a snap keeps the story it was measured
+  // from where --stories names none, so a re-measure of a push that chose
+  // another story doesn't switch it back to the default.
+  for (const entry of earlier ? entries : []) {
+    const was = earlier!.result.components.find((c) => (c.id ?? componentKey(c)) === entry.id)?.storyId;
+    if (!stories.has(entry.id) && was && entry.storyIds?.includes(was)) stories.set(entry.id, was);
+  }
   let browserVersion: string | undefined;
 
   const components: SnapComponent[] = [];

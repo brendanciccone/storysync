@@ -1904,6 +1904,37 @@ test("resolveStoryOverrides: by ID or title; a name two components share is refu
   assert.equal(resolveStoryOverrides(entries, undefined).size, 0);
 });
 
+test("resolveStoryOverrides: a pair for a component Storybook has and the run doesn't measure is checked, then left out", () => {
+  const listed = [
+    { id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds: ["ui-base-button--default", "ui-base-button--with-icon"] },
+    { id: "ui-base-switch", name: "Switch", title: "ui/base/Switch", storyIds: ["ui-base-switch--default"] },
+  ];
+  // A push's pairs, given to a re-measure of the Switch alone.
+  const measured = [listed[1]];
+  assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon" }, listed)], []);
+  assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon", Switch: "ui-base-switch--default" }, listed)], [["ui-base-switch", "ui-base-switch--default"]]);
+  // Still a typo when it names no component Storybook has, or a story not the component's.
+  assert.throws(() => resolveStoryOverrides(measured, { Nope: "nope--x" }, listed), /--stories names "Nope", which is none of the components being measured \(ui-base-switch\)/);
+  assert.throws(() => resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--x" }, listed), /--stories gives ui-base-button the story "ui-base-button--x", which isn't one of its stories/);
+});
+
+test("runSnap: --merge measures a component again from the story the snap measured it from, unless --stories names another", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture });
+    const run = (more: Partial<SnapOptions>) => runSnap(options(dir, { selector: "[data-slot=switch]", ...more }), { storybook: switchDocs(), launch });
+    await run({ stories: { "ui-base-switch": "ui-base-switch--disabled" } });
+    const kept = await run({ merge: true, components: ["ui-base-switch"] });
+    assert.equal(kept.components[0].storyId, "ui-base-switch--disabled", "a re-measure went back to the default story");
+    const named = await run({ merge: true, components: ["ui-base-switch"], stories: { "ui-base-switch": "ui-base-switch--default" } });
+    assert.equal(named.components[0].storyId, "ui-base-switch--default");
+    // Without --merge, snap picks as it always has.
+    assert.equal((await run({})).components[0].storyId, "ui-base-switch--default");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSnap: with channelArgs off, a value the story won't take leaves its variant unmeasured, never measured as the default", async () => {
   const launch = badgeBrowser(() => ({ argTypes: { variant: { options: ["default", "secondary"], type: { name: "enum" } } }, initial: { variant: "default" } }));
   const dir = tempDir();

@@ -369,7 +369,7 @@ program
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
   .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
-  .option("--stories <pairs>", "Comma-separated component=storyId pairs: the story to measure each named component from, by its ID or title, in place of the one snap picks (also given more than once)", collect)
+  .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the story to measure the component from, in place of the one snap picks; a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
