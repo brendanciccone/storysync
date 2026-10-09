@@ -476,11 +476,15 @@ function header(seq: number, kind: string, page: string): string {
   return `// storysync figma code, call ${pad(seq)}: ${kind}${page ? ` on page "${page}"` : ""}. Send this file unchanged as use_figma's code.\n`;
 }
 
-/** The code of a build call over these parts, all on `page`. */
+/**
+ * The code of a build call over these parts, all on `page`. Each part's
+ * variants are sent as changes to its first variant's records, so a variant
+ * alone in a call carries its own records only.
+ */
 function buildCode(seq: number, page: string, parts: Part[], template: string): string {
   const table = new Table();
   const sets = parts.map(({ component, variants }) => {
-    const base = intern(component.variants[0].records, table);
+    const base = intern(variants[0].records, table);
     return {
       id: component.id, title: component.title ?? "", name: component.name, props: component.props, base,
       v: variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, deltaOf(base, intern(v.records, table))]),
@@ -501,7 +505,9 @@ function describeParts(parts: Part[]): string {
     const all = component.variants.length;
     if (variants.length === all) return `${component.name} (${all} variant${all === 1 ? "" : "s"})`;
     const first = component.variants.indexOf(variants[0]) + 1;
-    return `${component.name} (variants ${first}-${first + variants.length - 1} of ${all})`;
+    const last = component.variants.indexOf(variants[variants.length - 1]) + 1;
+    const span = last - first + 1 === variants.length ? `variants ${first}-${last}` : `${variants.length} variants of ${first}-${last}`;
+    return `${component.name} (${first === last ? `variant ${first}` : span} of ${all})`;
   }).join(", ");
 }
 
@@ -609,7 +615,9 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     });
   };
 
-  // Builds: by page, each component's variants in snap order, packed.
+  // Builds: by page, each component's variants in snap order, packed. A
+  // variant too big for one call on its own is left out, and the rest built.
+  const tooBig = new Set<CompiledVariant>();
   for (const page of pages) {
     let parts: Part[] = [];
     const flush = () => {
@@ -622,9 +630,6 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
         (seq) => buildCode(seq, page, done, templates.build),
       );
       const call = calls[calls.length - 1];
-      if (call.chars > USE_FIGMA_CODE_LIMIT) {
-        throw new Error(`${describeParts(done)} needs ${call.chars} characters of code in one call, more than use_figma takes: a variant is never split across calls`);
-      }
       if (call.chars > maxChars) warnings.push(`call ${pad(call.seq)} holds one variant of ${call.chars} characters, over --max-chars ${maxChars}`);
       if (nodes > maxNodes) warnings.push(`call ${pad(call.seq)} holds one variant of ${nodes} nodes, over --max-nodes ${maxNodes}`);
     };
@@ -636,21 +641,37 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
         else next.push({ component, variants: [variant] });
         const nodes = next.reduce((t, p) => t + p.variants.reduce((u, v) => u + v.records.length, 0), 0);
         const images = new Set(next.flatMap((p) => p.variants.flatMap((v) => v.images))).size;
-        const fits = nodes <= maxNodes && images <= MAX_UPLOADS_PER_CALL && buildCode(calls.length + 1, page, next, templates.build).length <= maxChars;
-        if (fits || !parts.length) {
+        if (nodes <= maxNodes && images <= MAX_UPLOADS_PER_CALL && buildCode(calls.length + 1, page, next, templates.build).length <= maxChars) {
           parts = next;
-        } else {
-          flush();
-          parts = [{ component, variants: [variant] }];
+          continue;
         }
+        // It starts a call of its own: over --max-chars or --max-nodes is
+        // warned, and over what use_figma takes at all is left out.
+        const alone: Part[] = [{ component, variants: [variant] }];
+        const chars = buildCode(calls.length + 1, page, alone, templates.build).length;
+        if (chars > USE_FIGMA_CODE_LIMIT) {
+          tooBig.add(variant);
+          warnings.push(
+            `${component.key} ${variant.slug}: not built: its ${variant.records.length} nodes need ${chars} characters of code, ` +
+            `more than one use_figma call takes (${USE_FIGMA_CODE_LIMIT}), and a variant is never split across calls`,
+          );
+          continue;
+        }
+        flush();
+        parts = alone;
       }
     }
     flush();
   }
+  // What is left to fill, label and read back: the variants built.
+  for (const component of components) component.variants = component.variants.filter((v) => !tooBig.has(v));
+  const built = components.filter((c) => c.variants.length);
+  if (!built.length) throw new Error("No component to build: every variant is too big for one use_figma call");
+  const builtPages = pages.filter((page) => built.some((c) => c.page === page));
 
   // Images: one call per page whose sets show one.
-  for (const page of pages) {
-    const shown = components.filter((c) => c.page === page && c.variants.some((v) => v.images.length));
+  for (const page of builtPages) {
+    const shown = built.filter((c) => c.page === page && c.variants.some((v) => v.images.length));
     if (!shown.length) continue;
     add(
       { kind: "images", page, components: shown.map((c) => c.key), description: `Fill the image layers on page "${page}" with images already uploaded` },
@@ -659,14 +680,14 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   }
 
   // Label: every set built, with a line for those snap measured from something else.
-  const label = { pages, sets: components.map((c) => [c.id, c.note]) };
+  const label = { pages: builtPages, sets: built.map((c) => [c.id, c.note]) };
   add(
-    { kind: "label", page: "", components: components.map((c) => c.key), description: "Label the sets snap measured from something other than the component, and remove Figma's empty default page" },
+    { kind: "label", page: "", components: built.map((c) => c.key), description: "Label the sets snap measured from something other than the component, and remove Figma's empty default page" },
     (seq) => `${header(seq, "label", "")}const DATA = ${JSON.stringify(label)};\n${templates.label}\n`,
   );
 
   // Reads: by page, slices of each set's variants packed by predicted size.
-  for (const page of pages) {
+  for (const page of builtPages) {
     let slices: Slice[] = [];
     let predicted = 0;
     let keys: string[] = [];
@@ -683,7 +704,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
         (seq) => readCode(seq, page, done.slices, readLimit + READ_GUARD_MARGIN, templates.readback),
       );
     };
-    for (const component of components.filter((c) => c.page === page)) {
+    for (const component of built.filter((c) => c.page === page)) {
       for (const variant of component.variants) {
         if (slices.length && predicted + variant.read > readLimit) flush();
         const last = slices[slices.length - 1];

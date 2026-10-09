@@ -6,6 +6,7 @@ import { DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigm
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
+import type { TreeDelta } from "../tree-types.js";
 import { STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
 import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
@@ -94,6 +95,32 @@ test("figma code: every call is at most --max-chars and --max-nodes, and no vari
       for (const set of data.sets) slugs.push(...set.v.map((v) => v[1]));
     }
     assert.deepEqual(slugs, component.variants.map((v) => v.slug), "every variant once, in snap order");
+  }
+});
+
+test("figma code: a variant too big for any one call is left out and said, and everything else is planned", async () => {
+  for (const big of [1, 0]) {
+    const snap = copy(loadTreeFixture("card"));
+    snap.components.push(copy(loadTreeFixture("switch").components[0]));
+    const card = snap.components[0];
+    const variants = card.variants as (typeof card.variants[number] & { treeDelta?: TreeDelta })[];
+    // A title of 60,000 characters: more code than use_figma takes in one call.
+    const title = expandTree(card.tree, variants[big].treeDelta).find((n) => n.k === "card-header/card-title")!;
+    const delta = variants[big].treeDelta ?? {};
+    delta.set = { ...delta.set, "card-header/card-title": { ...delta.set?.["card-header/card-title"], tx: { ...title.tx!, c: "x".repeat(60_000) } } };
+    if (big) variants[big].treeDelta = delta;
+    else card.tree.base.find((n) => n.k === "card-header/card-title")!.tx!.c = "x".repeat(60_000);
+    const coded = await codeFor(snap);
+    const slug = card.variants[big].slug;
+    assert.equal(coded.warnings.length, 1);
+    assert.match(coded.warnings[0], new RegExp(`^ui/base/Card ${slug}: not built: its 23 nodes need \\d+ characters of code, more than one use_figma call takes \\(50000\\), and a variant is never split across calls$`));
+    const kept = card.variants[1 - big].slug;
+    const builds = coded.plan.calls.filter((c) => c.kind === "build");
+    assert.deepEqual(builds.flatMap((c) => (dataOf(coded.code(c)) as { sets: { v: string[][] }[] }).sets.flatMap((s) => s.v.map((v) => v[1]))), [kept, "size-default", "size-sm"]);
+    assert.deepEqual(builds[0].description, `Create or update Card (variant ${2 - big} of 2), Switch (2 variants) on page "ui/base"`);
+    assert.deepEqual(coded.plan.calls.filter((c) => c.kind === "read").flatMap((c) => c.slices), [["ui-base-card", 1 - big, 1 - big], ["ui-base-switch", 0, 1]]);
+    const mock = mockFor([loadTreeFixture("card"), loadTreeFixture("switch")]);
+    await runPlan(mock, coded);
   }
 });
 

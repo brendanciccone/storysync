@@ -13,7 +13,7 @@
 //         id, title   the component's Storybook id and title, kept on the set
 //                     as shared plugin data, by which it is found again;
 //         name        the set's name; props, its variantProperties for the grid;
-//         base        records of the component's first measured variant;
+//         base        records of the part's first variant;
 //         v           [[name, slug, i, src, digest, delta]], the part's variants:
 //                     src 1 measured, 0 a placeholder for one snap couldn't
 //                     measure; delta [[index, [x, y, w, h] | 0, style | -1]]
