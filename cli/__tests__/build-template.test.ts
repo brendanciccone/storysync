@@ -9,8 +9,8 @@ import { MockFigma, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixt
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
 type BuildResult = {
-  kind: string; sets: { id: string; component: string; name: string; variants: number; added: number; updated: number; migrated: number; designerLayers: number; absoluteContainers: unknown[] }[];
-  uploads: [string, string][]; unbound: string[][]; fallbacks: string[][]; fonts: Record<string, string>;
+  kind: string; page: string; sets: { id: string; component: string; name: string; variants: number; added: number; updated: number; migrated: number; designerLayers: number; absoluteContainers: unknown[] }[];
+  uploads: [string, string][]; unbound: string[][]; fallbacks: [string, string, string, number][]; fonts: Record<string, string>; omitted?: number;
 };
 const result = (run: MockRun) => run.value as BuildResult;
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -319,8 +319,9 @@ test("spike item 2: a shadow's spread Figma refuses on a frame that doesn't clip
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#0a0a0a1a", inset: false }];
   const { mock, results } = await buildAll(fixture, { shadowSpread: "refuse" });
-  assert.equal(results[0].fallbacks.length, 2);
-  assert.match(results[0].fallbacks[0].join(" "), /^ui\/base\/Switch size-default  shadow spread left out: /);
+  // Once for the root, in both variants.
+  assert.equal(results[0].fallbacks.length, 1);
+  assert.deepEqual(results[0].fallbacks[0].map((v, i) => (i === 2 ? String(v).replace(/: .*/, "") : v)), ["ui/base/Switch", "", "shadow spread left out", 2]);
   const root = mock.handle(variantsBySlug(mock).get("size-default")!.id) as { effects: { spread: number }[] };
   assert.equal(root.effects[0].spread, 0);
 });
@@ -343,12 +344,43 @@ test("build: an SVG Figma won't import is an empty keyed frame, named so, tried 
   const fixture = copy(loadTreeFixture("toggle"));
   fixture.components[0].tree.assets.svg["svg:3a1614af"] = "<svg-not-really/>";
   const { coded, mock, results } = await buildAll(fixture);
-  assert.equal(results[0].fallbacks.length, 6);
-  assert.match(results[0].fallbacks[0].join(" "), /^ui\/base\/Toggle variant-default--size-default svg svg import failed: /);
+  assert.equal(results[0].fallbacks.length, 1);
+  assert.match(results[0].fallbacks[0].join("|"), /^ui\/base\/Toggle\|svg\|svg import failed: .*\|6$/);
   const failed = mock.nodes("FRAME").filter((n) => n.data["storysync.k"] === "svg");
   assert.deepEqual([...new Set(failed.map((n) => [n.name, n.width, n.height, n.children!.length].join()))], ["svg (import failed),16,16,0"]);
   const [again] = await runPlan(mock, coded, ["build"]);
-  assert.equal(result(again).fallbacks.length, 6, "the import is tried again");
+  assert.equal(result(again).fallbacks[0][3], 6, "the import is tried again");
+});
+
+test("build: a response stays under use_figma's 20kb when every fallback fires, and keeps its uploads", async () => {
+  // Sidebar's 25 nodes as 60 variants, every icon one Figma won't import, every truncation and spread refused.
+  const snap = copy(loadTreeFixture("sidebar"));
+  const component = snap.components[0];
+  component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 60 }, (_, i) => String(i)), defaultValue: "0" }];
+  component.variants = Array.from({ length: 60 }, (_, i) => ({ ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`, ...(i ? { treeDelta: {} } : {}) }));
+  component.base = { ...component.base!, combination: { n: "0" }, slug: "n-0" };
+  for (const id of Object.keys(component.tree.assets.svg)) component.tree.assets.svg[id] = "<svg-not-really/>";
+  // Every node a key of its own in `unbound` too: a name no variable has.
+  component.tree.base.forEach((n) => { if (n.t === "F" && !n.bg) n.bg = "#171717"; n.cls = ["bg-primary"]; });
+  snap.components.push(copy(loadTreeFixture("avatar").components[0]));
+  // And 380 icons in one variant, each its own key, none of which imports.
+  const icons = synthetic("Icons", [
+    { k: "", t: "F", el: "div", box: [0, 0, 16, 380 * 16], L: { d: "flex", dir: "column" } },
+    ...Array.from({ length: 380 }, (_, i): TreeNode => ({ k: i ? `svg:${i + 1}` : "svg", t: "V", el: "svg.lucide-circle", box: [0, i * 16, 16, 16], svg: "svg:x", shapes: [[2, 2, 12, 12]] })),
+  ], { width: 16, height: 380 * 16, display: "flex" }, { "svg:x": "<svg-not-really/>" });
+  snap.components.push(icons.components[0]);
+  const coded = await codeFor(snap, {}, SHADCN_TOKENS);
+  const mock = mockFor([snap as TreeFixture], { textTruncation: "refuse", shadowSpread: "refuse" });
+  const runs = await runPlan(mock, coded, ["build"]);
+  for (const run of runs) assert.ok(run.bytes <= 16_500, `${run.bytes} bytes`);
+  // Sidebar's: each once per key, with how many variants it happened in.
+  const sidebar = runs.map(result).filter((r) => r.sets.some((set) => set.component === "ui-base-sidebar"));
+  assert.ok(sidebar.length > 1 && sidebar.every((r) => r.fallbacks.length && r.fallbacks.every(([, , , n]) => n === r.sets[0].added)));
+  assert.deepEqual(runs.flatMap((r) => result(r).uploads.map((u) => u[1])), ["img:513d06f54269-262b"], "the upload is kept");
+  // The icons' 380 keys don't fit: half and half again go, and are counted.
+  const many = result(runs.find((r) => result(r).page === "test")!);
+  assert.equal(many.fallbacks.length + many.omitted!, 380);
+  assert.ok(many.fallbacks.length >= 95, `${many.fallbacks.length} kept`);
 });
 
 test("build: a component whose root is an icon holds the icon's shapes itself, replaced only when the icon changes", async () => {

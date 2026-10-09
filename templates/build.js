@@ -23,6 +23,12 @@
 //   to the parent's frame; w and h are the frame's size. A style is
 //   cli/figma-map.ts's FigmaStyle.
 //
+// It returns { kind: 'build', tpl: 2, page, sets, uploads, fonts, unbound,
+// fallbacks, omitted? }: per set what changed (section 8.2), the image
+// layers to upload_assets, font stand-ins, variable names that didn't bind,
+// spike fallbacks taken, and how many list entries were left out to keep
+// the response under use_figma's 20kb.
+//
 // Each variant is converged: its layers are matched to records by the key in
 // their shared plugin data `k`, restyled in place (so node ids, and the
 // overrides of instances, survive), created where missing, and removed where
@@ -33,6 +39,7 @@
 // (cli/figma-spike.ts): each tries the design's choice and falls back.
 
 const NS = 'storysync';
+const NL = String.fromCharCode(10);
 const S = DATA.S;
 const get = (n, k) => n.getSharedPluginData(NS, k);
 const put = (n, k, v) => n.setSharedPluginData(NS, k, v);
@@ -79,8 +86,17 @@ const VARS = {};
 for (const v of await figma.variables.getLocalVariablesAsync()) (VARS[v.resolvedType + v.name] = VARS[v.resolvedType + v.name] || []).push(v);
 let collections = null;
 const unbound = [];
+// Where Figma refused what the design asked for and the build fell back
+// (SPIKE(n)): [component, key, what, variants], once per component, key
+// and what, however many variants it happened in.
 const fallbacks = [];
+const seen = {};
 let at = [];
+const fallback = (what, e) => {
+  const entry = [at[0], at[2] || '', what + ': ' + String((e && e.message) || e).slice(0, 80), 0];
+  const id = entry.join(NL);
+  (seen[id] = seen[id] || fallbacks[fallbacks.push(entry) - 1])[3]++;
+};
 const variable = async (type, name, property) => {
   let list = VARS[type + name] || [];
   if (list.length > 1 && type === 'FLOAT') {
@@ -150,7 +166,7 @@ const vector = (st) => {
     if (st.rs) n.rescale(st.rs);
     return n;
   } catch (e) {
-    fallbacks.push([...at, 'svg import failed: ' + String((e && e.message) || e)]);
+    fallback('svg import failed', e);
     const n = figma.createFrame();
     n.fills = [];
     n.name = 'svg (import failed)';
@@ -194,7 +210,7 @@ const style = async (n, rec, parent, root) => {
     // SPIKE(2): a shadow's spread Figma refuses on this node is left out.
     if (!fx.some((f) => f.spread)) throw e;
     n.effects = fx.map((f) => Object.assign({}, f, { spread: 0 }));
-    fallbacks.push([...at, 'shadow spread left out: ' + String((e && e.message) || e)]);
+    fallback('shadow spread left out', e);
   }
   if (kind === 'T') {
     const t = st.t;
@@ -216,7 +232,7 @@ const style = async (n, rec, parent, root) => {
     } catch (e) {
       // SPIKE(3): truncation Figma refuses is built as a box of the measured size.
       if (!t.tr) throw e;
-      fallbacks.push([...at, 'truncation refused: ' + String((e && e.message) || e)]);
+      fallback('truncation refused', e);
       n.resize(w, h);
       n.textAutoResize = 'NONE';
       ar = '';
@@ -630,4 +646,17 @@ for (const [s, set] of DATA.sets.entries()) {
   Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
 }
 
-return { kind: 'build', tpl: 2, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
+const out = { kind: 'build', tpl: 2, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
+// use_figma returns at most 20kb, and a call's changes stand when its
+// response is cut, so the agent would lose `uploads` with it. The lists that
+// grow with nodes are halved, longest first, until the response fits, and
+// `omitted` says how many entries went.
+const lists = [unbound, fallbacks, ...results.map((r) => r.absoluteContainers)];
+let omitted = 0;
+while (JSON.stringify(out).length > 16000) {
+  const list = lists.reduce((a, b) => (b.length > a.length ? b : a));
+  if (!list.length) break;
+  omitted += list.splice(list.length >> 1).length;
+}
+if (omitted) out.omitted = omitted;
+return out;
