@@ -2577,6 +2577,40 @@ async function main() {
     return "4 outline variants through the preview, all 12 as the unchanged story measures";
   });
 
+  await check("with --no-channel-args, a value the story's argTypes reject is left unmeasured, as arg_rejected, and fails --strict", async () => {
+    // The same story change as above, with the preview route turned off:
+    // nothing may be measured under a name the render didn't take.
+    const storybook = await rewritingStorybook("/src/Button.stories.tsx", (code) =>
+      code.replace(/options:\s*\[\s*"primary",\s*"danger",\s*"outline"\s*\]/, 'options: ["primary", "danger"]'));
+    const out = join(WORK, "no-channel");
+    let r;
+    try {
+      r = await cliAsync(["snap", "--storybook", storybook.url, "--components", "Button", "--variants", "all", "--out", out, "--strict", "--no-channel-args"]);
+    } finally {
+      await storybook.close();
+    }
+    assert(r.status === 1, `snap --strict --no-channel-args exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    const rejected = button.variants.filter((v) => v.status === "arg_rejected");
+    assert(rejected.length === 4 && rejected.every((v) => v.combination.variant === "outline" && !v.appliedVia && !v.delta && !v.treeDelta),
+      `arg_rejected: ${rejected.map((v) => v.slug).join(", ") || "none"}`);
+    assert(button.variants.filter((v) => v.status === "ok").length === 8, "the other variants weren't measured");
+    return "4 outline variants arg_rejected, 8 measured, --strict failed";
+  });
+
+  await check("--stories measures a component from the story it names, and refuses a story that isn't the component's", () => {
+    const out = join(WORK, "stories");
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
+    assert(r.status === 0, `snap --stories exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    assert(button.storyId === "forms-button--default", `storyId ${button.storyId}`);
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", join(WORK, "stories-refused"), "--stories", "forms-button=forms-frozen--default"]);
+    assert(refused.status === 1 && /--stories gives forms-button the story "forms-frozen--default", which isn't one of its stories: forms-button--default/.test(refused.out),
+      `a story of another component was taken:\n${refused.out.trim()}`);
+    assert(!existsSync(join(WORK, "stories-refused", "styles.json")), "the refused run wrote a snap");
+    return "measured from forms-button--default; Frozen's story refused";
+  });
+
   await check("snapshots are stamped with the running version", () => {
     const styles = readJson(join(snapDir, "styles.json")).storysyncVersion;
     const meta = readJson(join(snapDir, "meta.json")).storysyncVersion;
