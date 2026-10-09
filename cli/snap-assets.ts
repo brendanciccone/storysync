@@ -374,6 +374,18 @@ export function imageAssetFile(id: string, mime: "image/jpeg" | "image/png", fnv
 export const THUMBNAIL_MAX_SIDE = 1024;
 
 /**
+ * How a thumbnail is encoded: a JPEG at `quality` where every pixel is
+ * opaque, a PNG where any isn't, as a letterboxed `contain` leaves some.
+ * With THUMBNAIL_MAX_SIDE, the one place snap's image encoding is chosen,
+ * which the Figma spike (section 14 of the design) may argue to change,
+ * should what upload_assets does to the bytes favor one format: PNG
+ * throughout is `opaque: "image/png"`. thumbnailInPage is handed it.
+ */
+export const THUMBNAIL_ENCODING: { opaque: "image/jpeg" | "image/png"; alpha: "image/png"; quality: number } = {
+  opaque: "image/jpeg", alpha: "image/png", quality: 0.85,
+};
+
+/**
  * A thumbnail's pixel size: twice the box, as the screenshots are taken, so
  * Figma has the pixels a 2x display shows, and at most THUMBNAIL_MAX_SIDE on
  * its longer side.

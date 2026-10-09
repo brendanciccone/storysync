@@ -10,9 +10,9 @@ import { fakePreview, inPage } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
-  captureTree, captureTreeInPage, drawingElementInPage,
+  captureTree, captureTreeInPage, drawingElementInPage, thumbnailInPage,
 } from "../snap-browser.js";
-import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, imageAssetId } from "../snap-assets.js";
+import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
 import { NON_RENDERED_TAGS } from "../snap-normalize.js";
@@ -635,6 +635,43 @@ test("captureTreeInPage: an input's value or placeholder, with how wide it draws
   assert.equal(input.text?.color, "rgb(0, 0, 0)");
   assert.deepEqual(img.img, { src: "https://example.test/a.png", natural: [80, 80] });
   assert.deepEqual(img.cs, { "box-sizing": "content-box", "object-fit": "cover" });
+});
+
+/**
+ * thumbnailInPage run against a stand-in canvas whose pixels are `pixels`
+ * (RGBA, row by row), recording what it drew and how it encoded it.
+ */
+async function drawThumbnail(pixels: number[], args: Omit<Parameters<typeof thumbnailInPage>[0], "encoding">) {
+  const scope = globalThis as Record<string, unknown>;
+  const saved = { Image: scope.Image, document: scope.document };
+  const drawn: number[][] = [];
+  const encoded: unknown[][] = [];
+  scope.Image = class { src = ""; async decode() {} };
+  scope.document = {
+    createElement: () => ({
+      width: 0, height: 0,
+      getContext: () => ({ drawImage: (...a: unknown[]) => drawn.push(a.slice(1) as number[]), getImageData: () => ({ data: Uint8ClampedArray.from(pixels) }) }),
+      toDataURL: (mime: string, quality: number) => { encoded.push([mime, quality]); return `data:${mime};base64,AAAA`; },
+    }),
+  };
+  try {
+    return { result: await thumbnailInPage({ ...args, encoding: THUMBNAIL_ENCODING }), drawn, encoded };
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete scope[k];
+      else scope[k] = v;
+    }
+  }
+}
+
+test("thumbnailInPage: what the box shows, drawn at the thumbnail's size, a JPEG where it is opaque and a PNG where it isn't", async () => {
+  const args = { url: "data:image/png;base64,AAAA", src: [0, 0, 400, 200] as [number, number, number, number], dst: [0, 0.25, 1, 0.5] as [number, number, number, number], size: [64, 64] as [number, number] };
+  const opaque = await drawThumbnail([10, 20, 30, 255, 40, 50, 60, 255], args);
+  assert.deepEqual(opaque.drawn, [[0, 0, 400, 200, 0, 16, 64, 32]]);
+  assert.deepEqual([opaque.result, opaque.encoded], [{ mime: "image/jpeg", base64: "AAAA" }, [["image/jpeg", 0.85]]]);
+  // A letterboxed contain leaves pixels clear: a JPEG would turn them black.
+  const clear = await drawThumbnail([10, 20, 30, 255, 0, 0, 0, 0], args);
+  assert.deepEqual([clear.result.mime, clear.encoded[0][0]], ["image/png", "image/png"]);
 });
 
 test("drawingElementInPage: an element that draws nothing, holding nothing that does, gives way to the nearest one around it that draws", () => {

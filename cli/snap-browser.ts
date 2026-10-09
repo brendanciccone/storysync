@@ -21,7 +21,7 @@ import type { FigmaVariantProperty } from "./mapper.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS, buildTree, countInnerElements } from "./snap-tree.js";
 import type { PendingImage, RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
 import {
-  SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS,
+  SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING,
   decodeDataUrl, imageAssetId, imageCrop, pngSize, sniffImageType, thumbnailSize,
 } from "./snap-assets.js";
 import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
@@ -1853,9 +1853,9 @@ export async function countTree(target: ElementHandle<Element>): Promise<number>
 
 /**
  * Runs in the page: an image's thumbnail, drawn from its source as its box
- * shows it, at `size` pixels: a JPEG at quality 0.85, or a PNG where any
- * pixel is less than opaque, as a letterboxed `contain` is. The source
- * arrives as a `data:` URL, so a picture from another origin draws without
+ * shows it, at `size` pixels, encoded as THUMBNAIL_ENCODING says: one type
+ * where every pixel is opaque, another where any isn't. The source arrives
+ * as a `data:` URL, so a picture from another origin draws without
  * tainting the canvas.
  */
 export async function thumbnailInPage(args: {
@@ -1863,6 +1863,7 @@ export async function thumbnailInPage(args: {
   src: [number, number, number, number];
   dst: [number, number, number, number];
   size: [number, number];
+  encoding: typeof THUMBNAIL_ENCODING;
 }): Promise<{ mime: "image/jpeg" | "image/png"; base64: string }> {
   const img = new Image();
   img.src = args.url;
@@ -1885,8 +1886,8 @@ export async function thumbnailInPage(args: {
       break;
     }
   }
-  const mime = alpha ? "image/png" : "image/jpeg";
-  const url = canvas.toDataURL(mime, 0.85);
+  const mime = alpha ? args.encoding.alpha : args.encoding.opaque;
+  const url = canvas.toDataURL(mime, args.encoding.quality);
   return { mime, base64: url.slice(url.indexOf(",") + 1) };
 }
 
@@ -1897,7 +1898,7 @@ export async function thumbnailInPage(args: {
 export async function makeThumbnail(page: Page, image: CapturedImage): Promise<{ bytes: Buffer; mime: "image/jpeg" | "image/png"; size: [number, number] }> {
   if (image.raster) return { bytes: image.bytes, mime: "image/png", size: image.natural };
   const size = thumbnailSize(image.box);
-  const drawn = await page.evaluate(thumbnailInPage, { url: dataUrl(image.bytes, image.mime), src: image.crop.src, dst: image.crop.dst, size });
+  const drawn = await page.evaluate(thumbnailInPage, { url: dataUrl(image.bytes, image.mime), src: image.crop.src, dst: image.crop.dst, size, encoding: THUMBNAIL_ENCODING });
   return { bytes: Buffer.from(drawn.base64, "base64"), mime: drawn.mime, size };
 }
 
