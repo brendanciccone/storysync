@@ -1776,6 +1776,37 @@ test("runSnap: an image is kept as a thumbnail of what its box shows, named by i
   }
 });
 
+test("runSnap: the story's argTypes options add the values the docs' type lacks, measured after the planned ones", async () => {
+  const dir = tempDir();
+  try {
+    const sides = { name: "side", type: { name: "Side" }, defaultValue: "top" };
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default",
+      capture: switchCapture,
+      argTypes: { size: { options: ["default", "sm", "lg"] }, side: { options: ["top", "bottom"] } },
+    });
+    // size's type has default and sm; the options add lg. side's type
+    // lists nothing; the options make it an axis, and the plan starts again.
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variantProperties.map((p) => [p.name, p.values, p.defaultValue]), [["size", ["default", "sm", "lg"], "default"], ["side", ["top", "bottom"], "top"]]);
+    assert.deepEqual(component.variants.map((v) => v.slug), ["size-default--side-top", "size-sm--side-top", "size-lg--side-top", "size-default--side-bottom"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: values the options add to an axis already planned come after the planned ones, their slugs unchanged", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm", "lg"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs(), launch });
+    assert.deepEqual(result.components[0].variants.map((v) => v.slug), ["size-default", "size-sm", "size-lg"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("detectIdenticalValues: values that measured the same, root and tree, wherever both were measured", () => {
   const props: FigmaVariantProperty[] = [
     { name: "variant", type: "VARIANT", values: ["default", "ghost", "link"], defaultValue: "default" },

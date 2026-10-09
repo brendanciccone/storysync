@@ -10,7 +10,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
-import { mapComponent, withoutProps, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, withoutProps, representativeCombinations, supplementOptions, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
 import { selectComponents, componentKey } from "./storybook.js";
@@ -1096,7 +1096,8 @@ async function snapComponent(
     return shell;
   }
 
-  const definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS);
+  const maxCombinations = opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS;
+  let definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), maxCombinations);
   const storyId = pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;
@@ -1107,21 +1108,22 @@ async function snapComponent(
     return shell;
   }
 
-  const combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
+  let combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
   // Only the full product can exceed the ceiling; representative mode measures
   // one value at a time and never approaches it.
-  if (opts.variants === "all" && definition.cap) {
-    shell.cap = { ...definition.cap, uncovered: uncoveredValues(definition.variantProperties, combinations) };
-    shell.warnings.push(describeCap(entry.title ?? entry.name, shell.cap));
-  }
+  const capOf = () => {
+    delete shell.cap;
+    if (opts.variants === "all" && definition.cap) {
+      shell.cap = { ...definition.cap, generated: combinations.length, uncovered: uncoveredValues(definition.variantProperties, combinations) };
+    }
+  };
+  capOf();
 
   // Slugs are assigned up front, for the whole set at once, because uniqueness
   // is a property of the set rather than of any one combination. This is also
   // why it happens before the browser starts: the clash is in the declared
   // values, so it is worth reporting even if nothing renders.
-  const { slugs, collisions } = assignVariantSlugs(combinations);
-  const collided = describeSlugCollisions(collisions);
-  if (collided) shell.warnings.push(collided);
+  let { slugs, collisions } = assignVariantSlugs(combinations);
 
   // Context creation is inside the guarded block so a failure here is recorded
   // against this component rather than abandoning the whole run, and so a
@@ -1141,13 +1143,15 @@ async function snapComponent(
   const images = new Map<string, CapturedImage>();
   const treeNotes = new Set<string>();
   const climbed: { slug: string; element: string; from: string }[] = [];
+  // Whether the story's argTypes options have been read into the variant properties yet.
+  let supplemented = false;
   try {
     checkpoint();
     context = await createContext(browser);
     const page = await context.newPage();
 
-    for (const [index, combination] of combinations.entries()) {
-      const slug = slugs[index];
+    for (let index = 0; index < combinations.length; index++) {
+      const combination = combinations[index];
       deps.onVariantStart?.(index + 1, combinations.length);
       // A value the URL can't carry is left out of it and set through
       // Storybook's preview once the story loads, as one it refused is.
@@ -1170,6 +1174,37 @@ async function snapComponent(
       // would only take as long again.
       let captured = await capture();
       if (captured.status === "timeout" && captured.retryable) captured = await capture();
+
+      // The story's argTypes options, read with the first variant, add the
+      // values the docs' types don't list, and make a prop whose type lists
+      // none an axis (section 5.2 of the design): planned now, measured in
+      // this run, after the planned ones. A new axis renames every
+      // combination, the first one measured included, so then the plan
+      // starts again.
+      if (!supplemented && captured.args?.argTypes) {
+        supplemented = true;
+        const wider = mapComponent(withoutProps(supplementOptions(component, captured.args.argTypes), opts.excludeProps ?? []), maxCombinations);
+        if (JSON.stringify(wider.variantProperties) !== JSON.stringify(definition.variantProperties)) {
+          const known = new Set(definition.variantProperties.map((p) => p.name));
+          const axis = wider.variantProperties.some((p) => !known.has(p.name));
+          const plan = selectCombinations(opts.variants, wider.variantProperties, wider.variantCombinations);
+          const same = (a: Record<string, string>, b: Record<string, string>) => JSON.stringify(a) === JSON.stringify(b);
+          const added = axis ? plan : plan.filter((c) => !combinations.some((d) => same(c, d)));
+          combinations = axis ? plan : [...combinations, ...added];
+          if (opts.variants === "all") combinations = combinations.slice(0, Math.max(maxCombinations, 1));
+          definition = wider;
+          shell.variantProperties = definition.variantProperties;
+          ({ slugs, collisions } = assignVariantSlugs(combinations));
+          capOf();
+          progress(`  ${entry.title ?? entry.name}: the story's argTypes options add ${axis ? "a variant property" : "values"}; ${combinations.length} variants planned`);
+          if (axis) {
+            index = -1;
+            continue;
+          }
+        }
+      }
+
+      const slug = slugs[index];
       captures++;
 
       // What the story's argTypes are, from the first variant that read them.
@@ -1267,6 +1302,10 @@ async function snapComponent(
   } finally {
     await context?.close().catch(() => { /* already gone */ });
   }
+
+  const collided = describeSlugCollisions(collisions);
+  if (collided) shell.warnings.unshift(collided);
+  if (shell.cap) shell.warnings.unshift(describeCap(entry.title ?? entry.name, shell.cap));
 
   const measured = shell.variants.filter((v) => v.status === "ok").length;
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));

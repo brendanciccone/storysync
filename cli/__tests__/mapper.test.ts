@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mapComponent,
+  supplementOptions,
   mapProp,
   shouldSkip,
   extractEnumValues,
@@ -577,4 +578,36 @@ test("cartesian: honors a custom ceiling", () => {
   const full = cartesian(props, 9);
   assert.equal(full.wasCapped, false);
   assert.equal(full.combinations.length, 9);
+});
+
+test("supplementOptions: the story's options add values after the type's own, and make an axis of a prop whose type lists none", () => {
+  const component = {
+    name: "Tooltip",
+    props: [
+      { name: "variant", type: { name: "union", raw: '"default" | "ghost"' }, defaultValue: "default" },
+      { name: "side", type: { name: "Side" }, defaultValue: "top" },
+      { name: "open", type: { name: "boolean" } },
+      { name: "children", type: { name: "ReactNode" } },
+      { name: "align", type: { name: "union", raw: '"start" | "end"' } },
+    ],
+    stories: [],
+  };
+  const widened = supplementOptions(component, {
+    // Only adds: the type's ghost stays though the options lack it.
+    variant: { options: ["default", "outline", null] },
+    side: { options: ["top", "right", "bottom", "left", { nope: 1 }] },
+    open: { options: [true, false, "maybe"] },
+    children: { options: ["a", "b"] },
+    align: { options: ["start", "end"] },
+  });
+  const mapped = mapComponent(widened).variantProperties;
+  assert.deepEqual(mapped.map((p) => [p.name, p.values, p.defaultValue]), [
+    ["variant", ["default", "ghost", "outline"], "default"],
+    ["side", ["top", "right", "bottom", "left"], "top"],
+    ["open", ["true", "false"], "false"],
+    ["align", ["start", "end"], "start"],
+  ]);
+  // Nothing to add, nothing changed: the same component.
+  assert.equal(supplementOptions(component, { align: { options: ["start"] } }), component);
+  assert.equal(supplementOptions(component, {}), component);
 });

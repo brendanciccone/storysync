@@ -510,6 +510,47 @@ export function withoutProps(component: StorybookComponent, names: readonly stri
   return { ...component, props: component.props.filter((p) => !excluded.has(p.name.toLowerCase())) };
 }
 
+/**
+ * argTypes `options` entries that are variant values: strings, numbers and
+ * booleans, written as strings. Not null: Storybook lists it for a cva
+ * variant typed `"default" | "outline" | null`, where it means unset, as
+ * definedMembers reads it, not a value to draw.
+ */
+const OPTION_TYPES = new Set(["string", "number", "boolean"]);
+
+/**
+ * `component` with each documented prop's values widened by the options its
+ * story's argTypes give it (section 5.2 of the design): the type's values
+ * first, in their order, then any the options list besides. A prop whose
+ * type lists no values, as Base UI Tooltip's `side`, takes the options as its
+ * values, and so becomes a variant property.
+ *
+ * Only ever adds: a value the type has and the options lack is the code's,
+ * as shadcn/ui Badge's `ghost` is, and snap measures it through the preview.
+ * Props the options would make no sense on keep what they have: content,
+ * callbacks, booleans, and the composition props.
+ */
+export function supplementOptions(
+  component: StorybookComponent,
+  argTypes: Record<string, { options?: unknown[] } | undefined>,
+): StorybookComponent {
+  let changed = false;
+  const props = component.props.map((prop) => {
+    const options = argTypes[prop.name]?.options;
+    if (!Array.isArray(options) || !options.length || isBoolean(prop)) return prop;
+    const listed = [...new Set(options.filter((o) => OPTION_TYPES.has(typeof o)).map((o) => String(o)))];
+    if (!listed.length) return prop;
+    const own = extractEnumValues(prop) ?? [];
+    const merged = [...own, ...listed.filter((v) => !own.includes(v))];
+    const widened: StorybookProp = { ...prop, control: { ...prop.control, options: merged } };
+    // Skipped for what it is, not for having no values: options don't change that.
+    if (merged.length === own.length || skipReason(widened) !== null) return prop;
+    changed = true;
+    return widened;
+  });
+  return changed ? { ...component, props } : component;
+}
+
 export function mapComponent(
   component: StorybookComponent,
   maxCombinations: number = DEFAULT_MAX_COMBINATIONS,
