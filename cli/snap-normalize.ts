@@ -339,7 +339,7 @@ export function resolveFontFamily(probe: FontProbe): { family: string; available
   return { family: probe.families[0] ?? "", available: probe.families.length ? false : null };
 }
 
-function normalizeFontWeight(value: string | undefined): number {
+export function normalizeFontWeight(value: string | undefined): number {
   const raw = (value ?? "").trim();
   const named: Record<string, number> = { normal: 400, bold: 700, lighter: 300, bolder: 700 };
   if (named[raw] != null) return named[raw];
@@ -347,7 +347,7 @@ function normalizeFontWeight(value: string | undefined): number {
   return Number.isFinite(n) ? n : 400;
 }
 
-function normalizeLineHeight(value: string | undefined): number | "normal" {
+export function normalizeLineHeight(value: string | undefined): number | "normal" {
   const raw = (value ?? "").trim();
   if (!raw || raw === "normal") return "normal";
   const px = pxToNumber(raw);
@@ -357,7 +357,7 @@ function normalizeLineHeight(value: string | undefined): number | "normal" {
 }
 
 /** Chromium keeps a percentage letter-spacing as written; it is a share of the font size. */
-function normalizeLetterSpacing(value: string | undefined, fontSize: number): number {
+export function normalizeLetterSpacing(value: string | undefined, fontSize: number): number {
   const raw = (value ?? "").trim();
   if (!raw || raw === "normal") return 0;
   const percent = raw.match(/^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i);
@@ -401,7 +401,7 @@ function normalizeBackgroundClip(value: string | undefined): string | null {
  * oklch(...) 100%)`, Chromium dropping its default `in oklab`. A `url()`
  * layer is kept as written.
  */
-function normalizeBackgroundImage(value: string | undefined): string | null {
+export function normalizeBackgroundImage(value: string | undefined): string | null {
   const raw = (value ?? "").trim();
   if (!raw || raw === "none") return null;
   const anyColor = new RegExp(COLOR_FUNCTION.source, "gi");
@@ -466,7 +466,7 @@ function cornerRadii(value: string | undefined, box: { width: number; height: nu
  * radii differ, `10px / 20px` or `50%` of a box that isn't square, keeps the
  * smaller.
  */
-function resolveRadii(
+export function resolveRadii(
   raw: RawComputedStyles,
   box: { width: number; height: number },
 ): NormalizedStyles["borderRadius"] {

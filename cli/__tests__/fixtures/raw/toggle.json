@@ -1,0 +1,108 @@
+{
+ "source": {
+  "story": "ui-base-toggle--default",
+  "args": null,
+  "root": "[data-slot=toggle]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "button",
+   "box": [
+    0,
+    0,
+    36,
+    36
+   ],
+   "cs": {
+    "display": "inline-flex",
+    "padding-right": "8px",
+    "padding-left": "8px",
+    "justify-content": "center",
+    "align-items": "center",
+    "row-gap": "4px",
+    "column-gap": "4px",
+    "border-top-left-radius": "8px",
+    "border-top-right-radius": "8px",
+    "border-bottom-right-radius": "8px",
+    "border-bottom-left-radius": "8px"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "svg",
+     "box": [
+      10,
+      10,
+      16,
+      16
+     ],
+     "cs": {
+      "flex-shrink": "0",
+      "overflow-x": "hidden",
+      "overflow-y": "hidden"
+     },
+     "kids": [],
+     "path": [
+      0
+     ],
+     "lucide": "lucide-bold",
+     "svg": {
+      "tag": "svg",
+      "attrs": {
+       "viewBox": "0 0 24 24"
+      },
+      "kids": [
+       {
+        "tag": "path",
+        "attrs": {
+         "d": "M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"
+        },
+        "paint": {
+         "fill": "none",
+         "fill-opacity": "1",
+         "stroke": "oklch(0.145 0 0)",
+         "stroke-opacity": "1",
+         "stroke-width": "2px",
+         "stroke-linecap": "round",
+         "stroke-linejoin": "round",
+         "opacity": "1",
+         "fill-rule": "nonzero",
+         "clip-rule": "nonzero"
+        }
+       }
+      ]
+     },
+     "shapes": [
+      [
+       4,
+       2.666656494140625,
+       8.66668701171875,
+       10.66668701171875
+      ]
+     ]
+    }
+   ],
+   "path": [],
+   "slot": "toggle",
+   "cls": [
+    "hover:text-foreground",
+    "aria-pressed:bg-muted",
+    "focus-visible:border-ring",
+    "focus-visible:ring-ring/50",
+    "aria-invalid:ring-destructive/20",
+    "dark:aria-invalid:ring-destructive/40",
+    "aria-invalid:border-destructive",
+    "hover:bg-muted",
+    "rounded-md",
+    "text-sm",
+    "outline-none",
+    "focus-visible:ring-[3px]",
+    "bg-transparent"
+   ]
+  },
+  "fonts": {}
+ }
+}
