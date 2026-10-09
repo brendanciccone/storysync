@@ -841,8 +841,10 @@ test("describeMeasurementNotes: a closed trigger names the content slots snap ta
   // TooltipContent's own slot is already its content's: it was told to add
   // data-slot="tooltip-content-content".
   const [tooltip] = describeMeasurementNotes("TooltipContent", trigger, 1, "ui/base/Tooltip");
-  assert.match(tooltip, /carries data-slot="tooltip-content" or that/);
+  assert.match(tooltip, /carries data-slot="tooltip-content", that/);
   assert.doesNotMatch(tooltip, /content-content/);
+  // Or any open overlay's content in a portal, which needs no slot.
+  assert.match(tooltip, /that the trigger's aria-controls names, or that is a dialog, alert dialog, tooltip or menu in a portal\.$/);
   // A component named apart from its title is matched by both.
   const [demo] = describeMeasurementNotes("DialogDemo", trigger, 1, "Overlays/Dialog");
   assert.match(demo, /data-slot="dialog-demo-content" or "dialog-content"/);

@@ -15,7 +15,7 @@ import {
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
-import { NON_RENDERED_TAGS } from "../snap-normalize.js";
+import { NON_RENDERED_TAGS, OVERLAY_SELECTOR } from "../snap-normalize.js";
 import { inFakePage } from "./dom-standin.js";
 import type { FakeElementSpec } from "./dom-standin.js";
 
@@ -170,10 +170,13 @@ test("storyReadySelector: waits for an element that can draw, the component's sl
   assert.match(selector, /#root > :not\(noscript/);
   // Content only in a portal, as an open dialog's, ends it too.
   assert.match(selector, /\[data-slot="input-otp"\], \[data-slot="input-otp-content"\]/);
+  // So does an open overlay's content, as a story that renders only an open dialog shows.
+  assert.ok(selector.includes(`, ${OVERLAY_SELECTOR}, `));
+  assert.match(OVERLAY_SELECTOR, /\[role="dialog"\], \[role="alertdialog"\], \[role="tooltip"\], \[role="menu"\], \[data-slot\$="-content"\]/);
   assert.match(selector, /body\.sb-show-errordisplay, body\.sb-show-preparingstory-error$/);
   // A slot already ending in -content is not doubled.
   const tooltip = storyReadySelector(["tooltip-content", "tooltip"]);
-  assert.match(tooltip, /\[data-slot="tooltip-content"\], \[data-slot="tooltip"\], body/);
+  assert.match(tooltip, /\[data-slot="tooltip-content"\], \[data-slot="tooltip"\], \[role="dialog"\]/);
   assert.doesNotMatch(tooltip, /content-content/);
 });
 
@@ -587,6 +590,62 @@ test("captureStory: with a tree, a root that draws nothing gives way to the near
   assert.equal(result.tree!.nodes[1].img, imageAssetId(bytes, "0,0,460,460"));
   // Listening only while it captured.
   assert.equal(listeners.get("response")?.size, 0);
+});
+
+test("captureStory: a story that renders only an open dialog, into a portal, measures the dialog and says it came from one", async () => {
+  // coder's ConfirmDialog: Radix's Dialog, open with no trigger, renders
+  // nothing under the story's root; its content, role=dialog, is a child of
+  // the body. It was element_not_found in every variant.
+  const capture = {
+    root: { k: "e", tag: "div", box: [0, 0, 512, 180], cs: { "background-color": "rgb(255, 255, 255)", position: "fixed" }, path: [], kids: [], role: "dialog" },
+    fonts: {},
+  };
+  const dialog = {
+    evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn === captureTreeInPage) return capture;
+      // Whether it is the element it climbed from: it is, as it draws.
+      if (arg !== undefined) return true;
+      return null;
+    },
+    evaluateHandle: async () => ({ asElement: () => dialog, dispose: async () => {} }),
+    boundingBox: async () => ({ x: 384, y: 270, width: 512, height: 180 }),
+  };
+  let found: unknown = null;
+  const portals = {
+    // Radix's backdrop first, which is no overlay content, then the dialog.
+    evaluate: async () => [
+      { tag: "div", slot: null, role: null, id: null, rendered: true, overlay: false },
+      { tag: "div", slot: null, role: "dialog", id: "radix-r1", rendered: true, overlay: true },
+    ],
+    evaluateHandle: async (_fn: unknown, index: unknown) => ({ asElement: () => (index === 1 ? dialog : null), dispose: async () => {} }),
+    dispose: async () => {},
+  };
+  const container = {
+    // Holds nothing: Radix put the dialog in the body.
+    evaluate: async (_fn: unknown, arg: unknown) => (Array.isArray(arg) ? false : storyNode("div", null, [])),
+  };
+  const page = {
+    ...LISTENS,
+    goto: async () => null,
+    waitForSelector: async (selector: string) => {
+      assert.ok(selector.includes('[role="dialog"]'), "the wait ends on the open dialog");
+      return null;
+    },
+    addStyleTag: async () => null,
+    $: async (selector: string) => (selector === "#storybook-root" ? container : null),
+    evaluateHandle: async (_fn: unknown, arg: unknown) => {
+      found = arg;
+      return portals;
+    },
+    evaluate: async (fn: unknown) => (fn === storybookErrorInPage ? null : {}),
+  };
+  const result = await captureStory(page as unknown as Page, "http://localhost:6006/iframe.html?id=components-dialog-confirmdialog--example", {
+    ...OPTS, component: { name: "ConfirmDialog", title: "components/Dialog/ConfirmDialog" }, tree: "tree",
+  });
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.element, result.matchedSelector, result.portal], ['div[role="dialog"]', 'portal div[role="dialog"]', true]);
+  assert.deepEqual(found, { container, slots: ["confirm-dialog", "confirm-dialog-content"], overlay: OVERLAY_SELECTOR });
+  assert.deepEqual(result.tree!.nodes.map((n) => n.k), [""]);
 });
 
 // --- captureTreeInPage, in a stand-in page ---
