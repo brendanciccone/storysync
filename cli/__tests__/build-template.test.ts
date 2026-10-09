@@ -369,3 +369,28 @@ test("build: a component whose root is an icon holds the icon's shapes itself, r
   await runPlan(mock, await codeFor(next), ["build"]);
   assert.equal(variantsBySlug(mock).get("default")!.children!.length, 1, "the old icon's shapes went with it");
 });
+
+test("build: a call refused for one of its sets changes none of them", async () => {
+  const snap = copy(loadTreeFixture("switch"));
+  snap.components.push(copy(loadTreeFixture("toggle").components[0]));
+  const coded = await codeFor(snap);
+  const mock = mockFor([loadTreeFixture("switch"), loadTreeFixture("toggle")]);
+  await mock.run(`
+    const page = figma.createPage();
+    page.name = 'ui/base';
+    await figma.setCurrentPageAsync(page);
+    for (const x of [0, 200]) {
+      const v = figma.createComponent();
+      v.name = 'variant=default, size=default';
+      const set = figma.combineAsVariants([v], page);
+      set.name = 'Toggle';
+      set.x = x;
+    }
+  `);
+  const before = JSON.stringify(mock.pages());
+  const call = coded.plan.calls[0];
+  assert.deepEqual(call.components, ["ui/base/Switch", "ui/base/Toggle"]);
+  const run = await mock.run(coded.code(call));
+  assert.match(run.text, /The page has COMPONENT_SET "Toggle" .*, COMPONENT_SET "Toggle" .*: ask the user which to update/);
+  assert.equal(JSON.stringify(mock.pages()), before, "Switch, first in the call, wasn't built either");
+});

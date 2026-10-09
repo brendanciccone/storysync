@@ -433,8 +433,9 @@ const recordsOf = (base, delta) => {
 
 const idOf = (n) => get(n, 'id');
 const results = [];
-for (const set of DATA.sets) {
-  at = [set.title || set.name];
+// Every set this call builds is found and checked before any is changed,
+// so a call refused for one changes nothing.
+const found = DATA.sets.map((set) => {
   const want = set.props.length ? 'COMPONENT_SET' : 'COMPONENT';
   const names = set.v.map((v) => v[0]);
   if (new Set(names).size !== names.length) throw new Error('This part names a variant of ' + set.name + ' twice');
@@ -443,12 +444,12 @@ for (const set of DATA.sets) {
   const all = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
     .filter((n) => n.parent.type !== 'COMPONENT_SET' && (n.type === want || n.type === 'COMPONENT_SET' || idOf(n)));
   const named = all.filter((n) => n.name === set.name);
-  const found = named.length ? named : all.filter((n) => idOf(n) === set.id);
-  let node = found[0] || null;
-  const why = found.length > 1 ? 'ask the user which to update'
+  const sets = named.length ? named : all.filter((n) => idOf(n) === set.id);
+  const node = sets[0] || null;
+  const why = sets.length > 1 ? 'ask the user which to update'
     : node && node.type !== want ? 'this part builds a ' + want + ': ask the user whether to convert it or skip it'
       : node && idOf(node) && idOf(node) !== set.id ? 'it is another component: ask the user whether it is ' + set.id : '';
-  if (why) throw new Error('The page has ' + found.map((n) => n.type + ' "' + n.name + '" (' + n.id + ', id "' + idOf(n) + '")').join(', ') + ': ' + why);
+  if (why) throw new Error('The page has ' + sets.map((n) => n.type + ' "' + n.name + '" (' + n.id + ', id "' + idOf(n) + '")').join(', ') + ': ' + why);
   if (node && set.props.length && node.layoutMode !== 'NONE') {
     throw new Error('The set "' + set.name + '" has auto layout (' + node.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set');
   }
@@ -458,6 +459,11 @@ for (const set of DATA.sets) {
     if (same.length > 1) throw new Error('The set "' + set.name + '" has ' + same.length + ' variants named "' + name + '", not one');
     existing.set(name, same[0] || null);
   }
+  return { want, names, node, existing };
+});
+for (const [s, set] of DATA.sets.entries()) {
+  const { want, names, existing } = found[s];
+  let node = found[s].node;
   const fresh = !node;
   const below = page.children.reduce((y, n) => Math.max(y, n.y + n.height + 100), 0);
   const created = [];
