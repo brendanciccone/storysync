@@ -1616,8 +1616,11 @@ function treeBrowser(opts: {
   argTypes?: Record<string, FakeArgType>;
   version?: string;
   thumbnail?: (arg: { size: [number, number] }) => Buffer;
+  /** How many loads time out before any loads, as a cold Storybook's first story may. */
+  timeouts?: number;
 }) {
   const drawn: unknown[] = [];
+  let timeouts = opts.timeouts ?? 0;
   let storyId = opts.storyId;
   let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId });
   let described = false;
@@ -1634,10 +1637,12 @@ function treeBrowser(opts: {
       const root = opts.capture(given(), storyId).root.box;
       return { x: 0, y: 0, width: root[2], height: root[3] };
     },
+    screenshot: async () => Buffer.from("png"),
   };
   const page = {
     on: () => {}, off: () => {},
     goto: async (url: string) => {
+      if (timeouts-- > 0) throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
       described = false;
       storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
       fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {} });
@@ -1886,7 +1891,40 @@ test("runSnap: the story's argTypes options add the values the docs' type lacks,
     const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
     const [component] = result.components;
     assert.deepEqual(component.variantProperties.map((p) => [p.name, p.values, p.defaultValue]), [["size", ["default", "sm", "lg"], "default"], ["side", ["top", "bottom"], "top"]]);
-    assert.deepEqual(component.variants.map((v) => v.slug), ["size-default--side-top", "size-sm--side-top", "size-lg--side-top", "size-default--side-bottom"]);
+    assert.deepEqual(component.variants.map((v) => [v.slug, v.combination, v.status]), [
+      ["size-default--side-top", { size: "default", side: "top" }, "ok"],
+      ["size-sm--side-top", { size: "sm", side: "top" }, "ok"],
+      ["size-lg--side-top", { size: "lg", side: "top" }, "ok"],
+      ["size-default--side-bottom", { size: "default", side: "bottom" }, "ok"],
+    ]);
+    assert.deepEqual(component.base!.combination, { size: "default", side: "top" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a variant that failed before the options added an axis is measured again in the new plan, not kept without it", async () => {
+  const dir = tempDir();
+  try {
+    const sides = { name: "side", type: { name: "Side" }, defaultValue: "top" };
+    // The first story times out twice, as a cold Storybook's may, so its
+    // args are never read; the second's add the side axis.
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default",
+      capture: switchCapture,
+      argTypes: { size: { options: ["default", "sm"] }, side: { options: ["top", "bottom"] } },
+      timeouts: 2,
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", screenshots: true }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variants.map((v) => [v.slug, v.combination, v.status]), [
+      ["size-default--side-top", { size: "default", side: "top" }, "ok"],
+      ["size-sm--side-top", { size: "sm", side: "top" }, "ok"],
+      ["size-default--side-bottom", { size: "default", side: "bottom" }, "ok"],
+    ]);
+    assert.equal(result.summary.variants, 3);
+    // Only the new plan's screenshots: none for a slug no variant has.
+    assert.deepEqual(readdirSync(join(dir, "ui-base-switch")).sort(), ["size-default--side-bottom.png", "size-default--side-top.png", "size-sm--side-top.png"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1898,6 +1936,21 @@ test("runSnap: values the options add to an axis already planned come after the 
     const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm", "lg"] } } });
     const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs(), launch });
     assert.deepEqual(result.components[0].variants.map((v) => v.slug), ["size-default", "size-sm", "size-lg"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: values the options add past --max-combinations start a capped plan that measures them, not one cut short of them", async () => {
+  const dir = tempDir();
+  try {
+    // size x tone is 4, within the limit; the options' lg makes it 6, past it.
+    const tone = { name: "tone", type: { name: "union", raw: '"a" | "b"' }, defaultValue: "a" };
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm", "lg"] } } });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all", maxCombinations: 4 }), { storybook: switchDocs([SWITCH_SIZE, tone]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variants.map((v) => v.slug), ["size-default--tone-a", "size-sm--tone-a", "size-lg--tone-a", "size-default--tone-b"]);
+    assert.deepEqual([component.cap!.totalPossible, component.cap!.generated, component.cap!.uncovered], [6, 4, []]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

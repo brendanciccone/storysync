@@ -1157,7 +1157,7 @@ async function snapComponent(
   const capOf = () => {
     delete shell.cap;
     if (opts.variants === "all" && definition.cap) {
-      shell.cap = { ...definition.cap, generated: combinations.length, uncovered: uncoveredValues(definition.variantProperties, combinations) };
+      shell.cap = { ...definition.cap, uncovered: uncoveredValues(definition.variantProperties, combinations) };
     }
   };
   capOf();
@@ -1224,7 +1224,9 @@ async function snapComponent(
       // none an axis (section 5.2 of the design): planned now, measured in
       // this run, after the planned ones. A new axis renames every
       // combination, the first one measured included, so then the plan
-      // starts again.
+      // starts again; so does one the added values would push past
+      // --max-combinations, whose tail, the added values, would be cut
+      // off, where the wider plan's capped set covers every value.
       if (!supplemented && captured.args?.argTypes) {
         supplemented = true;
         const wider = mapComponent(withoutProps(supplementOptions(component, captured.args.argTypes), opts.excludeProps ?? []), maxCombinations);
@@ -1233,15 +1235,32 @@ async function snapComponent(
           const axis = wider.variantProperties.some((p) => !known.has(p.name));
           const plan = selectCombinations(opts.variants, wider.variantProperties, wider.variantCombinations);
           const same = (a: Record<string, string>, b: Record<string, string>) => JSON.stringify(a) === JSON.stringify(b);
-          const added = axis ? plan : plan.filter((c) => !combinations.some((d) => same(c, d)));
-          combinations = axis ? plan : [...combinations, ...added];
-          if (opts.variants === "all") combinations = combinations.slice(0, Math.max(maxCombinations, 1));
+          const appended = [...combinations, ...plan.filter((c) => !combinations.some((d) => same(c, d)))];
+          const restart = axis || (opts.variants === "all" && appended.length > Math.max(maxCombinations, 1));
+          combinations = restart ? plan : appended;
           definition = wider;
           shell.variantProperties = definition.variantProperties;
           ({ slugs, collisions } = assignVariantSlugs(combinations));
           capOf();
           progress(`  ${entry.title ?? entry.name}: the story's argTypes options add ${axis ? "a variant property" : "values"}; ${combinations.length} variants planned`);
-          if (axis) {
+          if (restart) {
+            // Nothing measured under the old plan stands: a variant that
+            // failed before the args could be read has a combination
+            // without the new property, which no variant of the set names,
+            // and a cold Storybook's first story is the likeliest to time out.
+            shell.variants = [];
+            shell.base = null;
+            captures = 0;
+            unchecked.length = 0;
+            uncheckedError = undefined;
+            notes.length = 0;
+            markups.length = 0;
+            trees.length = 0;
+            for (const id of Object.keys(svgAssets)) delete svgAssets[id];
+            images.clear();
+            treeNotes.clear();
+            climbed.length = 0;
+            stage.drop(entry);
             index = -1;
             continue;
           }
