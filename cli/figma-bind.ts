@@ -13,6 +13,7 @@
 // guessed. The value is always snap's; the class only picks among the
 // tokens that have it.
 
+import { tokenClassName, withoutRepeatedDefault } from "./tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
 
 /** What a paint colors, which decides the classes that can name its token. */
@@ -42,15 +43,14 @@ export interface BindDecision {
   candidates: string[];
 }
 
-/** A token name as a class names it: Tailwind writes `primary-foreground` for the token `primary/foreground`. */
-const asClass = (name: string) => name.toLowerCase().replace(/\//g, "-");
-
 export class Binder {
   private readonly colors = new Map<string, string[]>();
   private readonly radii: { name: string; px: number }[] = [];
 
   constructor(tokens?: Pick<TokenExtractionResult, "collections"> | null) {
-    for (const collection of tokens?.collections ?? []) {
+    // tokens.json from before held a radius DEFAULT that repeats a step: a
+    // 10px corner matched it and lg, and no class names DEFAULT.
+    for (const collection of withoutRepeatedDefault(tokens?.collections ?? [])) {
       for (const token of collection.tokens) {
         if (collection.category === "colors" && token.hex) {
           // An opaque token is keyed by #rrggbb, so a translucent paint of its
@@ -94,7 +94,7 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
     if (!prefix) continue;
     const rest = c.slice(prefix.length + 1).toLowerCase();
     for (const name of [rest, rest.replace(SIDE, "")]) {
-      const token = candidates.find((t) => asClass(t) === name);
+      const token = candidates.find((t) => tokenClassName(t) === name);
       if (token) named.add(token);
     }
   }

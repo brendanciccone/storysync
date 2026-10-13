@@ -54,7 +54,8 @@ test("Binder: radius binds by rounded-* among the radius tokens of its value, a 
   const binder = new Binder(SHADCN_TOKENS);
   assert.equal(binder.radius(10, ["rounded-lg"]).variable, "lg");
   assert.equal(binder.radius(10, ["rounded-t-lg"]).variable, "lg");
-  assert.deepEqual(binder.radius(10, undefined), { variable: null, candidates: ["DEFAULT", "lg"] });
+  // tokens.json from before held a DEFAULT that repeats lg: it is no candidate.
+  assert.deepEqual(binder.radius(10, undefined), { variable: "lg", candidates: ["lg"] });
   assert.equal(binder.radius(8, undefined).variable, "md");
   assert.equal(binder.radius(9999, ["rounded-full"]).variable, null);
 });
@@ -86,4 +87,10 @@ test("Binder: a token's dark value is no candidate, since snap measures the ligh
   assert.deepEqual(binder.color("#0a0a0a", "fill", ["bg-background"]), { variable: "foreground", candidates: ["foreground"] });
   assert.deepEqual(binder.radius(12, ["rounded-lg"]), { variable: null, candidates: [] });
   assert.equal(binder.radius(8, ["rounded-lg"]).variable, "lg");
+});
+
+test("Binder: a Tailwind config's DEFAULT key is unnamed in a class", () => {
+  // shadcn/ui v3's `primary: { DEFAULT: "hsl(var(--primary))" }` is the token primary/DEFAULT, and bg-primary names it.
+  const binder = new Binder({ collections: [{ category: "colors", tokens: [{ name: "primary/DEFAULT", value: "", hex: "#18181b" }, { name: "foreground", value: "", hex: "#18181b" }] }] });
+  assert.equal(binder.color("#18181b", "fill", ["bg-primary"]).variable, "primary/DEFAULT");
 });

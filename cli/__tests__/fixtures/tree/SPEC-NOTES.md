@@ -542,6 +542,11 @@ commit that made it.
     - Candidates are the tokens' light `hex` and `px`, which snap measures;
       a token's `dark` value is never one. A variable with Light and Dark
       modes binds by name as one of one mode does (tokens 0.4.0, item #8).
+    - tokens leaves out a radius `DEFAULT` that repeats another step in
+      every mode (shadcn/ui's `--radius`, which `--radius-lg` is); the
+      Binder, `--check`'s baseline and diff's Figma variables drop it the
+      same way, so a tokens.json, baseline or Figma file from before
+      still works. A class's `primary` names a config's `primary/DEFAULT`.
 41. **Label call (section 8.11).** DATA is `{ pages, sets: [[id, line]] }`,
     because the template loads only those pages. It returns
     `{ kind, changed, missing, pageOne }` and switches page at most once,

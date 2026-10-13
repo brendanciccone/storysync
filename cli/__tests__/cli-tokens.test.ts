@@ -348,7 +348,9 @@ test("tokens CLI: the text output gives each length's px where its value doesn't
     writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
     const r = tokens(dir);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.out, /\n {4}DEFAULT {18}0\.625rem = 10px\n {4}sm {23}calc\(0\.625rem - 4px\) = 6px\n {4}lg {23}0\.625rem = 10px\n/);
+    // --radius is lg too, so it isn't listed again as DEFAULT.
+    assert.match(r.out, /\n {4}sm {23}calc\(0\.625rem - 4px\) = 6px\n {4}lg {23}0\.625rem = 10px\n/);
+    assert.doesNotMatch(r.out, /DEFAULT/);
   });
 });
 
@@ -363,15 +365,21 @@ test("tokens CLI: --check says how to update the baseline, and that a newer stor
     writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), JSON.stringify({ ...current, collections: current.collections.filter((c) => c.category === "colors") }));
     const upgraded = tokens(dir, "--check");
     assert.equal(upgraded.status, 0, upgraded.out);
-    assert.match(upgraded.out, /\+ radius: DEFAULT, sm, lg\n/);
+    assert.match(upgraded.out, /\+ radius: sm, lg\n/);
     assert.match(upgraded.out, /If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
     assert.equal(tokens(dir, "--check", "--strict").status, 1);
 
     writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), tokens(dir, "--json").stdout);
+    // A baseline from before, with the radius DEFAULT that repeats lg, still checks clean.
+    const radius = (current.collections as { category: string; tokens: unknown[] }[]).find((c) => c.category === "radius")!;
+    const before = { ...current, collections: current.collections.map((c) => (c === radius ? { ...radius, tokens: [{ name: "DEFAULT", value: "0.625rem", px: 10 }, ...radius.tokens] } : c)) };
+    writeFileSync(join(dir, ".storysync", "tokens-before.json"), JSON.stringify(before));
+    const old = tokens(dir, "--check", "--strict", "--baseline", join(dir, ".storysync", "tokens-before.json"));
+    assert.equal(old.status, 0, old.out);
     writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4.replace("--radius: 0.625rem", "--radius: 0.5rem"));
     const changed = tokens(dir, "--check", "--strict");
     assert.equal(changed.status, 1, changed.out);
-    assert.match(changed.out, /~ radius\/DEFAULT: 0\.625rem → 0\.5rem/);
+    assert.match(changed.out, /~ radius\/lg: 0\.625rem → 0\.5rem/);
     assert.match(changed.out, /If the change is intended, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
   });
 });

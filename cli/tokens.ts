@@ -333,8 +333,31 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
       return out;
     });
   }
+  result.collections = withoutRepeatedDefault(result.collections);
   const hasDark = result.collections.some((c) => c.tokens.some((t) => t.dark));
   return { ...result, modes: hasDark ? ["Light", "Dark"] : ["Light"] };
+}
+
+/**
+ * The collections less a radius `DEFAULT` that only repeats another radius
+ * step, in every mode. shadcn/ui's `:root` holds `--radius`, read as radius
+ * `DEFAULT`, and its `@theme inline` sets `--radius-lg: var(--radius)`: the
+ * push made two variables of one value, and a 10px corner, bound by value
+ * alone, matched both and stayed unbound. A baseline or a Figma file from
+ * before still has it: `--check` and diff read theirs through this too.
+ */
+export function withoutRepeatedDefault<T extends Pick<TokenCollection, "category" | "tokens">>(collections: T[]): T[] {
+  const radii = collections.filter((c) => c.category === "radius").flatMap((c) => c.tokens);
+  const length = (v: { value: string; px?: number } | undefined) => (v === undefined ? undefined : v.px ?? lengthToPx(v.value) ?? v.value.trim());
+  const repeats = (a: TokenValue, b: TokenValue) => length(a) === length(b) && length(a.dark) === length(b.dark);
+  const repeated = (t: TokenValue) => t.name === "DEFAULT" && radii.some((other) => other.name !== "DEFAULT" && repeats(t, other));
+  if (!radii.some(repeated)) return collections;
+  return collections.map((c) => (c.category === "radius" ? { ...c, tokens: c.tokens.filter((t) => !repeated(t)) } : c));
+}
+
+/** The class form of a token's name, as Tailwind writes it in a utility: `card/foreground` is `card-foreground`, and a `DEFAULT` key is unnamed, so `primary/DEFAULT` is `primary`. */
+export function tokenClassName(name: string): string {
+  return name.toLowerCase().replace(/\/default$/, "").replace(/\//g, "-");
 }
 
 /** A resolved value's `hex`, for a color, or `px`, for a length, when it has one. */
@@ -2108,8 +2131,10 @@ export function compareTokens(baseline: TokenBaseline, current: TokenExtractionR
   const darkChecked = Array.isArray(baseline.modes);
   if (!darkChecked && current.collections.some((c) => c.tokens.some((t) => t.dark))) drift.darkNotChecked = true;
 
-  const baseMap = tokensByCategory(baseline.collections);
-  const currMap = tokensByCategory(current.collections);
+  // A baseline from before holds a radius DEFAULT that repeats a step,
+  // which extraction now leaves out: neither side compares it.
+  const baseMap = tokensByCategory(withoutRepeatedDefault(baseline.collections));
+  const currMap = tokensByCategory(withoutRepeatedDefault(current.collections));
 
   // Find added and changed
   for (const [category, currTokens] of currMap) {
