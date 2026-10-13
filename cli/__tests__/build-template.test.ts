@@ -8,7 +8,7 @@ import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
 import type { Box, TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, drawnInSet, mockFor, readBoxes, runPlan, variantsBySlug, withConstant } from "./figma-build-harness.js";
-import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
+import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildTree } from "../snap-tree.js";
@@ -655,15 +655,18 @@ test("bindings: what no class colors binds to the base styles' token, so Dark mo
       { property: "border-color", token: "border", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
     ],
   };
-  const dialog = loadTreeFixture("dialog");
-  const attachment = loadTreeFixture("attachment");
+  // snap says so (`nocls`), which these fixtures predate.
+  const dialog = withNoClass(loadTreeFixture("dialog"), { "dialog-header/dialog-title": ["color"], "dialog-footer/dialog-close/#text": ["color"] });
+  const attachment = withNoClass(loadTreeFixture("attachment"), { "": ["border-color"] });
   const mock = mockFor([dialog, attachment]);
   const foreground = mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors").id;
   const border = mock.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#ffffff1a" }, "Colors").id;
   for (const fixture of [dialog, attachment]) {
     const coded = await codeFor(fixture, {}, tokens);
     // The fixture's fills carry no class: a background is no base style's.
-    assert.equal(coded.warnings.some((w) => /(?:color|stroke) #\w+ left unbound/.test(w)), false, coded.warnings.join("\n"));
+    // Nor do Attachment's texts, which inherit its text-card-foreground,
+    // and no nocls says no class colors them: they stay unbound.
+    assert.equal(coded.warnings.some((w) => /stroke #\w+ left unbound|Dialog: color #\w+ left unbound/.test(w)), false, coded.warnings.join("\n"));
     await runPlan(mock, coded, ["build"]);
   }
   const fillOf = (name: string) => (mock.handle(mock.nodes("TEXT").find((n) => n.name === name)!.id).fills as { boundVariables?: { color: { id: string } } }[])[0];

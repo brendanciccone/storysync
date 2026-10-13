@@ -10,10 +10,10 @@ import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
-import type { TreeDelta, TreeNode } from "../tree-types.js";
+import type { NoClassPaint, TreeDelta, TreeNode } from "../tree-types.js";
 import { verify } from "../verify.js";
 import { SHADCN_TOKENS, STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
-import { loadTreeFixture, svgShapeBoxes, treeFixtureNames } from "./mock-figma.js";
+import { loadTreeFixture, svgShapeBoxes, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -324,18 +324,24 @@ test("figma code: what it can't build, and values several tokens share with no c
   assert.deepEqual(without.warnings, ["no tokens at /nonexistent/tokens.json, so nothing is bound to a variable: save them first with `npx storysync tokens --json > /nonexistent/tokens.json`"]);
 });
 
+/** What snap now says of Dialog's title and Cancel: no class colors them, and body's base style does. */
+const DIALOG_NO_CLASS: Record<string, NoClassPaint[]> = { "dialog-header/dialog-title": ["color"], "dialog-footer/dialog-close/#text": ["color"] };
+
 test("figma code: a value the base styles bind is recorded in the plan with its rule, and not warned as unbound", async () => {
   const from = "app/globals.css, @layer base: body { @apply bg-background text-foreground }";
   const tokens = { ...SHADCN_TOKENS, defaults: [{ property: "color", token: "foreground", from }] };
-  const coded = await codeFor(loadTreeFixture("dialog"), {}, tokens);
+  const coded = await codeFor(withNoClass(loadTreeFixture("dialog"), DIALOG_NO_CLASS), {}, tokens);
   // The title and Cancel both: once.
   assert.deepEqual(coded.plan.bindings, [{ component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from }]);
   assert.deepEqual(JSON.parse(readFileSync(join(coded.out, "plan.json"), "utf8")).bindings, coded.plan.bindings);
   assert.equal(coded.warnings.some((w) => /left unbound/.test(w)), false);
-  // Without them, as tokens.json from before: warned as it was, and no bindings.
-  const before = await codeFor(loadTreeFixture("dialog"), {}, SHADCN_TOKENS);
-  assert.equal(before.plan.bindings, undefined);
-  assert.ok(before.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and no class names one"));
+  // Without them, as tokens.json from before, or from a snap that didn't
+  // say no class colors them: warned as it was, and no bindings.
+  for (const [snap, t] of [[withNoClass(loadTreeFixture("dialog"), DIALOG_NO_CLASS), SHADCN_TOKENS], [loadTreeFixture("dialog"), tokens]] as [object, object][]) {
+    const before = await codeFor(snap, {}, t);
+    assert.equal(before.plan.bindings, undefined);
+    assert.ok(before.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and no class names one"));
+  }
 });
 
 test("figma code: a new plan clears the last plan's calls and results, and leaves every other file", async () => {

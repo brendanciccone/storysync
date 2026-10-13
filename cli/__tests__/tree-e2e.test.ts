@@ -20,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
+import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 import { drawnInSet, withConstant } from "./figma-build-harness.js";
@@ -880,7 +880,8 @@ test("figma code: prints each value the base styles bound, with the rule, and li
   const dir = mkdtempSync(join(tmpdir(), "storysync-tree-e2e-"));
   try {
     const snapPath = join(dir, "styles.json");
-    writeFileSync(snapPath, stylesJsonText(asSnap(loadTreeFixture("dialog")) as Parameters<typeof stylesJsonText>[0]));
+    const dialog = withNoClass(loadTreeFixture("dialog"), { "dialog-header/dialog-title": ["color"], "dialog-footer/dialog-close/#text": ["color"] });
+    writeFileSync(snapPath, stylesJsonText(asSnap(dialog) as Parameters<typeof stylesJsonText>[0]));
     const from = "app/globals.css, @layer base: body { @apply bg-background text-foreground }";
     writeFileSync(join(dir, "tokens.json"), JSON.stringify({ ...SHADCN_TOKENS, defaults: [{ property: "color", token: "foreground", from }] }));
     const args = ["figma", "code", "--snap", snapPath, "--tokens", join(dir, "tokens.json"), "--out", join(dir, "figma")];

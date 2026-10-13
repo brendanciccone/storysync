@@ -67,7 +67,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expandTree } from "../tree-types.js";
-import type { Box, ComponentTree, TreeDelta, TreeNode } from "../tree-types.js";
+import type { Box, ComponentTree, NoClassPaint, TreeDelta, TreeNode } from "../tree-types.js";
 import type { SnapComponent, SnapResult } from "../snap.js";
 
 export const CODE_LIMIT = 50_000;
@@ -2301,6 +2301,19 @@ export function treeFixtureNames(): string[] {
 
 export function loadTreeFixture(name: string): TreeFixture {
   return JSON.parse(readFileSync(`${TREE_FIXTURES_DIR}${name}.json`, "utf8")) as TreeFixture;
+}
+
+/**
+ * A fixture with `nocls` set on the base nodes `keys` names, as snap now
+ * records where no class colors them: the fixtures were snapped before it
+ * did, and a tree without `nocls` takes no base style (figma-bind.ts).
+ */
+export function withNoClass(fixture: TreeFixture, keys: Record<string, NoClassPaint[]>): TreeFixture {
+  const out = structuredClone(fixture);
+  for (const component of out.components) {
+    for (const node of component.tree.base) if (keys[node.k]) node.nocls = keys[node.k];
+  }
+  return out;
 }
 
 /** A fixture's asset file's bytes, by the path its ImageAsset gives, relative to the fixture. */

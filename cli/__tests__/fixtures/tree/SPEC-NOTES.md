@@ -563,12 +563,17 @@ commit that made it.
       or an icon, and the `border-color` a `*` rule sets
       (`* { @apply border-border }`), for a stroke, from rules in
       `@layer base` or no layer. A fill takes none: no background is
-      inherited. The default binds only when it is one of the value's
-      tokens, and not when two classes name two. Stylesheets that set a
-      property to different tokens leave it out. Each such binding is in
-      plan.json's `bindings` with its rule, printed with `=`, and not
-      warned. Without `defaults` (a tokens.json from before), nothing
-      changes.
+      inherited. The default binds only where the node's `nocls` names
+      the property (A10), when it is one of the value's tokens, not when
+      two classes name two, and not when a class in `cls` sets the
+      property to a color no token names (`hover:text-neutral-950`, which
+      may be the one measured); a token's class in another state, a size
+      (a typography token's `text-*` included) or a width doesn't stop it.
+      Stylesheets that set a property to different tokens leave it out.
+      Each such binding is in plan.json's `bindings` with its rule,
+      printed with `=`, and not warned. Without `defaults` (a
+      tokens.json from before), or `nocls` (a tree snapped before it, or
+      a class list cut at 8), nothing changes: re-snap.
     - Snap's text evidence walks past the root: `outer` holds the
       evidence classes of each element around it, innermost first, up to
       `<html>`, so a story wrapper's `text-muted-foreground` is found

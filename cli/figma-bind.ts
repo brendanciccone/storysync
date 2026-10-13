@@ -16,11 +16,17 @@
 // Where no class names one, the project's base styles can: shadcn/ui's
 // dialog title has no color class, and inherits `body`'s `text-foreground`
 // from `@layer base`; a card's border takes `* { @apply border-border }`.
-// tokens reads those as `defaults`, and a value whose tokens include the
-// default for its property binds to it, with the rule as its evidence.
+// tokens reads those as `defaults`. Only where snap found that no class
+// sets the property (the node's `nocls`) does a value whose tokens include
+// the default bind to it, with the rule as its evidence: a class that sets
+// it to a color no token names (`text-neutral-950`, `text-[#0a0a0a]`), or
+// sets it on an element the text inherits from, is no such evidence, and a
+// tree from before `nocls` takes no default.
 
 import { tokenClassName, withoutRepeatedDefault } from "./tokens.js";
 import type { BaseDefault, TokenExtractionResult } from "./tokens.js";
+import { SIDE, utilitySetsColor } from "./tree-types.js";
+import type { NoClassPaint } from "./tree-types.js";
 
 /** What a paint colors, which decides the classes that can name its token. */
 export type PaintRole = "fill" | "text" | "stroke" | "vector";
@@ -39,16 +45,16 @@ const PREFIXES: Record<PaintRole | "radius", string[]> = {
   radius: ["rounded"],
 };
 
-/** A side or corner before the token in `border-t-input` or `rounded-tl-lg`. */
-const SIDE = /^(?:[trblxyse]|tl|tr|br|bl|ss|se|es|ee)-/;
-
 /**
  * The property of the base styles' defaults a role takes when no class
  * names its token: a text, and an icon in `currentColor`, inherit `color`;
  * a stroke is a border, whose color `*` sets. A fill takes none, since no
  * background is inherited.
  */
-const DEFAULT_PROPERTY: Partial<Record<PaintRole, BaseDefault["property"]>> = { text: "color", vector: "color", stroke: "border-color" };
+const DEFAULT_PROPERTY: Partial<Record<PaintRole, NoClassPaint>> = { text: "color", vector: "color", stroke: "border-color" };
+
+/** The color properties a role's classes set: an icon's `fill-*` and `stroke-*` as well as its `text-*`. */
+const SETS: Partial<Record<PaintRole, string[]>> = { text: ["color"], vector: ["color", "fill", "stroke"], stroke: ["border-color"] };
 
 export interface BindDecision {
   /** The token, as `tokens` names it and the variable is named, or null to leave the value unbound. */
@@ -63,9 +69,21 @@ export class Binder {
   private readonly colors = new Map<string, string[]>();
   private readonly radii: { name: string; px: number }[] = [];
   private readonly defaults = new Map<BaseDefault["property"], BaseDefault>();
+  /** Every color token as a class names it (`card-foreground`), and each font size as its `text-*` class. */
+  private readonly colorNames = new Set<string>();
+  private readonly sizeClasses = new Set<string>();
 
   constructor(tokens?: Pick<TokenExtractionResult, "collections" | "defaults"> | null) {
     for (const d of tokens?.defaults ?? []) this.defaults.set(d.property, d);
+    for (const collection of tokens?.collections ?? []) {
+      for (const token of collection.tokens) {
+        if (collection.category === "colors") this.colorNames.add(tokenClassName(token.name));
+        // A v4 theme's `--text-body`, or a config's fontSize `body`: `text-body` is a size.
+        if (collection.category === "typography" && (token.name.startsWith("text/") || !token.name.includes("/"))) {
+          this.sizeClasses.add(`text-${tokenClassName(token.name.replace(/^text\//, ""))}`);
+        }
+      }
+    }
     // tokens.json from before held a radius DEFAULT that repeats a step: a
     // 10px corner matched it and lg, and no class names DEFAULT.
     for (const collection of withoutRepeatedDefault(tokens?.collections ?? [])) {
@@ -90,16 +108,39 @@ export class Binder {
     return this.colors.size === 0 && this.radii.length === 0;
   }
 
-  /** The token a paint of `hex` (`#rrggbb` or `#rrggbbaa`) binds to, in `role`, given the node's classes. */
-  color(hex: string, role: PaintRole, cls: readonly string[] | undefined): BindDecision {
+  /**
+   * The token a paint of `hex` (`#rrggbb` or `#rrggbbaa`) binds to, in
+   * `role`, given the node's classes and the properties snap found no class
+   * sets (`nocls`).
+   */
+  color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[]): BindDecision {
     const value = hex.toLowerCase();
     const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
     const decision = decide(candidates, PREFIXES[role], cls);
     if (decision.variable || decision.named) return { variable: decision.variable, candidates };
-    // No class names any of them: the base style for the property, if it is one.
-    const fallback = DEFAULT_PROPERTY[role] && this.defaults.get(DEFAULT_PROPERTY[role]!);
-    if (fallback && candidates.includes(fallback.token)) return { variable: fallback.token, candidates, from: fallback.from };
+    // No class names any of them: the base style for the property, where
+    // snap found no class sets it, and none of the classes it lists sets it
+    // in some state to a color no token names.
+    const property = DEFAULT_PROPERTY[role];
+    const fallback = property && this.defaults.get(property);
+    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.unnamedColor(role, cls)) {
+      return { variable: fallback.token, candidates, from: fallback.from };
+    }
     return { variable: null, candidates };
+  }
+
+  /**
+   * A class among `cls` that sets the role's color to one no token names:
+   * a palette color, `hover:text-neutral-950`, which may be the color
+   * measured in that state. A project's font size (`text-body`) sets none.
+   */
+  private unnamedColor(role: PaintRole, cls: readonly string[] | undefined): string | undefined {
+    return (cls ?? []).find((c) => {
+      const property = utilitySetsColor(c);
+      if (!property || !SETS[role]?.includes(property) || this.sizeClasses.has(c)) return false;
+      const name = c.slice(c.indexOf("-") + 1);
+      return !this.colorNames.has(name) && !this.colorNames.has(name.replace(SIDE, ""));
+    });
   }
 
   /** The radius token a corner radius of `px` binds to, given the node's classes. */

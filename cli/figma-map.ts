@@ -150,10 +150,14 @@ export function splitHex(hex: string): [string, number] {
 
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
-/** A solid paint for a measured color, bound where its value and classes name one token. */
-export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefined, key: string, property: string, ctx: MapContext): FigmaPaint {
+/**
+ * A solid paint for a measured color, bound where its value and classes
+ * name one token, or where no class sets it (`nocls`) and the project's
+ * base styles do.
+ */
+export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefined, key: string, property: string, ctx: MapContext, nocls?: string[]): FigmaPaint {
   const [rgb, alpha] = splitHex(hex);
-  const decision = ctx.binder.color(hex, role, cls);
+  const decision = ctx.binder.color(hex, role, cls, nocls);
   if (!decision.variable && decision.candidates.length > 1) {
     ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
   }
@@ -297,7 +301,7 @@ function strokeOf(node: TreeNode, ctx: MapContext): FigmaStroke | undefined {
   const style = styles[drawn[0]];
   if (!["solid", "dashed", "dotted"].includes(style)) ctx.notBuilt.push({ key: node.k, what: `border style ${style}, built solid` });
   const w = collapse(widths);
-  const stroke: FigmaStroke = { w, p: color ? solidPaint(color, "stroke", node.cls, node.k, "stroke", ctx) : CLEAR };
+  const stroke: FigmaStroke = { w, p: color ? solidPaint(color, "stroke", node.cls, node.k, "stroke", ctx, node.nocls) : CLEAR };
   const unit = Math.max(...drawn.map((i) => widths[i]));
   if (style === "dashed") stroke.d = [3 * unit, 3 * unit];
   if (style === "dotted") stroke.d = [unit, unit];
@@ -466,7 +470,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     style.t = textOf(node, ctx);
     const color = node.tx!.col;
     const cls = node.el.startsWith("#") ? node.cls ?? ctx.parentCls : node.cls;
-    style.f = color ? [solidPaint(color, "text", cls, node.k, "color", ctx)] : [];
+    style.f = color ? [solidPaint(color, "text", cls, node.k, "color", ctx, node.nocls)] : [];
     return style;
   }
 
@@ -478,7 +482,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     if (imported.rescale) style.rs = imported.rescale;
     const binds: Record<string, string> = {};
     for (const hex of markupColors(markup)) {
-      const decision = ctx.binder.color(hex, "vector", node.cls);
+      const decision = ctx.binder.color(hex, "vector", node.cls, node.nocls);
       if (decision.variable && decision.from) ctx.byDefault?.push({ key: node.k, property: "vector", value: hex, variable: decision.variable, from: decision.from });
       if (decision.variable) binds[hex] = decision.variable;
       else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
