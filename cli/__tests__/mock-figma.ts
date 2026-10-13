@@ -1374,21 +1374,31 @@ function turnMatrix(deg: number, x: number, y: number): number[][] {
   return [[cos, sin, x], [-sin || 0, cos, y]];
 }
 
-/** The box a node's turned corners span, from where its top left corner is. */
-function turnedBox(at: { x: number; y: number }, n: Node): { x: number; y: number; width: number; height: number } {
-  if (!n.rot) return { ...at, width: n.w, height: n.h };
-  const [[a, b], [c, d]] = turnMatrix(n.rot, 0, 0);
+/**
+ * A node's transform to its page, Figma's absoluteTransform: each frame's
+ * own (relativeTransform) from the page down, so a frame's turn turns what
+ * it holds. A group's children are in its frame's coordinates, as the
+ * group itself is, so a group adds nothing.
+ */
+function absoluteMatrix(n: Node): number[][] {
+  n.doc.settle();
+  const chain: Node[] = [];
+  for (let at: Node | null = n; at && at.type !== "PAGE" && at.type !== "DOCUMENT"; at = containerOf(at)) chain.unshift(at);
+  let [a, b, x, c, d, y] = [1, 0, 0, 0, 1, 0];
+  for (const at of chain) {
+    const [[a2, b2, x2], [c2, d2, y2]] = turnMatrix(at.rot, at.x, at.y);
+    [a, b, x, c, d, y] = [a * a2 + b * c2, a * b2 + b * d2, a * x2 + b * y2 + x, c * a2 + d * c2, c * b2 + d * d2, c * x2 + d * y2 + y];
+  }
+  return [[a, b, r2(x)], [c, d, r2(y)]];
+}
+
+/** The box a node's corners span on its page, Figma's absoluteBoundingBox. */
+function absoluteBox(n: Node): { x: number; y: number; width: number; height: number } {
+  const [[a, b, x], [c, d, y]] = absoluteMatrix(n);
   const xs = [0, a * n.w, b * n.h, a * n.w + b * n.h];
   const ys = [0, c * n.w, d * n.h, c * n.w + d * n.h];
   const [x0, y0] = [Math.min(...xs), Math.min(...ys)];
-  return { x: at.x + x0, y: at.y + y0, width: Math.max(...xs) - x0, height: Math.max(...ys) - y0 };
-}
-
-function absolutePosition(n: Node): { x: number; y: number } {
-  n.doc.settle();
-  let [x, y] = [0, 0];
-  for (let at: Node | null = n; at && at.type !== "PAGE" && at.type !== "DOCUMENT"; at = containerOf(at)) [x, y] = [x + at.x, y + at.y];
-  return { x: r2(x), y: r2(y) };
+  return { x: x + x0, y: y + y0, width: Math.max(...xs) - x0, height: Math.max(...ys) - y0 };
 }
 
 function cloneNode(n: Node, parent: Node | null): Node {
@@ -1526,10 +1536,10 @@ const PROPS: Record<string, Prop> = {
   // A turn as the sixth probe saw Figma's (fixtures/figma-tsum-probe.json,
   // call 1): about the top left corner, which x and y keep, setting it or a
   // size; the transform's first two columns are cos, sin and -sin, cos of
-  // the angle, counterclockwise. Not modeled: an ancestor's turn, which no
-  // absolute box or transform here takes in, as the build turns only leaves.
-  absoluteBoundingBox: { types: SCENE, geometry: true, get: (n) => turnedBox(absolutePosition(n), n) },
-  absoluteTransform: { types: SCENE, geometry: true, get: (n) => { const p = absolutePosition(n); return turnMatrix(n.rot, p.x, p.y); } },
+  // the angle, counterclockwise. A frame's turn turns what it holds on the
+  // page, as an imported icon's shapes in its turned frame.
+  absoluteBoundingBox: { types: SCENE, geometry: true, get: (n) => absoluteBox(n) },
+  absoluteTransform: { types: SCENE, geometry: true, get: (n) => absoluteMatrix(n) },
   relativeTransform: { types: SCENE, geometry: true, get: (n) => turnMatrix(n.rot, n.x, n.y) },
   rotation: {
     types: SCENE,

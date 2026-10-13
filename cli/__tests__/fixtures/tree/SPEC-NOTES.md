@@ -1925,3 +1925,15 @@ F6-6. **A turn inside a transformed node is built unturned** (F6-3).
    `tf`; `unturnedBecause` gives the reason a turn is left out, which figma
    code's warning and verify's unscorable `transform` both say: `a
    transform around it is built untransformed`.
+F6-7. **A turned icon's shapes are scored** (10.2, F6-3). verify left them
+   unscored as `the SVG holds what Figma's importer may drop (transform)`:
+   it read the node's `approx`, `transform` included, where the rest of its
+   geometry drops `transform` for a turn the build makes. snap measures a
+   turned icon's shapes turned, in the box the turned icon spans
+   (getBoundingClientRect), and the readback reads each shape's
+   absoluteBoundingBox in the turned frame's, which is the same, so they
+   are now compared. Where the build leaves the transform out, the reason
+   says so: `its shapes are measured as rotate: 45deg draws them, and it
+   is built unturned`. The mock's absoluteTransform and absoluteBoundingBox
+   now compose each frame's turn from the page down, as Figma's do, so a
+   turned frame turns what it holds.

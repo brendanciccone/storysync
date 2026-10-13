@@ -579,7 +579,7 @@ export function scoreTree(input: TreeInput): TreeScore {
     }
 
     if (n.t === "T" && n.tx) scoreText(n, rec, field, check, unscorable, spike, snap.get(parentKey(n.k) ?? ""));
-    else if (n.t === "V") scoreVector(n, field, assets, tolerance, check, unscorable);
+    else if (n.t === "V") scoreVector(n, approxBy, field, assets, tolerance, check, unscorable);
     else if (n.t === "I") scoreImage(n, field, assets, tolerance, check, unscorable, spike);
     else scoreFrame(n, field, tolerance, check, unscorable, spike);
 
@@ -752,13 +752,24 @@ export function cutInBrowser(n: TreeNode, parent?: TreeNode): boolean | null {
   return tx.ink[0] < start - 0.5 || tx.ink[0] + tx.ink[2] > end + 0.5;
 }
 
-function scoreVector(n: TreeNode, field: Field, assets: ComponentTree["assets"], tolerance: number, check: Check, unscorable: Unscorable): void {
+/**
+ * A vector's shapes and paint. `approxBy` is why its geometry is
+ * approximate, less a turn the build makes (builtTurn): a turned icon's
+ * shapes are then scored, snap's measured turned in the box the turned
+ * icon spans, as the readback reads Figma's.
+ */
+function scoreVector(n: TreeNode, approxBy: string, field: Field, assets: ComponentTree["assets"], tolerance: number, check: Check, unscorable: Unscorable): void {
   const want = n.shapes ?? [];
   const got = (Array.isArray(field("shapes")) ? field("shapes") : []) as unknown[][];
   const markup = n.svg ? assets.svg[n.svg] : undefined;
-  // Content createNodeFromSvg may drop: its shapes may not come out one for one.
-  if (n.approx || n.raster) {
-    unscorable("shapes", n.raster ? "a raster stands in for the vector" : `the SVG holds what Figma's importer may drop (${n.approx})`);
+  // Content createNodeFromSvg may drop: its shapes may not come out one for
+  // one. A transform the build leaves out: snap measured its shapes as it
+  // drew them, and Figma holds them untransformed.
+  const dropped = approxBy.split(",").filter((why) => why && why !== "transform").join(",");
+  if (n.raster || dropped) {
+    unscorable("shapes", n.raster ? "a raster stands in for the vector" : `the SVG holds what Figma's importer may drop (${dropped})`);
+  } else if (approxBy) {
+    unscorable("shapes", `its shapes are measured as ${n.tf ?? "its transform"} draws them, and it is built ${turnOf(n.tf) === null ? "untransformed" : "unturned"}`);
   } else {
     const limit = Math.max(SHAPE_TOLERANCE.min, SHAPE_TOLERANCE.ratio * Math.max(n.box[2], n.box[3]));
     const same = want.length === got.length && want.every((box, i) => box.every((v, j) => near(Number(got[i][j]), v, limit)));

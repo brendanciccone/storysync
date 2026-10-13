@@ -552,6 +552,38 @@ test("tree e2e: a turn inside a turned layer is built unturned and named, not sc
   }
 });
 
+test("tree e2e: a turned icon's shapes are scored where it is built turned, and named where it isn't", async () => {
+  // The Card's bell, 24 square, turned 90 degrees clockwise out of the
+  // flow: the browser measures each shape turned, in the box the turned
+  // icon spans, (x, y, w, h) to (24 - y - h, x, h, w), and so does the
+  // readback, off Figma's turned frame.
+  const card = (edit: (svg: TreeNode) => void) => {
+    const snap = asSnap(loadTreeFixture("card"));
+    edit((snap.components[0] as TreeComponent).tree!.base.find((n) => n.k === "card-content/div/svg")!);
+    return snap;
+  };
+  const turned = await push(card((svg) => {
+    Object.assign(svg, { abs: 1, tf: "rotate: 90deg", approx: "transform", shapes: svg.shapes!.map(([x, y, w, h]) => [24 - y - h, x, h, w]) });
+  }));
+  try {
+    const { json } = await verifyPlan(turned);
+    assert.equal(json.elementFidelity, 1);
+    assert.deepEqual((json.unscorable as { key: string; property: string }[]).filter((u) => u.key === "card-content/div/svg"), []);
+  } finally {
+    cleanup(turned);
+  }
+  // In the flow at 45 degrees it is built unturned: its shapes, measured
+  // turned, are named, not scored against the unturned ones.
+  const unturned = await push(card((svg) => Object.assign(svg, { tf: "rotate: 45deg", approx: "transform" })));
+  try {
+    const { json } = await verifyPlan(unturned);
+    const shapes = (json.unscorable as { key: string; property: string; reason: string }[]).filter((u) => u.key === "card-content/div/svg" && u.property === "shapes");
+    assert.deepEqual(shapes.map((u) => u.reason), ["its shapes are measured as rotate: 45deg draws them, and it is built unturned"]);
+  } finally {
+    cleanup(unturned);
+  }
+});
+
 test("tree e2e: a Select snap clicked open is built from its listbox with no item hovered, and verifies by element", async () => {
   const select = asSnap(loadTreeFixture("select"));
   const [variant] = select.components[0].variants;

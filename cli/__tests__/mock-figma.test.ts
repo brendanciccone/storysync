@@ -335,6 +335,27 @@ test("rotation: a layer turns about its top left corner, as the sixth probe saw 
     return c.x;`), /a turned layer in an auto layout's flow is not modeled/);
 });
 
+test("rotation: a frame's turn turns what it holds on the page, a group's children included, as an imported icon's shapes", async () => {
+  // A 24 square at 100,50 turned 90 clockwise (Figma -90) about its top
+  // left corner, which stays at 100,50: what it held at 2,3, 4 by 5, is at
+  // 100 - 3 - 5 across and 50 + 2 down, 5 by 4; its relative transform is
+  // still its own.
+  const figma = new MockFigma();
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><rect x="2" y="3" width="4" height="5"/><g><rect x="10" y="0" width="2" height="2"/></g></svg>';
+  const got = await ok(figma, `
+    const f = figma.createNodeFromSvg(${JSON.stringify(markup)}); f.x = 100; f.y = 50; f.rotation = -90;
+    const [r, g] = f.children;
+    return [r.absoluteBoundingBox, r.absoluteTransform, r.relativeTransform, g.children[0].absoluteBoundingBox, f.absoluteBoundingBox];`) as unknown[];
+  const round = (v: unknown): unknown => (typeof v === "number" ? Math.round(v * 1000) / 1000 || 0 : Array.isArray(v) ? v.map(round) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, round(x)])) : v);
+  assert.deepEqual(round(got), [
+    { x: 92, y: 52, width: 5, height: 4 },
+    [[0, -1, 97], [1, 0, 52]],
+    [[1, 0, 2], [0, 1, 3]],
+    { x: 98, y: 60, width: 2, height: 2 },
+    { x: 76, y: 50, width: 24, height: 24 },
+  ]);
+});
+
 test("auto layout: strokes included in layout inset the children by the frame's own stroke, when INSIDE", async () => {
   const stroke = "f.strokes = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }]; f.strokeWeight = 2;";
   assert.deepEqual(await layout(`${HUG} ${stroke} f.strokesIncludedInLayout = true;`, [[20, 10]]), { frame: [24, 14], kids: [[2, 2, 20, 10]] });
