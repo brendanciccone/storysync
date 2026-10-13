@@ -615,6 +615,32 @@ const APPLY_STYLES = `const applyStyles = async (variant, styles) => {
       variant.resize(styles.width, styles.height);
     };`;
 
+test("templates: the skill's Tokens step 3 makes a collection in Light and Dark, and the Audit's read gives each mode", async () => {
+  // tokens gives a dark value, and the push makes it a Dark mode beside
+  // Light; a token without one keeps its light value there.
+  const blocks = skillBlocks();
+  const create = blocks.filter((b) => /^Create the Colors variable collection/.test(b.description));
+  const read = blocks.filter((b) => /^Read all variable collections/.test(b.description));
+  assert.equal(create.length, 1);
+  assert.equal(read.length, 1);
+  const figma = new MockFigma();
+  assert.deepEqual(JSON.parse((await ok(figma, create[0].code)) as string), { collection: "Colors", modes: ["Light", "Dark"], variables: 3, darkError: null });
+  const audit = JSON.parse((await ok(figma, read[0].code)) as string) as { next: unknown; variables: unknown[] };
+  assert.deepEqual(audit, { total: 3, next: null, variables: [
+    { name: "background", type: "COLOR", value: "#ffffff", collection: "Colors", modes: { Light: "#ffffff", Dark: "#0a0a0a" } },
+    { name: "primary", type: "COLOR", value: "#171717", collection: "Colors", modes: { Light: "#171717", Dark: "#e5e5e5" } },
+    { name: "chart/1", type: "COLOR", value: "#3b82f6", collection: "Colors", modes: { Light: "#3b82f6", Dark: "#3b82f6" } },
+  ] });
+
+  // A plan of one mode: Light alone, and the error to tell the user.
+  const free = new MockFigma({ maxModes: 1 });
+  const made = JSON.parse((await ok(free, create[0].code)) as string) as { modes: string[]; darkError: string | null };
+  assert.deepEqual(made.modes, ["Light"]);
+  assert.match(made.darkError ?? "", /Limited to 1 modes/);
+  const lightOnly = JSON.parse((await ok(free, read[0].code)) as string) as { variables: { value: string; modes?: unknown }[] };
+  assert.deepEqual(lightOnly.variables.map((v) => [v.value, v.modes]), [["#ffffff", undefined], ["#171717", undefined], ["#3b82f6", undefined]]);
+});
+
 test("templates: the 0.4.0 skill's build and readback run unchanged, and verify scores the result 100%", async () => {
   const blocks = skillBlocks();
   const build = blocks.filter((b) => /^Create or update/.test(b.description));

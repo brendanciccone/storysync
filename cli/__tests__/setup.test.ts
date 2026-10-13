@@ -1494,7 +1494,7 @@ test("every step a command names is the step it means, in the command or the ski
   assert.match(push, /step 5's `figma code` and step 7's `verify`/, "the push command no longer sends skipped components to its own steps 5 and 7");
 });
 
-test("every audit says what its token counts don't cover: other modes, the dark theme, unread tokens and Tailwind's default scales", () => {
+test("every audit compares the Dark mode with the dark theme, and says what its token counts don't cover: other modes, unread tokens and Tailwind's default scales", () => {
   // An audit of shadcn/ui ended "39 matched, 0 missing", silent on the
   // dark theme neither side compared, the fonts tokens couldn't resolve,
   // and the spacing and type Tailwind's defaults give, which have no tokens.
@@ -1512,7 +1512,8 @@ test("every audit says what its token counts don't cover: other modes, the dark 
       const text = readFileSync(join(project, path), "utf8");
       const audit = text.slice(text.search(/^(?:## Audit$|Workflow\b)/m));
       assert.match(audit, /every mode of a Figma collection but its first/, `${path} doesn't name the modes it didn't compare`);
-      assert.match(audit, /`Only the light theme is read`/, `${path} doesn't name the dark theme tokens doesn't read`);
+      assert.match(audit, /`Dark`[^.]*`dark`/, `${path} doesn't compare the Dark mode with the tokens' dark values`);
+      assert.match(audit, /missing from Figma(\*\*)? in Dark/, `${path} doesn't report a dark value Figma has no mode for`);
       assert.match(audit, /`Unresolved:`, `Skipped dynamic value:`, `Not read from @theme`, `Uncategorized:`/, `${path} doesn't name the tokens tokens didn't read`);
       assert.match(audit, /Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract/, `${path} doesn't name Tailwind's default scales`);
       assert.match(audit, /Beside the token counts, say what they cover and what they don't/, `${path}'s summary gives the counts alone`);

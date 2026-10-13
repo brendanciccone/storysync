@@ -508,6 +508,9 @@ commit that made it.
       `currentColor`.
     - A radius is not bound when its border is built OUTSIDE, because the
       inner radius matches no token.
+    - Candidates are the tokens' light `hex` and `px`, which snap measures;
+      a token's `dark` value is never one. A variable with Light and Dark
+      modes binds by name as one of one mode does (tokens 0.4.0, item #8).
 41. **Label call (section 8.11).** DATA is `{ pages, sets: [[id, line]] }`,
     because the template loads only those pages. It returns
     `{ kind, changed, missing, pageOne }` and switches page at most once,

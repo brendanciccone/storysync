@@ -28,10 +28,15 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
 {
   "source": "tailwind",
   "sourcePath": "tailwind.config.ts",
+  "modes": ["Light", "Dark"],
   "collections": [
     {
       "category": "colors",
-      "tokens": [{ "name": "primary/500", "value": "oklch(62.3% 0.214 259.815)", "hex": "#2b7fff" }, ...]
+      "tokens": [
+        { "name": "primary/500", "value": "oklch(62.3% 0.214 259.815)", "hex": "#2b7fff" },
+        { "name": "background", "value": "oklch(1 0 0)", "hex": "#ffffff", "dark": { "value": "oklch(0.145 0 0)", "hex": "#0a0a0a" } },
+        ...
+      ]
     },
     {
       "category": "spacing",
@@ -42,46 +47,60 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
 }
 ```
 
+A token with a `dark` has a different value in the project's dark theme (`.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`), with its own `hex` or `px`. `modes` is `["Light", "Dark"]` when any token has one.
+
 If a `warnings` entry says storysync can't read or find part of the Tailwind config, or doesn't follow it, such as a preset from a package, a config built by a function, or a file it names, or that it read no theme from the config, tell the user what it names: those tokens are missing from the output, so they won't reach Figma. If one says it read another source rather than a `tailwind.config.mts` or `.cts`, tell the user, who can pass `--source tailwind` to read the config. If the command returns no collections, skip to Components.
 
 2. **Preview tokens** — optionally, run `npx storysync tokens --project .` (without `--json`) to show a human-readable preview, or `npx storysync tokens --project . --all` to show every token.
 
-3. **Create Figma variable collections** — use the JSON output from step 1 to create Figma variables. Call `use_figma` with one collection at a time:
+3. **Create Figma variable collections** — use the JSON output from step 1 to create Figma variables, one collection per category. Call `use_figma` with one collection at a time. Where any token of a collection has a `dark`, the collection gets two modes, `Light` and `Dark`, and every variable in it a value in each: `Dark` from its `dark`, or, for a token with none, its light value again, as the browser keeps a variable the dark theme doesn't set. A collection with no `dark` token keeps one mode:
 
 ```js
 use_figma({
   code: `
-    // Create Colors collection
-    const colors = figma.variables.createVariableCollection('Colors');
-    const mode = colors.modes[0];
-
-    // Add variables, each color from its token's hex
-    const primary500 = figma.variables.createVariable('primary/500', colors, 'COLOR');
-    primary500.setValueForMode(mode.modeId, figma.util.rgba('#2b7fff'));
-
-    // ... repeat for each color token from the storysync output
-
-    // Create Spacing collection
-    const spacing = figma.variables.createVariableCollection('Spacing');
-    const spMode = spacing.modes[0];
-    const sp4 = figma.variables.createVariable('4', spacing, 'FLOAT');
-    sp4.setValueForMode(spMode.modeId, 16); // its token's px
-
-    // ... repeat for each spacing token
+    // One collection's tokens from the storysync output: each color's hex,
+    // and its dark's hex where it has one.
+    const NAME = 'Colors';
+    const TOKENS = [
+      { name: 'background', hex: '#ffffff', dark: { hex: '#0a0a0a' } },
+      { name: 'primary', hex: '#171717', dark: { hex: '#e5e5e5' } },
+      { name: 'chart/1', hex: '#3b82f6' },
+    ];
+    const collection = figma.variables.createVariableCollection(NAME);
+    const light = collection.modes[0].modeId;
+    let dark = null;
+    let darkError = null;
+    if (TOKENS.some((t) => t.dark)) {
+      collection.renameMode(light, 'Light');
+      try {
+        dark = collection.addMode('Dark');
+      } catch (e) {
+        // The file's plan allows fewer modes: Light alone, said in the summary.
+        darkError = String((e && e.message) || e);
+      }
+    }
+    for (const token of TOKENS) {
+      const variable = figma.variables.createVariable(token.name, collection, 'COLOR');
+      variable.setValueForMode(light, figma.util.rgba(token.hex));
+      if (dark) variable.setValueForMode(dark, figma.util.rgba((token.dark || token).hex));
+    }
+    return JSON.stringify({ collection: NAME, modes: collection.modes.map((m) => m.name), variables: TOKENS.length, darkError });
   `,
-  description: "Create variable collections: Colors (N variables), Spacing (N variables), Radius (N variables), Typography (N variables), Shadows (N variables)",
+  description: "Create the Colors variable collection (N variables), in Light and Dark modes",
   fileKey: "<file-key>",
   skillNames: "figma-use"
 })
 ```
 
+   A `FLOAT` collection is made the same way, with `createVariable(token.name, collection, 'FLOAT')` and each mode set from `px` (`token.px`, and `token.dark.px` in Dark). If a call returns a `darkError`, the file's Figma plan allows the collection one mode: it holds the light theme alone, so tell the user, with the error, that the dark values weren't pushed, and that a plan with more modes, or a Dark mode added by hand, would take them.
+
    Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6, and `value` is as the source writes it. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, such as one in em or % (as letter spacing often is), which depends on the element. Leave out too, and say which, any token a `tokens` warning starting `Unresolved:` names: its `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). The tokens such a warning says were not read from `@theme`, shadcn/ui's `font/sans` and `font/mono` among them, are out of the output already: name them all the same. So are the tokens a warning starting `Skipped dynamic value:` names, a value the config only computes when it runs, such as a template literal that interpolates or a `theme()` call: name them too. A `value` can keep a `var()` that did resolve, as `calc(var(--radius) - 4px)` in `:root` does; set that token from its `px` or `hex` as usual. If no token in the output has a `px` at all, an older storysync ran: use a plain rem `value` times 16, or a px one as is, in place of `px`.
 
    Set each color from its token's `hex`, not its `value`: `figma.util.rgba(token.hex ?? token.value)`. `value` is the color as the source writes it, and `figma.util.rgb` and `rgba` take only hex, `rgb()`, `hsl()` and `lab()`, so a value in `oklch()`, `oklab()`, `lch()`, `hwb()` or `color()`, or bare HSL channels such as `0 0% 100%`, throws. `hex` is sRGB, `#rrggbbaa` when the color is translucent, which `rgba` keeps. A color token with no `hex` is one storysync couldn't convert, such as `currentColor` or an unresolved `var()`; if `rgba` throws on its `value` too, leave it out and say which.
 
-   A `use_figma` call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow. Split a large collection — a full color palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created rather than creating another.
+   A `use_figma` call takes at most 50,000 characters of code, and one that runs too long fails with `Script exceeded time limit`; creating variables is slow. Split a large collection — a full color palette runs to hundreds — across calls of a few dozen variables each, finding the collection the first call created, and its `Light` and `Dark` modes by name, rather than creating another.
 
-4. **Verify** — confirm the variable collections were created with the expected count, less the tokens you left out. If any are missing, retry.
+4. **Verify** — confirm the variable collections were created with the expected count, less the tokens you left out, and with a `Dark` mode where step 3 made one. If any are missing, retry.
 
 ## Components
 
@@ -244,11 +263,11 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
    - `! snap recorded a failure`: the measurement itself is incomplete, not Figma. Where it names a component's error, measure that component again (step 3, with `--merge`); where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again.
    - `Variables:` the element-tree readback doesn't read variable bindings yet, so a token detached in Figma at the same value can't be seen. Say so in the summary.
 
-7. Summarize what was synced: token collections created, and that they hold the light theme alone where a `tokens` warning starts `Only the light theme is read`, the tokens left out (Tokens step 3), components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score, worded as `verify` words it: element fidelity, with the share of properties beside it**, and where its line says entries were `unverified, not scored`, how many entries it left unverified, which the score doesn't cover; the coverage `verify` gives, with what it couldn't score; the variants built as a `Not measured` placeholder, each with the story change it needs; any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, any variant snap marked `argsChecked: false`, each component's `argsNotInDocs`, each component measured from the story `--stories` named, with the story and its `!` where it had one, for an audit to measure from it too, the variants snap measured from a story of their own, as its output says, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured; the frames built without auto layout (`figma code`'s warnings and the build responses' `absoluteContainers`), the layers of an earlier root-only push the build replaced (`migrated`), and the designer layers `verify` listed, with what the user chose for them; the values left unbound because several variables share them, from `figma code`'s warnings and the build responses' `unbound`; every font stand-in the build responses returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which snap measured that text in too where its `fontStandIns` says so, and any `fallbacks` they list, where `kept on one line` or `cut short` means Figma sets a text wider than snap measured it, which a snap taken again measures in Figma's font, and `verify` scores a text cut short as drift on its truncation; which variant Figma will treat as a set's default where that is not the component's default (step 5); any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a build returned `overlaps` for, and whether the user had it moved; any picture `figma upload` couldn't post, or an `images` response left `unfilled`; that `verify` can't yet see variable bindings in an element-tree readback; and any failures or caps.
+7. Summarize what was synced: token collections created, with their modes, and, where a collection holds the light theme alone though its tokens have `dark` values, why (Tokens step 3's `darkError`), the tokens left out (Tokens step 3), components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score, worded as `verify` words it: element fidelity, with the share of properties beside it**, and where its line says entries were `unverified, not scored`, how many entries it left unverified, which the score doesn't cover; the coverage `verify` gives, with what it couldn't score; the variants built as a `Not measured` placeholder, each with the story change it needs; any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, any variant snap marked `argsChecked: false`, each component's `argsNotInDocs`, each component measured from the story `--stories` named, with the story and its `!` where it had one, for an audit to measure from it too, the variants snap measured from a story of their own, as its output says, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured; the frames built without auto layout (`figma code`'s warnings and the build responses' `absoluteContainers`), the layers of an earlier root-only push the build replaced (`migrated`), and the designer layers `verify` listed, with what the user chose for them; the values left unbound because several variables share them, from `figma code`'s warnings and the build responses' `unbound`; every font stand-in the build responses returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which snap measured that text in too where its `fontStandIns` says so, and any `fallbacks` they list, where `kept on one line` or `cut short` means Figma sets a text wider than snap measured it, which a snap taken again measures in Figma's font, and `verify` scores a text cut short as drift on its truncation; which variant Figma will treat as a set's default where that is not the component's default (step 5); any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a build returned `overlaps` for, and whether the user had it moved; any picture `figma upload` couldn't post, or an `images` response left `unfilled`; that `verify` can't yet see variable bindings in an element-tree readback; and any failures or caps.
 
 ## Variable binding
 
-`figma code` binds each fill, stroke, text color, icon color and corner radius to a variable from `.storysync/tokens.json`, the `tokens --json` output Components step 5 saves, so that when tokens change in code and storysync runs again, updating the variables updates every component. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color, `#rrggbbaa`, matches a token of its `#rrggbb`, and is bound with the paint's opacity at its alpha, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, `text-card-foreground` the text to `card/foreground`, `border-input` the stroke to `input`, and `rounded-lg` the radius to `lg`. Where no class names one, the value is left unbound, and `figma code` warns with the variables it matches: list them in the summary rather than bind one by hand. The build finds each variable by its name in the file, as Tokens step 3 created it from `tokens`, so a name Figma has none of, or two of, leaves the value unbound too, listed in the build response's `unbound`. Shadows stay unbound, and a project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
+`figma code` binds each fill, stroke, text color, icon color and corner radius to a variable from `.storysync/tokens.json`, the `tokens --json` output Components step 5 saves, so that when tokens change in code and storysync runs again, updating the variables updates every component. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color, `#rrggbbaa`, matches a token of its `#rrggbb`, and is bound with the paint's opacity at its alpha, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, `text-card-foreground` the text to `card/foreground`, `border-input` the stroke to `input`, and `rounded-lg` the radius to `lg`. Where no class names one, the value is left unbound, and `figma code` warns with the variables it matches: list them in the summary rather than bind one by hand. The build finds each variable by its name in the file, as Tokens step 3 created it from `tokens`, so a name Figma has none of, or two of, leaves the value unbound too, listed in the build response's `unbound`. Values are matched by the light theme's, which snap measures: a token's `dark` value picks no variable. A variable bound this way takes its `Dark` value wherever a designer switches a frame to the Dark mode. Shadows stay unbound, and a project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
 
 ## Root-only snaps (`--root-only`)
 
@@ -1088,7 +1107,7 @@ npx storysync verify --strict-age
 
    Fix what it flags with a follow-up `use_figma` targeting the node by ID, then read the set back again and re-run `verify`. Four things it flags are not fixed by editing a node: an `unscored` variant means your readback returned nothing comparable for it — re-read that node; an entry whose checksum is missing or does not match, or whose component has the `nodeId` of another, is not what the readback returned — read that slice, or both components' sets, again and write their entries exactly as returned, each component under its own set's id, never editing the file to make it pass; an `incomplete` entry was read with the template cut down, and a `stale` one before the snap — read that slice again, now, with the template as it is; and `! snap recorded a failure` means the measurement itself is incomplete, not Figma: where it names a component's error, measure that component again (step 3, with `--merge`), and where it says components share a key, or that the snap recorded no components, do what snap warned and run the whole snap again. Nor, as a rule, is a `width` a pixel or two off on a variant that hugs its text, with nothing else on it drifting: Figma lays text out with its own metrics, about a pixel apart from the browser's (a chip labeled "Chip" in bold 11px Inter measured 38.59 wide in Chrome and 40 in Figma), and verify's allowance is narrowest on small labels. Report it as a font-rendering difference rather than fixing the text's width to squeeze it, which can clip the label, but only when the variant's stroke is `OUTSIDE`, `INSIDE` with `strokesIncludedInLayout`, or it has none, and the difference is not exactly twice the measured border's weight. Otherwise check its `strokeAlign` first: an `INSIDE` stroke on a hugging frame without `strokesIncludedInLayout` leaves the variant short by exactly twice the border, a `CENTER` one by the border, and a transparent border built with no stroke by twice the border too, and each is a build mistake to fix, not font rendering. Nor is a `borderUniform` whose measured `style` is `double`, `groove`, `ridge`, `inset` or `outset`: Figma's strokes have none of those, so report it rather than spend a fix round on it; nor a `fontFamily` the build parts' `fonts` name a stand-in for, which no edit in Figma can fix. **Stop after two fix rounds** and report the residual score. `use_figma` calls are rate-limited and becoming a paid feature; an unbounded repair loop burns that budget for diminishing returns.
 
-7. Summarize what was synced: token collections created, and that they hold the light theme alone where a `tokens` warning starts `Only the light theme is read`, components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, any variant snap marked `argsChecked: false`, each component's `argsNotInDocs`, each component measured from the story `--stories` named, with the story and its `!` where it had one, for an audit to measure from it too, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any label built ending in an ellipsis where the browser cut it off flat (`text.layout`'s `truncation` of `clip`), the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
+7. Summarize what was synced: token collections created, with their modes, and, where a collection holds the light theme alone though its tokens have `dark` values, why (Tokens step 3's `darkError`), components grouped by page, whether the label call removed Figma's default page `Page 1` or why it kept it (its `pageOne`), variant counts, the components built as one plain component for having no variant properties, **the fidelity score**, worded as `verify` words it: where its line says `of verified entries`, how many entries it left unverified, which the score doesn't cover, how many variants were measured versus inferred, any components whose stories did not pass their args through, any props snap found reach a component but change nothing it measures, and what the user chose for them, any variant snap marked `argsChecked: false`, each component's `argsNotInDocs`, each component measured from the story `--stories` named, with the story and its `!` where it had one, for an audit to measure from it too, each component snap measured as a closed trigger or a layout wrapper and what the user chose for it (step 3), what `verify` printed under the score about what snap measured, the values left unbound because several variables share them (Variable binding, below), every font stand-in the build parts returned in `fonts` (a CSS keyword such as `system-ui` set in Inter, a platform face such as Menlo in Roboto Mono), which variant Figma will treat as a set's default where that is not the component's default (step 5), any set skipped for its auto layout, any component skipped for a set or plain component of its name an earlier push left (step 5), any set or component a part returned `overlaps` for, and whether the user had it moved, any border built solid for a style Figma's strokes lack, any label built ending in an ellipsis where the browser cut it off flat (`text.layout`'s `truncation` of `clip`), the fields `verify` names as bound to no variable though a variable has their value, with why each was left unbound, any variant built 0.01 wide or high for a measured 0, the variants with a transparent border, and any failures or caps. For each variant with a transparent or translucent border, say how its fill meets that border, as the browser draws it: with `backgroundClip: padding-box` the fill stops at the border, and Figma's `OUTSIDE` stroke leaves the same unfilled ring; without it the fill runs under the border, built as an `INSIDE` stroke with `strokesIncludedInLayout`. A transparent border built any other way, such as an `OUTSIDE` stroke where the background is not clipped, shows an unfilled ring the browser fills: say so, and that a stroke tinted the background's color would hide it, which `verify` will then score as a border color the code does not have.
 
 ### Variable binding for a root-only push
 
@@ -1099,7 +1118,7 @@ When token variable collections exist, bind component properties to variables in
 - Font size → bind to the Typography collection
 - Drop shadows → bind to the Shadows collection
 
-A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a color, its `px` for a length. A translucent color, `#rrggbbaa`, matches a variable of its `#rrggbb` too, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several variables often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them, and 10px is both the default radius and `lg`. Then bind the one the component's source names for that property. Read the classes the variant renders with (its `cva` variant, or its `className`) and take the token from the utility, named as `tokens` names it, with `/` for each `-`: `bg-primary` is `primary` for the fill, `text-primary-foreground` is `primary/foreground` for the text, `border-input` is `input` for the stroke, and `rounded-lg` is the radius `lg`. The source picks only among the variables of the measured value; the value is still snap's. A class with an opacity modifier, such as `bg-destructive/10` or `border-destructive/30`, names its variable at an opacity: snap measures it translucent, `#df22254d` say, which matches `destructive`'s `#df2225`, so bind it to `destructive` with the paint's opacity at its alpha, through the build template's `setPaints`, which keeps that opacity where assigning the bound paint would reset it to 1. A shadow's color has no opacity of its own, so `setPaints` binds it only to a variable of its alpha. If you can't read the source, or it names no variable of that value (an arbitrary value like `bg-[#171717]`, or a class set elsewhere), leave the value unbound and list it in the summary, with the variables it matches, rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
+A measured value matches a variable when it equals what the variable was set from: its token's `hex` for a color, its `px` for a length, the light theme's that snap measures, never a `dark` one. A translucent color, `#rrggbbaa`, matches a variable of its `#rrggbb` too, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several variables often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them, and 10px is both the default radius and `lg`. Then bind the one the component's source names for that property. Read the classes the variant renders with (its `cva` variant, or its `className`) and take the token from the utility, named as `tokens` names it, with `/` for each `-`: `bg-primary` is `primary` for the fill, `text-primary-foreground` is `primary/foreground` for the text, `border-input` is `input` for the stroke, and `rounded-lg` is the radius `lg`. The source picks only among the variables of the measured value; the value is still snap's. A class with an opacity modifier, such as `bg-destructive/10` or `border-destructive/30`, names its variable at an opacity: snap measures it translucent, `#df22254d` say, which matches `destructive`'s `#df2225`, so bind it to `destructive` with the paint's opacity at its alpha, through the build template's `setPaints`, which keeps that opacity where assigning the bound paint would reset it to 1. A shadow's color has no opacity of its own, so `setPaints` binds it only to a variable of its alpha. If you can't read the source, or it names no variable of that value (an arbitrary value like `bg-[#171717]`, or a class set elsewhere), leave the value unbound and list it in the summary, with the variables it matches, rather than pick one. A project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
 
 This ensures that when tokens change in code and storysync runs again, updating the variables automatically updates all components.
 
@@ -1116,7 +1135,7 @@ If the `use_figma` tool doesn't return the plugin code's return value in a usabl
 
 `use_figma` takes at most 50,000 characters of code and returns at most 20kb per call. The code below is small, but a full palette or library passes 20kb on the way back, so both reads return a slice per call. Call each with `START = 0`, then again from the `next` it returns until `next` is `null`, and combine the slices. The variables read throws if a slice comes too close to 20kb; lower `BATCH` and read that slice again. The components read takes as many as fit under that limit in each call.
 
-1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values. It reads each collection's first mode, and the first call returns every collection's `modes`, for step 7 to name the others as not compared:
+1. **Read Figma variables** — call `use_figma` to enumerate all variable collections and their resolved values. It reads each variable in its collection's first mode, as `value`, and, in a collection of several modes, in each, as `modes`, by mode name, for step 5 to compare the `Dark` one with the code's dark theme:
 
 ```js
 use_figma({
@@ -1129,26 +1148,24 @@ use_figma({
     for (const { coll, varId } of all.slice(START, START + BATCH)) {
       const v = await figma.variables.getVariableByIdAsync(varId);
       if (!v) continue;
-      const mode = coll.modes[0];
-      const raw = v.valuesByMode[mode.modeId];
-      let value = '';
-      if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
-        // #rrggbb, then the alpha as two more digits when it comes to less
-        // than ff, as tokens writes a translucent color's hex.
-        const channels = [raw.r, raw.g, raw.b].map(x => Math.round(x * 255));
-        const a = Math.round((raw.a == null ? 1 : raw.a) * 255);
-        if (a < 255) channels.push(a);
-        value = '#' + channels.map(x => x.toString(16).padStart(2, '0')).join('');
-      } else {
-        value = String(raw);
-      }
-      results.push({ name: v.name, type: v.resolvedType, value, collection: coll.name });
+      const valueIn = (mode) => {
+        const raw = v.valuesByMode[mode.modeId];
+        if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
+          // #rrggbb, then the alpha as two more digits when it comes to less
+          // than ff, as tokens writes a translucent color's hex.
+          const channels = [raw.r, raw.g, raw.b].map(x => Math.round(x * 255));
+          const a = Math.round((raw.a == null ? 1 : raw.a) * 255);
+          if (a < 255) channels.push(a);
+          return '#' + channels.map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+        return String(raw);
+      };
+      const entry = { name: v.name, type: v.resolvedType, value: valueIn(coll.modes[0]), collection: coll.name };
+      if (coll.modes.length > 1) entry.modes = Object.fromEntries(coll.modes.map((m) => [m.name, valueIn(m)]));
+      results.push(entry);
     }
     const next = START + BATCH < all.length ? START + BATCH : null;
-    // Each collection's modes, on the first slice: only the first is read
-    // above, so the summary names the rest as not compared.
-    const modes = START === 0 ? collections.map((coll) => ({ collection: coll.name, modes: coll.modes.map((m) => m.name) })) : undefined;
-    const result = JSON.stringify({ total: all.length, next, modes, variables: results });
+    const result = JSON.stringify({ total: all.length, next, variables: results });
     // use_figma JSON-encodes what this returns: measure the encoded string.
     const size = JSON.stringify(result).length;
     if (size > 17000) {
@@ -1251,7 +1268,8 @@ npx storysync map --storybook http://localhost:6006 --json
    - In Figma but not in code → **missing from code** (orphaned or manually added)
    - Both exist but values differ → **value mismatch** (show code value vs Figma value)
    - Normalize before comparing: compare a color by its token's `hex` and a spacing, radius or size token by its `px`, which has rem and `calc()` worked out, where the token has one; otherwise lowercase hex colors, convert rem→px (1rem=16px), and strip units for numeric comparison. A translucent color is `#rrggbbaa` on both sides, step 1's template writing Figma's alpha as tokens does, so compare all eight digits. Round numbers to thousandths on both sides, since Figma can return a float with a tail of binary noise.
-   - Note what can't be compared, for step 7 to name: every mode of a Figma collection but its first, from the `modes` step 1 returns; the dark theme, which `tokens` doesn't read, where a `tokens` warning starts `Only the light theme is read`; the tokens a `tokens` warning says it didn't read (`Unresolved:`, `Skipped dynamic value:`, `Not read from @theme`, `Uncategorized:`); and the categories `tokens` has no collection for in a project on Tailwind, whose components use Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract.
+   - Compare each collection's first mode, the variable's `value`, with the token's light value. Where the `tokens` output's `modes` includes `Dark`, compare too each variable's mode named `Dark` (in its `modes`) with the token's `dark` `hex` or `px`, or its light ones where it has no `dark`, and report a difference there as a value mismatch in Dark. A token with a `dark` whose collection has no `Dark` mode is **missing from Figma** in Dark.
+   - Note what can't be compared, for step 7 to name: every mode of a Figma collection but its first and the `Dark` one step 1's `modes` give, and the `Dark` one too where the `tokens` output's `modes` has no `Dark`; the tokens a `tokens` warning says it didn't read (`Unresolved:`, `Skipped dynamic value:`, `Not read from @theme`, `Uncategorized:`); and the categories `tokens` has no collection for in a project on Tailwind, whose components use Tailwind's default spacing, type or shadow scale, which `tokens` doesn't extract.
 
 6. **Compare components** — pair each code component with a Figma component from step 2: a set, or a component outside any set, which is how the push builds a component with no variant properties.
    - **By ID first.** A Figma component whose `storybookId` is a code component's `id` is that component's, whatever its name or page, since a designer may have moved or renamed it. If two carry the ID, as a copy of a set does, tell them apart by page as below. One whose `storybookId` no code component has is Figma only, pushed from a component code no longer has under that ID (removed, or its story moved): never pair it with another component by name.
@@ -1269,7 +1287,7 @@ npx storysync map --storybook http://localhost:6006 --json
    - Group by category (tokens) or component name
    - Use clear labels: `+` missing from Figma, `-` missing from code, `~` value mismatch, `?` ambiguous, `!` errored in Figma
    - End with a summary: N tokens matched, N mismatched, N missing. N components matched, N mismatched, N code-only, N Figma-only, N ambiguous, N errored in Figma, and N components outside any set not from the push, not compared.
-   - Beside the token counts, say what they cover and what they don't, from step 5's notes, so `39 matched` isn't read as every token in both themes: `39 matched (colors and radius, light mode only; not compared: the Dark mode of Colors and the code's .dark theme, font/sans and font/mono, which tokens couldn't resolve, and Tailwind's default spacing, type and shadow scales, which have no tokens)`.
+   - Beside the token counts, say what they cover and what they don't, from step 5's notes, so `39 matched` isn't read as every token in both themes: `39 matched (colors and radius, in Light and Dark; not compared: the High contrast mode of Colors, font/sans and font/mono, which tokens couldn't resolve, and Tailwind's default spacing, type and shadow scales, which have no tokens)`.
    - Confirm "Figma and code are in sync." only if everything matches and no name is ambiguous or set errored; components outside any set not from the push don't count against it. An ambiguous name was compared on none of its copies, and an errored set on nothing, so either can hide drift: while any is, name them instead, and never say the two are in sync. Say with it what the audit compares: tokens, in the modes it noted, and each component's variant properties, not the styles the push's `verify` scores.
 
 8. **Score how the sets look, when the user asks.** Steps 1 to 7 compare token values and variant properties, not what a set looks like. To audit that too, score the sets as a push's `verify` does, reading Figma and changing nothing in it:
