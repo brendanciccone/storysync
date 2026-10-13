@@ -1645,7 +1645,9 @@ O1. **How snap opens one** (`snap-browser.ts` openOverlay). First the
     Radix's `data-state` with no `aria-haspopup` or `aria-expanded`),
     clicked for anything else; then the other ways in turn. Each way waits
     OPEN_WAIT_MS (3000), or --timeout where that is shorter, for content
-    in a portal; one that opens nothing is undone (the arg reset with
+    in a portal, or inline where the open trigger's `aria-controls` names
+    it, as Headless UI's menu renders its items beside its button; one
+    that opens nothing is undone (the arg reset with
     `resetStoryArgs`, Escape, the mouse moved to -1,-1, focus dropped).
     The registry's shadcn overlays need no arg: none of their docs list
     `open`. vaul's Drawer does, and opens by it.
@@ -1667,10 +1669,12 @@ O4. **A select's field is opened too**, and its listbox measured, as the
     OVERLAY_SELECTOR. A designer who wants the field instead has
     `--no-open-overlays`.
 O5. **chooseMeasuredElement** (section 6.1, "unchanged") gains two
-    things: an open trigger whose `aria-controls` names nothing (Radix's
-    tooltip at `delayed-open`, a hover card) takes the overlay showing,
-    and `data-state` ending `-open` counts as open; and a closed trigger
-    or a closed select's field comes with `trigger`, the ways to open it.
+    things: an open trigger whose `aria-controls` names an element inline
+    in the story measures it (`content`), one whose `aria-controls` names
+    nothing (Radix's tooltip at `delayed-open`, a hover card) takes the
+    overlay showing, and `data-state` ending `-open` counts as open; and a
+    closed trigger or a closed select's field comes with `trigger`, the
+    ways to open it. StoryNode reads each element's `id` for the first.
 O6. **styles.json.** A variant snap opened records `opened`: `{ via:
     "click" | "hover" | "focus" | "contextmenu", trigger }`, or `{ via:
     "arg", arg: "open" | "defaultOpen", trigger }`, beside `portal: true`
@@ -1683,8 +1687,8 @@ O7. **A trigger snap couldn't open** keeps today's warning and label
     (section 8.11), now with why, from every attempt in order
     (describeOpenFailure): `snap didn't open it (clicking it, hovering over
     it, focusing it and right-clicking it opened nothing within 3000ms
-    each)`; `... opened it, but snap found nothing it opened outside the
-    story's root to measure`; `... failed (<error>)`; or `it was run with
+    each)`; `... opened it, but snap found nothing it opened to measure`;
+    `... failed (<error>)`; or `it was run with
     --no-open-overlays`. The wait is fixed, not what --timeout left, so
     every variant the same way says the same. parseMeasurementWarning reads
     the reason back up to the sentence after it; verify's `closed-trigger`

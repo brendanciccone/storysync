@@ -659,10 +659,12 @@ test("readStoryTreeInPage: reads each element's own text, outline, and the ::bef
     tag: "div", rect: [0, 0, 100, 40], attrs: { id: "storybook-root" },
     kids: [
       { tag: "span", rect: [0, 0, 24, 24], before: { content: '"★"', display: "inline-block" } },
-      { tag: "div", rect: [0, 30, 40, 10], style: { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" }, after: { content: "none" }, kids: [{ text: "  ", rects: [] }] },
+      { tag: "div", rect: [0, 30, 40, 10], attrs: { id: "menu-1" }, style: { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" }, after: { content: "none" }, kids: [{ text: "  ", rects: [] }] },
     ],
   }, (el) => readStoryTreeInPage(el, { props: WRAPPER_PROPERTIES, maxDepth: 12, maxNodes: 600 }));
   const [glyph, ring] = read.children;
+  // Its id, which an open trigger's aria-controls may name, inline.
+  assert.deepEqual([glyph.id, ring.id], [null, "menu-1"]);
   assert.deepEqual([glyph.text, glyph.pseudos?.map((p) => [p.content, p.styles.display])], [false, [['"★"', "inline-block"]]]);
   assert.deepEqual([ring.text, ring.pseudos, ring.styles["outline-style"], ring.styles["outline-width"]], [false, undefined, "solid", "2px"]);
   assert.equal(read.pseudos, undefined);
@@ -1124,10 +1126,10 @@ test("captureStory: a trigger nothing opens is measured as it is, after every wa
 });
 
 test("captureStory: the note says when a trigger opened but showed nothing outside the story's root, or a way failed", async () => {
-  const inline = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], inline: true });
-  const result = await captureStory(inline.page, URL_OF, OVERLAY_OPTS);
+  const nowhere = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], where: "nowhere" });
+  const result = await captureStory(nowhere.page, URL_OF, OVERLAY_OPTS);
   assert.equal(result.notes[0].kind === "closed-trigger" && result.notes[0].reason,
-    "clicking it opened it, but snap found nothing it opened outside the story's root to measure; " +
+    "clicking it opened it, but snap found nothing it opened to measure; " +
     "hovering over it, focusing it and right-clicking it opened nothing within 40ms each");
 
   // A click Playwright couldn't make is undone too, and the next way opens it.
@@ -1135,6 +1137,17 @@ test("captureStory: the note says when a trigger opened but showed nothing outsi
   const hovered = await captureStory(covered.page, URL_OF, OVERLAY_OPTS);
   assert.deepEqual(hovered.opened, { via: "hover", trigger: 'button[data-slot="dialog-trigger"]' });
   assert.deepEqual(covered.done.slice(0, 5), ["click", ...UNDONE, "hover"]);
+});
+
+test("captureStory: an overlay that opens inline, beside its trigger, is measured where its trigger's aria-controls names it", async () => {
+  // Headless UI's menu renders its items beside its button, in no portal.
+  const { page, done, open } = overlayPage({ marks: { hasPopup: "menu", expanded: "false" }, opensOn: ["click"], where: "inline", content: { slot: null, role: "menu" } });
+  const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Menu", title: "Headless/Menu" } });
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.element, result.portal, result.notes], ['div[role="menu"]', undefined, []]);
+  assert.deepEqual(result.opened, { via: "click", trigger: "button" });
+  assert.deepEqual(done, ["click", "settled", "Escape", "mouse -1,-1", "blur"]);
+  assert.equal(open(), false);
 });
 
 test("captureStory: with --no-open-overlays, a closed trigger is measured untouched, and the note says snap was told so", async () => {

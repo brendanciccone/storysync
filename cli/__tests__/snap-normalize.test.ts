@@ -1107,7 +1107,7 @@ test("describeOpenFailure: says each way snap tried and what came of it, a run t
     { via: "click", outcome: "no-content" },
     { via: "hover", outcome: "nothing", waitMs: 3000 },
   ]), "setting its defaultOpen arg through Storybook's preview failed (Storybook didn't confirm the args); " +
-    "clicking it opened it, but snap found nothing it opened outside the story's root to measure; hovering over it opened nothing within 3000ms");
+    "clicking it opened it, but snap found nothing it opened to measure; hovering over it opened nothing within 3000ms");
   assert.equal(describeOpenFailure([{ via: "click", outcome: "failed" }]), "clicking it failed");
 });
 
@@ -1140,6 +1140,19 @@ test("chooseMeasuredElement: an open trigger whose aria-controls names nothing m
   // Something open that is no trigger doesn't take an overlay in its place.
   const item = node("div", { state: "open", text: true });
   assert.equal(chooseMeasuredElement(root(item), portals, []).kind, "tree");
+});
+
+test("chooseMeasuredElement: an open trigger's aria-controls names content rendered inline, beside it, as Headless UI's menu is", () => {
+  const open = node("button", { hasPopup: "menu", expanded: "true", controls: "menu-1", text: true });
+  const items = node("div", { role: "menu", id: "menu-1", styles: FILLED });
+  assert.deepEqual(chooseMeasuredElement(root(open, items), [], []), { kind: "tree", path: [1], element: 'div[role="menu"]', notes: [], content: true });
+  // Not one with no box.
+  assert.equal(chooseMeasuredElement(root(open, node("div", { id: "menu-1", rendered: false })), [], []).kind, "tree");
+  assert.deepEqual(chooseMeasuredElement(root(open, node("div", { id: "menu-1", rendered: false })), [], []), { kind: "tree", path: [0], element: "button", notes: [] });
+  // Closed, it names nothing that shows: the trigger is measured, and flagged.
+  const closed = node("button", { hasPopup: "menu", expanded: "false", controls: "menu-1", text: true });
+  const choice = chooseMeasuredElement(root(closed, node("div", { id: "menu-1", rendered: false })), [], []);
+  assert.equal(choice.kind === "tree" && choice.notes[0]?.kind, "closed-trigger");
 });
 
 test("chooseMeasuredElement: without slots, an open trigger's aria-controls names its content", () => {

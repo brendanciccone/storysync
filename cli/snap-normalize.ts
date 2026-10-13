@@ -607,6 +607,8 @@ export interface StoryNode {
   state: string | null;
   /** Whether it carries `data-popup-open` or `data-open`, Base UI's mark of an open trigger. */
   open: boolean;
+  /** Its `id`, which a trigger's `aria-controls` names; absent where it wasn't read. */
+  id?: string | null;
   /** `dir`, `data-orientation` (else `aria-orientation`) and `aria-label` (else `aria-labelledby`), as written. */
   dir: string | null;
   orientation: string | null;
@@ -735,7 +737,7 @@ export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
     }
     flush();
     parts.push(attempt.outcome === "no-content"
-      ? `${attemptPhrase(attempt)} opened it, but snap found nothing it opened outside the story's root to measure`
+      ? `${attemptPhrase(attempt)} opened it, but snap found nothing it opened to measure`
       : `${attemptPhrase(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
   }
   flush();
@@ -754,8 +756,12 @@ export interface OpenableTrigger {
 }
 
 export type MeasuredChoice =
-  /** An element under the story's root, by its index at each level down from the root's container. */
-  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger }
+  /**
+   * An element under the story's root, by its index at each level down
+   * from the root's container. `content`: what an open trigger beside it
+   * controls, rendered inline rather than into a portal.
+   */
+  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger; content?: true }
   /** One of the portal candidates, by index. */
   | { kind: "portal"; index: number; element: string; notes: MeasurementNote[] }
   | { kind: "none"; error: string };
@@ -965,6 +971,16 @@ function findOwnSlotInStory(container: StoryNode, slots: readonly string[]): { p
   return null;
 }
 
+/** The first element at or under `node`, in document order, that has a box and an id in `ids`. */
+function findControlled(node: StoryNode, path: number[], ids: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (child.id && ids.includes(child.id) && child.rendered) return { path: [...path, index], node: child };
+    const found = findControlled(child, [...path, index], ids);
+    if (found) return found;
+  }
+  return null;
+}
+
 /** Tags whose children are its own parts, as a list's items or a form's fields are, never a story's layout. */
 const COMPONENT_ROOT_TAGS: readonly string[] = ["nav", "ol", "ul", "menu", "dl", "form", "fieldset", "table"];
 
@@ -1008,9 +1024,10 @@ function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
  *      with no trigger, shows nothing else.
  *   4. Otherwise, as snap always has, the root, past single-child wrappers
  *      that draw nothing. When that is an open trigger whose `aria-controls`
- *      names an element in a portal, that element is measured instead; when
- *      it is a trigger open or closed, or an open select's field, an open
- *      overlay's content in a portal.
+ *      names an element in a portal, or one rendered inline in the story,
+ *      that element is measured instead; when it is a trigger open or
+ *      closed, or an open select's field, an open overlay's content in a
+ *      portal.
  *
  * What 4 settles on is flagged when it is a closed trigger, or holds several
  * elements while drawing nothing itself and bearing no mark of a component's
@@ -1058,6 +1075,9 @@ export function chooseMeasuredElement(
   const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
   const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
   if (opened) return opened;
+  // Or rendered inline, beside the trigger, as Headless UI's menu is.
+  const inline = isOpen(node) && container ? findControlled(container, [], controls) : null;
+  if (inline) return { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
   // An open trigger whose aria-controls names nothing, as a tooltip's or a
   // hover card's: what it opened is the overlay showing.
   const shownBy = isOpen(node) && (isTrigger(node) || isField(node)) ? overlay() : null;

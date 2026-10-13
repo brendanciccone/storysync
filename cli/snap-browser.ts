@@ -533,7 +533,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * through the trigger, each of `closed.trigger.interactions` in turn (snap-
  * normalize.ts openInteractions). An arg the variant sets itself is left
  * as it set it. Each way waits OPEN_WAIT_MS, or --timeout where that is
- * shorter, for content in a portal, the same wait for every variant, so
+ * shorter, for its content, in a portal or inline where the trigger's
+ * `aria-controls` names it, the same wait for every variant, so
  * the note of one that opens nothing is the same for each; a way that
  * opens nothing is undone (the arg reset, Escape pressed, the mouse moved
  * off the page, focus dropped) before the next. Once it is open, it waits
@@ -628,16 +629,16 @@ export function blurInPage(): void {
 }
 
 /**
- * Waits, at most `ms`, for chooseMeasuredElement to find open content in a
- * portal, and returns it located; or, when none shows, whether the trigger
- * says it is open, as one whose content renders inside the story's root
- * would.
+ * Waits, at most `ms`, for chooseMeasuredElement to find open content, in
+ * a portal or what the trigger's `aria-controls` names inline, and
+ * returns it located; or, when none shows, whether the trigger says it is
+ * open.
  */
 async function waitForOverlay(page: Page, slots: readonly string[], ms: number): Promise<{ located: Located } | { triggerOpen: boolean }> {
   const deadline = Date.now() + ms;
   for (;;) {
     const located = await locateComponent(page, slots);
-    if (!("error" in located) && located.portal) return { located };
+    if (!("error" in located) && (located.portal || located.content)) return { located };
     if (Date.now() >= deadline) {
       if ("error" in located) return { triggerOpen: false };
       const triggerOpen = await located.target.evaluate(triggerOpenInPage).catch(() => false);
@@ -667,7 +668,7 @@ async function settleOverlay(page: Page, located: Located, ctx: OpenContext): Pr
   if (ctx.standIns) await drawStandIns(page, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
   await located.target.evaluate(overlaySettledInPage, { ms: Math.min(ctx.timeoutMs, OPEN_SETTLE_MS), frames: OPEN_STILL_FRAMES }).catch(() => false);
   const again = await locateComponent(page, ctx.slots);
-  if ("error" in again || !again.portal) {
+  if ("error" in again || !(again.portal || again.content)) {
     if (!("error" in again)) await again.target.dispose().catch(() => { /* gone */ });
     return located;
   }
@@ -1016,6 +1017,8 @@ interface Located {
   portal?: true;
   /** How the element may be opened, where it is a closed trigger or a closed select's field: see chooseMeasuredElement. */
   trigger?: OpenableTrigger;
+  /** What an open trigger controls, rendered inline in the story's root. */
+  content?: true;
 }
 
 /**
@@ -1072,6 +1075,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       matchedSelector: choice.kind === "portal" ? `portal ${choice.element}` : containerSelector,
       ...(choice.kind === "portal" ? { portal: true as const } : {}),
       ...(choice.kind === "tree" && choice.trigger ? { trigger: choice.trigger } : {}),
+      ...(choice.kind === "tree" && choice.content ? { content: true as const } : {}),
     };
   } finally {
     await portalsHandle.dispose();
@@ -1099,6 +1103,7 @@ export function readStoryTreeInPage(
       hasPopup: el.getAttribute("aria-haspopup"),
       expanded: el.getAttribute("aria-expanded"),
       controls: el.getAttribute("aria-controls"),
+      id: el.id || null,
       state: el.getAttribute("data-state"),
       open: el.hasAttribute("data-popup-open") || el.hasAttribute("data-open"),
       dir: el.getAttribute("dir"),

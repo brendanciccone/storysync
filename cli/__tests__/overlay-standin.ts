@@ -23,16 +23,16 @@ function storyNode(tag: string, slot: string | null, children: object[] = []) {
  * a Dialog's Default story does. Its content opens on `opensOn`: ways of
  * interacting with the trigger, and `arg`, the story's `open` or
  * `defaultOpen` arg set through the stand-in preview, which a story that
- * doesn't pass it on ignores. It shows in a portal while open, unless
- * `inline`, when the trigger says it is open and nothing outside the
- * story's root shows.
+ * doesn't pass it on ignores. While open it shows `where`: in a portal
+ * (the default), inline beside the trigger, which names it in
+ * `aria-controls`, or nowhere, though the trigger says it is open.
  * Everything done to the page is recorded in `done`, in order.
  */
 export function overlayPage(opts: {
   marks: Partial<StoryNode>;
   opensOn: ("click" | "hover" | "focus" | "contextmenu" | "arg")[];
   argTypes?: Record<string, FakeArgType>;
-  inline?: boolean;
+  where?: "portal" | "inline" | "nowhere";
   content?: { slot: string | null; role: string | null };
   /** The first click fails with this, as one on a trigger that never takes it does. */
   clickThrows?: string;
@@ -49,7 +49,7 @@ export function overlayPage(opts: {
   const triggerNode = () => ({
     ...storyNode("button", null), styles: { display: "inline-flex", "background-color": "rgb(23, 23, 23)" }, text: true,
     ...opts.marks,
-    ...(open() ? { expanded: "true", state: "open" } : {}),
+    ...(open() ? { expanded: "true", state: "open", controls: "radix-r1" } : {}),
   });
   const content = opts.content ?? { slot: "dialog-content", role: "dialog" };
   const contentHandle = {
@@ -89,10 +89,14 @@ export function overlayPage(opts: {
     dispose: async () => {},
   };
   const container = {
-    evaluate: async (fn: unknown, arg: unknown) => (fn === readStoryTreeInPage ? storyNode("div", null, [triggerNode()]) : Array.isArray(arg)),
-    evaluateHandle: async () => ({ asElement: () => trigger, dispose: async () => {} }),
+    evaluate: async (fn: unknown, arg: unknown) => {
+      if (fn !== readStoryTreeInPage) return Array.isArray(arg);
+      const inline = open() && opts.where === "inline" ? [{ ...storyNode("div", content.slot), role: content.role, id: "radix-r1", styles: { "background-color": "rgb(255, 255, 255)" } }] : [];
+      return storyNode("div", null, [triggerNode(), ...inline]);
+    },
+    evaluateHandle: async (_fn: unknown, path: number[]) => ({ asElement: () => (path[0] === 1 ? contentHandle : trigger), dispose: async () => {} }),
   };
-  const shown = () => (open() && !opts.inline ? [{ tag: "div", ...content, id: "radix-r1", rendered: true, overlay: true }] : []);
+  const shown = () => (open() && (opts.where ?? "portal") === "portal" ? [{ tag: "div", ...content, id: "radix-r1", rendered: true, overlay: true }] : []);
   const page = {
     on: () => {}, off: () => {},
     goto: async (url: string) => {
