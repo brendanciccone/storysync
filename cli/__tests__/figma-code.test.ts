@@ -221,6 +221,20 @@ test("figma code: reads pack to 17,000 predicted, stopping at 18,000, under what
   assert.ok(READ_LIMIT < probe.call5.bytes, "a read stops under what came back whole");
   // And the template's guard throws past 19,000, a byte over that.
   assert.match(loadTemplate("readback"), />19e3\)throw/);
+  // The seventh probe: use_figma counts the JSON it returns, not that JSON
+  // escaped again, and in bytes, its limit 20,480. A response of 18,999
+  // characters, 30% of them quotes or backslashes (a read's records run
+  // 15%), came back whole, as did one the template counts at 19,000 with
+  // half its bytes outside ASCII; one of 20,500 was refused.
+  const seventh = JSON.parse(readFileSync(new URL("../../../cli/__tests__/fixtures/figma-probe-7.json", import.meta.url), "utf8")) as {
+    call2: { chars: string; dense: string; end: string }; call3: { counted: string; utf8: string; end: string }; call4: string;
+  };
+  assert.deepEqual([seventh.call2.end, seventh.call3.end], ["END", "END"]);
+  assert.ok(Number(seventh.call2.dense) / Number(seventh.call2.chars) > 0.25 && Number(seventh.call2.chars) >= 18_999);
+  assert.equal(Number(seventh.call3.counted), 19_000);
+  const limit = Number(/exceeds the (\d+)-byte limit \(20500 bytes\)/.exec(seventh.call4)?.[1]);
+  assert.equal(limit, 20_480);
+  assert.ok(19_000 < limit, "the most a read returns, its guard's, is under the limit");
 });
 
 test("figma code: reads slice each page's variants in order, each call predicted under --read-limit", async () => {

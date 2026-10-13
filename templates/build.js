@@ -777,10 +777,11 @@ for (const [s, set] of DATA.sets.entries()) {
 }
 
 const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
-// use_figma returns at most 20kb, and a call's changes stand when its
-// response is cut, so the agent would lose `uploads` with it. The lists that
-// grow with nodes are halved, longest first, until the response fits, and
-// `omitted` says how many entries went.
+// use_figma returns at most 20,480 bytes, and refuses a call that would
+// return more, keeping none of its changes (the seventh probe), so a build
+// whose response grew past it would fail each time it was sent. The lists
+// that grow with nodes are halved, longest first, until the response fits,
+// and `omitted` says how many entries went.
 const lists = [unbound, fallbacks, ...results.map((r) => r.absoluteContainers)];
 let omitted = 0;
 while (JSON.stringify(out).length > 16000) {

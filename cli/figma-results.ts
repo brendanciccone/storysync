@@ -60,7 +60,13 @@ export interface ReadResult {
  * prediction was low. Section 9.1's 15,000 left the fifth live push's
  * reads at 10,700 to 12,700 bytes each, 12 calls each carrying the 8,000
  * character template; the sixth probe saw a response of 18,999 bytes come
- * back whole (fixtures/figma-tsum-probe.json, call 5).
+ * back whole (fixtures/figma-tsum-probe.json, call 5). The seventh
+ * (fixtures/figma-probe-7.json) saw what use_figma counts: the bytes of
+ * the JSON it returns, not that JSON escaped again, up to 20,480. 18,999
+ * characters, 30% of them quotes or backslashes, twice a read's share,
+ * came back whole, as did 17,969 bytes half outside ASCII, which the
+ * template counts at 19,000; 20,500 was refused, the call's changes not
+ * kept.
  */
 export const READ_LIMIT = 18_000;
 

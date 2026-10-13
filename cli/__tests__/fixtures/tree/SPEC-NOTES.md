@@ -1954,3 +1954,17 @@ F6-8. **A turn in the flow is built where the turned box is the node's
    turned layer in the flow out by its turned box, any angle, replaying
    both probes; it refuses one that fills at other than 180 degrees,
    which no probe tried. Figma keeps a rotation of 180 or -180 as given.
+F6-9. **LIMIT 18,000 holds for dense and non-ASCII reads** (F6-5, C2). The
+   sixth probe's 18,999 bytes were almost all `x`, which couldn't tell how
+   use_figma counts its 20kb; a read's records are 15% quotes and
+   backslashes, which, escaped once more, would take an 18,000 read past
+   20,000. The seventh probe's calls 2 to 4: a response of 18,999
+   characters, 30% quotes and backslashes, came back whole, ending with
+   its end marker; so did 17,969 bytes, half of them outside ASCII, which
+   the template counts at 19,000, the most its guard lets through; one of
+   20,500 failed with `Return value exceeds the 20480-byte limit (20500
+   bytes). Canvas edits from this run were not committed.` So the limit is
+   20,480 bytes of the JSON returned, not escaped again, and a call over it
+   keeps none of its changes, where the build template's comment had them
+   stand. The mock still fails a response at 20,001 bytes, and keeps the
+   changes of a call it fails.
