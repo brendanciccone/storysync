@@ -396,7 +396,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       const opening: Opening = opts.openOverlays === false
         ? { reason: "it was run with --no-open-overlays" }
         : await openOverlay(page, closed, {
-          slots, story: opts.story, argTypes: empty.args?.argTypes, props: opts.component?.props,
+          slots, story: opts.story, storyId: opts.story?.id ?? new URL(url).searchParams.get("id") ?? "", argTypes: empty.args?.argTypes, props: opts.component?.props,
           timeoutMs: opts.timeoutMs, waitMs: opts.openWaitMs ?? OPEN_WAIT_MS, images, standIns: opts.standIns !== false,
         });
       if ("located" in opening) {
@@ -414,6 +414,11 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       if (!opened) {
         const reason = "reason" in opening ? opening.reason : "";
         located.notes = located.notes.map((note) => (note.kind === "closed-trigger" ? { ...note, reason } : note));
+        // One an attempt left open, which a remount didn't close, keeps
+        // the note of the trigger as it was found, closed.
+        if (!closed.trigger.field && !located.notes.some((note) => note.kind === "closed-trigger")) {
+          located.notes = [...located.notes, { kind: "closed-trigger", element: closed.element, reason }];
+        }
       }
     }
     // Under a tree, an element that draws nothing and holds nothing that
@@ -512,6 +517,8 @@ const OVERLAY_POLL_MS = 50;
 interface OpenContext {
   slots: readonly string[];
   story?: CaptureOptions["story"];
+  /** The story's id, from `story` or else the URL: what a remount names. */
+  storyId: string;
   argTypes?: Record<string, StoryArgType>;
   props?: readonly string[];
   timeoutMs: number;
@@ -538,7 +545,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * `aria-controls` names it, the same wait for every variant, so
  * the note of one that opens nothing is the same for each; a way that
  * opens nothing is undone (the arg reset, Escape pressed, the mouse moved
- * off the page, focus dropped) before the next. Once it is open, the mouse
+ * off the page, focus dropped) before the next, and the story mounted
+ * again where that left its trigger open. Once it is open, the mouse
  * is moved off the page, unless hovering opened it: a select's listbox
  * opens under the pointer a click left on its field, which would measure
  * its first item hovered and highlighted. Then it waits for fonts, images
@@ -552,6 +560,19 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
   const waitMs = Math.min(ctx.waitMs, ctx.timeoutMs);
   const trigger = closed.element;
   const attempts: OpenAttempt[] = [];
+  // Why it is still open, where a way left it so and a remount didn't close it.
+  let stuck = "";
+  // After a way that left it open with nothing snap measures, which
+  // Escape didn't close: the story mounted again, so the next way starts
+  // from the story as it rendered. True where it is open all the same,
+  // and no other way can start from it closed.
+  const reclose = async (): Promise<boolean> => {
+    if (!(await triggerLeftOpen(page, ctx.slots))) return false;
+    const remounted = await applyArgs(page, { storyId: ctx.storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, remount: true });
+    if (!(await triggerLeftOpen(page, ctx.slots))) return false;
+    stuck = `it stayed open, ${"error" in remounted ? `and snap couldn't mount the story again (${remounted.error})` : "though snap mounted the story again"}`;
+    return true;
+  };
   // Open and settled, or null where it closed as the pointer left.
   const opened = async (located: Located, how: OverlayOpened): Promise<Opening | null> => {
     if (how.via !== "hover") await page.mouse.move(-1, -1).catch(() => { /* the page went */ });
@@ -588,6 +609,7 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
     } catch (err) {
       attempts.push({ via: how, outcome: "failed", error: firstLine(err) });
       await dismiss(page);
+      if (await reclose()) break;
       continue;
     } finally {
       await located.target.dispose().catch(() => { /* gone with a remount */ });
@@ -595,10 +617,21 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
     const shown = await waitForOverlay(page, ctx.slots, waitMs);
     const open = "located" in shown ? await opened(shown.located, { via: how, trigger }) : null;
     if (open) return open;
-    attempts.push({ via: how, outcome: "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing", waitMs });
+    const outcome = "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing";
+    attempts.push({ via: how, outcome, waitMs });
     await dismiss(page);
+    if (outcome !== "nothing" && await reclose()) break;
   }
-  return { reason: describeOpenFailure(attempts) };
+  return { reason: [describeOpenFailure(attempts), stuck].filter(Boolean).join("; ") };
+}
+
+/** Whether the component's element is a trigger that says it is open, with nothing open snap measures. */
+async function triggerLeftOpen(page: Page, slots: readonly string[]): Promise<boolean> {
+  const located = await locateComponent(page, slots);
+  if ("error" in located) return false;
+  const open = !located.trigger && !located.portal && !located.content && await located.target.evaluate(triggerOpenInPage).catch(() => false);
+  await located.target.dispose().catch(() => { /* gone */ });
+  return open;
 }
 
 /** applyStoryArgsInPage, its error a result, as a remount Storybook can't do in place reloads the page. */
@@ -1607,7 +1640,8 @@ export async function storyArgsInPage(args: { storyId: string; waitMs: number })
  * as its Controls panel does, after lifting the argTypes `if` of each arg in
  * `lift`, then remounts it, so it renders from scratch with them as from
  * its URL. With `reset`, it resets those args to the story's own instead,
- * as the Controls panel's reset does, and `updates` is unused. Waits for
+ * as the Controls panel's reset does, and `updates` is unused; with
+ * `remount`, it only remounts the story, with the args it has. Waits for
  * the render in progress to finish first: Storybook queues a rerender
  * asked for during one, and reloads the page for a remount. `{ error }`
  * when it can't, or Storybook doesn't confirm it.
@@ -1618,6 +1652,7 @@ export async function applyStoryArgsInPage(args: {
   lift: string[];
   waitMs: number;
   reset?: string[];
+  remount?: boolean;
 }): Promise<{ ok: true } | { error: string }> {
   try {
     const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
@@ -1668,10 +1703,12 @@ export async function applyStoryArgsInPage(args: {
       if (argType?.if) argTypes[name] = { ...argType, if: undefined };
       if (argTypes[name]?.if) return { error: `argTypes.${name}.if couldn't be lifted` };
     }
-    const updated = once({ storyArgsUpdated: forStory });
-    if (args.reset) channel.emit("resetStoryArgs", { storyId: args.storyId, argNames: args.reset });
-    else channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
-    if (!(await updated)) return { error: "Storybook didn't confirm the args" };
+    if (!args.remount) {
+      const updated = once({ storyArgsUpdated: forStory });
+      if (args.reset) channel.emit("resetStoryArgs", { storyId: args.storyId, argNames: args.reset });
+      else channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
+      if (!(await updated)) return { error: "Storybook didn't confirm the args" };
+    }
     // Rendered, or threw: a story that can't render the values never says
     // storyRendered, but shows Storybook's error display, which the capture
     // reads next, so it is a render error rather than a refusal.

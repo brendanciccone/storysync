@@ -1203,6 +1203,33 @@ test("captureStory: an overlay that opens inline, beside its trigger, is measure
   assert.equal(open(), false);
 });
 
+test("captureStory: a way that leaves the trigger open, with nothing to measure, which Escape doesn't close, has the story mounted again", async () => {
+  // Opens on a click into something snap can't find, and ignores Escape.
+  const stuck = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], where: "nowhere", escapeIgnored: true });
+  const result = await captureStory(stuck.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.status, "ok", result.error ?? "");
+  // Measured closed, as it rendered, with the trigger's note and why.
+  assert.deepEqual([result.element, result.opened], ['button[data-slot="dialog-trigger"]', undefined]);
+  assert.deepEqual(result.notes, [{
+    kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]',
+    reason: "clicking it opened it, but snap found nothing it opened to measure; hovering over it, focusing it and right-clicking it opened nothing within 40ms each",
+  }]);
+  assert.deepEqual(stuck.done.slice(0, 6), ["click", ...UNDONE, "remount", "hover"]);
+  assert.equal(stuck.open(), false);
+
+  // One a remount doesn't close either is measured as it is, with the note
+  // of the trigger as it was found, and no other way is tried.
+  const open = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], where: "nowhere", staysOpen: true });
+  const kept = await captureStory(open.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(kept.status, "ok", kept.error ?? "");
+  assert.equal(kept.opened, undefined);
+  assert.deepEqual(kept.notes, [{
+    kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]',
+    reason: "clicking it opened it, but snap found nothing it opened to measure; it stayed open, though snap mounted the story again",
+  }]);
+  assert.deepEqual(open.done, ["click", ...UNDONE, "remount"]);
+});
+
 test("captureStory: with --no-open-overlays, a closed trigger is measured untouched, and the note says snap was told so", async () => {
   const { page, done } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
   const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, openOverlays: false });

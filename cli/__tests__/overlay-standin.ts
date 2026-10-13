@@ -27,8 +27,10 @@ function storyNode(tag: string, slot: string | null, children: object[] = []) {
  * (the default), inline beside the trigger, which names it in
  * `aria-controls`, or nowhere, though the trigger says it is open.
  * With `closesOnLeave`, it closes as the pointer leaves the page, as one
- * that opens while hovered over does. Everything done to the page is
- * recorded in `done`, in order.
+ * that opens while hovered over does; with `escapeIgnored`, Escape doesn't
+ * close it; with `staysOpen`, nothing does, a remount included. A remount
+ * otherwise renders it closed. Everything done to the page is recorded
+ * in `done`, in order.
  */
 export function overlayPage(opts: {
   marks: Partial<StoryNode>;
@@ -39,6 +41,8 @@ export function overlayPage(opts: {
   /** The first click fails with this, as one on a trigger that never takes it does. */
   clickThrows?: string;
   closesOnLeave?: boolean;
+  escapeIgnored?: boolean;
+  staysOpen?: boolean;
 }) {
   const storyId = "ui-radix-dialog--default";
   const done: string[] = [];
@@ -126,14 +130,16 @@ export function overlayPage(opts: {
       if (fn === storybookErrorInPage) return null;
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage) {
         if (fn === applyStoryArgsInPage) {
-          const { updates, reset } = arg as { updates: Record<string, unknown>; reset?: string[] };
-          done.push(reset ? `reset ${reset.join(",")}` : `set ${Object.entries(updates).map(([k, v]) => `${k}=${v}`).join(",")}`);
+          const { updates, reset, remount } = arg as { updates: Record<string, unknown>; reset?: string[]; remount?: boolean };
+          done.push(remount ? "remount" : reset ? `reset ${reset.join(",")}` : `set ${Object.entries(updates).map(([k, v]) => `${k}=${v}`).join(",")}`);
+          // Rendered from scratch: what interacting opened is gone.
+          if (!opts.staysOpen) interacted = false;
         }
         return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       }
       if (fn === blurInPage) {
         done.push("blur");
-        interacted = interacted && !opts.opensOn.includes("focus");
+        if (!opts.staysOpen) interacted = interacted && !opts.opensOn.includes("focus");
         return null;
       }
       return arg === undefined ? null : {};
@@ -141,7 +147,7 @@ export function overlayPage(opts: {
     keyboard: {
       press: async (key: string) => {
         done.push(key);
-        if (key === "Escape") interacted = false;
+        if (key === "Escape" && !opts.escapeIgnored && !opts.staysOpen) interacted = false;
       },
     },
     mouse: {

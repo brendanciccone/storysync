@@ -1730,3 +1730,14 @@ O11. **The pointer leaves what a click opened** before it is measured.
     trigger. Content that closes as the pointer leaves opened only while
     hovered over: that way's note says `... opened it, but it closed again
     as the pointer left`, and the next way is tried.
+O12. **A way that leaves the trigger open** with nothing snap measures
+    (it found no content, or the content closed as the pointer left), and
+    that Escape doesn't close, has the story mounted again through
+    Storybook's preview (`forceRemount`, applyStoryArgsInPage's `remount`)
+    before the next way, so each starts from the story as it rendered,
+    and the trigger is measured closed. Before, the next ways ran on an
+    open trigger and the capture measured it open, its closed-trigger
+    note dropped. Where a remount doesn't close it either, snap tries no
+    other way, measures what is there, and keeps the trigger's note as
+    it was found, its reason ending `it stayed open, though snap mounted
+    the story again` (or why it couldn't).
