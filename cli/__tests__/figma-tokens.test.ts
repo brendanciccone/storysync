@@ -337,3 +337,15 @@ test("CLI: figma tokens writes the plan, and says what it left out", () => {
   assert.match(text, /! shadows sm: left out, a Figma variable can't hold a shadow/);
   assert.match(text, /ask the user before removing any/);
 });
+
+test("skills: every skill and the push command send the calls figma tokens writes, write no variable code, and remove a variable only once the user confirms", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  for (const file of ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"]) {
+    const text = readFileSync(join(root, file), "utf8");
+    assert.match(text, /npx storysync figma tokens`?/, file);
+    assert.match(text, /storysync tokens --json --project \. > \.storysync\/tokens\.json/, file);
+    assert.match(text, /Never remove a variable on your own/, file);
+    assert.match(text, /figma tokens --remove/, file);
+    assert.doesNotMatch(text, /createVariableCollection|createVariable\(/, `${file} still has the agent create variables itself`);
+  }
+});
