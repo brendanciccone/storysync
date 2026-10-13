@@ -876,6 +876,25 @@ function textVerdict(result: TreeScore, key: string, properties: string[]) {
   };
 }
 
+test("kind gate: a layer of another kind is compared on what its own would be, and its kind, its turn once", () => {
+  // A turned arrow out of the flow, which the build turns, and a turned
+  // box with a child, which it doesn't: each read back as a text.
+  const root: TreeNode = { k: "", t: "F", el: "div", box: [0, 0, 60, 40] };
+  const styles = { borderRadius: { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 }, boxShadow: [], opacity: 1 } as unknown as NormalizedStyles;
+  const F = (k: string, box: Box) => [k, "F", ...box, [], null, 0, [], 1, "NORMAL", 0, 1, `1:${k.length + 1}`, 0];
+  const T = (k: string, box: Box) => [k, "T", ...box, "x", "Inter", 400, 0, 14, 20, 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1, `1:${k.length + 1}`, 0, 0];
+  const arrow: TreeNode = { k: "arrow", t: "F", el: "div", box: [20, 10, 10, 10], abs: 1, tf: "rotate: 45deg" };
+  const wrap: TreeNode = { k: "wrap", t: "F", el: "div", box: [0, 20, 20, 20], abs: 1, tf: "rotate: 90deg" };
+  const dot: TreeNode = { k: "wrap/dot", t: "F", el: "span", box: [5, 5, 4, 4] };
+  const compared = (arrowKind: typeof F, wrapKind: typeof F) => scoreTree({
+    nodes: [root, arrow, wrap, dot], styles, assets: { svg: {}, img: {} }, tolerance: 0.5,
+    records: [F("", root.box), arrowKind("arrow", [37.07, 15, 10, 10]), wrapKind("wrap", [20, 20, 20, 20]), F("wrap/dot", dot.box)],
+  }).compared;
+  const whole = compared(F, F);
+  assert.equal(compared(T, F), whole + 1, "the turned arrow: its turn and box, its kind, and a frame's own properties");
+  assert.equal(compared(F, T), whole + 1, "the box with a child: no turn, which it isn't scored on");
+});
+
 const LONG = "sales-dashboard-quarterly-report.pdf";
 
 test("lines: a clamped text the browser and Figma both cut shows the clamp's lines in each, not the lines Chrome hides", () => {

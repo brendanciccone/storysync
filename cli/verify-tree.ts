@@ -566,8 +566,9 @@ export function scoreTree(input: TreeInput): TreeScore {
     const kind = n.t === "I" ? "F" : n.t;
     if (rec.kind !== kind) {
       check("kind", false, n.t, rec.kind);
-      // Its kind's own properties can't be compared on another kind's record.
-      const own = propertiesOf(n, isRoot).filter((p) => !["x", "y", "w", "h"].includes(p));
+      // Its kind's own properties can't be compared on another kind's
+      // record; its place, size and turn were, above.
+      const own = propertiesOf(n, isRoot, kids.get(n.k)?.length).filter((p) => !["x", "y", "w", "h", "turn"].includes(p));
       compared += own.length;
       out.drifted++;
       out.matched += matched;
