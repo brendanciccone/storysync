@@ -37,7 +37,7 @@ import type { TemplateName } from "../figma-code.js";
  *   characters, nowhere near 45,000, and what it returns is held by its
  *   LIMIT, not by its code.
  */
-const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000 } as const;
+const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000, variables: 3_000 } as const;
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 

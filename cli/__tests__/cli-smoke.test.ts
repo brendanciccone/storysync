@@ -87,13 +87,14 @@ test("CLI: every command's --help lists each of its options, the element-tree on
     "figma code": ["--snap <path>", "--tokens <path>", "--components <names>", "--skip <names>", "--out <dir>", "--max-chars <n>", "--max-nodes <n>", "--read-limit <n>", "--no-minify", "--json"],
     "figma upload": ["--plan <path>", "--seq <n>", "--json"],
     "figma next": ["--plan <path>", "--seq <n>", "--json"],
+    "figma tokens": ["--tokens <path>", "--out <dir>", "--remove <variable>", "--max-variables <n>", "--no-minify", "--json"],
   };
   for (const [command, flags] of Object.entries(options)) {
     const help = run(...command.split(" "), "--help");
     for (const flag of flags) assert.ok(help.includes(flag), `${command} --help doesn't list ${flag}`);
   }
   const figma = run("figma", "--help");
-  for (const sub of ["code", "upload", "next"]) assert.match(figma, new RegExp(`\\n  ${sub} \\[options\\]`));
+  for (const sub of ["code", "upload", "next", "tokens"]) assert.match(figma, new RegExp(`\\n  ${sub} \\[options\\]`));
   assert.match(run("--help"), /\n  figma +Write the use_figma calls/);
 });
 
