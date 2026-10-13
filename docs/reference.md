@@ -16,7 +16,7 @@ The [README](../README.md) covers the common path: installing Storysync, a first
 
 ## Commands
 
-The CLI handles setup (`init`, `setup`) and gives deterministic output you can check locally or in CI (`tokens`, `list`, `map`, `inspect`, `snap`, `figma`, `verify`, `diff`). It never calls Figma's tools itself: `figma code` writes the calls, and your AI client sends them. The one request it sends to Figma is `figma upload`'s, which posts image bytes to the upload URLs Figma's `upload_assets` gave your client.
+The CLI handles setup (`init`, `setup`) and gives deterministic output you can check locally or in CI (`tokens`, `list`, `map`, `inspect`, `snap`, `figma`, `verify`, `diff`). It never calls Figma's tools itself: `figma tokens` writes the variable calls and `figma code` the component calls, and your AI client sends them. The one request it sends to Figma is `figma upload`'s, which posts image bytes to the upload URLs Figma's `upload_assets` gave your client.
 
 **Connecting.** A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it. When the server answers with an HTTP error, the message gives the status and what to do, such as running `storysync init` when Storybook has no `/mcp`.
 
@@ -211,7 +211,10 @@ storysync figma code [options]
 
 storysync figma upload --plan <path> --seq <n> [--json]
 storysync figma next --plan <path> --seq <n> [--json]
+storysync figma tokens [--tokens <path>] [--out <dir>] [--remove <Collection/name>]... [--max-variables <n>] [--no-minify] [--json]
 ```
+
+`figma tokens` defaults to `--tokens .storysync/tokens.json`, `--out .storysync/figma/tokens` and `--max-variables 40`.
 
 `figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. `plan.json` lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
 
@@ -222,6 +225,8 @@ Estimate: 22 use_figma calls send 274,800 characters of code and read back about
 ```
 
 `figma upload` posts the pictures a build call left for `upload_assets`. `figma next` writes the call that reads the rest of a read call that stopped short of `use_figma`'s response limit.
+
+`figma tokens` writes a `use_figma` call per token collection (Colors, Spacing, Radius, Typography) under `<out>/calls/`, listed in `<out>/plan.json`. Each call finds its collection and variables by name, adds a Dark mode where the tokens have a dark theme, sets values and scopes, and writes only what differs, so pushing twice changes nothing. A response lists `stale` variables (in the collection but not in the tokens) and `conflicts`. None is removed unless `--remove` names it after you confirm. Shadows, colors it can't convert and em or % lengths are left out, and it prints why.
 
 ### `storysync verify`
 

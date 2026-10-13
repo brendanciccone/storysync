@@ -158,9 +158,18 @@ async function push(
   // drew it.
   const browser = measureFromTrees(treesOf(snap));
   const mock = new MockFigma({ measure: fonts === "figma" ? figmaFonts(browser) : browser, moveNeedsFonts: true });
-  for (const t of SHADCN_TOKENS.collections[0].tokens as { name: string; hex: string }[]) mock.addVariable(t.name, "COLOR", t.hex);
-  for (const t of SHADCN_TOKENS.collections[1].tokens as { name: string; px: number }[]) mock.addVariable(t.name, "FLOAT", t.px, "Radius");
   mockInUse = mock;
+
+  // The variables first, from the calls `figma tokens` writes, each sent
+  // unchanged and its response saved unchanged.
+  const tokenOut = join(out, "tokens");
+  const tokens = await cli(["figma", "tokens", "--tokens", join(dir, "tokens.json"), "--out", tokenOut, "--json"]);
+  assert.equal(tokens.status, 0, `figma tokens exited ${tokens.status}\n${tokens.stdout}${tokens.stderr}`);
+  for (const call of (jsonOf(tokens) as { calls: { file: string; result: string }[] }).calls) {
+    const run = await mock.run(readFileSync(join(tokenOut, call.file), "utf8"));
+    assert.ok(run.ok, `${call.file} failed in Figma: ${run.text}`);
+    writeFileSync(join(tokenOut, call.result), run.text);
+  }
 
   const send = async (file: string, result: string, kind: string) => {
     const text = readFileSync(file, "utf8");

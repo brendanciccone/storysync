@@ -119,7 +119,7 @@ These work in every client:
 
 The skill walks your agent through these steps. It stops and asks you whenever a choice is yours.
 
-1. **Tokens.** `storysync tokens --json` reads your tokens, and the agent creates a Figma variable collection per category. A dark theme becomes a Dark mode beside Light.
+1. **Tokens.** `storysync tokens --json` reads your tokens, and `storysync figma tokens` writes a call per collection that the agent sends to create or update its Figma variables. A dark theme becomes a Dark mode beside Light.
 2. **Pick components.** `storysync list` counts them. With more than about 20, the agent asks which to push.
 3. **Measure.** `storysync snap --variants all` renders every combination of every component's variant props. It runs in the background, since it can take minutes.
 4. **Ask.** The agent asks you about anything the measurement can't settle on its own: a component with more combinations than the cap, an overlay snap couldn't open, or props that measured the same in every variant.

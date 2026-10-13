@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fnv1a32Bytes } from "../checksum.js";
+import { runFigmaTokens } from "../figma-tokens.js";
 import { verify } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 import {
@@ -728,16 +731,26 @@ return JSON.stringify([was, (await figma.variables.getVariableByIdAsync(v.id)).s
   }
 });
 
-test("templates: the skill's Tokens step 3 makes a collection in Light and Dark, scoped, and the Audit's read gives each mode", async () => {
+test("templates: the calls Tokens step 3 sends make a collection in Light and Dark, scoped, and the Audit's read gives each mode", async () => {
   // tokens gives a dark value, and the push makes it a Dark mode beside
   // Light; a token without one keeps its light value there.
-  const blocks = skillBlocks();
-  const create = blocks.filter((b) => /^Create the Colors variable collection/.test(b.description));
-  const read = blocks.filter((b) => /^Read all variable collections/.test(b.description));
-  assert.equal(create.length, 1);
+  const read = skillBlocks().filter((b) => /^Read all variable collections/.test(b.description));
   assert.equal(read.length, 1);
+  const dir = mkdtempSync(join(tmpdir(), "storysync-skill-tokens-"));
+  const colors = [
+    { name: "background", value: "#ffffff", hex: "#ffffff", dark: { value: "#0a0a0a", hex: "#0a0a0a" } },
+    { name: "primary", value: "#171717", hex: "#171717", dark: { value: "#e5e5e5", hex: "#e5e5e5" } },
+    { name: "chart/1", value: "#3b82f6", hex: "#3b82f6" },
+  ];
+  const callsFor = (tokens: typeof colors) => {
+    writeFileSync(join(dir, "tokens.json"), JSON.stringify({ collections: [{ category: "colors", tokens }], warnings: [] }));
+    const { plan } = runFigmaTokens({ tokens: join(dir, "tokens.json"), out: join(dir, "out") });
+    return plan.calls.map((c) => readFileSync(join(dir, "out", c.file), "utf8"));
+  };
+  const [create] = callsFor(colors);
   const figma = new MockFigma();
-  assert.deepEqual(JSON.parse((await ok(figma, create[0].code)) as string), { collection: "Colors", modes: ["Light", "Dark"], variables: 3, darkError: null });
+  const made = (await ok(figma, create)) as { collection: string; modes: string[]; created: string[]; darkError: string | null };
+  assert.deepEqual([made.collection, made.modes, made.created, made.darkError], ["Colors", ["Light", "Dark"], ["background", "primary", "chart/1"], null]);
   const audit = JSON.parse((await ok(figma, read[0].code)) as string) as { next: unknown; variables: unknown[] };
   assert.deepEqual(audit, { total: 3, next: null, variables: [
     { name: "background", type: "COLOR", value: "#ffffff", collection: "Colors", modes: { Light: "#ffffff", Dark: "#0a0a0a" } },
@@ -750,15 +763,14 @@ test("templates: the skill's Tokens step 3 makes a collection in Light and Dark,
   assert.deepEqual(scopes, Array(3).fill(["ALL_FILLS", "STROKE_COLOR", "EFFECT_COLOR"]));
   // A collection with no dark value: one mode, named, not Figma's "Mode 1".
   const single = new MockFigma();
-  const lightCode = create[0].code.replace(/, dark: \{ hex: '#[0-9a-f]+' \}/g, "");
-  assert.notEqual(lightCode, create[0].code);
-  assert.deepEqual(JSON.parse((await ok(single, lightCode)) as string), { collection: "Colors", modes: ["Default"], variables: 3, darkError: null });
+  const [lightCode] = callsFor(colors.map(({ dark: _dark, ...t }) => t));
+  assert.deepEqual(((await ok(single, lightCode)) as { modes: string[] }).modes, ["Default"]);
 
   // A plan of one mode: Light alone, and the error to tell the user.
   const free = new MockFigma({ maxModes: 1 });
-  const made = JSON.parse((await ok(free, create[0].code)) as string) as { modes: string[]; darkError: string | null };
-  assert.deepEqual(made.modes, ["Light"]);
-  assert.match(made.darkError ?? "", /Limited to 1 modes/);
+  const limited = (await ok(free, create)) as { modes: string[]; darkError: string | null };
+  assert.deepEqual(limited.modes, ["Light"]);
+  assert.match(limited.darkError ?? "", /Limited to 1 modes/);
   const lightOnly = JSON.parse((await ok(free, read[0].code)) as string) as { variables: { value: string; modes?: unknown }[] };
   assert.deepEqual(lightOnly.variables.map((v) => [v.value, v.modes]), [["#ffffff", undefined], ["#171717", undefined], ["#3b82f6", undefined]]);
 });

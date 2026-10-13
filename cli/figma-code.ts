@@ -61,7 +61,7 @@ export interface FigmaCodeOptions {
   spike?: Partial<Spike>;
 }
 
-export type TemplateName = "build" | "images" | "label" | "readback";
+export type TemplateName = "build" | "images" | "label" | "readback" | "variables";
 
 /** The readback template a read call is written for (section 9.1), which refuses a call written for another. */
 export { READBACK_TPL };
@@ -78,6 +78,7 @@ export const CALL_CONSTANTS: Record<TemplateName, readonly string[]> = {
   images: ["PAGE", "SUM"],
   label: ["DATA", "SUM"],
   readback: ["PAGE", "SLICES", "LIMIT", "TPL", "SUM"],
+  variables: ["DATA", "SUM"],
 };
 
 /** use_figma runs a call's code as the body of an async function. */

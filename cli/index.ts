@@ -20,6 +20,7 @@ import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSna
 import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
+import { DEFAULT_MAX_VARIABLES, runFigmaTokens } from "./figma-tokens.js";
 import { loadPlanResults } from "./figma-results.js";
 import { fnv1a32Bytes } from "./checksum.js";
 import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
@@ -1001,7 +1002,7 @@ program
 // unchanged, and these read what it saved.
 const figma = program
   .command("figma")
-  .description("Write the use_figma calls that build and read back a snap's components, as files the agent sends unchanged");
+  .description("Write the use_figma calls that push the tokens' variables, and build and read back a snap's components, as files the agent sends unchanged");
 
 figma
   .command("code")
@@ -1114,6 +1115,42 @@ figma
       // A read call sent again leaves its continuations from the reading before.
       if (next.again) console.log(`  ${shownPath(next.result)} was read before the result it continues, so it holds Figma as it was: send this again, and save its response over it.`);
       console.log(`  save its response unchanged to ${next.result}, then run this again: a result with \`more\` continues once more.`);
+    } catch (err) {
+      reportError(err, json);
+      process.exitCode = 1;
+    }
+  });
+
+figma
+  .command("tokens")
+  .description("Write the use_figma calls that create or update a variable collection per token category, found by name, so a push sent again changes nothing")
+  .option("--tokens <path>", "`storysync tokens --json` output", ".storysync/tokens.json")
+  .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan's calls and results there are removed", ".storysync/figma/tokens")
+  .option("--remove <variable>", "A variable to remove, as Collection/name, as a response's stale or conflicts list it, once the user has confirmed; repeat for each", collect)
+  .option("--max-variables <n>", "Most variables one call creates or updates; lower it after `Script exceeded time limit`", String(DEFAULT_MAX_VARIABLES))
+  .option("--no-minify", "Send the template's readable source instead of its minified build, for debugging")
+  .option("--json", "Output JSON instead of formatted text")
+  .action((opts) => {
+    const json = !!opts.json;
+    const maxVariables = parsePositiveInteger(opts.maxVariables, "--max-variables");
+    try {
+      const { plan, planPath, collections, warnings } = runFigmaTokens({
+        tokens: opts.tokens as string,
+        out: opts.out as string,
+        remove: opts.remove as string[] | undefined,
+        maxVariables,
+        minify: opts.minify !== false,
+      });
+      if (json) {
+        console.log(JSON.stringify({ planPath, calls: plan.calls, leftOut: plan.leftOut, warnings }));
+        return;
+      }
+      const count = collections.reduce((n, c) => n + c.variables.length, 0);
+      console.log(`\n${plan.calls.length} use_figma ${plan.calls.length === 1 ? "call" : "calls"} for ${count} variables in ${collections.length} ${collections.length === 1 ? "collection" : "collections"}, planned in ${shownPath(planPath)}`);
+      for (const call of plan.calls) console.log(`  ${String(call.seq).padStart(2, "0")} ${call.description} ${chalk.dim(`(${call.chars.toLocaleString("en-US")} characters)`)}`);
+      for (const t of plan.leftOut) console.log(chalk.yellow(`  ! ${t.category} ${t.name}: left out, ${t.why}`));
+      for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
+      console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. A response's `stale` lists variables no token has, and `conflicts` those that can't be their token's: ask the user before removing any, then run this again with `--remove <Collection/name>` for each they confirm, and send the calls again."));
     } catch (err) {
       reportError(err, json);
       process.exitCode = 1;

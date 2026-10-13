@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
 import { extractTokens } from "../tokens.js";
+import { variablesFromTokens } from "../figma-tokens.js";
 import type { Client } from "../setup.js";
 import { COMPARABLE_PROPERTIES, READBACK_FIELDS, READBACK_LATER_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
@@ -882,34 +883,33 @@ test("every push instruction prices a part at real entries, and builds a long on
   }
 });
 
-test("every push instruction sets FLOAT variables from px, and leaves out a token whose var() didn't resolve", () => {
+test("every push sets FLOAT variables from px, and leaves out a token whose var() didn't resolve", () => {
   // Told only to convert rem, the agent did shadcn/ui's calc() radii by
   // hand, or passed the string to a FLOAT variable, and took
   // `var(--font-sans)` for a font family. Told to leave out any value with
   // a var(), it dropped :root's `calc(var(--radius) - 4px)`, which has its
-  // px; and with no px from an older storysync, every length.
-  const project = tempProject();
-  try {
-    setupOutput(project, false, "claude");
-    setupOutput(project, false, "codex");
-    setupOutput(project, false, "cursor");
-    const files = [
-      join(".claude", "skills", "storysync", "SKILL.md"),
-      join(".agents", "skills", "storysync", "SKILL.md"),
-      join(".cursor", "rules", "storysync.mdc"),
-      join(".claude", "commands", "storysync-push.md"),
-    ];
-    for (const path of files) {
-      const text = readFileSync(join(project, path), "utf8");
-      assert.match(text, /setting each `FLOAT` variable from its token's `px`|Set each `FLOAT` variable from its token's `px`/, `${path} never sets FLOAT variables from px`);
-      assert.match(text, /`calc\(0\.625rem - 4px\)` is 6/, `${path} never says px works out calc()`);
-      assert.match(text, /leave out[^\n]*any token a `tokens` warning starting `Unresolved:` names/i, `${path} sets a token whose var() didn't resolve`);
-      assert.doesNotMatch(text, /any token whose `value` still holds a `var\(\)`/, `${path} leaves out tokens whose var() resolved`);
-      assert.match(text, /If no token (?:in the output )?has a `px` at all, an older storysync ran: use a plain rem `value` times 16/, `${path} drops every length when an older storysync gives no px`);
-      assert.doesNotMatch(text, /Convert rem values to px/, `${path} still has the agent convert rem itself`);
-    }
-  } finally {
-    rmSync(project, { recursive: true, force: true });
+  // px; and with no px from an older storysync, every length. Now `figma
+  // tokens` writes the calls, so it does each of these, and every
+  // instruction sends its calls rather than converting anything itself.
+  const { collections, leftOut } = variablesFromTokens({
+    source: "css", sourcePath: "app/globals.css",
+    warnings: ["Unresolved: typography font/sans = var(--font-sans) (--font-sans is set only in terms of itself)"],
+    collections: [
+      { category: "radius", tokens: [{ name: "sm", value: "calc(var(--radius) - 4px)", px: 6 }, { name: "md", value: "calc(0.625rem - 2px)", px: 8 }] },
+      { category: "typography", tokens: [{ name: "font/sans", value: "var(--font-sans)" }, { name: "text/sm", value: "0.875rem" }] },
+    ],
+  });
+  assert.deepEqual(collections.map((c) => [c.name, c.variables.map((v) => [v.name, v.type, v.light])]), [
+    // A var() that resolved is set from its px; an older output's rem without one is worked out.
+    ["Radius", [["sm", "FLOAT", 6], ["md", "FLOAT", 8]]],
+    ["Typography", [["text/sm", "FLOAT", 14]]],
+  ]);
+  assert.deepEqual(leftOut.map((t) => t.name), ["font/sans"]);
+  for (const [path, text] of installedPushTexts()) {
+    assert.match(text, /npx storysync figma tokens/, `${path} doesn't send the calls figma tokens writes`);
+    assert.match(text, /leave out[^\n]*any token a `tokens` warning starting `Unresolved:` names/i, `${path} doesn't name the tokens whose var() didn't resolve`);
+    assert.doesNotMatch(text, /any token whose `value` still holds a `var\(\)`/, `${path} leaves out tokens whose var() resolved`);
+    assert.doesNotMatch(text, /Convert rem values to px/, `${path} still has the agent convert rem itself`);
   }
 });
 
@@ -1678,7 +1678,8 @@ test("skills: the variable scopes name one for every typography token tokens rea
   const rows = readFileSync(join(root, "skills", "claude-code.md"), "utf8").split("\n")
     .filter((line) => /^\s*\| typography/.test(line))
     .map((line) => {
-      const [names, scopes] = line.split("|").slice(1, 3);
+      const cells = line.split("|").slice(1, -1);
+      const [names, scopes] = [cells[0], cells[cells.length - 1]];
       return { globs: [...names.matchAll(/`([\w/]+)\/\*`/g)].map((m) => m[1]), bare: /no namespace/.test(names), other: /other/.test(names), scope: /`(\w+)`/.exec(scopes)![1] };
     });
   const scopeOf = (name: string): string | undefined => {
@@ -1697,8 +1698,12 @@ test("skills: the variable scopes name one for every typography token tokens rea
     const project = tempProject();
     try {
       for (const [file, text] of Object.entries(files)) writeFileSync(join(project, file), text);
-      const typography = extractTokens(project).collections.filter((c) => c.category === "typography").flatMap((c) => c.tokens.map((t) => t.name));
+      const tokens = extractTokens(project);
+      const typography = tokens.collections.filter((c) => c.category === "typography").flatMap((c) => c.tokens.map((t) => t.name));
       assert.deepEqual(Object.fromEntries(typography.map((name) => [name, scopeOf(name)])), expected, JSON.stringify(files));
+      // And `figma tokens` sets them so, a variable for each token it can push.
+      const pushed = variablesFromTokens(tokens).collections.find((c) => c.name === "Typography")?.variables ?? [];
+      assert.deepEqual(Object.fromEntries(pushed.map((v) => [v.name, v.scopes.join()])), Object.fromEntries(Object.entries(expected).filter(([name]) => name !== "tracking/wide")), JSON.stringify(files));
     } finally {
       rmSync(project, { recursive: true, force: true });
     }
