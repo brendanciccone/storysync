@@ -1853,9 +1853,11 @@ R1. **A story for a sibling value measures what the component's story
     measures it, recorded as its `storyId` with `refit: { from, by,
     for }`: the component's story, how far it drew past, and the values
     the story is for. Button's icon-xs variants come from Icon (`size=icon`), its icon
-    alone. A variant that fits keeps its story, and one every sibling
-    also draws past keeps the component's, the warning naming the
-    stories snap tried and no longer giving one of them as an example.
+    alone. A variant that fits keeps its story, and one no sibling draws
+    within its box keeps the component's, the warning naming the stories
+    that drew it past its box too, no longer giving one of them as an
+    example, and apart those snap couldn't measure it from, with why
+    ("ui-base-button--icon (timeout)"), which may still be the example.
     Each variant is judged on its own measurements, so the choice is the
     same whatever order the variants are measured in; a late read of the
     stories' args (S12) measures again a variant that drew past its box

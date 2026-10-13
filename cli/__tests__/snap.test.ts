@@ -1702,6 +1702,8 @@ function treeBrowser(opts: {
   csf?: Parameters<typeof fakePreview>[0]["csf"];
   /** How many reads of the stories' own annotations fail before one succeeds, as one cut off by a navigation does. */
   storiesReadFails?: number;
+  /** Stories whose every load times out. */
+  timesOut?: (storyId: string) => boolean;
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
@@ -1727,7 +1729,9 @@ function treeBrowser(opts: {
   const page = {
     on: () => {}, off: () => {},
     goto: async (url: string) => {
-      if (timeouts-- > 0) throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+      if (timeouts-- > 0 || opts.timesOut?.(new URL(url).searchParams.get("id") ?? "")) {
+        throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
+      }
       described = false;
       storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
       fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {}, csf: opts.csf });
@@ -2584,6 +2588,24 @@ test("runSnap: a variant the component's story draws past its box, which no stor
   }
 });
 
+test("runSnap: a story for another of its values that snap couldn't measure a variant from is said apart, not as one that drew it past its box", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-button--default", capture: buttonXsCapture(), argTypes: XS_ARG_TYPES, csf: BUTTON_CSF,
+      timesOut: (id) => id === "ui-base-button--icon",
+    });
+    const button = (await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(undefined, [BUTTON_XS]), launch })).components[0];
+    const xs = button.variants.find((v) => v.combination.size === "icon-xs")!;
+    assert.deepEqual([xs.storyId, xs.refit, xs.status], [undefined, undefined, "ok"]);
+    const warning = button.warnings.find((w) => /draws past its box/.test(w))!;
+    assert.match(warning, /content that doesn't fit\. snap couldn't measure it from ui-base-button--icon \(timeout\), a story for another of its values\. A story whose own args set size=icon-xs and give it content that fits, as ui-base-button--icon is for `size=icon`, would measure it;/);
+    assert.doesNotMatch(warning, /past its box too/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSnap: a variant measured before a late read of the stories' args, which drew past its box and has a story to try, is measured again", async () => {
   const dir = tempDir();
   try {
@@ -2686,6 +2708,11 @@ test("describeOverflow: the variants by the values they share, how far, and the 
   assert.doesNotMatch(fromIcon, /as ui-base-button--icon is for/);
   // A component --stories named with `!`: drop it, or name another.
   const only = describeOverflow({ ...component, storyId: "ui-base-button--icon", storyOnly: true }, [over(variant("default", "default"), 3)], 6, { own, properties })!;
+  // Stories snap tried as well: one that drew them past their box too, and one it couldn't measure them from, each said once, the second still an example.
+  const tries = { overflowed: ["ui-base-button--small"], failed: [{ storyId: "ui-base-button--icon", why: "render error" }] };
+  const tried = describeOverflow(component, [over(variant("icon-xs", "default"), 6.5), over(variant("icon-xs", "secondary"), 6)], 6, { own, properties },
+    new Map([["default-icon-xs", tries], ["secondary-icon-xs", tries]]))!;
+  assert.match(tried, /doesn't fit\. snap measured them from ui-base-button--small as well, a story for another of their values, which drew them past their box too\. snap couldn't measure them from ui-base-button--icon \(render error\), a story for another of their values\. A story whose own args set size=icon-xs and give them content that fits, as ui-base-button--icon is for `size=icon`, would measure them;/);
   assert.match(only, /ui-base-button--icon gives it content that doesn't fit\. --stories names ui-base-button--icon with `!`, for every variant: name another story, or drop the `!` so snap measures a variant from a story that is for its values\.$/);
 });
 
