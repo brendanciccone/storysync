@@ -18,9 +18,9 @@
 // picked here. Where the component's story draws a variant past its box,
 // as Default's label does Button's `size=icon-xs` square, which no story
 // is for, a story for another value of the same property measures it
-// instead if that draws it within its box: Icon, for `size=icon`
-// (siblingStories). Deterministic: the same stories and combination always
-// pick the same story.
+// instead if that draws it within its box, one for a value of the same
+// family first: Icon, for `size=icon` (siblingStories). Deterministic: the
+// same stories and combination always pick the same story.
 
 import type { FigmaVariantProperty } from "./mapper.js";
 
@@ -161,8 +161,26 @@ export const SIBLING_TRIES = 3;
 /** A story for another value of one of a variant's properties (siblingStories). */
 export interface SiblingStory {
   storyId: string;
-  /** The values the story is for (storyKeys), as `prop=value`: all the variant's but one, another value of that property. */
+  /** The values the story is for (storyKeys), as `prop=value`: another value of one or more of the variant's properties among them. */
   values: string[];
+}
+
+/** A value's words, lowercased: `icon-xs` and `iconXs` both have `icon` and `xs`. */
+function words(value: string): string[] {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/**
+ * How many leading words two values share: `icon` and `icon-xs` one, a
+ * family's head and a member of it, as `icon-sm` and `icon-xs` are of one
+ * family; `xs` and `icon-xs` none, though both say extra small. A box is
+ * sized for what its family holds, an icon alone for the `icon` sizes.
+ */
+export function kinship(a: string, b: string): number {
+  const [x, y] = [words(a), words(b)];
+  let n = 0;
+  while (n < x.length && n < y.length && x[n] === y[n]) n++;
+  return n;
 }
 
 /**
@@ -171,13 +189,16 @@ export interface SiblingStory {
  * shadcn/ui Button's `size=icon-xs`, which no story is for, from Icon,
  * which is for `size=icon` and draws an icon alone, so the 24px square
  * holds the icon and not the Default story's label. Each adds content of
- * its own and is for (storyKeys) all of the variant's values but one, and
- * another value of that property: a story for the same kind of variant,
- * which the variant's own values, given it in its URL, then override. The
- * most of the variant's values first, then the plainest, then the earlier,
- * as chooseStory ranks; never `fallback` or one with a play function; at
- * most SIBLING_TRIES. Deterministic: the same stories and combination
- * always give the same list.
+ * its own and is for (storyKeys) another value of one or more of the
+ * variant's properties; the variant's own values, given it in its URL or
+ * through the preview, override the story's, so what it brings is its
+ * content. First the story for values of the same family as the variant's
+ * (`kinship`: `icon` for `icon-xs`, not `xs`), as that content was made for
+ * a box of the same kind: ExtraSmall's label, for `size=xs`, never fits an
+ * icon's square. Then as chooseStory ranks: the most of the variant's
+ * values, the fewest others, the plainest, the earlier. Never `fallback`
+ * or one with a play function; at most SIBLING_TRIES. Deterministic: the
+ * same stories and combination always give the same list.
  */
 export function siblingStories(
   combination: Record<string, string>,
@@ -186,14 +207,15 @@ export function siblingStories(
   fallback: string,
   keys: Map<string, Record<string, string>> = storyKeys(stories, properties),
 ): SiblingStory[] {
-  const found: { story: StoryOwn; key: [string, string][]; index: number }[] = [];
+  const found: { story: StoryOwn; key: [string, string][]; kin: number; shared: number; other: number; index: number }[] = [];
   stories.forEach((story, index) => {
     const key = Object.entries(keys.get(story.id) ?? {});
     if (!key.length || story.id === fallback || story.play || !storyAddsContent(story, properties)) return;
     const other = key.filter(([name, value]) => combination[name] !== value);
-    if (other.length !== 1 || combination[other[0][0]] === undefined) return;
-    found.push({ story, key, index });
+    if (!other.length || other.some(([name]) => combination[name] === undefined)) return;
+    const kin = other.reduce((sum, [name, value]) => sum + kinship(value, combination[name]), 0);
+    found.push({ story, key, kin, shared: key.length - other.length, other: other.length, index });
   });
-  found.sort((a, b) => b.key.length - a.key.length || weight(a.story) - weight(b.story) || a.index - b.index);
+  found.sort((a, b) => b.kin - a.kin || b.shared - a.shared || a.other - b.other || weight(a.story) - weight(b.story) || a.index - b.index);
   return found.slice(0, SIBLING_TRIES).map(({ story, key }) => ({ storyId: story.id, values: key.map(([name, value]) => `${name}=${value}`) }));
 }

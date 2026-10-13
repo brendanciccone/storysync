@@ -1837,16 +1837,22 @@ R1. **A story for a sibling value measures what the component's story
     a variant measured from the component's story draws more than 1px
     past its box (S7's contentOverflow), snap measures it again from each
     story for another value of one of its properties: one that adds
-    content of its own and is for (S5's keys) all of the variant's values
-    but one, and another value of that property. The variant's own
-    values override the story's in its URL, or through the preview where
-    the URL can't carry them, as for any variant. Ranked as S5 and S8
-    rank (the most values shared, then the plainest, then the first),
-    never the component's story or one with a play function, at most
-    three a variant. The first that draws it within its box measures it,
-    recorded as its `storyId` with `refit: { from, by, for }`: the
-    component's story, how far it drew past, and the values the story is
-    for. Button's icon-xs variants come from Icon (`size=icon`), its icon
+    content of its own and is for (S5's keys) another value of one or
+    more of the variant's properties. The variant's own values override
+    the story's in its URL, or through the preview where the URL can't
+    carry them, as for any variant, so what the story brings is its
+    content. Ranked first by kinship, the leading words its other values
+    share with the variant's (`icon` and `icon-xs` one, `xs` and
+    `icon-xs` none), as a box is sized for what its family holds; then
+    as S5 and S8 rank (the most values shared, the fewest others, the
+    plainest, the first). So Icon comes first for icon-xs even where
+    plainer stories for `xs`, `sm` and `lg` each draw a label, and even
+    where Icon's `variant=secondary` is for something, no plain story
+    setting it. Never the component's story or one with a play function,
+    at most three a variant. The first that draws it within its box
+    measures it, recorded as its `storyId` with `refit: { from, by,
+    for }`: the component's story, how far it drew past, and the values
+    the story is for. Button's icon-xs variants come from Icon (`size=icon`), its icon
     alone. A variant that fits keeps its story, and one every sibling
     also draws past keeps the component's, the warning naming the
     stories snap tried and no longer giving one of them as an example.
