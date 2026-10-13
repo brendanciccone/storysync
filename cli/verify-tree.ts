@@ -683,6 +683,8 @@ function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable
   else if (maxLines !== null) {
     const want = cutInBrowser(n, parent);
     if (want === null) unscorable("cut", "snap measures a pseudo-element's text as its box, so not whether the browser cut it");
+    else if (cut === undefined) unscorable("cut", "read with readback template 2, which doesn't say whether Figma cuts it");
+    else if (!seen) unscorable("cut", "the readback couldn't tell whether Figma cuts it: mixed fonts or sizes, or a font that won't load");
     const scored = seen && want !== null;
     check("truncation", truncation === "ENDING" && field("maxLines") === maxLines && (!scored || (cut === 1) === want),
       { maxLines, ...(scored ? { cut: want } : {}) }, { truncation, maxLines: field("maxLines"), ...(scored ? { cut: cut === 1 } : {}) });

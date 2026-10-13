@@ -1324,7 +1324,10 @@ BV3. **The readback says whether Figma cuts each text short, and verify
      "maxLines":1,"cut":true}`. The property count doesn't change.
    - Template 2 entries, with 23-field T records, still verify, scored on
      the settings alone; a template 3 entry with 23 fields was read with
-     the template cut down, and is incomplete.
+     the template cut down, and is incomplete. Where a text truncates and
+     its entry has no `cut` (template 2) or a null one, `cut` is listed as
+     unscorable, so the coverage line doesn't say every property was
+     scored.
    - The fixtures were measured in system-ui, so in Figma's Inter the
      faithful harness now drifts 2 Attachment titles and 5 Sidebar labels
      on this, and tree-e2e, whose build widens what it can (T14), drifts

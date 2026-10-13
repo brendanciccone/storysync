@@ -892,3 +892,15 @@ test("truncation: an input's value as wide as its box ran past it, and a pseudo-
     assert.deepEqual(textVerdict(scoreOne({}, after, { maxLines: 1, cut }), "::after", ["truncation"]), { differences: [], unscorable: ["cut"] });
   }
 });
+
+test("coverage: where the readback can't say whether Figma cuts a text, its cut is listed as unscorable, and truncation scored on the settings", () => {
+  const title: TreeNode = { k: "title", t: "T", el: "span", box: [0, 0, 100, 20], tx: { c: LONG, f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, el: 1, ws: "nowrap", n: 1, ink: [0, 2, 227, 16] } };
+  // null: a font that won't load; undefined: template 2's record, with no cut.
+  for (const cut of [null, undefined]) {
+    assert.deepEqual(textVerdict(scoreOne({}, title, { maxLines: 1, cut }), "title", ["truncation"]), { differences: [], unscorable: ["cut"] }, String(cut));
+  }
+  for (const cut of [0, 1] as const) assert.deepEqual(textVerdict(scoreOne({}, title, { maxLines: 1, cut }), "title", ["truncation"]).unscorable, [], String(cut));
+  // A text that doesn't truncate has no cut to read.
+  const whole: TreeNode = { ...title, tx: { ...title.tx!, el: undefined, ink: [0, 2, 90, 16] } };
+  assert.deepEqual(textVerdict(scoreOne({}, whole, { maxLines: 1, cut: null }), "title", ["truncation"]).unscorable, []);
+});
