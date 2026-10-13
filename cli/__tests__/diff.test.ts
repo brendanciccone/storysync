@@ -152,6 +152,13 @@ test("diffTokens: an earlier push's radius DEFAULT that repeats a step is not mi
   assert.deepEqual(own.map((e) => [e.name, e.status]), [["sm", "match"], ["lg", "match"], ["DEFAULT", "missing_from_code"]]);
 });
 
+test("diffTokens: an alpha variable figma tokens made beside a code token is not missing from code; one of a token gone is", () => {
+  const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "destructive", value: "#df2225" }] }];
+  const color = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Colors", resolvedType: "COLOR", mode: "Light" });
+  const diffs = diffTokens(code, [color("destructive", "#df2225"), color("destructive 10%", "#df22251a"), color("destructive 12,5%", "#df222520"), color("gone 10%", "#0000001a")]);
+  assert.deepEqual(diffs.map((e) => [e.name, e.status]), [["destructive", "match"], ["gone 10%", "missing_from_code"]]);
+});
+
 test("diffTokens: matching color in different formats", () => {
   const code: TokenCollection[] = [
     { category: "colors", tokens: [{ name: "primary/500", value: "rgb(59, 130, 246)" }] },
