@@ -50,7 +50,7 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
 }
 ```
 
-A token with a `dark` has a different value in the project's dark theme (`.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`), with its own `hex` or `px`. `modes` is `["Light", "Dark"]` when any token has one. `defaults`, where there is one, names the color tokens the project's base styles give an element no class colors: the text color `body` hands down, and the border and outline colors a `*` rule sets, each with the rule. It makes no variable; `figma code` binds by it (Variable binding, below).
+A token with a `dark` has a different value in the project's dark theme (`.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`), with its own `hex` or `px`. `modes` is `["Light", "Dark"]` when any token has one, else `["Default"]`: the Figma modes step 3 makes. `defaults`, where there is one, names the color tokens the project's base styles give an element no class colors: the text color `body` hands down, and the border and outline colors a `*` rule sets, each with the rule. It makes no variable; `figma code` binds by it (Variable binding, below).
 
 If a `warnings` entry says storysync can't read or find part of the Tailwind config, or doesn't follow it, such as a preset from a package, a config built by a function, or a file it names, or that it read no theme from the config, tell the user what it names: those tokens are missing from the output, so they won't reach Figma. If one says it read another source rather than a `tailwind.config.mts` or `.cts`, tell the user, who can pass `--source tailwind` to read the config. If the command returns no collections, skip to Components.
 

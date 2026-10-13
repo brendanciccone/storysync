@@ -2085,15 +2085,18 @@ test("CSS: each token gets the dark theme's value, from every dark selector, a l
   const light = makeProject({ "app/globals.css": `:root { --background: #ffffff; }\n.card { --inset: 4px; }\n` });
   try {
     const result = extractTokens(light);
-    assert.deepEqual(result.modes, ["Light"]);
+    // The one mode Tokens step 3 makes, named as the skill names it.
+    assert.deepEqual(result.modes, ["Default"]);
     assert.equal(result.collections[0].tokens[0].dark, undefined);
+    // A baseline an earlier build wrote names its one mode Light: it checks clean, its dark theme read.
+    assert.equal(hasDrift(compareTokens(baselineOf({ ...result, modes: ["Light"] }), extractTokens(light))), false);
   } finally { cleanup(light); }
 
   // A theme file holds no stylesheet's dark theme.
   const theme = makeProject({ "src/theme.ts": `export const colors = { primary: "#0000ff" };`, "src/app.css": `.dark { --primary: #ffffff; }` });
   try {
     const result = extractTokens(theme, "theme");
-    assert.deepEqual([result.modes, result.collections[0].tokens[0].dark], [["Light"], undefined]);
+    assert.deepEqual([result.modes, result.collections[0].tokens[0].dark], [["Default"], undefined]);
   } finally { cleanup(theme); }
 });
 

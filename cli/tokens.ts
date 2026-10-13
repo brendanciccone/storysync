@@ -64,10 +64,12 @@ export interface TokenExtractionResult {
   collections: TokenCollection[];
   warnings: string[];
   /**
-   * The Figma variable modes the tokens fill: `["Light", "Dark"]` when a
-   * token has a `dark` value, else `["Light"]`. extractTokens always sets
-   * it, so a baseline that has it was written by a storysync that reads the
-   * dark theme, and `--check` compares dark values only against one that has.
+   * The Figma variable modes the tokens fill, as the skill names them:
+   * `["Light", "Dark"]` when a token has a `dark` value, else `["Default"]`
+   * (`["Light"]` in a baseline an earlier build wrote). extractTokens
+   * always sets it, so a baseline that has it, either way, was written by a
+   * storysync that reads the dark theme, and `--check` compares dark values
+   * only against one that has.
    */
   modes?: string[];
   /**
@@ -358,7 +360,7 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
   const hasDark = result.collections.some((c) => c.tokens.some((t) => t.dark));
   const colors = result.collections.filter((c) => c.category === "colors").flatMap((c) => c.tokens.map((t) => t.name));
   const defaults = colors.length ? baseDefaults(projectPath, colors) : [];
-  return { ...result, modes: hasDark ? ["Light", "Dark"] : ["Light"], ...(defaults.length ? { defaults } : {}) };
+  return { ...result, modes: hasDark ? ["Light", "Dark"] : ["Default"], ...(defaults.length ? { defaults } : {}) };
 }
 
 /**
