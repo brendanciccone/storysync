@@ -1346,6 +1346,13 @@ test("scoreCaveats: the variants measured from a story of their own, by story, s
   }]);
   // Each variant from the component's story: nothing to say.
   assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { width: 36 } }]).components[0]), []);
+  // Unless snap couldn't read the stories' args, and so chose no story for any variant.
+  const unread = snapWith([{ slug: "a" }, { slug: "b", delta: { width: 36 } }]).components[0];
+  unread.storiesUnread = "Execution context was destroyed";
+  assert.deepEqual(scoreCaveats(unread), [{
+    component: "Forms/Button", kind: "variant-stories", stories: [],
+    note: "snap couldn't read its stories' args (Execution context was destroyed), so it measured every variant from forms-button--default, choosing no story for any",
+  }]);
 });
 
 test("scoreCaveats: props that reach the component and change nothing measured are a caveat of their own, not the story's", () => {

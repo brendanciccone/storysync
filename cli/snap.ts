@@ -162,6 +162,13 @@ export interface SnapComponent {
    * An audit names it so again.
    */
   storyOnly?: true;
+  /**
+   * Why snap couldn't read the component's stories' own args, where it
+   * couldn't: every variant was then measured from `storyId`, with no story
+   * chosen for any (snap-stories.ts), as a preview before Storybook 7
+   * can't give them. verify says so beside the score.
+   */
+  storiesUnread?: string;
   variantProperties: FigmaVariantProperty[];
   /** Full styles for the reference combination; deltas are relative to this. */
   base: { combination: Record<string, string>; slug: string; styles: NormalizedStyles } | null;
@@ -575,12 +582,17 @@ export function describeIdenticalValues(groups: { property: string; values: stri
 
 /**
  * Which variants were measured from a story other than the component's, as
- * the rest of a line naming the component, or null where none was:
+ * the rest of a line naming the component, or null where none was; or,
+ * where snap couldn't read the stories' args (`storiesUnread`), that it
+ * chose no story for any:
  * "measured `size=icon` from ui-base-button--icon and `size=icon-sm` from
  * ui-base-button--icon-small, the rest from ui-base-button--default". Each
  * story by the values its variants share, else by how many there were.
  */
-export function describeVariantStories(component: Pick<SnapComponent, "storyId" | "variants">): string | null {
+export function describeVariantStories(component: Pick<SnapComponent, "storyId" | "variants" | "storiesUnread">): string | null {
+  if (component.storiesUnread) {
+    return `snap couldn't read its stories' args (${component.storiesUnread}), so it measured every variant from ${component.storyId}, choosing no story for any`;
+  }
   const byStory = new Map<string, SnapVariant[]>();
   for (const variant of component.variants) {
     if (!variant.storyId) continue;
@@ -598,6 +610,9 @@ export function describeVariantStories(component: Pick<SnapComponent, "storyId" 
   const rest = component.variants.some((v) => !v.storyId) && component.storyId ? `, the rest from ${component.storyId}` : "";
   return `measured ${list}${rest}`;
 }
+
+/** How many times snap reads a component's stories' own args, each with a variant that loaded, before it measures every variant from the component's story. */
+export const READ_STORIES_TRIES = 3;
 
 /** How far past its box a variant's content may draw before snap warns, in px: glyphs overhang their advance by less. */
 export const OVERFLOW_PX = 1;
@@ -1498,6 +1513,25 @@ async function snapComponent(
   const storyIds = entry.storyIds?.length ? entry.storyIds : component.stories.map((s) => s.id);
   let owns: StoryOwn[] | null | undefined = storyIds.length > 1 && !storyOverride?.only ? undefined : null;
   let ownsError: string | undefined;
+  // Reads that failed: tried again with later variants, up to READ_STORIES_TRIES.
+  let ownsTries = 0;
+  // Everything measured so far goes, for the plan to start again.
+  const startOver = () => {
+    shell.variants = [];
+    shell.base = null;
+    captures = 0;
+    unchecked.length = 0;
+    uncheckedError = undefined;
+    notes.length = 0;
+    markups.length = 0;
+    trees.length = 0;
+    for (const id of Object.keys(svgAssets)) delete svgAssets[id];
+    images.clear();
+    treeNotes.clear();
+    climbed.length = 0;
+    standIns.clear();
+    stage.drop(entry);
+  };
   try {
     checkpoint();
     context = await createContext(browser);
@@ -1536,14 +1570,26 @@ async function snapComponent(
       let captured = await captureOnce();
       // The stories' own args, from the preview of the first story that
       // loaded; and this variant measured again where one of them is for it.
+      // A read that fails is tried again with the next variants that load,
+      // and one that then succeeds starts the plan over where a variant
+      // measured before it has a story of its own, so no variant keeps
+      // content the stories would have changed.
       if (owns === undefined && captured.status !== "timeout") {
         checkpoint();
         const read = await readStoriesOwn(page, storyIds);
         if ("error" in read) {
-          owns = null;
           ownsError = read.error;
+          if (++ownsTries >= READ_STORIES_TRIES) owns = null;
         } else {
           owns = read.stories;
+          ownsError = undefined;
+          const stories = read.stories;
+          if (shell.variants.some((v) => chooseStory(v.combination, stories, definition.variantProperties, storyId).storyId !== storyId)) {
+            progress(`  ${entry.title ?? entry.name}: snap read its stories' args late; measuring its variants again`);
+            startOver();
+            index = -1;
+            continue;
+          }
           const better = choose();
           if (better.storyId !== choice.storyId) {
             choice = better;
@@ -1582,20 +1628,7 @@ async function snapComponent(
             // failed before the args could be read has a combination
             // without the new property, which no variant of the set names,
             // and a cold Storybook's first story is the likeliest to time out.
-            shell.variants = [];
-            shell.base = null;
-            captures = 0;
-            unchecked.length = 0;
-            uncheckedError = undefined;
-            notes.length = 0;
-            markups.length = 0;
-            trees.length = 0;
-            for (const id of Object.keys(svgAssets)) delete svgAssets[id];
-            images.clear();
-            treeNotes.clear();
-            climbed.length = 0;
-            standIns.clear();
-            stage.drop(entry);
+            startOver();
             index = -1;
             continue;
           }
@@ -1705,7 +1738,10 @@ async function snapComponent(
   }
 
   if (standIns.size) shell.fontStandIns = [...standIns].sort().map((pair) => JSON.parse(pair) as [string, string]);
-  if (ownsError) progress(`  ${entry.title ?? entry.name}: snap couldn't read its stories' args (${ownsError}), so it measured every variant from ${storyId}`);
+  if (ownsError) {
+    shell.storiesUnread = ownsError;
+    progress(`  ${entry.title ?? entry.name}: snap couldn't read its stories' args (${ownsError}), so it measured every variant from ${storyId}`);
+  }
   const collided = describeSlugCollisions(collisions);
   if (collided) shell.warnings.unshift(collided);
   if (shell.cap) shell.warnings.unshift(describeCap(entry.title ?? entry.name, shell.cap));

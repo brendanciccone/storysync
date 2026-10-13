@@ -1710,7 +1710,7 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     caveats.push({ component: key, kind: "preview-set", values, variants: viaPreview.length });
   }
   // Which variants a story other than the component's measured, as snap said.
-  const note = describeVariantStories({ storyId: component.storyId, variants: component.variants ?? [] });
+  const note = describeVariantStories({ storyId: component.storyId, variants: component.variants ?? [], storiesUnread: component.storiesUnread });
   if (note) {
     const stories = new Map<string, string[]>();
     for (const v of component.variants ?? []) if (v.storyId) stories.set(v.storyId, [...(stories.get(v.storyId) ?? []), v.slug]);

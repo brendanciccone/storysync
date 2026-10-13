@@ -1397,3 +1397,13 @@ S11. **`--stories` with `!` measures every variant from one story**
     named with `!`, another story or dropping the `!`. The Cursor rule says
     all of this as the Claude Code and Codex skills do, and setup.test.ts
     holds all three to it.
+S12. **A failed read of the stories' args is tried again, and recorded.**
+    A read that failed, after a render error or a navigation, left the
+    component on its story for every variant with only a progress line, so
+    two runs could measure different content with nothing in styles.json
+    to tell. Now a failed read is tried again with each later variant that
+    loads, up to `READ_STORIES_TRIES` (3); one that succeeds after a
+    variant was measured that a story is for starts the plan over, as new
+    argTypes options do, so no variant keeps the wrong story's content.
+    Where every try fails, the component records why as `storiesUnread`,
+    which snap's output and verify's `variant-stories` caveat say.

@@ -1671,9 +1671,12 @@ function treeBrowser(opts: {
   markup?: (args: Record<string, unknown>) => string;
   /** The stories' own annotations the preview loads from their file (fakePreview's `csf`); none by default. */
   csf?: Parameters<typeof fakePreview>[0]["csf"];
+  /** How many reads of the stories' own annotations fail before one succeeds, as one cut off by a navigation does. */
+  storiesReadFails?: number;
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
+  let readFails = opts.storiesReadFails ?? 0;
   let storyId = opts.storyId;
   let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId, csf: opts.csf });
   let described = false;
@@ -1705,6 +1708,7 @@ function treeBrowser(opts: {
     addStyleTag: async () => null,
     $: async () => target,
     evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn === storiesOwnInPage && readFails-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage || fn === storiesOwnInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
@@ -2318,7 +2322,9 @@ test("runSnap: where the stories' args can't be read, every variant is measured 
     assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), [
       "  ui/base/Button: snap couldn't read its stories' args (Storybook's preview can't load a story's file (loadCSFFileByStoryId)), so it measured every variant from ui-base-button--default",
     ]);
-    assert.equal(describeVariantStories(button), null);
+    // Recorded, for verify to say beside the score.
+    assert.equal(button.storiesUnread, "Storybook's preview can't load a story's file (loadCSFFileByStoryId)");
+    assert.equal(describeVariantStories(button), "snap couldn't read its stories' args (Storybook's preview can't load a story's file (loadCSFFileByStoryId)), so it measured every variant from ui-base-button--default, choosing no story for any");
     assert.deepEqual(button.warnings, [
       "the variant with `size=icon` draws past its box, by up to 5px at the right and left (`#text`), so Figma shows it spilling out: " +
         "ui-base-button--default gives it content that doesn't fit. A story whose own args set size=icon and give it content that fits " +
@@ -2330,6 +2336,28 @@ test("runSnap: where the stories' args can't be read, every variant is measured 
     const named = await runSnap(options(dir, { selector: "button", stories: { "ui-base-button": "ui-base-button--icon" } }), { storybook: buttonDocs(), launch });
     assert.equal(named.components[0].storyId, "ui-base-button--icon");
     assert.ok(!named.components[0].warnings.some((w) => /draws? past/.test(w)), named.components[0].warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a read of the stories' args that fails is tried again, and one that succeeds late measures again what it would change", async () => {
+  const dir = tempDir();
+  try {
+    // Wide is for size=default, so the first variant, measured before the read succeeded, had the wrong story.
+    const csf = { ...BUTTON_CSF, "ui-base-button--wide": { args: { size: "default", children: "A wider label" } } };
+    const storyIds = ["ui-base-button--default", "ui-base-button--icon", "ui-base-button--wide"];
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf, storiesReadFails: 1 });
+    const progress: string[] = [];
+    const [button] = (await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(storyIds), launch, onProgress: (m) => progress.push(m) })).components;
+    assert.deepEqual(button.variants.map((v) => [v.combination.size, v.storyId]), [["default", "ui-base-button--wide"], ["icon", "ui-base-button--icon"]]);
+    assert.equal(button.storiesUnread, undefined);
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), ["  ui/base/Button: snap read its stories' args late; measuring its variants again"]);
+    // A read that fails every time gives up after READ_STORIES_TRIES, recorded.
+    const failing = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf, storiesReadFails: 99 });
+    const [unread] = (await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(storyIds), launch: failing.launch })).components;
+    assert.ok(unread.variants.every((v) => v.storyId === undefined));
+    assert.match(unread.storiesUnread ?? "", /^page\.evaluate: Execution context was destroyed/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
