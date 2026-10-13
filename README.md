@@ -63,7 +63,7 @@ npx storysync setup --client claude     # or: --client cursor, --client codex
 
 `setup` writes the skill file, plus slash commands for Claude Code, and prints the MCP setup commands you still need to run.
 
-To try Storysync without a project of your own, use [`examples/storybook-vite`](examples/storybook-vite). It's a small Storybook with one component that measures cleanly and one whose story is broken on purpose, so you can see the warning.
+To try Storysync without a project of your own, use [`examples/storybook-vite`](https://github.com/brendanciccone/storysync/tree/main/examples/storybook-vite). It's a small Storybook with one component that measures cleanly and one whose story is broken on purpose, so you can see the warning.
 
 ## Your first push
 

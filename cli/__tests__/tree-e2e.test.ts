@@ -383,6 +383,37 @@ test("tree e2e: variants that draw past their boxes are laid out apart, each whe
   }
 });
 
+test("tree e2e: a Button's translucent border is built OUTSIDE at its padding box and a clear one INSIDE at its border box, each read back and verified at 100%", async () => {
+  // shadcn/ui's Button clips its background to the padding box. Its
+  // destructive variants here take border-destructive/30: the background
+  // stopping short of it shows what is behind, which only an OUTSIDE
+  // stroke around the padding box draws, at the inner radius, 7. The
+  // default variants' transparent border paints nothing: built INSIDE at
+  // the border box, radius 8, the fill runs under it, which verify names.
+  const snap = asSnap(loadTreeFixture("button-icon"));
+  const side = { width: 1, style: "solid", color: "#df22254d" };
+  for (const v of snap.components[0].variants) {
+    if (v.slug.startsWith("variant-destructive") && v.delta) Object.assign(v.delta, { border: { top: side, right: side, bottom: side, left: side }, borderUniform: side });
+  }
+  const p = await push(snap);
+  try {
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    for (const size of ["default", "xs", "sm"]) {
+      // The height is snap's less the border OUTSIDE; the width, set in Figma's fonts, the clear one's less it.
+      const height = (snap.components[0].variants.find((v) => v.slug === `variant-default--size-${size}`)!.delta?.height as number | undefined) ?? 36;
+      const [translucent, clear] = ["destructive", "default"].map((variant) => p.mock.handle(layerOf(p.mock, `variant-${variant}--size-${size}`, "").id) as Record<string, number | string>);
+      assert.deepEqual([translucent.strokeAlign, translucent.cornerRadius, translucent.height, translucent.width], ["OUTSIDE", 7, height - 2, Number(clear.width) - 2], size);
+      assert.deepEqual([clear.strokeAlign, clear.cornerRadius, clear.height], ["INSIDE", 8, height], size);
+    }
+    const clip = (json.unscorable as { key: string; property: string; reason: string; variants: number }[]).filter((u) => u.property === "background-clip");
+    assert.deepEqual(clip.map((u) => [u.key, u.reason, u.variants]), [["", "background-clip padding-box inside a transparent border, built as a fill to the border box", 3]]);
+  } finally {
+    cleanup(p);
+  }
+});
+
 for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture in one push packs several components a call, and all of it verifies under --strict, with text as wide as ${fonts === "figma" ? "Figma sets it, but the titles it cuts short" : "the browser drew it"}`, async () => {
   const all = treeFixtureNames().map((n) => asSnap(loadTreeFixture(n)));
   const snap = { ...all[0], components: all.flatMap((s) => s.components) } as SnapResult;

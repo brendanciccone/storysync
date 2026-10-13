@@ -148,20 +148,39 @@ test("falsify: the Tooltip's arrow built unturned, as the fifth live push built 
   assert.deepEqual(findings(corner), ["default div: x,y"]);
 });
 
-test("falsify: a Button whose background stops inside its transparent border, built INSIDE at its border box, drifts on its stroke alone", async () => {
+test("falsify: a Button whose background stops inside a border that paints nothing scores built INSIDE at its border box as OUTSIDE at its padding box; inside a translucent one, INSIDE drifts on its stroke alone", async () => {
   // shadcn/ui's default Button: bg-clip-padding, a 1px transparent border
-  // over its background. Built INSIDE at radius 8, its fill would run under
-  // the border, 1px past the browser's on every side: only an OUTSIDE
-  // stroke around the padding box draws it. (Where an INSIDE stroke draws
-  // the same, verify takes either: insideStrokeDrawsBorder.)
-  const result = await falsified("button-icon", ({ figma, built }) => {
+  // over its background. The border draws nothing, so the build makes it
+  // INSIDE at the border box, radius 8, the class's own, its fill running
+  // under the clear stroke (borderBuiltInside); push 5b, and this harness,
+  // made it OUTSIDE around the padding box at radius 7. Both score, so a
+  // readback from either verifies. A translucent border shows what is
+  // behind the element where the background stops: only the OUTSIDE
+  // stroke draws that, and INSIDE at the border box drifts on it.
+  const inside = ({ figma, built }: Awaited<ReturnType<typeof buildAndRead>>) => {
     const v = built.variants.find((x) => x.slug === "variant-default--size-default")!;
     const root = node(figma, v.id);
     root.strokeAlign = "INSIDE";
     root.resize(root.width + 2, root.height + 2);
     root.cornerRadius = 8;
     for (const child of root.children) Object.assign(child, { x: child.x + 1, y: child.y + 1 });
-  });
+  };
+  const clear = await buildAndRead("button-icon");
+  const before = verify(clear.fixture, clear.readback, 0.5);
+  inside(clear);
+  const after = verify(clear.fixture, await reread(clear.figma, clear.fixture, clear.built), 0.5);
+  assert.deepEqual([findings(before), findings(after), after.elementFidelity, after.fidelity], [[], [], 1, 1], drift(after));
+  assert.equal(after.summary.propertiesCompared, before.summary.propertiesCompared);
+  // Built INSIDE, the fill runs under the clear border, which verify names
+  // under coverage as figma code does; OUTSIDE, it stops where the browser's does.
+  const clip = (r: VerifyResult) => (r.unscorable ?? []).filter((u) => u.property === "background-clip").map((u) => [u.key, u.reason, u.variants]);
+  assert.deepEqual([clip(before), clip(after)], [[], [["", "background-clip padding-box inside a transparent border, built as a fill to the border box", 1]]]);
+
+  const translucent = JSON.parse(JSON.stringify(loadTreeFixture("button-icon"))) as TreeFixture;
+  const styles = (translucent.components[0].base as unknown as { styles: NormalizedStyles }).styles;
+  const side = { width: 1, style: "solid", color: "#e5e5e580" };
+  Object.assign(styles, { border: { top: side, right: side, bottom: side, left: side }, borderUniform: side });
+  const result = await falsified(translucent, inside);
   assert.deepEqual(findings(result), ["variant-default--size-default : stroke"]);
   const [stroke] = result.variants[0].nodes!.find((n) => n.key === "")!.differences;
   assert.deepEqual([(stroke.measured as unknown[])[3], (stroke.figma as unknown[])[3]], ["O", "I"]);

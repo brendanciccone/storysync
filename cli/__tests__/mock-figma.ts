@@ -788,6 +788,8 @@ type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GRO
 const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP"]);
 const FRAMES = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET"]);
 const SCENE = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "GROUP", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
+/** What a variable mode can be set on. */
+const MODED = new Set<Kind>([...FRAMES, "PAGE"]);
 const GEOMETRY = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
 const CORNERS = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "RECTANGLE", "VECTOR", "POLYGON"]);
 const SIDED = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "RECTANGLE"]);
@@ -919,6 +921,8 @@ class Node {
   layoutGrow = 0;
   constraints = { horizontal: "MIN", vertical: "MIN" };
   boundVariables: Record<string, Alias> = {};
+  /** The variable mode set on this node, by collection name: the mode's place in its collection. */
+  modes = new Map<string, number>();
   description = "";
   // Text.
   characters = "";
@@ -1501,12 +1505,57 @@ function paintsSetter(key: "fills" | "strokes") {
       // push found it set to 1; one bound as before keeps its opacity.
       const variable = n.doc.variables.get(id);
       if (!variable || variable.resolvedType !== "COLOR") invalid(key, `No COLOR variable with id ${id}`);
-      const { r, g, b, a } = variable.value as Rgba;
+      const { r, g, b, a } = valueAt(n, variable) as Rgba;
       const was = (before[i] as SolidPaint | undefined)?.boundVariables?.color?.id;
       return { ...next, color: { r, g, b }, opacity: was === id ? next.opacity : a };
     });
     changed(n);
   };
+}
+
+/**
+ * A variable's value where a node is: in the mode the node, or the nearest
+ * node around it, sets for the variable's collection, else in the default
+ * mode, the first.
+ */
+function valueAt(n: Node, v: Variable): unknown {
+  for (let at: Node | null = n; at; at = at.parent) {
+    const i = at.modes.get(v.collection);
+    if (i !== undefined) return v.modes[i][1];
+  }
+  return v.value;
+}
+
+/**
+ * What Figma does under a node whose mode is set or cleared: it resolves
+ * every bound value there again, in the mode each node is now in. A paint
+ * takes its variable's alpha as its opacity, and a shadow its variable's
+ * alpha, whatever alpha it was assigned, back in the first mode too: probe
+ * 7b's second call saw a ring at 10% read back opaque after each switch.
+ */
+function resolveAgain(top: Node): void {
+  for (const n of [top, ...top.descendants()]) {
+    const at = (id: string) => valueAt(n, n.doc.variables.get(id)!) as Rgba;
+    for (const key of ["fills", "strokes"] as const) {
+      n[key] = n[key].map((p) => {
+        const id = (p as SolidPaint).boundVariables?.color?.id;
+        if (p.type !== "SOLID" || !id) return p;
+        const { r, g, b, a } = at(id);
+        return { ...p, color: { r, g, b }, opacity: a };
+      });
+    }
+    n.effects = n.effects.map((e) => (e.color && e.boundVariables?.color ? { ...e, color: { ...at(e.boundVariables.color.id) } } : e));
+    for (const [field, alias] of Object.entries(n.boundVariables)) (n.handle as Record<string, unknown>)[field] = valueAt(n, n.doc.variables.get(alias.id)!);
+  }
+  changed(top);
+}
+
+/** The collection a mode method names, by its handle or id. */
+function collectionNamed(n: Node, collection: unknown, method: string): string {
+  const id = typeof collection === "string" ? collection : String((collection as { id?: unknown } | null)?.id);
+  const name = id.replace(/^VariableCollectionId:/, "");
+  if (!n.doc.collections.has(name)) throw new Error(`in ${method}: no collection ${id}`);
+  return name;
 }
 
 const weightProp = (side: number): Prop => ({
@@ -1589,7 +1638,17 @@ const PROPS: Record<string, Prop> = {
     get: (n) => frozenCopy(n.effects),
     set: (n, v) => {
       if (!Array.isArray(v)) invalid("effects", "Expected array");
-      const effects = v.map(effect);
+      // A shadow's color resolves from its variable: one bound afresh takes
+      // the variable's alpha, and one bound as before keeps its own (probe 7b).
+      const before = n.effects;
+      const effects = v.map(effect).map((e, i) => {
+        const id = e.boundVariables?.color?.id;
+        if (!id || !e.color) return e;
+        const variable = n.doc.variables.get(id);
+        if (!variable || variable.resolvedType !== "COLOR") invalid("effects", `No COLOR variable with id ${id}`);
+        const { r, g, b, a } = valueAt(n, variable) as Rgba;
+        return { ...e, color: { r, g, b, a: before[i]?.boundVariables?.color?.id === id ? e.color.a : a } };
+      });
       if (n.doc.options.shadowSpread === "refuse" && !(FRAMES.has(n.type) && n.clipsContent) && effects.some((e) => e.spread)) {
         invalid("effects", "spread is only supported on frames that clip their content (mock-figma shadowSpread 'refuse')");
       }
@@ -1678,6 +1737,15 @@ const PROPS: Record<string, Prop> = {
     },
   },
   boundVariables: { types: SCENE, get: (n) => frozenCopy(n.boundVariables) },
+  explicitVariableModes: { types: MODED, get: (n) => Object.fromEntries([...n.modes].map(([c, i]) => [`VariableCollectionId:${c}`, `1:${i}`])) },
+  resolvedVariableModes: {
+    types: SCENE,
+    get: (n) => Object.fromEntries([...n.doc.collections.keys()].map((c) => {
+      let at: Node | null = n;
+      while (at && !at.modes.has(c)) at = at.parent;
+      return [`VariableCollectionId:${c}`, `1:${at ? at.modes.get(c) : 0}`];
+    })),
+  },
   description: {
     types: new Set(["COMPONENT", "COMPONENT_SET"]),
     get: (n) => n.description,
@@ -1856,8 +1924,25 @@ const METHODS: Record<string, Method> = {
       if (!v) throw new Error(`in setBoundVariable: no variable ${JSON.stringify(variable)}`);
       if (v.resolvedType !== "FLOAT") throw new Error(`in setBoundVariable: ${name} takes a FLOAT variable, not ${v.resolvedType}`);
       const handle = n.handle as Record<string, unknown>;
-      handle[name] = v.value;
+      handle[name] = valueAt(n, v);
       n.boundVariables[name] = { type: "VARIABLE_ALIAS", id: v.id };
+    },
+  },
+  setExplicitVariableModeForCollection: {
+    types: MODED,
+    fn: (n, collection, modeId) => {
+      const name = collectionNamed(n, collection, "setExplicitVariableModeForCollection");
+      const i = n.doc.collections.get(name)!.findIndex((_, at) => `1:${at}` === String(modeId));
+      if (i < 0) throw new Error(`in setExplicitVariableModeForCollection: no mode ${JSON.stringify(modeId)} in collection ${name}`);
+      n.modes.set(name, i);
+      resolveAgain(n);
+    },
+  },
+  clearExplicitVariableModeForCollection: {
+    types: MODED,
+    fn: (n, collection) => {
+      n.modes.delete(collectionNamed(n, collection, "clearExplicitVariableModeForCollection"));
+      resolveAgain(n);
     },
   },
   set: {
@@ -2170,6 +2255,10 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
         doc.variables.set(v.id, v);
         doc.variableWrites.push(`variable ${v.name}`);
         return variableHandle(v);
+      },
+      getVariableCollectionByIdAsync: async (id: unknown) => {
+        const key = String(id).replace(/^VariableCollectionId:/, "");
+        return doc.collections.has(key) ? collectionHandle(key) : null;
       },
       getVariableByIdAsync: async (id: unknown) => {
         const v = doc.variables.get(String(id));

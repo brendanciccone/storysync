@@ -1,0 +1,411 @@
+{
+ "about": "Probe 7b: its two use_figma responses, as use_figma returned them. Figma file rPGAMu9hIKY9BwFWRkDpY3, page \"storysync probe 7b\", 2026-10-13. Call 1 is spikes/figma-probe-7b-ring.js: each frame set to its mode before its ring was bound. A drop shadow whose color is bound with setBoundVariableForEffect takes the variable's alpha when assigned (A); assigned once more with its own alpha put back, it keeps that alpha, bound, in the mode it was bound in (A2). An OUTSIDE stroke bound with the alpha as its paint's opacity draws the same (B). Call 2 is spikes/figma-probe-7b-modes.js: rings bound as the build binds them, in the page's default mode, then shown in another mode. The first time a node's mode changes after binding, its own frame's (C), a frame around it (D), or an instance's in a frame set to Dark (E), the shadow takes its variable's alpha, 1, and keeps it back in Light (C); an OUTSIDE stroke's paint takes it as its opacity the same way (F). Neither keeps a 10% ring's alpha past a mode switch, so a shadow's color is left unbound. G and H are a ring and a stroke left in the default mode, at 0.102.",
+ "call1": {
+  "variable": "VariableID:1:33",
+  "modes": {
+   "Light": [
+    0.039,
+    0.039,
+    0.039,
+    1
+   ],
+   "Dark": [
+    0.98,
+    0.98,
+    0.98,
+    1
+   ]
+  },
+  "nodes": {
+   "Light": {
+    "A": {
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_3\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 1 0\"/>"
+     ]
+    },
+    "A2": {
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_4\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "B": {
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "align": "OUTSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "stroke=\"#0A0A0A\"",
+      "stroke-opacity=\"0.101961\""
+     ]
+    }
+   },
+   "Dark": {
+    "A": {
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_6\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 1 0\"/>"
+     ]
+    },
+    "A2": {
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_7\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "B": {
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "align": "OUTSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "stroke=\"#FAFAFA\"",
+      "stroke-opacity=\"0.101961\""
+     ]
+    }
+   }
+  },
+  "createdNodeIds": [
+   "44:3",
+   "44:4",
+   "44:5",
+   "44:6",
+   "44:7",
+   "44:8"
+  ]
+ },
+ "call2": {
+  "variable": "VariableID:1:33",
+  "defaultMode": "Light",
+  "pageModes": 0,
+  "nodes": {
+   "C": {
+    "built": {
+     "mode": "Light",
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 1 0\"/>"
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 1 0\"/>"
+     ]
+    }
+   },
+   "D": {
+    "built": {
+     "mode": "Light",
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 1 0\"/>"
+     ]
+    }
+   },
+   "E": {
+    "main": {
+     "mode": "Light",
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "instance": {
+     "mode": "Dark",
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 1 0\"/>"
+     ]
+    }
+   },
+   "F": {
+    "built": {
+     "mode": "Light",
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "svg": [
+      "stroke=\"#0A0A0A\"",
+      "stroke-opacity=\"0.101961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        null
+       ],
+       "opacity": 1,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "svg": [
+      "stroke=\"#FAFAFA\""
+     ]
+    }
+   },
+   "G": {
+    "built": {
+     "mode": "Light",
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "svg": [
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0\"/>"
+     ]
+    }
+   },
+   "H": {
+    "built": {
+     "mode": "Light",
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "svg": [
+      "stroke=\"#0A0A0A\"",
+      "stroke-opacity=\"0.101961\""
+     ]
+    }
+   }
+  },
+  "createdNodeIds": [
+   "45:2",
+   "45:3",
+   "45:4",
+   "45:5",
+   "45:6",
+   "45:7",
+   "45:8",
+   "45:9",
+   "45:10"
+  ]
+ }
+}

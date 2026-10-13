@@ -17,7 +17,7 @@
 
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, RECORD_BY_TPL, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, borderBuiltInside, borderPaintsNothing, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, ComponentTree, Flow, Sides, TreeNode, TurnContext } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
@@ -828,6 +828,15 @@ function scoreFrame(n: TreeNode, field: Field, tolerance: number, check: Check, 
   const sameFills = fills.length === want.length && want.every((w, i) => (w.startsWith("lin:") && typeof fills[i] === "string" && fills[i].startsWith("lin:")
     ? sameGradient(w, fills[i]) : w === lower(fills[i])));
   check("fills", sameFills, want, fills);
+  // A background clipped inside a border that paints nothing, built INSIDE
+  // at the border box (borderBuiltInside), runs under the clear stroke, a
+  // border's width past where the browser stops it, as figma code says.
+  // Built OUTSIDE at the padding box, as push 5b built it, the fill stops
+  // where the browser's does.
+  const stroke = field("stroke");
+  if (n.bgc && want.length && !insideStrokeDrawsBorder(n) && borderPaintsNothing(n) && Array.isArray(stroke) && stroke[3] === "I") {
+    unscorable("background-clip", `background-clip ${n.bgc} inside a transparent border, built as a fill to the border box`);
+  }
 
   scoreStroke(n, field, tolerance, check, unscorable);
   scoreRadius(n, field, tolerance, check);
@@ -872,9 +881,11 @@ function scoreStroke(n: TreeNode, field: Field, tolerance: number, check: Check,
   const colors = [...new Set(drawn.map((i) => lower(sides(n.bd!.c)[i])))];
   const style = String(sides(n.bd.s)[drawn[0]]);
   // OUTSIDE where the background stops at the border, INSIDE where it runs
-  // under it; either where they draw alike (insideStrokeDrawsBorder).
+  // under it; either where the build takes INSIDE all the same
+  // (borderBuiltInside), as for a border that paints nothing, which an
+  // earlier build made OUTSIDE at the padding box: both score.
   const align = n.bgc === "padding-box" || n.bgc === "content-box" ? "O" : "I";
-  const aligned = (got: unknown) => got === align || (insideStrokeDrawsBorder(n) && got === "I");
+  const aligned = (got: unknown) => got === align || (borderBuiltInside(n) && got === "I");
   const want = [Array.isArray(n.bd.w) ? weights : weights[0], colors.length === 1 ? (colors[0] ? [colors[0]] : []) : colors, style, align];
   if (colors.length > 1) unscorable("stroke color", "per-side border colors, built as one in phase 1");
   if (!STROKE_STYLES.has(style)) unscorable("stroke style", `a ${style} border, which Figma's strokes don't draw`);

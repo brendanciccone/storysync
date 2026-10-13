@@ -1,6 +1,6 @@
 # Storysync reference
 
-The [README](../README.md) covers the common path: installing Storysync, a first push, checking the result and finding drift. This page is the reference. Look things up as you need them.
+The [README](https://github.com/brendanciccone/storysync/blob/main/README.md) covers the common path: installing Storysync, a first push, checking the result and finding drift. This page is the reference. Look things up as you need them.
 
 ## Contents
 
@@ -218,7 +218,7 @@ storysync figma tokens [--tokens <path>] [--out <dir>] [--remove <Collection/nam
 
 `figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. `plan.json` lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
 
-It prints each call, its warnings, and the push's [estimate](../README.md#what-a-push-costs):
+It prints each call, its warnings, and the push's [estimate](https://github.com/brendanciccone/storysync/blob/main/README.md#what-a-push-costs):
 
 ```text
 Estimate: 22 use_figma calls send 274,800 characters of code and read back about 180,000. Plan on about 510k-980k agent tokens for this push of 5 components, setup and verification included (the rule of thumb, 100k a component plus 100k a push, gives 600k).
@@ -434,7 +434,7 @@ Figma has no font for a CSS keyword like `system-ui`, or for a platform's own fo
 - Figma keeps a line whole only in a box at least as wide as the text, so snap rounds the width of anything that holds text up to the next hundredth of a pixel, never down.
 - A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `Inter`, with the family the code asked for, `system-ui`, beside it, and snap says once a run which fonts it drew this way.
 
-A font your project loads itself, such as Geist or Inter, is measured as it is. Figma needs that font installed to draw it. See [What Figma can't do](../README.md#what-figma-cant-do).
+A font your project loads itself, such as Geist or Inter, is measured as it is. Figma needs that font installed to draw it. See [What Figma can't do](https://github.com/brendanciccone/storysync/blob/main/README.md#what-figma-cant-do).
 
 **Take the snaps you compare on one platform.** Text is drawn a little wider or narrower from one operating system and browser build to the next, and the boxes after it move with it, so two machines' snaps of the same code can differ by fractions of a pixel. `meta.json` records the `platform` and `browser` a snap was taken with. Commit snaps taken in one place, such as CI.
 
@@ -475,6 +475,8 @@ Use the version the error prints. Other Playwright versions install a browser th
 - Frames get auto layout where a model of Figma's auto layout puts every child where the browser did, and the build checks it again in Figma. Elsewhere, such as a flex row that wraps, children are placed at their measured positions, and `figma code` says which frames.
 - Text gets its family, weight, size, line height, letter spacing, case and color, and fits its box as the browser fitted it: on one line, wrapped at its width, or cut off with an ellipsis. A font Figma lacks is drawn in a stand-in at the measured weight, which the build's response names. Text the browser drew whole on one line stays on one line: where Figma sets it wider than snap measured it, as for a snap taken before snap drew stand-ins, the build gives it Figma's own width and lists it in the response's `fallbacks`.
 - A transparent or translucent border is filled as the browser fills it: an `INSIDE` stroke the fill runs under, or, with `bg-clip-padding`, an `OUTSIDE` stroke the fill stops at.
+- Where a component clips its background inside a fully transparent border, as shadcn/ui Button's `border-transparent bg-clip-padding` does, the frame is built at the border box with its corner radius bound to its token. The fill runs 1px under the clear stroke: `figma code` warns about it and `verify` lists it under coverage.
+- A translucent, dashed or partly transparent border over a padding-box background is still built `OUTSIDE` at the padding box, at the inner radius. That radius is left unbound, with a warning.
 - Icons are imported from their SVG at their measured size. An icon whose shapes were recolored or changed in Figma is imported again, under a new node id, since the build sets an icon's shapes only by importing them.
 - A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source.
 - What Figma can't draw is left out and named in `figma code`'s warnings, never approximated silently, and `verify` lists it under coverage. What it draws another way is named as `built as`: borders with a different color on each side as one color, and scaling as the element's own box.
@@ -486,9 +488,11 @@ Colors and corner radii are bound to the variables `tokens` names. A measured va
 
 Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, and `rounded-lg` the radius to `lg`. Where the classes name two, as an outline button's `border-border dark:border-input` does, the one the `dark:` class names binds: it has the light value too, and is the token the dark theme paints.
 
-Where no class names one, the project's base styles can, as `tokens` reads them into `defaults`: shadcn/ui's dialog title has no color class and inherits `body`'s `text-foreground` from `@layer base`, so it binds to `foreground`, and a card's border takes `* { @apply border-border }`, so it binds to `border`. `figma code` prints each such binding with its rule. A base style counts only where snap found no class sets the color at all: a palette or arbitrary color such as `text-neutral-950` names no variable, and keeps the value unbound. Where neither names one, the value is left unbound and `figma code` warns with the variables it matches. Values are matched by the light theme's, which snap measures. A bound variable takes its Dark value wherever a designer switches a frame to the Dark mode. Shadows stay unbound.
+Where no class names one, the project's base styles can, as `tokens` reads them into `defaults`: shadcn/ui's dialog title has no color class and inherits `body`'s `text-foreground` from `@layer base`, so it binds to `foreground`, and a card's border takes `* { @apply border-border }`, so it binds to `border`. `figma code` prints each such binding with its rule. A base style counts only where snap found no class sets the color at all: a palette or arbitrary color such as `text-neutral-950` names no variable, and keeps the value unbound. Where neither names one, the value is left unbound and `figma code` warns with the variables it matches. Values are matched by the light theme's, which snap measures. A bound variable takes its Dark value wherever a designer switches a frame to the Dark mode.
 
-A frame whose background stops inside a transparent border is drawn at its padding box's inner radius, which no token holds, so that radius is left unbound and `figma code` says why.
+Shadow colors stay unbound: Figma gives a bound shadow its variable's alpha at the first mode switch, so a 10% ring would draw fully opaque.
+
+A frame built at its padding box inside a translucent, dashed or partly transparent border is drawn at the inner radius, which no token holds, so that radius is left unbound and `figma code` says why.
 
 ### Pictures
 
@@ -574,7 +578,7 @@ Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not
 
 With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
 
-The checksum isn't a signature. See [What Figma can't do](../README.md#what-figma-cant-do).
+The checksum isn't a signature. See [What Figma can't do](https://github.com/brendanciccone/storysync/blob/main/README.md#what-figma-cant-do).
 
 ### Staleness
 
@@ -764,7 +768,7 @@ npx storysync@<version> map --storybook http://localhost:6006 --json > .storysyn
 npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 ```
 
-Commit both files. Use the Storysync version the Action runs, which is the `version` in this repo's [`package.json`](../package.json) at the ref you use. A baseline from a different version can differ from what the Action maps. The Action's warnings and errors print these commands with the version filled in. You can also save the Action's `json` and `tokens_json` outputs as your baselines.
+Commit both files. Use the Storysync version the Action runs, which is the `version` in this repo's [`package.json`](https://github.com/brendanciccone/storysync/blob/main/package.json) at the ref you use. A baseline from a different version can differ from what the Action maps. The Action's warnings and errors print these commands with the version filled in. You can also save the Action's `json` and `tokens_json` outputs as your baselines.
 
 - If you set `components`, `exclude_props` or `token_source`, pass the same values to `map --components`, `map --exclude-props` and `tokens --source`.
 - A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
@@ -815,7 +819,7 @@ Commit both files. Use the Storysync version the Action runs, which is the `vers
 
 ### snap warnings
 
-- **Every variant measured the same.** If they rendered the same markup, the story likely drops its args: see [Write stories that measure well](../README.md#write-stories-that-measure-well). If the markup changed, the props change only behavior, and snap leaves them out.
+- **Every variant measured the same.** If they rendered the same markup, the story likely drops its args: see [Write stories that measure well](https://github.com/brendanciccone/storysync/blob/main/README.md#write-stories-that-measure-well). If the markup changed, the props change only behavior, and snap leaves them out.
 - **A closed trigger or a layout wrapper.** Give the component an `open` or `defaultOpen` prop the story passes through, or a story that renders it open or on its own. Then measure it again with `--merge`.
 - **Content past its box.** Use a story whose args give those variants content that fits, or name one with `--stories`.
 - **A capped component.** Raise `--max-combinations`, or leave out props that don't change the look with `--exclude-props`.

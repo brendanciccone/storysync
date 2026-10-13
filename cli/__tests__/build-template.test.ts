@@ -576,7 +576,7 @@ test("images: a build on a page that already shows the image fills from it and l
 
 test("bindings: paints, text colors and radii bind to the variables their classes name, opacity kept", async () => {
   const button = copy(loadTreeFixture("button-icon"));
-  // Its radius isn't bound: its border is built outside it, at the inner radius, which no token has.
+  // Its radius is bound: its transparent border paints nothing, so it is built at the border box.
   button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
   const toggle = copy(loadTreeFixture("toggle"));
   toggle.components[0].tree.base[0].cls = ["rounded-md"];
@@ -589,7 +589,7 @@ test("bindings: paints, text colors and radii bind to the variables their classe
       const root = mock.handle(variantsBySlug(mock).get("variant-default--size-default")!.id) as Record<string, unknown>;
       const fill = (root.fills as { boundVariables?: { color: { id: string } }; opacity: number }[])[0];
       assert.equal(fill.boundVariables?.color.id, vars.primary);
-      assert.equal((root.boundVariables as Record<string, unknown>).topLeftRadius, undefined);
+      assert.deepEqual((root.boundVariables as Record<string, unknown>).topLeftRadius, { type: "VARIABLE_ALIAS", id: vars.md });
       const label = mock.nodes("TEXT").find((n) => n.name === "Login with Email Button")!;
       assert.equal((mock.handle(label.id).fills as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, vars["primary/foreground"]);
       assert.deepEqual(r.unbound, []);
@@ -624,14 +624,15 @@ test("bindings: paints, text colors and radii bind to the variables their classe
   }
 });
 
-test("bindings: a Button's radius binds where its border is built INSIDE, drawn alike, and the one left unbound is said", async () => {
+test("bindings: a Button's radius binds wherever its border is built INSIDE at the border box, and the fill under a clear border is said", async () => {
   // The fifth live push's 97 Button frames: rounded-md, md = 8, a 1px
   // border with bg-clip-padding, all built OUTSIDE at radius 7, bound to
   // nothing, and nothing said. Outline's opaque border hides the background
   // under it, and link has none: both are built INSIDE at the border box,
-  // radius 8, bound to md. Default's and destructive's transparent border
-  // shows their background stopping short of it, which only the padding
-  // box draws: radius 7, which no token holds, said once.
+  // radius 8, bound to md. Push 5b built default's and destructive's the
+  // same way, OUTSIDE at radius 7: their transparent border paints
+  // nothing, so they are built INSIDE at the border box too, radius 8,
+  // bound to md, with the fill running under the clear stroke, said once.
   const button = copy(loadTreeFixture("button-icon"));
   button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
   const coded = await codeFor(button, {}, SHADCN_TOKENS);
@@ -639,18 +640,17 @@ test("bindings: a Button's radius binds where its border is built INSIDE, drawn 
   const md = mock.addVariable("md", "FLOAT", 8, "Radius").id;
   await runPlan(mock, coded, ["build"]);
   const built = variantsBySlug(mock);
-  const cases = [["outline", "INSIDE", 8, md], ["link", "INSIDE", 8, md], ["default", "OUTSIDE", 7, undefined], ["destructive", "OUTSIDE", 7, undefined]] as const;
-  for (const [variant, align, radius, bound] of cases) {
+  for (const variant of ["outline", "link", "default", "destructive"]) {
     // Link's other sizes are placeholders: snap couldn't measure them.
     for (const size of variant === "link" ? ["default"] : ["default", "xs", "sm"]) {
       const root = mock.handle(built.get(`variant-${variant}--size-${size}`)!.id) as Record<string, unknown>;
-      assert.deepEqual([root.strokeAlign, root.cornerRadius], [align, radius], `${variant} ${size}`);
+      assert.deepEqual([root.strokeAlign, root.cornerRadius, root.strokesIncludedInLayout], ["INSIDE", 8, true], `${variant} ${size}`);
       const corner = (root.boundVariables as Record<string, { id: string }>).topLeftRadius;
-      assert.equal(corner?.id, bound, `${variant} ${size}`);
+      assert.equal(corner?.id, md, `${variant} ${size}`);
     }
   }
-  assert.deepEqual(coded.warnings.filter((w) => /radius/.test(w)), [
-    "ui/base/Button: radius 8 left unbound: its background stops inside a border that would show it (background-clip padding-box), so the frame is built as the padding box, at radius 7, which no token holds",
+  assert.deepEqual(coded.warnings.filter((w) => /radius|background-clip/.test(w)), [
+    "ui/base/Button › (root): background-clip padding-box inside a transparent border is built as a fill to the border box, under the border's clear stroke",
   ]);
 });
 
@@ -704,6 +704,28 @@ test("bindings: what no class colors binds to the base styles' token, so Dark mo
   assert.equal(fillOf("Cancel").boundVariables?.color.id, foreground);
   const root = mock.handle(variantsBySlug(mock, "ui-base-attachment").get("size-default--orientation-horizontal--state-done")!.id) as Record<string, unknown>;
   assert.equal((root.strokes as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, border);
+});
+
+test("bindings: a dialog's ring stays unbound at its own 10% alpha, which a switch to Dark keeps, where a bound ring turns opaque", async () => {
+  // The fifth live push's Dialog: ring-1 ring-foreground/10, a spread-only
+  // shadow. Probe 7b bound it to foreground at 10%, which Figma kept only
+  // until the frame's mode changed: then it drew foreground opaque, in
+  // Dark and back in Light, as a stroke at the paint's opacity did too.
+  // Unbound, it draws #0a0a0a at 10% in every mode.
+  const dialog = loadTreeFixture("dialog");
+  const coded = await codeFor(dialog, {}, SHADCN_TOKENS);
+  const mock = mockFor([dialog]);
+  mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors");
+  await runPlan(mock, coded, ["build"]);
+  const variant = variantsBySlug(mock).get("default")!;
+  const ring = () => (mock.handle(variant.id) as { effects: { type: string; spread: number; color: { r: number; a: number }; boundVariables?: { color?: { id: string } } }[] }).effects
+    .map((e) => [e.type, e.spread, Math.round(e.color.r * 255), Math.round(e.color.a * 255), e.boundVariables?.color?.id]);
+  assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, undefined]]);
+  const run = await mock.run(`const [fg] = (await figma.variables.getLocalVariablesAsync('COLOR')).filter((v) => v.name === 'foreground');
+    const col = await figma.variables.getVariableCollectionByIdAsync(fg.variableCollectionId);
+    (await figma.getNodeByIdAsync('${variant.id}')).parent.setExplicitVariableModeForCollection(col, col.modes[1].modeId);`);
+  assert.ok(run.ok, run.text);
+  assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, undefined]], "in Dark");
 });
 
 test("label: a set measured from its closed trigger says so on one line, written once, its description unescaped", async () => {
@@ -1266,16 +1288,17 @@ test("drawnInSet: a group's shapes draw where the frame around the group puts th
 });
 
 test("build: the set's grid gives room to an outside stroke and a layer blur, which draw past a box too", async () => {
-  // A badge over the corner with a 30px border it keeps its fill inside,
-  // built as a frame its fill's size with an OUTSIDE stroke, and an icon
-  // blurred by 40px: each draws further past its frame than GAP, so laid
-  // out by boxes and shadows alone, the variants drew over each other.
+  // A badge over the corner with a 30px translucent border it keeps its
+  // fill inside, built as a frame its fill's size with an OUTSIDE stroke,
+  // and an icon blurred by 40px: each draws further past its frame than
+  // GAP, so laid out by boxes and shadows alone, the variants drew over
+  // each other.
   const fixture = copy(loadTreeFixture("button-icon"));
   const c = fixture.components[0];
   c.variantProperties = [{ name: "look", type: "VARIANT", values: ["plain", "ring", "blur"], defaultValue: "plain" }];
   const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
   const keys = c.tree!.base.map((n) => n.k);
-  const ring = { k: "ring", t: "F", el: "span", box: [150, -40, 100, 110], abs: 1, bg: "#ffffff", bgc: "padding-box", bd: { w: 30, s: "solid", c: "#ff0000" } };
+  const ring = { k: "ring", t: "F", el: "span", box: [150, -40, 100, 110], abs: 1, bg: "#ffffff", bgc: "padding-box", bd: { w: 30, s: "solid", c: "#ff000080" } };
   Object.assign(c.base!, { combination: { look: "plain" }, slug: "look-plain" });
   c.variants = [
     { ...base, combination: { look: "plain" }, slug: "look-plain" },
@@ -1287,11 +1310,13 @@ test("build: the set's grid gives room to an outside stroke and a layer blur, wh
   const set = mock.nodes("COMPONENT_SET")[0];
   const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
   const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
+  const badge = mock.handle(mock.nodes("FRAME").find((n) => n.data["storysync.k"] === "ring")!.id) as Record<string, number | string>;
+  assert.deepEqual([badge.strokeAlign, badge.strokeWeight, badge.width, badge.height], ["OUTSIDE", 30, 40, 50]);
   // The stroke draws the badge's border box, 40px above the button's and
-  // 70 down, the button's frame being inside its own 1px border; the blur
-  // 40px round the icon at 9 down.
-  assert.deepEqual([at.get("look=ring")![1] - own.get("look=ring")![1], at.get("look=ring")![3] - own.get("look=ring")![1]], [-41, 69]);
-  assert.equal(at.get("look=blur")![1] - own.get("look=blur")![1], 9 - 40);
+  // 70 down, the button's frame being its border box, its transparent
+  // border built INSIDE; the blur 40px round the icon at 10 down.
+  assert.deepEqual([at.get("look=ring")![1] - own.get("look=ring")![1], at.get("look=ring")![3] - own.get("look=ring")![1]], [-40, 70]);
+  assert.equal(at.get("look=blur")![1] - own.get("look=blur")![1], 10 - 40);
   const drawn = [...at.entries()];
   for (const [i, [name, a]] of drawn.entries()) {
     assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);
@@ -1325,9 +1350,9 @@ test("build: the set's grid gives room to a turned layer, by the box its turned 
   const set = mock.nodes("COMPONENT_SET")[0];
   const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
   const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
-  // From the variant's frame, inside the button's 1px border: 43 above it, to 77 down.
+  // From the variant's frame, the button's border box: 42 above it, to 78 down.
   const turned = "variant=turned, size=default";
-  assert.deepEqual([at.get(turned)![1] - own.get(turned)![1], at.get(turned)![3] - own.get(turned)![1]].map(Math.round), [-43, 77]);
+  assert.deepEqual([at.get(turned)![1] - own.get(turned)![1], at.get(turned)![3] - own.get(turned)![1]].map(Math.round), [-42, 78]);
   const drawn = [...at.entries()];
   for (const [i, [name, a]] of drawn.entries()) {
     assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);

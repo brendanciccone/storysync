@@ -15,7 +15,7 @@ import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
-import { builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
+import { borderBuiltInside, borderPaintsNothing, builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, Sides, TreeNode, TurnContext } from "./tree-types.js";
 
 /**
@@ -286,13 +286,30 @@ export function outsideInsets(node: TreeNode): [number, number, number, number] 
  * Whether the border is built OUTSIDE: where the background stops at it
  * (`background-clip: padding-box`, as shadcn/ui's Button's `bg-clip-padding`),
  * so Figma's fill, which an INSIDE stroke would sit over, ends where the
- * browser's does, and a transparent border shows what is behind it. Not
- * where an INSIDE stroke draws the same (insideStrokeDrawsBorder): no
- * background, or a solid opaque border that hides it, which is built INSIDE
- * at the border box, so its radius is the browser's own and binds.
+ * browser's does, and a translucent or dashed border shows what is behind
+ * it. Not where the border is built INSIDE at the border box all the same
+ * (borderBuiltInside): no background, a solid opaque border that hides it,
+ * or a border that paints nothing, so its radius is the browser's own and
+ * binds.
  */
 function strokeIsOutside(node: TreeNode): boolean {
-  return Boolean(node.bd && node.bgc && sides(node.bd.w).some((w) => w > 0) && node.t === "F" && !insideStrokeDrawsBorder(node));
+  return Boolean(node.bd && node.bgc && sides(node.bd.w).some((w) => w > 0) && node.t === "F" && !borderBuiltInside(node));
+}
+
+/**
+ * What about a border the background stops at shows what is behind the
+ * element rather than the background, where it is built OUTSIDE: some side
+ * transparent, translucent, or a style with gaps, as `dashed`.
+ */
+function seeThrough(node: TreeNode): string {
+  const widths = sides(node.bd!.w);
+  const colors = sides(node.bd!.c);
+  const styles = sides(node.bd!.s);
+  const drawn = [0, 1, 2, 3].filter((i) => widths[i] > 0);
+  const alpha = (i: number) => (colors[i] === null ? 0 : splitHex(colors[i]!)[1]);
+  if (drawn.some((i) => alpha(i) === 0)) return "partly transparent";
+  if (drawn.some((i) => alpha(i) < 1)) return "translucent";
+  return styles[drawn.find((i) => styles[i] !== "solid") ?? drawn[0]];
 }
 
 function strokeOf(node: TreeNode, ctx: MapContext): FigmaStroke | undefined {
@@ -342,7 +359,7 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
       if (decision.variable || decision.candidates.length) {
         ctx.unbound.push({
           key: node.k, property: "radius", value: String(value), candidates: decision.candidates,
-          why: `its background stops inside a border that would show it (background-clip ${node.bgc}), so the frame is built as the padding box, at radius ${out.r}, which no token holds`,
+          why: `its background stops inside its ${seeThrough(node)} border (background-clip ${node.bgc}), which shows what is behind the element there, so the frame is built as the padding box, at radius ${out.r}, which no token holds`,
         });
       }
     } else if (decision.variable) out.rv = decision.variable;
@@ -539,7 +556,11 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
         else ctx.notBuilt.push({ key: node.k, what: `background ${layer.length > 60 ? `${layer.slice(0, 57)}...` : layer}` });
       }
     }
-    if (node.bgc === "content-box") ctx.notBuilt.push({ key: node.k, what: "background-clip content-box", as: "padding-box" });
+    if (node.bgc && fills.length && !insideStrokeDrawsBorder(node) && borderPaintsNothing(node)) {
+      // A clear ring: the frame is the border box its class rounds, and the
+      // fill runs under the ring, where the browser shows what is behind.
+      ctx.notBuilt.push({ key: node.k, what: `background-clip ${node.bgc} inside a transparent border`, as: "a fill to the border box, under the border's clear stroke" });
+    } else if (node.bgc === "content-box") ctx.notBuilt.push({ key: node.k, what: "background-clip content-box", as: "padding-box" });
     style.f = fills;
   }
   const stroke = strokeOf(node, ctx);
