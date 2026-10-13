@@ -1017,6 +1017,9 @@ test("storiesOwnInPage: each story's own args, plain, and whether it has a rende
     { id: "ui-base-button--played", args: {}, play: true },
   ]);
   assert.deepEqual(await inPage(fake.preview, () => storiesOwnInPage({ storyIds: ["ui-base-button--small"] })), { error: "Storybook's preview has no story ui-base-button--small in its file" });
+  // A CSF2 story, `Template.bind({})`, which Storybook normalizes to its userStoryFn and no render: drawn by a function of its own.
+  const csf2 = fakePreview({ argTypes: {}, initial: {}, url: {}, csf: { "ui-base-button--icon": { args: { size: "icon" }, userStoryFn: () => null } } });
+  assert.deepEqual(await inPage(csf2.preview, () => storiesOwnInPage({ storyIds: ["ui-base-button--icon"] })), [{ id: "ui-base-button--icon", args: { size: "icon" }, render: true }]);
   // A preview that can't load a story's file.
   const old = fakePreview({ argTypes: {}, initial: {}, url: {} });
   assert.deepEqual(await inPage(old.preview, () => storiesOwnInPage({ storyIds: ["x"] })), { error: "Storybook's preview can't load a story's file (loadCSFFileByStoryId)" });

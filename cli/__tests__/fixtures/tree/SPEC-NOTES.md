@@ -1361,3 +1361,11 @@ S8. **The plainest story wins a tie** (review of S5). The first live
     lacks is now for none of the values that one is for (`decorates`), and
     a tie goes to the story that sets the least of its own, then the
     first. Toggle's outline variants come from Outline.
+S9. **A CSF2 story draws with a function of its own.** Storybook keeps a
+    story that is a function (`Template.bind({})`) as its `userStoryFn`,
+    which it renders in place of any `render`, and gives it no `render`
+    of its own. storiesOwnInPage read only `render`, so such a story whose
+    args named only variant properties counted as one that adds nothing,
+    and took those values from the keys of the stories that do: a
+    function story with `{ size: "icon" }` left Icon for nothing. It now
+    counts as having a render.

@@ -1364,12 +1364,13 @@ function watchArgWarnings(page: Page): ArgWarnings {
  * Runs in the page: each story's own annotations, from the CSF file
  * Storybook's preview loaded it from (`loadCSFFileByStoryId`, there from
  * Storybook 7): its own args, not its component's, and whether it has a
- * render, decorators or a play function of its own, for snap to choose
+ * render (or, a CSF2 story, is a function itself), decorators or a play
+ * function of its own, for snap to choose
  * which story measures each variant (snap-stories.ts). `{ error }` when the
  * preview can't give them.
  */
 export async function storiesOwnInPage(args: { storyIds: string[] }): Promise<StoryOwn[] | { error: string }> {
-  type Csf = { stories?: Record<string, { args?: Record<string, unknown>; render?: unknown; decorators?: unknown; play?: unknown } | undefined> };
+  type Csf = { stories?: Record<string, { args?: Record<string, unknown>; render?: unknown; userStoryFn?: unknown; decorators?: unknown; play?: unknown } | undefined> };
   try {
     const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: { storyStoreValue?: { loadCSFFileByStoryId?: (id: string) => Promise<Csf> } } }).__STORYBOOK_PREVIEW__;
     const store = preview?.storyStoreValue;
@@ -1384,7 +1385,8 @@ export async function storiesOwnInPage(args: { storyIds: string[] }): Promise<St
       for (const [name, value] of Object.entries(story.args ?? {})) if (value !== undefined) own[name] = plain(value);
       out.push({
         id, args: own,
-        ...(typeof story.render === "function" ? { render: true as const } : {}),
+        // A CSF2 story, a function, is kept as its userStoryFn, which Storybook renders in place of any render.
+        ...(typeof story.render === "function" || typeof story.userStoryFn === "function" ? { render: true as const } : {}),
         ...(Array.isArray(story.decorators) && story.decorators.length ? { decorators: true as const } : {}),
         ...(typeof story.play === "function" ? { play: true as const } : {}),
       });
