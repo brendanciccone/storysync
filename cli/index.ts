@@ -1313,7 +1313,7 @@ program
   .option("--request-timeout <ms>", requestTimeoutHelp("Figma MCP and Storybook MCP"))
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
-  .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
+  .option("--mode <name>", "Figma variable mode to read, alone (default: every mode, the first compared with the light theme and one named Dark with the dark theme)")
   .option("--components <names>", "Comma-separated component names, titles or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
   .option("--exclude-props <names>", "Comma-separated prop names the push left out with --exclude-props, left out of every component here too, so they aren't reported missing from Figma")
   .option("--json", "Output JSON instead of formatted text")

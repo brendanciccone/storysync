@@ -261,8 +261,9 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
 /**
  * The Figma modes diffTokens compared with nothing, by collection: every
  * mode but the first and the Dark one, and the Dark one too where the code
- * has no dark theme, or `--mode` read one mode. For the report to name, so
- * a count of matches isn't read as covering them.
+ * has no dark theme. None with `--mode`, which reads the one mode asked
+ * for. For the report to name, so a count of matches isn't read as
+ * covering them.
  */
 export function modesNotCompared(figmaVars: FigmaVariable[], options: TokenDiffOptions = {}): { collection: string; modes: string[] }[] {
   const codeDark = !!options.codeModes?.includes("Dark");

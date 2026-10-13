@@ -718,7 +718,8 @@ Options:
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
-  --mode <name>          Figma variable mode to read (default: each collection's first mode)
+  --mode <name>          Figma variable mode to read, alone (default: every mode, the first
+                         compared with the light theme and one named Dark with the dark theme)
   --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
