@@ -19,7 +19,7 @@ import {
   normalizeStyles, encodeStoryArgs, buildStoryUrl,
   assignVariantSlugs, componentSlug, componentSlots, contentSlots, diffFromBase,
 } from "./snap-normalize.js";
-import type { MeasurementNote, NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
+import type { MeasurementNote, NormalizedStyles, OverlayOpened, SlugCollision, StyleDelta } from "./snap-normalize.js";
 import { resolveAndLaunch, createContext, captureStory, makeThumbnail, readStoriesOwn } from "./snap-browser.js";
 import type { CaptureResult, CaptureStatus, CapturedImage } from "./snap-browser.js";
 import { argsNotInDocs, describeArgRejections, describeUncheckedArgs, nameSlugs } from "./snap-args.js";
@@ -68,6 +68,12 @@ export interface SnapOptions {
    */
   channelArgs?: boolean;
   /**
+   * Whether a story that renders only an overlay's closed trigger has the
+   * overlay opened and its content measured (the default), or the trigger
+   * measured as it is (`--no-open-overlays`).
+   */
+  openOverlays?: boolean;
+  /**
    * The component's story, by the component's ID or title, in place of the
    * one snap picks (`--stories ui-base-button=ui-base-button--with-icon`):
    * each variant is measured from it, except one another of the
@@ -113,6 +119,13 @@ export interface SnapVariant {
    * its root: an open dialog's, say, where nothing in the root draws.
    */
   portal?: true;
+  /**
+   * How snap opened the overlay `element` is the content of, where the
+   * story rendered only its closed trigger: by setting the story's `open`
+   * or `defaultOpen` arg through Storybook's preview (`via: "arg"`), or by
+   * clicking, hovering over, focusing or right-clicking `trigger`.
+   */
+  opened?: OverlayOpened;
   /**
    * Keys of the tree's elements placed against the browser window
    * (`position: fixed`) or the page (`position: absolute` with nothing
@@ -318,6 +331,12 @@ export interface SnapMeta {
    * may be ones the preview would have measured. Absent otherwise.
    */
   channelArgs?: false;
+  /**
+   * False where the run that wrote this file measured overlays' closed
+   * triggers as they rendered rather than opening them
+   * (`--no-open-overlays`). Absent otherwise.
+   */
+  openOverlays?: false;
 }
 
 export const SNAP_META_FILENAME = "meta.json";
@@ -792,6 +811,36 @@ export function describeClimbed(climbed: { slug: string; element: string; from: 
   );
 }
 
+/**
+ * How snap opened a component's overlay to measure it, where it did, as the
+ * rest of a line naming the component, or null where it opened none:
+ * "measured open: snap clicked button[data-slot="dialog-trigger"] to open
+ * it, and measured div[data-slot="dialog-content"]". Each way once, with
+ * how many variants it opened where that is not all of those measured.
+ * Said, not warned: the content is the component.
+ */
+export function describeOpenedOverlays(component: Pick<SnapComponent, "variants">): string | null {
+  const measured = component.variants.filter((v) => v.status === "ok");
+  const opened = measured.filter((v) => v.opened);
+  if (!opened.length) return null;
+  const ways = new Map<string, { how: OverlayOpened; count: number }>();
+  for (const variant of opened) {
+    const key = JSON.stringify(variant.opened);
+    ways.set(key, { how: variant.opened!, count: (ways.get(key)?.count ?? 0) + 1 });
+  }
+  const verbs: Record<OverlayOpened["via"], string> = {
+    arg: "set", click: "clicked", hover: "hovered over", focus: "focused", contextmenu: "right-clicked",
+  };
+  const parts = [...ways.values()].map(({ how, count }) => {
+    const what = how.via === "arg" ? `set its ${how.arg ?? "open"} arg through Storybook's preview` : `${verbs[how.via]} ${how.trigger}`;
+    return `${what}${count < measured.length ? ` in ${count} of ${measured.length} variants` : ""}`;
+  });
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  const elements = new Set(opened.map((v) => v.element ?? ""));
+  const element = elements.size === 1 && !elements.has("") ? [...elements][0] : "what it opened";
+  return `measured open: snap ${list} to open it, and measured ${element}`;
+}
+
 /** Warning for properties detectNoOpProperties found. */
 export function describeNoOpProperties(names: string[]): string | null {
   if (!names.length) return null;
@@ -830,13 +879,14 @@ export function describeMeasurementNotes(
   return [...groups.values()].map(({ note, slugs }) => {
     const which = slugs.length < measured ? ` in ${slugs.length} of ${measured} measured variants` : "";
     if (note.kind === "closed-trigger") {
+      const why = note.reason ? `: snap didn't open it (${note.reason})` : "";
       return (
-        `snap measured ${note.element}, a closed trigger, rather than ${name}${which}. What it opens renders ` +
+        `snap measured ${note.element}, a closed trigger, rather than ${name}${which}${why}. What it opens renders ` +
         `only while open, usually in a portal outside the story's root, so the Figma component would be the ` +
-        `trigger. To measure the content, have the story snap renders (the Default story, or else the first) ` +
-        `render ${name} open, with defaultOpen for example: snap measures open content that carries ` +
-        `data-slot=${content}, that the trigger's aria-controls names, or that is a dialog, alert dialog, ` +
-        `tooltip or menu in a portal.`
+        `trigger. To measure the content, give ${name} an \`open\` or \`defaultOpen\` prop the story passes ` +
+        `through, which snap sets, or have the story snap renders (the Default story, or else the first) render ` +
+        `${name} open: snap measures open content that carries data-slot=${content}, that the trigger's ` +
+        `aria-controls names, or that is a dialog, alert dialog, tooltip, menu or listbox in a portal.`
       );
     }
     return (
@@ -856,7 +906,11 @@ export function describeMeasurementNotes(
  */
 export function parseMeasurementWarning(warning: string): MeasurementNote | null {
   const trigger = /^snap measured (.+?), a closed trigger, rather than /.exec(warning);
-  if (trigger) return { kind: "closed-trigger", element: trigger[1] };
+  if (trigger) {
+    // Up to the sentence after it, so a reason holding parentheses or a period is read whole.
+    const reason = /: snap didn't open it \((.*)\)\. What it opens renders /s.exec(warning)?.[1];
+    return { kind: "closed-trigger", element: trigger[1], ...(reason ? { reason } : {}) };
+  }
   const wrapper = /^snap measured (.+?), which holds (\d+) elements and draws nothing itself/.exec(warning);
   if (wrapper) return { kind: "layout-wrapper", element: wrapper[1], children: Number(wrapper[2]) };
   return null;
@@ -1412,7 +1466,7 @@ function writeSnap(
   const oldest = Object.values(times ?? {}).reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min), measuredAt);
 
   writeStylesJson(opts.outDir, result);
-  writeMetaJson(opts.outDir, result, oldest, times, browserVersion, opts.channelArgs === false);
+  writeMetaJson(opts.outDir, result, oldest, times, browserVersion, { noChannelArgs: opts.channelArgs === false, noOpenOverlays: opts.openOverlays === false });
   return result;
 }
 
@@ -1553,9 +1607,10 @@ async function snapComponent(
           timeoutMs: opts.timeoutMs,
           selector: opts.selector,
           screenshot: opts.screenshots,
-          component: { name: entry.name, title: entry.title },
+          component: { name: entry.name, title: entry.title, props: component.props.map((p) => p.name) },
           story: { id: choice.storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
           channelArgs: opts.channelArgs ?? true,
+          openOverlays: opts.openOverlays ?? true,
           tree: opts.rootOnly ? "count" : "tree",
         });
       };
@@ -1685,6 +1740,7 @@ async function snapComponent(
         boundingBox: { width: styles.width, height: styles.height },
         ...(captured.element ? { element: captured.element } : {}),
         ...(captured.portal ? { portal: captured.portal } : {}),
+        ...(captured.opened ? { opened: captured.opened } : {}),
         ...(captured.tree?.movedInside?.length ? { movedInside: captured.tree.movedInside } : {}),
         ...argsRecord,
       };
@@ -1902,7 +1958,7 @@ function writeMetaJson(
   measuredAt: string,
   componentsMeasuredAt?: Record<string, string>,
   browserVersion?: string,
-  noChannelArgs = false,
+  { noChannelArgs = false, noOpenOverlays = false }: { noChannelArgs?: boolean; noOpenOverlays?: boolean } = {},
 ): string {
   const meta: SnapMeta = {
     version: SNAP_SCHEMA_VERSION,
@@ -1916,6 +1972,7 @@ function writeMetaJson(
     platform: `${process.platform}-${process.arch}`,
     ...(browserVersion ? { browser: browserVersion } : {}),
     ...(noChannelArgs ? { channelArgs: false as const } : {}),
+    ...(noOpenOverlays ? { openOverlays: false as const } : {}),
   };
   const path = join(outDir, SNAP_META_FILENAME);
   mkdirSync(outDir, { recursive: true });

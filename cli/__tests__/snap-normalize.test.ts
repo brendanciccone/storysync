@@ -22,7 +22,9 @@ import {
   componentSlots,
   contentSlots,
   chooseMeasuredElement,
+  describeOpenFailure,
   isClosedTrigger,
+  openInteractions,
   resolveFontFamily,
   isFontKeyword,
   CAPTURED_PROPERTIES,
@@ -1049,6 +1051,9 @@ test("chooseMeasuredElement: the bundled example's shape, a filled button behind
 });
 
 test("isClosedTrigger: ARIA's and shadcn/ui's marks of a trigger whose content isn't showing", () => {
+  // Radix's tooltip, open after its delay or at once, is open.
+  assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger", state: "delayed-open" })), false);
+  assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger", state: "instant-open" })), false);
   assert.equal(isClosedTrigger(node("button", { hasPopup: "dialog", expanded: "false" })), true);
   assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger" })), true);
   assert.equal(isClosedTrigger(node("button", { state: "closed" })), true);
@@ -1063,10 +1068,47 @@ test("isClosedTrigger: ARIA's and shadcn/ui's marks of a trigger whose content i
   assert.equal(isClosedTrigger(node("button")), false);
 });
 
-test("chooseMeasuredElement: a closed overlay's trigger is measured, and flagged", () => {
+test("chooseMeasuredElement: a closed overlay's trigger is measured, and flagged, with how snap may open it", () => {
   const trigger = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false", styles: { display: "inline-block" } });
   const choice = chooseMeasuredElement(root(trigger), [], ["dialog"]);
   assert.deepEqual(choice.kind === "tree" && choice.notes, [{ kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' }]);
+  assert.deepEqual(choice.kind === "tree" && choice.trigger, { field: false, interactions: ["click", "hover", "focus", "contextmenu"] });
+  // A select's field is the component while closed: no note, but snap may open it.
+  const field = node("button", { slot: "select-trigger", role: "combobox", expanded: "false", state: "closed", styles: FILLED });
+  const select = chooseMeasuredElement(root(field), [], ["select"]);
+  assert.deepEqual(select, { kind: "tree", path: [0], element: 'button[data-slot="select-trigger"]', notes: [], trigger: { field: true, interactions: ["click"] } });
+  // Anything else isn't one to open.
+  const button = chooseMeasuredElement(root(node("button", { slot: "button", styles: FILLED })), [], ["button"]);
+  assert.equal(button.kind === "tree" && button.trigger, undefined);
+});
+
+test("openInteractions: a context menu's trigger is right-clicked first, a tooltip's or hover card's hovered over, anything else clicked; then the rest in turn", () => {
+  const rest = (first: string) => ["click", "hover", "focus", "contextmenu"].filter((how) => how !== first);
+  assert.deepEqual(openInteractions(node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false" })), ["click", ...rest("click")]);
+  assert.deepEqual(openInteractions(node("span", { slot: "context-menu-trigger", state: "closed" })), ["contextmenu", ...rest("contextmenu")]);
+  assert.deepEqual(openInteractions(node("button", { slot: "tooltip-trigger" })), ["hover", ...rest("hover")]);
+  assert.deepEqual(openInteractions(node("a", { slot: "hover-card-trigger" })), ["hover", ...rest("hover")]);
+  // By the component's slots, where the trigger has none of its own, as Base UI's tooltip's has none to go by but the story's.
+  assert.deepEqual(openInteractions(node("button", { state: "closed", hasPopup: "dialog" }), ["tooltip-content", "tooltip"]), ["hover", ...rest("hover")]);
+  // Radix's tooltip and hover card triggers: a data-state, and nothing that says what they open.
+  assert.deepEqual(openInteractions(node("button", { state: "closed" })), ["hover", ...rest("hover")]);
+  // A select's field: clicked, and nothing else.
+  assert.deepEqual(openInteractions(node("button", { role: "combobox", expanded: "false" })), ["click"]);
+  assert.deepEqual(openInteractions(node("button", { hasPopup: "listbox" })), ["click"]);
+});
+
+test("describeOpenFailure: says each way snap tried and what came of it, a run that opened nothing in the same wait once", () => {
+  assert.equal(describeOpenFailure([
+    { via: "click", outcome: "nothing", waitMs: 3000 }, { via: "hover", outcome: "nothing", waitMs: 3000 },
+    { via: "focus", outcome: "nothing", waitMs: 3000 }, { via: "contextmenu", outcome: "nothing", waitMs: 3000 },
+  ]), "clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each");
+  assert.equal(describeOpenFailure([
+    { via: "arg", arg: "defaultOpen", outcome: "failed", error: "Storybook didn't confirm the args." },
+    { via: "click", outcome: "no-content" },
+    { via: "hover", outcome: "nothing", waitMs: 3000 },
+  ]), "setting its defaultOpen arg through Storybook's preview failed (Storybook didn't confirm the args); " +
+    "clicking it opened it, but snap found nothing it opened outside the story's root to measure; hovering over it opened nothing within 3000ms");
+  assert.equal(describeOpenFailure([{ via: "click", outcome: "failed" }]), "clicking it failed");
 });
 
 test("chooseMeasuredElement: open content in a portal is measured in place of the trigger", () => {
@@ -1082,6 +1124,22 @@ test("chooseMeasuredElement: open content in a portal is measured in place of th
   // Content with no box is not measured.
   const hidden = chooseMeasuredElement(root(trigger), [portal({ slot: "dialog-content", rendered: false })], ["dialog"]);
   assert.equal(hidden.kind, "tree");
+});
+
+test("chooseMeasuredElement: an open trigger whose aria-controls names nothing measures the overlay it shows, a select's listbox included", () => {
+  // Radix's tooltip once hovered over: open, naming nothing it controls.
+  const tooltip = node("button", { state: "delayed-open", text: true });
+  const portals = [portal({ tag: "span", role: "tooltip", overlay: true })];
+  assert.deepEqual(chooseMeasuredElement(root(tooltip), portals, []), { kind: "portal", index: 0, element: 'span[role="tooltip"]', notes: [] });
+  // A select's field, open, without slots.
+  const field = node("button", { role: "combobox", expanded: "true", controls: "elsewhere", styles: FILLED });
+  const listbox = [portal({ role: "listbox", overlay: true })];
+  assert.deepEqual(chooseMeasuredElement(root(field), listbox, []), { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [] });
+  // An open trigger with nothing showing is measured as it is, with no note: it isn't closed.
+  assert.deepEqual(chooseMeasuredElement(root(tooltip), [], []), { kind: "tree", path: [0], element: "button", notes: [] });
+  // Something open that is no trigger doesn't take an overlay in its place.
+  const item = node("div", { state: "open", text: true });
+  assert.equal(chooseMeasuredElement(root(item), portals, []).kind, "tree");
 });
 
 test("chooseMeasuredElement: without slots, an open trigger's aria-controls names its content", () => {
@@ -1113,7 +1171,10 @@ test("chooseMeasuredElement: an open overlay in a portal is measured where the s
   assert.equal(chooseMeasuredElement(root(node("p")), portals, []).kind, "tree");
   // No overlay open: as before.
   assert.equal(chooseMeasuredElement(root(), portals.slice(0, 2), []).kind, "none");
-  assert.deepEqual(chooseMeasuredElement(root(trigger), [], []), { kind: "tree", path: [0], element: "button", notes: [{ kind: "closed-trigger", element: "button" }] });
+  assert.deepEqual(chooseMeasuredElement(root(trigger), [], []), {
+    kind: "tree", path: [0], element: "button", notes: [{ kind: "closed-trigger", element: "button" }],
+    trigger: { field: false, interactions: ["click", "hover", "focus", "contextmenu"] },
+  });
   // Content with no box is not measured.
   assert.equal(chooseMeasuredElement(root(), [portal({ role: "dialog", overlay: true, rendered: false })], []).kind, "none");
 });

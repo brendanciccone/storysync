@@ -11,7 +11,7 @@ import { DEFAULT_REQUEST_TIMEOUT_MS, requestLimit } from "./mcp-connect.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
-import { describeFontStandIns, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
+import { describeFontStandIns, describeOpenedOverlays, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
@@ -168,11 +168,15 @@ function readbackIssueReason(issue: ReadbackIssue, snapAge: SnapAgeInfo): string
 /** Caveats verify draws from what it compared, rather than from snap's warnings. */
 const VERIFY_CAVEATS = new Set<ScoreCaveat["kind"]>(["root-only", "truncated-tree", "built-from-other-measurement"]);
 
+/** Caveats said beside the score rather than warned: how snap measured, where nothing is wrong with it. */
+const SAID_CAVEATS = new Set<ScoreCaveat["kind"]>(["variant-stories", "opened"]);
+
 /** What a caveat beside verify's score says about its component, as the rest of a line naming it. */
 function describeCaveat(caveat: ScoreCaveat): string {
   switch (caveat.kind) {
     case "closed-trigger":
-      return `snap measured ${caveat.element}, a closed trigger, so this scores the trigger, not what it opens`;
+      return `snap measured ${caveat.element}, a closed trigger, so this scores the trigger, not what it opens` +
+        (caveat.reason ? `; snap didn't open it: ${caveat.reason}` : "");
     case "layout-wrapper":
       return `snap measured ${caveat.element}, which may be the story's layout wrapper rather than the component`;
     case "identical-variants":
@@ -219,6 +223,7 @@ function describeCaveat(caveat: ScoreCaveat): string {
     case "snap-warning":
       return caveat.warning ?? "";
     case "variant-stories":
+    case "opened":
       return caveat.note ?? "";
     case "root-only": {
       const inner = caveat.innerElements;
@@ -416,6 +421,7 @@ program
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
   .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
+  .option("--no-open-overlays", "Measure an overlay's closed trigger as the story renders it, rather than opening the overlay (by its open or defaultOpen arg, or by clicking, hovering over, focusing or right-clicking the trigger) and measuring its content")
   .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the component's story, in place of the one snap picks, which measures every variant no other story's own args are for, or every variant where the story ends in ! (ui-base-toggle=ui-base-toggle--default!); a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
@@ -500,6 +506,7 @@ program
           merge: !!opts.merge,
           rootOnly: !!opts.rootOnly,
           channelArgs: opts.channelArgs !== false,
+          openOverlays: opts.openOverlays !== false,
           ...(stories ? { stories } : {}),
         },
         {
@@ -532,6 +539,11 @@ program
         for (const component of result.components) {
           const stories = describeVariantStories(component);
           if (stories) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${stories}`));
+        }
+        // Said, not warned: the overlays snap opened to measure.
+        for (const component of result.components) {
+          const opened = describeOpenedOverlays(component);
+          if (opened) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${opened}`));
         }
         // Said, not warned: snap still takes variant properties from the docs alone.
         for (const component of result.components.filter((c) => c.argsNotInDocs?.length)) {
@@ -678,13 +690,13 @@ program
         if (result.skipped.length > 0) {
           beside.push(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }
-        const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind) && c.kind !== "variant-stories");
+        const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind) && !SAID_CAVEATS.has(c.kind));
         if (snapCaveats.length > 0) {
           beside.push(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
           for (const caveat of snapCaveats) beside.push(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
         }
-        // Said, not warned: the variants snap measured from a story of their own.
-        for (const caveat of result.caveats.filter((c) => c.kind === "variant-stories")) {
+        // Said, not warned: the variants snap measured from a story of their own, and the overlays it opened.
+        for (const caveat of result.caveats.filter((c) => SAID_CAVEATS.has(c.kind))) {
           beside.push(chalk.dim(`  i ${caveat.component}: ${describeCaveat(caveat)}`));
         }
         // Elements first where snap measured them (cli/verify.ts formatElementReport).

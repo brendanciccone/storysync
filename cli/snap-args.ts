@@ -243,6 +243,23 @@ export function findRejectedArgs(
 }
 
 /**
+ * The arg snap sets to true through Storybook's preview to open an overlay
+ * the story renders closed: `open`, else `defaultOpen`, where the story's
+ * argTypes or the component's documented props (`props`, by name) have
+ * it, and an argType gives it no type but boolean. Null where neither has
+ * one, and snap opens the overlay through its trigger instead. Neither is
+ * ever a variant property: what an overlay's state is, not how it looks.
+ */
+export function openArg(argTypes: Record<string, StoryArgType> | undefined, props: readonly string[] = []): "open" | "defaultOpen" | null {
+  for (const name of ["open", "defaultOpen"] as const) {
+    const argType = argTypes?.[name];
+    if (argType && argType.type !== undefined && argType.type !== "boolean") continue;
+    if (argType || props.includes(name)) return name;
+  }
+  return null;
+}
+
+/**
  * What snap sends through Storybook's preview to apply `rejected`: each
  * value as Storybook holds it, and the args whose `if` to lift so the story
  * is given them.

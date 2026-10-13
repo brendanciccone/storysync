@@ -10,11 +10,14 @@ import { createRequire } from "node:module";
 import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request, Response } from "playwright-core";
 import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS, OVERLAY_SELECTOR,
-  chooseMeasuredElement, componentSlots, contentSlots, describeElement, resolveFontFamily,
+  chooseMeasuredElement, componentSlots, contentSlots, describeElement, describeOpenFailure, resolveFontFamily,
 } from "./snap-normalize.js";
-import type { RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, PortalNode, StoryNode } from "./snap-normalize.js";
+import type {
+  RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, OpenAttempt, OpenInteraction, OpenableTrigger, OverlayOpened,
+  PortalNode, StoryNode,
+} from "./snap-normalize.js";
 import {
-  compactArgTypes, findRejectedArgs, previewArgUpdate, rejectionsFromWarnings, stillRejected,
+  compactArgTypes, findRejectedArgs, openArg, previewArgUpdate, rejectionsFromWarnings, stillRejected,
 } from "./snap-args.js";
 import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
 import type { FigmaVariantProperty } from "./mapper.js";
@@ -252,6 +255,11 @@ export interface CaptureResult {
   climbedFrom?: string;
   /** True when the element measured is content the story renders into a portal, outside its root. */
   portal?: true;
+  /**
+   * How snap opened the overlay it measured, where the story rendered only
+   * its closed trigger: see openOverlay. Absent where snap opened nothing.
+   */
+  opened?: OverlayOpened;
 }
 
 export interface CaptureOptions {
@@ -259,8 +267,12 @@ export interface CaptureOptions {
   /** Measures the element this matches as it is, rather than choosing one. */
   selector?: string;
   screenshot: boolean;
-  /** The component the story renders, whose `data-slot` marks its root: see chooseMeasuredElement. */
-  component?: { name: string; title?: string };
+  /**
+   * The component the story renders, whose `data-slot` marks its root: see
+   * chooseMeasuredElement. `props`, its documented props by name, say
+   * whether it takes an `open` or `defaultOpen` arg (openOverlay).
+   */
+  component?: { name: string; title?: string; props?: readonly string[] };
   /**
    * The story `url` loads, with the args its URL asks for: snap's
    * combination, and the component's variant properties, so a boolean is
@@ -287,6 +299,14 @@ export interface CaptureOptions {
   tree?: "tree" | "count";
   /** Whether text Figma sets in a stand-in is drawn in it before it is measured. Default true. */
   standIns?: boolean;
+  /**
+   * Whether a story that renders only an overlay's closed trigger has the
+   * overlay opened and its content measured (the default), or the trigger
+   * measured as it is (`--no-open-overlays`): see openOverlay.
+   */
+  openOverlays?: boolean;
+  /** How long each way of opening an overlay waits for it, within `timeoutMs`: OPEN_WAIT_MS by default. */
+  openWaitMs?: number;
 }
 
 /** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
@@ -317,6 +337,8 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
   let responses: ImageResponses | null = null;
   let warnings: ArgWarnings | null = null;
   let loaded = false;
+  // The overlay snap opened, to close once it is measured.
+  let shut: { opened: OverlayOpened; content: ElementHandle<Element> } | null = null;
 
   try {
     // From before the navigation, so a request the story makes as it renders is seen.
@@ -365,8 +387,35 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // Before anything is measured, or chosen by its box.
     if (opts.standIns !== false) await drawStandIns(page, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
 
-    const located = opts.selector ? await locateSelector(page, opts.selector) : await locateComponent(page, slots);
+    let located = opts.selector ? await locateSelector(page, opts.selector) : await locateComponent(page, slots);
     if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
+    // A closed trigger, or a closed select's field: what it opens is measured, where snap can open it.
+    let opened: OverlayOpened | undefined;
+    if (located.trigger) {
+      const closed = located as Located & { trigger: OpenableTrigger };
+      const opening: Opening = opts.openOverlays === false
+        ? { reason: "it was run with --no-open-overlays" }
+        : await openOverlay(page, closed, {
+          slots, story: opts.story, argTypes: empty.args?.argTypes, props: opts.component?.props,
+          timeoutMs: opts.timeoutMs, waitMs: opts.openWaitMs ?? OPEN_WAIT_MS, images, standIns: opts.standIns !== false,
+        });
+      if ("located" in opening) {
+        await closed.target.dispose().catch(() => { /* gone with a remount */ });
+        located = opening.located;
+        opened = opening.opened;
+        shut = { opened, content: located.target };
+      } else if (opts.openOverlays !== false) {
+        // Found again: an arg set and reset remounted the story, and the trigger with it.
+        await closed.target.dispose().catch(() => { /* gone with a remount */ });
+        const again = await locateComponent(page, slots);
+        if ("error" in again) return { status: "element_not_found", error: again.error, ...empty };
+        located = again;
+      }
+      if (!opened) {
+        const reason = "reason" in opening ? opening.reason : "";
+        located.notes = located.notes.map((note) => (note.kind === "closed-trigger" ? { ...note, reason } : note));
+      }
+    }
     // Under a tree, an element that draws nothing and holds nothing that
     // does is no root to build: the nearest one around it that draws is.
     const climbedFrom = opts.tree === "tree" && !opts.selector ? await climbToDrawing(located) : null;
@@ -415,7 +464,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args,
       ...(standIns.length ? { standIns } : {}),
       ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
-      ...(portal ? { portal } : {}),
+      ...(portal ? { portal } : {}), ...(opened ? { opened } : {}),
     };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
@@ -425,9 +474,268 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
     return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
   } finally {
+    // Closed again, whatever came of measuring it.
+    if (shut) await closeOverlay(page, shut.opened, shut.content, opts.story?.id).catch(() => { /* the page went */ });
     images?.stop();
     responses?.stop();
     warnings?.stop();
+  }
+}
+
+// --- Overlays ---------------------------------------------------------------
+//
+// A story that renders only an overlay's closed trigger, as a Dialog's,
+// Popover's or Tooltip's Default story does, has the overlay opened before
+// anything is measured, so what Figma gets is its content, as a designer
+// draws it: through the story's `open` or `defaultOpen` arg where the
+// component takes one, else through the trigger, as a user opens it. Each
+// way is tried in turn, each bounded, and the overlay is closed again once
+// it has been measured.
+
+/** The longest snap waits for an overlay to open after each way it tries, within --timeout. */
+export const OPEN_WAIT_MS = 3000;
+
+/** The longest snap waits for an open overlay's animations to end and its boxes to stay put. */
+export const OPEN_SETTLE_MS = 2000;
+
+/** How many frames in a row an open overlay's boxes must stay put. */
+const OPEN_STILL_FRAMES = 3;
+
+/** The longest snap waits for an overlay it measured to close again. */
+export const CLOSE_WAIT_MS = 1000;
+
+/** How often snap looks for an overlay opening or closing. */
+const OVERLAY_POLL_MS = 50;
+
+/** What openOverlay needs from the capture. */
+interface OpenContext {
+  slots: readonly string[];
+  story?: CaptureOptions["story"];
+  argTypes?: Record<string, StoryArgType>;
+  props?: readonly string[];
+  timeoutMs: number;
+  /** How long each way waits for the overlay to open. */
+  waitMs: number;
+  images: ImageRequests;
+  standIns: boolean;
+}
+
+/** The open overlay's content, as located, and how snap opened it; or why it couldn't. */
+type Opening = { located: Located; opened: OverlayOpened } | { reason: string };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Opens the overlay whose closed trigger `closed` is, and locates its
+ * content: first by setting the story's `open` arg, or `defaultOpen`, to
+ * true through Storybook's preview, where the story's argTypes or the
+ * component's documented props have one (snap-args.ts openArg), then
+ * through the trigger, each of `closed.trigger.interactions` in turn (snap-
+ * normalize.ts openInteractions). An arg the variant sets itself is left
+ * as it set it. Each way waits OPEN_WAIT_MS, or --timeout where that is
+ * shorter, for content in a portal, the same wait for every variant, so
+ * the note of one that opens nothing is the same for each; a way that
+ * opens nothing is undone (the arg reset, Escape pressed, the mouse moved
+ * off the page, focus dropped) before the next. Once it is open, it waits
+ * for fonts, images and stand-ins as the story's own load did, then for
+ * its animations to end and its boxes to stay put (overlaySettledInPage).
+ */
+async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrigger }, ctx: OpenContext): Promise<Opening> {
+  // The same wait for every way and every variant, so a note that says it is the same for each.
+  const waitMs = Math.min(ctx.waitMs, ctx.timeoutMs);
+  const trigger = closed.element;
+  const attempts: OpenAttempt[] = [];
+  const opened = async (located: Located, how: OverlayOpened): Promise<Opening> => ({ located: await settleOverlay(page, located, ctx), opened: how });
+
+  // Not one the variant sets itself: its value is the variant's.
+  const arg = ctx.story ? openArg(ctx.argTypes, ctx.props) : null;
+  if (arg && ctx.story && !Object.hasOwn(ctx.story.args, arg)) {
+    const storyId = ctx.story.id;
+    const set = await applyArgs(page, { storyId, updates: { [arg]: true }, lift: ctx.argTypes?.[arg]?.if ? [arg] : [], waitMs: ctx.timeoutMs });
+    if ("error" in set) {
+      attempts.push({ via: "arg", arg, outcome: "failed", error: set.error });
+    } else {
+      const shown = await waitForOverlay(page, ctx.slots, waitMs);
+      if ("located" in shown) return opened(shown.located, { via: "arg", arg, trigger });
+      attempts.push({ via: "arg", arg, outcome: shown.triggerOpen ? "no-content" : "nothing", waitMs });
+      // The story's own value again, so the trigger is tried on the story as it rendered.
+      await applyArgs(page, { storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, reset: [arg] });
+    }
+  }
+
+  for (const how of closed.trigger.interactions) {
+    // Found again for each way: a remount replaces the trigger's element.
+    const located = await locateComponent(page, ctx.slots);
+    if ("error" in located) {
+      attempts.push({ via: how, outcome: "failed", error: located.error });
+      continue;
+    }
+    try {
+      await interact(located.target, how, waitMs);
+    } catch (err) {
+      attempts.push({ via: how, outcome: "failed", error: firstLine(err) });
+      await dismiss(page);
+      continue;
+    } finally {
+      await located.target.dispose().catch(() => { /* gone with a remount */ });
+    }
+    const shown = await waitForOverlay(page, ctx.slots, waitMs);
+    if ("located" in shown) return opened(shown.located, { via: how, trigger });
+    attempts.push({ via: how, outcome: shown.triggerOpen ? "no-content" : "nothing", waitMs });
+    await dismiss(page);
+  }
+  return { reason: describeOpenFailure(attempts) };
+}
+
+/** applyStoryArgsInPage, its error a result, as a remount Storybook can't do in place reloads the page. */
+async function applyArgs(page: Page, args: Parameters<typeof applyStoryArgsInPage>[0]): Promise<{ ok: true } | { error: string }> {
+  try {
+    return await page.evaluate(applyStoryArgsInPage, args);
+  } catch (err) {
+    return { error: firstLine(err) };
+  }
+}
+
+/** Does to `trigger` what a user does to open it, waiting at most `timeoutMs` for it to take the action. */
+async function interact(trigger: ElementHandle<Element>, how: OpenInteraction, timeoutMs: number): Promise<void> {
+  switch (how) {
+    case "click":
+      return trigger.click({ timeout: timeoutMs });
+    case "hover":
+      return trigger.hover({ timeout: timeoutMs });
+    case "focus":
+      return trigger.focus();
+    case "contextmenu":
+      return trigger.click({ button: "right", timeout: timeoutMs });
+  }
+}
+
+/**
+ * Undoes what an attempt to open an overlay did: Escape pressed, which
+ * closes any overlay open, the mouse moved off the page, so nothing is
+ * hovered over, and focus dropped.
+ */
+async function dismiss(page: Page): Promise<void> {
+  await page.keyboard.press("Escape").catch(() => { /* the page went */ });
+  await page.mouse.move(-1, -1).catch(() => { /* the page went */ });
+  await page.evaluate(blurInPage).catch(() => { /* the page went */ });
+}
+
+/** Runs in the page: drops focus from whatever has it. */
+export function blurInPage(): void {
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active !== document.body && typeof active.blur === "function") active.blur();
+}
+
+/**
+ * Waits, at most `ms`, for chooseMeasuredElement to find open content in a
+ * portal, and returns it located; or, when none shows, whether the trigger
+ * says it is open, as one whose content renders inside the story's root
+ * would.
+ */
+async function waitForOverlay(page: Page, slots: readonly string[], ms: number): Promise<{ located: Located } | { triggerOpen: boolean }> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const located = await locateComponent(page, slots);
+    if (!("error" in located) && located.portal) return { located };
+    if (Date.now() >= deadline) {
+      if ("error" in located) return { triggerOpen: false };
+      const triggerOpen = await located.target.evaluate(triggerOpenInPage).catch(() => false);
+      await located.target.dispose().catch(() => { /* gone */ });
+      return { triggerOpen };
+    }
+    if (!("error" in located)) await located.target.dispose().catch(() => { /* gone */ });
+    await sleep(OVERLAY_POLL_MS);
+  }
+}
+
+/** Runs in the page: whether a trigger says what it controls is open, as ARIA, Radix or Base UI mark it. */
+export function triggerOpenInPage(el: Element): boolean {
+  const state = el.getAttribute("data-state") ?? "";
+  return el.getAttribute("aria-expanded") === "true" || state === "open" || state.endsWith("-open") ||
+    el.hasAttribute("data-popup-open") || el.hasAttribute("data-open");
+}
+
+/**
+ * Brings open content to the state the story's own load was measured in:
+ * fonts, images and stand-ins (settle, drawStandIns), then its animations
+ * ended and its boxes put (overlaySettledInPage), each within --timeout;
+ * then locates it again, as a stand-in may have moved it.
+ */
+async function settleOverlay(page: Page, located: Located, ctx: OpenContext): Promise<Located> {
+  await settle(page, ctx.images, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
+  if (ctx.standIns) await drawStandIns(page, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
+  await located.target.evaluate(overlaySettledInPage, { ms: Math.min(ctx.timeoutMs, OPEN_SETTLE_MS), frames: OPEN_STILL_FRAMES }).catch(() => false);
+  const again = await locateComponent(page, ctx.slots);
+  if ("error" in again || !again.portal) {
+    if (!("error" in again)) await again.target.dispose().catch(() => { /* gone */ });
+    return located;
+  }
+  await located.target.dispose().catch(() => { /* gone */ });
+  return again;
+}
+
+/**
+ * Runs in the page: waits, at most `ms`, for the animations on `el` and in
+ * it to finish, those that ever do (one that repeats forever, a spinner's,
+ * never does), then for its box and those in it to stay put `frames`
+ * frames in a row, so content a script places or animates as it opens is
+ * measured where it comes to rest. snap's stylesheet (settle) already
+ * stops CSS animations and transitions; this waits out what scripts run.
+ * True once settled, false when the time ran out first.
+ */
+export async function overlaySettledInPage(el: Element, args: { ms: number; frames: number }): Promise<boolean> {
+  const deadline = Date.now() + args.ms;
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const running = () => (typeof el.getAnimations === "function" ? el.getAnimations({ subtree: true }) : [])
+    .filter((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime ?? Infinity));
+  while (running().length && remaining() > 0) {
+    await Promise.race([
+      Promise.all(running().map((a) => a.finished.catch(() => null))),
+      new Promise((r) => setTimeout(r, remaining())),
+    ]);
+  }
+  const frame = () => new Promise((r) => {
+    // A page that draws no frames, hidden, still moves on.
+    const timer = setTimeout(() => r(null), 100);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      r(null);
+    });
+  });
+  const boxes = () => [el, ...Array.from(el.querySelectorAll("*"))].map((e) => {
+    const r = e.getBoundingClientRect();
+    return `${r.x},${r.y},${r.width},${r.height}`;
+  }).join(";");
+  let last = boxes();
+  let still = 0;
+  while (remaining() > 0) {
+    await frame();
+    const now = boxes();
+    still = now === last ? still + 1 : 0;
+    last = now;
+    if (still >= args.frames) return running().length === 0;
+  }
+  return false;
+}
+
+/**
+ * Closes the overlay snap opened and measured, so the story is as it
+ * rendered for whatever comes next: the arg reset to the story's own
+ * through Storybook's preview, or Escape pressed, the mouse moved off the
+ * page and focus dropped. Waits CLOSE_WAIT_MS at most for `content` to go,
+ * and says whether it did.
+ */
+async function closeOverlay(page: Page, opened: OverlayOpened, content: ElementHandle<Element>, storyId: string | undefined): Promise<boolean> {
+  if (opened.via === "arg" && opened.arg && storyId) {
+    await applyArgs(page, { storyId, updates: {}, lift: [], waitMs: CLOSE_WAIT_MS, reset: [opened.arg] });
+  }
+  await dismiss(page);
+  const deadline = Date.now() + CLOSE_WAIT_MS;
+  for (;;) {
+    const gone = await content.evaluate((el) => !el.isConnected || el.getClientRects().length === 0).catch(() => true);
+    if (gone || Date.now() >= deadline) return gone;
+    await sleep(OVERLAY_POLL_MS);
   }
 }
 
@@ -706,6 +1014,8 @@ interface Located {
   matchedSelector: string | null;
   /** Content in a portal outside the story's root. */
   portal?: true;
+  /** How the element may be opened, where it is a closed trigger or a closed select's field: see chooseMeasuredElement. */
+  trigger?: OpenableTrigger;
 }
 
 /**
@@ -761,6 +1071,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       notes: choice.notes,
       matchedSelector: choice.kind === "portal" ? `portal ${choice.element}` : containerSelector,
       ...(choice.kind === "portal" ? { portal: true as const } : {}),
+      ...(choice.kind === "tree" && choice.trigger ? { trigger: choice.trigger } : {}),
     };
   } finally {
     await portalsHandle.dispose();
@@ -1269,15 +1580,18 @@ export async function storyArgsInPage(args: { storyId: string; waitMs: number })
  * Runs in the page: gives the story `updates` through Storybook's channel,
  * as its Controls panel does, after lifting the argTypes `if` of each arg in
  * `lift`, then remounts it, so it renders from scratch with them as from
- * its URL. Waits for the render in progress to finish first: Storybook
- * queues a rerender asked for during one, and reloads the page for a
- * remount. `{ error }` when it can't, or Storybook doesn't confirm it.
+ * its URL. With `reset`, it resets those args to the story's own instead,
+ * as the Controls panel's reset does, and `updates` is unused. Waits for
+ * the render in progress to finish first: Storybook queues a rerender
+ * asked for during one, and reloads the page for a remount. `{ error }`
+ * when it can't, or Storybook doesn't confirm it.
  */
 export async function applyStoryArgsInPage(args: {
   storyId: string;
   updates: Record<string, unknown>;
   lift: string[];
   waitMs: number;
+  reset?: string[];
 }): Promise<{ ok: true } | { error: string }> {
   try {
     const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
@@ -1329,7 +1643,8 @@ export async function applyStoryArgsInPage(args: {
       if (argTypes[name]?.if) return { error: `argTypes.${name}.if couldn't be lifted` };
     }
     const updated = once({ storyArgsUpdated: forStory });
-    channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
+    if (args.reset) channel.emit("resetStoryArgs", { storyId: args.storyId, argNames: args.reset });
+    else channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
     if (!(await updated)) return { error: "Storybook didn't confirm the args" };
     // Rendered, or threw: a story that can't render the values never says
     // storyRendered, but shows Storybook's error display, which the capture

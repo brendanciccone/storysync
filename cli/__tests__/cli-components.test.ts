@@ -755,6 +755,22 @@ test("snap CLI: --no-channel-args reaches the run, which records it in meta.json
   }
 });
 
+test("snap CLI: --no-open-overlays reaches the run, which records it in meta.json", async () => {
+  const empty = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { list: "# Docs\n- Introduction (introduction--docs)", docs: {} });
+  standIns.push(empty);
+  const out = mkdtempSync(join(tmpdir(), "storysync-overlays-"));
+  try {
+    const meta = () => JSON.parse(readFileSync(join(out, "meta.json"), "utf8")) as { openOverlays?: boolean };
+    const off = await run("snap", "--storybook", empty.url, "--out", out, "--no-open-overlays", "--json");
+    assert.ok(existsSync(join(out, "meta.json")), off.out);
+    assert.equal(meta().openOverlays, false);
+    await run("snap", "--storybook", empty.url, "--out", out, "--json");
+    assert.equal(meta().openOverlays, undefined, "a run that opens overlays says nothing of it");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
 test("map, snap and diff CLI: a Storybook that can't be reached is an error that parses under --json", async () => {
   // The reason went only to stderr, so a script piping the output to jq got
   // nothing at all to parse.

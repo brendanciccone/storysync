@@ -82,7 +82,7 @@ test("CLI: tokens --strict exits 1 when no tokens found", () => {
 
 test("CLI: every command's --help lists each of its options, the element-tree ones included", () => {
   const options: Record<string, string[]> = {
-    snap: ["--root-only", "--no-channel-args", "--stories <pairs>", "--merge", "--exclude-props <names>", "--strict-warnings"],
+    snap: ["--root-only", "--no-channel-args", "--no-open-overlays", "--stories <pairs>", "--merge", "--exclude-props <names>", "--strict-warnings"],
     verify: ["--plan <path>", "--min-fidelity <pct>", "--allow-designer-layers", "--roots-only", "--strict", "--strict-age", "--strict-measured", "--skip <names>"],
     "figma code": ["--snap <path>", "--tokens <path>", "--components <names>", "--skip <names>", "--out <dir>", "--max-chars <n>", "--max-nodes <n>", "--read-limit <n>", "--no-minify", "--json"],
     "figma upload": ["--plan <path>", "--seq <n>", "--json"],

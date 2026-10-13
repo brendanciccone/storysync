@@ -7,6 +7,7 @@ import { callConstants, callSum } from "../checksum.js";
 import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
+import { describeMeasurementNotes } from "../snap.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
 import type { TreeDelta, TreeNode } from "../tree-types.js";
@@ -257,6 +258,23 @@ test("figma code: the label call carries a line for a set measured from a closed
   assert.deepEqual(data.sets.find(([id]) => id === "ui-base-card"), ["ui-base-card", ""]);
   // The example's 0.3.0 snap has no Storybook id: its title stands in, as verify keys it.
   assert.ok(data.sets.some(([id]) => id === "Forms/Button"));
+});
+
+test("figma code: the label line of a closed trigger snap didn't open says why, without quotes; an overlay it opened gets none", async () => {
+  const snap = allFixtures();
+  const switchSet = snap.components.find((c) => c.name === "Switch")!;
+  switchSet.warnings = describeMeasurementNotes("Switch", [{
+    slug: "a", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason: 'clicking it failed (locator resolved to "Open")' },
+  }], 1);
+  const card = snap.components.find((c) => c.name === "Card")!;
+  card.variants = card.variants.map((v) => ({ ...v, opened: { via: "click" as const, trigger: 'button[data-slot="dialog-trigger"]' }, portal: true as const }));
+  const coded = await codeFor(snap);
+  const data = dataOf(coded.code(coded.plan.calls.find((c) => c.kind === "label")!)) as { sets: [string, string][] };
+  assert.deepEqual(data.sets.find(([id]) => id === "ui-base-switch"), [
+    "ui-base-switch",
+    "measured from its closed trigger, button[data-slot=dialog-trigger], not the open Switch, as snap didn't open it (clicking it failed (locator resolved to Open))",
+  ]);
+  assert.deepEqual(data.sets.find(([id]) => id === "ui-base-card"), ["ui-base-card", ""]);
 });
 
 test("figma code: the label call says which variants a story of their own measured, after any other line", async () => {

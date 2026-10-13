@@ -648,23 +648,114 @@ export interface PortalNode {
 
 /**
  * What an open overlay's content is, wherever it renders: a dialog, alert
- * dialog, tooltip or menu by its role; shadcn/ui's `*-content` slot, as
- * `popover-content`; and what Radix's popper places, a popover's or a
- * select's content without either. An overlay renders into a portal, a
+ * dialog, tooltip, menu or select's listbox by its role; shadcn/ui's
+ * `*-content` slot, as `popover-content`; and what Radix's popper places,
+ * a popover's or a select's content without either. An overlay renders into a portal, a
  * child of the body outside the story's root (Base UI's in a
  * `data-base-ui-portal` holder).
  */
 export const OVERLAY_SELECTOR =
-  '[role="dialog"], [role="alertdialog"], [role="tooltip"], [role="menu"], [data-slot$="-content"], [data-radix-popper-content-wrapper] > *';
+  '[role="dialog"], [role="alertdialog"], [role="tooltip"], [role="menu"], [role="listbox"], [data-slot$="-content"], [data-radix-popper-content-wrapper] > *';
 
-/** Why the element snap measured may not be the component. */
+/**
+ * Why the element snap measured may not be the component. A closed
+ * trigger's `reason` says why snap didn't open it (see snap-browser.ts's
+ * openOverlay); a snap from before it opened overlays has none.
+ */
 export type MeasurementNote =
   | { kind: "layout-wrapper"; element: string; children: number }
-  | { kind: "closed-trigger"; element: string };
+  | { kind: "closed-trigger"; element: string; reason?: string };
+
+/** How snap opens an overlay through its trigger, as a user would: see openInteractions. */
+export type OpenInteraction = "click" | "hover" | "focus" | "contextmenu";
+
+/**
+ * How snap opened the overlay it measured, where the story rendered it
+ * closed: recorded on the variant as `opened`.
+ */
+export interface OverlayOpened {
+  /**
+   * `arg`: snap set the story's `arg`, `open` or `defaultOpen`, to true
+   * through Storybook's preview. Otherwise what it did to the trigger:
+   * clicked it, hovered over it, focused it or right-clicked it.
+   */
+  via: "arg" | OpenInteraction;
+  arg?: "open" | "defaultOpen";
+  /** The trigger, as describeElement names it. */
+  trigger: string;
+}
+
+/** One way snap tried to open an overlay, and what came of it, for describeOpenFailure. */
+export interface OpenAttempt {
+  via: "arg" | OpenInteraction;
+  arg?: "open" | "defaultOpen";
+  /**
+   * `nothing`: nothing opened within `waitMs`. `no-content`: the trigger
+   * said it was open, but snap found nothing it opened outside the
+   * story's root. `failed`: the attempt itself failed, as `error` says.
+   */
+  outcome: "nothing" | "no-content" | "failed";
+  waitMs?: number;
+  error?: string;
+}
+
+const ATTEMPT_PHRASES: Record<OpenInteraction, string> = {
+  click: "clicking it", hover: "hovering over it", focus: "focusing it", contextmenu: "right-clicking it",
+};
+
+function attemptPhrase(attempt: Pick<OpenAttempt, "via" | "arg">): string {
+  return attempt.via === "arg" ? `setting its ${attempt.arg ?? "open"} arg through Storybook's preview` : ATTEMPT_PHRASES[attempt.via];
+}
+
+function listed(items: string[]): string {
+  return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * Why snap couldn't open a closed trigger, from what it tried, in order:
+ * the rest of a closed-trigger note. A run of attempts that opened nothing
+ * in the same wait is said once, so the note is the same for every variant
+ * it is the same for: "clicking it, hovering over it, focusing it and
+ * right-clicking it opened nothing within 3000ms each".
+ */
+export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
+  const parts: string[] = [];
+  let run: OpenAttempt[] = [];
+  const flush = () => {
+    if (!run.length) return;
+    const wait = run[0].waitMs;
+    parts.push(`${listed(run.map(attemptPhrase))} opened nothing${wait !== undefined ? ` within ${wait}ms${run.length > 1 ? " each" : ""}` : ""}`);
+    run = [];
+  };
+  for (const attempt of attempts) {
+    if (attempt.outcome === "nothing") {
+      if (run.length && run[0].waitMs !== attempt.waitMs) flush();
+      run.push(attempt);
+      continue;
+    }
+    flush();
+    parts.push(attempt.outcome === "no-content"
+      ? `${attemptPhrase(attempt)} opened it, but snap found nothing it opened outside the story's root to measure`
+      : `${attemptPhrase(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
+  }
+  flush();
+  return parts.join("; ");
+}
+
+/**
+ * A measured element snap may open before it measures: a closed trigger,
+ * with the interactions to try in order, or a select or combobox `field`,
+ * which is the component while closed and measured as it is when clicking
+ * it opens nothing.
+ */
+export interface OpenableTrigger {
+  field: boolean;
+  interactions: OpenInteraction[];
+}
 
 export type MeasuredChoice =
   /** An element under the story's root, by its index at each level down from the root's container. */
-  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[] }
+  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger }
   /** One of the portal candidates, by index. */
   | { kind: "portal"; index: number; element: string; notes: MeasurementNote[] }
   | { kind: "none"; error: string };
@@ -768,18 +859,54 @@ function drawsNothing(styles: RawComputedStyles): boolean {
  * value, which is the component, and what it opens is the transient part.
  */
 export function isClosedTrigger(node: StoryNode): boolean {
+  return !isField(node) && isTrigger(node) && !isOpen(node);
+}
+
+/** A select's or combobox's field: what it opens is a listbox, and closed it is the component. */
+function isField(node: StoryNode): boolean {
+  return node.role === "combobox" || (node.hasPopup ?? "").trim().toLowerCase() === "listbox";
+}
+
+/** Whether an element bears a trigger's marks, open or closed: see isClosedTrigger. */
+function isTrigger(node: StoryNode): boolean {
   const popup = (node.hasPopup ?? "").trim().toLowerCase();
-  if (node.role === "combobox" || popup === "listbox") return false;
-  const trigger =
-    (popup !== "" && popup !== "false") ||
+  return (popup !== "" && popup !== "false") ||
     (node.slot?.endsWith("-trigger") ?? false) ||
-    (node.expanded === "false" && node.controls != null) ||
-    (node.state === "closed" && (node.tag === "button" || node.role === "button"));
-  return trigger && !isOpen(node);
+    ((node.expanded === "false" || node.expanded === "true") && node.controls != null) ||
+    ((node.state === "closed" || isOpenState(node.state)) && (node.tag === "button" || node.role === "button"));
+}
+
+/** Radix's `data-state` of something open: `open`, and a tooltip's `delayed-open` and `instant-open`. */
+function isOpenState(state: string | null): boolean {
+  return state === "open" || (state?.endsWith("-open") ?? false);
 }
 
 function isOpen(node: StoryNode): boolean {
-  return node.expanded === "true" || node.state === "open" || node.open;
+  return node.expanded === "true" || isOpenState(node.state) || node.open;
+}
+
+/** All the ways snap opens a trigger, in the order it tries those its marks don't single out. */
+const INTERACTIONS: readonly OpenInteraction[] = ["click", "hover", "focus", "contextmenu"];
+
+/**
+ * The ways snap tries to open a closed trigger, in order: first the one its
+ * marks point to, then the rest in INTERACTIONS' order. A context menu's
+ * trigger is right-clicked; a tooltip's or hover card's is hovered over,
+ * known by its slot or the component's (`slots`), or as Radix marks one, a
+ * `data-state` with no `aria-haspopup` or `aria-expanded`. Anything else is
+ * clicked, as a dialog's, popover's, sheet's or menu's is. A select's or
+ * combobox's field is clicked, and nothing else: it is the component, and
+ * measured as it is when that opens nothing.
+ */
+export function openInteractions(node: StoryNode, slots: readonly string[] = []): OpenInteraction[] {
+  if (isField(node)) return ["click"];
+  const names = [node.slot ?? "", ...slots].map((name) => name.toLowerCase());
+  const named = (...parts: string[]) => names.some((name) => parts.some((part) => name.includes(part)));
+  const radixHover = node.state != null && node.hasPopup == null && node.expanded == null;
+  const first: OpenInteraction = named("context-menu", "contextmenu")
+    ? "contextmenu"
+    : named("tooltip", "hover-card", "hovercard") || radixHover ? "hover" : "click";
+  return [first, ...INTERACTIONS.filter((how) => how !== first)];
 }
 
 /**
@@ -881,13 +1008,16 @@ function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
  *      with no trigger, shows nothing else.
  *   4. Otherwise, as snap always has, the root, past single-child wrappers
  *      that draw nothing. When that is an open trigger whose `aria-controls`
- *      names an element in a portal, that element is measured instead, and
- *      when it is a closed trigger, an open overlay's content in a portal.
+ *      names an element in a portal, that element is measured instead; when
+ *      it is a trigger open or closed, or an open select's field, an open
+ *      overlay's content in a portal.
  *
  * What 4 settles on is flagged when it is a closed trigger, or holds several
  * elements while drawing nothing itself and bearing no mark of a component's
  * root, which is how a story's layout wrapper looks. Neither is certain, so
- * each is a note for a warning.
+ * each is a note for a warning. A closed trigger, and a closed select's or
+ * combobox's field, also come with `trigger`: how snap may open it, which
+ * snap-browser.ts does before it measures (openOverlay), choosing again.
  */
 export function chooseMeasuredElement(
   container: StoryNode | null,
@@ -928,6 +1058,10 @@ export function chooseMeasuredElement(
   const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
   const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
   if (opened) return opened;
+  // An open trigger whose aria-controls names nothing, as a tooltip's or a
+  // hover card's: what it opened is the overlay showing.
+  const shownBy = isOpen(node) && (isTrigger(node) || isField(node)) ? overlay() : null;
+  if (shownBy) return shownBy;
 
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];
@@ -936,7 +1070,12 @@ export function chooseMeasuredElement(
     const content = overlay();
     if (content) return content;
     notes.push({ kind: "closed-trigger", element });
-  } else {
+    return { kind: "tree", path, element, notes, trigger: { field: false, interactions: openInteractions(node, slots) } };
+  }
+  if (isField(node) && !isOpen(node)) {
+    return { kind: "tree", path, element, notes, trigger: { field: true, interactions: openInteractions(node, slots) } };
+  }
+  {
     const children = drawnChildren(node).length;
     if (children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots)) {
       notes.push({ kind: "layout-wrapper", element, children });
