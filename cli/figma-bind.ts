@@ -12,9 +12,15 @@
 // measured, unbound, and is listed with the tokens it matches, rather than
 // guessed. The value is always snap's; the class only picks among the
 // tokens that have it.
+//
+// Where no class names one, the project's base styles can: shadcn/ui's
+// dialog title has no color class, and inherits `body`'s `text-foreground`
+// from `@layer base`; a card's border takes `* { @apply border-border }`.
+// tokens reads those as `defaults`, and a value whose tokens include the
+// default for its property binds to it, with the rule as its evidence.
 
 import { tokenClassName, withoutRepeatedDefault } from "./tokens.js";
-import type { TokenExtractionResult } from "./tokens.js";
+import type { BaseDefault, TokenExtractionResult } from "./tokens.js";
 
 /** What a paint colors, which decides the classes that can name its token. */
 export type PaintRole = "fill" | "text" | "stroke" | "vector";
@@ -36,18 +42,30 @@ const PREFIXES: Record<PaintRole | "radius", string[]> = {
 /** A side or corner before the token in `border-t-input` or `rounded-tl-lg`. */
 const SIDE = /^(?:[trblxyse]|tl|tr|br|bl|ss|se|es|ee)-/;
 
+/**
+ * The property of the base styles' defaults a role takes when no class
+ * names its token: a text, and an icon in `currentColor`, inherit `color`;
+ * a stroke is a border, whose color `*` sets. A fill takes none, since no
+ * background is inherited.
+ */
+const DEFAULT_PROPERTY: Partial<Record<PaintRole, BaseDefault["property"]>> = { text: "color", vector: "color", stroke: "border-color" };
+
 export interface BindDecision {
   /** The token, as `tokens` names it and the variable is named, or null to leave the value unbound. */
   variable: string | null;
   /** Every token with the value, sorted: what an unbound value is listed with. */
   candidates: string[];
+  /** Where a base style picked the token, not a class: the rule, as `defaults` gives it. */
+  from?: string;
 }
 
 export class Binder {
   private readonly colors = new Map<string, string[]>();
   private readonly radii: { name: string; px: number }[] = [];
+  private readonly defaults = new Map<BaseDefault["property"], BaseDefault>();
 
-  constructor(tokens?: Pick<TokenExtractionResult, "collections"> | null) {
+  constructor(tokens?: Pick<TokenExtractionResult, "collections" | "defaults"> | null) {
+    for (const d of tokens?.defaults ?? []) this.defaults.set(d.property, d);
     // tokens.json from before held a radius DEFAULT that repeats a step: a
     // 10px corner matched it and lg, and no class names DEFAULT.
     for (const collection of withoutRepeatedDefault(tokens?.collections ?? [])) {
@@ -76,18 +94,28 @@ export class Binder {
   color(hex: string, role: PaintRole, cls: readonly string[] | undefined): BindDecision {
     const value = hex.toLowerCase();
     const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
-    return decide(candidates, PREFIXES[role], cls);
+    const decision = decide(candidates, PREFIXES[role], cls);
+    if (decision.variable || decision.named) return { variable: decision.variable, candidates };
+    // No class names any of them: the base style for the property, if it is one.
+    const fallback = DEFAULT_PROPERTY[role] && this.defaults.get(DEFAULT_PROPERTY[role]!);
+    if (fallback && candidates.includes(fallback.token)) return { variable: fallback.token, candidates, from: fallback.from };
+    return { variable: null, candidates };
   }
 
   /** The radius token a corner radius of `px` binds to, given the node's classes. */
   radius(px: number, cls: readonly string[] | undefined): BindDecision {
     const candidates = [...new Set(this.radii.filter((t) => Math.abs(t.px - px) < 0.01).map((t) => t.name))].sort();
-    return decide(candidates, PREFIXES.radius, cls);
+    return { variable: decide(candidates, PREFIXES.radius, cls).variable, candidates };
   }
 }
 
-function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined): BindDecision {
-  if (candidates.length <= 1) return { variable: candidates[0] ?? null, candidates };
+/**
+ * The one candidate the classes name, or the only candidate; `named` says
+ * how many the classes named, so a value two classes name isn't then
+ * handed to a default.
+ */
+function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined): { variable: string | null; named: number } {
+  if (candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
   const named = new Set<string>();
   for (const c of cls ?? []) {
     const prefix = prefixes.find((p) => c.startsWith(`${p}-`));
@@ -98,5 +126,5 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
       if (token) named.add(token);
     }
   }
-  return { variable: named.size === 1 ? [...named][0] : null, candidates };
+  return { variable: named.size === 1 ? [...named][0] : null, named: named.size };
 }

@@ -164,6 +164,13 @@ export interface RawTreeCapture {
    * (anchorToRoot). Absent for any other root.
    */
   around?: Record<string, string>[];
+  /**
+   * The class tokens that may be class evidence (as an element's `cls`) of
+   * each element around the root, innermost first, up to `<html>`: absent
+   * where none has any. A text the root holds inherits its color from them
+   * where nothing inside sets one.
+   */
+  outer?: string[][];
 }
 
 // --- What the build hands on ---------------------------------------------------
@@ -874,6 +881,8 @@ export function lineBox(ink: RawBox, lines: number, lineHeight: number | "normal
 // --- Build -----------------------------------------------------------------------
 
 interface Ctx {
+  /** RawTreeCapture's `outer`. */
+  outer: string[][];
   fonts: Record<string, FontProbe | null>;
   svg: Record<string, string>;
   images: PendingImage[];
@@ -889,17 +898,19 @@ interface Ctx {
  * (`hover:text-accent-foreground`). The DOM's elements are each item's
  * own and then the wrappers collapsed into it, innermost first, which sat
  * between it and its parent: a wrapper's `text-muted-foreground` is
- * nearer than the card's.
+ * nearer than the card's. Past the root, the elements around it (`outer`),
+ * up to `<html>`: none sets one in a portal, and figma code then takes the
+ * project's base styles (figma-bind.ts).
  */
-function inheritedTextEvidence(item: Item): string[] {
-  const colors = (el: RawTreeElement, prefixed: boolean) => [...new Set(evidenceOf(el.cls ?? [])
+function inheritedTextEvidence(item: Item, outer: string[][]): string[] {
+  const colors = (cls: string[] | undefined, prefixed: boolean) => [...new Set(evidenceOf(cls ?? [])
     .filter((e) => e.prefixed === prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name)).map((e) => e.name))].sort();
   for (const prefixed of [false, true]) {
-    for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) {
-      for (const el of [at.el, ...at.wrappers]) {
-        const found = el ? colors(el, prefixed) : [];
-        if (found.length) return found.slice(0, 8);
-      }
+    const chain: (string[] | undefined)[] = [];
+    for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
+    for (const cls of [...chain, ...outer]) {
+      const found = colors(cls, prefixed);
+      if (found.length) return found.slice(0, 8);
     }
   }
   return [];
@@ -934,7 +945,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       node = { k: key, t: "T", el: "#value", box: rel(box), tx };
     }
     if (holder("visibility") !== "visible") node.vis = 0;
-    const cls = inheritedTextEvidence(item);
+    const cls = inheritedTextEvidence(item, ctx.outer);
     if (cls.length) node.cls = cls;
     return node;
   }
@@ -1056,7 +1067,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     let cls = classEvidence(el.cls ?? []);
     const setsColor = evidenceOf(el.cls ?? []).some((e) => !e.prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name));
     if ((kind === "T" || kind === "V") && !setsColor) {
-      cls = [...new Set([...cls, ...inheritedTextEvidence(item)])].sort().slice(0, 8);
+      cls = [...new Set([...cls, ...inheritedTextEvidence(item, ctx.outer)])].sort().slice(0, 8);
     }
     if (cls.length) node.cls = cls;
   }
@@ -1173,7 +1184,7 @@ function rootOnly(node: TreeNode): TreeNode {
 export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {}): BuiltTree {
   const maxNodes = options.maxNodes ?? TREE_LIMITS.maxNodes;
   const maxDepth = options.maxDepth ?? TREE_LIMITS.maxDepth;
-  const ctx: Ctx = { fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
+  const ctx: Ctx = { outer: capture.outer ?? [], fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
   const [root] = buildItem(capture.root, true);
   anchorToRoot(root, capture.around);
 

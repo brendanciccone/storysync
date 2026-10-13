@@ -107,10 +107,21 @@ export interface Unbound {
   candidates: string[];
 }
 
+/** A paint bound by the project's base styles, not a class: the rule is why (figma-bind.ts). */
+export interface BoundByDefault {
+  key: string;
+  property: string;
+  value: string;
+  variable: string;
+  from: string;
+}
+
 export interface MapContext {
   binder: Binder;
   notBuilt: NotBuilt[];
   unbound: Unbound[];
+  /** The paints a base style bound, each with its rule. */
+  byDefault?: BoundByDefault[];
   /**
    * The parent's classes, for the color of a `#text` or `#value` run that
    * carries none of its own. snap writes the `text-*` class a run inherits on
@@ -146,6 +157,7 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
   if (!decision.variable && decision.candidates.length > 1) {
     ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
   }
+  if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
   if (decision.variable) return [rgb, alpha, decision.variable];
   return alpha === 1 ? rgb : [rgb, alpha];
 }
@@ -467,6 +479,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     const binds: Record<string, string> = {};
     for (const hex of markupColors(markup)) {
       const decision = ctx.binder.color(hex, "vector", node.cls);
+      if (decision.variable && decision.from) ctx.byDefault?.push({ key: node.k, property: "vector", value: hex, variable: decision.variable, from: decision.from });
       if (decision.variable) binds[hex] = decision.variable;
       else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
     }

@@ -2308,6 +2308,14 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
 
   try {
     const out: RawTreeCapture = { root: walk(root, [], 0), fonts };
+    // The class evidence around the root, up to <html>: a text it holds
+    // inherits its color from there where nothing inside sets one, as from
+    // a story's wrapper.
+    const outer: string[][] = [];
+    for (let at = root.parentElement; at; at = at.parentElement) {
+      outer.push((at.getAttribute("class") ?? "").split(/\s+/).filter((t) => t && evidence.test(t)));
+    }
+    if (outer.some((cls) => cls.length)) out.outer = outer;
     // What places an overlay's content, from outside it: up to the page's
     // own elements, which place nothing a component draws.
     if (args.around) {

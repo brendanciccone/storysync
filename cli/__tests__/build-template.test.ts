@@ -645,6 +645,34 @@ test("bindings: a variable with Light and Dark modes binds by its name, as one o
   assert.equal((mock.handle(label.id).fills as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, foreground);
 });
 
+test("bindings: what no class colors binds to the base styles' token, so Dark mode shows its dark value", async () => {
+  // Dialog's title and Cancel inherit body's text-foreground; Attachment's
+  // border is *'s border-border. #0a0a0a and #e5e5e5 are each several tokens.
+  const tokens = {
+    ...SHADCN_TOKENS,
+    defaults: [
+      { property: "color", token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+      { property: "border-color", token: "border", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+    ],
+  };
+  const dialog = loadTreeFixture("dialog");
+  const attachment = loadTreeFixture("attachment");
+  const mock = mockFor([dialog, attachment]);
+  const foreground = mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors").id;
+  const border = mock.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#ffffff1a" }, "Colors").id;
+  for (const fixture of [dialog, attachment]) {
+    const coded = await codeFor(fixture, {}, tokens);
+    // The fixture's fills carry no class: a background is no base style's.
+    assert.equal(coded.warnings.some((w) => /(?:color|stroke) #\w+ left unbound/.test(w)), false, coded.warnings.join("\n"));
+    await runPlan(mock, coded, ["build"]);
+  }
+  const fillOf = (name: string) => (mock.handle(mock.nodes("TEXT").find((n) => n.name === name)!.id).fills as { boundVariables?: { color: { id: string } } }[])[0];
+  assert.equal(fillOf("Are you absolutely sure?").boundVariables?.color.id, foreground);
+  assert.equal(fillOf("Cancel").boundVariables?.color.id, foreground);
+  const root = mock.handle(variantsBySlug(mock, "ui-base-attachment").get("size-default--orientation-horizontal--state-done")!.id) as Record<string, unknown>;
+  assert.equal((root.strokes as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, border);
+});
+
 test("label: a set measured from its closed trigger says so on one line, written once, its description unescaped", async () => {
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].warnings = ['snap measured button[data-slot="dialog-trigger"], a closed trigger, rather than Switch. What it opens renders only while open.'];

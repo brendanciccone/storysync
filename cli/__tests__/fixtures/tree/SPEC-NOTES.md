@@ -542,6 +542,23 @@ commit that made it.
     - Candidates are the tokens' light `hex` and `px`, which snap measures;
       a token's `dark` value is never one. A variable with Light and Dark
       modes binds by name as one of one mode does (tokens 0.4.0, item #8).
+    - **Base styles (push 5, bugs 1 and 2).** Where no class names one of
+      a value's tokens, tokens' `defaults` can: the `color` a `*`, `body`
+      or root rule sets (`body { @apply text-foreground }`), for a text
+      or an icon, and the `border-color` a `*` rule sets
+      (`* { @apply border-border }`), for a stroke, from rules in
+      `@layer base` or no layer. A fill takes none: no background is
+      inherited. The default binds only when it is one of the value's
+      tokens, and not when two classes name two. Stylesheets that set a
+      property to different tokens leave it out. Each such binding is in
+      plan.json's `bindings` with its rule, printed with `=`, and not
+      warned. Without `defaults` (a tokens.json from before), nothing
+      changes.
+    - Snap's text evidence walks past the root: `outer` holds the
+      evidence classes of each element around it, innermost first, up to
+      `<html>`, so a story wrapper's `text-muted-foreground` is found
+      before the base styles are. Absent where none has any, which keeps
+      every fixture's tree as it was.
     - tokens leaves out a radius `DEFAULT` that repeats another step in
       every mode (shadcn/ui's `--radius`, which `--radius-lg` is); the
       Binder, `--check`'s baseline and diff's Figma variables drop it the

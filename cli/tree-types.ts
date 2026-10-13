@@ -236,6 +236,14 @@ export interface FigmaPlan {
   version: 1; storysyncVersion: string;
   snap: { path: string; measuredAt: string; digest: string };  // digest: fnv over styles.json bytes
   calls: PlanCall[];
+  /** Each value bound by the project's base styles, where no class names its token, with the rule (section 8.9). */
+  bindings?: PlanBinding[];
+}
+
+/** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it. */
+export interface PlanBinding {
+  component: string;                         // componentKey
+  property: string; value: string; variable: string; from: string;
 }
 
 /** One planned call. Paths are relative to the plan's directory. */

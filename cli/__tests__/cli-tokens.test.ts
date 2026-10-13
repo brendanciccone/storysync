@@ -354,6 +354,21 @@ test("tokens CLI: the text output gives each length's px where its value doesn't
   });
 });
 
+test("tokens CLI: --json gives the colors the base styles set, for figma code's bindings", () => {
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), `${SHADCN_V4}:root { --foreground: oklch(0.145 0 0); }\n@layer base { body { @apply bg-background text-foreground; } }\n`);
+    const json = tokens(dir, "--json");
+    assert.equal(json.status, 0, json.out);
+    assert.deepEqual((JSON.parse(json.stdout) as { defaults?: unknown }).defaults, [
+      { property: "color", token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+    ]);
+    // None, none written.
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    assert.equal("defaults" in (JSON.parse(tokens(dir, "--json").stdout) as object), false);
+  });
+});
+
 test("tokens CLI: --check says how to update the baseline, and that a newer storysync can read more tokens", () => {
   withEmptyProject((dir) => {
     mkdirSync(join(dir, "app"));

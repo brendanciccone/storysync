@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES, withoutRepeatedDefault } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES, baseDefaults, withoutRepeatedDefault } from "../tokens.js";
 import type { TokenBaseline, TokenExtractionResult } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
@@ -2172,6 +2172,67 @@ test("drift: a dark value is compared against a baseline that read the dark them
     writeFileSync(join(plain, "app/globals.css"), `:root { --background: #ffffff; --muted: #dddddd; }\n.dark { --background: #0a0a0a; }\n`);
     assert.deepEqual(compareTokens(baseline, extractTokens(plain)).changed, [{ category: "colors", token: "muted", from: "#eeeeee", to: "#dddddd" }]);
   } finally { cleanup(plain); }
+});
+
+// --- Base styles (figma code's evidence where no class names a token) ---
+
+test("base styles: shadcn/ui's @layer base gives body's text-foreground and *'s border-border and outline-ring, with the rule", () => {
+  const dir = makeProject({
+    "app/globals.css": `@import "tailwindcss";
+:root { --background: oklch(1 0 0); --foreground: oklch(0.145 0 0); --card-foreground: oklch(0.145 0 0); --border: oklch(0.922 0 0); --input: oklch(0.922 0 0); --ring: oklch(0.708 0 0); }
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}`,
+  });
+  try {
+    assert.deepEqual(extractTokens(dir).defaults, [
+      { property: "border-color", token: "border", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+      { property: "outline-color", token: "ring", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+      { property: "color", token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("base styles: the nearest selector's color wins, a value no token names ends one, and other rules don't count", () => {
+  const names = ["foreground", "muted/foreground", "border", "input", "primary", "ring"];
+  const dir = makeProject({
+    "src/base.css": `body { color: hsl(var(--foreground)); border-color: var(--input); }
+html { color: var(--muted-foreground); }
+*, ::before, ::after { border-color: var(--color-border); outline-color: var(--ring); }
+* { outline: 2px solid transparent; }
+.dark body { color: var(--primary); }
+@media (prefers-color-scheme: dark) { body { color: var(--primary); } }
+@layer components { * { color: var(--primary); } }
+body { @apply hover:text-primary; }
+:root { --x: 1px; }`,
+  });
+  try {
+    // body hands its color down nearer than html, whatever their order;
+    // body's border-color is body's own; the outline shorthand resets it.
+    assert.deepEqual(baseDefaults(dir, names), [
+      { property: "color", token: "foreground", from: "src/base.css: body { color: hsl(var(--foreground)) }" },
+      { property: "border-color", token: "border", from: "src/base.css: *, ::before, ::after { border-color: var(--color-border) }" },
+    ]);
+    // A later `color: red` on body ends what it set.
+    writeFileSync(join(dir, "src/base.css"), "body { color: var(--foreground); }\nbody { color: red; }\n");
+    assert.deepEqual(baseDefaults(dir, names), []);
+  } finally { cleanup(dir); }
+});
+
+test("base styles: stylesheets that set a default to different tokens leave it out; agreeing ones keep it", () => {
+  const names = ["foreground", "card/foreground", "border"];
+  const dir = makeProject({
+    "app/globals.css": "@layer base { body { @apply text-foreground; } * { @apply border-border; } }",
+    "src/other.css": "body { color: var(--card-foreground); } * { border-color: var(--border); }",
+  });
+  try {
+    assert.deepEqual(baseDefaults(dir, names).map((d) => [d.property, d.token]), [["border-color", "border"]]);
+  } finally { cleanup(dir); }
 });
 
 test("radius: a DEFAULT that repeats a step in every mode is left out; one that differs is kept", () => {

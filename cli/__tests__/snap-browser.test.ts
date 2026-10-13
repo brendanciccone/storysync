@@ -730,6 +730,20 @@ test("captureTreeInPage: for an overlay's content, reads what is around it, inne
   assert.equal(inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content).around, undefined);
 });
 
+test("captureTreeInPage: reads the class evidence around the root, innermost first, for the color a text inherits", () => {
+  // A story's wrapper colors its text, outside the component's root.
+  const page = {
+    tag: "div", rect: [0, 0, 400, 100] as [number, number, number, number], attrs: { class: "p-4 text-muted-foreground hover:text-primary" },
+    kids: [{ tag: "div", rect: [0, 0, 400, 100] as [number, number, number, number], attrs: { class: "flex gap-2" },
+      kids: [{ tag: "div", rect: [0, 0, 100, 20] as [number, number, number, number], attrs: { "data-slot": "card", class: "bg-card" } }] }],
+  };
+  const content = (root: Element) => root.children[0].children[0];
+  const read = inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content);
+  assert.deepEqual(read.outer, [[], ["text-muted-foreground", "hover:text-primary"]]);
+  // None around it has any: none.
+  assert.equal(readTree({ tag: "div", rect: [0, 0, 10, 10], attrs: { class: "bg-card" } }).outer, undefined);
+});
+
 test("captureTreeInPage: an element a rotate or scale of its own turns gives its own size, an svg its CSS size", () => {
   const read = readTree({
     tag: "span", rect: [0, 0, 10, 10], style: { "box-sizing": "border-box" },

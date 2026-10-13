@@ -12,7 +12,7 @@ import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
 import type { TreeDelta, TreeNode } from "../tree-types.js";
 import { verify } from "../verify.js";
-import { STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
+import { SHADCN_TOKENS, STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
 import { loadTreeFixture, svgShapeBoxes, treeFixtureNames } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
 
@@ -322,6 +322,20 @@ test("figma code: what it can't build, and values several tokens share with no c
   ]);
   const without = await codeFor(loadTreeFixture("switch"), { tokens: "/nonexistent/tokens.json" });
   assert.deepEqual(without.warnings, ["no tokens at /nonexistent/tokens.json, so nothing is bound to a variable: save them first with `npx storysync tokens --json > /nonexistent/tokens.json`"]);
+});
+
+test("figma code: a value the base styles bind is recorded in the plan with its rule, and not warned as unbound", async () => {
+  const from = "app/globals.css, @layer base: body { @apply bg-background text-foreground }";
+  const tokens = { ...SHADCN_TOKENS, defaults: [{ property: "color", token: "foreground", from }] };
+  const coded = await codeFor(loadTreeFixture("dialog"), {}, tokens);
+  // The title and Cancel both: once.
+  assert.deepEqual(coded.plan.bindings, [{ component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from }]);
+  assert.deepEqual(JSON.parse(readFileSync(join(coded.out, "plan.json"), "utf8")).bindings, coded.plan.bindings);
+  assert.equal(coded.warnings.some((w) => /left unbound/.test(w)), false);
+  // Without them, as tokens.json from before: warned as it was, and no bindings.
+  const before = await codeFor(loadTreeFixture("dialog"), {}, SHADCN_TOKENS);
+  assert.equal(before.plan.bindings, undefined);
+  assert.ok(before.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and no class names one"));
 });
 
 test("figma code: a new plan clears the last plan's calls and results, and leaves every other file", async () => {

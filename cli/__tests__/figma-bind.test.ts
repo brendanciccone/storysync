@@ -89,6 +89,50 @@ test("Binder: a token's dark value is no candidate, since snap measures the ligh
   assert.equal(binder.radius(8, ["rounded-lg"]).variable, "lg");
 });
 
+// The project's base styles, as tokens reads shadcn/ui's @layer base.
+const DEFAULTS = [
+  { property: "color" as const, token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+  { property: "border-color" as const, token: "border", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+];
+const WITH_DEFAULTS = { ...SHADCN_TOKENS, defaults: DEFAULTS };
+
+test("Binder: a text no class colors takes body's color from the base styles, with the rule as its evidence", () => {
+  // Dialog's title: inherited from body, so no class says it, and #0a0a0a is four tokens.
+  assert.deepEqual(new Binder(WITH_DEFAULTS).color("#0a0a0a", "text", undefined), {
+    variable: "foreground", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"], from: DEFAULTS[0].from,
+  });
+  // An icon in currentColor too.
+  assert.equal(new Binder(WITH_DEFAULTS).color("#0a0a0a", "vector", undefined).variable, "foreground");
+});
+
+test("Binder: a border no class colors takes *'s border color from the base styles, a width or another state's color aside", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // Attachment: `border` and data-[state=error]:border-destructive/30, measured #e5e5e5.
+  assert.deepEqual(binder.color("#e5e5e5", "stroke", ["border-destructive", "border-dashed"]), {
+    variable: "border", candidates: ["border", "input"], from: DEFAULTS[1].from,
+  });
+  // Sheet: border-l names a side, no color.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-l"]).variable, "border");
+  // A translucent paint of it too.
+  assert.equal(binder.color("#e5e5e540", "stroke", undefined).variable, "border");
+});
+
+test("Binder: a base style binds only where no class names a candidate, and only a candidate", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // A class that names one wins: an Input's border-input.
+  assert.deepEqual(binder.color("#e5e5e5", "stroke", ["border-input"]), { variable: "input", candidates: ["border", "input"] });
+  // Two classes naming two: ambiguous, and no default settles it.
+  assert.equal(binder.color("#0a0a0a", "text", ["text-card-foreground", "text-popover-foreground"]).variable, null);
+  // No background is inherited: a fill takes no default.
+  assert.equal(binder.color("#f5f5f5", "fill", undefined).variable, null);
+  // The default isn't one of the value's tokens.
+  assert.deepEqual(binder.color("#171717", "text", undefined), {
+    variable: null, candidates: ["accent/foreground", "primary", "secondary/foreground", "sidebar/primary"],
+  });
+  // Without defaults, as tokens.json from before: unbound, as it was.
+  assert.equal(new Binder(SHADCN_TOKENS).color("#e5e5e5", "stroke", undefined).variable, null);
+});
+
 test("Binder: a Tailwind config's DEFAULT key is unnamed in a class", () => {
   // shadcn/ui v3's `primary: { DEFAULT: "hsl(var(--primary))" }` is the token primary/DEFAULT, and bg-primary names it.
   const binder = new Binder({ collections: [{ category: "colors", tokens: [{ name: "primary/DEFAULT", value: "", hex: "#18181b" }, { name: "foreground", value: "", hex: "#18181b" }] }] });

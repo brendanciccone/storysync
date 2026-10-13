@@ -734,6 +734,19 @@ test("buildTree: a text or icon takes the text color class of the nearest elemen
   assert.deepEqual(nodes.get("svg")!.cls, ["text-destructive"]);
 });
 
+test("buildTree: past the root, a text takes the text color class of the elements around it, those inside nearer", () => {
+  // A story's wrapper sets text-muted-foreground around a root that sets none.
+  const title = el("h2", [0, 0, 200, 20], {}, [run("Title", [[0, 1.5, 40, 17]])], { text: TEXT });
+  const own = el("p", [0, 20, 200, 20], {}, [run("Own", [[0, 21.5, 40, 17]])], { text: TEXT, cls: ["text-destructive"] });
+  const root = el("div", [0, 0, 200, 40], { display: "flex" }, [title, own]);
+  const outer = [["hover:text-primary"], [], ["text-muted-foreground", "bg-background"]];
+  const nodes = byKey(buildTree({ ...tree(root), outer }).nodes);
+  assert.deepEqual(nodes.get("h2")!.cls, ["text-muted-foreground"]);
+  assert.deepEqual(nodes.get("p")!.cls, ["text-destructive"]);
+  // None around it, as in a portal: nothing, and figma code takes the base styles.
+  assert.equal(byKey(buildTree(tree(root)).nodes).get("h2")!.cls, undefined);
+});
+
 test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, at most 8", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x"]),
