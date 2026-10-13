@@ -311,6 +311,27 @@ test("action Detect drift: a change the counts don't show says what it was", () 
   assert.match(grown.report ?? "", /: 1 → 1 props, 2 → 3 combinations\n/);
 });
 
+test("action Detect drift: a prop map leaves out is a change to its properties, said with why, and its record alone is none", () => {
+  // The snap the push was measured into left out p2 (behavior only).
+  const before = withId(component("ui/Drawer", 3));
+  const after = { ...withId(component("ui/Drawer", 2)), excludedProps: [{ name: "p2", reason: "no-op" }] };
+  const r = detectDrift(mapJson([before]), [after]);
+  assert.equal(r.outputs.result, "true", r.stdout);
+  assert.match(r.report ?? "", /### Changed\n- \*\*ui\/Drawer\*\*: 3 → 2 props, 8 → 4 combinations \(p2 left out \(every value measured the same\)\)\n/);
+  // A baseline written with the same exclusions, or before they were recorded, is no drift.
+  assert.equal(detectDrift(mapJson([after]), [after]).outputs.result, "false");
+  assert.equal(detectDrift(mapJson([withId(component("ui/Drawer", 2))]), [after]).outputs.result, "false");
+});
+
+test("action Detect drift: says once when map couldn't see the stories' argTypes, and where to point it", () => {
+  const current = JSON.stringify({ ...JSON.parse(mapJson([formsButton])), props: { snap: null, argTypesUnseen: ["forms-button"] } });
+  const r = run("Detect drift", "storysync-drift.md", { ".storysync/baseline.json": mapJson([formsButton]), "storysync-current.json": current }, {
+    BASELINE_PATH: ".storysync/baseline.json", STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", SNAP_DIR: ".storysync/snaps",
+  });
+  assert.equal(r.outputs.result, "false", r.stdout);
+  assert.match(r.stdout, /::notice::storysync map couldn't see the argTypes of 1 component \(forms-button\): there is no snap at \.storysync\/snaps\/styles\.json\. Commit the snap the push was measured into, or point snap_dir at it\./);
+});
+
 test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
   // A baseline with IDs that repeats one, as only a hand edit could.
   const button = withId(component("Forms/Button", 1));

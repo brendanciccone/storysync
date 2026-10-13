@@ -14,6 +14,7 @@ import {
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
   contentOverflow, describeOverflow, describeVariantStories,
+  detectBehaviorProps,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
@@ -1526,13 +1527,16 @@ test("runSnap: a value the story rejects is measured through the preview, or mar
     assert.match(refused, /add 'link' to argTypes\.variant\.options in \.\/badge\.stories\.tsx, then measure the component again with --components ui-base-badge --merge\.$/);
     assert.deepEqual(rest, []);
 
-    // The story's argTypes are recorded, and the choice the docs omit named.
+    // The story's argTypes are recorded, and the choice the docs omit named:
+    // made a variant property, measured, and left out again, as the stand-in
+    // draws every value of it the same.
     assert.deepEqual(badge.argTypes, {
       disabled: { type: "boolean", control: "boolean" },
-      variant: { type: "enum", control: "select", options: ["default", "secondary"] },
+      variant: { type: "enum", control: "select", options: ["default", "secondary"], initial: "default" },
     });
     assert.equal(badge.storyFile, "./badge.stories.tsx");
     assert.deepEqual(badge.argsNotInDocs, ["disabled"]);
+    assert.deepEqual(badge.excludedProps, [{ name: "disabled", reason: "no-op" }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1589,7 +1593,8 @@ test("runSnap: an arg_rejected variant records only the values the story still w
   const dir = tempDir();
   try {
     const size = { name: "size", type: { name: "union" }, defaultValue: "sm", control: { type: "select", options: ["sm", "lg"] } };
-    const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200 }), {
+    // The stand-in draws every size alike, which would leave size out.
+    const result = await runSnap(options(dir, { variants: "all", selector: "[data-slot=badge]", timeoutMs: 200, keepProps: ["size"] }), {
       storybook: badgeDocs([BADGE_VARIANT, size]),
       launch,
     });
@@ -1785,7 +1790,8 @@ test("runSnap: an element placed against the window, measured moved inside the r
   const dir = tempDir();
   try {
     const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: (args) => (args.size === "sm" ? right() : rawCapture("sidebar")), argTypes: { size: { options: ["default", "sm"] } } });
-    const result = await runSnap(options(dir, { selector: "[data-slot=sidebar]" }), { storybook: switchDocs(), launch });
+    // Moved inside, size=sm measures as the default does, which would leave size out.
+    const result = await runSnap(options(dir, { selector: "[data-slot=sidebar]", keepProps: ["size"] }), { storybook: switchDocs(), launch });
     const [component] = result.components;
     assert.deepEqual(component.variants.map((v) => [v.slug, v.movedInside]), [["size-default", undefined], ["size-sm", ["sidebar-container"]]]);
     assert.deepEqual(Object.keys(component.variants[1]), ["combination", "slug", "status", "error", "boundingBox", "element", "movedInside", "delta", "treeDelta"]);
@@ -1813,7 +1819,7 @@ test("runSnap --root-only: styles.json as before trees, each variant saying how 
   const dir = tempDir();
   try {
     const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: () => rawCapture("card"), argTypes: { size: { options: ["default", "sm"] } } });
-    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", rootOnly: true }), { storybook: switchDocs(), launch });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", rootOnly: true, keepProps: ["size"] }), { storybook: switchDocs(), launch });
     assert.equal(result.treeVersion, undefined);
     assert.equal(result.treeLimits, undefined);
     const [component] = result.components;
@@ -2043,7 +2049,8 @@ test("runSnap: the story's argTypes options add the values the docs' type lacks,
     });
     // size's type has default and sm; the options add lg. side's type
     // lists nothing; the options make it an axis, and the plan starts again.
-    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
+    // The stand-in draws every side alike, which would leave side out.
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", keepProps: ["side"] }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
     const [component] = result.components;
     assert.deepEqual(component.variantProperties.map((p) => [p.name, p.values, p.defaultValue]), [["size", ["default", "sm", "lg"], "default"], ["side", ["top", "bottom"], "top"]]);
     assert.deepEqual(component.variants.map((v) => [v.slug, v.combination, v.status]), [
@@ -2070,7 +2077,7 @@ test("runSnap: a variant that failed before the options added an axis is measure
       argTypes: { size: { options: ["default", "sm"] }, side: { options: ["top", "bottom"] } },
       timeouts: 2,
     });
-    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", screenshots: true }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", screenshots: true, keepProps: ["side"] }), { storybook: switchDocs([SWITCH_SIZE, sides]), launch });
     const [component] = result.components;
     assert.deepEqual(component.variants.map((v) => [v.slug, v.combination, v.status]), [
       ["size-default--side-top", { size: "default", side: "top" }, "ok"],
@@ -2102,7 +2109,7 @@ test("runSnap: values the options add past --max-combinations start a capped pla
     // size x tone is 4, within the limit; the options' lg makes it 6, past it.
     const tone = { name: "tone", type: { name: "union", raw: '"a" | "b"' }, defaultValue: "a" };
     const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm", "lg"] } } });
-    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all", maxCombinations: 4 }), { storybook: switchDocs([SWITCH_SIZE, tone]), launch });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all", maxCombinations: 4, keepProps: ["tone"] }), { storybook: switchDocs([SWITCH_SIZE, tone]), launch });
     const [component] = result.components;
     assert.deepEqual(component.variants.map((v) => v.slug), ["size-default--tone-a", "size-sm--tone-a", "size-lg--tone-a", "size-default--tone-b"]);
     assert.deepEqual([component.cap!.totalPossible, component.cap!.generated, component.cap!.uncovered], [6, 4, []]);
@@ -2118,12 +2125,119 @@ test("runSnap: a tree snap whose variants measure alike though their markup chan
       storyId: "ui-base-switch--default", capture: () => rawCapture("switch"), argTypes: { size: { options: ["default", "sm"] } },
       markup: (args) => `markup-${String(args.size)}`,
     });
-    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    // Kept: size, measuring the same, is otherwise left out (see the next test).
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", keepProps: ["size"] }), { storybook: switchDocs(), launch });
     const warning = result.components[0].warnings.find((w) => parseBehaviorOnlyWarning(w));
     assert.match(warning ?? "", /something it doesn't measure, such as a hover or focus state, or an animation\./);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("runSnap: a prop every value of which measures the same is left out, its reason recorded, and the rest measured without it", async () => {
+  const dir = tempDir();
+  try {
+    // size changes the markup but nothing snap measures; tone draws.
+    const tone = { name: "tone", type: { name: "union", raw: '"a" | "b"' }, defaultValue: "a" };
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: (args) => rawCapture(args.tone === "b" ? "switch-sm" : "switch"),
+      argTypes: { size: { options: ["default", "sm"] }, tone: { options: ["a", "b"] } },
+      markup: (args) => `markup-${String(args.size)}`,
+    });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs([SWITCH_SIZE, tone]), launch, onProgress: (m) => progress.push(m) });
+    const [component] = result.components;
+    assert.deepEqual(component.variantProperties.map((p) => p.name), ["tone"]);
+    assert.deepEqual(component.variants.map((v) => [v.slug, v.status]), [["tone-a", "ok"], ["tone-b", "ok"]]);
+    assert.deepEqual(component.excludedProps, [{ name: "size", reason: "no-op", markup: "changed" }]);
+    // No warning of a property measuring the same: it is left out, which snap says once.
+    assert.deepEqual(component.warnings.filter((w) => /measured the same|measured identically/.test(w)), []);
+    assert.ok(progress.some((m) => /size measured the same for every value; 2 variants planned without it/.test(m)), progress.join("\n"));
+    assert.deepEqual(readJson(join(dir, "styles.json")).components[0].excludedProps, [{ name: "size", reason: "no-op", markup: "changed" }]);
+
+    // --keep-props keeps it a variant property, as before.
+    const kept = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all", keepProps: ["size"] }), { storybook: switchDocs([SWITCH_SIZE, tone]), launch });
+    assert.deepEqual(kept.components[0].variantProperties.map((p) => p.name), ["size", "tone"]);
+    assert.equal(kept.components[0].excludedProps, undefined);
+    assert.deepEqual(kept.keepProps, ["size"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: where nothing a prop's values set reaches the page, it is left out and the story is still warned of", async () => {
+  const dir = tempDir();
+  try {
+    // Frozen's story: every variant draws, and marks up, the default.
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: () => rawCapture("switch"), argTypes: { size: { options: ["default", "sm"] } }, markup: () => "frozen" });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variants.map((v) => v.slug), ["default"]);
+    assert.deepEqual(component.excludedProps, [{ name: "size", reason: "no-op", markup: "same" }]);
+    const warning = component.warnings.find((w) => /measured identically/.test(w));
+    assert.match(warning ?? "", /^all 2 rendered variants measured identically and rendered the same markup — the story may not pass args through/);
+    assert.match(warning ?? "", /snap left out `size`, so it is one variant: if the story drops it, pass it through and measure it again; if it changes only behavior, this is as it should be\.$/);
+    assert.equal(result.summary.componentsWithWarnings, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a choice only the story's argTypes declare is measured as a variant property, and one they mark as behavior is left out", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: (args) => rawCapture(args.disabled === true ? "switch-sm" : "switch"),
+      argTypes: { size: { options: ["default", "sm"], control: false }, disabled: { type: { name: "boolean" }, control: { type: "boolean" } } },
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variantProperties, [{ name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true }]);
+    assert.deepEqual(component.variants.map((v) => v.slug), ["disabled-false", "disabled-true"]);
+    assert.deepEqual(component.excludedProps, [{ name: "size", reason: "no-control" }]);
+    assert.deepEqual(component.argsNotInDocs, ["disabled"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectBehaviorProps: a prop whose value opens what a closed trigger hides is pinned; nothing else is judged on a trigger", () => {
+  const props: FigmaVariantProperty[] = [
+    { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+    { name: "modal", type: "BOOLEAN", values: ["true", "false"], defaultValue: "true" },
+    { name: "side", type: "VARIANT", values: ["right", "left"], defaultValue: "right" },
+  ];
+  const v = (open: string, modal: string, side: string, extra: Partial<SnapVariant> = {}): SnapVariant =>
+    ({ combination: { open, modal, side }, slug: `${open}-${modal}-${side}`, status: "ok", error: null, delta: {}, element: "button", ...extra }) as SnapVariant;
+  const variants = [
+    v("false", "true", "right"), v("true", "true", "right", { portal: true, element: "div[data-slot=drawer-content]", delta: { width: 300 } }),
+    v("false", "false", "right"), v("false", "true", "left"),
+  ];
+  const closed = new Set(["false-true-right", "false-false-right", "false-true-left"]);
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed, markups: new Map(), pin: true }), [{ name: "open", reason: "opens", value: "true" }]);
+  // Without a pin, or with open kept, a prop measured on the trigger alone, as side is, is not judged.
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed, markups: new Map(), pin: false }), []);
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed, markups: new Map(), pin: true, keep: ["open"] }), []);
+});
+
+test("detectBehaviorProps: a prop every value of which measured the same, with whether its markup changed; unchecked args are no evidence", () => {
+  const props: FigmaVariantProperty[] = [
+    { name: "loop", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+    { name: "align", type: "VARIANT", values: ["left", "right"], defaultValue: "left" },
+    { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+  ];
+  const v = (loop: string, align: string, size: string, extra: Partial<SnapVariant> = {}): SnapVariant =>
+    ({ combination: { loop, align, size }, slug: `${loop}-${align}-${size}`, status: "ok", error: null, delta: {}, ...extra }) as SnapVariant;
+  const variants = [v("false", "left", "sm"), v("true", "left", "sm"), v("false", "right", "sm"), v("false", "left", "lg", { delta: { width: 60 } })];
+  const markups = new Map([["false-left-sm", "m1"], ["true-left-sm", "m1"], ["false-right-sm", "m2"], ["false-left-lg", "m3"]]);
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed: new Set(), markups }), [
+    { name: "loop", reason: "no-op", markup: "same" },
+    { name: "align", reason: "no-op", markup: "changed" },
+  ]);
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed: new Set(), markups: new Map(), keep: ["loop"] }), [{ name: "align", reason: "no-op" }]);
+  // A variant whose args Storybook didn't confirm may be the default: no evidence either way.
+  const unchecked = variants.map((x) => (x.slug === "true-left-sm" ? { ...x, argsChecked: false as const } : x));
+  assert.deepEqual(detectBehaviorProps(props, unchecked, { closed: new Set(), markups }).map((e) => e.name), ["align"]);
 });
 
 test("detectIdenticalValues: values that measured the same, root and tree, wherever both were measured", () => {

@@ -14,9 +14,11 @@ export interface FakeArgType {
   options?: unknown[];
   if?: { arg: string; neq?: unknown; eq?: unknown };
   type?: { name: string };
-  control?: { type: string };
+  control?: { type: string } | false;
   mapping?: Record<string, unknown>;
   target?: string;
+  table?: { disable?: boolean; category?: string };
+  action?: string;
 }
 
 export function fakePreview(opts: {
@@ -40,7 +42,7 @@ export function fakePreview(opts: {
   csf?: Record<string, { args?: Record<string, unknown>; render?: () => unknown; userStoryFn?: () => unknown; decorators?: unknown[]; play?: () => unknown }>;
 }) {
   const storyId = opts.storyId ?? "ui-base-badge--default";
-  const story = { argTypes: structuredClone(opts.argTypes) as Record<string, FakeArgType>, parameters: { fileName: "./badge.stories.tsx" } };
+  const story = { argTypes: structuredClone(opts.argTypes) as Record<string, FakeArgType>, parameters: { fileName: "./badge.stories.tsx" }, initialArgs: { ...opts.initial } };
   const declared = structuredClone(opts.argTypes) as Record<string, FakeArgType>;
   const stored: Record<string, unknown> = { ...opts.initial };
   for (const [name, value] of Object.entries(opts.url)) {

@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { VERSION } from "./version.js";
@@ -16,6 +19,13 @@ export interface ComponentEntry {
   storyIds?: string[];
   /** Set when the title was rebuilt from the ID, since Storybook's index couldn't be read or doesn't list it. */
   titleDerived?: boolean;
+  /**
+   * Set when Storybook's index shows the entry's stories name no component
+   * (none has a `componentPath`), as shadcn's `design/*` token pages: with
+   * no component behind it, storysync leaves it out unless `--components`
+   * names it.
+   */
+  docsOnly?: true;
 }
 
 /** The last segment of a title, the name Storybook's sidebar shows: `Button` for `ui/base/Button`. */
@@ -79,19 +89,23 @@ export function selectComponents(
   alsoKnown: readonly string[] = [],
   flag = "--components",
 ): ComponentEntry[] {
+  // An entry whose stories name no component is left out unless named:
+  // there is no component to push, as on shadcn's design/* token pages.
+  const components = entries.some((e) => e.docsOnly) ? entries.filter((e) => !e.docsOnly) : entries;
   const wanted = componentNames(names).map((name) => ({ name, key: name.toLowerCase() }));
-  if (!wanted.length) return entries;
+  if (!wanted.length) return components;
   const known = new Set(alsoKnown.map((n) => n.toLowerCase()));
 
   const unmatched = wanted.filter(({ key }) => !known.has(key) && !entries.some((e) => isNamed(e, key)));
   if (unmatched.length) {
     throw new Error(
       `${flag} matched no component named ${unmatched.map(({ name }) => `"${name}"`).join(", ")}. ` +
-      `Available: ${available(entries, alsoKnown)}`,
+      `Available: ${available(components, alsoKnown)}`,
     );
   }
 
-  return entries.filter((e) => wanted.some(({ key }) => isNamed(e, key)));
+  // Such an entry only for a name that names no component.
+  return entries.filter((e) => wanted.some(({ key }) => isNamed(e, key) && (!e.docsOnly || !components.some((c) => isNamed(c, key)))));
 }
 
 /**
@@ -206,6 +220,20 @@ export function indexUrls(storybookUrl: string): URL[] {
   return urls.filter((url, i) => urls.findIndex((u) => u.href === url.href) === i);
 }
 
+/** Storybook's component manifest, which its docs are made from, or null when it can't be read before `signal` aborts. */
+async function fetchManifest(storybookUrl: string, signal: AbortSignal): Promise<unknown> {
+  for (const url of indexUrls(storybookUrl).map((u) => new URL(u.pathname.replace(/index\.json$/, "manifests/components.json"), u))) {
+    if (signal.aborted) break;
+    try {
+      const res = await fetch(url, { signal });
+      if (res.ok) return await res.json();
+    } catch {
+      // Not there, or not JSON: nothing to key a cache by.
+    }
+  }
+  return null;
+}
+
 /** Storybook's index.json, or null when it can't be read before `signal` aborts. */
 async function fetchIndex(storybookUrl: string, signal: AbortSignal): Promise<unknown> {
   for (const url of indexUrls(storybookUrl)) {
@@ -239,6 +267,31 @@ export function indexTitles(index: unknown): Map<string, string> | null {
   return titles;
 }
 
+/**
+ * The component IDs whose stories, by Storybook's index.json, name no
+ * component: none of their story entries has a `componentPath`, which
+ * Storybook gives a story whose meta names a `component`. shadcn's
+ * `design/*` token pages are such: a table of swatches with no component
+ * behind it, whose docs list no props. Null when the index gives no story
+ * a `componentPath`, as one written before Storybook recorded it doesn't,
+ * so nothing can be told from it.
+ */
+export function indexDocsOnly(index: unknown): Set<string> | null {
+  const entries = (index as { entries?: unknown } | null)?.entries;
+  if (!entries || typeof entries !== "object") return null;
+  const stories = new Set<string>();
+  const withComponent = new Set<string>();
+  for (const entry of Object.values(entries)) {
+    const { id, type, componentPath } = (entry ?? {}) as { id?: unknown; type?: unknown; componentPath?: unknown };
+    if (typeof id !== "string" || type === "docs") continue;
+    const componentId = id.split("--")[0];
+    stories.add(componentId);
+    if (typeof componentPath === "string" && componentPath.trim()) withComponent.add(componentId);
+  }
+  if (!withComponent.size) return null;
+  return new Set([...stories].filter((id) => !withComponent.has(id)));
+}
+
 /** The title minus its last segment, the sidebar folder it is in: `ui/base` for `ui/base/Button`. */
 export function titleCategory(title: string): string | undefined {
   return title.split("/").slice(0, -1).map((s) => s.trim()).join("/") || undefined;
@@ -248,8 +301,9 @@ export function titleCategory(title: string): string | undefined {
  * Gives each component listed in Storybook's index its title there, and the
  * category that title implies, in place of what the docs list let it rebuild.
  */
-export function applyIndexTitles(entries: ComponentEntry[], titles: Map<string, string> | null): ComponentEntry[] {
+export function applyIndexTitles(entries: ComponentEntry[], titles: Map<string, string> | null, docsOnly: Set<string> | null = null): ComponentEntry[] {
   for (const entry of entries) {
+    if (docsOnly?.has(entry.id)) entry.docsOnly = true;
     const title = titles?.get(entry.id);
     if (!title) continue;
     entry.title = title;
@@ -369,7 +423,18 @@ export interface StorybookClientOptions {
   requestTimeoutMs?: number;
   /** The limit on connecting, --connect-timeout's value: requestTimeoutMs unless given. */
   connectTimeoutMs?: number;
+  /**
+   * Where the docs cache is kept: `.storysync/cache/docs` under the working
+   * directory unless given; null keeps none (`--no-cache`), as does a
+   * client connected through a test's transport unless a test gives one.
+   */
+  cacheDir?: string | null;
+  /** Reads Storybook's component manifest, which the docs cache keys by; fetched from the Storybook URL by default. */
+  readManifest?: ((signal: AbortSignal) => Promise<unknown>) | null;
 }
+
+/** Where the docs cache is kept, under the working directory. */
+export const DOCS_CACHE_DIR = ".storysync/cache/docs";
 
 export class StorybookClient {
   private client: Client | null = null;
@@ -381,10 +446,15 @@ export class StorybookClient {
   // docs-show got 60 seconds whatever the flags said.
   private requestTimeoutMs: number;
   private connectTimeoutMs: number;
+  private cacheDir: string | null | undefined;
+  private readManifest: ((signal: AbortSignal) => Promise<unknown>) | null | undefined;
+  private cacheKeysRead: Promise<{ dir: string; index: string; manifest: Map<string, string> } | null> | null = null;
 
   constructor(url: string, options: StorybookClientOptions = {}) {
     this.url = url;
     this.readIndex = options.readIndex;
+    this.cacheDir = options.cacheDir;
+    this.readManifest = options.readManifest;
     this.indexGraceMs = options.indexGraceMs ?? INDEX_GRACE_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.connectTimeoutMs = options.connectTimeoutMs ?? this.requestTimeoutMs;
@@ -398,6 +468,7 @@ export class StorybookClient {
     this.docsTools = null;
     if (transport) {
       if (this.readIndex === undefined) this.readIndex = null;
+      if (this.cacheDir === undefined) this.cacheDir = null;
       await this.client.connect(transport);
       return;
     }
@@ -438,33 +509,91 @@ export class StorybookClient {
     // the command open.
     const stop = new AbortController();
     const stopped = new Promise<null>((resolve) => stop.signal.addEventListener("abort", () => resolve(null), { once: true }));
-    const titles = Promise.race([this.readTitles(stop.signal), stopped]);
+    const index = Promise.race([this.readIndexOnce(stop.signal), stopped]);
     let grace: ReturnType<typeof setTimeout> | undefined;
     try {
       const text = await this.call(list, { withStoryIds: true });
       grace = setTimeout(() => stop.abort(), this.indexGraceMs);
-      return applyIndexTitles(this.parseComponentList(text), await titles);
+      const read = await index;
+      return applyIndexTitles(this.parseComponentList(text), read ? indexTitles(read) : null, read ? indexDocsOnly(read) : null);
     } finally {
       clearTimeout(grace);
       stop.abort();
     }
   }
 
-  /** The titles in Storybook's index, or null when there is none to read or it can't be read. */
-  private async readTitles(signal: AbortSignal): Promise<Map<string, string> | null> {
+  /** Storybook's index, or null when there is none to read or it can't be read. */
+  private async readIndexOnce(signal: AbortSignal): Promise<unknown> {
     const read = this.readIndex === undefined ? (s: AbortSignal) => fetchIndex(this.url, s) : this.readIndex;
     try {
-      return read ? indexTitles(await read(signal)) : null;
+      return read ? await read(signal) : null;
     } catch {
       return null;
     }
   }
 
   async getComponent(id: string, displayName?: string, title?: string, category?: string): Promise<StorybookComponent> {
-    const { show } = await this.getDocsTools();
-    const text = await this.call(show, { id });
+    const text = await this.docsText(id);
     const name = displayName ?? id;
     return { name, title, category, props: this.parseProps(text), stories: this.parseStories(id, text) };
+  }
+
+  /**
+   * A component's docs, from the docs cache where it holds them for the
+   * Storybook as it is now, else from docs-show, which takes seconds a
+   * component, and then kept there. Kept per Storybook URL, each component's
+   * under the index.json it was read with and the component's entry in
+   * Storybook's component manifest, which its docs are made from: a story
+   * added, renamed or moved changes the first, and a prop or its type the
+   * second. With either unreadable nothing is cached, as nothing would
+   * say when it went stale.
+   */
+  private async docsText(id: string): Promise<string> {
+    const { show } = await this.getDocsTools();
+    const keys = await this.cacheKeys();
+    const manifest = keys?.manifest.get(id);
+    const file = keys && manifest ? join(keys.dir, `${id.replace(/[^A-Za-z0-9_-]/g, "_")}.json`) : null;
+    if (file) {
+      try {
+        const cached = JSON.parse(readFileSync(file, "utf8")) as { index?: unknown; manifest?: unknown; text?: unknown };
+        if (cached.index === keys!.index && cached.manifest === manifest && typeof cached.text === "string") return cached.text;
+      } catch {
+        // Not cached yet, or unreadable: read it from Storybook.
+      }
+    }
+    const text = await this.call(show, { id });
+    if (file) {
+      try {
+        mkdirSync(keys!.dir, { recursive: true });
+        // Written whole, then moved into place, so a command reading it alongside never reads half.
+        const temp = `${file}.${process.pid}.tmp`;
+        writeFileSync(temp, JSON.stringify({ index: keys!.index, manifest, text }));
+        renameSync(temp, file);
+      } catch {
+        // A cache that can't be written only costs the next command time.
+      }
+    }
+    return text;
+  }
+
+  /** What the docs cache keys each component's docs by, read once, or null when there is no cache. */
+  private cacheKeys(): Promise<{ dir: string; index: string; manifest: Map<string, string> } | null> {
+    if (this.cacheDir === null) return Promise.resolve(null);
+    this.cacheKeysRead ??= (async () => {
+      const signal = AbortSignal.timeout(this.requestTimeoutMs);
+      const readManifest = this.readManifest === undefined ? (s: AbortSignal) => fetchManifest(this.url, s) : this.readManifest;
+      const [index, manifest] = await Promise.all([this.readIndexOnce(signal), readManifest ? readManifest(signal).catch(() => null) : null]);
+      const components = (manifest as { components?: unknown } | null)?.components;
+      if (index == null || !components || typeof components !== "object") return null;
+      const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 32);
+      const url = this.url.replace(/[?#].*$/, "").replace(/\/+$/, "");
+      return {
+        dir: join(resolve(this.cacheDir ?? DOCS_CACHE_DIR), hash(url).slice(0, 16)),
+        index: hash(index),
+        manifest: new Map(Object.entries(components as Record<string, unknown>).map(([id, entry]) => [id, hash(entry)])),
+      };
+    })();
+    return this.cacheKeysRead;
   }
 
   private async getDocsTools(): Promise<DocsTools> {
