@@ -458,7 +458,7 @@ test("rootWithStyles: the root with its paint from its styles, in the tree's enc
 const FIXTURES = treeFixtureNames();
 
 test("fixtures: the components the design lists are all here", () => {
-  assert.deepEqual(FIXTURES, ["attachment", "avatar", "button-icon", "card", "example-button", "inputotp", "sidebar", "switch", "toggle"]);
+  assert.deepEqual(FIXTURES, ["attachment", "avatar", "button-icon", "card", "dialog", "example-button", "inputotp", "sidebar", "switch", "toggle"]);
 });
 
 function eachFixture(fn: (name: string, fixture: TreeFixture) => void) {

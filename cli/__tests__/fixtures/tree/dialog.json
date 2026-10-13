@@ -1,0 +1,150 @@
+{
+  "fixture": {
+    "name": "dialog",
+    "sources": [
+      "storysync snap of ui-base-dialog--default (0.4.0 with overlays measured open), against the shadcn/ui registry's Storybook (MIT), --components ui-base-dialog"
+    ],
+    "notes": [
+      "The story renders only the dialog's closed trigger. snap clicked it open, waited for the content to settle, and measured div[data-slot=dialog-content] in its portal, as the variant's `opened` and `portal` record.",
+      "Written by snap's own writer from the live run, unchanged but for this block."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "representative",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-dialog",
+      "name": "Dialog",
+      "title": "ui/base/Dialog",
+      "category": "ui/base",
+      "storyId": "ui-base-dialog--default",
+      "variantProperties": [],
+      "base": {
+        "combination": {},
+        "slug": "default",
+        "styles": {
+          "display": "grid",
+          "flexDirection": "row",
+          "alignItems": "normal",
+          "justifyContent": "normal",
+          "gap": {
+            "row": 24,
+            "column": 24
+          },
+          "width": 448,
+          "height": 170,
+          "backgroundColor": "#ffffff",
+          "color": "#0a0a0a",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 14,
+            "topRight": 14,
+            "bottomRight": 14,
+            "bottomLeft": 14
+          },
+          "borderRadiusUniform": 14,
+          "padding": {
+            "top": 24,
+            "right": 24,
+            "bottom": 24,
+            "left": 24
+          },
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": 400,
+          "lineHeight": 20,
+          "letterSpacing": 0,
+          "boxShadow": [
+            {
+              "offsetX": 0,
+              "offsetY": 0,
+              "blur": 0,
+              "spread": 1,
+              "color": "#0a0a0a1a",
+              "inset": false
+            }
+          ],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": true,
+          "text": {
+            "color": "#0a0a0a",
+            "fontFamily": "Inter",
+            "fontSize": 14,
+            "fontWeight": 500
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {},
+          "slug": "default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 448,
+            "height": 170
+          },
+          "element": "div[data-slot=\"dialog-content\"]",
+          "portal": true,
+          "opened": {
+            "via": "click",
+            "trigger": "button[data-slot=\"dialog-trigger\"]"
+          },
+          "delta": {}
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "argTypes": {},
+      "storyFile": "./registry/ui/dialog-story/dialog-base.stories.tsx",
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"d":"grid","gap":[24,24],"pad":[24,24,24,24],"tracks":[1,2]},"box":[0,0,448,170],"cls":["bg-background","outline-none","ring-foreground","rounded-xl","text-sm"],"el":"div[data-slot=dialog-content]","k":"","t":"F"},
+          {"L":{"d":"flex","dir":"column","gap":[8,8]},"box":[24,24,400,62],"el":"div[data-slot=dialog-header]","k":"dialog-header","t":"F"},
+          {"box":[0,0,400,14],"el":"h2[data-slot=dialog-title]","k":"dialog-header/dialog-title","t":"T","tx":{"c":"Are you absolutely sure?","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,-2,164.42,17],"lh":14,"n":1,"sz":14,"wt":500}},
+          {"box":[0,22,400,40],"cls":["text-foreground","text-muted-foreground","text-sm"],"el":"p[data-slot=dialog-description]","k":"dialog-header/dialog-description","t":"T","tx":{"c":"This action cannot be undone. This will permanently delete your account and remove your data from our servers.","col":"#737373","f":"Inter","fs":"system-ui","ink":[0,1,389.53,37],"lh":20,"n":2,"sz":14,"wt":400}},
+          {"L":{"d":"flex","gap":[16,16],"jc":"flex-end"},"box":[24,110,400,36],"el":"div[data-slot=dialog-footer]","k":"dialog-footer","t":"F"},
+          {"L":{"d":"block"},"box":[246.83,0,45.57,36],"el":"button[data-slot=dialog-close]","k":"dialog-footer/dialog-close","t":"F"},
+          {"box":[0,7.5,45.57,20],"el":"#text","k":"dialog-footer/dialog-close/#text","t":"T","tx":{"c":"Cancel","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1.5,45.56,17],"lh":20,"n":1,"sz":14,"ta":"center","wt":400}},
+          {"L":{"d":"block","pad":[8,16,8,16]},"bg":"#171717","box":[308.39,0,91.61,36],"cls":["bg-primary","text-primary-foreground"],"el":"button[data-slot=dialog-close]","k":"dialog-footer/dialog-close:2","r":4,"t":"F"},
+          {"box":[16,7.5,59.61,20],"cls":["text-primary-foreground"],"el":"#text","k":"dialog-footer/dialog-close:2/#text","t":"T","tx":{"c":"Continue","col":"#fafafa","f":"Inter","fs":"system-ui","ink":[0,1.5,59.61,17],"lh":20,"n":1,"sz":14,"ta":"center","wt":400}},
+          {"L":{"ai":"center","d":"flex","jc":"center"},"abs":1,"bd":{"c":null,"s":"solid","w":1},"box":[400,16,32,32],"cls":["bg-clip-padding","border-destructive","border-ring","border-transparent","outline-none","ring-destructive","ring-ring","text-sm"],"el":"button[data-slot=dialog-close]","k":"dialog-close","r":8,"t":"F"},
+          {"S":{"shrink":0},"box":[8,8,16,16],"clip":1,"cls":["text-foreground"],"el":"svg.lucide-x","k":"dialog-close/svg","shapes":[[4,4,8,8],[4,4,8,8]],"svg":"svg:a15c3ae7","t":"V"}
+        ],
+        "assets": {
+          "svg": {
+            "svg:a15c3ae7": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/></svg>"
+          },
+          "img": {}
+        }
+      },
+      "fontStandIns": [
+        [
+          "system-ui",
+          "Inter"
+        ]
+      ]
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 1,
+    "rendered": 1,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}
