@@ -102,18 +102,18 @@ test("nodeStyle: a border the background stops at is INSIDE where that draws the
   // A translucent, dashed or partly transparent border over the
   // background shows what is behind the element where the background
   // stops, as Figma's fill under an INSIDE stroke can't. Built OUTSIDE at
-  // the padding box, radius 7, which no token holds: said, never silent.
+  // the padding box, radius 7, which no token holds: said as what it is.
   const borders: [TreeNode["bd"], string][] = [
     [{ w: 1, s: "solid", c: "#e5e5e580" }, "translucent"], [{ w: 1, s: "dashed", c: "#e5e5e5" }, "dashed"],
     [{ w: 1, s: "solid", c: ["#e5e5e5", null, "#e5e5e5", null] }, "partly transparent"],
   ];
-  for (const [bd] of borders) {
+  for (const [bd, kind] of borders) {
     const c = ctx(new Binder(SHADCN_TOKENS));
     const style = nodeStyle(button({ bd, bg: "#171717" }), c);
     assert.deepEqual([style.s!.o, style.r, style.rv], [1, 7, undefined], JSON.stringify(bd));
     assert.deepEqual(c.unbound.filter((u) => u.property === "radius"), [{
       key: "", property: "radius", value: "8", candidates: ["md"],
-      why: "its background stops inside a border that would show it (background-clip padding-box), so the frame is built as the padding box, at radius 7, which no token holds",
+      why: `its background stops inside its ${kind} border (background-clip padding-box), which shows what is behind the element there, so the frame is built as the padding box, at radius 7, which no token holds`,
     }]);
   }
 });

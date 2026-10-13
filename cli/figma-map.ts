@@ -299,6 +299,22 @@ function strokeIsOutside(node: TreeNode): boolean {
   return Boolean(node.bd && node.bgc && sides(node.bd.w).some((w) => w > 0) && node.t === "F" && !borderBuiltInside(node));
 }
 
+/**
+ * What about a border the background stops at shows what is behind the
+ * element rather than the background, where it is built OUTSIDE: some side
+ * transparent, translucent, or a style with gaps, as `dashed`.
+ */
+function seeThrough(node: TreeNode): string {
+  const widths = sides(node.bd!.w);
+  const colors = sides(node.bd!.c);
+  const styles = sides(node.bd!.s);
+  const drawn = [0, 1, 2, 3].filter((i) => widths[i] > 0);
+  const alpha = (i: number) => (colors[i] === null ? 0 : splitHex(colors[i]!)[1]);
+  if (drawn.some((i) => alpha(i) === 0)) return "partly transparent";
+  if (drawn.some((i) => alpha(i) < 1)) return "translucent";
+  return styles[drawn.find((i) => styles[i] !== "solid") ?? drawn[0]];
+}
+
 function strokeOf(node: TreeNode, ctx: MapContext): FigmaStroke | undefined {
   const bd = node.bd;
   if (!bd) return undefined;
@@ -346,7 +362,7 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
       if (decision.variable || decision.candidates.length) {
         ctx.unbound.push({
           key: node.k, property: "radius", value: String(value), candidates: decision.candidates,
-          why: `its background stops inside a border that would show it (background-clip ${node.bgc}), so the frame is built as the padding box, at radius ${out.r}, which no token holds`,
+          why: `its background stops inside its ${seeThrough(node)} border (background-clip ${node.bgc}), which shows what is behind the element there, so the frame is built as the padding box, at radius ${out.r}, which no token holds`,
         });
       }
     } else if (decision.variable) out.rv = decision.variable;
