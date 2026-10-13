@@ -24,12 +24,12 @@ import { resolveAndLaunch, createContext, captureStory, makeThumbnail, readStori
 import type { CaptureResult, CaptureStatus, CapturedImage } from "./snap-browser.js";
 import { argsNotInDocs, describeArgRejections, describeUncheckedArgs, nameSlugs } from "./snap-args.js";
 import type { ArgRejection, StoryArgType } from "./snap-args.js";
-import { TREE_LIMITS, TREE_VERSION, diffTree } from "./tree-types.js";
+import { TREE_LIMITS, TREE_VERSION, absoluteBoxes, diffTree, parentKey } from "./tree-types.js";
 import type { ComponentTree, ImageAsset, TreeDelta, TreeNode } from "./tree-types.js";
 import { imageAssetFile } from "./snap-assets.js";
 import { fnv1a32Bytes } from "./checksum.js";
 import { stylesJsonText } from "./snap-tree.js";
-import { chooseStory } from "./snap-stories.js";
+import { chooseStory, storyAddsContent, storyKeys } from "./snap-stories.js";
 import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
 
@@ -590,6 +590,133 @@ export function describeVariantStories(component: Pick<SnapComponent, "storyId" 
   const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
   const rest = component.variants.some((v) => !v.storyId) && component.storyId ? `, the rest from ${component.storyId}` : "";
   return `measured ${list}${rest}`;
+}
+
+/** How far past its box a variant's content may draw before snap warns, in px: glyphs overhang their advance by less. */
+export const OVERFLOW_PX = 1;
+
+/** How far a variant's content draws past its root's box, as contentOverflow finds it. */
+export interface ContentOverflow {
+  /** The farthest any content reaches past the box, in px, to 0.1. */
+  by: number;
+  /** The sides it reaches past, in CSS order. */
+  sides: ("top" | "right" | "bottom" | "left")[];
+  /** The elements that do, by `el`, at most three, the farthest first. */
+  elements: string[];
+}
+
+/**
+ * How far a variant's content draws past its root's box, from its element
+ * tree, or null where nothing draws more than OVERFLOW_PX past it: a label
+ * wider than a button sized for an icon alone, which Figma shows spilling
+ * out of its square. What draws counts, at its own box, or a text's at its
+ * glyphs: text, vectors, images and frames with a fill or a border. Not
+ * what the root, or an element around it, clips, as overflow hidden does;
+ * nor a shadow or an outline, a focus ring, which no box holds; nor what is
+ * positioned absolutely, transformed, hidden or fully transparent, or in
+ * such an element, a badge's dot or a spinner, whose overflow is the
+ * design's.
+ */
+export function contentOverflow(nodes: readonly TreeNode[]): ContentOverflow | null {
+  const root = nodes[0];
+  if (!root || root.k !== "" || root.clip === 1) return null;
+  let boxes: Map<string, [number, number, number, number]>;
+  try {
+    boxes = absoluteBoxes([...nodes]);
+  } catch {
+    return null;
+  }
+  const byKey = new Map(nodes.map((n) => [n.k, n]));
+  const [width, height] = [root.box[2], root.box[3]];
+  const past = { top: 0, right: 0, bottom: 0, left: 0 };
+  const found: { el: string; by: number }[] = [];
+  for (const node of nodes.slice(1)) {
+    const box = boxes.get(node.k);
+    if (!box) continue;
+    const draws = node.t !== "F" || node.raster || node.bg || node.bgi
+      || (node.bd && (Array.isArray(node.bd.w) ? node.bd.w.some((w) => w > 0) : node.bd.w > 0));
+    if (!draws) continue;
+    let [x0, y0, x1, y1] = [box[0], box[1], box[0] + box[2], box[1] + box[3]];
+    // A text by its glyphs, unless it cuts them off at its box.
+    if (node.t === "T" && node.tx && !node.clip && !node.tx.el && !node.tx.cl) {
+      [x0, y0, x1, y1] = [box[0] + node.tx.ink[0], box[1] + node.tx.ink[1], box[0] + node.tx.ink[0] + node.tx.ink[2], box[1] + node.tx.ink[1] + node.tx.ink[3]];
+    }
+    let skip = false;
+    for (let k: string | null = node.k; k !== null && !skip; k = parentKey(k)) {
+      const at = byKey.get(k);
+      if (!at) break;
+      if (at.vis === 0 || at.op === 0 || (k !== "" && (at.abs || at.tf))) skip = true;
+      // What an element around it clips, on the axes it clips.
+      const clip = k !== node.k ? at.clip : undefined;
+      const window = clip ? boxes.get(k) : undefined;
+      if (window && clip !== "y") [x0, x1] = [Math.max(x0, window[0]), Math.min(x1, window[0] + window[2])];
+      if (window && clip !== "x") [y0, y1] = [Math.max(y0, window[1]), Math.min(y1, window[1] + window[3])];
+    }
+    if (skip || x1 <= x0 || y1 <= y0) continue;
+    const reach = {
+      top: root.clip === "y" ? 0 : -y0, right: root.clip === "x" ? 0 : x1 - width,
+      bottom: root.clip === "y" ? 0 : y1 - height, left: root.clip === "x" ? 0 : -x0,
+    };
+    const most = Math.max(...Object.values(reach));
+    if (most <= OVERFLOW_PX) continue;
+    for (const side of Object.keys(past) as (keyof typeof past)[]) past[side] = Math.max(past[side], reach[side]);
+    found.push({ el: node.el, by: most });
+  }
+  if (!found.length) return null;
+  const sides = (Object.keys(past) as (keyof typeof past)[]).filter((side) => past[side] > OVERFLOW_PX);
+  const elements = [...new Set(found.sort((a, b) => b.by - a.by).map((f) => f.el))].slice(0, 3);
+  return { by: Math.round(Math.max(...Object.values(past)) * 10) / 10, sides, elements };
+}
+
+/**
+ * Warning for a component some of whose variants draw past their box, or
+ * null: the variants, by the values they share where they share any, how
+ * far, and the story to measure them from instead. `stories`, the
+ * component's stories' own annotations where snap read them, names one
+ * that draws something of its own for another value of the same property,
+ * as Icon is for `size=icon`, so the user can see what such a story looks
+ * like.
+ */
+export function describeOverflow(
+  component: { id: string; label: string; storyId: string },
+  over: { variant: SnapVariant; overflow: ContentOverflow }[],
+  measured: number,
+  stories: { own: StoryOwn[]; properties: FigmaVariantProperty[] } | null,
+): string | null {
+  if (!over.length) return null;
+  const first = over[0].variant.combination;
+  const shared = Object.entries(first).filter(([name, value]) => over.every(({ variant }) => variant.combination[name] === value));
+  // Values only these variants have: those the rest measured within their box don't.
+  const which = shared.length && over.length < measured
+    ? `the ${over.length === 1 ? "variant" : `${over.length} variants`} with ${shared.map(([n, v]) => `\`${n}=${v}\``).join(" ")}`
+    : over.length === measured ? (measured === 1 ? "the variant" : `all ${measured} variants`) : `${over.length} of ${measured} variants (${nameSlugs(over.map((o) => o.variant.slug))})`;
+  const by = Math.max(...over.map((o) => o.overflow.by));
+  const sides = ["top", "right", "bottom", "left"].filter((side) => over.some((o) => o.overflow.sides.includes(side as ContentOverflow["sides"][number])));
+  const elements = [...new Set(over.flatMap((o) => o.overflow.elements))].slice(0, 3).map((el) => `\`${el}\``).join(", ");
+  const from = [...new Set(over.map((o) => o.variant.storyId ?? component.storyId))];
+  // A story that is for another value of a property these share.
+  let example = "";
+  if (stories) {
+    const keys = storyKeys(stories.own, stories.properties);
+    for (const story of stories.own) {
+      const key = Object.entries(keys.get(story.id) ?? {});
+      if (story.play || !storyAddsContent(story, stories.properties)) continue;
+      if (key.length && shared.some(([name]) => key.some(([k]) => k === name))) {
+        example = `, as ${story.id} is for ${key.map(([n, v]) => `\`${n}=${v}\``).join(" ")},`;
+        break;
+      }
+    }
+  }
+  const values = shared.length && over.length < measured ? shared.map(([n, v]) => `${n}=${v}`).join(" ") : null;
+  return (
+    `${which} ${over.length === 1 ? "draws" : "draw"} past ${over.length === 1 ? "its" : "their"} box, by up to ${by}px at the ${sides.join(" and ")} ` +
+    `(${elements}), so Figma shows ${over.length === 1 ? "it" : "them"} spilling out: ${from.join(" and ")} ${from.length === 1 ? "gives" : "give"} ` +
+    `${over.length === 1 ? "it" : "them"} content that doesn't fit. ` +
+    (values
+      ? `A story whose own args set ${values} and give it content that fits${example} would measure ${over.length === 1 ? "it" : "them"}; snap picks such a story by itself. `
+      : "") +
+    `Or measure the component from another of its stories, with --stories ${component.id}=<story ID>.`
+  );
 }
 
 /** Warning for variants whose tree was cut off at TREE_LIMITS, or null. */
@@ -1555,6 +1682,15 @@ async function snapComponent(
     if (noOps) shell.warnings.push(noOps);
     shell.warnings.push(...describeIdenticalValues(detectIdenticalValues(definition.variantProperties, shell.variants, noOpNames)));
   }
+
+  const overflowed = trees.flatMap(({ variant, nodes }) => {
+    const overflow = contentOverflow(nodes);
+    return overflow ? [{ variant, overflow }] : [];
+  });
+  const overflowWarning = describeOverflow(
+    { id: entry.id, label, storyId }, overflowed, measured, owns ? { own: owns, properties: definition.variantProperties } : null,
+  );
+  if (overflowWarning) shell.warnings.push(overflowWarning);
 
   const truncatedWarning = describeTruncatedTrees(trees.filter((t) => t.truncated).map((t) => ({ slug: t.variant.slug, truncated: t.truncated! })), measured);
   if (truncatedWarning) shell.warnings.push(truncatedWarning);

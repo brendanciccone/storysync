@@ -13,7 +13,7 @@ import {
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
-  describeVariantStories,
+  contentOverflow, describeOverflow, describeVariantStories,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
@@ -21,6 +21,7 @@ import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
 import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, storiesOwnInPage, thumbnailInPage } from "../snap-browser.js";
 import type { RawTreeCapture } from "../snap-tree.js";
+import type { TreeNode } from "../tree-types.js";
 import { imageAssetId } from "../snap-assets.js";
 import { fnv1a32Bytes } from "../checksum.js";
 import { fakePreview, inPage, urlArgs } from "./preview-standin.js";
@@ -2302,7 +2303,7 @@ test("runSnap: a variant is measured from the story whose own args are for its v
   }
 });
 
-test("runSnap: where the stories' args can't be read, every variant is measured from the component's story; --stories names the component's story", async () => {
+test("runSnap: where the stories' args can't be read, every variant is measured from the component's story, and a label spilling out of its box is warned of", async () => {
   const dir = tempDir();
   try {
     // A preview that can't load a story's file, as before Storybook 7.
@@ -2315,11 +2316,86 @@ test("runSnap: where the stories' args can't be read, every variant is measured 
       "  ui/base/Button: snap couldn't read its stories' args (Storybook's preview can't load a story's file (loadCSFFileByStoryId)), so it measured every variant from ui-base-button--default",
     ]);
     assert.equal(describeVariantStories(button), null);
-    // --stories names the Icon story: the component's story for every variant.
+    assert.deepEqual(button.warnings, [
+      "the variant with `size=icon` draws past its box, by up to 5px at the right and left (`#text`), so Figma shows it spilling out: " +
+        "ui-base-button--default gives it content that doesn't fit. A story whose own args set size=icon and give it content that fits " +
+        "would measure it; snap picks such a story by itself. Or measure the component from another of its stories, with --stories ui-base-button=<story ID>.",
+    ]);
+    // verify says it as written.
+    assert.equal(parseSnapWarning(button.warnings[0]), null);
+    // --stories names the Icon story: the component's story for every variant, the label gone from both.
     const named = await runSnap(options(dir, { selector: "button", stories: { "ui-base-button": "ui-base-button--icon" } }), { storybook: buttonDocs(), launch });
     assert.equal(named.components[0].storyId, "ui-base-button--icon");
-    assert.ok(named.components[0].variants.every((v) => v.storyId === undefined));
+    assert.ok(!named.components[0].warnings.some((w) => /draws? past/.test(w)), named.components[0].warnings.join("\n"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/** A tree node, with only what contentOverflow reads. */
+const node = (k: string, box: [number, number, number, number], extra: Partial<TreeNode> = {}): TreeNode =>
+  ({ k, t: "F", el: k ? k.split("/").pop()! : "button", box, bg: "#000000", ...extra }) as TreeNode;
+const label = (k: string, box: [number, number, number, number], extra: Partial<TreeNode> = {}): TreeNode =>
+  node(k, box, { t: "T", el: "#text", bg: undefined, tx: { c: "Button", f: "Inter", sz: 14, wt: 500, col: "#000000", lh: 20, n: 1, ink: [0, 0, box[2], box[3]] }, ...extra });
+
+test("contentOverflow: how far what draws reaches past the root's box, and which elements do", () => {
+  const root = node("", [0, 0, 36, 36]);
+  assert.deepEqual(contentOverflow([root, label("#text", [-5, 9, 46, 17])]), { by: 5, sides: ["right", "left"], elements: ["#text"] });
+  assert.equal(contentOverflow([root, label("#text", [5, 9, 26, 17])]), null);
+  // Within a pixel is a glyph's overhang, not overflow.
+  assert.equal(contentOverflow([root, label("#text", [-0.8, 9, 37.6, 17])]), null);
+  // A text by its glyphs: a line box wider than the ink isn't content past the box.
+  assert.equal(contentOverflow([root, label("#text", [-5, 9, 46, 17], { tx: { c: "B", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 1, ink: [10, 0, 20, 17] } })]), null);
+  // Down the tree, each box relative to its parent's.
+  assert.deepEqual(contentOverflow([root, node("row", [4, 4, 28, 28], { bg: undefined }), node("row/dot", [20, 20, 16, 16])]), { by: 4, sides: ["right", "bottom"], elements: ["dot"] });
+});
+
+test("contentOverflow: not what is clipped, positioned, transformed, hidden or paints nothing, nor what no box holds", () => {
+  const spill = label("#text", [-5, 9, 46, 17]);
+  // The root clips both axes, or the axis it spills on.
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36], { clip: 1 }), spill]), null);
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36], { clip: "x" }), spill]), null);
+  assert.deepEqual(contentOverflow([node("", [0, 0, 36, 36], { clip: "y" }), spill])?.sides, ["right", "left"]);
+  // An element around it clips it to its own box.
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36]), node("wrap", [0, 0, 36, 36], { bg: undefined, clip: 1 }), label("wrap/#text", [-5, 9, 46, 17])]), null);
+  // A badge's dot positioned past the corner, a spinner turned, a hidden or transparent layer: the design's.
+  const root = node("", [0, 0, 36, 36]);
+  assert.equal(contentOverflow([root, node("dot", [30, -4, 10, 10], { abs: 1 })]), null);
+  assert.equal(contentOverflow([root, node("abs", [0, 0, 36, 36], { abs: 1, bg: undefined }), node("abs/dot", [30, -4, 10, 10])]), null);
+  assert.equal(contentOverflow([root, node("spin", [-4, -4, 44, 44], { tf: "matrix(0.7,0.7,-0.7,0.7,0,0)" })]), null);
+  assert.equal(contentOverflow([root, node("ghost", [-4, 0, 44, 36], { vis: 0 })]), null);
+  assert.equal(contentOverflow([root, node("ghost", [-4, 0, 44, 36], { op: 0 })]), null);
+  // A frame that paints nothing; a shadow or a focus ring, which no box holds.
+  assert.equal(contentOverflow([root, node("layout", [-4, 0, 44, 36], { bg: undefined })]), null);
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36], { sh: [[0, 4, 12, 0, "#00000040"]], ol: [2, "solid", "#3b82f6", 2] })]), null);
+  // A text that cuts itself off at its box, by its box.
+  assert.equal(contentOverflow([root, label("#text", [2, 9, 32, 17], { tx: { c: "sales-dashboard.pdf", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 1, el: 1, ink: [0, 0, 139.4, 17] } })]), null);
+});
+
+test("describeOverflow: the variants by the values they share, how far, and the story that would measure them, with --stories", () => {
+  const variant = (size: string, variant: string, storyId?: string): SnapVariant =>
+    ({ combination: { variant, size }, slug: `${variant}-${size}`, status: "ok", error: null, ...(storyId ? { storyId } : {}) });
+  const over = (v: SnapVariant, by: number) => ({ variant: v, overflow: { by, sides: ["right", "left"] as ("right" | "left")[], elements: ["#text"] } });
+  const component = { id: "ui-base-button", label: "ui/base/Button", storyId: "ui-base-button--default" };
+  const own = [
+    { id: "ui-base-button--default", args: {} },
+    { id: "ui-base-button--secondary", args: { variant: "secondary" } },
+    // Small is for size=sm, but draws nothing of its own, so it shows nothing of what a story for icon-xs would be.
+    { id: "ui-base-button--small", args: { size: "sm" } },
+    { id: "ui-base-button--icon", args: { variant: "secondary", size: "icon", children: { $type: "object" } } },
+  ];
+  const properties: FigmaVariantProperty[] = [
+    { name: "variant", type: "VARIANT", values: ["default", "secondary"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["default", "icon", "icon-xs"], defaultValue: "default" },
+  ];
+  const said = describeOverflow(component, [over(variant("icon-xs", "default"), 6.5), over(variant("icon-xs", "secondary"), 6)], 6, { own, properties });
+  assert.equal(said,
+    "the 2 variants with `size=icon-xs` draw past their box, by up to 6.5px at the right and left (`#text`), so Figma shows them spilling out: " +
+    "ui-base-button--default gives them content that doesn't fit. A story whose own args set size=icon-xs and give it content that fits, " +
+    "as ui-base-button--icon is for `size=icon`, would measure them; snap picks such a story by itself. " +
+    "Or measure the component from another of its stories, with --stories ui-base-button=<story ID>.");
+  // Every variant, or some sharing nothing: by slug, and the story each was measured from.
+  const all = describeOverflow(component, [over(variant("default", "default"), 2), over(variant("icon", "secondary", "ui-base-button--icon"), 3)], 2, null)!;
+  assert.match(all, /^all 2 variants draw past their box, by up to 3px .* ui-base-button--default and ui-base-button--icon give them content that doesn't fit\. Or measure/);
+  assert.equal(describeOverflow(component, [], 6, null), null);
 });

@@ -1336,3 +1336,16 @@ S6. **`--stories` names the component's story** rather than every
     that names WithIcon for Button still measures its icon sizes from the
     Icon stories. Its checks are as before (D's notes), and `--merge` still
     keeps the component's story of the snap it adds to.
+S7. **Content past its box** (`contentOverflow`, `describeOverflow`). A
+    variant whose content draws more than 1px past its root's box, which
+    Figma shows spilling out, is warned of once a component: the variants,
+    by the values they share where the others don't have them, how far and
+    on which sides, the elements, the story they came from, and that a
+    story whose own args set those values and give them content that fits
+    would be picked, naming one that is for another value of the same
+    property, or `--stories`. What draws counts (text by its glyphs unless
+    it cuts itself off, vectors, images, frames with a fill or a border),
+    not what the root or an element around it clips, nor anything
+    positioned absolutely, transformed, hidden or fully transparent, or in
+    such an element, nor shadows and outlines, which no box holds. verify
+    says it as written, as a `snap-warning`.
