@@ -171,6 +171,10 @@ test("falsify: a Button whose background stops inside a border that paints nothi
   const after = verify(clear.fixture, await reread(clear.figma, clear.fixture, clear.built), 0.5);
   assert.deepEqual([findings(before), findings(after), after.elementFidelity, after.fidelity], [[], [], 1, 1], drift(after));
   assert.equal(after.summary.propertiesCompared, before.summary.propertiesCompared);
+  // Built INSIDE, the fill runs under the clear border, which verify names
+  // under coverage as figma code does; OUTSIDE, it stops where the browser's does.
+  const clip = (r: VerifyResult) => (r.unscorable ?? []).filter((u) => u.property === "background-clip").map((u) => [u.key, u.reason, u.variants]);
+  assert.deepEqual([clip(before), clip(after)], [[], [["", "background-clip padding-box inside a transparent border, built as a fill to the border box", 1]]]);
 
   const translucent = JSON.parse(JSON.stringify(loadTreeFixture("button-icon"))) as TreeFixture;
   const styles = (translucent.components[0].base as unknown as { styles: NormalizedStyles }).styles;

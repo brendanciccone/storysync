@@ -17,7 +17,7 @@
 
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, RECORD_BY_TPL, borderBuiltInside, builtTurn, flowOf, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, borderBuiltInside, borderPaintsNothing, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, ComponentTree, Flow, Sides, TreeNode, TurnContext } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
@@ -828,6 +828,15 @@ function scoreFrame(n: TreeNode, field: Field, tolerance: number, check: Check, 
   const sameFills = fills.length === want.length && want.every((w, i) => (w.startsWith("lin:") && typeof fills[i] === "string" && fills[i].startsWith("lin:")
     ? sameGradient(w, fills[i]) : w === lower(fills[i])));
   check("fills", sameFills, want, fills);
+  // A background clipped inside a border that paints nothing, built INSIDE
+  // at the border box (borderBuiltInside), runs under the clear stroke, a
+  // border's width past where the browser stops it, as figma code says.
+  // Built OUTSIDE at the padding box, as push 5b built it, the fill stops
+  // where the browser's does.
+  const stroke = field("stroke");
+  if (n.bgc && want.length && !insideStrokeDrawsBorder(n) && borderPaintsNothing(n) && Array.isArray(stroke) && stroke[3] === "I") {
+    unscorable("background-clip", `background-clip ${n.bgc} inside a transparent border, built as a fill to the border box`);
+  }
 
   scoreStroke(n, field, tolerance, check, unscorable);
   scoreRadius(n, field, tolerance, check);
