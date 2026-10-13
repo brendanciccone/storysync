@@ -107,7 +107,11 @@ export interface TextFacts {
  *   each painted shape's box relative to the SVG's own box, in document
  *   order; `raster` a node snap could only capture as a screenshot.
  * - `cls` is the node's Tailwind-style class evidence for variable binding;
- *   `approx` names why a node's geometry is approximate.
+ *   `nocls` the paint properties no class sets, so the project's base styles
+ *   do: `color` on a text or icon where no class on it or an element it
+ *   inherits from sets one (utilitySetsColor), `border-color` on a node that
+ *   draws a border no class of its colors; `approx` names why a node's
+ *   geometry is approximate.
  *
  * A fact that is absent is CSS's default, and never written as `null`: a
  * delta's `null` means "removed" (TreeDelta).
@@ -124,8 +128,11 @@ export interface TreeNode {
   tx?: TextFacts;                // t === "T"
   svg?: string; shapes?: Box[];  // t === "V"
   img?: string;                  // t === "I"
-  raster?: 1; cls?: string[]; approx?: string;
+  raster?: 1; cls?: string[]; nocls?: NoClassPaint[]; approx?: string;
 }
+
+/** A paint property `nocls` can say no class sets. */
+export type NoClassPaint = "color" | "border-color";
 
 /**
  * An image snap saved: `file` is relative to the directory holding
@@ -202,13 +209,15 @@ export interface Flow {
  * Section 7.2 of the design lists the first thirteen, with frame roots in
  * mind. The rest are there because a root can be an `<svg>` (shadcn's
  * Spinner) or an `<img>`, whose markup, shapes and image no style holds, and
- * can carry a clip-path or an approximation like any node. A root never
- * collapses into a text leaf: a component's root is a frame in Figma, so its
- * text is a `#text` child, and `tx` stays off this list.
+ * can carry a clip-path or an approximation like any node. `nocls` goes
+ * with `cls`: a root's border, in its styles, takes the base styles' color
+ * where no class of its colors it. A root never collapses into a text leaf:
+ * a component's root is a frame in Figma, so its text is a `#text` child,
+ * and `tx` stays off this list.
  */
 export const ROOT_FIELDS = [
   "k", "t", "el", "box", "L", "clip", "bm", "tf", "fl", "bf", "ol", "cls", "vis",
-  "cp", "svg", "shapes", "img", "raster", "approx",
+  "cp", "svg", "shapes", "img", "raster", "approx", "nocls",
 ] as const;
 
 /**
@@ -255,6 +264,43 @@ export interface PlanCall {
   nodes?: number;                            // build: nodes created or restyled at most
   slices?: [componentId: string, firstI: number, lastI: number][]; // read
   predicted?: number;                        // read: predicted response characters
+}
+
+// --- Class evidence -----------------------------------------------------------
+
+/** `text-*` utilities that set no color of their own: a size, an alignment, a wrap or an overflow, or the inherited color. */
+const TEXT_NOT_COLOR = /^(?:xs|sm|base|lg|\d?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|current|inherit)$/;
+
+/** A side or corner before the rest of `border-t-input` or `rounded-tl-lg`. */
+export const SIDE = /^(?:[trblxyse]|tl|tr|br|bl|ss|se|es|ee)-/;
+
+/** What follows `border-` (and any side) that is a width, a style or a table's, not a color. */
+const BORDER_NOT_COLOR = /^(?:\d+|px|solid|dashed|dotted|double|hidden|none|collapse|separate|spacing(?:-.+)?)$/;
+
+/** An arbitrary value that is a length, as `text-[14px]` or `border-[length:var(--w)]` are. */
+const ARBITRARY_LENGTH = /^\[(?:(?:length|size|number|percentage):|(?:calc|clamp|min|max)\(|-?[\d.]+(?:px|r?em|%|v[whib]|d?v[wh]|ch|ex|pt|cm|mm|in)?\])/;
+
+/**
+ * The color property a utility in `cls` sets, its variant prefix and
+ * opacity cut off, or null: a `text-*` the text `color`, unless it's a size,
+ * an alignment, a wrap, or `current` or `inherit`; a `border-*` the
+ * `border-color`, unless it's a side's width or a style; a `fill-*` or
+ * `stroke-*` an icon's `fill` or `stroke`, unless `none` or a stroke's
+ * width. A palette color (`text-neutral-950`) sets one though it names no
+ * token, and so does an arbitrary one (`text-[#0a0a0a]`) that isn't a
+ * length. A project's own font size (`text-body`) reads as a color here:
+ * snap's page tells it apart (captureTreeInPage).
+ */
+export function utilitySetsColor(utility: string): NoClassPaint | "fill" | "stroke" | null {
+  const m = /^(text|border|fill|stroke)-(.+)$/.exec(utility);
+  if (!m) return null;
+  const [, kind, value] = m;
+  if (kind === "text") return (value.startsWith("[") ? ARBITRARY_LENGTH.test(value) : TEXT_NOT_COLOR.test(value)) ? null : "color";
+  if (kind === "fill") return value === "none" ? null : "fill";
+  if (kind === "stroke") return value === "none" || /^\d+(?:\.\d+)?$/.test(value) || (value.startsWith("[") && ARBITRARY_LENGTH.test(value)) ? null : "stroke";
+  if (/^(?:[trblxyse]|tl|tr|br|bl|ss|se|es|ee)$/.test(value)) return null;
+  const rest = value.replace(SIDE, "");
+  return (rest.startsWith("[") ? ARBITRARY_LENGTH.test(rest) : BORDER_NOT_COLOR.test(rest)) ? null : "border-color";
 }
 
 // --- Helpers ----------------------------------------------------------------

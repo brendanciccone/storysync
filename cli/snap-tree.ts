@@ -26,9 +26,9 @@ import type { FontProbe } from "./snap-normalize.js";
 import { isStandInFamily, stackFamilies, standInDrawn } from "./fonts.js";
 import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
-import { ROOT_FIELDS, TREE_LIMITS } from "./tree-types.js";
+import { ROOT_FIELDS, TREE_LIMITS, utilitySetsColor } from "./tree-types.js";
 import { canonicalJson } from "./checksum.js";
-import type { Box, Shadow, Sides, TextFacts, TreeLayout, TreeNode, TreeSelf } from "./tree-types.js";
+import type { Box, NoClassPaint, Shadow, Sides, TextFacts, TreeLayout, TreeNode, TreeSelf } from "./tree-types.js";
 
 // --- What the page reads ------------------------------------------------------
 
@@ -283,9 +283,6 @@ const NATIVE_INPUTS = new Set(["checkbox", "radio", "range", "color", "file"]);
 /** Classes that may say which token a node's paint is: section 6.3's class evidence. */
 const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-z][\w/-]*)$/;
 
-/** `text-*` classes that set no color, passed over when finding the one a text inherits. */
-const TEXT_NOT_COLOR = /^text-(?:xs|sm|base|lg|\d?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip)$/;
-
 /**
  * Class tokens naming what paints a node, for binding its paint to a
  * variable: each token's variant prefixes (`hover:`, `data-[state=on]:`)
@@ -295,11 +292,15 @@ const TEXT_NOT_COLOR = /^text-(?:xs|sm|base|lg|\d?xl|left|center|right|justify|s
  * bound in its place.
  */
 export function classEvidence(tokens: readonly string[]): string[] {
-  return [...new Set(evidenceOf(tokens).map((f) => f.name))].sort();
+  return [...new Set(utilitiesOf(tokens).filter((u) => EVIDENCE.test(u.name)).map((u) => u.name))].sort();
 }
 
-/** Each token that is class evidence, as its utility, and whether a variant prefix applies it only sometimes. */
-function evidenceOf(tokens: readonly string[]): { name: string; prefixed: boolean }[] {
+/**
+ * Each class token as its utility, its variant prefixes and any `/NN` or
+ * `/[.5]` opacity cut off (an arbitrary value's own `/` stays), and whether
+ * a variant prefix applies it only sometimes.
+ */
+function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean }[] {
   const found: { name: string; prefixed: boolean }[] = [];
   for (const token of tokens) {
     // The utility is what follows the last `:` outside brackets.
@@ -311,11 +312,29 @@ function evidenceOf(tokens: readonly string[]): { name: string; prefixed: boolea
       else if (ch === "]" || ch === ")") depth--;
       else if (ch === ":" && depth === 0) cut = i;
     }
-    const utility = token.slice(cut + 1).replace(/^!|!$/g, "").replace(/\/[^/]*$/, "");
-    if (!EVIDENCE.test(utility)) continue;
+    const utility = token.slice(cut + 1).replace(/^!|!$/g, "").replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
     found.push({ name: utility, prefixed: cut >= 0 });
   }
   return found;
+}
+
+/**
+ * The color properties classes among `tokens` set (utilitySetsColor):
+ * `always`, by an unprefixed class; `maybe`, by those and by a state's
+ * arbitrary color (`hover:border-[#e5e5e5]`), which names no token and may
+ * be the one measured. A state's token or palette class is figma code's to
+ * judge, which knows the tokens (figma-bind.ts).
+ */
+function setByClass(tokens: readonly string[]): { always: Set<string>; maybe: Set<string> } {
+  const always = new Set<string>();
+  const maybe = new Set<string>();
+  for (const u of utilitiesOf(tokens)) {
+    const property = utilitySetsColor(u.name);
+    if (!property) continue;
+    if (!u.prefixed) always.add(property);
+    if (!u.prefixed || !EVIDENCE.test(u.name)) maybe.add(property);
+  }
+  return { always, maybe };
 }
 
 // --- Items: the tree after pruning and collapse --------------------------------
@@ -896,28 +915,33 @@ interface Ctx {
 }
 
 /**
- * The `text-*` evidence a text or icon inherits its color by: from the
- * nearest element up the DOM that sets one always, as a card sets its
- * title's; failing that, from the nearest that sets one in some state
- * (`hover:text-accent-foreground`). The DOM's elements are each item's
- * own and then the wrappers collapsed into it, innermost first, which sat
- * between it and its parent: a wrapper's `text-muted-foreground` is
- * nearer than the card's. Past the root, the elements around it (`outer`),
- * up to `<html>`: none sets one in a portal, and figma code then takes the
- * project's base styles (figma-bind.ts).
+ * The `text-*` evidence a text or icon inherits its color by, and whether a
+ * class sets that color at all (`set`): from the nearest element up the DOM
+ * that sets one always, as a card sets its title's; failing that, from the
+ * nearest that sets one in some state (`hover:text-accent-foreground`),
+ * which isn't `set`. The DOM's elements are each item's own and then the
+ * wrappers collapsed into it, innermost first, which sat between it and its
+ * parent: a wrapper's `text-muted-foreground` is nearer than the card's.
+ * Past the root, the elements around it (`outer`), up to `<html>`. Where
+ * none sets one always, as in a portal, the color is the project's base
+ * styles' (figma-bind.ts). An arbitrary color (`text-[#0a0a0a]`) sets it,
+ * as a palette one does, though neither names a token; a font size the page
+ * found sets no color (`text-body`) is no longer in `cls` to stop the walk.
  */
-function inheritedTextEvidence(item: Item, outer: string[][]): string[] {
-  const colors = (cls: string[] | undefined, prefixed: boolean) => [...new Set(evidenceOf(cls ?? [])
-    .filter((e) => e.prefixed === prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name)).map((e) => e.name))].sort();
+function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; set: boolean } {
+  const colors = (cls: string[] | undefined, prefixed: boolean) => [...new Set(utilitiesOf(cls ?? [])
+    .filter((u) => u.prefixed === prefixed && u.name.startsWith("text-") && utilitySetsColor(u.name) === "color").map((u) => u.name))].sort();
+  const chain: (string[] | undefined)[] = [];
+  for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
   for (const prefixed of [false, true]) {
-    const chain: (string[] | undefined)[] = [];
-    for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
     for (const cls of [...chain, ...outer]) {
       const found = colors(cls, prefixed);
-      if (found.length) return found;
+      // A state's arbitrary color, which may be the one measured, names
+      // nothing either: no base style stands in for it.
+      if (found.length) return { cls: found.filter((name) => EVIDENCE.test(name)), set: !prefixed || found.some((name) => !EVIDENCE.test(name)) };
     }
   }
-  return [];
+  return { cls: [], set: false };
 }
 
 function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, ctx: Ctx): TreeNode {
@@ -949,8 +973,9 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       node = { k: key, t: "T", el: "#value", box: rel(box), tx };
     }
     if (holder("visibility") !== "visible") node.vis = 0;
-    const cls = inheritedTextEvidence(item, ctx.outer);
-    if (cls.length) node.cls = cls;
+    const inherited = inheritedTextEvidence(item, ctx.outer);
+    if (inherited.cls.length) node.cls = inherited.cls;
+    if (!inherited.set) node.nocls = ["color"];
     return node;
   }
 
@@ -1067,13 +1092,22 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
 
   // Class evidence, on what draws: its own classes, and for text and icons
   // the text color they inherit, as a card's title takes the card's.
+  // And what no class colors, which the project's base styles then do: a
+  // text or icon's color where nothing up the DOM sets one, a border's
+  // where no class of its own does (`border` alone, as a card's).
   if (item.paints || kind === "T" || kind === "V") {
     let cls = classEvidence(el.cls ?? []);
-    const setsColor = evidenceOf(el.cls ?? []).some((e) => !e.prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name));
-    if ((kind === "T" || kind === "V") && !setsColor) {
-      cls = [...new Set([...cls, ...inheritedTextEvidence(item, ctx.outer)])].sort();
+    const set = setByClass(el.cls ?? []);
+    const nocls: NoClassPaint[] = [];
+    if ((kind === "T" || kind === "V") && !set.always.has("color")) {
+      const inherited = inheritedTextEvidence(item, ctx.outer);
+      cls = [...new Set([...cls, ...inherited.cls])].sort();
+      // An icon's own fill-* or stroke-* paints it, whatever its color.
+      if (!inherited.set && !set.maybe.has("color") && !(kind === "V" && (set.maybe.has("fill") || set.maybe.has("stroke")))) nocls.push("color");
     }
+    if (hasBorder(css) && !set.maybe.has("border-color")) nocls.push("border-color");
     if (cls.length) node.cls = cls;
+    if (nocls.length) node.nocls = nocls;
   }
   if (approx.length) node.approx = approx.join(",");
   return isRoot ? rootOnly(node) : node;

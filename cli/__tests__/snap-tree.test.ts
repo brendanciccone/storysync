@@ -193,6 +193,7 @@ test("buildTree: the stories package T's fixtures came from build to the same tr
     const ours = buildTree(raw(name)).nodes.map((n) => {
       const node = structuredClone(n);
       delete node.cls;
+      delete node.nocls;
       if (node.S) {
         delete node.S.basis;
         if (!Object.keys(node.S).length) delete node.S;
@@ -749,14 +750,49 @@ test("buildTree: past the root, a text takes the text color class of the element
 
 test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, every one", () => {
   assert.deepEqual(
-    classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x"]),
-    ["bg-input", "bg-primary", "rounded-md", "text-primary-foreground", "text-x"],
+    classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x", "bg-muted/[.5]"]),
+    ["bg-input", "bg-muted", "bg-primary", "rounded-md", "text-primary-foreground", "text-x"],
   );
   // An outline button's: past 8, the dark:border-input that names its border in Dark mode is kept.
   const outline = ["focus-visible:border-ring", "focus-visible:ring-ring/50", "aria-invalid:ring-destructive/20", "aria-invalid:border-destructive",
     "rounded-md", "border", "bg-background", "shadow-xs", "hover:bg-accent", "hover:text-accent-foreground", "dark:bg-input/30", "dark:border-input", "text-sm"];
   assert.deepEqual(classEvidence(outline), ["bg-accent", "bg-background", "bg-input", "border-destructive", "border-input", "border-ring",
     "ring-destructive", "ring-ring", "rounded-md", "shadow-xs", "text-accent-foreground", "text-sm"]);
+});
+
+test("buildTree: nocls says what no class colors: a text with no color class up the DOM, a border none of its own colors", () => {
+  const BORDERED = { ...BORDER, "border-top-style": "solid", "border-right-style": "solid", "border-bottom-style": "solid", "border-left-style": "solid" };
+  const text = (cls: string[] = [], css: Record<string, string> = {}) => el("p", [0, 0, 200, 20], css, [run("Text", [[0, 1.5, 40, 17]])], { text: TEXT, cls });
+  const of = (root: RawTreeElement, outer?: string[][]) => byKey(buildTree({ ...tree(root), ...(outer ? { outer } : {}) }).nodes);
+  // Dialog's title: no class anywhere, a state's aside, so the base styles color it.
+  const title = of(el("div", [0, 0, 200, 20], { display: "flex" }, [text(["hover:text-accent-foreground", "text-lg"])])).get("p")!;
+  assert.deepEqual([title.cls, title.nocls], [["text-accent-foreground", "text-lg"], ["color"]]);
+  // A class sets it on it, on an element around it, or outside the root: none.
+  for (const [root, outer] of [
+    [el("div", [0, 0, 200, 20], { display: "flex" }, [text(["text-neutral-950"])]), undefined],
+    [el("div", [0, 0, 200, 20], { display: "flex" }, [text(["text-[#0a0a0a]"])]), undefined],
+    [el("div", [0, 0, 200, 20], { display: "flex" }, [text()], { cls: ["text-card-foreground"] }), undefined],
+    [el("div", [0, 0, 200, 20], { display: "flex" }, [text()]), [["text-muted-foreground"]]],
+    // A state's arbitrary color names nothing, and may be the one measured.
+    [el("div", [0, 0, 200, 20], { display: "flex" }, [text(["hover:text-[#0a0a0a]"])]), undefined],
+  ] as [RawTreeElement, string[][] | undefined][]) {
+    assert.equal(of(root, outer).get("p")!.nocls, undefined, JSON.stringify(root.kids[0]));
+  }
+  assert.deepEqual(of(el("div", [0, 0, 200, 20], { display: "flex" }, [text(["text-[#0a0a0a]"])])).get("p")!.cls, undefined);
+  // A run of text beside elements, and an icon, the same.
+  const button = el("button", [0, 0, 100, 20], { display: "flex" }, [el("svg", [0, 0, 16, 16], {}, [], { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [] }), run("Cancel", [[20, 1.5, 40, 17]])], { text: TEXT });
+  const nodes = of(el("div", [0, 0, 200, 20], { display: "flex" }, [button]));
+  assert.deepEqual([nodes.get("button/#text")!.nocls, nodes.get("button/svg")!.nocls], [["color"], ["color"]]);
+  const filled = el("svg", [0, 0, 16, 16], {}, [], { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [], cls: ["fill-foreground"] });
+  assert.equal(of(el("div", [0, 0, 200, 20], { display: "flex" }, [filled])).get("svg")!.nocls, undefined);
+  // A card's border: `border` alone, a state's color aside, a side or a style.
+  const card = (cls: string[]) => el("div", [0, 0, 200, 40], BORDERED, [], { cls });
+  assert.deepEqual(of(card(["data-[state=error]:border-destructive/30", "border-dashed", "border-l", "bg-card"])).get("")!.nocls, ["border-color"]);
+  for (const cls of [["border-input"], ["border-t-input"], ["border-[#e5e5e5]"], ["border-neutral-200"], ["hover:border-[#e5e5e5]"]]) {
+    assert.equal(of(card(cls)).get("")!.nocls, undefined, String(cls));
+  }
+  // No border, nothing to say.
+  assert.equal(of(el("div", [0, 0, 200, 40], { "background-color": "rgb(255, 255, 255)" }, [], { cls: ["bg-card"] })).get("")!.nocls, undefined);
 });
 
 // --- Limits -------------------------------------------------------------------------

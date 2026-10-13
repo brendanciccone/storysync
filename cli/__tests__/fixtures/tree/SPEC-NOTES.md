@@ -317,6 +317,14 @@ A10. **Class evidence.**
       font size (`text-body`, a v4 `--text-body`) no longer stops the walk
       for the color a text inherits. Where the probe can't tell (a rule
       colors every element), every one stays.
+    - `nocls` (not in the spec) says what no class colors: `color` on a T or
+      V node where no unprefixed class on it or up the DOM, `outer`
+      included, sets one (a palette or arbitrary color does, `text-current`
+      doesn't), and none sets one in a state with an arbitrary color;
+      `border-color` on a node that draws a border none of its own
+      unprefixed classes colors (`border`, a side, a width or a style
+      don't). An icon's own `fill-*` or `stroke-*` counts. figma code takes
+      the base styles only there (note 40). It is a root field too.
 A11. **Spec problem: the line box of a wrapped run.** Section 6.4's
     `y = inkTop − (lh − inkH/n)/2` is wrong for n > 1. The union of a run's
     line rects is (n − 1)·lh plus one line's glyphs, so the formula put every
