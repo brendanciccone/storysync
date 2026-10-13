@@ -36,6 +36,8 @@ export function fakePreview(opts: {
   /** A remount throws, as a story given a value it can't render does. */
   remountThrows?: boolean;
   storyId?: string;
+  /** The stories of the story's CSF file, by ID, each with its own annotations, which loadCSFFileByStoryId gives; without it the preview can't load a file, as before Storybook 7. */
+  csf?: Record<string, { args?: Record<string, unknown>; render?: () => unknown; decorators?: unknown[]; play?: () => unknown }>;
 }) {
   const storyId = opts.storyId ?? "ui-base-badge--default";
   const story = { argTypes: structuredClone(opts.argTypes) as Record<string, FakeArgType>, parameters: { fileName: "./badge.stories.tsx" } };
@@ -88,6 +90,7 @@ export function fakePreview(opts: {
     storyRenders: [render],
     channel,
     storyStoreValue: {
+      ...(opts.csf ? { loadCSFFileByStoryId: async () => ({ stories: opts.csf }) } : {}),
       args: { get: () => stored },
       getStoryContext: () => {
         // As Storybook's prepareContext: by target, then mapped, then by `if`.

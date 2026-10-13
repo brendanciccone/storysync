@@ -13,12 +13,13 @@ import {
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
+  describeVariantStories,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
-import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, thumbnailInPage } from "../snap-browser.js";
+import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, storiesOwnInPage, thumbnailInPage } from "../snap-browser.js";
 import type { RawTreeCapture } from "../snap-tree.js";
 import { imageAssetId } from "../snap-assets.js";
 import { fnv1a32Bytes } from "../checksum.js";
@@ -1667,11 +1668,13 @@ function treeBrowser(opts: {
   timeouts?: number;
   /** The story's markup checksum, as readMarkup reads it, for the args it was given; unread by default. */
   markup?: (args: Record<string, unknown>) => string;
+  /** The stories' own annotations the preview loads from their file (fakePreview's `csf`); none by default. */
+  csf?: Parameters<typeof fakePreview>[0]["csf"];
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
   let storyId = opts.storyId;
-  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId });
+  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId, csf: opts.csf });
   let described = false;
   const given = () => fake.preview.storyStoreValue.getStoryContext().args;
   const target = {
@@ -1694,14 +1697,14 @@ function treeBrowser(opts: {
       if (timeouts-- > 0) throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
       described = false;
       storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
-      fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {} });
+      fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {}, csf: opts.csf });
       return null;
     },
     waitForSelector: async () => null,
     addStyleTag: async () => null,
     $: async () => target,
     evaluate: async (fn: unknown, arg?: unknown) => {
-      if (fn === storyArgsInPage || fn === applyStoryArgsInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
+      if (fn === storyArgsInPage || fn === applyStoryArgsInPage || fn === storiesOwnInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
         const bytes = opts.thumbnail ? opts.thumbnail(arg as { size: [number, number] }) : Buffer.from("thumbnail bytes");
@@ -2234,4 +2237,89 @@ test("describeFontStandIns: once a run, what each family was measured in and why
     "Text in system-ui was measured in Inter, the font Figma sets it in, so the browser and Figma lay the text out alike.");
   assert.equal(describeFontStandIns([["Menlo", "Roboto Mono"], ["system-ui", "Inter"]]),
     "Text in Menlo was measured in Roboto Mono and text in system-ui in Inter, the fonts Figma sets them in, so the browser and Figma lay the text out alike.");
+});
+
+// --- The story each variant is measured from, and content past its box -------------
+
+const BUTTON_SIZE = { name: "size", type: { name: "union", raw: '"default" | "icon"' }, defaultValue: "default" };
+
+/**
+ * shadcn/ui Button as its stories draw it (fixtures/raw/button-icon.json):
+ * the Icon story an icon alone in its 36px square; any other story its
+ * label, which at `size=icon` spills out of the square by 5px a side.
+ */
+function buttonCapture(args: Record<string, unknown>, storyId: string): RawTreeCapture {
+  const capture = structuredClone(rawCapture("button-icon"));
+  const [svg, text] = capture.root.kids as [RawTreeCapture["root"], { rects: number[][]; text: string }];
+  if (storyId.endsWith("--icon")) {
+    capture.root.box = [0, 0, 36, 36];
+    svg.box = [10, 10, 16, 16];
+    capture.root.kids = [svg];
+  } else if (args.size === "icon") {
+    capture.root.box = [0, 0, 36, 36];
+    capture.root.kids = [{ ...text, text: "Button", rects: [[-5, 9, 46, 17]] }] as never;
+  } else {
+    capture.root.box = [0, 0, 70, 36];
+    capture.root.kids = [{ ...text, text: "Button", rects: [[12, 9, 46, 17]] }] as never;
+  }
+  return capture;
+}
+
+function buttonDocs(storyIds = ["ui-base-button--default", "ui-base-button--icon"]) {
+  return {
+    listComponents: async () => [{ id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds }],
+    getComponent: async () => ({ name: "Button", props: [BUTTON_SIZE], stories: storyIds.map((id) => ({ id, name: id })) }),
+  } as never;
+}
+
+const BUTTON_CSF = {
+  "ui-base-button--default": { args: {} },
+  "ui-base-button--icon": { args: { size: "icon", title: "Mail", children: { type: "svg" } } },
+};
+
+test("runSnap: a variant is measured from the story whose own args are for its values, recorded on it; the rest from the component's story", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf: BUTTON_CSF });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [button] = result.components;
+    assert.equal(button.storyId, "ui-base-button--default");
+    const [base, icon] = button.variants;
+    assert.deepEqual([base.combination, base.storyId], [{ size: "default" }, undefined]);
+    assert.deepEqual([icon.combination, icon.storyId, icon.status], [{ size: "icon" }, "ui-base-button--icon", "ok"]);
+    assert.deepEqual(Object.keys(icon).slice(0, 4), ["combination", "slug", "storyId", "status"]);
+    // The icon alone, its label gone: nothing draws past the square.
+    assert.equal(icon.boundingBox!.width, 36);
+    assert.deepEqual(icon.treeDelta!.keys, ["", "svg"]);
+    assert.deepEqual(button.warnings, []);
+    assert.equal(describeVariantStories(button), "measured `size=icon` from ui-base-button--icon, the rest from ui-base-button--default");
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), []);
+    // Written as measured.
+    assert.equal((readJson(join(dir, "styles.json")) as { components: { variants: SnapVariant[] }[] }).components[0].variants[1].storyId, "ui-base-button--icon");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: where the stories' args can't be read, every variant is measured from the component's story; --stories names the component's story", async () => {
+  const dir = tempDir();
+  try {
+    // A preview that can't load a story's file, as before Storybook 7.
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } } });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [button] = result.components;
+    assert.ok(button.variants.every((v) => v.storyId === undefined));
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), [
+      "  ui/base/Button: snap couldn't read its stories' args (Storybook's preview can't load a story's file (loadCSFFileByStoryId)), so it measured every variant from ui-base-button--default",
+    ]);
+    assert.equal(describeVariantStories(button), null);
+    // --stories names the Icon story: the component's story for every variant.
+    const named = await runSnap(options(dir, { selector: "button", stories: { "ui-base-button": "ui-base-button--icon" } }), { storybook: buttonDocs(), launch });
+    assert.equal(named.components[0].storyId, "ui-base-button--icon");
+    assert.ok(named.components[0].variants.every((v) => v.storyId === undefined));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

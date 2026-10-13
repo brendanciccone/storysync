@@ -18,6 +18,7 @@ import {
 } from "./snap-args.js";
 import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
 import type { FigmaVariantProperty } from "./mapper.js";
+import type { StoryOwn } from "./snap-stories.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS, buildTree, countInnerElements } from "./snap-tree.js";
 import type { PendingImage, RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
 import {
@@ -1357,6 +1358,62 @@ function watchArgWarnings(page: Page): ArgWarnings {
   };
   page.on("console", listener);
   return { texts, stop: () => page.off("console", listener) };
+}
+
+/**
+ * Runs in the page: each story's own annotations, from the CSF file
+ * Storybook's preview loaded it from (`loadCSFFileByStoryId`, there from
+ * Storybook 7): its own args, not its component's, and whether it has a
+ * render, decorators or a play function of its own, for snap to choose
+ * which story measures each variant (snap-stories.ts). `{ error }` when the
+ * preview can't give them.
+ */
+export async function storiesOwnInPage(args: { storyIds: string[] }): Promise<StoryOwn[] | { error: string }> {
+  type Csf = { stories?: Record<string, { args?: Record<string, unknown>; render?: unknown; decorators?: unknown; play?: unknown } | undefined> };
+  try {
+    const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: { storyStoreValue?: { loadCSFFileByStoryId?: (id: string) => Promise<Csf> } } }).__STORYBOOK_PREVIEW__;
+    const store = preview?.storyStoreValue;
+    if (typeof store?.loadCSFFileByStoryId !== "function") return { error: "Storybook's preview can't load a story's file (loadCSFFileByStoryId)" };
+    const plain = (value: unknown): unknown =>
+      value === null || ["string", "number", "boolean"].includes(typeof value) ? value : { $type: typeof value };
+    const out: StoryOwn[] = [];
+    for (const id of args.storyIds) {
+      const story = (await store.loadCSFFileByStoryId(id)).stories?.[id];
+      if (!story) return { error: `Storybook's preview has no story ${id} in its file` };
+      const own: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(story.args ?? {})) if (value !== undefined) own[name] = plain(value);
+      out.push({
+        id, args: own,
+        ...(typeof story.render === "function" ? { render: true as const } : {}),
+        ...(Array.isArray(story.decorators) && story.decorators.length ? { decorators: true as const } : {}),
+        ...(typeof story.play === "function" ? { play: true as const } : {}),
+      });
+    }
+    return out;
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+}
+
+/**
+ * The component's stories' own annotations, read in `page`, which must
+ * hold Storybook's preview, as it does once a story has loaded; null, with
+ * why, when they can't be read, and snap measures every variant from the
+ * component's story as before.
+ */
+export async function readStoriesOwn(page: Page, storyIds: readonly string[]): Promise<{ stories: StoryOwn[] } | { error: string }> {
+  let read: unknown;
+  try {
+    read = await page.evaluate(storiesOwnInPage, { storyIds: [...storyIds] });
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (isRecord(read) && typeof read.error === "string") return { error: read.error };
+  if (!Array.isArray(read) || read.length !== storyIds.length || !read.every((s, i) => isRecord(s) && s.id === storyIds[i] && isRecord(s.args))) {
+    return { error: "Storybook's preview returned nothing snap can read" };
+  }
+  return { stories: read as StoryOwn[] };
 }
 
 /** A value read from the page, as a snapshot, or why it isn't one. */

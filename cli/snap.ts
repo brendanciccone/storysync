@@ -20,7 +20,7 @@ import {
   assignVariantSlugs, componentSlug, componentSlots, contentSlots, diffFromBase,
 } from "./snap-normalize.js";
 import type { MeasurementNote, NormalizedStyles, SlugCollision, StyleDelta } from "./snap-normalize.js";
-import { resolveAndLaunch, createContext, captureStory, makeThumbnail } from "./snap-browser.js";
+import { resolveAndLaunch, createContext, captureStory, makeThumbnail, readStoriesOwn } from "./snap-browser.js";
 import type { CaptureResult, CaptureStatus, CapturedImage } from "./snap-browser.js";
 import { argsNotInDocs, describeArgRejections, describeUncheckedArgs, nameSlugs } from "./snap-args.js";
 import type { ArgRejection, StoryArgType } from "./snap-args.js";
@@ -29,6 +29,8 @@ import type { ComponentTree, ImageAsset, TreeDelta, TreeNode } from "./tree-type
 import { imageAssetFile } from "./snap-assets.js";
 import { fnv1a32Bytes } from "./checksum.js";
 import { stylesJsonText } from "./snap-tree.js";
+import { chooseStory } from "./snap-stories.js";
+import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
 
 export const SNAP_SCHEMA_VERSION = 1;
@@ -66,8 +68,10 @@ export interface SnapOptions {
    */
   channelArgs?: boolean;
   /**
-   * The story to measure a component from, by the component's ID or title,
-   * in place of the one snap picks (`--stories ui-base-button=ui-base-button--with-icon`).
+   * The component's story, by the component's ID or title, in place of the
+   * one snap picks (`--stories ui-base-button=ui-base-button--with-icon`):
+   * each variant is measured from it, except one another of the
+   * component's stories is for (snap-stories.ts).
    */
   stories?: Record<string, string>;
 }
@@ -82,6 +86,13 @@ export type SnapVariantStatus = CaptureStatus | "args_unsupported";
 export interface SnapVariant {
   combination: Record<string, string>;
   slug: string;
+  /**
+   * The story this variant was measured from, where it is not the
+   * component's (`SnapComponent.storyId`): one whose own args are for its
+   * values and draw it with content of their own, as shadcn/ui Button's Icon
+   * story is for `size=icon` (snap-stories.ts).
+   */
+  storyId?: string;
   status: SnapVariantStatus;
   error: string | null;
   /** Differences from the component's base styles. Empty for the base itself. */
@@ -553,6 +564,32 @@ export function describeIdenticalValues(groups: { property: string; values: stri
       `may not pass ${property} through for these values; if it doesn't, they could be one Figma variant.`
     );
   });
+}
+
+/**
+ * Which variants were measured from a story other than the component's, as
+ * the rest of a line naming the component, or null where none was:
+ * "measured `size=icon` from ui-base-button--icon and `size=icon-sm` from
+ * ui-base-button--icon-small, the rest from ui-base-button--default". Each
+ * story by the values its variants share, else by how many there were.
+ */
+export function describeVariantStories(component: Pick<SnapComponent, "storyId" | "variants">): string | null {
+  const byStory = new Map<string, SnapVariant[]>();
+  for (const variant of component.variants) {
+    if (!variant.storyId) continue;
+    byStory.set(variant.storyId, [...(byStory.get(variant.storyId) ?? []), variant]);
+  }
+  if (!byStory.size) return null;
+  const parts = [...byStory].map(([story, variants]) => {
+    const shared = Object.entries(variants[0].combination)
+      .filter(([name, value]) => variants.every((v) => v.combination[name] === value))
+      .map(([name, value]) => `\`${name}=${value}\``);
+    const which = shared.length ? shared.join(" ") : `${variants.length} ${variants.length === 1 ? "variant" : "variants"} (${nameSlugs(variants.map((v) => v.slug))})`;
+    return `${which} from ${story}`;
+  });
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  const rest = component.variants.some((v) => !v.storyId) && component.storyId ? `, the rest from ${component.storyId}` : "";
+  return `measured ${list}${rest}`;
 }
 
 /** Warning for variants whose tree was cut off at TREE_LIMITS, or null. */
@@ -1282,6 +1319,12 @@ async function snapComponent(
   const standIns = new Set<string>();
   // Whether the story's argTypes options have been read into the variant properties yet.
   let supplemented = false;
+  // The component's stories' own args, read once a story has loaded, for
+  // the story each variant is measured from: null where there is one story
+  // or they can't be read.
+  const storyIds = entry.storyIds?.length ? entry.storyIds : component.stories.map((s) => s.id);
+  let owns: StoryOwn[] | null | undefined = storyIds.length > 1 ? undefined : null;
+  let ownsError: string | undefined;
   try {
     checkpoint();
     context = await createContext(browser);
@@ -1293,15 +1336,18 @@ async function snapComponent(
       // A value the URL can't carry is left out of it and set through
       // Storybook's preview once the story loads, as one it refused is.
       const { param, unsupported, unsupportedNames } = encodeStoryArgs(combination, definition.variantProperties);
+      // The story whose own args are for this variant's values, else the component's.
+      const choose = (): StoryChoice => (owns ? chooseStory(combination, owns, definition.variantProperties, storyId) : { storyId });
+      let choice = choose();
 
       const capture = (): Promise<CaptureResult> => {
         checkpoint();
-        return captureStory(page, buildStoryUrl(opts.storybookUrl, storyId, param), {
+        return captureStory(page, buildStoryUrl(opts.storybookUrl, choice.storyId, param), {
           timeoutMs: opts.timeoutMs,
           selector: opts.selector,
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title },
-          story: { id: storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
+          story: { id: choice.storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
           channelArgs: opts.channelArgs ?? true,
           tree: opts.rootOnly ? "count" : "tree",
         });
@@ -1310,8 +1356,29 @@ async function snapComponent(
       // stories that render a moment later, and a variant left unmeasured
       // gets built from source instead. Not on one after it loaded, which
       // would only take as long again.
-      let captured = await capture();
-      if (captured.status === "timeout" && captured.retryable) captured = await capture();
+      const captureOnce = async (): Promise<CaptureResult> => {
+        const first = await capture();
+        return first.status === "timeout" && first.retryable ? capture() : first;
+      };
+      let captured = await captureOnce();
+      // The stories' own args, from the preview of the first story that
+      // loaded; and this variant measured again where one of them is for it.
+      if (owns === undefined && captured.status !== "timeout") {
+        checkpoint();
+        const read = await readStoriesOwn(page, storyIds);
+        if ("error" in read) {
+          owns = null;
+          ownsError = read.error;
+        } else {
+          owns = read.stories;
+          const better = choose();
+          if (better.storyId !== choice.storyId) {
+            choice = better;
+            captured = await captureOnce();
+          }
+        }
+      }
+      const fromStory = choice.storyId !== storyId ? { storyId: choice.storyId } : {};
 
       // The story's argTypes options, read with the first variant, add the
       // values the docs' types don't list, and make a prop whose type lists
@@ -1393,7 +1460,7 @@ async function snapComponent(
         // are args_unsupported, as before snap tried the preview.
         if (captured.status === "arg_rejected" && args?.unapplied.every((r) => r.reasons.includes("url-unsafe"))) {
           shell.variants.push({
-            combination, slug, status: "args_unsupported",
+            combination, slug, ...fromStory, status: "args_unsupported",
             error:
               `Storybook cannot receive ${unsupported.join(", ")} through the args URL (outside its allowed character set), ` +
               `and snap couldn't set ${unsupported.length === 1 ? "it" : "them"} through Storybook's preview either` +
@@ -1402,13 +1469,13 @@ async function snapComponent(
           });
           continue;
         }
-        shell.variants.push({ combination, slug, status: captured.status, error: captured.error, ...argsRecord });
+        shell.variants.push({ combination, slug, ...fromStory, status: captured.status, error: captured.error, ...argsRecord });
         continue;
       }
 
       const styles = normalizeStyles(captured.raw, captured.boundingBox, captured.textRaw, captured.fontAvailable, captured.fonts, captured.textLayout);
       const variant: SnapVariant = {
-        combination, slug, status: "ok", error: null,
+        combination, slug, ...fromStory, status: "ok", error: null,
         boundingBox: { width: styles.width, height: styles.height },
         ...(captured.element ? { element: captured.element } : {}),
         ...(captured.portal ? { portal: captured.portal } : {}),
@@ -1465,6 +1532,7 @@ async function snapComponent(
   }
 
   if (standIns.size) shell.fontStandIns = [...standIns].sort().map((pair) => JSON.parse(pair) as [string, string]);
+  if (ownsError) progress(`  ${entry.title ?? entry.name}: snap couldn't read its stories' args (${ownsError}), so it measured every variant from ${storyId}`);
   const collided = describeSlugCollisions(collisions);
   if (collided) shell.warnings.unshift(collided);
   if (shell.cap) shell.warnings.unshift(describeCap(entry.title ?? entry.name, shell.cap));

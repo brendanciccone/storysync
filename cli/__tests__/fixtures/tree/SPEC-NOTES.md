@@ -1305,3 +1305,34 @@ S4. **The mock follows the same data.** `fixtures/figma-fonts.json`,
     139.38 and 139.39 and keeps it whole from 139.4, as Figma did. The mock
     rounds a size to 0.01 as it is set, so where it keeps a line whole can
     sit up to 0.007px from Figma's.
+S5. **Each variant from the story that is for it** (`cli/snap-stories.ts`;
+    section 6.1 measures every variant from one story). The fourth push
+    measured Button from WithIcon (`--stories`), so each icon size held
+    "Login with Email Button" spilling out of its 34px square. Once a
+    story has loaded, snap reads each of the component's stories' own
+    annotations from Storybook's preview (`loadCSFFileByStoryId`, Storybook
+    7 on): its own args, not its component's, and whether it has a render,
+    decorators or a play function of its own. A story is for the values its
+    own args give the variant properties, less those a story that draws
+    nothing of its own also gives them: Icon sets `variant=secondary` and
+    `size=icon`, and Secondary sets `variant=secondary`, so Icon is for
+    `size=icon`; WithIcon sets what Secondary does, so it is for nothing.
+    A variant is measured from the story that draws something of its own
+    (an arg that is no variant property and no function, or its own render
+    or decorators) and that is for values the variant all has: the most of
+    them, then the story that sets more of its own, then the first; never
+    one with a play function. Every other variant comes from the
+    component's story. On shadcn's Button that is each `size=icon`,
+    `icon-sm` and `icon-lg` variant from Icon, Icon Small and Icon Large,
+    and the rest from Default. The first variant measured is measured
+    again where the stories, read after it loaded, give it another. A
+    variant from another story records it as `storyId`; snap prints a line
+    a component saying which, and verify a `variant-stories` caveat, said
+    beside the score, not warned. A preview that can't give the
+    annotations leaves every variant on the component's story, with a
+    progress line.
+S6. **`--stories` names the component's story** rather than every
+    variant's: it measures each variant no other story is for, so a push
+    that names WithIcon for Button still measures its icon sizes from the
+    Icon stories. Its checks are as before (D's notes), and `--merge` still
+    keeps the component's story of the snap it adds to.

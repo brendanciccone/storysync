@@ -11,6 +11,7 @@ import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
   captureTree, captureTreeInPage, drawingElementInPage, readStoryTreeInPage, thumbnailInPage, textFontStacksInPage, standInFontsInPage, standInsLoadedInPage, standInsMeasured,
+  storiesOwnInPage, readStoriesOwn,
 } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
@@ -998,4 +999,37 @@ test("standInsMeasured: each family the capture drew in a stand-in, asked and dr
   ] as never;
   assert.deepEqual(standInsMeasured({ root: probe, text: probe }, { nodes }), [["Menlo", "Roboto Mono"], ["system-ui", "Inter"]]);
   assert.deepEqual(standInsMeasured({ root: null, text: { families: ["Geist"], applied: [true] } }), []);
+});
+
+// --- Each story's own annotations (snap-stories.ts) -------------------------------
+
+test("storiesOwnInPage: each story's own args, plain, and whether it has a render, decorators or a play function of its own", async () => {
+  const fake = fakePreview({
+    argTypes: {}, initial: {}, url: {},
+    csf: {
+      "ui-base-button--icon": { args: { size: "icon", children: { type: "svg" }, onClick: () => {}, gone: undefined }, render: () => null, decorators: [() => null] },
+      "ui-base-button--played": { args: {}, decorators: [], play: () => {} },
+    },
+  });
+  const read = await inPage(fake.preview, () => storiesOwnInPage({ storyIds: ["ui-base-button--icon", "ui-base-button--played"] }));
+  assert.deepEqual(read, [
+    { id: "ui-base-button--icon", args: { size: "icon", children: { $type: "object" }, onClick: { $type: "function" } }, render: true, decorators: true },
+    { id: "ui-base-button--played", args: {}, play: true },
+  ]);
+  assert.deepEqual(await inPage(fake.preview, () => storiesOwnInPage({ storyIds: ["ui-base-button--small"] })), { error: "Storybook's preview has no story ui-base-button--small in its file" });
+  // A preview that can't load a story's file.
+  const old = fakePreview({ argTypes: {}, initial: {}, url: {} });
+  assert.deepEqual(await inPage(old.preview, () => storiesOwnInPage({ storyIds: ["x"] })), { error: "Storybook's preview can't load a story's file (loadCSFFileByStoryId)" });
+});
+
+test("readStoriesOwn: the stories as the page read them, in the order asked; anything else is no reading", async () => {
+  const page = (value: unknown) => ({ evaluate: async () => { if (value instanceof Error) throw value; return value; } }) as unknown as Page;
+  const ids = ["a--default", "a--icon"];
+  const stories = [{ id: "a--default", args: {} }, { id: "a--icon", args: { size: "icon" } }];
+  assert.deepEqual(await readStoriesOwn(page(stories), ids), { stories });
+  assert.deepEqual(await readStoriesOwn(page({ error: "no preview" }), ids), { error: "no preview" });
+  for (const wrong of [{}, null, [stories[0]], [...stories].reverse(), [{ id: "a--default" }, stories[1]]]) {
+    assert.deepEqual(await readStoriesOwn(page(wrong), ids), { error: "Storybook's preview returned nothing snap can read" }, JSON.stringify(wrong));
+  }
+  assert.deepEqual(await readStoriesOwn(page(new Error("Execution context was destroyed\nmore")), ids), { error: "Execution context was destroyed" });
 });
