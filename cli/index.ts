@@ -1115,14 +1115,20 @@ function checkTokens(
   }
 
   const drift = compareTokens(baseline, result);
+  // A baseline from before the dark theme was read: its dark values weren't
+  // compared, which the check says rather than pass as though they were.
+  const darkNote = `The baseline at ${baselinePath} was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared. Recreate it with \`${create}\` to check them.`;
   if (!hasDrift(drift)) {
-    if (json) console.log(JSON.stringify({ drift: false }));
-    else console.log(chalk.green("\nNo token drift detected."));
+    if (json) console.log(JSON.stringify({ drift: false, ...(drift.darkNotChecked ? { darkNotChecked: true } : {}) }));
+    else {
+      console.log(chalk.green("\nNo token drift detected."));
+      if (drift.darkNotChecked) console.log(chalk.dim(darkNote));
+    }
     return;
   }
 
   if (json) {
-    console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed }));
+    console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed, ...(drift.darkNotChecked ? { darkNotChecked: true } : {}) }));
   } else {
     console.log(chalk.red("\nToken drift detected:\n"));
     for (const a of drift.added) {
@@ -1132,8 +1138,9 @@ function checkTokens(
       console.log(`  ${chalk.red("-")} ${r.category}: ${r.tokens.map((t) => t.name).join(", ")}`);
     }
     for (const c of drift.changed) {
-      console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}: ${c.from} → ${c.to}`);
+      console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}${c.mode ? ` (${c.mode})` : ""}: ${c.from} → ${c.to}`);
     }
+    if (drift.darkNotChecked) console.log(chalk.dim(`\n${darkNote}`));
     // A newer storysync can read tokens an older one left out, shadcn/ui's
     // radius scale say, which a baseline the older one wrote lists as added.
     const why = drift.removed.length || drift.changed.length
@@ -1215,17 +1222,20 @@ program
     }
 
     if (!found) {
-      if (json) console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
+      if (json) console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, modes: result.modes, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
       return;
     }
 
     // Default: pretty-print discovered tokens
     const totalTokens = result.collections.reduce((sum, c) => sum + c.tokens.length, 0);
+    const darkTokens = result.collections.reduce((sum, c) => sum + c.tokens.filter((t) => t.dark).length, 0);
 
     if (json) {
       console.log(JSON.stringify({
         source: result.source,
         sourcePath: result.sourcePath,
+        // Always written, so a baseline says it was read for the dark theme.
+        modes: result.modes,
         collections: result.collections,
         warnings: result.warnings,
         summary: { totalTokens, collections: result.collections.length },
@@ -1238,13 +1248,16 @@ program
         for (const token of shown) {
           // The px a FLOAT variable gets, when the value doesn't say it already.
           const px = token.px === undefined || token.value === `${token.px}px` ? "" : ` = ${token.px}px`;
-          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value + px)}`);
+          const dark = token.dark ? `   dark: ${token.dark.value}${token.dark.px === undefined || token.dark.value === `${token.dark.px}px` ? "" : ` = ${token.dark.px}px`}` : "";
+          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value + px + dark)}`);
         }
         if (!opts.all && collection.tokens.length > 8) {
           console.log(chalk.dim(`    ... and ${collection.tokens.length - 8} more (use --all to show)`));
         }
       }
       console.log(`\n${totalTokens} tokens in ${result.collections.length} collections`);
+      // Figma gets a Dark mode for them, the rest taking their light value there.
+      if (darkTokens) console.log(`${darkTokens} with a dark theme value, for a Dark mode beside Light`);
       if (result.warnings.length) {
         console.log(chalk.dim(`\nWarnings:`));
         for (const w of result.warnings) console.log(chalk.dim(`  ${w}`));
