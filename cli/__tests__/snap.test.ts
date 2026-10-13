@@ -2346,6 +2346,12 @@ test("contentOverflow: how far what draws reaches past the root's box, and which
   assert.equal(contentOverflow([root, label("#text", [-0.8, 9, 37.6, 17])]), null);
   // A text by its glyphs: a line box wider than the ink isn't content past the box.
   assert.equal(contentOverflow([root, label("#text", [-5, 9, 46, 17], { tx: { c: "B", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 1, ink: [10, 0, 20, 17] } })]), null);
+  // Down by its lines, not the font's content area: shadcn/ui Label, `leading-none`, 14px Inter in a 14px root, its glyph rects 17px tall (live, 2026-10-13).
+  const labelRoot = node("", [0, 0, 1248, 14], { bg: undefined, t: "F" });
+  const leadingNone = label("#text", [0, -0.5, 127.23, 14], { tx: { c: "Accept terms and conditions", f: "Inter", sz: 14, wt: 500, col: null, lh: 14, n: 1, ink: [0, -1.5, 127.23, 17] } });
+  assert.equal(contentOverflow([labelRoot, leadingNone]), null);
+  // Lines that do run past the box still count.
+  assert.deepEqual(contentOverflow([node("", [0, 0, 100, 20]), label("#text", [0, 0, 90, 40], { tx: { c: "Two lines", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 2, ink: [0, 1.5, 90, 37] } })])?.sides, ["bottom"]);
   // Down the tree, each box relative to its parent's.
   assert.deepEqual(contentOverflow([root, node("row", [4, 4, 28, 28], { bg: undefined }), node("row/dot", [20, 20, 16, 16])]), { by: 4, sides: ["right", "bottom"], elements: ["dot"] });
 });

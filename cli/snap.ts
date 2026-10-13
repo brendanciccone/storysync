@@ -609,8 +609,8 @@ export interface ContentOverflow {
  * How far a variant's content draws past its root's box, from its element
  * tree, or null where nothing draws more than OVERFLOW_PX past it: a label
  * wider than a button sized for an icon alone, which Figma shows spilling
- * out of its square. What draws counts, at its own box, or a text's at its
- * glyphs: text, vectors, images and frames with a fill or a border. Not
+ * out of its square. What draws counts, at its own box, or a text's across
+ * at its glyphs: text, vectors, images and frames with a fill or a border. Not
  * what the root, or an element around it, clips, as overflow hidden does;
  * nor a shadow or an outline, a focus ring, which no box holds; nor what is
  * positioned absolutely, transformed, hidden or fully transparent, or in
@@ -637,9 +637,12 @@ export function contentOverflow(nodes: readonly TreeNode[]): ContentOverflow | n
       || (node.bd && (Array.isArray(node.bd.w) ? node.bd.w.some((w) => w > 0) : node.bd.w > 0));
     if (!draws) continue;
     let [x0, y0, x1, y1] = [box[0], box[1], box[0] + box[2], box[1] + box[3]];
-    // A text by its glyphs, unless it cuts them off at its box.
+    // A text across by its glyphs' advances, unless it cuts them off at its
+    // box; down by its box, its lines. `ink` is the font's content area, not
+    // the glyphs' own bounds: 17px for 14px Inter, so `leading-none` text
+    // flush with its root reached 1.5px past it, where nothing draws.
     if (node.t === "T" && node.tx && !node.clip && !node.tx.el && !node.tx.cl) {
-      [x0, y0, x1, y1] = [box[0] + node.tx.ink[0], box[1] + node.tx.ink[1], box[0] + node.tx.ink[0] + node.tx.ink[2], box[1] + node.tx.ink[1] + node.tx.ink[3]];
+      [x0, x1] = [box[0] + node.tx.ink[0], box[0] + node.tx.ink[0] + node.tx.ink[2]];
     }
     let skip = false;
     for (let k: string | null = node.k; k !== null && !skip; k = parentKey(k)) {

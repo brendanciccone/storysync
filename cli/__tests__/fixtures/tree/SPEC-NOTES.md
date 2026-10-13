@@ -1344,8 +1344,9 @@ S7. **Content past its box** (`contentOverflow`, `describeOverflow`). A
     on which sides, the elements, the story they came from, and that a
     story whose own args set those values and give them content that fits
     would be picked, naming one that is for another value of the same
-    property, or `--stories`. What draws counts (text by its glyphs unless
-    it cuts itself off, vectors, images, frames with a fill or a border),
+    property, or `--stories`. What draws counts (text across by its
+    glyphs unless it cuts itself off and down by its lines (S10), vectors,
+    images, frames with a fill or a border),
     not what the root or an element around it clips, nor anything
     positioned absolutely, transformed, hidden or fully transparent, or in
     such an element, nor shadows and outlines, which no box holds. verify
@@ -1369,3 +1370,12 @@ S9. **A CSF2 story draws with a function of its own.** Storybook keeps a
     and took those values from the keys of the stories that do: a
     function story with `{ size: "icon" }` left Icon for nothing. It now
     counts as having a render.
+S10. **Text draws down to its lines, not its content area.** A text's
+    `ink` is the union of its client rects, the font's content area, 17px
+    tall for 14px Inter, not the glyphs' own bounds. Measured by it, any
+    `leading-none` text flush with its root reached 1.5px past it, so a
+    stock shadcn/ui Label (root 14px, text box [0, -0.5, 127.23, 14], ink
+    [0, -1.5, 127.23, 17]) was warned of, with advice it couldn't follow,
+    and `--strict-warnings` failed. contentOverflow now takes a text's
+    extent across from its ink and down from its own box, its lines, which
+    the build sets it to.
