@@ -747,14 +747,16 @@ test("buildTree: past the root, a text takes the text color class of the element
   assert.equal(byKey(buildTree(tree(root)).nodes).get("h2")!.cls, undefined);
 });
 
-test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, at most 8", () => {
+test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, every one", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x"]),
     ["bg-input", "bg-primary", "rounded-md", "text-primary-foreground", "text-x"],
   );
-  const many = ["bg-a", "bg-b", "bg-c", "bg-d", "bg-e", "bg-f", "bg-g", "hover:bg-h", "bg-i"];
-  // The unprefixed first when there are more than 8.
-  assert.deepEqual(classEvidence(many), ["bg-a", "bg-b", "bg-c", "bg-d", "bg-e", "bg-f", "bg-g", "bg-i"]);
+  // An outline button's: past 8, the dark:border-input that names its border in Dark mode is kept.
+  const outline = ["focus-visible:border-ring", "focus-visible:ring-ring/50", "aria-invalid:ring-destructive/20", "aria-invalid:border-destructive",
+    "rounded-md", "border", "bg-background", "shadow-xs", "hover:bg-accent", "hover:text-accent-foreground", "dark:bg-input/30", "dark:border-input", "text-sm"];
+  assert.deepEqual(classEvidence(outline), ["bg-accent", "bg-background", "bg-input", "border-destructive", "border-input", "border-ring",
+    "ring-destructive", "ring-ring", "rounded-md", "shadow-xs", "text-accent-foreground", "text-sm"]);
 });
 
 // --- Limits -------------------------------------------------------------------------

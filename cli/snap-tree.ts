@@ -286,12 +286,12 @@ const TEXT_NOT_COLOR = /^text-(?:xs|sm|base|lg|\d?xl|left|center|right|justify|s
  * Class tokens naming what paints a node, for binding its paint to a
  * variable: each token's variant prefixes (`hover:`, `data-[state=on]:`)
  * and any `/NN` opacity cut off, arbitrary values (`bg-[#fff]`) left out,
- * at most 8, the unprefixed first, then sorted.
+ * sorted. Every one is kept: at most 8 dropped the `dark:border-input` that
+ * names an outline button's border in Dark mode, so the base styles' color
+ * bound in its place.
  */
 export function classEvidence(tokens: readonly string[]): string[] {
-  const found = evidenceOf(tokens);
-  const ordered = [...found.filter((f) => !f.prefixed), ...found.filter((f) => f.prefixed)].map((f) => f.name);
-  return [...new Set(ordered)].slice(0, 8).sort();
+  return [...new Set(evidenceOf(tokens).map((f) => f.name))].sort();
 }
 
 /** Each token that is class evidence, as its utility, and whether a variant prefix applies it only sometimes. */
@@ -910,7 +910,7 @@ function inheritedTextEvidence(item: Item, outer: string[][]): string[] {
     for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
     for (const cls of [...chain, ...outer]) {
       const found = colors(cls, prefixed);
-      if (found.length) return found.slice(0, 8);
+      if (found.length) return found;
     }
   }
   return [];
@@ -1067,7 +1067,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     let cls = classEvidence(el.cls ?? []);
     const setsColor = evidenceOf(el.cls ?? []).some((e) => !e.prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name));
     if ((kind === "T" || kind === "V") && !setsColor) {
-      cls = [...new Set([...cls, ...inheritedTextEvidence(item, ctx.outer)])].sort().slice(0, 8);
+      cls = [...new Set([...cls, ...inheritedTextEvidence(item, ctx.outer)])].sort();
     }
     if (cls.length) node.cls = cls;
   }

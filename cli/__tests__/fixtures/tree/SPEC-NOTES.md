@@ -304,7 +304,9 @@ A9. **Not stored**, as T note 12 says, since the contract has no fields: the
 A10. **Class evidence.**
     - A token's variant prefixes are cut at the last `:` outside brackets, so
       `data-[state=checked]:bg-primary` counts, which 6.3's regex misses.
-    - Unprefixed tokens come first, capped at 8, then sorted.
+    - Sorted, and not capped (6.3 says 8): the cap dropped an outline
+      button's `dark:border-input`, which names its border in Dark mode, and
+      a tabs trigger's `data-active:bg-background` (push 5 review).
     - T and V nodes also get the text color class of the nearest element around
       them, a collapsed wrapper included, so `text-card-foreground` reaches the
       Card title, as B's binding example needs.
