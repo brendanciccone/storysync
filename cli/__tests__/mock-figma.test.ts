@@ -813,6 +813,7 @@ type WidthRow = [chars: string, weight: number, size: number, hug: number, big: 
 /** What Figma answered, kept unchanged. */
 const TEXT_LIVE_3 = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-probe-3.json`, "utf8")) as {
   call1: { rows: WidthRow[]; attachment: Record<string, unknown> };
+  call2: { size: number; advance: Record<string, number[]> };
   call3: { other: [chars: string, family: string, style: string, size: number, hug: number, exact: number, r2: number][] };
 };
 const STYLE_WEIGHT: Record<string, number> = { Regular: 400, Medium: 500, "Semi Bold": 600, Bold: 700 };
@@ -842,6 +843,24 @@ test("text probe 3: the mock keeps a line whole at Figma's own width for each st
   // "sales-dashboard.pdf" in a column of 139.38, as the fourth push built
   // the Attachment, takes two lines; it takes one only from 139.4.
   assert.deepEqual(got.attachment, TEXT_LIVE_3.call1.attachment);
+});
+
+test("figmaFonts: the mock sets each of the probe's characters as wide as Figma did at every weight of Inter, arrows and check marks included", () => {
+  // The probe's second call, each character alone in units of 2048 an em:
+  // ←, → and ✓ were set in a fallback font, 2048 and 1565 where Figma has
+  // 1954 and 1804, before the stand-ins carried Inter's symbols.
+  const measure = figmaFonts();
+  const chars = [...Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)), ...Array.from({ length: 96 }, (_, i) => String.fromCharCode(160 + i)), ..."–—‘’“”…•€←→↑↓−×✓"];
+  for (const [weight, advances] of Object.entries(TEXT_LIVE_3.call2.advance)) {
+    const style = ["Thin", "ExtraLight", "Light", "Regular", "Medium", "Semi Bold", "Bold", "ExtraBold", "Black"][Number(weight) / 100 - 1];
+    chars.forEach((ch, i) => {
+      // White space and a soft hyphen alone Figma sets 0 wide: the probe read them between two H.
+      if (ch === "\u00ad") return;
+      const font = { family: "Inter", style, size: 2048, letterSpacing: 0 };
+      const got = /\s/.test(ch) ? measure.advance(`H${ch}H`, font) - measure.advance("HH", font) : measure.advance(ch, font);
+      assert.ok(Math.abs(got - advances[i]) <= 2048 * 0.00001, `${JSON.stringify(ch)} at ${weight}: ${got}, Figma ${advances[i]}`);
+    });
+  }
 });
 
 test("figmaFonts: the mock sets each string of the fourth push's probe as wide as Figma did, in Inter and Roboto Mono", () => {

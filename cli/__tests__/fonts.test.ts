@@ -12,7 +12,13 @@ import {
 } from "../fonts.js";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
-const MANIFEST = JSON.parse(readFileSync(`${ROOT}fonts/manifest.json`, "utf8")) as { packages: Record<string, string>; sha256: Record<string, string> };
+const MANIFEST = JSON.parse(readFileSync(`${ROOT}fonts/manifest.json`, "utf8")) as { packages: Record<string, string>; sha256: Record<string, string>; unicodeRange: Record<string, string> };
+
+/** Whether a CSS unicode-range holds a character. */
+const covers = (range: string, ch: string) => range.split(",").some((part) => {
+  const [lo, hi = lo] = part.trim().replace(/^U\+/i, "").split("-").map((h) => parseInt(h, 16));
+  return ch.codePointAt(0)! >= lo && ch.codePointAt(0)! <= hi;
+});
 const sha256 = (base64: string) => createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
 const PROBE = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-probe.json`, "utf8")) as {
   call1: { fonts: Record<string, { axes: unknown; styles: string[] }> };
@@ -80,9 +86,14 @@ test("standInDrawn: the Figma family of a family snap added to the page, null fo
 test("standInFaces: Inter's and Roboto Mono's Latin faces from fonts/, rounded as Figma sets them; every other subset from its package", () => {
   const inter = standInFaces("Inter");
   const latin = inter.filter((f) => f.family === "storysync Inter");
-  // One static face a weight Figma has, each the Latin subset, from fonts/.
+  // One static face a weight Figma has, each the Latin subset and Inter's symbols, from fonts/.
   assert.deepEqual(latin.map((f) => f.weight), ["100", "200", "300", "400", "500", "600", "700", "800", "900"]);
-  assert.ok(latin.every((f) => f.style === "normal" && /U\+0000-00FF/.test(f.unicodeRange)));
+  for (const face of latin) {
+    assert.equal(face.style, "normal");
+    assert.equal(face.unicodeRange, MANIFEST.unicodeRange[`inter-latin-${face.weight}-normal.woff2`]);
+    // "Next →" in Inter, as Figma sets it, not in a fallback font.
+    for (const ch of "aZé€←→↑↓✓⌘") assert.ok(covers(face.unicodeRange, ch), `Inter ${face.weight} lacks ${ch}`);
+  }
   const digests = MANIFEST.sha256;
   for (const face of latin) {
     assert.equal(sha256(face.data), digests[`inter-latin-${face.weight}-normal.woff2`], `Inter ${face.weight}: the bytes manifest.json records`);

@@ -13,9 +13,15 @@
 # Figma. These faces carry Figma's widths, so Chrome sets text in them as
 # Figma does:
 #
-# - Inter, Latin subset, one static face per weight Figma has, 100 to 900:
-#   instanced from @fontsource-variable/inter (Inter 3.19), scaled to 2048
-#   units, every advance and kerning value Figma's at that weight.
+# - Inter, one static face per weight Figma has, 100 to 900: the Latin
+#   subset @fontsource-variable/inter (Inter 3.19) ships, and every symbol
+#   Inter has from U+2000 to U+2BFF, arrows, check marks and the keys of a
+#   Mac keyboard among them, which no subset of the package has, so "Next
+#   →" isn't set in a fallback font. Taken from Inter 3.19 whole, the font
+#   Google Fonts shipped as Inter[slnt,wght].ttf (version 3.019, git
+#   0a5106e0b, the build the package subsets; its digest is pinned below),
+#   given with --inter. Instanced upright, scaled to 2048 units, every
+#   advance and kerning value Figma's at that weight.
 # - Roboto Mono, upright, Latin and Latin Extended: every advance 1230 of its
 #   2048 units, as Figma sets it at every weight (the package has 1229); it
 #   stays variable.
@@ -25,8 +31,8 @@
 # Each face keeps the SIL Open Font License of the font it comes from
 # (fonts/OFL-*.txt) and is renamed, as the license asks of a modified font.
 #
-#   python3 -m pip install fonttools==4.66.1 brotli uharfbuzz
-#   python3 scripts/figma-stand-ins.py [--check]
+#   python3 -m pip install fonttools==4.66.1 brotli==1.2.0 uharfbuzz
+#   python3 scripts/figma-stand-ins.py --inter <Inter[slnt,wght].ttf> [--check]
 #
 # It fails when a face sets any advance, kerning pair or string the probe
 # measured otherwise than Figma did. --check writes nothing and fails when
@@ -40,6 +46,7 @@ import os
 import sys
 
 import uharfbuzz as hb
+from fontTools import subset
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.scaleUpem import scale_upem
 from fontTools.varLib import instancer
@@ -51,6 +58,10 @@ PROBE = os.path.join(ROOT, "cli", "__tests__", "fixtures", "figma-text-probe-3.j
 PNPM = os.path.join(ROOT, "node_modules", ".pnpm")
 
 INTER = ("@fontsource-variable/inter", "5.0.18")
+# Inter 3.019 whole, as Google Fonts shipped it: Inter[slnt,wght].ttf.
+INTER_FULL_SHA256 = "b9a8e5e213977665be2a56db66945a16c686da3d9861af1e7851322cf15495ea"
+# The symbols the faces carry besides the package's Latin: every one of Inter's in this range.
+SYMBOLS = range(0x2000, 0x2C00)
 ROBOTO_MONO = ("@fontsource-variable/roboto-mono", "5.3.0")
 WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900]
 STYLE = {100: "Thin", 200: "ExtraLight", 300: "Light", 400: "Regular", 500: "Medium", 600: "SemiBold", 700: "Bold", 800: "ExtraBold", 900: "Black"}
@@ -121,12 +132,42 @@ def value_records(lookup):
     """Every kerning ValueRecord of a lookup, in order."""
     out = []
     for sub in lookup.SubTable:
+        # A pair adjustment in an extension subtable, as Inter's whole font has it.
+        sub = getattr(sub, "ExtSubTable", sub)
         if sub.Format == 1:
             for pairset in sub.PairSet:
                 out.extend(rec.Value1 for rec in pairset.PairValueRecord)
         else:
             for c1 in sub.Class1Record:
                 out.extend(c2.Value1 for c2 in c1.Class2Record)
+    return out
+
+
+def kern_keys(font):
+    """What each kerning ValueRecord of value_records is for, in the same
+    order: its subtable and its two glyphs, or, in a class subtable, the
+    first glyph of each class. The instancer may number a subtable's
+    classes otherwise than the variable font did, as with Inter whole, so
+    values go by these rather than by position."""
+    out = []
+    for n, sub in enumerate(s for lookup in kern_lookups(font) for s in lookup.SubTable):
+        sub = getattr(sub, "ExtSubTable", sub)
+        if sub.Format == 1:
+            for first, pairset in zip(sub.Coverage.glyphs, sub.PairSet):
+                out.extend((n, first, rec.SecondGlyph) for rec in pairset.PairValueRecord)
+        else:
+            order = {name: i for i, name in enumerate(font.getGlyphOrder())}
+            def firsts(classdefs, glyphs):
+                by = {}
+                for g in glyphs:
+                    c = classdefs.get(g, 0)
+                    if c not in by or order[g] < order[by[c]]:
+                        by[c] = g
+                return by
+            one = firsts(sub.ClassDef1.classDefs, sub.Coverage.glyphs)
+            two = firsts(sub.ClassDef2.classDefs, sub.ClassDef2.classDefs.keys())
+            for c1, rec1 in enumerate(sub.Class1Record):
+                out.extend((n, one.get(c1, "*"), two.get(c2, "*")) for c2 in range(len(rec1.Class2Record)))
     return out
 
 
@@ -235,14 +276,39 @@ def check_inter(font, weight, adv, kern, strings):
         sys.exit(f"Inter {weight} isn't set as Figma set it: {'; '.join(wrong[:8])}")
 
 
-def inter_faces(adv, kern, strings):
-    src_path = os.path.join(package_dir(*INTER), "files", "inter-latin-wght-normal.woff2")
+def inter_source(path):
+    """Inter's variable font upright, subset to the package's Latin and Inter's symbols (SYMBOLS)."""
+    data = open(path, "rb").read()
+    if hashlib.sha256(data).hexdigest() != INTER_FULL_SHA256:
+        sys.exit(f"{path} isn't Inter 3.019 as Google Fonts shipped it (Inter[slnt,wght].ttf, sha256 {INTER_FULL_SHA256})")
+    latin = TTFont(os.path.join(package_dir(*INTER), "files", "inter-latin-wght-normal.woff2"))
+    full = TTFont(io.BytesIO(data))
+    # The same Inter as the package's: each Latin character the same glyph, as wide.
+    fc, fm, lm = full.getBestCmap(), full["hmtx"], latin["hmtx"]
+    if any(fm[fc.get(cp, ".notdef")][0] != lm[name][0] for cp, name in latin.getBestCmap().items()):
+        sys.exit(f"{path} isn't the Inter {INTER[0]}@{INTER[1]} subsets")
+    # Saved and read again: the subsetter can't take the instancer's font as it is.
+    font = TTFont(io.BytesIO(font_bytes(instancer.instantiateVariableFont(full, {"slnt": 0}))))
+    keep = set(latin.getBestCmap()) | {cp for cp in font.getBestCmap() if cp in SYMBOLS}
+    options = subset.Options()
+    options.layout_features = ["*"]
+    options.name_IDs = ["*"]
+    options.name_languages = ["*"]
+    options.notdef_outline = True
+    options.glyph_names = True
+    subsetter = subset.Subsetter(options)
+    subsetter.populate(unicodes=keep)
+    subsetter.subset(font)
+    return font_bytes(font)
+
+
+def inter_faces(src, adv, kern, strings):
     out = {}
     for weight in WEIGHTS:
-        varfont = TTFont(src_path)
+        varfont = TTFont(io.BytesIO(src))
         widths = advances(varfont, weight)
         kerns = kern_values(varfont, weight)
-        font = instancer.instantiateVariableFont(TTFont(src_path), {"wght": weight})
+        font = instancer.instantiateVariableFont(TTFont(io.BytesIO(src)), {"wght": weight})
         lines = vertical(font)
         scale_upem(font, 2048)
         set_vertical(font, lines)
@@ -250,11 +316,13 @@ def inter_faces(adv, kern, strings):
         for name, value in widths.items():
             hmtx[name] = (value * 2048 // EM, hmtx[name][1])
         records = [r for lookup in kern_lookups(font) for r in value_records(lookup)]
-        if len(records) != len(kerns):
+        keys = kern_keys(font)
+        by_key = dict(zip(kern_keys(varfont), kerns))
+        if len(records) != len(kerns) or len(by_key) != len(kerns) or any(k not in by_key for k in keys):
             sys.exit("Inter's kerning changed shape when instanced")
-        for rec, value in zip(records, kerns):
+        for rec, key in zip(records, keys):
             if rec is not None:
-                rec.XAdvance = value * 2048 // EM
+                rec.XAdvance = by_key[key] * 2048 // EM
         font["OS/2"].usWeightClass = weight
         rename(font, "Inter storysync", STYLE[weight])
         check_inter(font, weight, adv, kern, strings)
@@ -286,16 +354,33 @@ def woff2(font):
     return font_bytes(font)
 
 
+def unicode_range(font):
+    """A face's characters as CSS's unicode-range: runs of consecutive code points."""
+    cps = sorted(font.getBestCmap())
+    runs = []
+    for cp in cps:
+        if runs and cp == runs[-1][1] + 1:
+            runs[-1][1] = cp
+        else:
+            runs.append([cp, cp])
+    return ", ".join(f"U+{a:X}" if a == b else f"U+{a:X}-{b:X}" for a, b in runs)
+
+
 def main():
     check = "--check" in sys.argv
+    if "--inter" not in sys.argv or sys.argv.index("--inter") + 1 >= len(sys.argv):
+        sys.exit("give Inter 3.019 whole with --inter <Inter[slnt,wght].ttf>")
     adv, kern, strings = probe_data()
-    faces = {**inter_faces(adv, kern, strings), **roboto_mono_faces()}
+    faces = {**inter_faces(inter_source(sys.argv[sys.argv.index("--inter") + 1]), adv, kern, strings), **roboto_mono_faces()}
     files = {name: woff2(font) for name, font in faces.items()}
     for license_name, pkg in (("OFL-Inter.txt", INTER), ("OFL-Roboto-Mono.txt", ROBOTO_MONO)):
         files[license_name] = open(os.path.join(package_dir(*pkg), "LICENSE"), "rb").read()
     manifest = {
         "about": "The stand-in faces snap draws text in, set as wide as Figma sets them (scripts/figma-stand-ins.py)",
         "packages": {INTER[0]: INTER[1], ROBOTO_MONO[0]: ROBOTO_MONO[1]},
+        "sources": {"Inter[slnt,wght].ttf": INTER_FULL_SHA256},
+        # The Inter faces' characters, which take the place of the package's Latin range.
+        "unicodeRange": {name: unicode_range(font) for name, font in sorted(faces.items()) if name.startswith("inter-")},
         "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items()) if name.endswith(".woff2")},
     }
     files["manifest.json"] = (json.dumps(manifest, indent=1) + "\n").encode()

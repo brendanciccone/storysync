@@ -19,8 +19,11 @@
 // probe (fixtures/figma-text-probe-3.json): it prints how far from Figma's
 // width Chrome sets each family's probe strings in the stand-in, and fails
 // when Inter or Roboto Mono, the families fonts/ rounds, is off by more than
-// 0.001px. Noto Serif comes from its package unrounded, so it is printed
-// only. mock-figma.test.ts holds the file to the same probe.
+// 0.001px; and how far each of the probe's characters alone is from Figma's
+// advance for it at every weight of Inter, arrows and check marks
+// included, failing above 0.00001em. Noto Serif comes from its package
+// unrounded, so it is printed only. mock-figma.test.ts holds the file to
+// the same probe.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -34,6 +37,8 @@ const PROBE = join(ROOT, "cli", "__tests__", "fixtures", "figma-text-probe-3.jso
 const ROUNDED_FAMILIES = ["Inter", "Roboto Mono"];
 /** In px: float noise, well under the 0.01 snap rounds a box to. */
 const PROOF_TOLERANCE = 0.001;
+/** In em: the 0.00001 the file keeps an advance to. */
+const ADVANCE_TOLERANCE = 0.00001;
 const { STAND_INS, standInFaces, standInFamilies } = await import(join(ROOT, "dist", "cli", "fonts.js"));
 const { resolveAndLaunch } = await import(join(ROOT, "dist", "cli", "snap-browser.js"));
 
@@ -135,6 +140,22 @@ try {
     console.log(`${ok ? "ok" : "FAIL"} ${family}: Chrome sets the probe's strings within ${w.off.toFixed(5)}px of Figma (worst "${w.chars}" ${w.weight} ${w.size}px: ${w.chrome.toFixed(5)} in Chrome, ${w.figma} in Figma)`);
     if (!ok) process.exitCode = 1;
   }
+  // And each of the probe's characters alone (its second call), at every
+  // weight: Chrome's advance in the stand-in against Figma's, in em, which
+  // the file keeps to 0.00001. A soft hyphen Figma sets 0 wide alone.
+  let advanceOff = { off: 0 };
+  for (const weight of WEIGHTS.Inter) {
+    const figma = probe.call2.advance[weight];
+    [...CHARS].forEach((ch, i) => {
+      if (ch === "\u00ad") return;
+      const off = Math.abs(fonts.Inter[`${weight}`].advance[i] - figma[i] / probe.call2.size);
+      if (off > advanceOff.off) advanceOff = { off, ch, weight, chrome: fonts.Inter[`${weight}`].advance[i], figma: figma[i] / probe.call2.size };
+    });
+  }
+  const advancesOk = advanceOff.off <= ADVANCE_TOLERANCE;
+  console.log(`${advancesOk ? "ok" : "FAIL"} Inter: Chrome sets each of the probe's ${CHARS.length} characters within ${advanceOff.off.toFixed(6)}em of Figma at every weight` +
+    (advanceOff.ch ? ` (worst ${JSON.stringify(advanceOff.ch)} at ${advanceOff.weight}: ${advanceOff.chrome} in Chrome, ${advanceOff.figma} in Figma)` : ""));
+  if (!advancesOk) process.exitCode = 1;
 
   const file = {
     about: "Each character's advance and each kerning pair among printable ASCII, in em, as Chrome sets the faces storysync draws stand-ins in, which Figma sets as wide (scripts/figma-font-metrics.mjs)",

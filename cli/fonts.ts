@@ -20,7 +20,10 @@
 // Latin faces, one per weight, and Roboto Mono's upright Latin ones are
 // rounded so in fonts/, which scripts/figma-stand-ins.py writes from Inter
 // 3.19 (@fontsource-variable/inter 5.0.18, the Inter Figma has: axes slnt and
-// wght) and Roboto Mono (@fontsource-variable/roboto-mono 5.3.0). Their other
+// wght) and Roboto Mono (@fontsource-variable/roboto-mono 5.3.0). Inter's
+// carry its symbols from U+2000 to U+2BFF too (arrows, check marks, a Mac
+// keyboard's keys), which no subset of the package has, taken from Inter
+// 3.19 whole, so "Next →" isn't set in whatever font the platform has. Their other
 // subsets, Roboto Mono's italics and Noto Serif (5.3.0) come from the
 // packages as they ship. Nothing is fetched while measuring. All three are
 // under the SIL Open Font License, whose text ships with each.
@@ -199,6 +202,13 @@ const FONTS_DIR = fileURLToPath(new URL("../../fonts/", import.meta.url));
 
 const faces = new Map<StandIn, StandInFace[]>();
 
+/** The characters of each face in fonts/ whose characters aren't its package face's, by file: Inter's carry its symbols too. */
+let ranges: Record<string, string> | null = null;
+function roundedRange(file: string): string | undefined {
+  ranges ??= (JSON.parse(readFileSync(join(FONTS_DIR, "manifest.json"), "utf8")) as { unicodeRange?: Record<string, string> }).unicodeRange ?? {};
+  return ranges[file];
+}
+
 /**
  * A stand-in's faces, read once: every unicode-range subset of its package,
  * so text in Cyrillic or Greek is set in it too, with fonts/ in place of the
@@ -224,7 +234,9 @@ export function standInFaces(standIn: StandIn): StandInFace[] {
       };
       const rounded = ROUNDED[basename(file)];
       if (rounded) {
-        for (const r of rounded) out.push({ ...face, weight: r.weight, data: readFileSync(join(FONTS_DIR, r.file)).toString("base64") });
+        for (const r of rounded) {
+          out.push({ ...face, weight: r.weight, unicodeRange: roundedRange(r.file) ?? face.unicodeRange, data: readFileSync(join(FONTS_DIR, r.file)).toString("base64") });
+        }
       } else {
         const [, scripts] = standInFamilies(standIn);
         out.push({ ...face, ...(scripts && face.style === "normal" ? { family: scripts } : {}), data: readFileSync(join(dirname(path), file)).toString("base64") });

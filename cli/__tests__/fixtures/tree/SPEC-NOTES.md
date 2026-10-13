@@ -1430,3 +1430,22 @@ S14. **A box that holds text is rounded up to 0.01** (review of S2-S4).
     compared allowing that. build-template.test.ts builds the Attachment
     with that title in the mock: whole, with no fallback, where to the
     nearest it was cut short.
+S15. **Inter's stand-in carries its symbols** (review of S2). The
+    package's Latin subset has no ←, → or ✓, so Chrome set them in a
+    platform font, "Next →" 0.65px narrower than Figma at Medium 14, and
+    the mock, at 1em, wider; 27 of the probe's advances were off. Each
+    rounded Inter face is now made from Inter 3.019 whole, the
+    Inter[slnt,wght].ttf Google Fonts shipped (the build the package
+    subsets; `figma-stand-ins.py --inter`, its digest pinned), upright,
+    subset to the package's Latin and every symbol Inter has from U+2000
+    to U+2BFF (356: arrows, check marks, a Mac keyboard's keys, shapes),
+    then rounded as before; about 42KB a weight, from 23KB. The manifest
+    records each face's characters (`unicodeRange`), which fonts.ts uses
+    in place of the package's Latin range. The whole font numbers a
+    kerning subtable's classes otherwise once instanced, so the script
+    matches kerning values by glyphs, not by position. Regenerating also
+    fixed a descent the committed faces had a unit off (-495 for -494 of
+    2048), so Inter's AUTO line height is Figma's 1.21em, not 1.211.
+    figma-font-metrics.mjs now proves each of the probe's 207 characters
+    alone at every weight too: within 0.000005em. mock-figma.test.ts holds
+    figma-fonts.json to the same.
