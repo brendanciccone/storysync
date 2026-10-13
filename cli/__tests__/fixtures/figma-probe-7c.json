@@ -1,0 +1,1442 @@
+{
+ "about": "Probe 7c: its two use_figma responses, as use_figma returned them. Figma file rPGAMu9hIKY9BwFWRkDpY3, page \"storysync probe 7c\", 2026-10-13. Call 1 is spikes/figma-probe-7c-alpha.js: variables that carry an alpha, \"destructive 10%\", \"destructive 30%\" and \"foreground 10%\", made in Colors beside their tokens, each mode's value the token's at that alpha. A fill (P), an OUTSIDE stroke (S) and a ring, a spread-only drop shadow (E), bound to them in the page's default mode take the variable's alpha as the paint's opacity or the shadow's alpha, whatever opacity the paint was bound from (P at 1, P2 at the alpha and put back), and keep it, in the variable's Dark and Light colors, through a switch of their own frame to Dark, Light, Dark and cleared, of a frame around them (W), and as an instance in a frame set to Dark, then Light and Dark (I). The SVG export draws each at that alpha. Of the names, \"destructive/10\" is taken beside the destructive variable, which stays one variable of its name, and \"probe 12.5%\" is refused: Figma takes no period in a variable name. Call 2 is spikes/figma-probe-7c-again.js: the same nodes read in a call of their own keep the alpha, and keep it through Dark and Light once more; \"probe 12,5%\" and \"probe 12_5%\" are taken.",
+ "call1": {
+  "collection": "Colors",
+  "variablesBefore": 31,
+  "variablesAfter": 34,
+  "names": {
+   "destructive 10%": {
+    "ok": true,
+    "created": true,
+    "name": "destructive 10%",
+    "id": "VariableID:46:3",
+    "values": {
+     "Light": [
+      0.875,
+      0.133,
+      0.145,
+      0.102
+     ],
+     "Dark": [
+      1,
+      0.392,
+      0.404,
+      0.102
+     ]
+    },
+    "scopes": [
+     "ALL_FILLS",
+     "STROKE_COLOR",
+     "EFFECT_COLOR"
+    ]
+   },
+   "destructive 30%": {
+    "ok": true,
+    "created": true,
+    "name": "destructive 30%",
+    "id": "VariableID:46:4",
+    "values": {
+     "Light": [
+      0.875,
+      0.133,
+      0.145,
+      0.302
+     ],
+     "Dark": [
+      1,
+      0.392,
+      0.404,
+      0.302
+     ]
+    },
+    "scopes": [
+     "ALL_FILLS",
+     "STROKE_COLOR",
+     "EFFECT_COLOR"
+    ]
+   },
+   "foreground 10%": {
+    "ok": true,
+    "created": true,
+    "name": "foreground 10%",
+    "id": "VariableID:46:5",
+    "values": {
+     "Light": [
+      0.039,
+      0.039,
+      0.039,
+      0.102
+     ],
+     "Dark": [
+      0.98,
+      0.98,
+      0.98,
+      0.102
+     ]
+    },
+    "scopes": [
+     "ALL_FILLS",
+     "STROKE_COLOR",
+     "EFFECT_COLOR"
+    ]
+   },
+   "destructive/10": {
+    "ok": true,
+    "created": true,
+    "name": "destructive/10",
+    "id": "VariableID:46:6",
+    "values": {
+     "Light": [
+      0.875,
+      0.133,
+      0.145,
+      0.102
+     ],
+     "Dark": [
+      1,
+      0.392,
+      0.404,
+      0.102
+     ]
+    },
+    "scopes": [
+     "ALL_FILLS",
+     "STROKE_COLOR",
+     "EFFECT_COLOR"
+    ],
+    "destructiveAfter": {
+     "name": "destructive",
+     "count": 1
+    }
+   },
+   "probe 12.5%": {
+    "ok": false,
+    "error": "in createVariable: invalid variable name"
+   }
+  },
+  "nodes": {
+   "P": {
+    "built": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "dark2": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "cleared": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    }
+   },
+   "P2": {
+    "built": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "dark2": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "cleared": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    }
+   },
+   "S": {
+    "built": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark2": {
+     "mode": "Dark",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "cleared": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    }
+   },
+   "E": {
+    "built": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0"
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0"
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0"
+     ]
+    },
+    "dark2": {
+     "mode": "Dark",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0"
+     ]
+    },
+    "cleared": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0"
+     ]
+    }
+   },
+   "W": {
+    "built": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark2": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "cleared": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    }
+   },
+   "I": {
+    "main": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "instance": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark2": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    }
+   }
+  },
+  "createdNodeIds": [
+   "46:7",
+   "46:8",
+   "46:9",
+   "46:10",
+   "46:11",
+   "46:12",
+   "46:13",
+   "46:14",
+   "46:15"
+  ]
+ },
+ "call2": {
+  "names": {
+   "probe 12,5%": {
+    "ok": true,
+    "name": "probe 12,5%"
+   },
+   "probe 12_5%": {
+    "ok": true,
+    "name": "probe 12_5%"
+   }
+  },
+  "nodes": {
+   "P": {
+    "kept": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [],
+     "effects": [],
+     "svg": [
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\""
+     ]
+    }
+   },
+   "S": {
+    "kept": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [],
+     "svg": [
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    }
+   },
+   "E": {
+    "kept": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0"
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0"
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [],
+     "strokes": [],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0"
+     ]
+    }
+   },
+   "W": {
+    "kept": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    }
+   },
+   "I": {
+    "kept": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "dark": {
+     "mode": "Dark",
+     "fills": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        1,
+        0.392,
+        0.404,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0",
+      "fill=\"#FF6467\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#FF6467\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    },
+    "light": {
+     "mode": "Light",
+     "fills": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:46:3"
+      }
+     ],
+     "strokes": [
+      {
+       "color": [
+        0.875,
+        0.133,
+        0.145,
+        null
+       ],
+       "opacity": 0.302,
+       "bound": "VariableID:46:4"
+      }
+     ],
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:46:5"
+      }
+     ],
+     "svg": [
+      "shadow 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0",
+      "fill=\"#DF2225\"",
+      "fill-opacity=\"0.101961\"",
+      "stroke=\"#DF2225\"",
+      "stroke-opacity=\"0.301961\""
+     ]
+    }
+   }
+  },
+  "mutatedNodeIds": [
+   "46:7",
+   "46:9",
+   "46:10",
+   "46:11",
+   "46:14"
+  ]
+ }
+}

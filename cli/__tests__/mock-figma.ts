@@ -2040,7 +2040,10 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
       doc.variableWrites.push(`scopes ${v.name}`);
     },
     variableCollectionId: `VariableCollectionId:${v.collection}`,
-    valuesByMode: Object.fromEntries(v.modes.map(([, value], i) => [`1:${i}`, structuredClone(value)])),
+    // Read when asked, as Figma's is: a value set since shows.
+    get valuesByMode() {
+      return Object.fromEntries(v.modes.map(([, value], i) => [`1:${i}`, structuredClone(value)]));
+    },
     setValueForMode: (modeId: unknown, value: unknown) => {
       const i = modeIndex(v.collection, modeId, "setValueForMode");
       if (v.resolvedType === "COLOR" && !(value && typeof value === "object" && "r" in value)) throw new Error("in setValueForMode: a COLOR variable takes an RGB or RGBA value");
@@ -2249,6 +2252,8 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
         const id = typeof collection === "string" ? collection : String((collection as { id?: unknown } | null)?.id);
         const key = id.replace(/^VariableCollectionId:/, "");
         if (!doc.collections.has(key)) throw new Error(`in createVariable: no collection ${id}`);
+        // Probe 7c: Figma refuses a name with a period, and takes a space, `%`, `,` and `_`.
+        if (String(name).includes(".")) throw new Error("in createVariable: invalid variable name");
         const resolvedType = oneOf("createVariable", type, ["COLOR", "FLOAT", "STRING", "BOOLEAN"] as const);
         const blank = resolvedType === "COLOR" ? { r: 0, g: 0, b: 0, a: 1 } : resolvedType === "FLOAT" ? 0 : resolvedType === "STRING" ? "" : false;
         const v: Variable = { id: `VariableID:1:${doc.nextVariable++}`, name: String(name), resolvedType, value: blank, collection: key, modes: doc.collections.get(key)!.map((mode) => [mode, structuredClone(blank)]) };
