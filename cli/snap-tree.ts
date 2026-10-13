@@ -431,17 +431,33 @@ function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
   // truncation, kept as `el` on the text, so it doesn't stop this. A flex
   // or grid container that moves its text off the start, centering it as
   // a button does, places it where a text the element's size can't say:
-  // it stays a frame, its layout and its text's line box kept.
+  // it stays a frame, its layout and its text's line box kept. So does an
+  // element taller than its text's lines, which a text node its size
+  // can't hold either: a `<button>` stretched in a row centers its label
+  // without flex, as a dialog's footer stretches its Cancel button.
   const text = el.text ?? {};
   const ellipsisOnly = text["text-overflow"] === "ellipsis" && text["white-space"] === "nowrap";
   if (
     only?.kind === "text" && !paintsOwnBox(el.cs) && !hasPadding(css) && (!clips(css) || ellipsisOnly) &&
-    !DRAWING_TAGS.has(el.tag) && !movesItsContent(css)
+    !DRAWING_TAGS.has(el.tag) && !movesItsContent(css) && !tallerThanItsLines(el, only.run!)
   ) {
     item.leaf = only.run;
     item.kids = [];
   }
   return [item];
+}
+
+/**
+ * Whether an element's box reaches more than 1px above or below its text's
+ * line box (lineBox): its text set off its top, as a button centers its
+ * label, or a box taller than the lines in it. Chrome rounds half-leading,
+ * which the 1px allows.
+ */
+function tallerThanItsLines(el: RawTreeElement, run: RawTreeText): boolean {
+  if (!run.rects.length) return false;
+  const lh = normalizeLineHeight((run.style ?? el.text ?? {})["line-height"]);
+  const line = lineBox(inkOf(run.rects), lineCount(run.rects), lh, firstLineHeight(run.rects));
+  return line[1] - el.box[1] > 1 || el.box[1] + el.box[3] - (line[1] + line[3]) > 1;
 }
 
 /**

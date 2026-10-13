@@ -437,7 +437,28 @@ test("buildTree: an element that is only its text becomes the text, sized as the
   ]))).nodes.slice(1).map((n) => [n.k, n.t, n.L?.jc ?? n.L?.ai]);
   assert.deepEqual(centered({ display: "flex", "justify-content": "center", "align-items": "center" }), [["span", "F", "center"], ["span/#text", "T", undefined]]);
   assert.deepEqual(centered({ display: "grid", "align-items": "end" }), [["span", "F", "end"], ["span/#text", "T", undefined]]);
-  assert.deepEqual(centered({ display: "flex", "align-items": "stretch" }), [["span", "T", undefined]]);
+  // At the start, a box its lines' height, it is the text.
+  const atStart = buildTree(tree(el("div", [0, 0, 200, 40], {}, [
+    el("span", [0, 0, 200, 20], { display: "flex", "align-items": "stretch" }, [run("Go", [[0, 1.5, 20, 17]])], { text: TEXT }),
+  ]))).nodes.slice(1).map((n) => [n.k, n.t]);
+  assert.deepEqual(atStart, [["span", "T"]]);
+});
+
+test("buildTree: an element taller than its text's lines stays a frame, its text's line box where the browser drew it", () => {
+  // A dialog's Cancel, a <button> with no padding stretched to its 36px
+  // footer: the button centers its label without flex. As a text node 36
+  // tall, Figma set it at the top, 20 tall.
+  const cancel = el("button", [246.83, 0, 45.57, 36], { display: "block" }, [run("Cancel", [[246.83, 9.5, 45.56, 17]])], { text: TEXT });
+  const nodes = buildTree(tree(el("div", [0, 0, 400, 36], { display: "flex" }, [cancel]))).nodes;
+  assert.deepEqual(nodes.map((n) => [n.k, n.t]), [["", "F"], ["button", "F"], ["button/#text", "T"]]);
+  assert.deepEqual(nodes[1].box, [246.83, 0, 45.57, 36]);
+  assert.deepEqual(nodes[2].box, [0, 8, 45.56, 20]);
+  // Its text at the top of a box taller than its line, as a min-height gives it: a frame too.
+  const tall = el("p", [0, 0, 200, 40], {}, [run("Hello", [[0, 1.5, 40, 17]])], { text: TEXT });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 200, 40], {}, [tall]))).nodes.map((n) => [n.k, n.t]), [["", "F"], ["p", "F"], ["p/#text", "T"]]);
+  // Within Chrome's rounding of the half-leading, a pixel, it is the text.
+  const rounded = el("p", [0, 0, 200, 21], {}, [run("Hello", [[0, 2, 40, 17]])], { text: TEXT });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 200, 21], {}, [rounded]))).nodes.map((n) => [n.k, n.t]), [["", "F"], ["p", "T"]]);
 });
 
 test("buildTree: a run that wraps starts where its first line does, whatever its leading and however many lines", () => {
