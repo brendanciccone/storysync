@@ -10,7 +10,9 @@
 //
 // So each variant is measured from the story whose own args name the values
 // it has, where that story adds something of its own: Button's `size=icon`
-// variants from Icon, `size=icon-sm` from Icon Small. Every other variant is
+// variants from Icon, `size=icon-sm` from Icon Small. Where several stories
+// fit equally, the plainest wins: Toggle's `variant=outline` from Outline,
+// not WithText, which adds a label to it. Every other variant is
 // measured from the component's story, Default or the one `--stories`
 // names. Deterministic: the same stories and combination always pick the
 // same story.
@@ -70,14 +72,30 @@ const contains = (outer: Record<string, string>, inner: Record<string, string>) 
   Object.entries(inner).every(([name, value]) => outer[name] === value);
 
 /**
+ * Whether `outer` is `inner` with more of its own: every one of inner's own
+ * args, as recorded, and besides them another arg, or a render or
+ * decorators inner lacks. shadcn/ui Toggle's WithText copies Outline's args
+ * and adds a render that puts a label beside the icon: a story about the
+ * label, not about `variant=outline`, which Outline is for.
+ */
+function decorates(outer: StoryOwn, inner: StoryOwn): boolean {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (!Object.entries(inner.args).every(([name, value]) => Object.hasOwn(outer.args, name) && same(outer.args[name], value))) return false;
+  return Object.keys(outer.args).length > Object.keys(inner.args).length
+    || Boolean(outer.render && !inner.render) || Boolean(outer.decorators && !inner.decorators);
+}
+
+/**
  * The values each story is for, by its ID: what its own args give the
  * variant properties, less what a story that adds nothing (storyAddsContent)
- * gives them too. Icon sets `variant=secondary` and `size=icon`, and
- * Secondary, which adds nothing, sets `variant=secondary`, so Icon is for
- * `size=icon`, its variant being what it is drawn in; WithIcon sets what
- * Secondary does and draws an icon and a long label, so it is for nothing,
- * as it would otherwise be for every secondary button. Stories with a play
- * function count for nothing.
+ * gives them too, or a story it only adds to (`decorates`). Icon sets
+ * `variant=secondary` and `size=icon`, and Secondary, which adds nothing,
+ * sets `variant=secondary`, so Icon is for `size=icon`, its variant being
+ * what it is drawn in; WithIcon sets what Secondary does and draws an icon
+ * and a long label, so it is for nothing, as it would otherwise be for
+ * every secondary button. Toggle's WithText is Outline with a label, so
+ * Outline alone is for `variant=outline`. Stories with a play function
+ * count for nothing.
  */
 export function storyKeys(stories: readonly StoryOwn[], properties: readonly FigmaVariantProperty[]): Map<string, Record<string, string>> {
   const usable = stories.filter((s) => !s.play);
@@ -87,7 +105,7 @@ export function storyKeys(stories: readonly StoryOwn[], properties: readonly Fig
   usable.forEach((story, i) => {
     const key: Record<string, string> = { ...claims[i] };
     usable.forEach((_, j) => {
-      if (i === j || !plain[j] || !contains(claims[i], claims[j])) return;
+      if (i === j || !contains(claims[i], claims[j]) || !(plain[j] || decorates(story, usable[j]))) return;
       for (const name of Object.keys(claims[j])) delete key[name];
     });
     out.set(story.id, key);
@@ -105,8 +123,9 @@ export interface StoryChoice {
 /**
  * The story to measure `combination` from: the one that adds content of its
  * own and whose values (storyKeys) the combination all has, the most of
- * them first, then the story that sets more of its own, then the earlier;
- * else `fallback`, the component's story.
+ * them first, then the plainest, the story that sets the least of its own,
+ * whose content is the variant's rather than a showcase's, then the
+ * earlier; else `fallback`, the component's story.
  */
 export function chooseStory(
   combination: Record<string, string>,
@@ -122,7 +141,7 @@ export function chooseStory(
     if (!contains(combination, key)) return;
     if (best) {
       const [a, b] = [Object.keys(key).length, Object.keys(best.key).length];
-      if (a < b || (a === b && weight(story) <= weight(best.story))) return;
+      if (a < b || (a === b && weight(story) >= weight(best.story))) return;
     }
     best = { story, key, index };
   });

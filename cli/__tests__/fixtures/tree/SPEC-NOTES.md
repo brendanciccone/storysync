@@ -1317,11 +1317,12 @@ S5. **Each variant from the story that is for it** (`cli/snap-stories.ts`;
     nothing of its own also gives them: Icon sets `variant=secondary` and
     `size=icon`, and Secondary sets `variant=secondary`, so Icon is for
     `size=icon`; WithIcon sets what Secondary does, so it is for nothing.
-    A variant is measured from the story that draws something of its own
-    (an arg that is no variant property and no function, or its own render
-    or decorators) and that is for values the variant all has: the most of
-    them, then the story that sets more of its own, then the first; never
-    one with a play function. Every other variant comes from the
+    Nor is a story for what another sets where it holds all of that
+    story's own args and adds more (S8). A variant is measured from the
+    story that draws something of its own (an arg that is no variant
+    property and no function, or its own render or decorators) and that is
+    for values the variant all has: the most of them, then the plainest
+    (S8), then the first; never one with a play function. Every other variant comes from the
     component's story. On shadcn's Button that is each `size=icon`,
     `icon-sm` and `icon-lg` variant from Icon, Icon Small and Icon Large,
     and the rest from Default. The first variant measured is measured
@@ -1349,3 +1350,14 @@ S7. **Content past its box** (`contentOverflow`, `describeOverflow`). A
     positioned absolutely, transformed, hidden or fully transparent, or in
     such an element, nor shadows and outlines, which no box holds. verify
     says it as written, as a `snap-warning`.
+S8. **The plainest story wins a tie** (review of S5). The first live
+    snap after S5 measured shadcn/ui Toggle's `variant=outline` variants
+    from WithText, whose own args are `{ ...Outline.args }` and whose
+    render adds an "Italic" label, as both were for `variant=outline` and
+    the tie went to the story that set more of its own: Figma got 78px
+    outline toggles with a label beside 36px icon-only defaults, and no
+    warning, as the label fit. A story that holds every one of another's
+    own args, as recorded, and adds an arg, a render or decorators that one
+    lacks is now for none of the values that one is for (`decorates`), and
+    a tie goes to the story that sets the least of its own, then the
+    first. Toggle's outline variants come from Outline.

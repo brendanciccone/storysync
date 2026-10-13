@@ -92,7 +92,7 @@ test("chooseStory: a story --stories named stays the story for every variant no 
   assert.deepEqual(chooseStory({ variant: "secondary", size: "icon" }, BUTTON, PROPERTIES, "ui-base-button--icon"), { storyId: "ui-base-button--icon" });
 });
 
-test("chooseStory: the story for the most of the variant's values, then the one that sets more of its own, then the first; never one with a play function", () => {
+test("chooseStory: the story for the most of the variant's values, then the plainest, then the first; never one with a play function", () => {
   const stories: StoryOwn[] = [
     { id: "small", args: { size: "sm", children: "Small" } },
     { id: "outline", args: { variant: "outline", children: "Outline" } },
@@ -103,10 +103,41 @@ test("chooseStory: the story for the most of the variant's values, then the one 
   const pick = (variant: string, size: string) => chooseStory({ variant, size }, stories, PROPERTIES, "default").storyId;
   assert.equal(pick("outline", "sm"), "outline-small");
   assert.equal(pick("outline", "default"), "outline");
-  assert.equal(pick("ghost", "sm"), "ghost", "Ghost sets more of its own than Small");
+  assert.equal(pick("ghost", "sm"), "small", "Small sets less of its own than Ghost");
   assert.equal(pick("default", "lg"), "default", "a story with a play function acts on what it renders");
   // The same stories in another order pick the same, but for a tie, which the first wins.
   const tie: StoryOwn[] = [{ id: "a", args: { size: "sm", children: "A" } }, { id: "b", args: { variant: "outline", children: "B" } }];
   assert.equal(chooseStory({ variant: "outline", size: "sm" }, tie, PROPERTIES, "default").storyId, "a");
   assert.equal(chooseStory({ variant: "outline", size: "sm" }, [...tie].reverse(), PROPERTIES, "default").storyId, "b");
+});
+
+/** ui/base/Toggle's stories, each its own args as its CSF file sets them: WithText is `{ ...Outline.args }` and a render that adds a label. */
+const TOGGLE_PROPERTIES: FigmaVariantProperty[] = [
+  { name: "variant", type: "VARIANT", values: ["default", "outline"], defaultValue: "default" },
+  { name: "size", type: "VARIANT", values: ["default", "sm", "lg"], defaultValue: "default" },
+];
+const TOGGLE: StoryOwn[] = [
+  { id: "ui-base-toggle--default", args: {} },
+  { id: "ui-base-toggle--outline", args: { variant: "outline", children: ELEMENT, "aria-label": "Toggle italic" } },
+  { id: "ui-base-toggle--with-text", args: { variant: "outline", children: ELEMENT, "aria-label": "Toggle italic" }, render: true },
+  { id: "ui-base-toggle--small", args: { size: "sm" } },
+  { id: "ui-base-toggle--large", args: { size: "lg" } },
+  { id: "ui-base-toggle--disabled", args: { disabled: true } },
+];
+
+test("chooseStory: Toggle's outline variants from Outline, not WithText, which adds a label to the same args", () => {
+  const keys = storyKeys(TOGGLE, TOGGLE_PROPERTIES);
+  assert.deepEqual(keys.get("ui-base-toggle--outline"), { variant: "outline" });
+  assert.deepEqual(keys.get("ui-base-toggle--with-text"), {}, "WithText is Outline with more of its own");
+  for (const size of TOGGLE_PROPERTIES[1].values) {
+    assert.deepEqual(chooseStory({ variant: "outline", size }, TOGGLE, TOGGLE_PROPERTIES, "ui-base-toggle--default"), { storyId: "ui-base-toggle--outline", values: ["variant=outline"] });
+    assert.deepEqual(chooseStory({ variant: "default", size }, TOGGLE, TOGGLE_PROPERTIES, "ui-base-toggle--default"), { storyId: "ui-base-toggle--default" });
+  }
+  // Without the rule that takes WithText's values away, the plainer of two stories for the same values still wins, whichever comes first.
+  const tied: StoryOwn[] = [
+    { id: "decorated", args: { variant: "outline", children: "Italic", title: "t" } },
+    { id: "plain", args: { variant: "outline", children: ELEMENT } },
+  ];
+  assert.equal(chooseStory({ variant: "outline", size: "sm" }, tied, TOGGLE_PROPERTIES, "default").storyId, "plain");
+  assert.equal(chooseStory({ variant: "outline", size: "sm" }, [...tied].reverse(), TOGGLE_PROPERTIES, "default").storyId, "plain");
 });
