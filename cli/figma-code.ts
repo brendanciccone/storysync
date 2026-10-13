@@ -758,6 +758,91 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   return { plan, planPath, warnings };
 }
 
+// --- Estimate ---------------------------------------------------------------
+
+/**
+ * What a push costs the agent that sends it, in tokens, never time. Most
+ * of it is the calls: the agent writes each file out whole as use_figma's
+ * code and reads each response back, and both stay in its context. So the
+ * estimate is the README's per-push share plus a share per component
+ * (reading its snap, asking about it, reporting it) plus a share per
+ * character the calls send and return.
+ *
+ * Calibrated on push 4 (5 components, 100 variants, 872 elements, 22
+ * calls, about 570k agent tokens): its calls sent and returned about
+ * 475,000 characters, which the low end puts at 530k. The high end allows
+ * a repair round, which sends a component's build and read calls again,
+ * and the questions a component can raise.
+ */
+export const ESTIMATE = {
+  /** Setup and verification: tokens, list, snap, verify and the summary. */
+  perPush: 100_000,
+  /** Reading a component's snap, asking about it and reporting it. */
+  perComponent: [10_000, 30_000],
+  /** Tokens per character the calls send and return. */
+  perChar: [0.8, 1.6],
+  /** The README's rule of thumb: 100k tokens a component, plus perPush. */
+  ruleOfThumb: 100_000,
+} as const;
+
+export interface PushEstimate {
+  /** Components the plan builds. */
+  components: number;
+  /** Planned use_figma calls, and how many of each kind. */
+  calls: number;
+  byKind: Partial<Record<PlanCall["kind"], number>>;
+  /** Characters of code the agent sends: every call's file, whole. */
+  charsSent: number;
+  /** Characters the read calls are predicted to return, which the agent saves. */
+  charsReturned: number;
+  /** Agent tokens for the push, setup and verification included, rounded to thousands. */
+  tokens: { low: number; high: number };
+  /** The rule of thumb for as many components, for comparison. */
+  ruleOfThumb: number;
+}
+
+/** A push's cost in tokens, from what plan.json says each call holds and returns. */
+export function estimatePush(plan: FigmaPlan): PushEstimate {
+  const byKind: PushEstimate["byKind"] = {};
+  let charsSent = 0;
+  let charsReturned = 0;
+  const components = new Set<string>();
+  for (const call of plan.calls) {
+    byKind[call.kind] = (byKind[call.kind] ?? 0) + 1;
+    charsSent += call.chars;
+    charsReturned += call.predicted ?? 0;
+    if (call.kind === "build") for (const key of call.components) components.add(key);
+  }
+  const moved = charsSent + charsReturned;
+  const at = (i: 0 | 1) => Math.round((ESTIMATE.perPush + components.size * ESTIMATE.perComponent[i] + moved * ESTIMATE.perChar[i]) / 1000) * 1000;
+  return {
+    components: components.size,
+    calls: plan.calls.length,
+    byKind,
+    charsSent,
+    charsReturned,
+    tokens: { low: at(0), high: at(1) },
+    ruleOfThumb: ESTIMATE.perPush + components.size * ESTIMATE.ruleOfThumb,
+  };
+}
+
+/** Tokens as a person reads them: 530k, 1.2M. */
+export function formatTokens(n: number): string {
+  if (n < 995_000) return `${Math.round(n / 10_000) * 10}k`;
+  return `${(Math.round(n / 100_000) / 10).toFixed(1)}M`;
+}
+
+/** The estimate as one line: what the calls send and return, and the tokens to plan on. */
+export function describeEstimate(e: PushEstimate): string {
+  const n = (v: number) => v.toLocaleString("en-US");
+  const returned = e.charsReturned ? ` and read back about ${n(Math.round(e.charsReturned / 1000) * 1000)}` : "";
+  return (
+    `Estimate: ${e.calls} use_figma ${e.calls === 1 ? "call sends" : "calls send"} ${n(e.charsSent)} characters of code${returned}. ` +
+    `Plan on about ${formatTokens(e.tokens.low)}-${formatTokens(e.tokens.high)} agent tokens for this push of ${e.components} ${e.components === 1 ? "component" : "components"}, ` +
+    `setup and verification included (the rule of thumb, 100k a component plus 100k a push, gives ${formatTokens(e.ruleOfThumb)}).`
+  );
+}
+
 // --- Results ----------------------------------------------------------------
 
 /**

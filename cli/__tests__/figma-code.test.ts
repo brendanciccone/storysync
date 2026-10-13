@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callConstants, callSum } from "../checksum.js";
-import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
-import type { TreeDelta, TreeNode } from "../tree-types.js";
+import type { FigmaPlan, PlanCall, TreeDelta, TreeNode } from "../tree-types.js";
 import { verify } from "../verify.js";
 import { STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
 import { loadTreeFixture, svgShapeBoxes, treeFixtureNames } from "./mock-figma.js";
@@ -507,4 +509,67 @@ test("figma code: a call's constants are written in ASCII, the same values, whic
   const [data, page, sum] = new Function(`${text}return [DATA, PAGE, SUM];`)() as [unknown, unknown, string];
   assert.deepEqual([data, page], [value, "ui/café"]);
   assert.equal(sum, callSum([data, page]));
+});
+
+// A push isn't lightweight: figma code says what this one costs in tokens,
+// and the skills show it and ask before sending a call.
+test("estimatePush: counts every call and its characters, and puts push 4's size at the low end", () => {
+  const call = (seq: number, kind: PlanCall["kind"], components: string[], chars: number, predicted?: number): PlanCall => ({
+    seq, kind, page: "ui/base", components, file: `calls/${seq}.js`, result: `results/${seq}.json`, description: "", chars,
+    ...(predicted !== undefined ? { predicted } : {}),
+  });
+  // Push 4's shape: 5 components, 3 builds, a label and 18 reads, about
+  // 475,000 characters sent and returned, which took about 570k tokens.
+  const calls: PlanCall[] = [
+    call(1, "build", ["a", "b"], 44_000), call(2, "build", ["b", "c", "d"], 44_000), call(3, "build", ["d", "e"], 30_000), call(4, "label", ["a", "b", "c", "d", "e"], 2_000),
+  ];
+  for (let i = 0; i < 18; i++) calls.push(call(5 + i, "read", ["a"], 8_600, 10_000));
+  const plan: FigmaPlan = { version: 1, storysyncVersion: "0.4.0", snap: { path: "", measuredAt: "", digest: "00000000" }, calls };
+  const e = estimatePush(plan);
+  assert.equal(e.components, 5);
+  assert.equal(e.calls, 22);
+  assert.deepEqual(e.byKind, { build: 3, label: 1, read: 18 });
+  assert.equal(e.charsSent, 44_000 + 44_000 + 30_000 + 2_000 + 18 * 8_600);
+  assert.equal(e.charsReturned, 180_000);
+  const moved = e.charsSent + e.charsReturned;
+  assert.equal(e.tokens.low, Math.round((ESTIMATE.perPush + 5 * ESTIMATE.perComponent[0] + moved * ESTIMATE.perChar[0]) / 1000) * 1000);
+  assert.ok(e.tokens.low <= 570_000 && 570_000 <= e.tokens.high, `push 4 took about 570k, outside ${e.tokens.low}-${e.tokens.high}`);
+  assert.equal(e.ruleOfThumb, 600_000);
+  assert.ok(e.tokens.low <= e.ruleOfThumb && e.ruleOfThumb <= e.tokens.high);
+  const line = describeEstimate(e);
+  assert.match(line, /^Estimate: 22 use_figma calls send 274,800 characters of code and read back about 180,000\. /);
+  assert.match(line, new RegExp(`Plan on about ${formatTokens(e.tokens.low)}-${formatTokens(e.tokens.high)} agent tokens for this push of 5 components`));
+  assert.match(line, /gives 600k\)\.$/);
+});
+
+test("formatTokens: thousands as k, millions as M with one decimal", () => {
+  assert.equal(formatTokens(530_000), "530k");
+  assert.equal(formatTokens(94_000), "90k");
+  assert.equal(formatTokens(994_000), "990k");
+  assert.equal(formatTokens(995_000), "1.0M");
+  assert.equal(formatTokens(1_260_000), "1.3M");
+  assert.equal(formatTokens(6_100_000), "6.1M");
+});
+
+test("figma code: prints the push's estimate, in text and in --json, from the calls it wrote", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-estimate-"));
+  try {
+    const snapPath = join(dir, "snaps", "styles.json");
+    mkdirSync(join(dir, "snaps"), { recursive: true });
+    writeFileSync(snapPath, JSON.stringify(loadTreeFixture("switch"), null, 2));
+    const cli = join(fileURLToPath(new URL(".", import.meta.url)), "..", "index.js");
+    const run = (...args: string[]) => execFileSync(process.execPath, [cli, "figma", "code", "--snap", snapPath, "--tokens", join(dir, "none.json"), "--out", join(dir, "figma"), ...args], { encoding: "utf8" });
+    const out = JSON.parse(run("--json")) as { calls: PlanCall[]; estimate: ReturnType<typeof estimatePush> };
+    const plan = JSON.parse(readFileSync(join(dir, "figma", "plan.json"), "utf8")) as FigmaPlan;
+    assert.deepEqual(out.estimate, estimatePush(plan));
+    assert.equal(out.estimate.calls, out.calls.length);
+    assert.equal(out.estimate.charsSent, out.calls.reduce((t, c) => t + c.chars, 0));
+    assert.equal(out.estimate.charsReturned, out.calls.reduce((t, c) => t + (c.predicted ?? 0), 0));
+    assert.equal(out.estimate.components, 1);
+    assert.ok(out.estimate.tokens.low > ESTIMATE.perPush && out.estimate.tokens.low < out.estimate.tokens.high);
+    const text = run();
+    assert.ok(text.includes(describeEstimate(out.estimate)), text);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

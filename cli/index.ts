@@ -17,7 +17,7 @@ import { describeFontStandIns, describeOpenedOverlays, describeVariantStories, r
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
-import { DEFAULT_READ_LIMIT, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
+import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
 import { loadPlanResults } from "./figma-results.js";
@@ -1033,8 +1033,10 @@ figma
         readLimit,
         minify: opts.minify !== false,
       });
+      // What the push costs the agent, in tokens: the skills show it and ask before sending.
+      const estimate = estimatePush(plan);
       if (json) {
-        console.log(JSON.stringify({ planPath, calls: plan.calls, warnings }));
+        console.log(JSON.stringify({ planPath, calls: plan.calls, warnings, estimate }));
         return;
       }
       const where = shownPath(planPath);
@@ -1047,6 +1049,7 @@ figma
         console.log(`  ${String(call.seq).padStart(2, "0")} ${call.kind.padEnd(6)} ${call.description} ${chalk.dim(`(${size})`)}`);
       }
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
+      console.log(`\n${describeEstimate(estimate)}`);
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
     } catch (err) {
       reportError(err, json);
