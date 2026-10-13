@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { callCode, callConstants } from "../checksum.js";
 import { CALL_CONSTANTS, loadTemplate } from "../figma-code.js";
 import { MAX_CALL_CHARS, USE_FIGMA_CODE_LIMIT } from "../figma-spike.js";
 import type { TemplateName } from "../figma-code.js";
@@ -15,22 +16,23 @@ import type { TemplateName } from "../figma-code.js";
  * use_figma's 50,000.
  *
  * The build's and the readback's have each been raised once, by 1,000, to
- * make room for a checksum each call checks of its own data and for the
- * readback's check of what Figma cuts short, against these limits, which
- * the test below holds them to:
+ * make room for the call's checksums and for the readback's check of what
+ * Figma cuts short, against these limits, which the test below holds them
+ * to. Each call also carries the guard that checks its SUM and TSUM
+ * (checksum.ts, callCode), about 700 characters, outside the template:
  *
- * - A build call is its template and DATA, packed to MAX_CALL_CHARS
- *   (45,000) in all, so the template takes from what a call can carry. At
- *   18,000 a packed call keeps 27,000 for DATA. Each of the fourth live
- *   push's 100 variants, in a call of its own, took 1,364 characters
- *   beside the template at the median and 7,454 at most, so the 1,000
- *   costs a packed call less than one variant.
+ * - A build call is its template, the guard and DATA, packed to
+ *   MAX_CALL_CHARS (45,000) in all, so the template takes from what a call
+ *   can carry. At 18,000 a packed call keeps over 26,000 for DATA. Each of
+ *   the fourth live push's 100 variants, in a call of its own, took 1,364
+ *   characters beside the template at the median and 7,454 at most, so
+ *   the 1,000 and the guard cost a packed call about one variant.
  * - A variant too big to share a call goes in one of its own, up to
- *   use_figma's 50,000 (USE_FIGMA_CODE_LIMIT): 32,000 of DATA, over four
+ *   use_figma's 50,000 (USE_FIGMA_CODE_LIMIT): over 31,000 of DATA, four
  *   times that push's largest.
- * - A read call is its template and a header of a few hundred characters,
- *   nowhere near 45,000, and what it returns is held by its LIMIT, not by
- *   its code.
+ * - A read call is its template, the guard and a header of a few hundred
+ *   characters, nowhere near 45,000, and what it returns is held by its
+ *   LIMIT, not by its code.
  */
 const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000 } as const;
 
@@ -48,9 +50,15 @@ test("templates: the build's budget leaves a call room for its data, packed and 
   // The room the comment on BUDGETS argues from: a budget raised past it
   // needs the argument made again. 7,454 is what the fourth live push's
   // largest variant took beside the template, in a call of its own.
-  assert.ok(MAX_CALL_CHARS - BUDGETS.build >= 27_000, "a packed call keeps 27,000 for DATA");
-  assert.ok(USE_FIGMA_CODE_LIMIT - BUDGETS.build >= 4 * 7_454, "a variant alone has four times the room the largest took");
-  assert.ok(BUDGETS.readback + 1_000 < MAX_CALL_CHARS, "a read call is its template and a short header");
+  const guard = callCode([["DATA", 0]], "").length - callConstants([["DATA", 0]]).length;
+  assert.ok(guard < 800, `the guard is ${guard} characters`);
+  assert.ok(MAX_CALL_CHARS - BUDGETS.build - guard >= 26_000, "a packed call keeps 26,000 for DATA");
+  assert.ok(USE_FIGMA_CODE_LIMIT - BUDGETS.build - guard >= 4 * 7_454, "a variant alone has four times the room the largest took");
+  assert.ok(BUDGETS.readback + guard + 1_000 < MAX_CALL_CHARS, "a read call is its template, the guard and a short header");
+});
+
+test("templates: each minified template is ASCII, so no character of the text TSUM covers can be retyped as another", () => {
+  for (const name of Object.keys(BUDGETS)) assert.match(loadTemplate(name as keyof typeof BUDGETS), /^[\n\x20-\x7e]*$/, name);
 });
 
 /** Every template this checkout has, which must be every one figma code writes a call for. */

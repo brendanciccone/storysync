@@ -1263,12 +1263,12 @@ BV1. **The build template's budget is 18,000 and the readback's 9,000**
    8,000), to make room for the call checksum (BV2) and the readback's
    truncation check (BV3). `templates.test.ts` says why each is safe and
    holds them to it:
-   - A build call is template and DATA, packed to 45,000, so a packed call
-     keeps 27,000 for DATA. Each of the fourth push's 100 variants, in a
+   - A build call is template, the guard of BV2 (about 700) and DATA,
+     packed to 45,000, so a packed call keeps over 26,000 for DATA. Each of the fourth push's 100 variants, in a
      call of its own, took 1,364 characters beside the template at the
      median and 7,454 at most: the 1,000 costs a packed call less than
      one variant.
-   - A variant alone may take use_figma's 50,000: 32,000 of DATA, over
+   - A variant alone may take use_figma's 50,000: over 31,000 of DATA,
      four times that push's largest.
    - A read call is its template and a short header, and what it returns
      is held by LIMIT, not by its code.
@@ -1283,18 +1283,45 @@ BV2. **Every call checks a checksum of its own data before it does
      `JSON.stringify([...values])`, the values in the order the call
      declares them, DATA for a build or label call, PAGE for images, and
      PAGE, SLICES, LIMIT and TPL for a read, a continuation included.
-   - Each template computes the same from the values it was given, first,
-     and throws `This call differs from the file storysync figma code
-     wrote: its data fails its checksum, SUM. Nothing was changed. Send
-     the file again, exactly as it is.` A build refuses before it creates
-     its page, a read before it switches to one. JSON.stringify of values
+   - The call computes the same from the values it was given, before its
+     template runs, and throws `This call differs from the file storysync
+     figma code wrote: its data fails its checksum, SUM. Nothing was
+     changed. Send the file again, exactly as it is.` A build refuses
+     before it creates its page, a read before it switches to one. JSON.stringify of values
      parsed from what JSON.stringify wrote is the same text, so an honest
      call always matches, and a character changed anywhere in its values,
      inside a string too, doesn't (a number written longer but equal, as
      `1.790` outside a string, is the same value, and passes).
-   - The template itself isn't covered: use_figma runs the code as the
-     body of a function, and nothing in it can read its own text. A
-     change there mostly fails to parse or to run.
+   - The template has its own checksum, TSUM (`callCode` in
+     `cli/checksum.ts`). It is 17,000 of a build call's 45,000, and a
+     digit mistyped in keepLines' 1.27 or a tolerance changed every build
+     without a word. figma code writes the template as the function
+     `const T = async()=>{...};`, TSUM as FNV-1a over that text, and a
+     guard after it that checks SUM, then TSUM, and returns `await T()`,
+     refusing a changed template with `... its template fails its
+     checksum, TSUM. ...`. The guard reads T back as `String(T)`: ES2019's
+     Function.prototype.toString gives a function's exact source, as V8
+     does. Whether Figma's plugin runtime does is not yet seen: it takes a
+     live call, and this pass was offline. So the guard compares TSUM only
+     where `String(P)` gives back exactly the text of P, an async arrow
+     function with a line break in it (`TC`): a runtime that strips
+     source, or code rewritten on its way, line ends included, skips the
+     check rather than refusing every honest call. The build returns TC as
+     `tc`, so the next live push's first build result settles it: `tc: 1`
+     is the check running, `tc: 0` the evidence that Figma can't give the
+     template back. Tested in the mock both ways, a runtime that strips
+     source standing in by Function.prototype.toString.
+   - SUM is checked before the template runs, so before the readback's
+     TPL: a TPL changed on its way reads as a call to send again, not as
+     `This is readback template 3, not 2`.
+   - The guard itself, about 700 characters, isn't covered: a change there
+     mostly fails to parse, or refuses every call. The templates no longer
+     check SUM themselves; minified, they are ASCII only (terser
+     `ascii_only`), the build's 16,834 characters and the readback's
+     8,249. A template that declares a constant its call writes no longer
+     fails to compile (T's scope shadows it), so `assertCompiles` compiles
+     each template after its call's constants too, and refuses it as
+     before.
    - Each constant is written in ASCII (`asciiJson`): every character
      past it as its `\u` escape, inside a string, where JSON and
      JavaScript read it alike. A no-break space an agent retyping the

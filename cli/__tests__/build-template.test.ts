@@ -923,8 +923,17 @@ test("build: a call refused for one of its sets changes none of them", async () 
   assert.equal(JSON.stringify(mock.pages()), before, "Switch, first in the call, wasn't built either");
 });
 
-/** The error every template throws for a call that fails its SUM. */
+/** The error every call throws when it fails its SUM. */
 const CHANGED_CALL = /^Error: This call differs from the file storysync figma code wrote: its data fails its checksum, SUM\. Nothing was changed\. Send the file again, exactly as it is\.$/;
+/** The error every call throws when its template fails its TSUM. */
+const CHANGED_TEMPLATE = /^Error: This call differs from the file storysync figma code wrote: its template fails its checksum, TSUM\. Nothing was changed\. Send the file again, exactly as it is\.$/;
+
+/** `code` with the first digit of its template, run as T, one more, as a mistyped number: keepLines' 1.27 in the build's. */
+function templateDigitOff(code: string, after = ""): string {
+  const at = code.indexOf(after, code.indexOf("\nconst T = "));
+  const digit = at + /\d/.exec(code.slice(at))!.index;
+  return code.slice(0, digit) + String((Number(code[digit]) + 1) % 10) + code.slice(digit + 1);
+}
 
 test("build, images and label: a call one character off the file figma code wrote is refused, and changes nothing", async () => {
   // Avatar's picture makes an images call, Card's icon a path to mistype.
@@ -971,6 +980,52 @@ test("build, images and label: a call one character off the file figma code wrot
     assert.deepEqual([run.created, run.removed, run.switches, JSON.stringify(mock.pages())], [0, 0, [], built], `${kind}: Page 1 kept, nothing filled`);
   }
   await runPlan(mock, coded, ["images", "label"]);
+});
+
+test("build, images and label: a call whose template is one character off is refused, and changes nothing", async () => {
+  const snap = copy(loadTreeFixture("avatar"));
+  snap.components.push(copy(loadTreeFixture("card").components[0]));
+  const coded = await codeFor(snap);
+  const code = (kind: string) => coded.code(coded.plan.calls.find((c) => c.kind === kind)!);
+  const mock = mockFor([loadTreeFixture("avatar"), loadTreeFixture("card")], { pages: ["Page 1"] });
+  const before = JSON.stringify(mock.pages());
+  // keepLines' 1.27, the line height it takes for a font's own, as 2.27:
+  // every label kept on its lines by a different measure, without a word.
+  const build = code("build");
+  assert.ok(build.includes("||1.27"), "keepLines' fallback line height is in the call");
+  for (const changed of [templateDigitOff(build, "||1.27"), templateDigitOff(build)]) {
+    const run = await mock.run(changed);
+    assert.match(run.text, CHANGED_TEMPLATE);
+    assert.deepEqual([run.created, run.switches, JSON.stringify(mock.pages())], [0, [], before], "not even its page made");
+  }
+  // The file as written builds, and says the runtime gave its template back to check.
+  const [ran] = await runPlan(mock, coded, ["build"]);
+  assert.equal((ran.value as { tc: number }).tc, 1);
+  const built = JSON.stringify(mock.pages());
+  for (const kind of ["images", "label"]) {
+    const run = await mock.run(templateDigitOff(code(kind)));
+    assert.match(run.text, CHANGED_TEMPLATE, kind);
+    assert.deepEqual([run.created, run.removed, run.switches, JSON.stringify(mock.pages())], [0, 0, [], built], kind);
+  }
+});
+
+test("build: a runtime that doesn't give back a function's source skips the template's check, and says so, but still checks the data", async () => {
+  // Function.prototype.toString as a runtime that strips source gives it.
+  const coded = await codeFor(loadTreeFixture("switch"));
+  const build = coded.code(coded.plan.calls.find((c) => c.kind === "build")!);
+  const original = Function.prototype.toString;
+  Function.prototype.toString = function () { return "function () { [native code] }"; };
+  try {
+    const mock = mockFor([loadTreeFixture("switch")], { pages: ["Page 1"] });
+    const changedData = await mock.run(build.replace(/"size=([^"]+)"/, '"size=$1 "'));
+    assert.match(changedData.text, CHANGED_CALL);
+    // The template's change isn't seen; the build runs, and reports it couldn't check.
+    const run = await mock.run(templateDigitOff(build, "||1.27"));
+    assert.ok(run.ok, run.text);
+    assert.equal((run.value as { tc: number }).tc, 0);
+  } finally {
+    Function.prototype.toString = original;
+  }
 });
 
 test("build: the set's grid gives each variant the room it draws in: a label past its icon button, a shadow, overlap nothing", async () => {

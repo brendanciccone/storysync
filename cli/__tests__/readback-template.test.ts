@@ -6,7 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FONTS, loadTreeFixture } from "./mock-figma.js";
 import { PAGE, READBACK_TEMPLATE, assemble, buildFixture, newFigma, readBack } from "./tree-harness.js";
-import { callSum } from "../checksum.js";
+import { callSum, templateFunction } from "../checksum.js";
+import { withConstant } from "./figma-build-harness.js";
 import { parseReadResult, readbackCall, readbackHeader } from "../figma-results.js";
 import type { ReadSlice } from "../figma-results.js";
 import { RECORD } from "../tree-types.js";
@@ -18,7 +19,7 @@ function stripped(source: string): string {
   return source.split("\n").map((line) => line.replace(/^\s+/, "")).filter((line) => line && !line.startsWith("//")).join("\n");
 }
 
-test("template: carries no data of its own, and a call is the five header lines and the template", () => {
+test("template: carries no data of its own, and a call is the five header lines, then the template as T and its guard", () => {
   const code = stripped(READBACK_TEMPLATE);
   assert.doesNotMatch(code, /\b(const|let|var) (PAGE|SLICES|LIMIT|TPL|SUM)\b/, "the CLI's header declares these");
   assert.doesNotMatch(code, /SLUG_BY_NAME|SOURCE_BY_SLUG|SET_ID/, "no slugs, sources or set ids to fill in");
@@ -28,7 +29,9 @@ test("template: carries no data of its own, and a call is the five header lines 
   assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), `const PAGE = "ui/base";\nconst SLICES = [["ui-base-card",0,1,0]];\nconst LIMIT = 9000;\nconst TPL = 3;\nconst SUM = "${sum}";\n`);
   assert.equal(readbackHeader("p", []), `const PAGE = "p";\nconst SLICES = [];\nconst LIMIT = 15000;\nconst TPL = 3;\nconst SUM = "${callSum(["p", [], 15000, 3])}";\n`, "LIMIT 15,000 unless told otherwise");
   const call = readbackCall(READBACK_TEMPLATE, "p", [], 1);
-  assert.ok(call.endsWith(READBACK_TEMPLATE));
+  assert.ok(call.startsWith(`${readbackHeader("p", [], 1)}const TSUM = "`));
+  assert.ok(call.includes(`\nconst T = ${templateFunction(READBACK_TEMPLATE)};\n`));
+  assert.ok(call.endsWith("\nreturn await T();\n"));
   // How `storysync figma next` finds the LIMIT a call was written with, to continue it with the same.
   assert.equal(/\nconst LIMIT = (\d+);/.exec(`// storysync figma code, call 07: read back\n${call}`)?.[1], "1");
 });
@@ -38,17 +41,30 @@ test("template: runs as `storysync figma code` writes a read call, and refuses a
   const fixture = loadTreeFixture("switch");
   const built = await buildFixture(figma, fixture);
   // A call file as figma-code.ts readCode writes it: a comment, then the
-  // four constants a line each, each slice with its first node, and their SUM.
-  const slices = [[built.component, 0, 1, 0]];
-  const header = (tpl: number) => `// storysync figma code, call 07: read back on "${PAGE}"\nconst PAGE = ${JSON.stringify(PAGE)};\nconst SLICES = ${JSON.stringify(slices)};\nconst LIMIT = 15000;\nconst TPL = ${tpl};\nconst SUM = "${callSum([PAGE, slices, 15000, tpl])}";\n`;
-  const run = await figma.run(`${header(3)}${READBACK_TEMPLATE}\n`);
+  // four constants a line each, each slice with its first node, and their
+  // SUM, then the template as T and the guard that checks both.
+  const call = `// storysync figma code, call 07: read back on "${PAGE}"\n${readbackCall(READBACK_TEMPLATE, PAGE, [[built.component, 0, 1, 0]])}`;
+  const run = await figma.run(call);
   assert.ok(run.ok, run.text);
   const result = run.value as { tpl: number; sets: { entries: Record<string, unknown> }[] };
   assert.equal(result.tpl, 3);
   assert.deepEqual(Object.keys(result.sets[0].entries), ["size-default", "size-sm"]);
-  const other = await figma.run(`${header(2)}${READBACK_TEMPLATE}\n`);
+  // Written for template 2, its SUM to match.
+  const other = await figma.run(withConstant(call, "TPL", 2));
   assert.equal(other.ok, false);
   assert.match(other.text, /This is readback template 3, not 2/);
+});
+
+test("template: refuses a call whose template is one character off, before it reads anything", async () => {
+  const figma = newFigma();
+  const built = await buildFixture(figma, loadTreeFixture("switch"));
+  const call = readbackCall(READBACK_TEMPLATE, PAGE, [[built.component, 0, 1, 0]]);
+  const at = call.indexOf("\nconst T = ");
+  const digit = at + /\d/.exec(call.slice(at))!.index;
+  const run = await figma.run(call.slice(0, digit) + String((Number(call[digit]) + 1) % 10) + call.slice(digit + 1));
+  assert.equal(run.ok, false);
+  assert.match(run.text, /^Error: This call differs from the file storysync figma code wrote: its template fails its checksum, TSUM\. Nothing was changed\. Send the file again, exactly as it is\.$/);
+  assert.deepEqual(run.switches, [], "not even its page switched to");
 });
 
 test("template: refuses a call one character off the file figma code wrote, before it reads anything", async () => {
@@ -57,12 +73,14 @@ test("template: refuses a call one character off the file figma code wrote, befo
   const call = readbackCall(READBACK_TEMPLATE, PAGE, [[built.component, 0, 1, 0]]);
   assert.ok((await figma.run(call)).ok);
   // Copied with one character changed: the last index to read, the
-  // limit, the page's name, or the SUM itself.
+  // limit, the page's name, the template it is for (checked after SUM, so
+  // a call to send again, not a template to doubt), or the SUM itself.
   const sum = /const SUM = "(.)/.exec(call)!;
   for (const changed of [
     call.replace(",0,1,0]]", ",0,0,0]]"),
     call.replace("const LIMIT = 15000;", "const LIMIT = 15001;"),
     call.replace(`const PAGE = "${PAGE}";`, `const PAGE = "${PAGE.toLowerCase()}";`),
+    call.replace("const TPL = 3;", "const TPL = 2;"),
     call.replace(sum[0], `const SUM = "${sum[1] === "0" ? "1" : "0"}`),
   ]) {
     assert.equal(changed.length, call.length);

@@ -12,7 +12,7 @@
 //
 // A call file is five lines the CLI writes (cli/figma-results.ts
 // readbackHeader, as `storysync figma code` writes them), then this
-// template:
+// template, as the function T, and a guard (cli/checksum.ts, callCode):
 //
 //   const PAGE = "ui/base";
 //   const SLICES = [["ui-base-card",0,1,0]];
@@ -28,8 +28,9 @@
 // stops and returns `more`, the slices left, from which `storysync figma
 // next` writes the next call. TPL is the template the CLI pairs the call
 // with, this one, 3; any other refuses to run. SUM is the checksum of the
-// four (cli/checksum.ts, callSum): a call that doesn't match it was changed
-// on its way from the file, and is refused before it reads anything.
+// four, and TSUM, after it, this template's: the guard checks both before
+// T runs, SUM first, so a call changed on its way from the file, its TPL
+// too, is refused as one to send again before anything is read.
 //
 // It returns, for each set read, its entries by slug, each sealed with the
 // checksum verify recomputes (FNV-1a over canonical JSON under the set's id
@@ -92,8 +93,6 @@ const fnv = (x) => {
   for (let i = 0; i < x.length; i++) h = Math.imul(h ^ (typeof x === 'string' ? x.charCodeAt(i) : x[i]), 0x01000193) >>> 0;
   return h.toString(16).padStart(8, '0');
 };
-// The call as the file holds it, before anything is read (SUM, above).
-if (fnv(JSON.stringify([PAGE, SLICES, LIMIT, TPL])) !== SUM) throw new Error('This call differs from the file storysync figma code wrote: its data fails its checksum, SUM. Nothing was changed. Send the file again, exactly as it is.');
 const seal = (setId, key, fields) => {
   // Through JSON first, as use_figma returns it, so what is sealed is what
   // arrives: an undefined field, or figma.mixed, drops out on both sides.

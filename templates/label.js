@@ -1,9 +1,9 @@
 // storysync label template: says on each set what snap measured, and
 // removes Figma's empty default page.
 //
-// `storysync figma code` writes the call as `const DATA = {...};` and
-// `const SUM = "...";`, the checksum of DATA (cli/checksum.ts, callSum),
-// followed by this file:
+// `storysync figma code` writes the call as `const DATA = {...};`, then
+// this file as the function T, whose checksum, TSUM, the call checks with
+// DATA's, SUM, before T runs (cli/checksum.ts, callCode):
 //   DATA = { pages, sets: [[storysync id, line], ...] }
 // with every set the build made, on the pages it made them on. A line is a
 // note for a set snap measured from something other than the component, a
@@ -11,14 +11,6 @@
 // the description's line that starts MARK, every other line kept, a
 // designer's own included; "" removes the line an earlier push left.
 
-// The call as the file holds it, before anything changes: one changed on
-// its way from the file fails SUM.
-const fnv = (x) => {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < x.length; i++) h = Math.imul(h ^ x.charCodeAt(i), 0x01000193) >>> 0;
-  return h.toString(16).padStart(8, '0');
-};
-if (fnv(JSON.stringify([DATA])) !== SUM) throw new Error('This call differs from the file storysync figma code wrote: its data fails its checksum, SUM. Nothing was changed. Send the file again, exactly as it is.');
 const NS = 'storysync';
 const MARK = 'storysync:';
 const NL = String.fromCharCode(10);

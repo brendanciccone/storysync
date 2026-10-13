@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { callConstants } from "./checksum.js";
+import { callCode, callConstants } from "./checksum.js";
 import { findToolValue } from "./figma.js";
 import type { FigmaPlan } from "./tree-types.js";
 import { READBACK_SCHEMA_VERSION } from "./verify.js";
@@ -68,19 +68,22 @@ export const READBACK_TPL = 3;
  * The lines the CLI writes ahead of templates/readback.js to make a read
  * call (design section 9.1): the page to read on, the slices, the bytes to
  * return at most, and the template the call is for, then SUM, their
- * checksum, which the template checks before it reads anything
- * (checksum.ts, callSum). The template is data-free, so this is all a read
+ * checksum, which the call checks before the template reads anything
+ * (checksum.ts, callCode). The template is data-free, so this is all a read
  * call carries. `storysync figma code` writes a call's header in this form,
  * one constant a line, and finds a call's LIMIT again by its line when it
  * writes the call that continues it.
  */
 export function readbackHeader(page: string, slices: ReadSlice[], limit = READ_LIMIT): string {
-  return callConstants([["PAGE", page], ["SLICES", slices], ["LIMIT", limit], ["TPL", READBACK_TPL]]);
+  return callConstants(readbackConstants(page, slices, limit));
 }
 
-/** A read call's code: the header, then the template (readable or minified) as it is. */
+const readbackConstants = (page: string, slices: ReadSlice[], limit: number) =>
+  [["PAGE", page], ["SLICES", slices], ["LIMIT", limit], ["TPL", READBACK_TPL]] as const;
+
+/** A read call's code: the header, then the template (readable or minified) as it is, run as checksum.ts's callCode runs it. */
 export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT): string {
-  return readbackHeader(page, slices, limit) + template;
+  return callCode(readbackConstants(page, slices, limit), template);
 }
 
 /**

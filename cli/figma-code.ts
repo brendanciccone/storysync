@@ -17,14 +17,14 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callConstants, canonicalJson, fnv1a32Bytes } from "./checksum.js";
+import { callCode, canonicalJson, fnv1a32Bytes } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
 import { planLayout } from "./figma-layout.js";
 import type { LayoutChild, LayoutPlan } from "./figma-layout.js";
 import { figmaSize, nodeStyle, outsideInsets, textSizesItself } from "./figma-map.js";
 import type { FigmaStyle, MapContext, NotBuilt, Unbound } from "./figma-map.js";
-import { READBACK_TPL, readBefore, readTimes, readbackHeader } from "./figma-results.js";
+import { READBACK_TPL, readBefore, readTimes, readbackCall } from "./figma-results.js";
 import type { ReadSlice } from "./figma-results.js";
 import { MAX_CALL_CHARS, MAX_UPLOADS_PER_CALL, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import type { Spike } from "./figma-spike.js";
@@ -68,10 +68,10 @@ export { READBACK_TPL };
 
 /**
  * The constants each kind of call writes before its template, which the
- * template reads and must not declare itself: declared twice, every call of
- * that kind is a SyntaxError in Figma. The last, SUM, is the checksum of
- * the others' values (checksum.ts, callSum), which each template checks
- * before it changes or reads anything.
+ * template reads and must not declare itself, or it reads its own. The
+ * last, SUM, is the checksum of the others' values (checksum.ts, callSum),
+ * which the call checks, and TSUM, the template's, before the template
+ * changes or reads anything (callCode).
  */
 export const CALL_CONSTANTS: Record<TemplateName, readonly string[]> = {
   build: ["DATA", "SUM"],
@@ -85,14 +85,19 @@ const AsyncFunction = (async () => {}).constructor as new (...args: string[]) =>
 
 /**
  * Refuses a call that isn't JavaScript use_figma can run, before any is
- * sent: compiled, not run. A template that declares what its call writes
- * would otherwise fail in Figma on every call of its kind.
+ * sent: compiled, not run. And `template`, the call's own of `kind`, which
+ * runs inside the call as T (checksum.ts, callCode), compiled after the
+ * constants its call writes: a template that declares one would read its
+ * own value and not the call's on every call of its kind.
  */
-export function assertCompiles(code: string, file: string): void {
-  try {
-    new AsyncFunction("figma", code);
-  } catch (e) {
-    throw new Error(`${file} is not code use_figma can run (${(e as Error).message}): a template must not declare the constants its call writes before it`);
+export function assertCompiles(code: string, file: string, kind: TemplateName, template: string): void {
+  const constants = CALL_CONSTANTS[kind].map((name) => `const ${name} = 0;\n`).join("");
+  for (const text of [code, constants + template]) {
+    try {
+      new AsyncFunction("figma", text);
+    } catch (e) {
+      throw new Error(`${file} is not code use_figma can run (${(e as Error).message}): a template must not declare the constants its call writes before it`);
+    }
   }
 }
 
@@ -494,7 +499,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string): 
       v: variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, deltaOf(base, intern(v.records, table))]),
     };
   });
-  return `${header(seq, "build", page)}${callConstants([["DATA", { page, S: table.values, sets }]])}${template}\n`;
+  return `${header(seq, "build", page)}${callCode([["DATA", { page, S: table.values, sets }]], template)}`;
 }
 
 const pad = (seq: number) => String(seq).padStart(2, "0");
@@ -520,7 +525,7 @@ type Slice = [string, number, number];
 
 function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string): string {
   const full = slices.map((s): ReadSlice => (s.length === 4 ? s : [...s, 0]));
-  return `${header(seq, "read back", page)}${readbackHeader(page, full, limit)}${template}\n`;
+  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit)}`;
 }
 
 // --- figma code -------------------------------------------------------------
@@ -607,7 +612,8 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     const seq = calls.length + 1;
     const text = code(seq);
     const file = `calls/${pad(seq)}-${call.kind}${call.page ? `-${pageSlug(call.page)}` : ""}.js`;
-    assertCompiles(text, file);
+    const kind = call.kind === "read" ? "readback" : call.kind;
+    assertCompiles(text, file, kind, templates[kind]);
     calls.push({
       seq, kind: call.kind, page: call.page, components: call.components,
       file, result: `results/${pad(seq)}.json`,
@@ -679,7 +685,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     if (!shown.length) continue;
     add(
       { kind: "images", page, components: shown.map((c) => c.key), description: `Fill the image layers on page "${page}" with images already uploaded` },
-      (seq) => `${header(seq, "images", page)}${callConstants([["PAGE", page]])}${templates.images}\n`,
+      (seq) => `${header(seq, "images", page)}${callCode([["PAGE", page]], templates.images)}`,
     );
   }
 
@@ -687,7 +693,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const label = { pages: builtPages, sets: built.map((c) => [c.id, c.note]) };
   add(
     { kind: "label", page: "", components: built.map((c) => c.key), description: "Label the sets snap measured from something other than the component, and remove Figma's empty default page" },
-    (seq) => `${header(seq, "label", "")}${callConstants([["DATA", label]])}${templates.label}\n`,
+    (seq) => `${header(seq, "label", "")}${callCode([["DATA", label]], templates.label)}`,
   );
 
   // Reads: by page, slices of each set's variants packed by predicted size.
@@ -851,7 +857,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
     const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
-    assertCompiles(code, file);
+    assertCompiles(code, file, "readback", template);
     writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };
   }

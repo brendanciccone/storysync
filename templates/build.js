@@ -1,14 +1,15 @@
 // storysync build template (tpl 2): builds and restyles component sets from
 // snap's element trees, one page per call.
 //
-// `storysync figma code` writes every call as `const DATA = {...};` and
-// `const SUM = "...";`, the checksum of DATA (cli/checksum.ts, callSum),
-// followed by this file, minified, and the agent sends the file unchanged.
-// A call that fails SUM was changed on its way from the file, and is
-// refused before anything changes. Nothing
-// here is specific to a component: everything is in DATA, which emit
-// computes from snap's facts (cli/figma-code.ts), so this file sets plain
-// Figma properties and decides nothing about CSS.
+// `storysync figma code` writes every call as `const DATA = {...};`, then
+// this file, minified, as the function T, and the agent sends the file
+// unchanged. The call checks DATA's checksum, SUM, and this file's, TSUM,
+// before T runs (cli/checksum.ts, callCode): a call changed on its way
+// from the file is refused before anything changes. T returns `tc`, 1
+// where the runtime gave back T's text to check, 0 where it couldn't, TC
+// in the call. Nothing here is specific to a component: everything is in
+// DATA, which emit computes from snap's facts (cli/figma-code.ts), so this
+// file sets plain Figma properties and decides nothing about CSS.
 //
 // DATA = { page, S, sets }
 //   S     the call's table of strings and styles; records refer to it by index.
@@ -44,12 +45,6 @@
 // didn't try: each takes the design's choice, which the spike saw Figma
 // take, and falls back should Figma refuse it.
 
-const fnv = (x) => {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < x.length; i++) h = Math.imul(h ^ x.charCodeAt(i), 0x01000193) >>> 0;
-  return h.toString(16).padStart(8, '0');
-};
-if (fnv(JSON.stringify([DATA])) !== SUM) throw new Error('This call differs from the file storysync figma code wrote: its data fails its checksum, SUM. Nothing was changed. Send the file again, exactly as it is.');
 const NS = 'storysync';
 const NL = String.fromCharCode(10);
 const S = DATA.S;
@@ -772,7 +767,7 @@ for (const [s, set] of DATA.sets.entries()) {
   Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
 }
 
-const out = { kind: 'build', tpl: 2, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
+const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
 // use_figma returns at most 20kb, and a call's changes stand when its
 // response is cut, so the agent would lose `uploads` with it. The lists that
 // grow with nodes are halved, longest first, until the response fits, and
