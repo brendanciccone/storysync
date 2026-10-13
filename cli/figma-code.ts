@@ -27,7 +27,7 @@ import type { FigmaStyle, MapContext, NotBuilt, Unbound } from "./figma-map.js";
 import { readBefore, readTimes } from "./figma-results.js";
 import { MAX_CALL_CHARS, MAX_UPLOADS_PER_CALL, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import type { Spike } from "./figma-spike.js";
-import { parseMeasurementWarning } from "./snap.js";
+import { describeVariantStories, parseMeasurementWarning } from "./snap.js";
 import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
 import { applyDelta } from "./snap-normalize.js";
 import { componentKey, selectComponents } from "./storybook.js";
@@ -382,18 +382,28 @@ export function setNameOf(component: SnapComponent): string {
   return component.title?.split("/").pop() || component.name;
 }
 
-/** The description line for a set snap measured from something other than the component, or "". */
+/**
+ * The description line for a set snap measured from something other than
+ * the component, or from more than one story, or "": what it measured, then
+ * which variants came from a story of their own (describeVariantStories),
+ * so someone looking at the set can see Toggle's outline variants came from
+ * another story than its others.
+ */
 function labelLine(component: SnapComponent): string {
+  const parts: string[] = [];
   for (const warning of component.warnings ?? []) {
     const note = parseMeasurementWarning(warning);
     if (!note) continue;
     // No double quotes: Figma escapes them in a description (D20).
     const element = note.element.replace(/"/g, "");
-    return note.kind === "closed-trigger"
+    parts.push(note.kind === "closed-trigger"
       ? `measured from its closed trigger, ${element}, not the open ${component.name}`
-      : `measured from ${element}, which may be the story's layout wrapper rather than ${component.name}`;
+      : `measured from ${element}, which may be the story's layout wrapper rather than ${component.name}`);
+    break;
   }
-  return "";
+  const stories = describeVariantStories(component);
+  if (stories) parts.push(stories.replace(/"/g, ""));
+  return parts.join("; ");
 }
 
 function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike): CompiledComponent | null {
@@ -683,7 +693,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // Label: every set built, with a line for those snap measured from something else.
   const label = { pages: builtPages, sets: built.map((c) => [c.id, c.note]) };
   add(
-    { kind: "label", page: "", components: built.map((c) => c.key), description: "Label the sets snap measured from something other than the component, and remove Figma's empty default page" },
+    { kind: "label", page: "", components: built.map((c) => c.key), description: "Label the sets snap measured from something other than the component or from more than one story, and remove Figma's empty default page" },
     (seq) => `${header(seq, "label", "")}const DATA = ${JSON.stringify(label)};\n${templates.label}\n`,
   );
 

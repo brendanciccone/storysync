@@ -11,7 +11,7 @@ import { DEFAULT_REQUEST_TIMEOUT_MS, requestLimit } from "./mcp-connect.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
-import { describeFontStandIns, runSnap, snapFailsStrict } from "./snap.js";
+import { describeFontStandIns, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
@@ -218,6 +218,8 @@ function describeCaveat(caveat: ScoreCaveat): string {
     }
     case "snap-warning":
       return caveat.warning ?? "";
+    case "variant-stories":
+      return caveat.note ?? "";
     case "root-only": {
       const inner = caveat.innerElements;
       return `only the outer element was measured and compared${inner !== undefined ? ` (${inner} inner ${inner === 1 ? "element" : "elements"} not measured)` : ""}`;
@@ -251,7 +253,7 @@ const collect = (value: string, previous: string[] = []): string[] => [...previo
 
 /**
  * Parses --stories: `component=storyId` pairs, comma-separated or given as
- * the flag more than once. Which component each names, and whether the
+ * the flag more than once, a story ending in `!` kept so. Which component each names, and whether the
  * story is one of its own, runSnap checks against Storybook's list
  * (resolveStoryOverrides) before anything is measured; this refuses what
  * can't be a pair at all, before connecting, rather than measuring the
@@ -265,7 +267,8 @@ function parseStories(values: string[] | undefined): Record<string, string> | un
     const at = pair.indexOf("=");
     const name = pair.slice(0, at).trim();
     const story = pair.slice(at + 1).trim();
-    if (at < 0 || !name || !story || story.includes("=")) {
+    // A story may end in `!`, to measure every variant from it.
+    if (at < 0 || !name || !story.replace(/!$/, "").trim() || story.includes("=") || story.slice(0, -1).includes("!")) {
       throw new Error(`--stories takes component=storyId pairs, such as ui-base-button=ui-base-button--with-icon, received "${pair}"`);
     }
     if (seen.has(name.toLowerCase())) throw new Error(`--stories names "${name}" twice: give each component one story`);
@@ -413,7 +416,7 @@ program
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
   .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
-  .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the story to measure the component from, in place of the one snap picks; a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
+  .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the component's story, in place of the one snap picks, which measures every variant no other story's own args are for, or every variant where the story ends in ! (ui-base-toggle=ui-base-toggle--default!); a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")
@@ -524,6 +527,11 @@ program
         }
         for (const component of result.components.filter((c) => c.error != null)) {
           console.log(chalk.yellow(`\n  ✗ ${component.title ?? component.name}: ${component.error}`));
+        }
+        // Said, not warned: the stories each variant was measured from, where not the component's.
+        for (const component of result.components) {
+          const stories = describeVariantStories(component);
+          if (stories) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${stories}`));
         }
         // Said, not warned: snap still takes variant properties from the docs alone.
         for (const component of result.components.filter((c) => c.argsNotInDocs?.length)) {
@@ -670,10 +678,14 @@ program
         if (result.skipped.length > 0) {
           beside.push(chalk.yellow(`  Left out of the score, as --skip asked: ${result.skipped.join(", ")}`));
         }
-        const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind));
+        const snapCaveats = result.caveats.filter((c) => !VERIFY_CAVEATS.has(c.kind) && c.kind !== "variant-stories");
         if (snapCaveats.length > 0) {
           beside.push(chalk.yellow(`  ! The score compares Figma with what snap measured, and snap warned about that for ${new Set(snapCaveats.map((c) => c.component)).size === 1 ? "this component" : "these components"}:`));
           for (const caveat of snapCaveats) beside.push(chalk.yellow(`      ${caveat.component}: ${describeCaveat(caveat)}`));
+        }
+        // Said, not warned: the variants snap measured from a story of their own.
+        for (const caveat of result.caveats.filter((c) => c.kind === "variant-stories")) {
+          beside.push(chalk.dim(`  i ${caveat.component}: ${describeCaveat(caveat)}`));
         }
         // Elements first where snap measured them (cli/verify.ts formatElementReport).
         const elementReport = formatElementReport(result, beside);

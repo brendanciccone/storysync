@@ -13,13 +13,15 @@ import {
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
+  contentOverflow, describeOverflow, describeVariantStories,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
 import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
-import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, thumbnailInPage } from "../snap-browser.js";
+import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, storiesOwnInPage, thumbnailInPage } from "../snap-browser.js";
 import type { RawTreeCapture } from "../snap-tree.js";
+import type { TreeNode } from "../tree-types.js";
 import { imageAssetId } from "../snap-assets.js";
 import { fnv1a32Bytes } from "../checksum.js";
 import { fakePreview, inPage, urlArgs } from "./preview-standin.js";
@@ -1667,11 +1669,16 @@ function treeBrowser(opts: {
   timeouts?: number;
   /** The story's markup checksum, as readMarkup reads it, for the args it was given; unread by default. */
   markup?: (args: Record<string, unknown>) => string;
+  /** The stories' own annotations the preview loads from their file (fakePreview's `csf`); none by default. */
+  csf?: Parameters<typeof fakePreview>[0]["csf"];
+  /** How many reads of the stories' own annotations fail before one succeeds, as one cut off by a navigation does. */
+  storiesReadFails?: number;
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
+  let readFails = opts.storiesReadFails ?? 0;
   let storyId = opts.storyId;
-  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId });
+  let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId, csf: opts.csf });
   let described = false;
   const given = () => fake.preview.storyStoreValue.getStoryContext().args;
   const target = {
@@ -1694,14 +1701,15 @@ function treeBrowser(opts: {
       if (timeouts-- > 0) throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
       described = false;
       storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
-      fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {} });
+      fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {}, csf: opts.csf });
       return null;
     },
     waitForSelector: async () => null,
     addStyleTag: async () => null,
     $: async () => target,
     evaluate: async (fn: unknown, arg?: unknown) => {
-      if (fn === storyArgsInPage || fn === applyStoryArgsInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
+      if (fn === storiesOwnInPage && readFails-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+      if (fn === storyArgsInPage || fn === applyStoryArgsInPage || fn === storiesOwnInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
         const bytes = opts.thumbnail ? opts.thumbnail(arg as { size: [number, number] }) : Buffer.from("thumbnail bytes");
@@ -1968,8 +1976,11 @@ test("resolveStoryOverrides: by ID or title; a name two components share is refu
     { id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds: ["ui-base-button--default", "ui-base-button--with-icon"] },
     { id: "ui-radix-button", name: "Button", title: "ui/radix/Button", storyIds: ["ui-radix-button--default"] },
   ];
-  assert.deepEqual([...resolveStoryOverrides(entries, { "ui/radix/button": "ui-radix-button--default" })], [["ui-radix-button", "ui-radix-button--default"]]);
-  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon" })], [["ui-base-button", "ui-base-button--with-icon"]]);
+  assert.deepEqual([...resolveStoryOverrides(entries, { "ui/radix/button": "ui-radix-button--default" })], [["ui-radix-button", { storyId: "ui-radix-button--default" }]]);
+  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon" })], [["ui-base-button", { storyId: "ui-base-button--with-icon" }]]);
+  // A story ending in `!` measures every variant: checked as the story it names.
+  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon!" })], [["ui-base-button", { storyId: "ui-base-button--with-icon", only: true }]]);
+  assert.throws(() => resolveStoryOverrides(entries, { "ui-base-button": "ui-base-button--x!" }), /--stories gives ui-base-button the story "ui-base-button--x", which isn't one of its stories/);
   assert.throws(() => resolveStoryOverrides(entries, { Button: "ui-x--y" }), /--stories names "Button", which is 2 components \(ui-base-button, ui-radix-button\)/);
   assert.equal(resolveStoryOverrides(entries, undefined).size, 0);
 });
@@ -1982,7 +1993,7 @@ test("resolveStoryOverrides: a pair for a component Storybook has and the run do
   // A push's pairs, given to a re-measure of the Switch alone.
   const measured = [listed[1]];
   assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon" }, listed)], []);
-  assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon", Switch: "ui-base-switch--default" }, listed)], [["ui-base-switch", "ui-base-switch--default"]]);
+  assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon", Switch: "ui-base-switch--default" }, listed)], [["ui-base-switch", { storyId: "ui-base-switch--default" }]]);
   // Still a typo when it names no component Storybook has, or a story not the component's.
   assert.throws(() => resolveStoryOverrides(measured, { Nope: "nope--x" }, listed), /--stories names "Nope", which is none of the components being measured \(ui-base-switch\)/);
   assert.throws(() => resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--x" }, listed), /--stories gives ui-base-button the story "ui-base-button--x", which isn't one of its stories/);
@@ -2234,4 +2245,231 @@ test("describeFontStandIns: once a run, what each family was measured in and why
     "Text in system-ui was measured in Inter, the font Figma sets it in, so the browser and Figma lay the text out alike.");
   assert.equal(describeFontStandIns([["Menlo", "Roboto Mono"], ["system-ui", "Inter"]]),
     "Text in Menlo was measured in Roboto Mono and text in system-ui in Inter, the fonts Figma sets them in, so the browser and Figma lay the text out alike.");
+});
+
+// --- The story each variant is measured from, and content past its box -------------
+
+const BUTTON_SIZE = { name: "size", type: { name: "union", raw: '"default" | "icon"' }, defaultValue: "default" };
+
+/**
+ * shadcn/ui Button as its stories draw it (fixtures/raw/button-icon.json):
+ * the Icon story an icon alone in its 36px square; any other story its
+ * label, which at `size=icon` spills out of the square by 5px a side.
+ */
+function buttonCapture(args: Record<string, unknown>, storyId: string): RawTreeCapture {
+  const capture = structuredClone(rawCapture("button-icon"));
+  const [svg, text] = capture.root.kids as [RawTreeCapture["root"], { rects: number[][]; text: string }];
+  if (storyId.endsWith("--icon")) {
+    capture.root.box = [0, 0, 36, 36];
+    svg.box = [10, 10, 16, 16];
+    capture.root.kids = [svg];
+  } else if (args.size === "icon") {
+    capture.root.box = [0, 0, 36, 36];
+    capture.root.kids = [{ ...text, text: "Button", rects: [[-5, 9, 46, 17]] }] as never;
+  } else {
+    capture.root.box = [0, 0, 70, 36];
+    capture.root.kids = [{ ...text, text: "Button", rects: [[12, 9, 46, 17]] }] as never;
+  }
+  return capture;
+}
+
+function buttonDocs(storyIds = ["ui-base-button--default", "ui-base-button--icon"]) {
+  return {
+    listComponents: async () => [{ id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds }],
+    getComponent: async () => ({ name: "Button", props: [BUTTON_SIZE], stories: storyIds.map((id) => ({ id, name: id })) }),
+  } as never;
+}
+
+const BUTTON_CSF = {
+  "ui-base-button--default": { args: {} },
+  "ui-base-button--icon": { args: { size: "icon", title: "Mail", children: { type: "svg" } } },
+};
+
+test("runSnap: a variant is measured from the story whose own args are for its values, recorded on it; the rest from the component's story", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf: BUTTON_CSF });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [button] = result.components;
+    assert.equal(button.storyId, "ui-base-button--default");
+    const [base, icon] = button.variants;
+    assert.deepEqual([base.combination, base.storyId], [{ size: "default" }, undefined]);
+    assert.deepEqual([icon.combination, icon.storyId, icon.status], [{ size: "icon" }, "ui-base-button--icon", "ok"]);
+    assert.deepEqual(Object.keys(icon).slice(0, 4), ["combination", "slug", "storyId", "status"]);
+    // The icon alone, its label gone: nothing draws past the square.
+    assert.equal(icon.boundingBox!.width, 36);
+    assert.deepEqual(icon.treeDelta!.keys, ["", "svg"]);
+    assert.deepEqual(button.warnings, []);
+    assert.equal(describeVariantStories(button), "measured `size=icon` from ui-base-button--icon, the rest from ui-base-button--default");
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), []);
+    // Written as measured.
+    assert.equal((readJson(join(dir, "styles.json")) as { components: { variants: SnapVariant[] }[] }).components[0].variants[1].storyId, "ui-base-button--icon");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: where the stories' args can't be read, every variant is measured from the component's story, and a label spilling out of its box is warned of", async () => {
+  const dir = tempDir();
+  try {
+    // A preview that can't load a story's file, as before Storybook 7.
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } } });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [button] = result.components;
+    assert.ok(button.variants.every((v) => v.storyId === undefined));
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), [
+      "  ui/base/Button: snap couldn't read its stories' args (Storybook's preview can't load a story's file (loadCSFFileByStoryId)), so it measured every variant from ui-base-button--default",
+    ]);
+    // Recorded, for verify to say beside the score.
+    assert.equal(button.storiesUnread, "Storybook's preview can't load a story's file (loadCSFFileByStoryId)");
+    assert.equal(describeVariantStories(button), "snap couldn't read its stories' args (Storybook's preview can't load a story's file (loadCSFFileByStoryId)), so it measured every variant from ui-base-button--default, choosing no story for any");
+    assert.deepEqual(button.warnings, [
+      "the variant with `size=icon` draws past its box, by up to 5px at the right and left (`#text`), so Figma shows it spilling out: " +
+        "ui-base-button--default gives it content that doesn't fit. A story whose own args set size=icon and give it content that fits " +
+        "would measure it; snap picks such a story by itself. Or measure the component from another of its stories, with --stories ui-base-button=<story ID>.",
+    ]);
+    // verify says it as written.
+    assert.equal(parseSnapWarning(button.warnings[0]), null);
+    // --stories names the Icon story: the component's story for every variant, the label gone from both.
+    const named = await runSnap(options(dir, { selector: "button", stories: { "ui-base-button": "ui-base-button--icon" } }), { storybook: buttonDocs(), launch });
+    assert.equal(named.components[0].storyId, "ui-base-button--icon");
+    assert.ok(!named.components[0].warnings.some((w) => /draws? past/.test(w)), named.components[0].warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a read of the stories' args that fails is tried again, and one that succeeds late measures again what it would change", async () => {
+  const dir = tempDir();
+  try {
+    // Wide is for size=default, so the first variant, measured before the read succeeded, had the wrong story.
+    const csf = { ...BUTTON_CSF, "ui-base-button--wide": { args: { size: "default", children: "A wider label" } } };
+    const storyIds = ["ui-base-button--default", "ui-base-button--icon", "ui-base-button--wide"];
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf, storiesReadFails: 1 });
+    const progress: string[] = [];
+    const [button] = (await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(storyIds), launch, onProgress: (m) => progress.push(m) })).components;
+    assert.deepEqual(button.variants.map((v) => [v.combination.size, v.storyId]), [["default", "ui-base-button--wide"], ["icon", "ui-base-button--icon"]]);
+    assert.equal(button.storiesUnread, undefined);
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), ["  ui/base/Button: snap read its stories' args late; measuring its variants again"]);
+    // A read that fails every time gives up after READ_STORIES_TRIES, recorded.
+    const failing = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf, storiesReadFails: 99 });
+    const [unread] = (await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(storyIds), launch: failing.launch })).components;
+    assert.ok(unread.variants.every((v) => v.storyId === undefined));
+    assert.match(unread.storiesUnread ?? "", /^page\.evaluate: Execution context was destroyed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a story --stories names ending in ! measures every variant, recorded as storyOnly, which --merge keeps", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf: BUTTON_CSF });
+    const progress: string[] = [];
+    const run = (more: Partial<SnapOptions>) => runSnap(options(dir, { selector: "button", ...more }), { storybook: buttonDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [button] = (await run({ stories: { "ui-base-button": "ui-base-button--default!" } })).components;
+    assert.equal(button.storyId, "ui-base-button--default");
+    assert.equal(button.storyOnly, true);
+    // The icon size from Default too, its label spilling out, though Icon is for it.
+    assert.ok(button.variants.every((v) => v.storyId === undefined));
+    assert.equal(button.variants[1].boundingBox!.width, 36);
+    assert.match(button.warnings.join("\n"), /--stories names ui-base-button--default with `!`, for every variant: name another story, or drop the `!`/);
+    assert.equal((readJson(join(dir, "styles.json")) as { components: { storyOnly?: true }[] }).components[0].storyOnly, true);
+    // A re-measure keeps it; --stories without `!` drops it.
+    const kept = (await run({ merge: true, components: ["ui-base-button"] })).components[0];
+    assert.deepEqual([kept.storyId, kept.storyOnly, kept.variants[1].storyId], ["ui-base-button--default", true, undefined]);
+    const picked = (await run({ merge: true, components: ["ui-base-button"], stories: { "ui-base-button": "ui-base-button--default" } })).components[0];
+    assert.deepEqual([picked.storyOnly, picked.variants[1].storyId], [undefined, "ui-base-button--icon"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A tree node, with only what contentOverflow reads. */
+const node = (k: string, box: [number, number, number, number], extra: Partial<TreeNode> = {}): TreeNode =>
+  ({ k, t: "F", el: k ? k.split("/").pop()! : "button", box, bg: "#000000", ...extra }) as TreeNode;
+const label = (k: string, box: [number, number, number, number], extra: Partial<TreeNode> = {}): TreeNode =>
+  node(k, box, { t: "T", el: "#text", bg: undefined, tx: { c: "Button", f: "Inter", sz: 14, wt: 500, col: "#000000", lh: 20, n: 1, ink: [0, 0, box[2], box[3]] }, ...extra });
+
+test("contentOverflow: how far what draws reaches past the root's box, and which elements do", () => {
+  const root = node("", [0, 0, 36, 36]);
+  assert.deepEqual(contentOverflow([root, label("#text", [-5, 9, 46, 17])]), { by: 5, sides: ["right", "left"], elements: ["#text"] });
+  assert.equal(contentOverflow([root, label("#text", [5, 9, 26, 17])]), null);
+  // Within a pixel is a glyph's overhang, not overflow.
+  assert.equal(contentOverflow([root, label("#text", [-0.8, 9, 37.6, 17])]), null);
+  // A text by its glyphs: a line box wider than the ink isn't content past the box.
+  assert.equal(contentOverflow([root, label("#text", [-5, 9, 46, 17], { tx: { c: "B", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 1, ink: [10, 0, 20, 17] } })]), null);
+  // Down by its lines, not the font's content area: shadcn/ui Label, `leading-none`, 14px Inter in a 14px root, its glyph rects 17px tall (live, 2026-10-13).
+  const labelRoot = node("", [0, 0, 1248, 14], { bg: undefined, t: "F" });
+  const leadingNone = label("#text", [0, -0.5, 127.23, 14], { tx: { c: "Accept terms and conditions", f: "Inter", sz: 14, wt: 500, col: null, lh: 14, n: 1, ink: [0, -1.5, 127.23, 17] } });
+  assert.equal(contentOverflow([labelRoot, leadingNone]), null);
+  // Lines that do run past the box still count.
+  assert.deepEqual(contentOverflow([node("", [0, 0, 100, 20]), label("#text", [0, 0, 90, 40], { tx: { c: "Two lines", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 2, ink: [0, 1.5, 90, 37] } })])?.sides, ["bottom"]);
+  // Down the tree, each box relative to its parent's.
+  assert.deepEqual(contentOverflow([root, node("row", [4, 4, 28, 28], { bg: undefined }), node("row/dot", [20, 20, 16, 16])]), { by: 4, sides: ["right", "bottom"], elements: ["dot"] });
+});
+
+test("contentOverflow: not what is clipped, positioned, transformed, hidden or paints nothing, nor what no box holds", () => {
+  const spill = label("#text", [-5, 9, 46, 17]);
+  // The root clips both axes, or the axis it spills on.
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36], { clip: 1 }), spill]), null);
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36], { clip: "x" }), spill]), null);
+  assert.deepEqual(contentOverflow([node("", [0, 0, 36, 36], { clip: "y" }), spill])?.sides, ["right", "left"]);
+  // An element around it clips it to its own box.
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36]), node("wrap", [0, 0, 36, 36], { bg: undefined, clip: 1 }), label("wrap/#text", [-5, 9, 46, 17])]), null);
+  // A badge's dot positioned past the corner, a spinner turned, a hidden or transparent layer: the design's.
+  const root = node("", [0, 0, 36, 36]);
+  assert.equal(contentOverflow([root, node("dot", [30, -4, 10, 10], { abs: 1 })]), null);
+  assert.equal(contentOverflow([root, node("abs", [0, 0, 36, 36], { abs: 1, bg: undefined }), node("abs/dot", [30, -4, 10, 10])]), null);
+  assert.equal(contentOverflow([root, node("spin", [-4, -4, 44, 44], { tf: "matrix(0.7,0.7,-0.7,0.7,0,0)" })]), null);
+  assert.equal(contentOverflow([root, node("ghost", [-4, 0, 44, 36], { vis: 0 })]), null);
+  assert.equal(contentOverflow([root, node("ghost", [-4, 0, 44, 36], { op: 0 })]), null);
+  // A frame that paints nothing; a shadow or a focus ring, which no box holds.
+  assert.equal(contentOverflow([root, node("layout", [-4, 0, 44, 36], { bg: undefined })]), null);
+  assert.equal(contentOverflow([node("", [0, 0, 36, 36], { sh: [[0, 4, 12, 0, "#00000040"]], ol: [2, "solid", "#3b82f6", 2] })]), null);
+  // A text that cuts itself off at its box, by its box.
+  assert.equal(contentOverflow([root, label("#text", [2, 9, 32, 17], { tx: { c: "sales-dashboard.pdf", f: "Inter", sz: 14, wt: 500, col: null, lh: 20, n: 1, el: 1, ink: [0, 0, 139.4, 17] } })]), null);
+});
+
+test("describeOverflow: the variants by the values they share, how far, and the story that would measure them, with --stories", () => {
+  const variant = (size: string, variant: string, storyId?: string): SnapVariant =>
+    ({ combination: { variant, size }, slug: `${variant}-${size}`, status: "ok", error: null, ...(storyId ? { storyId } : {}) });
+  const over = (v: SnapVariant, by: number) => ({ variant: v, overflow: { by, sides: ["right", "left"] as ("right" | "left")[], elements: ["#text"] } });
+  const component = { id: "ui-base-button", label: "ui/base/Button", storyId: "ui-base-button--default" };
+  const own = [
+    { id: "ui-base-button--default", args: {} },
+    { id: "ui-base-button--secondary", args: { variant: "secondary" } },
+    // Small is for size=sm, but draws nothing of its own, so it shows nothing of what a story for icon-xs would be.
+    { id: "ui-base-button--small", args: { size: "sm" } },
+    { id: "ui-base-button--icon", args: { variant: "secondary", size: "icon", children: { $type: "object" } } },
+  ];
+  const properties: FigmaVariantProperty[] = [
+    { name: "variant", type: "VARIANT", values: ["default", "secondary"], defaultValue: "default" },
+    { name: "size", type: "VARIANT", values: ["default", "icon", "icon-xs"], defaultValue: "default" },
+  ];
+  const said = describeOverflow(component, [over(variant("icon-xs", "default"), 6.5), over(variant("icon-xs", "secondary"), 6)], 6, { own, properties });
+  assert.equal(said,
+    "the 2 variants with `size=icon-xs` draw past their box, by up to 6.5px at the right and left (`#text`), so Figma shows them spilling out: " +
+    "ui-base-button--default gives them content that doesn't fit. A story whose own args set size=icon-xs and give them content that fits, " +
+    "as ui-base-button--icon is for `size=icon`, would measure them; snap picks such a story by itself. " +
+    "Or measure the component from another of its stories, with --stories ui-base-button=<story ID>.");
+  // Every variant, or some sharing nothing: by slug, and the story each was measured from.
+  const all = describeOverflow(component, [over(variant("default", "default"), 2), over(variant("icon", "secondary", "ui-base-button--icon"), 3)], 2, null)!;
+  assert.match(all, /^all 2 variants draw past their box, by up to 3px .* ui-base-button--default and ui-base-button--icon give them content that doesn't fit\. Measure the component from another of its stories instead, with --stories ui-base-button=<story ID>\. ui-base-button--icon is the story snap picked for some of their values: give it content that fits, or measure every variant from one story, ending it with `!`: --stories ui-base-button=<story ID>!\.$/);
+  assert.equal(describeOverflow(component, [], 6, null), null);
+  // Variants from the story snap picked for them: --stories alone, which sets the component's story, can't help, and the story itself is no example.
+  const picked = describeOverflow(component, [over(variant("icon", "default", "ui-base-button--icon"), 4), over(variant("icon", "secondary", "ui-base-button--icon"), 4)], 6, { own, properties })!;
+  assert.equal(picked,
+    "the 2 variants with `size=icon` draw past their box, by up to 4px at the right and left (`#text`), so Figma shows them spilling out: " +
+    "ui-base-button--icon gives them content that doesn't fit. ui-base-button--icon is the story snap picked for their values: give it content that fits, " +
+    "or measure every variant from one story, ending it with `!`: --stories ui-base-button=<story ID>!.");
+  assert.doesNotMatch(picked, /snap picks such a story by itself|as ui-base-button--icon is for/);
+  // Variants from the component's story that is the only story for another value: no example from the stories they came from.
+  const fromIcon = describeOverflow({ ...component, storyId: "ui-base-button--icon" }, [over(variant("icon-xs", "default"), 3)], 6, { own, properties })!;
+  assert.doesNotMatch(fromIcon, /as ui-base-button--icon is for/);
+  // A component --stories named with `!`: drop it, or name another.
+  const only = describeOverflow({ ...component, storyId: "ui-base-button--icon", storyOnly: true }, [over(variant("default", "default"), 3)], 6, { own, properties })!;
+  assert.match(only, /ui-base-button--icon gives it content that doesn't fit\. --stories names ui-base-button--icon with `!`, for every variant: name another story, or drop the `!` so snap measures a variant from a story that is for its values\.$/);
 });

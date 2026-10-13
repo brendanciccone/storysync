@@ -23,7 +23,7 @@ import {
   normalizeLetterSpacing, normalizeLineHeight, parseBoxShadow, pxToNumber, resolveFontFamily, resolveRadii, splitTopLevel,
 } from "./snap-normalize.js";
 import type { FontProbe } from "./snap-normalize.js";
-import { stackFamilies, standInDrawn } from "./fonts.js";
+import { isStandInFamily, stackFamilies, standInDrawn } from "./fonts.js";
 import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
 import { ROOT_FIELDS, TREE_LIMITS } from "./tree-types.js";
@@ -204,6 +204,21 @@ export interface TreeBuildOptions {
 
 const r2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
 const roundBox = (b: RawBox): Box => [r2(b[0]), r2(b[1]), r2(b[2]), r2(b[3])];
+/** To 0.01, up, float noise under a millionth of a pixel first taken off. */
+const c2 = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100 || 0;
+/**
+ * A box that holds text, rounded with its width up: never narrower than
+ * the text, which Figma keeps on one line only at its own width or wider
+ * (139.39 wraps "sales-dashboard.pdf", 139.4 doesn't). The stand-ins set
+ * text as wide as Figma does (fonts.ts), so rounding to the nearest 0.01
+ * cut about half of all one-line labels short by up to 0.005px.
+ */
+const textBox = (b: RawBox): Box => [r2(b[0]), r2(b[1]), c2(b[2]), r2(b[3])];
+
+/** Whether an element holds text, itself or anywhere below: a run, an input's value, or a pseudo-element's content. */
+function holdsText(el: RawTreeElement): boolean {
+  return Boolean(el.input) || el.kids.some((kid) => (kid.k === "t" && kid.text.trim() !== "") || (kid.k === "p" && kid.content !== "") || (kid.k === "e" && holdsText(kid)));
+}
 
 type Css = (property: string) => string;
 const reader = (cs: Record<string, string>): Css => (p) => cs[p] ?? TREE_PROPERTY_DEFAULTS[p] ?? "";
@@ -359,7 +374,7 @@ function runCharacters(text: string, whiteSpace: string): string {
  */
 function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
   const css = reader(el.cs);
-  const box = roundBox(el.box);
+  const box = holdsText(el) ? textBox(el.box) : roundBox(el.box);
   const item: Item = { kind: "el", box, kids: [], el, css, wrappers: [], paints: elementPaints(el) };
 
   // 1. sr-only: out of flow, a pixel or less, clipping what it holds.
@@ -376,7 +391,7 @@ function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
         // 5. A pseudo-element that paints nothing: Switch's hit area, say.
         const content = kid.content.trim() !== "";
         if (!paintsOwnBox(kid.cs) && !content) continue;
-        item.kids.push({ kind: "pseudo", box: roundBox(kid.box), kids: [], pseudo: kid, css: reader(kid.cs), wrappers: [], paints: true });
+        item.kids.push({ kind: "pseudo", box: kid.content !== "" ? textBox(kid.box) : roundBox(kid.box), kids: [], pseudo: kid, css: reader(kid.cs), wrappers: [], paints: true });
       } else if (kid.k === "cut") {
         item.kids.push({ kind: "cut", box: [0, 0, 0, 0], kids: [], wrappers: [], paints: false });
       } else {
@@ -712,7 +727,7 @@ function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { famil
   // the family after it as asked.
   const drawn = standInDrawn(first);
   if (!drawn) return { family: first, available: null };
-  const next = stackFamilies(stack)[1];
+  const next = stackFamilies(stack).slice(1).find((family) => !isStandInFamily(family));
   return { family: drawn, available: null, ...(next ? { asked: next } : {}) };
 }
 
@@ -850,7 +865,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       const run = item.run!;
       const ink = inkOf(run.rects);
       const lh = normalizeLineHeight(text["line-height"]);
-      const box = roundBox(lineBox(ink, lineCount(run.rects), lh, firstLineHeight(run.rects)));
+      const box = textBox(lineBox(ink, lineCount(run.rects), lh, firstLineHeight(run.rects)));
       const chars = runCharacters(run.text, text["white-space"] ?? "normal");
       node = { k: key, t: "T", el: "#text", box: rel(box), tx: textFacts(text, holder, chars, { rects: run.rects, ink }, box, ctx.fonts) };
     } else {

@@ -925,7 +925,8 @@ T3. **Figma's Inter is Inter 3.19** (axes slnt and wght). Chrome with
     strings exactly as wide as Figma did, rounded up to a pixel; with 5.3.0,
     Inter 4, 13 of 35. Roboto Mono and Noto Serif at 5.3.0 matched 2 of 2
     each. The spike's "158 against Chrome's 154.8" was Inter against the
-    Mac's system-ui, 2.1% wider; short words run up to 10%.
+    Mac's system-ui, 2.1% wider; short words run up to 10%. As wide to the
+    pixel only: Figma rounds each advance to a 1024th of an em (S1).
 T4. **Sizes round up to a pixel.** A hugging text is as wide as its advance
     rounded up ("Home" 39.04 came out 40), and a text that grows in height
     as tall as its lines rounded up (one line of 17.5 came out 18), except
@@ -933,7 +934,8 @@ T4. **Sizes round up to a pixel.** A hugging text is as wide as its advance
     AUTO line height is each font's ascent and descent to a whole pixel:
     Inter 1.21em, Roboto Mono 1.319 (18 at 14px), Noto Serif 1.362 (22 at
     16px).
-T5. **Figma keeps a line whole a little narrower than its advance**: by
+T5. **Superseded by S1**, which found call 2 reading a text Figma had
+    stopped wrapping. As first written: **Figma keeps a line whole a little narrower than its advance**: by
     0.13 to 1.22px for the probe's eight strings (call 2's thresholds), and
     always at Chrome's width, 0.004 under it, and rounded to 0.01. A word
     wider than its box breaks between characters.
@@ -1052,8 +1054,8 @@ T17. **The uniform `textWidthFactor` (1.045) is gone.** The fixtures were
     browser's widths, where a designer's changed text would stretch the line
     under it past its tolerance.
 T18. **Text sizes, wrapping and truncation follow T1 to T5**, except the
-    wrap threshold: the mock wraps a line wider than its box, so it may
-    wrap where Figma wouldn't, never the other way round. Lines break after
+    wrap threshold, which follows S4: a line wraps in a box any narrower
+    than it. Lines break after
     a space or a hyphen, and a word wider than its box between characters.
 T19. **The test harness's own build** (`tree-harness.ts`) set truncation
     first too, and lost it in the mock as soon as the mock did what Figma
@@ -1248,3 +1250,221 @@ LC2. **Each MCP request has `--request-timeout`, five minutes by default**
    600. The MCP transports now fetch through a dispatcher of Node's own
    kind with those limits off (`untimedFetch`), and cli-connect's test
    shortens Node's limits to 400ms to hold that.
+
+# Fix pass 5, snap side (after the fourth live push)
+
+Notes S1 on. The fourth live push (Figma file nCldItWrdQWKueFNy5dPZM)
+scored 100% with the layout right, but Figma cut Attachment's title
+("sales-dashboard.p…") that Storybook showed whole, and Button's icon sizes
+held a label spilling out of their square.
+
+S1. **Figma rounds each advance and kerning value to a 1024th of an em**,
+    as HarfBuzz does with the font scaled to 1024 units an em, a variable
+    font's deltas rounded on their own: 1845 advances and 7632 kerning pairs
+    of Inter at its nine weights come out so in the fourth push's text probe
+    (`spikes/figma-width-probe-1.js` to `-4.js`, its responses
+    `fixtures/figma-text-probe-3.json`, unchanged). Chrome sets the
+    package's Inter unrounded, so "sales-dashboard.pdf" (Medium 14) was
+    139.375 wide in Chrome and needs 139.39843 in Figma: snap measured the
+    title's column 139.38 wide, and Figma cut it. On a fresh text Figma
+    keeps a line whole only at its own width, 139.4 and not 139.39. The
+    third push's call 2 resized one text again and again, which Figma stops
+    wrapping (its textAutoResize ends NONE, `sameNode`), so its thresholds
+    (T5) described that text.
+S2. **The faces snap draws in carry Figma's widths** (`fonts/`, written by
+    `scripts/figma-stand-ins.py` with fonttools and uharfbuzz from the same
+    packages): Inter's Latin subset as nine static faces, one a weight,
+    each instanced and rounded as Figma rounds it, and Roboto Mono's
+    upright Latin and Latin Extended, every advance 1230 of 2048 units as
+    Figma sets it (the package has 1229). Each is renamed, as the OFL asks
+    of a modified font, and ships in the package's "files" with its license
+    (`fonts/OFL-*.txt`) and `fonts/manifest.json`, their digests, which
+    `fonts.test.ts` holds them to. Inter's other subsets stay variable from
+    the package, under a family of their own, `storysync Inter scripts`,
+    after the rounded one: Chrome picks one set of faces by weight and
+    doesn't look past it for a glyph, so static Latin faces and variable
+    others in one family set "a" in Times at some weights. Roboto Mono's
+    italics (1202, already whole) and Noto Serif are as their packages ship
+    them. resolveFontFamily and the tree reader skip the second family
+    where they read the family asked for after the stand-in.
+S3. **Proof.** `scripts/figma-font-metrics.mjs`, which acceptance runs
+    with `--check`, sets each of the probe's strings in Chrome in the
+    stand-in and prints how far each family is from Figma's widths: Inter's
+    37 strings and Roboto Mono's 3 are within 0.00001px, the probe's own
+    rounding, and it fails above 0.001px. Noto Serif is 0.21px narrower
+    than Figma at Bold 20 ("Quietly Waving"), as its faces aren't rounded
+    yet; its Regular strings are within 0.011px, and rounding Regular's
+    advances to a 1024th gives Figma's widths exactly, so the same script
+    can round it once it carries Noto Serif.
+S4. **The mock follows the same data.** `fixtures/figma-fonts.json`,
+    measured in Chrome from the faces snap draws in, sets every Inter and
+    Roboto Mono string of the probe within 0.002px of Figma (its advances
+    are kept to 0.00001em), and the mock keeps a line whole only in a box
+    at least as wide (`FITS`, float noise), where it allowed 0.01px. The
+    fourth push's first call, run in the mock, wraps the title at 139.375,
+    139.38 and 139.39 and keeps it whole from 139.4, as Figma did. The mock
+    rounds a size to 0.01 as it is set, so where it keeps a line whole can
+    sit up to 0.007px from Figma's.
+S5. **Each variant from the story that is for it** (`cli/snap-stories.ts`;
+    section 6.1 measures every variant from one story). The fourth push
+    measured Button from WithIcon (`--stories`), so each icon size held
+    "Login with Email Button" spilling out of its 34px square. Once a
+    story has loaded, snap reads each of the component's stories' own
+    annotations from Storybook's preview (`loadCSFFileByStoryId`, Storybook
+    7 on): its own args, not its component's, and whether it has a render,
+    decorators or a play function of its own. A story is for the values its
+    own args give the variant properties, less those a story that draws
+    nothing of its own also gives them: Icon sets `variant=secondary` and
+    `size=icon`, and Secondary sets `variant=secondary`, so Icon is for
+    `size=icon`; WithIcon sets what Secondary does, so it is for nothing.
+    Nor is a story for what another sets where it holds all of that
+    story's own args and adds more (S8). A variant is measured from the
+    story that draws something of its own (an arg that is no variant
+    property and no function, or its own render or decorators) and that is
+    for values the variant all has: the most of them, then the plainest
+    (S8), then the first; never one with a play function. Every other variant comes from the
+    component's story. On shadcn's Button that is each `size=icon`,
+    `icon-sm` and `icon-lg` variant from Icon, Icon Small and Icon Large,
+    and the rest from Default. The first variant measured is measured
+    again where the stories, read after it loaded, give it another. A
+    variant from another story records it as `storyId`; snap prints a line
+    a component saying which, and verify a `variant-stories` caveat, said
+    beside the score, not warned. A preview that can't give the
+    annotations leaves every variant on the component's story, with a
+    progress line.
+S6. **`--stories` names the component's story** rather than every
+    variant's: it measures each variant no other story is for, so a push
+    that names WithIcon for Button still measures its icon sizes from the
+    Icon stories. Its checks are as before (D's notes), and `--merge` still
+    keeps the component's story of the snap it adds to.
+S7. **Content past its box** (`contentOverflow`, `describeOverflow`). A
+    variant whose content draws more than 1px past its root's box, which
+    Figma shows spilling out, is warned of once a component: the variants,
+    by the values they share where the others don't have them, how far and
+    on which sides, the elements, the story they came from, and that a
+    story whose own args set those values and give them content that fits
+    would be picked, naming one that is for another value of the same
+    property, or `--stories`. What draws counts (text across by its
+    glyphs unless it cuts itself off and down by its lines (S10), vectors,
+    images, frames with a fill or a border),
+    not what the root or an element around it clips, nor anything
+    positioned absolutely, transformed, hidden or fully transparent, or in
+    such an element, nor shadows and outlines, which no box holds. verify
+    says it as written, as a `snap-warning`.
+S8. **The plainest story wins a tie** (review of S5). The first live
+    snap after S5 measured shadcn/ui Toggle's `variant=outline` variants
+    from WithText, whose own args are `{ ...Outline.args }` and whose
+    render adds an "Italic" label, as both were for `variant=outline` and
+    the tie went to the story that set more of its own: Figma got 78px
+    outline toggles with a label beside 36px icon-only defaults, and no
+    warning, as the label fit. A story that holds every one of another's
+    own args, as recorded, and adds an arg, a render or decorators that one
+    lacks is now for none of the values that one is for (`decorates`), and
+    a tie goes to the story that sets the least of its own, then the
+    first. Toggle's outline variants come from Outline.
+S9. **A CSF2 story draws with a function of its own.** Storybook keeps a
+    story that is a function (`Template.bind({})`) as its `userStoryFn`,
+    which it renders in place of any `render`, and gives it no `render`
+    of its own. storiesOwnInPage read only `render`, so such a story whose
+    args named only variant properties counted as one that adds nothing,
+    and took those values from the keys of the stories that do: a
+    function story with `{ size: "icon" }` left Icon for nothing. It now
+    counts as having a render.
+S10. **Text draws down to its lines, not its content area.** A text's
+    `ink` is the union of its client rects, the font's content area, 17px
+    tall for 14px Inter, not the glyphs' own bounds. Measured by it, any
+    `leading-none` text flush with its root reached 1.5px past it, so a
+    stock shadcn/ui Label (root 14px, text box [0, -0.5, 127.23, 14], ink
+    [0, -1.5, 127.23, 17]) was warned of, with advice it couldn't follow,
+    and `--strict-warnings` failed. contentOverflow now takes a text's
+    extent across from its ink and down from its own box, its lines, which
+    the build sets it to.
+S11. **`--stories` with `!` measures every variant from one story**
+    (review of S6, S7). S6 left no way to undo a story snap picked for a
+    variant: `--stories` sets only the component's story, so Toggle's
+    outline variants stayed on WithText whatever it named, and the
+    overflow warning's `--stories` advice couldn't help variants from a
+    picked story. A story ending in `!` (`ui-base-toggle=ui-base-toggle--
+    default!`) now measures every variant, snap reads no stories' args for
+    it, and the component records `storyOnly: true`, which `--merge` keeps
+    and an audit passes back as `!` (the skills' Audit step, the diff
+    command). `--stories` without it still sets only the component's
+    story, so an audit's pairs from styles.json reproduce the push's
+    per-variant picks. describeOverflow now advises by where the variants
+    came from: for the component's story, a story for their values (its
+    example never one they came from) or `--stories`; for a story snap
+    picked, that story given content that fits or `!`; for a component
+    named with `!`, another story or dropping the `!`. The Cursor rule says
+    all of this as the Claude Code and Codex skills do, and setup.test.ts
+    holds all three to it.
+S12. **A failed read of the stories' args is tried again, and recorded.**
+    A read that failed, after a render error or a navigation, left the
+    component on its story for every variant with only a progress line, so
+    two runs could measure different content with nothing in styles.json
+    to tell. Now a failed read is tried again with each later variant that
+    loads, up to `READ_STORIES_TRIES` (3); one that succeeds after a
+    variant was measured that a story is for starts the plan over, as new
+    argTypes options do, so no variant keeps the wrong story's content.
+    Where every try fails, the component records why as `storiesUnread`,
+    which snap's output and verify's `variant-stories` caveat say.
+S13. **A set's description says which variants a story of their own
+    measured.** S5 said it in snap's output and verify only, so someone
+    looking at a pushed set couldn't see that some variants came from
+    another story. The label call's line for a set (`labelLine`) now adds
+    describeVariantStories' line after any closed-trigger or wrapper note,
+    joined by "; ", so plan.json's label call and the set's `storysync:`
+    description line both carry it. The template is unchanged.
+S14. **A box that holds text is rounded up to 0.01** (review of S2-S4).
+    With the stand-ins as wide as Figma, snap still rounded every box to
+    the nearest 0.01, so about half of all one-line labels got a box up to
+    0.005px narrower than Figma's width for them, and Figma, which keeps a
+    line whole only at its own width or wider, cut them short: push 4's
+    cut title, for "financial-model.xlsx" (134.38068 in a 134.38 column)
+    as for 1101 of 2304 synthetic file names. buildTree now rounds the
+    width of a text's line box, and of every element or pseudo-element
+    that holds text, up to 0.01 (float noise under a millionth of a pixel
+    taken off first), and every other box as before. An ancestor's width
+    is rounded up from its own raw width, so a filling text has at least
+    its raw width inside it however its padding rounds. Package T's
+    fixtures, rounded to the nearest, are up to 0.01 narrower and are
+    compared allowing that. build-template.test.ts builds the Attachment
+    with that title in the mock: whole, with no fallback, where to the
+    nearest it was cut short.
+S15. **Inter's stand-in carries its symbols** (review of S2). The
+    package's Latin subset has no ←, → or ✓, so Chrome set them in a
+    platform font, "Next →" 0.65px narrower than Figma at Medium 14, and
+    the mock, at 1em, wider; 27 of the probe's advances were off. Each
+    rounded Inter face is now made from Inter 3.019 whole, the
+    Inter[slnt,wght].ttf Google Fonts shipped (the build the package
+    subsets; `figma-stand-ins.py --inter`, its digest pinned), upright,
+    subset to the package's Latin and every symbol Inter has from U+2000
+    to U+2BFF (356: arrows, check marks, a Mac keyboard's keys, shapes),
+    then rounded as before; about 42KB a weight, from 23KB. The manifest
+    records each face's characters (`unicodeRange`), which fonts.ts uses
+    in place of the package's Latin range. The whole font's kerning
+    subtables come out rearranged once instanced (S16 says how values
+    carry over). Regenerating also
+    fixed a descent the committed faces had a unit off (-495 for -494 of
+    2048), so Inter's AUTO line height is Figma's 1.21em, not 1.211.
+    figma-font-metrics.mjs now proves each of the probe's 207 characters
+    alone at every weight too: within 0.000005em. mock-figma.test.ts holds
+    figma-fonts.json to the same.
+S16. **Noto Serif's Latin faces are rounded too** (review of S3). They
+    were left unrounded for want of fonttools, so "The quick brown fox"
+    (Regular 16) was 158.432 in Chrome and the mock against 158.43749 in
+    Figma, and a box snap measured could cut it. figma-stand-ins.py now
+    writes Noto Serif's Latin faces, upright and italic, one a weight, as
+    Inter's (about 17KB each, 306KB in all), with its OFL; its other
+    subsets stay variable under `storysync Noto Serif scripts`, as Inter's
+    do. Both Regular strings of the probe now come out within 0.00001px,
+    and the metrics proof and the mock hold Noto Serif to the tolerance.
+    Its one Bold string ("Quietly Waving", 20px) doesn't: 155.21484 against
+    Figma's 155.05859, and no weight of Noto Serif 2.015 sets it as wide
+    (the closest, 695, is 0.08px off), so Figma's Bold is another release.
+    It is printed, not held (OTHER_RELEASE). Chrome sets it wider than
+    Figma, so nothing is cut. A probe of Noto Serif's advances at each
+    weight, as the fourth push's call 2 read Inter's, would let the script
+    take its widths from Figma itself: planned, as it needs a live call.
+    Each kerning value is now set in the variable font before it is
+    instanced, its delta dropped, as the instancer rearranges Noto Serif's
+    kerning subtables, so values no longer go by position.

@@ -802,6 +802,11 @@ test("resolveFontFamily: a stand-in snap drew is recorded as the family Figma se
     resolveFontFamily({ families: ["storysync Roboto Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"], applied: [true, false, false, true, null] }),
     { family: "Roboto Mono", available: true, asked: "Menlo" },
   );
+  // Inter's second family, its other scripts (fonts.ts), is snap's too, never what the code asked for.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Inter", "storysync Inter scripts", "ui-sans-serif", "system-ui"], applied: [true, true, false, null] }),
+    { family: "Inter", available: true, asked: "system-ui" },
+  );
   // A stand-in that didn't load drew nothing: the stack is read as before.
   assert.deepEqual(
     resolveFontFamily({ families: ["storysync Inter", "ui-sans-serif", "system-ui"], applied: [false, false, null] }),

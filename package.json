@@ -63,6 +63,7 @@
     "dist/cli/*.d.ts",
     "dist/templates",
     "templates",
+    "fonts",
     "skills",
     "commands",
     "action",

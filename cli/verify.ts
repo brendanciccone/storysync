@@ -18,7 +18,7 @@ import type { ComponentTree, TreeDelta, TreeNode } from "./tree-types.js";
 import { SPIKE, recordProblem, scoreTree } from "./verify-tree.js";
 import type { NodeVerdict, ReadRecord, SpikeAssumptions, UnscorableProperty } from "./verify-tree.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
-import { SNAP_META_FILENAME, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning, parseSnapWarning } from "./snap.js";
+import { SNAP_META_FILENAME, describeVariantStories, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning, parseSnapWarning } from "./snap.js";
 import { NO_STORY_FIX } from "./snap-args.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
@@ -522,7 +522,7 @@ export interface ScoreCaveat {
    * `identical-variants` has it.
    */
   kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
-    | "identical-values" | "no-op-properties" | "preview-set" | "font-stand-in" | "snap-warning"
+    | "identical-values" | "no-op-properties" | "preview-set" | "font-stand-in" | "snap-warning" | "variant-stories"
     | "root-only" | "truncated-tree" | "built-from-other-measurement";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
@@ -545,6 +545,13 @@ export interface ScoreCaveat {
   fonts?: string[];
   /** For `snap-warning`: a warning of snap's no other kind stands for, as snap wrote it. */
   warning?: string;
+  /**
+   * For `variant-stories`, said rather than warned: the stories variants
+   * were measured from other than the component's, each with the variants'
+   * slugs, and `note`, which says it as snap did.
+   */
+  stories?: { story: string; slugs: string[] }[];
+  note?: string;
   /**
    * For `args-unchecked`: the variants snap measured without being able to
    * check that Storybook gave the story their values, so any of them may
@@ -1701,6 +1708,13 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
   if (viaPreview.length) {
     const values = [...new Set(viaPreview.flat().map((r) => `${r.name}=${r.value}`))];
     caveats.push({ component: key, kind: "preview-set", values, variants: viaPreview.length });
+  }
+  // Which variants a story other than the component's measured, as snap said.
+  const note = describeVariantStories({ storyId: component.storyId, variants: component.variants ?? [], storiesUnread: component.storiesUnread });
+  if (note) {
+    const stories = new Map<string, string[]>();
+    for (const v of component.variants ?? []) if (v.storyId) stories.set(v.storyId, [...(stories.get(v.storyId) ?? []), v.slug]);
+    caveats.push({ component: key, kind: "variant-stories", stories: [...stories].map(([story, slugs]) => ({ story, slugs })), note });
   }
   // What snap's warnings alone say: values or properties that measured the
   // same, and a font the browser couldn't render.

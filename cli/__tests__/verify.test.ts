@@ -1333,6 +1333,28 @@ test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants
   assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]).components[0]), []);
 });
 
+test("scoreCaveats: the variants measured from a story of their own, by story, said as snap said it", () => {
+  const snap = snapWith([{ slug: "default", delta: {} }, { slug: "icon", delta: { width: 36 } }, { slug: "icon-sm", delta: { width: 32 } }]);
+  const [base, icon, small] = snap.components[0].variants;
+  base.combination = { size: "default" };
+  Object.assign(icon, { combination: { size: "icon" }, storyId: "forms-button--icon" });
+  Object.assign(small, { combination: { size: "icon-sm" }, storyId: "forms-button--icon-small" });
+  assert.deepEqual(scoreCaveats(snap.components[0]), [{
+    component: "Forms/Button", kind: "variant-stories",
+    stories: [{ story: "forms-button--icon", slugs: ["icon"] }, { story: "forms-button--icon-small", slugs: ["icon-sm"] }],
+    note: "measured `size=icon` from forms-button--icon and `size=icon-sm` from forms-button--icon-small, the rest from forms-button--default",
+  }]);
+  // Each variant from the component's story: nothing to say.
+  assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { width: 36 } }]).components[0]), []);
+  // Unless snap couldn't read the stories' args, and so chose no story for any variant.
+  const unread = snapWith([{ slug: "a" }, { slug: "b", delta: { width: 36 } }]).components[0];
+  unread.storiesUnread = "Execution context was destroyed";
+  assert.deepEqual(scoreCaveats(unread), [{
+    component: "Forms/Button", kind: "variant-stories", stories: [],
+    note: "snap couldn't read its stories' args (Execution context was destroyed), so it measured every variant from forms-button--default, choosing no story for any",
+  }]);
+});
+
 test("scoreCaveats: props that reach the component and change nothing measured are a caveat of their own, not the story's", () => {
   const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
   const props = [{ name: "textAlign", type: "VARIANT", values: ["center", "left"], defaultValue: "center" }] as never[];

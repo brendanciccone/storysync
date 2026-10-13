@@ -83,7 +83,7 @@ test("CLI: every command's --help lists each of its options, the element-tree on
 
 test("CLI: snap refuses a --stories pair it can't read before connecting to Storybook", () => {
   // Port 9 has nothing listening: the refusal must come first, as JSON under --json.
-  for (const [value, why] of [["ui-base-button", /component=storyId pairs/], ["a=b,A=c", /names "A" twice/], ["=story", /component=storyId pairs/]] as const) {
+  for (const [value, why] of [["ui-base-button", /component=storyId pairs/], ["a=b,A=c", /names "A" twice/], ["=story", /component=storyId pairs/], ["a=!", /component=storyId pairs/], ["a=b!c", /component=storyId pairs/]] as const) {
     let out = "";
     let status = 0;
     try {
