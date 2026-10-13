@@ -1626,3 +1626,79 @@ BV7. **An ellipsis is measured against the box it ends the text at**
      such run drifts on its width instead. A text element that is only
      its text and lays it out with `display: flex` (not centered, so snap
      keeps it a text) has no layout facts to tell, and still reads as cut.
+
+# Overlays measured open (0.4.0, Tier 1 #3)
+
+Notes O1 on. Section 2's non-goal ("Dialog and Tooltip remain closed
+triggers with a label") and the "open portal capture" of section 20's
+phase 3 are done: a story that renders only an overlay's closed trigger
+has the overlay opened, and its content measured through the portal path
+that stories rendering it open already took.
+
+O1. **How snap opens one** (`snap-browser.ts` openOverlay). First the
+    story's `open` arg, else `defaultOpen`, set to true through Storybook's
+    preview (`updateStoryArgs` and a remount), where the story's argTypes
+    or the component's documented props have it (`snap-args.ts` openArg);
+    never one the variant sets itself. Then the trigger, as a user opens
+    it (`snap-normalize.ts` openInteractions): right-clicked for a context
+    menu's, hovered over for a tooltip's or hover card's (by slot, or
+    Radix's `data-state` with no `aria-haspopup` or `aria-expanded`),
+    clicked for anything else; then the other ways in turn. Each way waits
+    OPEN_WAIT_MS (3000), or --timeout where that is shorter, for content
+    in a portal; one that opens nothing is undone (the arg reset with
+    `resetStoryArgs`, Escape, the mouse moved to -1,-1, focus dropped).
+    The registry's shadcn overlays need no arg: none of their docs list
+    `open`. vaul's Drawer does, and opens by it.
+O2. **Settling.** Once open: fonts, images and stand-ins again (the
+    content mounted after the story's own settle), then the content's
+    animations that end (`getAnimations({ subtree: true })`, those with a
+    finite end) and its boxes and its children's unchanged for 3 frames,
+    within OPEN_SETTLE_MS (2000). snap's stylesheet already stops CSS
+    animations and transitions, so Radix's Presence mounts at once; this
+    waits out what scripts move, as a popper's placement.
+O3. **Closed again** after it is measured, whatever came of it: the arg
+    reset, or Escape, the mouse off the page and focus dropped, and up to
+    CLOSE_WAIT_MS (1000) for the content to go. Each variant navigates
+    afresh anyway; navigation carried no hover over in a probe.
+O4. **A select's field is opened too**, and its listbox measured, as the
+    plan lists Select among the overlays. A field that opens nothing
+    (clicked only) is measured as the field, with no note, as before:
+    closed, it is the component. `[role="listbox"]` joined
+    OVERLAY_SELECTOR. A designer who wants the field instead has
+    `--no-open-overlays`.
+O5. **chooseMeasuredElement** (section 6.1, "unchanged") gains two
+    things: an open trigger whose `aria-controls` names nothing (Radix's
+    tooltip at `delayed-open`, a hover card) takes the overlay showing,
+    and `data-state` ending `-open` counts as open; and a closed trigger
+    or a closed select's field comes with `trigger`, the ways to open it.
+O6. **styles.json.** A variant snap opened records `opened`: `{ via:
+    "click" | "hover" | "focus" | "contextmenu", trigger }`, or `{ via:
+    "arg", arg: "open" | "defaultOpen", trigger }`, beside `portal: true`
+    and the content's `element`. meta.json records `openOverlays: false`
+    for a `--no-open-overlays` run. snap says each on an `i` line
+    (`measured open: snap clicked ... to open it, and measured ...`), and
+    verify as the `opened` caveat, said like `variant-stories`, never
+    warned.
+O7. **A trigger snap couldn't open** keeps today's warning and label
+    (section 8.11), now with why, from every attempt in order
+    (describeOpenFailure): `snap didn't open it (clicking it, hovering over
+    it, focusing it and right-clicking it opened nothing within 3000ms
+    each)`; `... opened it, but snap found nothing it opened outside the
+    story's root to measure`; `... failed (<error>)`; or `it was run with
+    --no-open-overlays`. The wait is fixed, not what --timeout left, so
+    every variant the same way says the same. parseMeasurementWarning reads
+    the reason back up to the sentence after it; verify's `closed-trigger`
+    caveat carries it as `reason`, and the label line ends `, as snap
+    didn't open it (<reason>)`, its double quotes dropped.
+O8. **Spec problem: a text leaf taller than its lines** (section 6.2's
+    collapse). The opened Dialog's Cancel is a `<button>` with no padding
+    that the footer stretches to 36px; a button centers its label without
+    flex (A8 covered flex and grid only), so as a text node 36 tall Figma
+    set it 20 tall at the top, and the footer's padded Continue button,
+    filling across a row that hugged the text, came out 20 tall too. An
+    element whose box reaches more than 1px above or below its text's line
+    box now stays a frame, its `#text` at its line box, as A8's do.
+O9. **The `dialog` fixture** is the ui-base-dialog story as snap measured
+    it live, opened by a click, written by snap's writer with only the
+    `fixture` block added. tree-e2e pushes it through the mock Figma, and
+    pushes a closed trigger's warning with its reason too.
