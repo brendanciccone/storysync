@@ -1407,3 +1407,10 @@ S12. **A failed read of the stories' args is tried again, and recorded.**
     argTypes options do, so no variant keeps the wrong story's content.
     Where every try fails, the component records why as `storiesUnread`,
     which snap's output and verify's `variant-stories` caveat say.
+S13. **A set's description says which variants a story of their own
+    measured.** S5 said it in snap's output and verify only, so someone
+    looking at a pushed set couldn't see that some variants came from
+    another story. The label call's line for a set (`labelLine`) now adds
+    describeVariantStories' line after any closed-trigger or wrapper note,
+    joined by "; ", so plan.json's label call and the set's `storysync:`
+    description line both carry it. The template is unchanged.

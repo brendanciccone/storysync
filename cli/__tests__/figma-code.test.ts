@@ -235,6 +235,20 @@ test("figma code: the label call carries a line for a set measured from a closed
   assert.ok(data.sets.some(([id]) => id === "Forms/Button"));
 });
 
+test("figma code: the label call says which variants a story of their own measured, after any other line", async () => {
+  const snap = allFixtures();
+  const card = snap.components.find((c) => c.name === "Card")!;
+  card.variants[card.variants.length - 1].storyId = "ui-base-card--with-footer";
+  const switchSet = snap.components.find((c) => c.name === "Switch")!;
+  switchSet.warnings = ['snap measured button[data-slot="dialog-trigger"], a closed trigger, rather than Switch. Have it render open.'];
+  switchSet.variants[switchSet.variants.length - 1].storyId = "ui-base-switch--checked";
+  const coded = await codeFor(snap);
+  const data = dataOf(coded.code(coded.plan.calls.find((c) => c.kind === "label")!)) as { pages: string[]; sets: [string, string][] };
+  const line = (id: string) => data.sets.find(([set]) => set === id)![1];
+  assert.match(line("ui-base-card"), /^measured .* from ui-base-card--with-footer, the rest from ui-base-card--default$/);
+  assert.match(line("ui-base-switch"), /^measured from its closed trigger, button\[data-slot=dialog-trigger\], not the open Switch; measured .* from ui-base-switch--checked, the rest from /);
+});
+
 test("figma code: --components and --skip pick what to build, matched as snap and verify match them", async () => {
   const coded = await codeFor(allFixtures(), { components: ["ui-base-card", "switch", "Forms/Button"], skip: ["Button"] });
   assert.deepEqual([...new Set(coded.plan.calls.flatMap((c) => c.components))], ["ui/base/Card", "ui/base/Switch"]);
