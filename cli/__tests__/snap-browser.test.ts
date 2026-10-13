@@ -13,6 +13,7 @@ import {
   captureTree, captureTreeInPage, drawingElementInPage, readStoryTreeInPage, thumbnailInPage, textFontStacksInPage, standInFontsInPage, standInsLoadedInPage, standInsMeasured,
   storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage,
 } from "../snap-browser.js";
+import type { OpenMemory } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
@@ -1116,11 +1117,18 @@ test("captureStory: an overlay with an open arg is opened by setting it through 
   assert.deepEqual(viaProps.opened, { via: "arg", arg: "defaultOpen", trigger: 'button[data-slot="dialog-trigger"]' });
   assert.equal(documented.done[0], "set defaultOpen=true");
 
-  // A variant that sets open itself keeps its value: the arg isn't touched.
-  const own = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], argTypes });
-  const kept = await captureStory(own.page, `${URL_OF}&args=open:!false`, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: { open: "false" } } });
+  // A variant that sets defaultOpen itself keeps its value: the arg isn't
+  // touched, and the trigger is clicked, as a user opens it.
+  const own = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], argTypes: { defaultOpen: argTypes.open } });
+  const kept = await captureStory(own.page, `${URL_OF}&args=defaultOpen:!false`, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: { defaultOpen: "false" } } });
   assert.equal(own.done.some((d) => d.startsWith("set ") || d.startsWith("reset ")), false);
   assert.equal(kept.opened?.via, "click");
+
+  // One that sets open to false holds it closed: nothing is tried, and the note says so.
+  const held = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], argTypes });
+  const shut = await captureStory(held.page, `${URL_OF}&args=open:!false`, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: { open: "false" } } });
+  assert.deepEqual([shut.element, shut.opened, held.done], ['button[data-slot="dialog-trigger"]', undefined, []]);
+  assert.deepEqual(shut.notes, [{ kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason: "the variant sets its open arg to false, which holds it closed" }]);
 });
 
 test("captureStory: when the open arg opens nothing, it is reset and the trigger is clicked", async () => {
@@ -1252,6 +1260,38 @@ test("captureStory: a select's field is clicked open and its listbox measured; o
   assert.equal(opened.unopened, undefined);
   // Clicked, and nothing else: closed, the field is the component.
   assert.deepEqual(shut.done, ["click", ...UNDONE]);
+});
+
+test("captureStory: a later variant of a story tries the way that opened an earlier one alone, and where none did, only the first way again", async () => {
+  const memory: OpenMemory = new Map();
+  const opts = { ...OVERLAY_OPTS, openMemory: memory, story: { id: "ui-radix-dialog--default", args: {} } };
+  // A tooltip-like trigger whose marks say click, which hovering opens.
+  const first = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["hover"] });
+  assert.equal((await captureStory(first.page, URL_OF, opts)).opened?.via, "hover");
+  assert.deepEqual(first.done.slice(0, 5), ["click", ...UNDONE, "hover"]);
+  assert.deepEqual(memory.get("ui-radix-dialog--default"), { worked: "hover" });
+  const second = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["hover"] });
+  assert.equal((await captureStory(second.page, URL_OF, opts)).opened?.via, "hover");
+  assert.equal(second.done[0], "hover");
+  // A variant it doesn't open, a disabled one, isn't tried every other way.
+  const disabled = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const shut = await captureStory(disabled.page, URL_OF, opts);
+  assert.deepEqual(disabled.done, ["hover", ...UNDONE]);
+  assert.equal(shut.notes[0].kind === "closed-trigger" && shut.notes[0].reason,
+    "hovering over it opened nothing within 40ms; snap tried no other way, as hovering over it opened an earlier variant");
+
+  // Where every way failed, a later variant tries the first again, and says what the first found.
+  memory.clear();
+  const none = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const all = await captureStory(none.page, URL_OF, opts);
+  const again = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const later = await captureStory(again.page, URL_OF, opts);
+  assert.deepEqual(again.done, ["click", ...UNDONE]);
+  assert.deepEqual(later.notes, all.notes);
+  // Where the first way opens it this time, it is remembered as the way.
+  const opens = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
+  assert.equal((await captureStory(opens.page, URL_OF, opts)).opened?.via, "click");
+  assert.deepEqual(memory.get("ui-radix-dialog--default"), { worked: "click" });
 });
 
 test("triggerOpenInPage: ARIA's, Radix's and Base UI's marks of an open trigger", () => {

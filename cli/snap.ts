@@ -21,7 +21,7 @@ import {
 } from "./snap-normalize.js";
 import type { MeasurementNote, NormalizedStyles, OverlayOpened, SlugCollision, StyleDelta } from "./snap-normalize.js";
 import { resolveAndLaunch, createContext, captureStory, makeThumbnail, readStoriesOwn } from "./snap-browser.js";
-import type { CaptureResult, CaptureStatus, CapturedImage } from "./snap-browser.js";
+import type { CaptureResult, CaptureStatus, CapturedImage, OpenMemory } from "./snap-browser.js";
 import { argsNotInDocs, describeArgRejections, describeUncheckedArgs, nameSlugs } from "./snap-args.js";
 import type { ArgRejection, StoryArgType } from "./snap-args.js";
 import { TREE_LIMITS, TREE_VERSION, absoluteBoxes, diffTree, parentKey } from "./tree-types.js";
@@ -1544,6 +1544,8 @@ async function snapComponent(
   // context whose first page fails to open still gets closed.
   let context: Awaited<ReturnType<typeof createContext>> | null = null;
   const notes: { slug: string; note: MeasurementNote }[] = [];
+  // How opening the overlay of each story went in the variants before.
+  const openMemory: OpenMemory = new Map();
   // The fields snap couldn't open (CaptureResult's `unopened`), by variant.
   const unopened: { slug: string; element: string; reason: string }[] = [];
   // Each measured variant's markup checksum, for describeIdenticalVariants.
@@ -1614,6 +1616,7 @@ async function snapComponent(
           story: { id: choice.storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
           channelArgs: opts.channelArgs ?? true,
           openOverlays: opts.openOverlays ?? true,
+          openMemory,
           tree: opts.rootOnly ? "count" : "tree",
         });
       };

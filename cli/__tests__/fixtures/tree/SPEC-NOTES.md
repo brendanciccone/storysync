@@ -1751,3 +1751,18 @@ O13. **A field that opens nothing, where others opened.** O4 measures a
     notes each such variant as a closed trigger with that reason: the
     warning, the label line and verify's caveat, as for any trigger it
     couldn't open. Where none opened, nothing changes.
+O14. **What earlier variants found** (`OpenMemory`, one per component,
+    by story). Every variant tried every way: a trigger nothing opens
+    took about 12s a variant, and the live registry run took 10:40
+    against 3:17, mostly Drawer's. Now the way that opened an earlier
+    variant of the story is tried alone, as a variant it doesn't open
+    is one its args hold closed (a disabled trigger), the note ending
+    `; snap tried no other way, as clicking it opened an earlier
+    variant`; and where no way opened an earlier variant, only the first
+    way is tried again, its note that variant's where it again opened
+    nothing, so the warning groups them. A variant that sets `open` to
+    false holds a controlled overlay closed, and snap tries nothing:
+    `the variant sets its open arg to false, which holds it closed`.
+    `defaultOpen` set to false only starts it closed, and snap opens it
+    as a user does. Area A leaves both out of the variant axes; until it
+    lands, Drawer's `open` is one.

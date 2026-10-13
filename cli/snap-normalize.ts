@@ -706,7 +706,8 @@ const ATTEMPT_PHRASES: Record<OpenInteraction, string> = {
   click: "clicking it", hover: "hovering over it", focus: "focusing it", contextmenu: "right-clicking it",
 };
 
-function attemptPhrase(attempt: Pick<OpenAttempt, "via" | "arg">): string {
+/** One way snap tries to open an overlay, as a note says it: "clicking it". */
+export function describeOpenWay(attempt: Pick<OpenAttempt, "via" | "arg">): string {
   return attempt.via === "arg" ? `setting its ${attempt.arg ?? "open"} arg through Storybook's preview` : ATTEMPT_PHRASES[attempt.via];
 }
 
@@ -727,7 +728,7 @@ export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
   const flush = () => {
     if (!run.length) return;
     const wait = run[0].waitMs;
-    parts.push(`${listed(run.map(attemptPhrase))} opened nothing${wait !== undefined ? ` within ${wait}ms${run.length > 1 ? " each" : ""}` : ""}`);
+    parts.push(`${listed(run.map(describeOpenWay))} opened nothing${wait !== undefined ? ` within ${wait}ms${run.length > 1 ? " each" : ""}` : ""}`);
     run = [];
   };
   for (const attempt of attempts) {
@@ -738,10 +739,10 @@ export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
     }
     flush();
     parts.push(attempt.outcome === "no-content"
-      ? `${attemptPhrase(attempt)} opened it, but snap found nothing it opened to measure`
+      ? `${describeOpenWay(attempt)} opened it, but snap found nothing it opened to measure`
       : attempt.outcome === "closed"
-        ? `${attemptPhrase(attempt)} opened it, but it closed again as the pointer left`
-        : `${attemptPhrase(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
+        ? `${describeOpenWay(attempt)} opened it, but it closed again as the pointer left`
+        : `${describeOpenWay(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
   }
   flush();
   return parts.join("; ");

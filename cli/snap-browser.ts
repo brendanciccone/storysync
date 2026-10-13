@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request, Response } from "playwright-core";
 import {
   CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS, OVERLAY_SELECTOR,
-  chooseMeasuredElement, componentSlots, contentSlots, describeElement, describeOpenFailure, resolveFontFamily,
+  chooseMeasuredElement, componentSlots, contentSlots, describeElement, describeOpenFailure, describeOpenWay, resolveFontFamily,
 } from "./snap-normalize.js";
 import type {
   RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, OpenAttempt, OpenInteraction, OpenableTrigger, OverlayOpened,
@@ -313,6 +313,8 @@ export interface CaptureOptions {
   openOverlays?: boolean;
   /** How long each way of opening an overlay waits for it, within `timeoutMs`: OPEN_WAIT_MS by default. */
   openWaitMs?: number;
+  /** What opening the story's overlay came to in the component's earlier variants, which this one adds to: see openOverlay. */
+  openMemory?: OpenMemory;
 }
 
 /** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
@@ -404,6 +406,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
         ? { reason: "it was run with --no-open-overlays" }
         : await openOverlay(page, closed, {
           slots, story: opts.story, storyId: opts.story?.id ?? new URL(url).searchParams.get("id") ?? "", argTypes: empty.args?.argTypes, props: opts.component?.props,
+          memory: opts.openMemory,
           timeoutMs: opts.timeoutMs, waitMs: opts.openWaitMs ?? OPEN_WAIT_MS, images, standIns: opts.standIns !== false,
         });
       if ("located" in opening) {
@@ -521,12 +524,23 @@ export const CLOSE_WAIT_MS = 1000;
 /** How often snap looks for an overlay opening or closing. */
 const OVERLAY_POLL_MS = 50;
 
+/** A way snap opens an overlay: its open arg, or an interaction with its trigger. */
+type OpenWay = "arg" | OpenInteraction;
+
+/**
+ * What opening each story's overlay came to in earlier variants, by story
+ * id, so a later variant doesn't retry what failed: the way that opened
+ * one, or, where none did, why. One for each component snap measures.
+ */
+export type OpenMemory = Map<string, { worked: OpenWay; failed?: undefined } | { worked?: undefined; failed: string }>;
+
 /** What openOverlay needs from the capture. */
 interface OpenContext {
   slots: readonly string[];
   story?: CaptureOptions["story"];
   /** The story's id, from `story` or else the URL: what a remount names. */
   storyId: string;
+  memory?: OpenMemory;
   argTypes?: Record<string, StoryArgType>;
   props?: readonly string[];
   timeoutMs: number;
@@ -588,24 +602,39 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
     return settled ? { located: settled, opened: how } : null;
   };
 
+  // A controlled overlay the variant holds closed opens no way: what it asks for is closed.
+  if (ctx.story && String(ctx.story.args.open) === "false") return { reason: "the variant sets its open arg to false, which holds it closed" };
+
   // Not one the variant sets itself: its value is the variant's.
   const arg = ctx.story ? openArg(ctx.argTypes, ctx.props) : null;
-  if (arg && ctx.story && !Object.hasOwn(ctx.story.args, arg)) {
-    const storyId = ctx.story.id;
-    const set = await applyArgs(page, { storyId, updates: { [arg]: true }, lift: ctx.argTypes?.[arg]?.if ? [arg] : [], waitMs: ctx.timeoutMs });
-    if ("error" in set) {
-      attempts.push({ via: "arg", arg, outcome: "failed", error: set.error });
-    } else {
-      const shown = await waitForOverlay(page, ctx.slots, waitMs);
-      const open = "located" in shown ? await opened(shown.located, { via: "arg", arg, trigger }) : null;
-      if (open) return open;
-      attempts.push({ via: "arg", arg, outcome: "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing", waitMs });
-      // The story's own value again, so the trigger is tried on the story as it rendered.
-      await applyArgs(page, { storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, reset: [arg] });
-    }
-  }
+  const every: OpenWay[] = [...(arg && ctx.story && !Object.hasOwn(ctx.story.args, arg) ? ["arg" as const] : []), ...closed.trigger.interactions];
+  let ways = every;
+  // What the story's earlier variants found: the way that opened one
+  // alone, as a variant it doesn't open is one its args hold closed (a
+  // disabled trigger); where none opened, only the first way again.
+  const memo = ctx.memory?.get(ctx.storyId);
+  if (memo?.worked && ways.includes(memo.worked)) ways = [memo.worked];
+  else if (memo?.failed) ways = ways.slice(0, 1);
+  const remember = (worked: OpenWay) => ctx.memory?.set(ctx.storyId, { worked });
 
-  for (const how of closed.trigger.interactions) {
+  for (const how of ways) {
+    if (how === "arg") {
+      const set = await applyArgs(page, { storyId: ctx.storyId, updates: { [arg!]: true }, lift: ctx.argTypes?.[arg!]?.if ? [arg!] : [], waitMs: ctx.timeoutMs });
+      if ("error" in set) {
+        attempts.push({ via: "arg", arg: arg!, outcome: "failed", error: set.error });
+        continue;
+      }
+      const shown = await waitForOverlay(page, ctx.slots, waitMs);
+      const open = "located" in shown ? await opened(shown.located, { via: "arg", arg: arg!, trigger }) : null;
+      if (open) {
+        remember("arg");
+        return open;
+      }
+      attempts.push({ via: "arg", arg: arg!, outcome: "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing", waitMs });
+      // The story's own value again, so the trigger is tried on the story as it rendered.
+      await applyArgs(page, { storyId: ctx.storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, reset: [arg!] });
+      continue;
+    }
     // Found again for each way: a remount replaces the trigger's element.
     const located = await locateComponent(page, ctx.slots);
     if ("error" in located) {
@@ -624,13 +653,27 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
     }
     const shown = await waitForOverlay(page, ctx.slots, waitMs);
     const open = "located" in shown ? await opened(shown.located, { via: how, trigger }) : null;
-    if (open) return open;
+    if (open) {
+      remember(how);
+      return open;
+    }
     const outcome = "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing";
     attempts.push({ via: how, outcome, waitMs });
     await dismiss(page);
     if (outcome !== "nothing" && await reclose()) break;
   }
-  return { reason: [describeOpenFailure(attempts), stuck].filter(Boolean).join("; ") };
+  let reason = describeOpenFailure(attempts);
+  const skipped = ways.length < every.length;
+  if (memo?.worked && ways[0] === memo.worked) {
+    if (skipped) reason += `; snap tried no other way, as ${describeOpenWay(attempts[0])} opened an earlier variant`;
+  } else if (memo?.failed) {
+    // Found as an earlier variant found it: that variant's reason, which tried every way.
+    if (attempts.length === 1 && attempts[0].outcome === "nothing" && !stuck) reason = memo.failed;
+    else if (skipped) reason += "; snap tried no other way, as none opened an earlier variant";
+  } else {
+    ctx.memory?.set(ctx.storyId, { failed: [reason, stuck].filter(Boolean).join("; ") });
+  }
+  return { reason: [reason, stuck].filter(Boolean).join("; ") };
 }
 
 /** Whether the component's element is a trigger that says it is open, with nothing open snap measures. */

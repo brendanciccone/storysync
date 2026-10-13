@@ -2586,3 +2586,17 @@ test("runSnap: a select whose field one variant couldn't open, where others open
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runSnap: a component's later variants open its overlay the way an earlier one found, without retrying what failed", async () => {
+  const dir = tempDir();
+  try {
+    // Its trigger's marks say click; hovering opens it.
+    const { page, done } = overlayPage({ marks: DIALOG_TRIGGER_MARKS, opensOn: ["hover"], argTypes: { modal: { type: { name: "boolean" } } } });
+    const result = await runSnap(options(dir), { storybook: dialogDocs([{ name: "modal", type: { name: "boolean" } }]), launch: launchOn(page) });
+    const variants = result.components[0].variants;
+    assert.deepEqual(variants.map((v) => v.opened?.via), ["hover", "hover"]);
+    assert.deepEqual(done.filter((d) => d === "click" || d === "hover"), ["click", "hover", "hover"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
