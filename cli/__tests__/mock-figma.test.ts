@@ -863,7 +863,7 @@ test("figmaFonts: the mock sets each of the probe's characters as wide as Figma 
   }
 });
 
-test("figmaFonts: the mock sets each string of the fourth push's probe as wide as Figma did, in Inter and Roboto Mono", () => {
+test("figmaFonts: the mock sets each string of the fourth push's probe as wide as Figma did, in Inter, Roboto Mono and Noto Serif", () => {
   const measure = figmaFonts();
   const font = (family: string, weight: number, size: number) => ({ family, size, letterSpacing: 0, style: Object.keys(STYLE_WEIGHT).find((s) => STYLE_WEIGHT[s] === weight)! });
   for (const [chars, weight, size, , , fits, , ends] of TEXT_LIVE_3.call1.rows) {
@@ -872,8 +872,8 @@ test("figmaFonts: the mock sets each string of the fourth push's probe as wide a
     assert.ok(off <= 0.002, `${chars} ${weight} ${size}: ${measure.advance(chars, font("Inter", weight, size))}, Figma ${fits}`);
   }
   for (const [chars, family, style, size, , exact] of TEXT_LIVE_3.call3.other) {
-    // Noto Serif's faces aren't rounded as Figma rounds them (fonts.ts).
-    if (family !== "Roboto Mono") continue;
+    // Figma's Noto Serif Bold is another release than the package's: no weight of it sets "Quietly Waving" as wide (scripts/figma-font-metrics.mjs).
+    if (family === "Noto Serif" && style === "Bold") continue;
     const off = Math.abs(measure.advance(chars, font(family, STYLE_WEIGHT[style], size)) - exact);
     assert.ok(off <= 0.002, `${chars} ${style} ${size}: Figma ${exact}`);
   }

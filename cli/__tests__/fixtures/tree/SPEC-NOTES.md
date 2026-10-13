@@ -1441,11 +1441,30 @@ S15. **Inter's stand-in carries its symbols** (review of S2). The
     to U+2BFF (356: arrows, check marks, a Mac keyboard's keys, shapes),
     then rounded as before; about 42KB a weight, from 23KB. The manifest
     records each face's characters (`unicodeRange`), which fonts.ts uses
-    in place of the package's Latin range. The whole font numbers a
-    kerning subtable's classes otherwise once instanced, so the script
-    matches kerning values by glyphs, not by position. Regenerating also
+    in place of the package's Latin range. The whole font's kerning
+    subtables come out rearranged once instanced (S16 says how values
+    carry over). Regenerating also
     fixed a descent the committed faces had a unit off (-495 for -494 of
     2048), so Inter's AUTO line height is Figma's 1.21em, not 1.211.
     figma-font-metrics.mjs now proves each of the probe's 207 characters
     alone at every weight too: within 0.000005em. mock-figma.test.ts holds
     figma-fonts.json to the same.
+S16. **Noto Serif's Latin faces are rounded too** (review of S3). They
+    were left unrounded for want of fonttools, so "The quick brown fox"
+    (Regular 16) was 158.432 in Chrome and the mock against 158.43749 in
+    Figma, and a box snap measured could cut it. figma-stand-ins.py now
+    writes Noto Serif's Latin faces, upright and italic, one a weight, as
+    Inter's (about 17KB each, 306KB in all), with its OFL; its other
+    subsets stay variable under `storysync Noto Serif scripts`, as Inter's
+    do. Both Regular strings of the probe now come out within 0.00001px,
+    and the metrics proof and the mock hold Noto Serif to the tolerance.
+    Its one Bold string ("Quietly Waving", 20px) doesn't: 155.21484 against
+    Figma's 155.05859, and no weight of Noto Serif 2.015 sets it as wide
+    (the closest, 695, is 0.08px off), so Figma's Bold is another release.
+    It is printed, not held (OTHER_RELEASE). Chrome sets it wider than
+    Figma, so nothing is cut. A probe of Noto Serif's advances at each
+    weight, as the fourth push's call 2 read Inter's, would let the script
+    take its widths from Figma itself: planned, as it needs a live call.
+    Each kerning value is now set in the variable font before it is
+    instanced, its delta dropped, as the instancer rearranges Noto Serif's
+    kerning subtables, so values no longer go by position.

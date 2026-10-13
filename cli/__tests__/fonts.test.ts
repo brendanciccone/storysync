@@ -8,7 +8,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
-  PLATFORM_FACES, STAND_INS, needsStandIn, stackFamilies, standInDrawn, standInFaces, standInFor, standInStack,
+  PLATFORM_FACES, STAND_INS, needsStandIn, stackFamilies, standInDrawn, standInFaces, standInFamilies, standInFor, standInStack,
 } from "../fonts.js";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -111,7 +111,13 @@ test("standInFaces: Inter's and Roboto Mono's Latin faces from fonts/, rounded a
     const face = mono.find((f) => f.style === "normal" && range.test(f.unicodeRange))!;
     assert.equal(sha256(face.data), digests[file], file);
   }
-  assert.ok(standInFaces("Noto Serif").some((f) => f.style === "italic"));
+  // Noto Serif's Latin faces from fonts/ too, upright and italic, one a weight; its other subsets, variable, under a family of their own.
+  const serif = standInFaces("Noto Serif");
+  const rounded = serif.filter((f) => f.family === "storysync Noto Serif");
+  assert.deepEqual(rounded.map((f) => `${f.style} ${f.weight}`), ["normal", "italic"].flatMap((style) => ["100", "200", "300", "400", "500", "600", "700", "800", "900"].map((w) => `${style} ${w}`)));
+  for (const face of rounded) assert.equal(sha256(face.data), digests[`noto-serif-latin-${face.weight}-${face.style}.woff2`], `Noto Serif ${face.style} ${face.weight}`);
+  assert.ok(serif.filter((f) => f !== rounded.find((r) => r === f)).every((f) => f.family === "storysync Noto Serif scripts" && f.weight === "100 900"));
+  assert.deepEqual(standInFamilies("Noto Serif"), ["storysync Noto Serif", "storysync Noto Serif scripts"]);
   // woff2 bytes, wherever they come from.
   assert.ok([...inter, ...mono].every((f) => Buffer.from(f.data, "base64").subarray(0, 4).toString("latin1") === "wOF2"));
 });
@@ -120,7 +126,7 @@ test("fonts/ holds the faces manifest.json lists, as it lists them, and each fon
   const files = readdirSync(`${ROOT}fonts`).filter((f) => f.endsWith(".woff2")).sort();
   assert.deepEqual(files, Object.keys(MANIFEST.sha256).sort());
   for (const file of files) assert.equal(createHash("sha256").update(readFileSync(`${ROOT}fonts/${file}`)).digest("hex"), MANIFEST.sha256[file], file);
-  for (const license of ["OFL-Inter.txt", "OFL-Roboto-Mono.txt"]) assert.match(readFileSync(`${ROOT}fonts/${license}`, "utf8"), /SIL OPEN FONT LICENSE Version 1\.1/, license);
+  for (const license of ["OFL-Inter.txt", "OFL-Roboto-Mono.txt", "OFL-Noto-Serif.txt"]) assert.match(readFileSync(`${ROOT}fonts/${license}`, "utf8"), /SIL OPEN FONT LICENSE Version 1\.1/, license);
 });
 
 test("the package ships fonts/: the faces snap reads, their manifest and their licenses", () => {

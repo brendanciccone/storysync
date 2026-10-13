@@ -2,28 +2,27 @@
 // Writes cli/__tests__/fixtures/figma-fonts.json: how wide Figma sets text in
 // each font storysync draws stand-ins in, for the mock Figma's text layout.
 //
-// The faces are the ones snap draws stand-ins in (cli/fonts.ts): Inter's and
-// Roboto Mono's Latin faces rounded as Figma rounds them, to a 1024th of an
-// em (fonts/, scripts/figma-stand-ins.py), so Chrome sets them as wide as
-// Figma does. Chrome measures them here: each character's advance and each
-// kerning pair among printable ASCII, in em, at every weight Figma has, and
-// each font's height at line-height normal, Figma's AUTO. Kerning is kept
-// for the weights text is usually set in, and the nearest of those stands in
-// for the rest.
+// The faces are the ones snap draws stand-ins in (cli/fonts.ts): Inter's,
+// Roboto Mono's and Noto Serif's Latin faces rounded as Figma rounds them,
+// to a 1024th of an em (fonts/, scripts/figma-stand-ins.py), so Chrome sets
+// them as wide as Figma does. Chrome measures them here: each character's
+// advance and each kerning pair among printable ASCII, in em, at every
+// weight Figma has, and each font's height at line-height normal, Figma's
+// AUTO. Kerning is kept for the weights text is usually set in, and the
+// nearest of those stands in for the rest.
 //
 //   pnpm build && node scripts/figma-font-metrics.mjs [--check]
 //
 // --check writes nothing and fails when the file differs from what the
 // installed fonts measure, as after an update of a font package or of
 // fonts/. Either way it proves the faces against the fourth push's text
-// probe (fixtures/figma-text-probe-3.json): it prints how far from Figma's
+// probe (fixtures/figma-text-probe-3.json). It prints how far from Figma's
 // width Chrome sets each family's probe strings in the stand-in, and fails
-// when Inter or Roboto Mono, the families fonts/ rounds, is off by more than
-// 0.001px; and how far each of the probe's characters alone is from Figma's
-// advance for it at every weight of Inter, arrows and check marks
-// included, failing above 0.00001em. Noto Serif comes from its package
-// unrounded, so it is printed only. mock-figma.test.ts holds the file to
-// the same probe.
+// where one is off by more than 0.001px, but for a face Figma has of
+// another release (OTHER_RELEASE), which it prints. And it prints how far
+// each of the probe's characters alone is from Figma's advance for it at
+// every weight of Inter, arrows and check marks included, failing above
+// 0.00001em. mock-figma.test.ts holds the file to the same probe.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -34,7 +33,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "cli", "__tests__", "fixtures", "figma-fonts.json");
 const PROBE = join(ROOT, "cli", "__tests__", "fixtures", "figma-text-probe-3.json");
 /** The families fonts/ rounds as Figma does, which must set the probe's strings as wide as Figma did. */
-const ROUNDED_FAMILIES = ["Inter", "Roboto Mono"];
+const ROUNDED_FAMILIES = ["Inter", "Roboto Mono", "Noto Serif"];
+/**
+ * Faces Figma has of another release than the package's: Noto Serif Bold,
+ * whose probe string no weight of Noto Serif 2.015 sets as wide (the
+ * closest, 695, is still 0.08px off; scripts/figma-stand-ins.py). Printed,
+ * not held to the tolerance, until a probe reads its advances.
+ */
+const OTHER_RELEASE = [{ family: "Noto Serif", weight: 700 }];
 /** In px: float noise, well under the 0.01 snap rounds a box to. */
 const PROOF_TOLERANCE = 0.001;
 /** In em: the 0.00001 the file keeps an advance to. */
@@ -131,6 +137,10 @@ try {
   const worst = {};
   for (const [i, s] of strings.entries()) {
     const diff = chrome[i] - s.figma;
+    if (OTHER_RELEASE.some((o) => o.family === s.family && o.weight === s.weight)) {
+      console.log(`-- ${s.family} ${s.weight}: "${s.chars}" ${s.size}px is ${chrome[i].toFixed(5)} in Chrome, ${s.figma} in Figma, whose ${s.family} at this weight is another release`);
+      continue;
+    }
     // A width read to 0.01 is only as close as that.
     const off = s.exact ? Math.abs(diff) : Math.max(0, Math.abs(diff) - 0.01);
     if (!worst[s.family] || off > worst[s.family].off) worst[s.family] = { off, chars: s.chars, weight: s.weight, size: s.size, chrome: chrome[i], figma: s.figma };

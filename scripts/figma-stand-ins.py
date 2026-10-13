@@ -26,8 +26,14 @@
 #   2048 units, as Figma sets it at every weight (the package has 1229); it
 #   stays variable.
 #
-# Inter's and Roboto Mono's other subsets, Roboto Mono's italics (1202, a
-# whole 1024th already) and Noto Serif stay as their packages ship them.
+# - Noto Serif, Latin subset, upright and italic, one static face per weight,
+#   100 to 900: instanced from @fontsource-variable/noto-serif (2.015) and
+#   rounded as Inter is. The probe's Regular strings come out as Figma set
+#   them; its Bold string doesn't at any weight of this Noto Serif, so
+#   Figma's Bold is another release, which the script prints.
+#
+# Their other subsets and Roboto Mono's italics (1202, a whole 1024th
+# already) stay as their packages ship them.
 # Each face keeps the SIL Open Font License of the font it comes from
 # (fonts/OFL-*.txt) and is renamed, as the license asks of a modified font.
 #
@@ -63,6 +69,7 @@ INTER_FULL_SHA256 = "b9a8e5e213977665be2a56db66945a16c686da3d9861af1e7851322cf15
 # The symbols the faces carry besides the package's Latin: every one of Inter's in this range.
 SYMBOLS = range(0x2000, 0x2C00)
 ROBOTO_MONO = ("@fontsource-variable/roboto-mono", "5.3.0")
+NOTO_SERIF = ("@fontsource-variable/noto-serif", "5.3.0")
 WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900]
 STYLE = {100: "Thin", 200: "ExtraLight", 300: "Light", 400: "Regular", 500: "Medium", 600: "SemiBold", 700: "Bold", 800: "ExtraBold", 900: "Black"}
 # Figma's scale: units an em.
@@ -143,34 +150,6 @@ def value_records(lookup):
     return out
 
 
-def kern_keys(font):
-    """What each kerning ValueRecord of value_records is for, in the same
-    order: its subtable and its two glyphs, or, in a class subtable, the
-    first glyph of each class. The instancer may number a subtable's
-    classes otherwise than the variable font did, as with Inter whole, so
-    values go by these rather than by position."""
-    out = []
-    for n, sub in enumerate(s for lookup in kern_lookups(font) for s in lookup.SubTable):
-        sub = getattr(sub, "ExtSubTable", sub)
-        if sub.Format == 1:
-            for first, pairset in zip(sub.Coverage.glyphs, sub.PairSet):
-                out.extend((n, first, rec.SecondGlyph) for rec in pairset.PairValueRecord)
-        else:
-            order = {name: i for i, name in enumerate(font.getGlyphOrder())}
-            def firsts(classdefs, glyphs):
-                by = {}
-                for g in glyphs:
-                    c = classdefs.get(g, 0)
-                    if c not in by or order[g] < order[by[c]]:
-                        by[c] = g
-                return by
-            one = firsts(sub.ClassDef1.classDefs, sub.Coverage.glyphs)
-            two = firsts(sub.ClassDef2.classDefs, sub.ClassDef2.classDefs.keys())
-            for c1, rec1 in enumerate(sub.Class1Record):
-                out.extend((n, one.get(c1, "*"), two.get(c2, "*")) for c2 in range(len(rec1.Class2Record)))
-    return out
-
-
 def kern_values(font, weight):
     """Each kerning value of the variable font at this weight in EM units: the
     base and its delta each scaled and rounded, as HarfBuzz applies them."""
@@ -180,8 +159,8 @@ def kern_values(font, weight):
     norm = (weight - mid) / (mid - lo) if weight < mid else (weight - mid) / (hi - mid) if weight > mid else 0.0
     # HarfBuzz holds normalized coordinates in 2.14.
     norm = round(norm * 16384) / 16384
-    store = font["GDEF"].table.VarStore
-    inst = VarStoreInstancer(store, fvar.axes, {"wght": norm})
+    store = getattr(font["GDEF"].table, "VarStore", None) if "GDEF" in font else None
+    inst = VarStoreInstancer(store, fvar.axes, {"wght": norm}) if store else None
     upem = font["head"].unitsPerEm
     out = []
     for lookup in kern_lookups(font):
@@ -189,7 +168,7 @@ def kern_values(font, weight):
             base = getattr(rec, "XAdvance", 0) or 0 if rec is not None else 0
             value = em_scale(base, upem)
             dev = getattr(rec, "XAdvDevice", None) if rec is not None else None
-            if dev is not None and dev.DeltaFormat == 0x8000:
+            if inst and dev is not None and dev.DeltaFormat == 0x8000:
                 value += em_scalef(inst[(dev.StartSize << 16) + dev.EndSize], upem)
             out.append(value)
     return out
@@ -302,31 +281,81 @@ def inter_source(path):
     return font_bytes(font)
 
 
+def rounded_face(src, weight, family, style):
+    """A variable font's static face at this weight, scaled to 2048 units,
+    its advances and kerning values rounded as Figma sets them. Each
+    kerning value is set in the variable font, its delta dropped, before
+    it is instanced: the instancer may rearrange the kerning subtables, as
+    Noto Serif's and Inter's whole font's, but each pair keeps its value."""
+    varfont = TTFont(io.BytesIO(src))
+    widths = advances(varfont, weight)
+    kerns = kern_values(varfont, weight) if "GPOS" in varfont else []
+    lines = vertical(instancer.instantiateVariableFont(TTFont(io.BytesIO(src)), {"wght": weight}))
+    font = TTFont(io.BytesIO(src))
+    scale_upem(font, 2048)
+    if kerns:
+        records = [r for lookup in kern_lookups(font) for r in value_records(lookup)]
+        if len(records) != len(kerns):
+            sys.exit(f"{family}'s kerning changed shape when scaled")
+        for rec, value in zip(records, kerns):
+            if rec is not None:
+                rec.XAdvance = value * 2048 // EM
+                if getattr(rec, "XAdvDevice", None) is not None:
+                    rec.XAdvDevice = None
+    font = instancer.instantiateVariableFont(font, {"wght": weight})
+    set_vertical(font, lines)
+    hmtx = font["hmtx"]
+    for name, value in widths.items():
+        hmtx[name] = (value * 2048 // EM, hmtx[name][1])
+    font["OS/2"].usWeightClass = weight
+    rename(font, f"{family} storysync", style)
+    return font
+
+
 def inter_faces(src, adv, kern, strings):
     out = {}
     for weight in WEIGHTS:
-        varfont = TTFont(io.BytesIO(src))
-        widths = advances(varfont, weight)
-        kerns = kern_values(varfont, weight)
-        font = instancer.instantiateVariableFont(TTFont(io.BytesIO(src)), {"wght": weight})
-        lines = vertical(font)
-        scale_upem(font, 2048)
-        set_vertical(font, lines)
-        hmtx = font["hmtx"]
-        for name, value in widths.items():
-            hmtx[name] = (value * 2048 // EM, hmtx[name][1])
-        records = [r for lookup in kern_lookups(font) for r in value_records(lookup)]
-        keys = kern_keys(font)
-        by_key = dict(zip(kern_keys(varfont), kerns))
-        if len(records) != len(kerns) or len(by_key) != len(kerns) or any(k not in by_key for k in keys):
-            sys.exit("Inter's kerning changed shape when instanced")
-        for rec, key in zip(records, keys):
-            if rec is not None:
-                rec.XAdvance = by_key[key] * 2048 // EM
-        font["OS/2"].usWeightClass = weight
-        rename(font, "Inter storysync", STYLE[weight])
+        font = rounded_face(src, weight, "Inter", STYLE[weight])
         check_inter(font, weight, adv, kern, strings)
         out[f"inter-latin-{weight}-normal.woff2"] = font
+    return out
+
+
+def shaped_width(font, s):
+    """A string's width in 2048ths of an em, as HarfBuzz sets it in the face."""
+    f = hb_font(font)
+    f.scale = (2048, 2048)
+    buf = hb.Buffer()
+    buf.add_str(s)
+    buf.guess_segment_properties()
+    hb.shape(f, buf, {})
+    return sum(p.x_advance for p in buf.glyph_positions)
+
+
+def noto_serif_faces():
+    """Noto Serif's Latin faces, upright and italic, one a weight, rounded
+    as Inter's are. The probe set two Regular strings exactly as these do;
+    its one Bold string is 0.156px narrower in Figma than any weight of this
+    Noto Serif sets it, its Bold a release of its own, so it is printed."""
+    probe = json.load(open(PROBE, encoding="utf-8"))
+    rows = [r for r in probe["call3"]["other"] if r[1] == "Noto Serif"]
+    out = {}
+    for italic in (False, True):
+        src = open(os.path.join(package_dir(*NOTO_SERIF), "files", f"noto-serif-latin-wght-{'italic' if italic else 'normal'}.woff2"), "rb").read()
+        src = font_bytes(TTFont(io.BytesIO(src)))
+        for weight in WEIGHTS:
+            style = STYLE[weight] + (" Italic" if italic else "")
+            font = rounded_face(src, weight, "Noto Serif", style)
+            if not italic:
+                for chars, _family, figma_style, size, _hug, exact, _r2 in rows:
+                    if STYLE.get(weight) != figma_style.replace("Semi Bold", "SemiBold"):
+                        continue
+                    got = shaped_width(font, chars) * size / 2048
+                    if figma_style == "Regular" and abs(got - exact) > 1e-4:
+                        sys.exit(f"Noto Serif {weight} sets {chars!r} {got} wide, Figma {exact}")
+                    if figma_style != "Regular":
+                        print(f"Noto Serif {figma_style} sets {chars!r} {got:.5f} wide, Figma {exact}: another release of it")
+            out[f"noto-serif-latin-{weight}-{'italic' if italic else 'normal'}.woff2"] = font
     return out
 
 
@@ -371,13 +400,13 @@ def main():
     if "--inter" not in sys.argv or sys.argv.index("--inter") + 1 >= len(sys.argv):
         sys.exit("give Inter 3.019 whole with --inter <Inter[slnt,wght].ttf>")
     adv, kern, strings = probe_data()
-    faces = {**inter_faces(inter_source(sys.argv[sys.argv.index("--inter") + 1]), adv, kern, strings), **roboto_mono_faces()}
+    faces = {**inter_faces(inter_source(sys.argv[sys.argv.index("--inter") + 1]), adv, kern, strings), **roboto_mono_faces(), **noto_serif_faces()}
     files = {name: woff2(font) for name, font in faces.items()}
-    for license_name, pkg in (("OFL-Inter.txt", INTER), ("OFL-Roboto-Mono.txt", ROBOTO_MONO)):
+    for license_name, pkg in (("OFL-Inter.txt", INTER), ("OFL-Roboto-Mono.txt", ROBOTO_MONO), ("OFL-Noto-Serif.txt", NOTO_SERIF)):
         files[license_name] = open(os.path.join(package_dir(*pkg), "LICENSE"), "rb").read()
     manifest = {
         "about": "The stand-in faces snap draws text in, set as wide as Figma sets them (scripts/figma-stand-ins.py)",
-        "packages": {INTER[0]: INTER[1], ROBOTO_MONO[0]: ROBOTO_MONO[1]},
+        "packages": {INTER[0]: INTER[1], ROBOTO_MONO[0]: ROBOTO_MONO[1], NOTO_SERIF[0]: NOTO_SERIF[1]},
         "sources": {"Inter[slnt,wght].ttf": INTER_FULL_SHA256},
         # The Inter faces' characters, which take the place of the package's Latin range.
         "unicodeRange": {name: unicode_range(font) for name, font in sorted(faces.items()) if name.startswith("inter-")},

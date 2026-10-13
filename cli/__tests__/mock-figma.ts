@@ -195,10 +195,10 @@ const metrics = (): FontMetrics =>
  * fonts it has and the stand-ins snap draws in (cli/fonts.ts): each
  * character's advance with the kerning between them, plus letter spacing,
  * from fixtures/figma-fonts.json, which Chrome measured in the faces snap
- * draws in. In Inter and Roboto Mono those are rounded as Figma rounds them,
- * so each string of the fourth push's text probe comes out within 0.002px of
- * the width Figma gave it (fixtures/figma-text-probe-3.json); Noto Serif's
- * aren't yet. Another family is measured by `fallback`. Figma rounds a
+ * draws in. Those are rounded as Figma rounds them, so each string of the
+ * fourth push's text probe comes out within 0.002px of the width Figma gave
+ * it (fixtures/figma-text-probe-3.json), but in Noto Serif Bold, which
+ * Figma has of another release. Another family is measured by `fallback`. Figma rounds a
  * hugging text's width up to a pixel (sizeText), and keeps a line whole only
  * in a box at least as wide as it (FITS).
  */

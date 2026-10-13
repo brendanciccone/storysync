@@ -17,16 +17,18 @@
 // an em (the fourth push's text probe, fixtures/figma-text-probe-3.json), so
 // Chrome, which sets the font unrounded, made "sales-dashboard.pdf" 139.375
 // wide where Figma needs 139.398, and Figma cut the title short. Inter's
-// Latin faces, one per weight, and Roboto Mono's upright Latin ones are
-// rounded so in fonts/, which scripts/figma-stand-ins.py writes from Inter
-// 3.19 (@fontsource-variable/inter 5.0.18, the Inter Figma has: axes slnt and
-// wght) and Roboto Mono (@fontsource-variable/roboto-mono 5.3.0). Inter's
-// carry its symbols from U+2000 to U+2BFF too (arrows, check marks, a Mac
-// keyboard's keys), which no subset of the package has, taken from Inter
-// 3.19 whole, so "Next →" isn't set in whatever font the platform has. Their other
-// subsets, Roboto Mono's italics and Noto Serif (5.3.0) come from the
-// packages as they ship. Nothing is fetched while measuring. All three are
-// under the SIL Open Font License, whose text ships with each.
+// Latin faces and Noto Serif's, upright and italic, one per weight, and
+// Roboto Mono's upright Latin ones are rounded so in fonts/, which
+// scripts/figma-stand-ins.py writes from Inter 3.19
+// (@fontsource-variable/inter 5.0.18, the Inter Figma has: axes slnt and
+// wght), Noto Serif (@fontsource-variable/noto-serif 5.3.0) and Roboto
+// Mono (@fontsource-variable/roboto-mono 5.3.0). Inter's carry its symbols
+// from U+2000 to U+2BFF too (arrows, check marks, a Mac keyboard's keys),
+// which no subset of the package has, taken from Inter 3.19 whole, so
+// "Next →" isn't set in whatever font the platform has. Their other
+// subsets and Roboto Mono's italics come from the packages as they ship.
+// Nothing is fetched while measuring. All three are under the SIL Open
+// Font License, whose text ships with each.
 
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -118,10 +120,10 @@ export function standInDrawn(family: string): StandIn | null {
  */
 export const STAND_IN_SCRIPTS = " scripts";
 
-/** The families snap puts a stand-in's text on, in order. */
+/** The families snap puts a stand-in's text on, in order: Inter's and Noto Serif's rounded faces are static, so their other subsets have a family of their own. */
 export function standInFamilies(standIn: StandIn): string[] {
   const family = `${STAND_IN_PREFIX}${standIn}`;
-  return standIn === "Inter" ? [family, family + STAND_IN_SCRIPTS] : [family];
+  return standIn === "Roboto Mono" ? [family] : [family, family + STAND_IN_SCRIPTS];
 }
 
 /** Whether a family is one snap added to the page: a stand-in's, any of them. */
@@ -188,11 +190,15 @@ const PACKAGES: Record<StandIn, { name: string; css: string[] }> = {
 /**
  * The package faces fonts/ holds Figma's widths of, by their file, and the
  * faces in fonts/ that take each one's place, with their weights: one per
- * weight Figma has for Inter, which rounds each weight on its own, and
- * Roboto Mono's whole axis, which is as wide at every weight.
+ * weight Figma has for Inter and for Noto Serif, upright and italic, which
+ * round each weight on their own, and Roboto Mono's whole axis, which is
+ * as wide at every weight.
  */
+const WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900];
 const ROUNDED: Record<string, { file: string; weight: string }[]> = {
-  "inter-latin-wght-normal.woff2": [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => ({ file: `inter-latin-${w}-normal.woff2`, weight: String(w) })),
+  "inter-latin-wght-normal.woff2": WEIGHTS.map((w) => ({ file: `inter-latin-${w}-normal.woff2`, weight: String(w) })),
+  "noto-serif-latin-wght-normal.woff2": WEIGHTS.map((w) => ({ file: `noto-serif-latin-${w}-normal.woff2`, weight: String(w) })),
+  "noto-serif-latin-wght-italic.woff2": WEIGHTS.map((w) => ({ file: `noto-serif-latin-${w}-italic.woff2`, weight: String(w) })),
   "roboto-mono-latin-wght-normal.woff2": [{ file: "roboto-mono-latin-wght-normal.woff2", weight: "100 700" }],
   "roboto-mono-latin-ext-wght-normal.woff2": [{ file: "roboto-mono-latin-ext-wght-normal.woff2", weight: "100 700" }],
 };
@@ -239,7 +245,7 @@ export function standInFaces(standIn: StandIn): StandInFace[] {
         }
       } else {
         const [, scripts] = standInFamilies(standIn);
-        out.push({ ...face, ...(scripts && face.style === "normal" ? { family: scripts } : {}), data: readFileSync(join(dirname(path), file)).toString("base64") });
+        out.push({ ...face, ...(scripts ? { family: scripts } : {}), data: readFileSync(join(dirname(path), file)).toString("base64") });
       }
     }
   }

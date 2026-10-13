@@ -2,7 +2,8 @@
  "about": "The stand-in faces snap draws text in, set as wide as Figma sets them (scripts/figma-stand-ins.py)",
  "packages": {
   "@fontsource-variable/inter": "5.0.18",
-  "@fontsource-variable/roboto-mono": "5.3.0"
+  "@fontsource-variable/roboto-mono": "5.3.0",
+  "@fontsource-variable/noto-serif": "5.3.0"
  },
  "sources": {
   "Inter[slnt,wght].ttf": "b9a8e5e213977665be2a56db66945a16c686da3d9861af1e7851322cf15495ea"
@@ -19,15 +20,33 @@
   "inter-latin-900-normal.woff2": "U+20-7E, U+A0-FF, U+131, U+152-153, U+2BB-2BC, U+2C6, U+2DA, U+2DC, U+300-301, U+303-304, U+308-309, U+323, U+329, U+2000-200B, U+2010-2027, U+202F-205F, U+2070-2071, U+2074-208E, U+2090-209C, U+20A0-20BF, U+20DB-20DE, U+20E8, U+20F0, U+2100-2101, U+2103, U+2105-2106, U+2109, U+2113, U+2116-2117, U+211E-2123, U+2126, U+212A-212B, U+212E, U+2132, U+213B, U+214D, U+214F, U+2153, U+215A-2188, U+2190-2199, U+21A9-21AA, U+21B0-21B1, U+21B3-21B5, U+21BA-21BB, U+21D0, U+21D2, U+21D4, U+21DE-21DF, U+21E4-21E5, U+21E7, U+21EA, U+2202, U+2205-2206, U+220F, U+2211-2212, U+221A, U+221E, U+222B, U+2248, U+2260, U+2264-2265, U+2303, U+2305, U+2318, U+2325-2327, U+232B, U+2380, U+2387, U+238B, U+23CE-23CF, U+2423, U+2460-2468, U+24B6-24CF, U+24EA, U+25A0-25A2, U+25AA, U+25B2-25B3, U+25B6-25B7, U+25BA-25BD, U+25C0-25C1, U+25C4-25C7, U+25CA-25CB, U+25CF, U+25E6, U+25EF, U+2600, U+2605-2606, U+263C, U+2661, U+2665, U+26A0, U+2713, U+2717, U+2756, U+2764, U+2780-2788, U+27EF, U+27F5-27FA, U+2B06, U+2B12-2B13, U+2B1C, U+FEFF"
  },
  "sha256": {
-  "inter-latin-100-normal.woff2": "253975d86389fd45c98063eefbe86bf99043dca5e9b05d778df2deb3635be298",
-  "inter-latin-200-normal.woff2": "2e272e7483f6feeda60369f45d0e2f0294e272d66304d906a998017ab6efe7c7",
-  "inter-latin-300-normal.woff2": "feaf6c56548009fa2b6e1cdb772a3a681a5db1e77e8c305e276a9e0427abfe2e",
-  "inter-latin-400-normal.woff2": "bcf79165ea29c0174b5189f3c20f22d66af6b6ec940d51ac1d885ba167714acb",
-  "inter-latin-500-normal.woff2": "249452603b84c4d48b926927777e5b5007ac372e7c9d4755da25a5ef45b74939",
-  "inter-latin-600-normal.woff2": "43df499685657f487ce600794f768b3c78bb11642d05b87972d95458f0371034",
-  "inter-latin-700-normal.woff2": "6168c7705d3625d30d24424491282f81a50e08c212b6694d2edf51d1483302af",
-  "inter-latin-800-normal.woff2": "0ff1775c5dec790a196c53c9b01e36c53da80f7f418e153c193abc9cc5fcfaa3",
-  "inter-latin-900-normal.woff2": "0f9a2602393d26efb87ecac44b9a84a7d95f44da6c16ae69fecc4b335d96ec2d",
+  "inter-latin-100-normal.woff2": "8cd9076244e8f644e4cacf10706d24b471ad17135b28a5690bd6e799e91d40ff",
+  "inter-latin-200-normal.woff2": "754f445914875bca7c4c589b6357ddd783b0bf4cd74d703092239080a8326b49",
+  "inter-latin-300-normal.woff2": "d6c3cacc0ecad1e5c068f9f42dbf2258ed21bb5e187e0d8c0ffd879a198ab1b1",
+  "inter-latin-400-normal.woff2": "4c507b82186b1715812079a8e810c7f94db83a8725588d011b10382cb0820030",
+  "inter-latin-500-normal.woff2": "d26ab9a5638b18508f194a1e1dab138beb7615fda763858911811ffc3300a863",
+  "inter-latin-600-normal.woff2": "122fa729254676ee07bf47eb98c4323fcbee5bbab9fd3ae5d689ea03fcd7ac4f",
+  "inter-latin-700-normal.woff2": "247079cbdfaaa8f0aaa2590372697c31fcc7921ce009ca0fd1afe8f6168110ce",
+  "inter-latin-800-normal.woff2": "f4ed68c5b2bb5c4a6f6cec399939ddd019498a33ebd0be1b2d0d11db185539b4",
+  "inter-latin-900-normal.woff2": "13aa6415f60faf79885851b6160cbb4a149ce2aabbae8314ab23581c273ef5f5",
+  "noto-serif-latin-100-italic.woff2": "c50f3dd4613df39d95b9d25d9bad5bf478bf99683f3c525689da3c5f1c402b05",
+  "noto-serif-latin-100-normal.woff2": "be0a3a94d090c9a6908e25d6aa3f8fbef958405e49ff91fb8987cdc30509f286",
+  "noto-serif-latin-200-italic.woff2": "f60743f1fc40f2b0f0e818507951b5f67e7ad710480fdc3cc95028ababe3619c",
+  "noto-serif-latin-200-normal.woff2": "36ca35f96eb27fcc68e7bb109eb95266e400a695c356cd50a86922ba800a5eb6",
+  "noto-serif-latin-300-italic.woff2": "2a143a6458776cb7fedb3790f66d478f6863d1a3d1eb887e02d65a73039bfd7d",
+  "noto-serif-latin-300-normal.woff2": "4695367a542bb119ef66eefa0a9265a2eb40b887e9e28558f4452e9e2dfbe282",
+  "noto-serif-latin-400-italic.woff2": "fab3580c2a0deaeec79f84c10cb49433294e2f1ac6b8b6a4f1fdea6621643b6e",
+  "noto-serif-latin-400-normal.woff2": "71ae70f3f84e1d11ab99c4af1ab9375989a4239bc39f0f7434cb4bca33d0f85b",
+  "noto-serif-latin-500-italic.woff2": "399924b47876552489bcd1c915e8581f3c2f9fb2dcc55acf8f7bb376dc1a7853",
+  "noto-serif-latin-500-normal.woff2": "4ee8a6f850ebbf3f1f1913d957228182aa881e0882a232f6a4c1614ae8201d58",
+  "noto-serif-latin-600-italic.woff2": "a20bc06ef52e9fec9b885fe79ef0e3d0d955d225b062eb95e1d869e066263a76",
+  "noto-serif-latin-600-normal.woff2": "71c050208aff780f4836cf1faaa7cd64ba7a7aa2cf71dc1372ab57899b21d0f1",
+  "noto-serif-latin-700-italic.woff2": "a088b10aa7c4cc850b8606f2a3e09ede96d07139ab0d1a9892899dd72c784ef7",
+  "noto-serif-latin-700-normal.woff2": "2683ee9597944a53c7ec65dc90a4c2d7fc7a43a6cf034f6b40b632a507ad15ab",
+  "noto-serif-latin-800-italic.woff2": "ff57a82cc42628e77b3241af8b4f8eed02a646fd5affa90167177b5efb2ee17d",
+  "noto-serif-latin-800-normal.woff2": "1bdbde6069ba03933eec47603b99104ac926560a9276f1e2a3db63e856163e46",
+  "noto-serif-latin-900-italic.woff2": "ab0d96b738b3793675576cd96cd08f68a63c6c984f2822eb14a8f9779634326d",
+  "noto-serif-latin-900-normal.woff2": "adeb0b4fb1b30380966332e3a344b908544821288979de20d5a59a323b41e994",
   "roboto-mono-latin-ext-wght-normal.woff2": "64cdfc5784c8aeb7f6fd890688e8ca1cc906dc7769b63e29684dac4735d84ec1",
   "roboto-mono-latin-wght-normal.woff2": "c07e636eda54e51fb6b59cc41664bdcf068ce836ac99cecf636895a20337cdc0"
  }
