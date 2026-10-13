@@ -23,7 +23,7 @@ import {
   normalizeLetterSpacing, normalizeLineHeight, parseBoxShadow, pxToNumber, resolveFontFamily, resolveRadii, splitTopLevel,
 } from "./snap-normalize.js";
 import type { FontProbe } from "./snap-normalize.js";
-import { stackFamilies, standInDrawn } from "./fonts.js";
+import { isStandInFamily, stackFamilies, standInDrawn } from "./fonts.js";
 import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
 import { ROOT_FIELDS, TREE_LIMITS } from "./tree-types.js";
@@ -712,7 +712,7 @@ function fontOf(stack: string, fonts: Record<string, FontProbe | null>): { famil
   // the family after it as asked.
   const drawn = standInDrawn(first);
   if (!drawn) return { family: first, available: null };
-  const next = stackFamilies(stack)[1];
+  const next = stackFamilies(stack).slice(1).find((family) => !isStandInFamily(family));
   return { family: drawn, available: null, ...(next ? { asked: next } : {}) };
 }
 

@@ -925,7 +925,8 @@ T3. **Figma's Inter is Inter 3.19** (axes slnt and wght). Chrome with
     strings exactly as wide as Figma did, rounded up to a pixel; with 5.3.0,
     Inter 4, 13 of 35. Roboto Mono and Noto Serif at 5.3.0 matched 2 of 2
     each. The spike's "158 against Chrome's 154.8" was Inter against the
-    Mac's system-ui, 2.1% wider; short words run up to 10%.
+    Mac's system-ui, 2.1% wider; short words run up to 10%. As wide to the
+    pixel only: Figma rounds each advance to a 1024th of an em (S1).
 T4. **Sizes round up to a pixel.** A hugging text is as wide as its advance
     rounded up ("Home" 39.04 came out 40), and a text that grows in height
     as tall as its lines rounded up (one line of 17.5 came out 18), except
@@ -933,7 +934,8 @@ T4. **Sizes round up to a pixel.** A hugging text is as wide as its advance
     AUTO line height is each font's ascent and descent to a whole pixel:
     Inter 1.21em, Roboto Mono 1.319 (18 at 14px), Noto Serif 1.362 (22 at
     16px).
-T5. **Figma keeps a line whole a little narrower than its advance**: by
+T5. **Superseded by S1**, which found call 2 reading a text Figma had
+    stopped wrapping. As first written: **Figma keeps a line whole a little narrower than its advance**: by
     0.13 to 1.22px for the probe's eight strings (call 2's thresholds), and
     always at Chrome's width, 0.004 under it, and rounded to 0.01. A word
     wider than its box breaks between characters.
@@ -1052,8 +1054,8 @@ T17. **The uniform `textWidthFactor` (1.045) is gone.** The fixtures were
     browser's widths, where a designer's changed text would stretch the line
     under it past its tolerance.
 T18. **Text sizes, wrapping and truncation follow T1 to T5**, except the
-    wrap threshold: the mock wraps a line wider than its box, so it may
-    wrap where Figma wouldn't, never the other way round. Lines break after
+    wrap threshold, which follows S4: a line wraps in a box any narrower
+    than it. Lines break after
     a space or a hyphen, and a word wider than its box between characters.
 T19. **The test harness's own build** (`tree-harness.ts`) set truncation
     first too, and lost it in the mock as soon as the mock did what Figma
@@ -1248,3 +1250,58 @@ LC2. **Each MCP request has `--request-timeout`, five minutes by default**
    600. The MCP transports now fetch through a dispatcher of Node's own
    kind with those limits off (`untimedFetch`), and cli-connect's test
    shortens Node's limits to 400ms to hold that.
+
+# Fix pass 5, snap side (after the fourth live push)
+
+Notes S1 on. The fourth live push (Figma file nCldItWrdQWKueFNy5dPZM)
+scored 100% with the layout right, but Figma cut Attachment's title
+("sales-dashboard.p…") that Storybook showed whole, and Button's icon sizes
+held a label spilling out of their square.
+
+S1. **Figma rounds each advance and kerning value to a 1024th of an em**,
+    as HarfBuzz does with the font scaled to 1024 units an em, a variable
+    font's deltas rounded on their own: 1845 advances and 7632 kerning pairs
+    of Inter at its nine weights come out so in the fourth push's text probe
+    (`spikes/figma-width-probe-1.js` to `-4.js`, its responses
+    `fixtures/figma-text-probe-3.json`, unchanged). Chrome sets the
+    package's Inter unrounded, so "sales-dashboard.pdf" (Medium 14) was
+    139.375 wide in Chrome and needs 139.39843 in Figma: snap measured the
+    title's column 139.38 wide, and Figma cut it. On a fresh text Figma
+    keeps a line whole only at its own width, 139.4 and not 139.39. The
+    third push's call 2 resized one text again and again, which Figma stops
+    wrapping (its textAutoResize ends NONE, `sameNode`), so its thresholds
+    (T5) described that text.
+S2. **The faces snap draws in carry Figma's widths** (`fonts/`, written by
+    `scripts/figma-stand-ins.py` with fonttools and uharfbuzz from the same
+    packages): Inter's Latin subset as nine static faces, one a weight,
+    each instanced and rounded as Figma rounds it, and Roboto Mono's
+    upright Latin and Latin Extended, every advance 1230 of 2048 units as
+    Figma sets it (the package has 1229). Each is renamed, as the OFL asks
+    of a modified font, and ships in the package's "files" with its license
+    (`fonts/OFL-*.txt`) and `fonts/manifest.json`, their digests, which
+    `fonts.test.ts` holds them to. Inter's other subsets stay variable from
+    the package, under a family of their own, `storysync Inter scripts`,
+    after the rounded one: Chrome picks one set of faces by weight and
+    doesn't look past it for a glyph, so static Latin faces and variable
+    others in one family set "a" in Times at some weights. Roboto Mono's
+    italics (1202, already whole) and Noto Serif are as their packages ship
+    them. resolveFontFamily and the tree reader skip the second family
+    where they read the family asked for after the stand-in.
+S3. **Proof.** `scripts/figma-font-metrics.mjs`, which acceptance runs
+    with `--check`, sets each of the probe's strings in Chrome in the
+    stand-in and prints how far each family is from Figma's widths: Inter's
+    37 strings and Roboto Mono's 3 are within 0.00001px, the probe's own
+    rounding, and it fails above 0.001px. Noto Serif is 0.21px narrower
+    than Figma at Bold 20 ("Quietly Waving"), as its faces aren't rounded
+    yet; its Regular strings are within 0.011px, and rounding Regular's
+    advances to a 1024th gives Figma's widths exactly, so the same script
+    can round it once it carries Noto Serif.
+S4. **The mock follows the same data.** `fixtures/figma-fonts.json`,
+    measured in Chrome from the faces snap draws in, sets every Inter and
+    Roboto Mono string of the probe within 0.002px of Figma (its advances
+    are kept to 0.00001em), and the mock keeps a line whole only in a box
+    at least as wide (`FITS`, float noise), where it allowed 0.01px. The
+    fourth push's first call, run in the mock, wraps the title at 139.375,
+    139.38 and 139.39 and keeps it whole from 139.4, as Figma did. The mock
+    rounds a size to 0.01 as it is set, so where it keeps a line whole can
+    sit up to 0.007px from Figma's.

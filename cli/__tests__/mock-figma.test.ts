@@ -8,7 +8,7 @@ import { verify } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 import {
   CODE_LIMIT, FONTS, MockFigma, RESPONSE_LIMIT,
-  estimateAdvance, fixtureVariants, imageSize, loadTreeFixture, measureFromTrees, parseSvg, svgShapeBoxes, treeFixtureAsset,
+  estimateAdvance, figmaFonts, fixtureVariants, imageSize, loadTreeFixture, measureFromTrees, parseSvg, svgShapeBoxes, treeFixtureAsset,
 } from "./mock-figma.js";
 import type { MockFont, MockRun, NodeView } from "./mock-figma.js";
 
@@ -781,13 +781,17 @@ test("text probe: the mock sets each string as wide and tall as Figma did, and k
   const second = two.value as typeof TEXT_LIVE.call2;
   assert.deepEqual(second.heights, TEXT_LIVE.call2.heights);
   for (const [name, live] of Object.entries(TEXT_LIVE.call2.orders)) assert.equal(second.orders[name], live, name);
+  // Call 2 resized one text again and again, which Figma stops wrapping
+  // again (the fourth push's probe read it at 138.25 for
+  // "sales-dashboard.pdf", its textAutoResize NONE), so its thresholds and
+  // heights describe that text. A fresh one keeps a line whole only at
+  // Figma's own width, which the fourth push's probe read for each of call
+  // 2's strings, and the mock wraps there too.
+  const fresh = new Map(TEXT_LIVE_3.call1.rows.map((r) => [`${r[0]}|${r[1]}|${r[2]}`, r[5]]));
   for (const [i, live] of TEXT_LIVE.call2.thresholds.entries()) {
     const got = second.thresholds[i];
-    // One line at Chrome's width, 0.004 under it, and rounded to 0.01, as in
-    // Figma, which keeps a line whole 0.13 to 1.22px narrower still: the
-    // mock wraps sooner, so it never keeps a line whole that Figma wraps.
-    assert.deepEqual(got.slice(5), live.slice(5), live[0]);
-    assert.ok(got[4] >= live[4] && got[4] <= live[3], `${live[0]}: the mock wraps under ${got[4]}, Figma under ${live[4]}, Chrome's width ${live[3]}`);
+    const figmaWidth = fresh.get(`${live[0]}|${STYLE_WEIGHT[live[1]]}|${live[2]}`)!;
+    assert.ok(Math.abs(got[4] - figmaWidth) <= RESIZE_STEP, `${live[0]}: the mock wraps under ${got[4]}, a fresh text in Figma under ${figmaWidth}`);
   }
   assert.equal(outside(figma, "storysync probe 2"), before, "nothing outside the probe's page changed");
 
@@ -799,4 +803,59 @@ test("text probe: the mock sets each string as wide and tall as Figma did, and k
   assert.ok(has.every((f) => TEXT_LIVE.call3.has.includes(f)));
   // A page of the probe's name it didn't make is refused.
   assert.match(await fails(new MockFigma({ pages: ["storysync probe 2"] }), TEXT_PROBE[0]), /exists that this probe did not create/);
+});
+
+// --- The fourth push's text probe ------------------------------------------------
+
+/** Its first call, as sent to use_figma on 2026-10-09: each string's width on a fresh text, and the Attachment title. */
+const WIDTH_PROBE = readFileSync(`${ROOT}spikes/figma-width-probe-1.js`, "utf8");
+type WidthRow = [chars: string, weight: number, size: number, hug: number, big: number, fits: number, ink: unknown, ends: [boolean, boolean]];
+/** What Figma answered, kept unchanged. */
+const TEXT_LIVE_3 = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-probe-3.json`, "utf8")) as {
+  call1: { rows: WidthRow[]; attachment: Record<string, unknown> };
+  call3: { other: [chars: string, family: string, style: string, size: number, hug: number, exact: number, r2: number][] };
+};
+const STYLE_WEIGHT: Record<string, number> = { Regular: 400, Medium: 500, "Semi Bold": 600, Bold: 700 };
+/**
+ * How far from Figma's the width the mock keeps a line whole from can be:
+ * the mock rounds a node's size to 0.01 as it is set, so a width it is
+ * resized to can be up to half that over what was asked, and
+ * fixtures/figma-fonts.json keeps each advance to 0.00001em, 0.002px over a
+ * label.
+ */
+const RESIZE_STEP = 0.007;
+
+test("text probe 3: the mock keeps a line whole at Figma's own width for each string, and wraps the Attachment title where Figma did", async () => {
+  const run = await new MockFigma({ pages: ["Page 1"] }).run(WIDTH_PROBE);
+  assert.ok(run.ok, run.text);
+  const got = run.value as { rows: WidthRow[]; attachment: Record<string, unknown> };
+  for (const [i, live] of TEXT_LIVE_3.call1.rows.entries()) {
+    const [chars, weight, size] = live;
+    const label = `${chars} ${weight} ${size}`;
+    assert.deepEqual(got.rows[i].slice(0, 4), live.slice(0, 4), `${label}: as wide, hugging, rounded up to a pixel`);
+    // At a hundred times the size, to 0.01: fixtures/figma-fonts.json keeps each advance to 0.00001em.
+    assert.ok(Math.abs(got.rows[i][4] - live[4]) <= 0.01, `${label}: ${got.rows[i][4]} at 100x, Figma ${live[4]}`);
+    assert.deepEqual(got.rows[i][7], live[7], label);
+    // A string that can't wrap fits at any width; any other only from Figma's width on.
+    if (!live[7][0]) assert.ok(Math.abs(got.rows[i][5] - live[5]) <= RESIZE_STEP, `${label}: whole from ${got.rows[i][5]}, in Figma from ${live[5]}`);
+  }
+  // "sales-dashboard.pdf" in a column of 139.38, as the fourth push built
+  // the Attachment, takes two lines; it takes one only from 139.4.
+  assert.deepEqual(got.attachment, TEXT_LIVE_3.call1.attachment);
+});
+
+test("figmaFonts: the mock sets each string of the fourth push's probe as wide as Figma did, in Inter and Roboto Mono", () => {
+  const measure = figmaFonts();
+  const font = (family: string, weight: number, size: number) => ({ family, size, letterSpacing: 0, style: Object.keys(STYLE_WEIGHT).find((s) => STYLE_WEIGHT[s] === weight)! });
+  for (const [chars, weight, size, , , fits, , ends] of TEXT_LIVE_3.call1.rows) {
+    if (ends[0]) continue;
+    const off = Math.abs(measure.advance(chars, font("Inter", weight, size)) - fits);
+    assert.ok(off <= 0.002, `${chars} ${weight} ${size}: ${measure.advance(chars, font("Inter", weight, size))}, Figma ${fits}`);
+  }
+  for (const [chars, family, style, size, , exact] of TEXT_LIVE_3.call3.other) {
+    // Noto Serif's faces aren't rounded as Figma rounds them (fonts.ts).
+    if (family !== "Roboto Mono") continue;
+    const off = Math.abs(measure.advance(chars, font(family, STYLE_WEIGHT[style], size)) - exact);
+    assert.ok(off <= 0.002, `${chars} ${style} ${size}: Figma ${exact}`);
+  }
 });

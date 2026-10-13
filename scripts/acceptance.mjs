@@ -2606,13 +2606,16 @@ async function main() {
     return `${texts.length} texts in Inter, none stood in`;
   });
 
-  await check("the stand-in fonts snap measures with set text as the mock's Figma metrics say, which match Figma's live widths", () => {
-    // scripts/figma-font-metrics.mjs measures the installed stand-ins in the
-    // browser; the unit tests hold those metrics to the widths Figma gave the
-    // live text probe. A font package updated without them fails here.
+  await check("the stand-in fonts snap measures with set text as the mock's Figma metrics say, and as wide as Figma did in the live probe", () => {
+    // scripts/figma-font-metrics.mjs measures the stand-ins in the browser:
+    // a font package or fonts/ updated without the metrics fails here, and
+    // so does Inter or Roboto Mono set more than 0.001px from a width the
+    // fourth push's text probe read from Figma.
     const r = spawnSync(process.execPath, [join(ROOT, "scripts", "figma-font-metrics.mjs"), "--check"], { encoding: "utf8" });
     assert(r.status === 0, `${r.stdout}${r.stderr}`.trim());
-    return "cli/__tests__/fixtures/figma-fonts.json matches the installed fonts";
+    const proof = r.stdout.split("\n").filter((line) => /^ok (Inter|Roboto Mono):/.test(line)).map((line) => line.replace(/ \(worst.*$/, ""));
+    assert(proof.length === 2, `the script proved ${proof.length} of 2 families against the probe:\n${r.stdout}`);
+    return `figma-fonts.json matches the installed fonts; ${proof.join("; ")}`;
   });
 
   await check("the push measures every Button combination, with the defaults as the base", () => {

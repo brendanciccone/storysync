@@ -3,7 +3,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,6 +12,8 @@ import {
 } from "../fonts.js";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const MANIFEST = JSON.parse(readFileSync(`${ROOT}fonts/manifest.json`, "utf8")) as { packages: Record<string, string>; sha256: Record<string, string> };
+const sha256 = (base64: string) => createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
 const PROBE = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-probe.json`, "utf8")) as {
   call1: { fonts: Record<string, { axes: unknown; styles: string[] }> };
   call3: { has: string[]; lacks: string[] };
@@ -53,7 +56,8 @@ test("stackFamilies: a computed font-family's families, unquoted, its quoted com
 
 test("standInStack: a stack that opens with a keyword or a face Figma lacks gets its stand-in ahead of it, any other stays", () => {
   const sans = 'ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji"';
-  assert.deepEqual(standInStack(sans), { stack: `"storysync Inter", ${sans}`, standIn: "Inter" });
+  // Inter's Latin faces are static, one a weight, so its other scripts are a family of their own after them.
+  assert.deepEqual(standInStack(sans), { stack: `"storysync Inter", "storysync Inter scripts", ${sans}`, standIn: "Inter" });
   const mono = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
   assert.deepEqual(standInStack(mono), { stack: `"storysync Roboto Mono", ${mono}`, standIn: "Roboto Mono" });
   assert.equal(standInStack('"Helvetica Neue", Arial, sans-serif')!.standIn, "Inter");
@@ -62,6 +66,7 @@ test("standInStack: a stack that opens with a keyword or a face Figma lacks gets
   assert.equal(standInStack('Geist, "Geist Fallback", ui-sans-serif, system-ui'), null);
   assert.equal(standInStack("Inter, sans-serif"), null);
   assert.equal(standInStack(`"storysync Inter", ${sans}`), null);
+  assert.equal(standInStack(`"storysync Inter", "storysync Inter scripts", ${sans}`), null);
   assert.equal(standInStack(""), null);
 });
 
@@ -72,19 +77,49 @@ test("standInDrawn: the Figma family of a family snap added to the page, null fo
   assert.equal(standInDrawn("Inter"), null);
 });
 
-test("standInFaces: each stand-in's faces from its package, every subset, under snap's own family name", () => {
+test("standInFaces: Inter's and Roboto Mono's Latin faces from fonts/, rounded as Figma sets them; every other subset from its package", () => {
   const inter = standInFaces("Inter");
-  // Inter 3.19 has no italic of its own: seven subsets, upright, its weight axis whole.
-  assert.equal(inter.length, 7);
-  assert.ok(inter.every((f) => f.family === "storysync Inter" && f.style === "normal" && f.weight === "100 900" && f.data.length > 1000));
-  assert.ok(inter.some((f) => /U\+0000-00FF/.test(f.unicodeRange)), "the Latin subset");
+  const latin = inter.filter((f) => f.family === "storysync Inter");
+  // One static face a weight Figma has, each the Latin subset, from fonts/.
+  assert.deepEqual(latin.map((f) => f.weight), ["100", "200", "300", "400", "500", "600", "700", "800", "900"]);
+  assert.ok(latin.every((f) => f.style === "normal" && /U\+0000-00FF/.test(f.unicodeRange)));
+  const digests = MANIFEST.sha256;
+  for (const face of latin) {
+    assert.equal(sha256(face.data), digests[`inter-latin-${face.weight}-normal.woff2`], `Inter ${face.weight}: the bytes manifest.json records`);
+  }
+  // Inter 3.19 has no italic of its own: its six other subsets stay variable, under a family of their own.
+  const scripts = inter.filter((f) => f.family === "storysync Inter scripts");
+  assert.equal(scripts.length, 6);
+  assert.ok(scripts.every((f) => f.weight === "100 900" && f.style === "normal" && !/U\+0000-00FF/.test(f.unicodeRange)));
+  assert.equal(latin.length + scripts.length, inter.length);
   assert.equal(standInFaces("Inter"), inter, "read once");
   const mono = standInFaces("Roboto Mono");
+  assert.ok(mono.every((f) => f.family === "storysync Roboto Mono"), "Roboto Mono's faces are variable at every subset, so one family");
   assert.deepEqual([...new Set(mono.map((f) => `${f.style} ${f.weight}`))].sort(), ["italic 100 700", "normal 100 700"]);
+  for (const [file, range] of [["roboto-mono-latin-wght-normal.woff2", /U\+0000-00FF/], ["roboto-mono-latin-ext-wght-normal.woff2", /U\+0100-02BA/]] as const) {
+    const face = mono.find((f) => f.style === "normal" && range.test(f.unicodeRange))!;
+    assert.equal(sha256(face.data), digests[file], file);
+  }
   assert.ok(standInFaces("Noto Serif").some((f) => f.style === "italic"));
-  // The woff2 bytes, as the package ships them.
-  const latin = inter.find((f) => /U\+0000-00FF/.test(f.unicodeRange))!;
-  assert.equal(Buffer.from(latin.data, "base64").subarray(0, 4).toString("latin1"), "wOF2");
+  // woff2 bytes, wherever they come from.
+  assert.ok([...inter, ...mono].every((f) => Buffer.from(f.data, "base64").subarray(0, 4).toString("latin1") === "wOF2"));
+});
+
+test("fonts/ holds the faces manifest.json lists, as it lists them, and each font's license", () => {
+  const files = readdirSync(`${ROOT}fonts`).filter((f) => f.endsWith(".woff2")).sort();
+  assert.deepEqual(files, Object.keys(MANIFEST.sha256).sort());
+  for (const file of files) assert.equal(createHash("sha256").update(readFileSync(`${ROOT}fonts/${file}`)).digest("hex"), MANIFEST.sha256[file], file);
+  for (const license of ["OFL-Inter.txt", "OFL-Roboto-Mono.txt"]) assert.match(readFileSync(`${ROOT}fonts/${license}`, "utf8"), /SIL OPEN FONT LICENSE Version 1\.1/, license);
+});
+
+test("the package ships fonts/: the faces snap reads, their manifest and their licenses", () => {
+  const pkg = JSON.parse(readFileSync(`${ROOT}package.json`, "utf8")) as { files: string[] };
+  // npm's "files": a directory takes all it holds; a pattern, what it matches.
+  const shipped = (path: string) => pkg.files.some((entry) =>
+    path === entry || path.startsWith(`${entry.replace(/\/$/, "")}/`)
+    || new RegExp(`^${entry.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`).test(path));
+  for (const file of readdirSync(`${ROOT}fonts`)) assert.ok(shipped(`fonts/${file}`), `fonts/${file} is in package.json "files"`);
+  assert.ok(!shipped("scripts/figma-stand-ins.py"), "the script that writes them is the repository's");
 });
 
 test("the stand-ins are the font versions Figma has, and the mock's metrics were measured from them", () => {

@@ -62,6 +62,12 @@ test("buildTree: a text snap drew in a stand-in records the family Figma sets it
   const { nodes: unprobed } = buildTree(tree(el("div", [0, 0, 40, 20], { display: "flex" }, [label])));
   const bare = unprobed.find((n) => n.tx)!.tx!;
   assert.deepEqual([bare.f, bare.fs, bare.fk, bare.fa], ["Inter", "ui-sans-serif", undefined, undefined]);
+  // Inter's stack as snap sets it, its other scripts a second family of snap's (fonts.ts), read past too.
+  const both = '"storysync Inter", "storysync Inter scripts", ui-sans-serif, system-ui, sans-serif';
+  const scripts = el("span", [0, 0, 40, 20], {}, [run("Home", [[0, 1.5, 39.05, 17]])], { text: { ...TEXT, "font-family": both } });
+  const { nodes: unprobedBoth } = buildTree(tree(el("div", [0, 0, 40, 20], { display: "flex" }, [scripts])));
+  const second = unprobedBoth.find((n) => n.tx)!.tx!;
+  assert.deepEqual([second.f, second.fs], ["Inter", "ui-sans-serif"]);
 });
 
 // --- What the registry's stories give ------------------------------------------------

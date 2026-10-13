@@ -17,6 +17,7 @@ import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from ".
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
 import { NON_RENDERED_TAGS, OVERLAY_SELECTOR, WRAPPER_PROPERTIES } from "../snap-normalize.js";
 import { inFakePage } from "./dom-standin.js";
+import { standInFamilies } from "../fonts.js";
 import type { FakeElementSpec } from "./dom-standin.js";
 
 /** Listening for requests, which captureStory does to wait for images. */
@@ -959,7 +960,8 @@ test("captureStory: sends only the stand-ins the story's text needs, none for a 
     const [[drawFn, drawArg], [waitFn, waitArg]] = sent;
     assert.equal(drawFn, standInFontsInPage);
     const { faces } = drawArg as { faces: { family: string }[] };
-    assert.deepEqual([...new Set(faces.map((f) => f.family))], want.map((s) => `storysync ${s}`));
+    // Inter's two families, its Latin faces and its other scripts (fonts.ts), and Roboto Mono's one.
+    assert.deepEqual([...new Set(faces.map((f) => f.family))].sort(), want.flatMap((s) => standInFamilies(s)).sort());
     assert.equal(waitFn, standInsLoadedInPage);
     assert.deepEqual(waitArg, { prefix: "storysync ", ms: 5000 });
   }

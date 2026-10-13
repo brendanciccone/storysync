@@ -194,12 +194,13 @@ const metrics = (): FontMetrics =>
  * Text as wide as Figma sets it in Inter, Roboto Mono and Noto Serif, the
  * fonts it has and the stand-ins snap draws in (cli/fonts.ts): each
  * character's advance with the kerning between them, plus letter spacing,
- * from fixtures/figma-fonts.json, which matches all 39 widths Figma gave the
- * live text probe (fixtures/figma-text-probe.json). Another family is
- * measured by `fallback`. Figma rounds a hugging text's width up to a pixel
- * (sizeText), and keeps a line whole in a box narrower than this by 0.13 to
- * 1.22px, which the mock doesn't: it wraps a line wider than its box, so it
- * may wrap where Figma wouldn't, never the other way round.
+ * from fixtures/figma-fonts.json, which Chrome measured in the faces snap
+ * draws in. In Inter and Roboto Mono those are rounded as Figma rounds them,
+ * so each string of the fourth push's text probe comes out within 0.002px of
+ * the width Figma gave it (fixtures/figma-text-probe-3.json); Noto Serif's
+ * aren't yet. Another family is measured by `fallback`. Figma rounds a
+ * hugging text's width up to a pixel (sizeText), and keeps a line whole only
+ * in a box at least as wide as it (FITS).
  */
 export function figmaFonts(fallback: TextMeasure = { advance: estimateAdvance }): TextMeasure {
   const table = metrics();
@@ -997,6 +998,14 @@ function textWidth(n: Node): number {
 }
 
 /**
+ * How much wider than its box a line can be and stay whole: float noise
+ * only. On a fresh text Figma keeps "sales-dashboard.pdf" (Inter Medium 14,
+ * 139.39843 wide) on one line at 139.4 and wraps it at 139.39 (the fourth
+ * push's text probe, fixtures/figma-text-probe-3.json, `attachment`).
+ */
+const FITS = 1e-4;
+
+/**
  * Lines the text takes wrapped at `width`, greedy by words, each breaking
  * after a space or a hyphen: each word as wide as the measure says where it
  * measures words, else its characters' share of the line's advance. A line
@@ -1015,7 +1024,7 @@ function textLines(n: Node, width: number): number {
       continue;
     }
     const advance = measure.advance(line, font);
-    if (advance <= width + 0.01 || !line.length) {
+    if (advance <= width + FITS || !line.length) {
       lines += 1;
       continue;
     }
@@ -1025,14 +1034,14 @@ function textLines(n: Node, width: number): number {
     let count = 1;
     for (const word of line.split(/(?<=[\s-])/)) {
       const fit = wide(word.trimEnd());
-      if (used > 0 && used + fit > width + 0.01) {
+      if (used > 0 && used + fit > width + FITS) {
         count++;
         used = 0;
       }
-      if (used === 0 && fit > width + 0.01) {
+      if (used === 0 && fit > width + FITS) {
         for (const ch of word) {
           const w = wide(ch);
-          if (used > 0 && used + w > width + 0.01 && ch.trim()) {
+          if (used > 0 && used + w > width + FITS && ch.trim()) {
             count++;
             used = 0;
           }

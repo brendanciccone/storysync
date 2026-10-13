@@ -5,7 +5,7 @@
 // module turns them into the normalized shape the Figma writer consumes.
 
 import { colorToHex } from "./color.js";
-import { isFontKeyword, standInDrawn } from "./fonts.js";
+import { isFontKeyword, isStandInFamily, standInDrawn } from "./fonts.js";
 
 // Where they lived before the stand-ins needed them too.
 export { isFontKeyword, isSystemFontAlias } from "./fonts.js";
@@ -318,7 +318,10 @@ export function resolveFontFamily(probe: FontProbe): { family: string; available
     const drawn = standInDrawn(family);
     if (drawn) {
       if (applied === false) continue;
-      const rest = resolveFontFamily({ families: probe.families.slice(index + 1), applied: probe.applied.slice(index + 1) });
+      // Past the stand-in's own families: Inter has two (fonts.ts).
+      let after = index + 1;
+      while (after < probe.families.length && isStandInFamily(probe.families[after])) after++;
+      const rest = resolveFontFamily({ families: probe.families.slice(after), applied: probe.applied.slice(after) });
       return { family: drawn, available: true, asked: rest.family };
     }
     const keyword = isFontKeyword(family);

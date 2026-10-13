@@ -1,0 +1,20 @@
+{
+ "about": "The stand-in faces snap draws text in, set as wide as Figma sets them (scripts/figma-stand-ins.py)",
+ "packages": {
+  "@fontsource-variable/inter": "5.0.18",
+  "@fontsource-variable/roboto-mono": "5.3.0"
+ },
+ "sha256": {
+  "inter-latin-100-normal.woff2": "6caa206d2adb1dee4415ca61ac1d2b1f4f5aa57a66f3ec128cbd4446df03740e",
+  "inter-latin-200-normal.woff2": "29cad5279ee5a1908b1468ac9e8530971c459dd56ee18bfceeecea8ca4e6d8f1",
+  "inter-latin-300-normal.woff2": "1a58dccea4b78db25c45c0106470d2ba80b60294d28fb7765f9b4add175a460f",
+  "inter-latin-400-normal.woff2": "8740c82827b6ac7448b34bb701a4ecd09753a4ecc9cf5e12983225d5d71c79e5",
+  "inter-latin-500-normal.woff2": "85883077d98f2182c91bce02ac35acfd953283926a662660596b0cbb4083b757",
+  "inter-latin-600-normal.woff2": "e255fd16d40492825079914cfe2fb9af53563d2ef759f4bbca11ba24a2030756",
+  "inter-latin-700-normal.woff2": "0adc3c6dc6a0e98e83863525bdc647375f3142e957cb567371b7a123cd76a2ee",
+  "inter-latin-800-normal.woff2": "7c1f6798fa3941f74a161b2d88334f55f6792e2bc6462b920deff24186e92934",
+  "inter-latin-900-normal.woff2": "239e169a6c397d5bfe24493d6ccb6a4d3bf6af1d2aab1c6ccff2e8d0250cadc5",
+  "roboto-mono-latin-ext-wght-normal.woff2": "97cc9cba7f3eccb8f45f6e8e70eb31b658ef4a5d0b20be0f8d865cf3f5d0a336",
+  "roboto-mono-latin-wght-normal.woff2": "82fc70a466f64de33a929061b89db751693e50dbde485e66c31293f2c1c3a444"
+ }
+}
