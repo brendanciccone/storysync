@@ -570,8 +570,8 @@ commit that made it.
       may be the one measured); a token's class in another state, a size
       (a typography token's `text-*` included) or a width doesn't stop it.
       Stylesheets that set a property to different tokens leave it out.
-      Each such binding is in plan.json's `bindings` with its rule,
-      printed with `=`, and not warned. Without `defaults` (a
+      Each such binding is in plan.json's `bindings` with its rule and
+      node keys, printed with `=`, and not warned. Without `defaults` (a
       tokens.json from before), or `nocls` (a tree snapped before it, or
       a class list cut at 8), nothing changes: re-snap.
     - Snap's text evidence walks past the root: `outer` holds the

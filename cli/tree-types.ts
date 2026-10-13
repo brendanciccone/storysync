@@ -249,10 +249,11 @@ export interface FigmaPlan {
   bindings?: PlanBinding[];
 }
 
-/** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it. */
+/** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it, in the layers `keys`. */
 export interface PlanBinding {
   component: string;                         // componentKey
   property: string; value: string; variable: string; from: string;
+  keys: string[];                            // node keys, sorted, "" the root
 }
 
 /** One planned call. Paths are relative to the plan's directory. */

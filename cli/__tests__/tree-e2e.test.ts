@@ -887,8 +887,9 @@ test("figma code: prints each value the base styles bound, with the rule, and li
     const args = ["figma", "code", "--snap", snapPath, "--tokens", join(dir, "tokens.json"), "--out", join(dir, "figma")];
     const run = await cli(args);
     assert.equal(run.status, 0, run.stderr);
-    assert.ok(run.stdout.includes(`  = ui/base/Dialog: color #0a0a0a bound to foreground, which no class names, by the base style ${from}\n`), run.stdout);
-    assert.deepEqual(jsonOf(await cli([...args, "--json"])).bindings, [{ component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from }]);
+    assert.ok(run.stdout.includes(`  = ui/base/Dialog: color #0a0a0a bound to foreground, which no class names, by the base style ${from} (dialog-footer/dialog-close/#text, dialog-header/dialog-title)\n`), run.stdout);
+    const keys = ["dialog-footer/dialog-close/#text", "dialog-header/dialog-title"];
+    assert.deepEqual(jsonOf(await cli([...args, "--json"])).bindings, [{ component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from, keys }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

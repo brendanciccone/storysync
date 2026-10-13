@@ -331,8 +331,11 @@ test("figma code: a value the base styles bind is recorded in the plan with its 
   const from = "app/globals.css, @layer base: body { @apply bg-background text-foreground }";
   const tokens = { ...SHADCN_TOKENS, defaults: [{ property: "color", token: "foreground", from }] };
   const coded = await codeFor(withNoClass(loadTreeFixture("dialog"), DIALOG_NO_CLASS), {}, tokens);
-  // The title and Cancel both: once.
-  assert.deepEqual(coded.plan.bindings, [{ component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from }]);
+  // The title and Cancel both: once, with each layer it bound.
+  assert.deepEqual(coded.plan.bindings, [{
+    component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from,
+    keys: ["dialog-footer/dialog-close/#text", "dialog-header/dialog-title"],
+  }]);
   assert.deepEqual(JSON.parse(readFileSync(join(coded.out, "plan.json"), "utf8")).bindings, coded.plan.bindings);
   assert.equal(coded.warnings.some((w) => /left unbound/.test(w)), false);
   // Without them, as tokens.json from before, or from a snap that didn't

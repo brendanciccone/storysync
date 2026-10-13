@@ -1048,7 +1048,10 @@ figma
       }
       // What no class showed, and the project's base styles did: a text that
       // inherits body's color, a border that takes `*`'s.
-      for (const b of bindings) console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from}`));
+      for (const b of bindings) {
+        const layers = b.keys.map((k) => (k === "" ? "its root" : k)).join(", ");
+        console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from} (${layers})`));
+      }
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
     } catch (err) {

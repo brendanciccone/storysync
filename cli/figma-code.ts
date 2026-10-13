@@ -443,9 +443,15 @@ function compileComponent(component: SnapComponentWithTree, binder: Binder, warn
   for (const u of [...unbound.values()].sort((a, b) => `${a.property} ${a.value}`.localeCompare(`${b.property} ${b.value}`))) {
     warnings.push(`${key}: ${u.property} ${u.value} left unbound: it matches ${u.candidates.join(", ")}, and no class names one`);
   }
-  // Each value a base style bound, once: the evidence for a binding no class shows.
+  // Each value a base style bound, once, with the layers it bound in any
+  // variant: the evidence for a binding no class shows.
   const bindings = new Map<string, PlanBinding>();
-  for (const b of findings.byDefault) bindings.set(`${b.property} ${b.value}`, { component: key, property: b.property, value: b.value, variable: b.variable, from: b.from });
+  for (const b of findings.byDefault) {
+    const id = `${b.property} ${b.value}`;
+    const was = bindings.get(id) ?? { component: key, property: b.property, value: b.value, variable: b.variable, from: b.from, keys: [] };
+    if (!was.keys.includes(b.key)) was.keys = [...was.keys, b.key].sort();
+    bindings.set(id, was);
+  }
   return {
     key, id: component.id ?? key, title: component.title, name: setNameOf(component), page: pageOf(component),
     props: component.variantProperties, variants, note: labelLine(component),
