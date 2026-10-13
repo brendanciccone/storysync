@@ -140,7 +140,7 @@ jobs:
 
 It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
 
-Runners don't come with bun, so a bun project needs [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun) as a step before the action, or its own `install_command`. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`.
+For a bun project on a runner without bun, the action installs it with [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun), at the version `packageManager` names, or the latest. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`. The log shows a line per component as it goes.
 
 **Create the baselines first.** With Storybook running, in the project's directory:
 
@@ -152,7 +152,7 @@ npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 
 Commit both files. Use the Storysync version the action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the action maps. The action's warnings and errors print these commands with the version filled in. You can also save the action's `json` and `tokens_json` outputs as your baselines.
 
-- If you set `components` or `token_source`, pass the same values to `map --components` and `tokens --source`.
+- If you set `components`, `exclude_props` or `token_source`, pass the same values to `map --components`, `map --exclude-props` and `tokens --source`.
 - A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
 - With no baseline, drift is `new` and the action warns that nothing was checked. With `fail_on_drift`, the job fails and prints the command that writes it.
 - A baseline that isn't `map --json` or `tokens --json` output always fails the job. That includes the `{"error": ...}` that `map --json` writes when Storybook isn't running.
@@ -162,9 +162,11 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 | Input | Default | |
 |---|---|---|
 | `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens, and baseline paths all use it. |
-| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
+| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile`. Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
 | `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
 | `components` | all | Comma-separated component names, titles or IDs. A name that matches nothing fails the job. |
+| `exclude_props` | none | Comma-separated props to leave out of every component, as `map --exclude-props`. |
+| `request_timeout` | 5 minutes | How long mapping waits for each Storybook request, in ms, as `map --request-timeout`. Raise it for a slow Storybook. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
 | `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A baseline from Storysync 0.3.0 has no IDs, so it's matched by title, with a warning to recreate it. |
 | `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |

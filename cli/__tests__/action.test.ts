@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -545,4 +545,148 @@ test("action: the command a missing baseline prints makes a directory whose name
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+// --- Dark values in Detect token drift ---
+
+test("action Detect token drift: a changed dark value is drift against a baseline that has modes, and an earlier one's says it went unchecked", () => {
+  // Compared on value alone, a dark theme that changed passed CI.
+  const dark = (bg: string) => ({ category: "colors", tokens: [{ name: "background", value: "#ffffff", dark: { value: bg } }, { name: "muted", value: "#f5f5f5" }] });
+  const withModes = (collections: unknown[]) => JSON.stringify({ source: "css", sourcePath: "app/globals.css", modes: ["Light", "Dark"], collections, warnings: [] });
+  const files = (baseline: string, current: unknown[]) => ({ ".storysync/tokens-baseline.json": baseline, "storysync-tokens-current.json": withModes(current) });
+  const env = { TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json", TOKEN_SOURCE: "auto" };
+
+  const same = run("Detect token drift", "storysync-token-drift.md", files(withModes([dark("#0a0a0a")]), [dark("#0a0a0a")]), env);
+  assert.equal(same.outputs.result, "false", same.stdout);
+
+  const changed = run("Detect token drift", "storysync-token-drift.md", files(withModes([dark("#0a0a0a")]), [dark("#000000")]), env);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed collections\n- \*\*colors\*\*: 0 added, 0 changed, 1 changed in the dark theme\n/);
+  assert.match(changed.outputs.error ?? "", /If they're intended/);
+
+  // Written by a storysync that didn't read the dark theme: no modes, no dark values.
+  const old = JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections: [{ category: "colors", tokens: [{ name: "background", value: "#ffffff" }, { name: "muted", value: "#f5f5f5" }] }], warnings: [] });
+  const unchecked = run("Detect token drift", "storysync-token-drift.md", files(old, [dark("#000000")]), env);
+  assert.equal(unchecked.outputs.result, "false", unchecked.stdout);
+  assert.match(unchecked.stdout, /^::notice::The token baseline at \.storysync\/tokens-baseline\.json \(relative to the repository root\) was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared\. Recreate it by running this in the repository root/m);
+
+  // A dark value without one is no baseline.
+  const broken = run("Detect token drift", "storysync-token-drift.md", files(withModes([{ category: "colors", tokens: [{ name: "background", value: "#ffffff", dark: {} }] }]), [dark("#000000")]), env);
+  assert.equal(broken.status, 1, broken.stdout);
+  assert.match(broken.stdout, /::error::The token baseline at .* is not tokens --json output/);
+});
+
+// --- Package manager, Setup Bun and Map components ---
+
+/** Runs a shell step's script in `dir`, with GITHUB_OUTPUT set, returning its outputs. */
+function runShell(step: string, dir: string, env: Record<string, string>): Run {
+  const outputFile = join(dir, "github-output");
+  writeFileSync(outputFile, "");
+  // By its path: PATH can be one of binWith's, which has no bash.
+  const bash = spawnSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+  const r = spawnSync(bash, ["--noprofile", "--norc", "-eo", "pipefail", "-c", shellStep(step)], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_OUTPUT: outputFile, GITHUB_WORKSPACE: dir, ...env },
+  });
+  const outputs: Record<string, string> = {};
+  for (const line of readFileSync(outputFile, "utf8").split("\n")) {
+    const m = /^(\w+)=(.*)$/.exec(line);
+    if (m) outputs[m[1]] = m[2];
+  }
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, outputs, report: null };
+}
+
+/** A PATH of node and, given a script, a `bun` that runs it: no other bun. */
+function binWith(dir: string, bun?: string): string {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "node"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 });
+  if (bun) writeFileSync(join(bin, "bun"), `#!/bin/sh\n${bun}\n`, { mode: 0o755 });
+  for (const tool of ["dirname", "cat"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+    if (found) writeFileSync(join(bin, tool), `#!/bin/sh\nexec ${found} "$@"\n`, { mode: 0o755 });
+  }
+  return bin;
+}
+
+test("action Find the package manager: a bun project on a runner without bun gets Setup Bun, at the version packageManager names", () => {
+  // It failed the job, telling the user to add setup-bun themselves.
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    writeFileSync(join(dir, "bun.lock"), "{}");
+    const find = (packageManager: string | null, bun?: string) => {
+      writeFileSync(join(dir, "package.json"), JSON.stringify(packageManager ? { packageManager } : {}));
+      rmSync(join(dir, "bin"), { recursive: true, force: true });
+      return runShell("Find the package manager", dir, { PATH: binWith(dir, bun), INSTALL_COMMAND: "" });
+    };
+    const pinned = find("bun@1.2.21+sha512.abc");
+    assert.equal(pinned.status, 0, pinned.stdout + pinned.stderr);
+    assert.deepEqual(pinned.outputs, { manager: "bun", dir: realpathSync(dir), setup_bun: "true", bun_version: "1.2.21" });
+    assert.equal(find(null).outputs.bun_version, "latest");
+    // A bun that runs is used as it is.
+    const installed = find(null, "echo 1.2.0");
+    assert.deepEqual([installed.outputs.manager, installed.outputs.setup_bun], ["bun", undefined]);
+    // A shim that answers but fails is no bun.
+    assert.equal(find(null, "exit 1").outputs.setup_bun, "true");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const yml = readFileSync(ACTION, "utf8");
+  const setup = yml.slice(yml.indexOf("    - name: Setup Bun\n"), yml.indexOf("    - name: Install project dependencies\n"));
+  assert.ok(yml.indexOf("    - name: Find the package manager\n") < yml.indexOf("    - name: Setup Bun\n"));
+  assert.match(setup, /^ {6}if: steps\.package-manager\.outputs\.setup_bun == 'true'$/m);
+  assert.match(setup, /^ {6}uses: oven-sh\/setup-bun@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m);
+  assert.match(setup, /bun-version: \$\{\{ steps\.package-manager\.outputs\.bun_version \}\}/);
+});
+
+test("action Install project dependencies: installs with the package manager found, where its lockfile is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    const project = join(dir, "packages", "ui");
+    mkdirSync(project, { recursive: true });
+    const r = runShell("Install project dependencies", project, {
+      PATH: binWith(dir, `echo "bun $* in $(pwd)" > ${JSON.stringify(join(dir, "ran"))}`),
+      INSTALL_COMMAND: "",
+      MANAGER: "bun",
+      MANAGER_DIR: dir,
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(readFileSync(join(dir, "ran"), "utf8"), `bun install --frozen-lockfile in ${dir}\n`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("action Map components: passes exclude_props and request_timeout to map, with a progress line per component, and the baseline command leaves the same props out", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    const cli = join(dir, "dist", "cli");
+    mkdirSync(cli, { recursive: true });
+    mkdirSync(join(dir, "action"));
+    writeFileSync(join(cli, "index.js"), `require("fs").writeFileSync(${JSON.stringify(join(dir, "args.json"))}, JSON.stringify({ args: process.argv.slice(2), progress: process.env.STORYSYNC_PROGRESS })); console.log("{}");\n`);
+    const map = (env: Record<string, string>) => {
+      const r = runShell("Map components", dir, { GITHUB_ACTION_PATH: join(dir, "action"), STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", EXCLUDE_PROPS: "", REQUEST_TIMEOUT: "", ...env });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      return JSON.parse(readFileSync(join(dir, "args.json"), "utf8")) as { args: string[] };
+    };
+    assert.deepEqual(map({}).args, ["map", "--storybook", "http://localhost:6006", "--json"]);
+    assert.deepEqual(map({ EXCLUDE_PROPS: "asChild,className", REQUEST_TIMEOUT: "900000" }).args,
+      ["map", "--storybook", "http://localhost:6006", "--json", "--exclude-props", "asChild,className", "--request-timeout", "900000"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const yml = readFileSync(ACTION, "utf8");
+  const step = yml.slice(yml.indexOf("    - name: Map components\n"), yml.indexOf("    - name: Stop Storybook\n"));
+  assert.match(step, /^ {8}STORYSYNC_PROGRESS: "1"$/m);
+  assert.match(step, /^ {8}EXCLUDE_PROPS: \$\{\{ inputs\.exclude_props \}\}$/m);
+  assert.match(step, /^ {8}REQUEST_TIMEOUT: \$\{\{ inputs\.request_timeout \}\}$/m);
+
+  // Mapped without the props, the baseline has to be too.
+  const r = run("Detect drift", "storysync-drift.md", { "storysync-current.json": mapJson([formsButton]) }, {
+    BASELINE_PATH: ".storysync/baseline.json", STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", EXCLUDE_PROPS: "asChild,className",
+  });
+  assert.match(r.stdout, new RegExp(`then commit it: mkdir -p -- \\.storysync && npx ${AT_VERSION} map --storybook http://localhost:6006 --exclude-props asChild,className --json > \\.storysync/baseline\\.json`));
 });
