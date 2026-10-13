@@ -148,6 +148,25 @@ test("falsify: the Tooltip's arrow built unturned, as the fifth live push built 
   assert.deepEqual(findings(corner), ["default div: x,y"]);
 });
 
+test("falsify: a Button whose background stops inside its transparent border, built INSIDE at its border box, drifts on its stroke alone", async () => {
+  // shadcn/ui's default Button: bg-clip-padding, a 1px transparent border
+  // over its background. Built INSIDE at radius 8, its fill would run under
+  // the border, 1px past the browser's on every side: only an OUTSIDE
+  // stroke around the padding box draws it. (Where an INSIDE stroke draws
+  // the same, verify takes either: insideStrokeDrawsBorder.)
+  const result = await falsified("button-icon", ({ figma, built }) => {
+    const v = built.variants.find((x) => x.slug === "variant-default--size-default")!;
+    const root = node(figma, v.id);
+    root.strokeAlign = "INSIDE";
+    root.resize(root.width + 2, root.height + 2);
+    root.cornerRadius = 8;
+    for (const child of root.children) Object.assign(child, { x: child.x + 1, y: child.y + 1 });
+  });
+  assert.deepEqual(findings(result), ["variant-default--size-default : stroke"]);
+  const [stroke] = result.variants[0].nodes!.find((n) => n.key === "")!.differences;
+  assert.deepEqual([(stroke.measured as unknown[])[3], (stroke.figma as unknown[])[3]], ["O", "I"]);
+});
+
 test("falsify: a thumb moved from x 1 to 15 drifts on x alone", async () => {
   const result = await falsified("switch", ({ figma, built }) => {
     node(figma, layers(built, "switch-thumb")[0].id).x = 15;
