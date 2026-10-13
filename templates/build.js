@@ -311,11 +311,16 @@ const style = async (n, rec, parent, root) => {
     } else {
       n.strokes = [];
     }
+    // A corner bound before, by the variant this one was copied from or an
+    // earlier build, and no longer bound by the style, is unbound first: a
+    // mode switch resolves a bound corner again, to its variable's radius.
+    const corners = ['topLeftRadius', 'topRightRadius', 'bottomRightRadius', 'bottomLeftRadius'];
+    if (!st.rv) for (const corner of corners) if (n.boundVariables[corner]) n.setBoundVariable(corner, null);
     if (Array.isArray(st.r)) [n.topLeftRadius, n.topRightRadius, n.bottomRightRadius, n.bottomLeftRadius] = st.r;
     else n.cornerRadius = st.r || 0;
     if (st.rv) {
       const v = await variable('FLOAT', st.rv, 'radius');
-      if (v) for (const corner of ['topLeftRadius', 'topRightRadius', 'bottomRightRadius', 'bottomLeftRadius']) n.setBoundVariable(corner, v);
+      if (v) for (const corner of corners) n.setBoundVariable(corner, v);
     }
     const L = st.L;
     n.layoutMode = L ? (L.m === 'H' ? 'HORIZONTAL' : 'VERTICAL') : 'NONE';

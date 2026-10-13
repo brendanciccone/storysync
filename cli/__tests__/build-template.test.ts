@@ -654,6 +654,36 @@ test("bindings: a Button's radius binds wherever its border is built INSIDE at t
   ]);
 });
 
+test("bindings: a variant copied from one whose radius is bound has its corners unbound where its own radius binds none, so a mode switch keeps its radius", async () => {
+  // The Button's destructive variants with border-destructive/30: built
+  // OUTSIDE at the padding box, radius 7, which no token holds. Each starts
+  // as a copy of the default variant, whose radius 8 is bound to md, and
+  // kept that binding, which a switch of the set's mode resolved to 8.
+  const button = copy(loadTreeFixture("button-icon"));
+  button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
+  const side = { width: 1, style: "solid", color: "#df22254d" };
+  for (const v of button.components[0].variants) {
+    if (v.slug.startsWith("variant-destructive") && v.delta) Object.assign(v.delta, { border: { top: side, right: side, bottom: side, left: side }, borderUniform: side });
+  }
+  const coded = await codeFor(button, {}, SHADCN_TOKENS);
+  const mock = mockFor([button]);
+  const md = mock.addVariable("md", "FLOAT", { Light: 8, Dark: 8 }, "Radius").id;
+  await runPlan(mock, coded, ["build"]);
+  const built = variantsBySlug(mock);
+  const corners = (slug: string) => {
+    const root = mock.handle(built.get(slug)!.id) as Record<string, unknown>;
+    return [root.cornerRadius, (root.boundVariables as Record<string, { id: string }>).topLeftRadius?.id];
+  };
+  assert.deepEqual(corners("variant-default--size-default"), [8, md]);
+  assert.deepEqual(corners("variant-destructive--size-default"), [7, undefined]);
+  const set = (mock.handle(built.get("variant-destructive--size-default")!.id) as { parent: { id: string } }).parent.id;
+  const run = await mock.run(`const [md] = await figma.variables.getLocalVariablesAsync('FLOAT');
+    const col = await figma.variables.getVariableCollectionByIdAsync(md.variableCollectionId);
+    (await figma.getNodeByIdAsync('${set}')).setExplicitVariableModeForCollection(col, col.modes[1].modeId);`);
+  assert.ok(run.ok, run.text);
+  assert.deepEqual(corners("variant-destructive--size-default"), [7, undefined], "in Dark");
+});
+
 test("bindings: a variable with Light and Dark modes binds by its name, as one of one mode does, its paint showing Light", async () => {
   // The push makes a Dark mode for the dark theme's values. The build finds
   // a variable by name, so the modes change nothing it does: the paint is
