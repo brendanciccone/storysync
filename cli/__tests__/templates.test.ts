@@ -63,7 +63,7 @@ test("templates: the build's budget leaves a call room for its data, packed and 
 
 test("templates: a call carries its template as a string whose value is the template exactly, which TSUM covers and the call runs", async () => {
   const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => () => Promise<unknown>;
-  for (const text of ["a`b${c}\\d", "/^#\\w{6}00$/.test(x)", "`${`", "\\`", ...Object.keys(BUDGETS).map((name) => loadTemplate(name as keyof typeof BUDGETS)), loadTemplate("readback", false)]) {
+  for (const text of ["a`b${c}\\d", "/^#\\w{6}00$/.test(x)", "`${`", "\\`", "a\r\nb\rc", "\\r", ...Object.keys(BUDGETS).map((name) => loadTemplate(name as keyof typeof BUDGETS)), loadTemplate("readback", false)]) {
     assert.equal(new Function(`return ${templateLiteral(text)};`)(), text);
   }
   // The guard checks T, the string, and runs that string: a template's
@@ -73,6 +73,11 @@ test("templates: a call carries its template as a string whose value is the temp
   assert.match(call, /\nconst T = `return DATA \+ TC;`;\n/);
   assert.equal(await new AsyncFunction("figma", call)(), 2);
   await assert.rejects(new AsyncFunction("figma", call.replace("return DATA + TC;`", "return DATA + 2;`"))(), /its template fails its checksum, TSUM/);
+
+  // A readable template with Windows line ends passes its TSUM and runs:
+  // its literal keeps each CR, which a literal makes a line feed of.
+  const crlf = callCode([["DATA", 1]], "const a = 1;\r\nreturn DATA + a + TC;\r\n");
+  assert.equal(await new AsyncFunction("figma", crlf)(), 3);
 });
 
 test("templates: each minified template is ASCII, so no character of the text TSUM covers can be retyped as another", () => {

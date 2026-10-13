@@ -113,10 +113,12 @@ export function refusal(what: "data" | "template", name: "SUM" | "TSUM"): string
  * `${` escaped, so the string the literal makes is the template, which TSUM
  * covers and the call runs. A minified template has no backtick or `${`
  * and a few backslashes, so it costs a few characters; a readable one
- * (`figma code --no-minify`) keeps its lines.
+ * (`figma code --no-minify`) keeps its lines. A carriage return is written
+ * `\r`: a template literal makes a line feed of a CRLF or a lone CR, so a
+ * template checked out with Windows line ends would fail its TSUM.
  */
 export function templateLiteral(template: string): string {
-  return `\`${template.replace(/\\|`|\$\{/g, (m) => `\\${m}`)}\``;
+  return `\`${template.replace(/\\|`|\$\{|\r/g, (m) => (m === "\r" ? "\\r" : `\\${m}`))}\``;
 }
 
 /**
