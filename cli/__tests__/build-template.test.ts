@@ -9,6 +9,10 @@ import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-ty
 import type { TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, drawnInSet, mockFor, readBoxes, runPlan, variantsBySlug } from "./figma-build-harness.js";
 import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { buildTree } from "../snap-tree.js";
+import type { RawTreeCapture, RawTreeItem } from "../snap-tree.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
 type BuildResult = {
@@ -222,6 +226,40 @@ test("build: a one-line label in a box Figma's font overflows is set to its own 
     "label kept on one line: Figma sets it wider",
     "fill cut short: Figma sets it wider",
   ]);
+});
+
+test("build: an Attachment title snap measured as wide as Figma sets it stays whole, its boxes rounded up, not to the nearest 0.01", async () => {
+  // The fourth push's Attachment, its title "financial-model.xlsx", which
+  // the stand-in sets 134.38068 wide, as Figma does: to the nearest 0.01
+  // its column and the card were 134.38 and 0.0007px too narrow, and Figma
+  // cut the title short where Storybook showed it whole.
+  const capture = (JSON.parse(readFileSync(fileURLToPath(new URL("../../../cli/__tests__/fixtures/raw/attachment.json", import.meta.url)), "utf8")) as { capture: RawTreeCapture }).capture;
+  const font = { family: "Inter", style: "Medium", size: 14, letterSpacing: 0 };
+  const width = figmaFonts().advance("financial-model.xlsx", font);
+  assert.ok(Math.round(width * 100) / 100 < width, `${width} rounds up to the nearest 0.01: pick a title that rounds down`);
+  // The card fits its content: what holds the title grows with it, and what follows moves along.
+  const title = (capture.root.kids[1] as { kids: { kids: { text: string; rects: number[][] }[] }[] }).kids[0].kids[0];
+  const [left, , was] = title.rects[0];
+  const grow = width - was;
+  const walk = (item: RawTreeItem) => {
+    const box = item.k === "t" ? item.rects[0] : "box" in item ? item.box : null;
+    if (!box) return;
+    if (box[0] >= left + was) box[0] += grow;
+    else if (box[0] <= left && box[0] + box[2] >= left + was) box[2] += grow;
+    if (item.k === "e") item.kids.forEach(walk);
+  };
+  walk(capture.root);
+  title.text = "financial-model.xlsx";
+  title.rects[0][2] = width;
+  const built = buildTree(capture);
+  const root = built.nodes[0].box;
+  const fixture = synthetic("Attachment", built.nodes, { width: root[2], height: root[3], display: "flex" }, built.svg);
+  const { mock, results } = await buildAll(fixture, { measure: figmaFonts() });
+  const [shown] = texts(mock, /attachment-title$/);
+  // One line of Inter at 14px, not cut short.
+  assert.equal(shown.chars, "financial-model.xlsx");
+  assert.ok(shown.h < 25, `the title is ${shown.h} high`);
+  assert.deepEqual(results[0].fallbacks, []);
 });
 
 /** A one-line text as a snap from before the stand-ins measured it, in system-ui with a 20px line. */

@@ -1414,3 +1414,19 @@ S13. **A set's description says which variants a story of their own
     describeVariantStories' line after any closed-trigger or wrapper note,
     joined by "; ", so plan.json's label call and the set's `storysync:`
     description line both carry it. The template is unchanged.
+S14. **A box that holds text is rounded up to 0.01** (review of S2-S4).
+    With the stand-ins as wide as Figma, snap still rounded every box to
+    the nearest 0.01, so about half of all one-line labels got a box up to
+    0.005px narrower than Figma's width for them, and Figma, which keeps a
+    line whole only at its own width or wider, cut them short: push 4's
+    cut title, for "financial-model.xlsx" (134.38068 in a 134.38 column)
+    as for 1101 of 2304 synthetic file names. buildTree now rounds the
+    width of a text's line box, and of every element or pseudo-element
+    that holds text, up to 0.01 (float noise under a millionth of a pixel
+    taken off first), and every other box as before. An ancestor's width
+    is rounded up from its own raw width, so a filling text has at least
+    its raw width inside it however its padding rounds. Package T's
+    fixtures, rounded to the nearest, are up to 0.01 narrower and are
+    compared allowing that. build-template.test.ts builds the Attachment
+    with that title in the mock: whole, with no fallback, where to the
+    nearest it was cut short.

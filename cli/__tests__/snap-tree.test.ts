@@ -199,8 +199,29 @@ test("buildTree: the stories package T's fixtures came from build to the same tr
       }
       return node;
     });
+    // A box that holds text is now rounded up (S14), where the fixtures rounded to the nearest 0.01: up to 0.01 wider.
+    const was = new Map(theirs.map((t) => [t.k, t]));
+    for (const node of ours) {
+      const width = was.get(node.k)?.box[2];
+      if (width !== undefined && node.box[2] > width && node.box[2] - width <= 0.0100001) node.box = [node.box[0], node.box[1], width, node.box[3]];
+    }
     assert.equal(canonicalJson(ours), canonicalJson(theirs), name);
   }
+});
+
+test("buildTree: a box that holds text is rounded up to 0.01, never narrower than the text; any other to the nearest", () => {
+  const label = el("div", [0, 0, 106.23036, 20.004], { display: "flex" }, [run("design-system.zip", [[0, 1.5, 106.23036, 17]])], { text: TEXT });
+  const nodes = buildTree(tree(el("div", [0, 0, 120.004, 40.006], { display: "flex", "background-color": "rgb(255, 0, 0)" }, [
+    label, el("div", [106.23036, 0, 13.77364, 40.006], { "background-color": "rgb(0, 0, 255)" }),
+  ]))).nodes;
+  const box = (k: string) => nodes.find((n) => n.k === k)!.box;
+  // The root holds the label: 120.01, its height to the nearest.
+  assert.deepEqual(box(""), [0, 0, 120.01, 40.01]);
+  assert.deepEqual(box("div").slice(2), [106.24, 20]);
+  // A box without text, to the nearest, and float noise taken off first.
+  assert.deepEqual(box("div:2").slice(2), [13.77, 40.01]);
+  const exact = buildTree(tree(el("div", [0, 0, 139.39999999999998, 20], { display: "flex" }, [run("x", [[0, 0, 139.40000000000003, 20]])], { text: TEXT }))).nodes;
+  assert.equal(exact[0].box[2], 139.4);
 });
 
 test("buildTree: two builds of one capture are the same, byte for byte", () => {
