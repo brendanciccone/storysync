@@ -10,8 +10,10 @@ import type { MockFont, TreeFixture } from "./mock-figma.js";
 import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, fixtureMeasure, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
 import { readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import type { ReadbackFile, ReadbackStyles, VerifyResult } from "../verify.js";
-import { SPIKE, cssLinearGradient, svgShapePaints, visibleReorder } from "../verify-tree.js";
-import type { Box } from "../tree-types.js";
+import { SPIKE, cssLinearGradient, scoreTree, svgShapePaints, visibleReorder } from "../verify-tree.js";
+import type { TreeScore } from "../verify-tree.js";
+import type { Box, TreeNode } from "../tree-types.js";
+import type { NormalizedStyles } from "../snap-normalize.js";
 
 /** Every node verify didn't verify, as `slug key: property measured→figma`, for an assertion's message. */
 function drift(result: VerifyResult): string {
@@ -816,4 +818,41 @@ test("linear gradients: a gradient fill reads back at the angle and stops CSS ga
     const fills = result.sets[0].entries.default.tree![0][6];
     assert.deepEqual(fills, [cssLinearGradient(`linear-gradient(${angle}deg, #ff0000 0%, #0000ff80 100%)`, w, h)], `${angle}deg in ${w}x${h}`);
   }
+});
+
+// --- One text in its holder, scored directly ----------------------------------
+
+/**
+ * A holder, the root, and one text in it, scored against Figma records of
+ * the same boxes and settings as built: Figma's text `h` tall, cut off
+ * after `maxLines` lines, and `cut` as the readback read it (undefined for
+ * template 2's record, which has none).
+ */
+function scoreOne(holder: Partial<TreeNode>, text: TreeNode, figma: { h?: number; maxLines: number; cut: 0 | 1 | null | undefined }): TreeScore {
+  const root: TreeNode = { k: "", t: "F", el: "div", box: [0, 0, 116, 20], ...holder };
+  const tx = text.tx!;
+  const F = ["", "F", 0, 0, root.box[2], root.box[3], [], null, 0, [], 1, "NORMAL", 1, 1, "1:1"];
+  const T = [text.k, "T", text.box[0], text.box[1], text.box[2], figma.h ?? text.box[3], tx.c, tx.f, tx.wt, 0, tx.sz, tx.lh, 0, tx.col,
+    "ORIGINAL", "NONE", "LEFT", "ENDING", figma.maxLines, "HEIGHT", 1, 1, "1:2", ...(figma.cut === undefined ? [] : [figma.cut])];
+  const styles = { borderRadius: { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 }, boxShadow: [], opacity: 1 } as unknown as NormalizedStyles;
+  return scoreTree({ nodes: [root, text], styles, assets: { svg: {}, img: {} }, records: [F, T], tolerance: 0.5 });
+}
+
+/** The text's differences on these properties, and why any of them went unscored. */
+function textVerdict(result: TreeScore, key: string, properties: string[]) {
+  return {
+    differences: (result.nodes.find((n) => n.key === key)?.differences ?? []).filter((d) => properties.includes(d.property)),
+    unscorable: result.unscorable.filter((u) => u.key === key).map((u) => u.property),
+  };
+}
+
+const LONG = "sales-dashboard-quarterly-report.pdf";
+
+test("lines: a clamped text the browser and Figma both cut shows the clamp's lines in each, not the lines Chrome hides", () => {
+  // Chrome lays out a clamp's hidden lines too: five line rects for a
+  // paragraph clamped at two, which Figma, cutting it, shows two of.
+  const text: TreeNode = { k: "p", t: "T", el: "p", box: [0, 0, 116, 40], tx: { c: LONG.repeat(4), f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, cl: 2, n: 5, ink: [0, 2, 116, 96] } };
+  assert.deepEqual(textVerdict(scoreOne({ box: [0, 0, 116, 40] }, text, { maxLines: 2, cut: 1 }), "p", ["lines", "truncation"]).differences, []);
+  // One Figma shows three lines of, past the clamp, still drifts.
+  assert.deepEqual(textVerdict(scoreOne({ box: [0, 0, 116, 40] }, text, { h: 60, maxLines: 2, cut: 1 }), "p", ["lines"]).differences, [{ property: "lines", measured: 2, figma: 3 }]);
 });

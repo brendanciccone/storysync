@@ -685,8 +685,12 @@ function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable
     check("truncation", truncation === "ENDING" && field("maxLines") === maxLines && (!seen || (cut === 1) === want),
       { maxLines, ...(seen ? { cut: want } : {}) }, { truncation, maxLines: field("maxLines"), ...(seen ? { cut: cut === 1 } : {}) });
   } else check("truncation", truncation !== "ENDING", { maxLines: null }, { truncation, maxLines: field("maxLines") });
+  // The lines it shows: Chrome counts the lines a clamp hides in `n`
+  // (cutInBrowser), and Figma shows at most maxLines, so a text both cut
+  // after its clamp shows the clamp's lines in each.
+  const shown = tx.cl !== undefined ? Math.min(tx.n, tx.cl) : tx.n;
   if (tx.lh === "normal" || typeof lh !== "number" || lh <= 0) unscorable("lines", "line-height: normal, so the lines a height holds are unknown");
-  else check("lines", Math.round(rec.box[3] / lh) === tx.n, tx.n, Math.round(rec.box[3] / lh));
+  else check("lines", Math.round(rec.box[3] / lh) === shown, shown, Math.round(rec.box[3] / lh));
 }
 
 /**

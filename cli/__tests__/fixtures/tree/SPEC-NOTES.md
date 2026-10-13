@@ -1342,3 +1342,8 @@ BV5. **verify prints its coverage line at 100% too** (section 10.6 shows
    scored`. The skill has the agent report coverage, and push4's verify
    printed none, with nothing unscored. It is left out only where nothing
    was compared at all.
+BV6. **A clamped text shows at most its clamp's lines** (section 10.2's
+   `lines`). `n` counts the lines Chrome lays out, the ones a clamp hides
+   included (BV3), and Figma shows at most maxLines, so `lines` expects
+   `min(n, cl)` for a clamped text: one both cut at two lines of five
+   drifted `lines measured 5, Figma 2` though the two agree.
