@@ -6,7 +6,7 @@ import type { Page } from "playwright-core";
 import { fakePreview, inPage, urlArgs } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
-  applyStoryArgsInPage, blurInPage, captureTreeInPage, overlaySettledInPage, readStoryTreeInPage, storyArgsInPage, storybookErrorInPage,
+  applyStoryArgsInPage, blurInPage, captureTreeInPage, goneInPage, overlaySettledInPage, readStoryTreeInPage, storyArgsInPage, storybookErrorInPage,
   triggerOpenInPage,
 } from "../snap-browser.js";
 import type { StoryNode } from "../snap-normalize.js";
@@ -26,7 +26,9 @@ function storyNode(tag: string, slot: string | null, children: object[] = []) {
  * doesn't pass it on ignores. While open it shows `where`: in a portal
  * (the default), inline beside the trigger, which names it in
  * `aria-controls`, or nowhere, though the trigger says it is open.
- * Everything done to the page is recorded in `done`, in order.
+ * With `closesOnLeave`, it closes as the pointer leaves the page, as one
+ * that opens while hovered over does. Everything done to the page is
+ * recorded in `done`, in order.
  */
 export function overlayPage(opts: {
   marks: Partial<StoryNode>;
@@ -36,6 +38,7 @@ export function overlayPage(opts: {
   content?: { slot: string | null; role: string | null };
   /** The first click fails with this, as one on a trigger that never takes it does. */
   clickThrows?: string;
+  closesOnLeave?: boolean;
 }) {
   const storyId = "ui-radix-dialog--default";
   const done: string[] = [];
@@ -64,8 +67,7 @@ export function overlayPage(opts: {
         treeArgs.push(arg as { around?: boolean });
         return { root: { k: "e", tag: "div", box: [0, 0, 448, 170], cs: {}, path: [], kids: [] }, fonts: {} };
       }
-      // Whether it has gone, as closeOverlay asks, by a function of its own.
-      if (arg === undefined && typeof fn === "function" && /isConnected/.test(String(fn))) return !open();
+      if (fn === goneInPage) return !open();
       return null;
     },
     evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
@@ -142,7 +144,12 @@ export function overlayPage(opts: {
         if (key === "Escape") interacted = false;
       },
     },
-    mouse: { move: async (x: number, y: number) => { done.push(`mouse ${x},${y}`); } },
+    mouse: {
+      move: async (x: number, y: number) => {
+        done.push(`mouse ${x},${y}`);
+        if (opts.closesOnLeave && x < 0) interacted = false;
+      },
+    },
   };
   return { page: page as unknown as Page, done, open, stored: () => fake.stored, treeArgs };
 }

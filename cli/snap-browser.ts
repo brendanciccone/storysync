@@ -538,16 +538,26 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * `aria-controls` names it, the same wait for every variant, so
  * the note of one that opens nothing is the same for each; a way that
  * opens nothing is undone (the arg reset, Escape pressed, the mouse moved
- * off the page, focus dropped) before the next. Once it is open, it waits
- * for fonts, images and stand-ins as the story's own load did, then for
- * its animations to end and its boxes to stay put (overlaySettledInPage).
+ * off the page, focus dropped) before the next. Once it is open, the mouse
+ * is moved off the page, unless hovering opened it: a select's listbox
+ * opens under the pointer a click left on its field, which would measure
+ * its first item hovered and highlighted. Then it waits for fonts, images
+ * and stand-ins as the story's own load did, and for its animations to
+ * end and its boxes to stay put (overlaySettledInPage). Content that
+ * closes as the pointer leaves opened only while hovered over, and the
+ * next way is tried, as after one that opened nothing.
  */
 async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrigger }, ctx: OpenContext): Promise<Opening> {
   // The same wait for every way and every variant, so a note that says it is the same for each.
   const waitMs = Math.min(ctx.waitMs, ctx.timeoutMs);
   const trigger = closed.element;
   const attempts: OpenAttempt[] = [];
-  const opened = async (located: Located, how: OverlayOpened): Promise<Opening> => ({ located: await settleOverlay(page, located, ctx), opened: how });
+  // Open and settled, or null where it closed as the pointer left.
+  const opened = async (located: Located, how: OverlayOpened): Promise<Opening | null> => {
+    if (how.via !== "hover") await page.mouse.move(-1, -1).catch(() => { /* the page went */ });
+    const settled = await settleOverlay(page, located, ctx);
+    return settled ? { located: settled, opened: how } : null;
+  };
 
   // Not one the variant sets itself: its value is the variant's.
   const arg = ctx.story ? openArg(ctx.argTypes, ctx.props) : null;
@@ -558,8 +568,9 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
       attempts.push({ via: "arg", arg, outcome: "failed", error: set.error });
     } else {
       const shown = await waitForOverlay(page, ctx.slots, waitMs);
-      if ("located" in shown) return opened(shown.located, { via: "arg", arg, trigger });
-      attempts.push({ via: "arg", arg, outcome: shown.triggerOpen ? "no-content" : "nothing", waitMs });
+      const open = "located" in shown ? await opened(shown.located, { via: "arg", arg, trigger }) : null;
+      if (open) return open;
+      attempts.push({ via: "arg", arg, outcome: "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing", waitMs });
       // The story's own value again, so the trigger is tried on the story as it rendered.
       await applyArgs(page, { storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, reset: [arg] });
     }
@@ -582,8 +593,9 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
       await located.target.dispose().catch(() => { /* gone with a remount */ });
     }
     const shown = await waitForOverlay(page, ctx.slots, waitMs);
-    if ("located" in shown) return opened(shown.located, { via: how, trigger });
-    attempts.push({ via: how, outcome: shown.triggerOpen ? "no-content" : "nothing", waitMs });
+    const open = "located" in shown ? await opened(shown.located, { via: how, trigger }) : null;
+    if (open) return open;
+    attempts.push({ via: how, outcome: "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing", waitMs });
     await dismiss(page);
   }
   return { reason: describeOpenFailure(attempts) };
@@ -662,19 +674,27 @@ export function triggerOpenInPage(el: Element): boolean {
  * Brings open content to the state the story's own load was measured in:
  * fonts, images and stand-ins (settle, drawStandIns), then its animations
  * ended and its boxes put (overlaySettledInPage), each within --timeout;
- * then locates it again, as a stand-in may have moved it.
+ * then locates it again, as a stand-in may have moved it. Null where it
+ * has gone meanwhile.
  */
-async function settleOverlay(page: Page, located: Located, ctx: OpenContext): Promise<Located> {
+async function settleOverlay(page: Page, located: Located, ctx: OpenContext): Promise<Located | null> {
   await settle(page, ctx.images, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
   if (ctx.standIns) await drawStandIns(page, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
   await located.target.evaluate(overlaySettledInPage, { ms: Math.min(ctx.timeoutMs, OPEN_SETTLE_MS), frames: OPEN_STILL_FRAMES }).catch(() => false);
   const again = await locateComponent(page, ctx.slots);
   if ("error" in again || !(again.portal || again.content)) {
     if (!("error" in again)) await again.target.dispose().catch(() => { /* gone */ });
-    return located;
+    if (!(await located.target.evaluate(goneInPage).catch(() => true))) return located;
+    await located.target.dispose().catch(() => { /* gone */ });
+    return null;
   }
   await located.target.dispose().catch(() => { /* gone */ });
   return again;
+}
+
+/** Runs in the page: whether an element has gone, or has no box left. */
+export function goneInPage(el: Element): boolean {
+  return !el.isConnected || el.getClientRects().length === 0;
 }
 
 /**
@@ -735,7 +755,7 @@ async function closeOverlay(page: Page, opened: OverlayOpened, content: ElementH
   await dismiss(page);
   const deadline = Date.now() + CLOSE_WAIT_MS;
   for (;;) {
-    const gone = await content.evaluate((el) => !el.isConnected || el.getClientRects().length === 0).catch(() => true);
+    const gone = await content.evaluate(goneInPage).catch(() => true);
     if (gone || Date.now() >= deadline) return gone;
     await sleep(OVERLAY_POLL_MS);
   }

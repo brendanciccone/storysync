@@ -694,9 +694,10 @@ export interface OpenAttempt {
   /**
    * `nothing`: nothing opened within `waitMs`. `no-content`: the trigger
    * said it was open, but snap found nothing it opened outside the
-   * story's root. `failed`: the attempt itself failed, as `error` says.
+   * story's root. `closed`: it opened, and closed again as the pointer
+   * left. `failed`: the attempt itself failed, as `error` says.
    */
-  outcome: "nothing" | "no-content" | "failed";
+  outcome: "nothing" | "no-content" | "closed" | "failed";
   waitMs?: number;
   error?: string;
 }
@@ -738,7 +739,9 @@ export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
     flush();
     parts.push(attempt.outcome === "no-content"
       ? `${attemptPhrase(attempt)} opened it, but snap found nothing it opened to measure`
-      : `${attemptPhrase(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
+      : attempt.outcome === "closed"
+        ? `${attemptPhrase(attempt)} opened it, but it closed again as the pointer left`
+        : `${attemptPhrase(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
   }
   flush();
   return parts.join("; ");

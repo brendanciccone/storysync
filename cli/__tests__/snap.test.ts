@@ -2532,7 +2532,7 @@ test("runSnap: a Dialog story showing only its trigger is measured open, by the 
       'div[data-slot="dialog-content"]', true, { via: "arg", arg: "defaultOpen", trigger: 'button[data-slot="dialog-trigger"]' },
     ]);
     assert.equal(component.warnings.some((w) => /closed trigger/.test(w)), false, component.warnings.join("\n"));
-    assert.deepEqual(done.slice(0, 2), ["set defaultOpen=true", "settled"]);
+    assert.deepEqual(done.slice(0, 3), ["set defaultOpen=true", "mouse -1,-1", "settled"]);
     // Written beside the element it opened, in styles.json.
     const written = JSON.parse(readFileSync(join(dir, "styles.json"), "utf8")) as { components: { variants: Record<string, unknown>[] }[] };
     assert.deepEqual(written.components[0].variants[0].opened, { via: "arg", arg: "defaultOpen", trigger: 'button[data-slot="dialog-trigger"]' });

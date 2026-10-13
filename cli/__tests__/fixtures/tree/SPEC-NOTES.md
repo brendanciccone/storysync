@@ -1720,3 +1720,13 @@ O10. **Spec problem: an overlay's content is placed from outside it**
     the arrow keeps where it drew, `abs: 1`, past the root's box. Any
     other root reads nothing around it, so a story's own wrappers still
     place nothing.
+O11. **The pointer leaves what a click opened** before it is measured.
+    Radix's and Base UI's item-aligned Select opens its listbox over the
+    field, under the pointer the click left there: Chromium hovered and
+    highlighted its first item, and Figma got `bg-accent` on "Apple", a
+    state a designer draws as hover. Once a click, a right-click, focus or
+    an arg has opened it, the mouse moves to -1,-1, and the content
+    settles after; only content hovering opened keeps the pointer on its
+    trigger. Content that closes as the pointer leaves opened only while
+    hovered over: that way's note says `... opened it, but it closed again
+    as the pointer left`, and the next way is tried.

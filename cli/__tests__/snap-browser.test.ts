@@ -1069,8 +1069,9 @@ test("captureStory: a story with a closed dialog trigger has it clicked open, it
   assert.deepEqual([result.element, result.portal, result.notes], ['div[data-slot="dialog-content"]', true, []]);
   assert.deepEqual(result.opened, { via: "click", trigger: 'button[data-slot="dialog-trigger"]' });
   assert.deepEqual(result.boundingBox, { x: 416, y: 275, width: 448, height: 170 });
-  // Opened, settled before it was measured, then closed: Escape, the mouse off the page, focus dropped.
-  assert.deepEqual(done, ["click", "settled", "Escape", "mouse -1,-1", "blur"]);
+  // Opened, the pointer moved off it, settled before it was measured, then
+  // closed: Escape, the mouse off the page, focus dropped.
+  assert.deepEqual(done, ["click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur"]);
   assert.equal(open(), false);
 });
 
@@ -1087,7 +1088,8 @@ test("captureStory: a tooltip's trigger is hovered over first, a context menu's 
   const tooltip = overlayPage({ marks: { slot: "tooltip-trigger", state: "closed" }, opensOn: ["hover"], content: { slot: "tooltip-content", role: "tooltip" } });
   const hovered = await captureStory(tooltip.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "TooltipContent", title: "ui/radix/Tooltip" } });
   assert.deepEqual([hovered.element, hovered.opened], ['div[data-slot="tooltip-content"]', { via: "hover", trigger: 'button[data-slot="tooltip-trigger"]' }]);
-  assert.equal(tooltip.done[0], "hover");
+  // The pointer stays on the trigger while it is measured: moved off, it would close.
+  assert.deepEqual(tooltip.done.slice(0, 3), ["hover", "settled", "Escape"]);
 
   const menu = overlayPage({ marks: { slot: "context-menu-trigger", state: "closed" }, opensOn: ["contextmenu"], content: { slot: "context-menu-content", role: "menu" } });
   const right = await captureStory(menu.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "ContextMenu", title: "ui/radix/ContextMenu" } });
@@ -1102,7 +1104,7 @@ test("captureStory: an overlay with an open arg is opened by setting it through 
   assert.equal(result.status, "ok", result.error ?? "");
   assert.deepEqual(result.opened, { via: "arg", arg: "open", trigger: 'button[data-slot="dialog-trigger"]' });
   // The trigger was never touched, and the arg is the story's own again.
-  assert.deepEqual(done, ["set open=true", "settled", "reset open", "Escape", "mouse -1,-1", "blur"]);
+  assert.deepEqual(done, ["set open=true", "mouse -1,-1", "settled", "reset open", "Escape", "mouse -1,-1", "blur"]);
   assert.equal(open(), false);
   assert.equal(Object.hasOwn(stored(), "open"), false);
 
@@ -1127,8 +1129,36 @@ test("captureStory: when the open arg opens nothing, it is reset and the trigger
   const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: {} } });
   assert.equal(result.status, "ok", result.error ?? "");
   assert.deepEqual(result.opened, { via: "click", trigger: 'button[data-slot="dialog-trigger"]' });
-  assert.deepEqual(done, ["set open=true", "reset open", "click", "settled", "Escape", "mouse -1,-1", "blur"]);
+  assert.deepEqual(done, ["set open=true", "reset open", "click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur"]);
   assert.equal(Object.hasOwn(stored(), "open"), false);
+});
+
+test("captureStory: once a click opens a select's listbox, the pointer moves off it before it is measured, so no item is hovered over", async () => {
+  // Radix's item-aligned listbox opens under the pointer, which stayed where
+  // the click left it: its first item was measured hovered and highlighted.
+  const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
+  const select = overlayPage({ marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" } });
+  const result = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
+  assert.equal(result.opened?.via, "click");
+  assert.deepEqual(select.done.slice(0, 3), ["click", "mouse -1,-1", "settled"]);
+  // A context menu, opened at the pointer, too.
+  const menu = overlayPage({ marks: { slot: "context-menu-trigger", state: "closed" }, opensOn: ["contextmenu"], content: { slot: "context-menu-content", role: "menu" } });
+  await captureStory(menu.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "ContextMenu", title: "ui/radix/ContextMenu" } });
+  assert.deepEqual(menu.done.slice(0, 3), ["contextmenu", "mouse -1,-1", "settled"]);
+});
+
+test("captureStory: content a click opened that closes as the pointer leaves is opened by hovering over its trigger instead", async () => {
+  // Opens while the pointer is on its trigger, which a click puts it on.
+  const { page, done } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click", "hover"], closesOnLeave: true });
+  const result = await captureStory(page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual(result.opened, { via: "hover", trigger: 'button[data-slot="dialog-trigger"]' });
+  assert.deepEqual(done.slice(0, 7), ["click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur", "hover"]);
+  // Where nothing keeps it open, the note says so.
+  const restless = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], closesOnLeave: true });
+  const shut = await captureStory(restless.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(shut.notes[0].kind === "closed-trigger" && shut.notes[0].reason,
+    "clicking it opened it, but it closed again as the pointer left; hovering over it, focusing it and right-clicking it opened nothing within 40ms each");
 });
 
 /** What dismiss does after a way that opened nothing, so the next starts from the story as it rendered. */
@@ -1169,7 +1199,7 @@ test("captureStory: an overlay that opens inline, beside its trigger, is measure
   assert.equal(result.status, "ok", result.error ?? "");
   assert.deepEqual([result.element, result.portal, result.notes], ['div[role="menu"]', undefined, []]);
   assert.deepEqual(result.opened, { via: "click", trigger: "button" });
-  assert.deepEqual(done, ["click", "settled", "Escape", "mouse -1,-1", "blur"]);
+  assert.deepEqual(done, ["click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur"]);
   assert.equal(open(), false);
 });
 
