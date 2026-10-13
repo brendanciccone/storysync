@@ -123,7 +123,7 @@ The skill walks your agent through these steps. It stops and asks you whenever a
 2. **Pick components.** `storysync list` counts them. With more than about 20, the agent asks which to push.
 3. **Measure.** `storysync snap --variants all` renders every combination of every component's variant props. It runs in the background, since it can take minutes.
 4. **Ask.** The agent asks you about anything the measurement can't settle on its own: a component with more combinations than the cap, an overlay snap couldn't open, or props that measured the same in every variant.
-5. **Write the calls.** `storysync figma code` writes every Figma call as a file and prints an estimate of what the push will cost. The agent shows you the estimate and waits for your go-ahead.
+5. **Write the calls.** `storysync figma code` writes every Figma call as a file and prints an estimate of what the push will cost. The agent shows you the estimate and waits for your go-ahead. Where a translucent color such as `bg-destructive/10` binds to a variable, `storysync figma tokens` runs again to add one that carries its opacity, `destructive 10%`, so it stays translucent when a designer switches a frame to Dark.
 6. **Send.** The agent sends each call to `use_figma` unchanged and saves each response unchanged.
 7. **Score.** `storysync verify --plan` reads the responses and scores Figma against the measurement. The agent reports the score, what differs, and what it couldn't score.
 

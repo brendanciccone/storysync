@@ -124,28 +124,57 @@ const variable = async (type, name, property) => {
 
 const rgb = (hex) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
 const rgba = (hex) => Object.assign(rgb(hex), { a: hex.length > 7 ? parseInt(hex.slice(7, 9), 16) / 255 : 1 });
-// A paint from a style's: '#rrggbb', [hex, opacity, variable?], or a gradient.
+// The color variable a paint or shadow binds to. Figma resolves a bound
+// paint again at every explicit mode switch, and gives it its variable's
+// alpha as its opacity, a shadow its variable's alpha (probe 7b). So a
+// translucent paint of an opaque token names the token's alpha variable,
+// `destructive 10%`, which carries the alpha in each mode, and the token
+// too (cli/figma-map.ts). Where the file has no such variable, as before
+// `storysync figma tokens` has read the plan, a paint binds the token at
+// its own opacity, as builds before this did, which a mode switch resets
+// to 1, and a shadow is left unbound, at its own alpha: each said in
+// `fallbacks`.
+const colorVariable = async (name, token, property, shadow) => {
+  if (!token) return name ? variable('COLOR', name, property) : null;
+  const list = VARS['COLOR' + name] || [];
+  if (list.length === 1) return list[0];
+  fallback((list.length ? list.length + ' variables named ' : 'no variable ') + name, (shadow ? 'shadow left unbound' : 'bound to ' + token + ' at its opacity') + ': run storysync figma tokens');
+  return shadow ? null : variable('COLOR', token, property);
+};
+// The paints bound to a variable that carries their opacity, which isn't put back.
+const carried = new Set();
+// A paint from a style's: '#rrggbb', [hex, opacity, variable?, token?], or a gradient.
 const paint = async (p, property) => {
   if (p.g) {
     return { type: 'GRADIENT_LINEAR', gradientTransform: [p.g.slice(0, 3), p.g.slice(3, 6)], gradientStops: p.s.map(([position, hex]) => ({ position, color: rgba(hex) })) };
   }
-  const [hex, opacity, name] = typeof p === 'string' ? [p, 1] : p;
+  const [hex, opacity, name, token] = typeof p === 'string' ? [p, 1] : p;
   const out = { type: 'SOLID', color: rgb(hex), opacity };
-  const v = name && (await variable('COLOR', name, property));
-  return v ? figma.variables.setBoundVariableForPaint(out, 'color', v) : out;
+  const v = await colorVariable(name, token, property);
+  if (!v) return out;
+  const bound = figma.variables.setBoundVariableForPaint(out, 'color', v);
+  if (token && v.name === name) carried.add(bound);
+  return bound;
 };
 // Sets fills or strokes. Figma gives a paint freshly bound to a variable the
 // variable's alpha as its opacity: assigning them once more, bound as they
-// now are, puts each paint's own opacity back.
+// now are, puts each paint's own opacity back, but for one whose alpha
+// variable holds it, which keeps it at a mode switch.
 const setPaints = async (n, key, list, property) => {
   const paints = [];
   for (const p of list) paints.push(await paint(p, property));
   n[key] = paints;
-  if (paints.some((p) => p.boundVariables)) n[key] = n[key].map((p, i) => Object.assign({}, p, { opacity: paints[i].opacity }));
+  if (paints.some((p) => p.boundVariables && !carried.has(p))) n[key] = n[key].map((p, i) => (carried.has(paints[i]) ? p : Object.assign({}, p, { opacity: paints[i].opacity })));
 };
-const effect = (e) => (e.length === 2
-  ? { type: e[0] === 'L' ? 'LAYER_BLUR' : 'BACKGROUND_BLUR', radius: e[1], visible: true }
-  : Object.assign({ type: e[0] === 'I' ? 'INNER_SHADOW' : 'DROP_SHADOW', color: Object.assign(rgb(e[5]), { a: e[6] }), offset: { x: e[1], y: e[2] }, radius: e[3], spread: e[4], visible: true, blendMode: 'NORMAL' }, e[0] === 'D' ? { showShadowBehindNode: false } : {}));
+// An effect from a style's: a blur, or a shadow, its color bound where it
+// names a variable (e[7]), the alpha variable of the token e[8] where it
+// is translucent, from which a freshly bound shadow takes its alpha.
+const effect = async (e) => {
+  if (e.length === 2) return { type: e[0] === 'L' ? 'LAYER_BLUR' : 'BACKGROUND_BLUR', radius: e[1], visible: true };
+  const out = Object.assign({ type: e[0] === 'I' ? 'INNER_SHADOW' : 'DROP_SHADOW', color: Object.assign(rgb(e[5]), { a: e[6] }), offset: { x: e[1], y: e[2] }, radius: e[3], spread: e[4], visible: true, blendMode: 'NORMAL' }, e[0] === 'D' ? { showShadowBehindNode: false } : {});
+  const v = await colorVariable(e[7], e[8], 'effect', true);
+  return v ? figma.variables.setBoundVariableForEffect(out, 'color', v) : out;
+};
 
 // Images already on the page, by asset id: reused rather than uploaded again.
 const HASHES = {};
@@ -248,7 +277,8 @@ const style = async (n, rec, parent, root) => {
   n.visible = st.v !== 0;
   n.opacity = st.o === undefined ? 1 : st.o;
   n.blendMode = st.b || (isFrame(n) && kind !== 'T' ? 'PASS_THROUGH' : 'NORMAL');
-  const fx = (st.e || []).map(effect);
+  const fx = [];
+  for (const e of st.e || []) fx.push(await effect(e));
   try {
     n.effects = fx;
   } catch (e) {
@@ -285,11 +315,14 @@ const style = async (n, rec, parent, root) => {
   } else if (kind === 'V') {
     if (Math.abs(n.width - w) > 0.01 || Math.abs(n.height - h) > 0.01) n.resize(w, h);
     if (st.vb) {
+      // A translucent shape's paint binds to its alpha variable, by its
+      // color and opacity as the import drew them, `#rrggbb@0.5`.
+      const at = (p) => hexOf(p.color) + '@' + Math.round(p.opacity * 100) / 100;
       for (const shape of n.findAll((c) => 'fills' in c)) {
         for (const key of ['fills', 'strokes']) {
           const list = shape[key];
           if (list === figma.mixed || !list.every((p) => p.type === 'SOLID') || !list.some((p) => st.vb[hexOf(p.color)])) continue;
-          await setPaints(shape, key, list.map((p) => [hexOf(p.color), p.opacity, st.vb[hexOf(p.color)]]), 'vector');
+          await setPaints(shape, key, list.map((p) => (st.vb[at(p)] ? [hexOf(p.color), p.opacity, st.vb[at(p)], st.vb[hexOf(p.color)]] : [hexOf(p.color), p.opacity, st.vb[hexOf(p.color)]])), 'vector');
         }
       }
     }

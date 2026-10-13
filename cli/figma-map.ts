@@ -11,19 +11,24 @@
 // Geometry lives here too: a Figma frame's box is its border box less any
 // stroke built OUTSIDE it, and its children sit relative to that box.
 
+import { alphaVariableName } from "./figma-bind.js";
 import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
 import { borderBuiltInside, borderPaintsNothing, builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
-import type { Box, Sides, TreeNode, TurnContext } from "./tree-types.js";
+import type { Box, PlanAlpha, Sides, TreeNode, TurnContext } from "./tree-types.js";
 
 /**
  * A paint as the template sets it: `#rrggbb` alone for an opaque, unbound
- * solid; else `[#rrggbb, opacity, variable?]`; a linear gradient as
+ * solid; else `[#rrggbb, opacity, variable?, token?]`; a linear gradient as
  * `{ g: gradientTransform's six numbers, s: [[position, #rrggbbaa], ...] }`.
+ * A translucent paint of an opaque token binds to the token's alpha
+ * variable, which carries the opacity (figma-bind.ts, alphaVariableName),
+ * and names the token too: a file without that variable binds the token at
+ * the paint's opacity, as before, which a mode switch resets to 1.
  */
-export type FigmaPaint = string | [hex: string, opacity: number, variable?: string] | { g: number[]; s: [number, string][] };
+export type FigmaPaint = string | [hex: string, opacity: number, variable?: string, token?: string] | { g: number[]; s: [number, string][] };
 
 /** A stroke: weight, or one per side (top, right, bottom, left); its paint; a dash; `o: 1` when OUTSIDE. */
 export interface FigmaStroke {
@@ -33,8 +38,13 @@ export interface FigmaStroke {
   o?: 1;
 }
 
-/** `[D|I, x, y, blur, spread, #rrggbb, alpha]` for a shadow, `[L|B, radius]` for a blur. */
-export type FigmaEffect = [string, number, number, number, number, string, number] | [string, number];
+/**
+ * `[D|I, x, y, blur, spread, #rrggbb, alpha, variable?, token?]` for a
+ * shadow, its color bound to the variable where one is named, and `token`
+ * where that is the token's alpha variable, as a paint's; `[L|B, radius]`
+ * for a blur.
+ */
+export type FigmaEffect = [string, number, number, number, number, string, number, string?, string?] | [string, number];
 
 /** A text node's properties. */
 export interface FigmaText {
@@ -81,7 +91,7 @@ export interface FigmaStyle {
   id?: string;
   m?: number;
   rs?: number;
-  /** A vector's paint colors that bind, `#rrggbb` to variable. */
+  /** A vector's paint colors that bind, `#rrggbb` to variable, and `#rrggbb@opacity` to the alpha variable a translucent one binds to. */
   vb?: Record<string, string>;
   /** An image's asset id. */
   im?: string;
@@ -129,6 +139,8 @@ export interface MapContext {
   unbound: Unbound[];
   /** The paints a base style bound, each with its rule. */
   byDefault?: BoundByDefault[];
+  /** The alpha variables the paints bind, by name: what `figma tokens` makes from the plan. */
+  alphas?: Map<string, PlanAlpha>;
   /**
    * The parent's classes, for the color of a `#text` or `#value` run that
    * carries none of its own. snap writes the `text-*` class a run inherits on
@@ -171,8 +183,20 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
     ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
   }
   if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
-  if (decision.variable) return [rgb, alpha, decision.variable];
+  if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx)];
   return alpha === 1 ? rgb : [rgb, alpha];
+}
+
+/**
+ * What a paint or shadow of `token`'s color at `alpha` binds to: the token,
+ * where it is opaque, or holds that alpha itself; else its alpha variable,
+ * then the token, recorded for `figma tokens` to make.
+ */
+function boundTo(token: string, alpha: number, ctx: MapContext): [string] | [string, string] {
+  if (alpha >= 1 || !ctx.binder.opaque(token)) return [token];
+  const variable = alphaVariableName(token, alpha);
+  if (!ctx.alphas?.has(variable)) ctx.alphas?.set(variable, { variable, token, alpha: round3(Math.round(alpha * 255) / 255) });
+  return [variable, token];
 }
 
 /** A paint that draws nothing: a transparent border still takes its space, so it is a stroke all the same. */
@@ -370,13 +394,25 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
 
 const BLUR = /^blur\((-?[\d.]+)px\)$/;
 
+/**
+ * Shadows and blurs. A shadow's color binds where a `ring-*` or `shadow-*`
+ * class names its token, as shadcn/ui's dialog's `ring-foreground/10`
+ * names `foreground`, never by its value alone, since Tailwind's shadow
+ * scale draws in a black no token was set from. A translucent one binds to
+ * the token's alpha variable, `foreground 10%`, whose alpha Figma keeps at
+ * a mode switch, where the token's own would make it opaque (probe 7c).
+ */
 function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
   const out: FigmaEffect[] = [];
   for (const [x, y, blur, spread, color, inset] of node.sh ?? []) {
     if (!color) continue;
     const [rgb, alpha] = splitHex(color);
     if (alpha === 0) continue;
-    out.push([inset ? "I" : "D", x, y, blur, spread, rgb, alpha]);
+    const effect: FigmaEffect = [inset ? "I" : "D", x, y, blur, spread, rgb, alpha];
+    const decision = ctx.binder.color(color, "effect", node.cls);
+    if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx));
+    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
+    out.push(effect);
   }
   for (const [fact, kind, name] of [[node.fl, "L", "filter"], [node.bf, "B", "backdrop-filter"]] as const) {
     if (!fact) continue;
@@ -470,11 +506,28 @@ export function vectorImport(markup: string, box: Box, strokesScale: boolean = S
   return { markup: sizedSvg(markup, view[2], view[3]), rescale: factor };
 }
 
-/** The colors in SVG markup, `#rrggbb`, from its fill and stroke attributes. */
-function markupColors(markup: string): string[] {
-  const out = new Set<string>();
-  for (const [, value] of markup.matchAll(/(?:fill|stroke)="(#[0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?"/g)) out.add(value.toLowerCase());
-  return [...out].sort();
+/**
+ * The colors in SVG markup, each `#rrggbb` with the opacities it is drawn at,
+ * from its fill and stroke attributes: a shape's own `fill-opacity` or
+ * `stroke-opacity`, else the root's, which serializeSvg hoists there when
+ * every shape shares it, times any alpha of an `#rrggbbaa`, to 0.01 as the
+ * markup writes them. A shape without a color of its own takes the root's.
+ */
+export function markupPaints(markup: string): Map<string, number[]> {
+  const out = new Map<string, Set<number>>();
+  const attrs = (text: string) => Object.fromEntries([...text.matchAll(/([\w:-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+  const tags = [...markup.matchAll(/<([a-zA-Z][\w:-]*)\b([^>]*)>/g)].map((m) => ({ tag: m[1], attrs: attrs(m[2]) }));
+  const root = tags[0]?.tag === "svg" ? tags[0].attrs : {};
+  for (const { attrs: own } of tags) {
+    for (const kind of ["fill", "stroke"]) {
+      const m = /^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(own[kind] ?? (own === root ? "" : root[kind] ?? ""));
+      if (!m) continue;
+      const opacity = Number(own[`${kind}-opacity`] ?? root[`${kind}-opacity`] ?? 1) * (m[2] ? parseInt(m[2], 16) / 255 : 1);
+      const hex = `#${m[1].toLowerCase()}`;
+      out.set(hex, (out.get(hex) ?? new Set()).add(Number.isFinite(opacity) ? Math.round(opacity * 100) / 100 : 1));
+    }
+  }
+  return new Map([...out].sort(([a], [b]) => a.localeCompare(b)).map(([hex, alphas]) => [hex, [...alphas].sort((a, b) => a - b)]));
 }
 
 // --- The node ---------------------------------------------------------------
@@ -530,11 +583,18 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     style.markup = imported.markup;
     if (imported.rescale) style.rs = imported.rescale;
     const binds: Record<string, string> = {};
-    for (const hex of markupColors(markup)) {
+    for (const [hex, alphas] of markupPaints(markup)) {
       const decision = ctx.binder.color(hex, "vector", node.cls, node.nocls);
       if (decision.variable && decision.from) ctx.byDefault?.push({ key: node.k, property: "vector", value: hex, variable: decision.variable, from: decision.from });
-      if (decision.variable) binds[hex] = decision.variable;
-      else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
+      if (decision.variable) {
+        binds[hex] = decision.variable;
+        // A translucent shape's paint binds to the alpha variable, by its
+        // color and opacity as the import draws them, `#rrggbb@0.5`.
+        for (const alpha of alphas) {
+          const [variable, token] = boundTo(decision.variable, alpha, ctx);
+          if (token) binds[`${hex}@${alpha}`] = variable;
+        }
+      } else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
     }
     if (Object.keys(binds).length) style.vb = binds;
     return style;

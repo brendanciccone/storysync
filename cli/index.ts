@@ -1023,7 +1023,7 @@ figma
     const maxNodes = parsePositiveInteger(opts.maxNodes, "--max-nodes");
     const readLimit = parsePositiveInteger(opts.readLimit, "--read-limit");
     try {
-      const { plan, planPath, warnings, bindings } = await runFigmaCode({
+      const { plan, planPath, warnings, bindings, alphas } = await runFigmaCode({
         snap: opts.snap as string,
         tokens: opts.tokens as string,
         components: opts.components ? (opts.components as string).split(",") : undefined,
@@ -1037,7 +1037,7 @@ figma
       // What the push costs the agent, in tokens: the skills show it and ask before sending.
       const estimate = estimatePush(plan);
       if (json) {
-        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, warnings, estimate }));
+        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, alphas, warnings, estimate }));
         return;
       }
       const where = shownPath(planPath);
@@ -1056,6 +1056,12 @@ figma
         console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from} (${layers})`));
       }
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
+      // A translucent paint binds to its token's alpha variable, which keeps
+      // its opacity at a mode switch: figma tokens makes them from this plan.
+      if (alphas.length) {
+        console.log(`\nTranslucent paints bind to ${alphas.length} alpha ${alphas.length === 1 ? "variable" : "variables"}, each a token's color at an alpha in every mode: ${alphas.map((a) => a.variable).join(", ")}.`);
+        console.log("Run `storysync figma tokens` now, which reads this plan and makes them, and send its calls before this plan's: a build that finds none binds the token at the paint's opacity, which Figma resets to 1 at a mode switch.");
+      }
       console.log(`\n${describeEstimate(estimate)}`);
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
     } catch (err) {
@@ -1125,6 +1131,7 @@ figma
   .command("tokens")
   .description("Write the use_figma calls that create or update a variable collection per token category, found by name, so a push sent again changes nothing")
   .option("--tokens <path>", "`storysync tokens --json` output", ".storysync/tokens.json")
+  .option("--plan <path>", "The plan `figma code` wrote, whose translucent paints' alpha variables these calls make too; none until it exists", ".storysync/figma/plan.json")
   .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan's calls and results there are removed", ".storysync/figma/tokens")
   .option("--remove <variable>", "A variable to remove, as Collection/name, as a response's stale or conflicts list it, once the user has confirmed; repeat for each", collect)
   .option("--max-variables <n>", "Most variables one call creates or updates; lower it after `Script exceeded time limit`", String(DEFAULT_MAX_VARIABLES))
@@ -1136,18 +1143,22 @@ figma
     try {
       const { plan, planPath, collections, warnings } = runFigmaTokens({
         tokens: opts.tokens as string,
+        plan: opts.plan as string,
         out: opts.out as string,
         remove: opts.remove as string[] | undefined,
         maxVariables,
         minify: opts.minify !== false,
       });
       if (json) {
-        console.log(JSON.stringify({ planPath, calls: plan.calls, leftOut: plan.leftOut, warnings }));
+        console.log(JSON.stringify({ planPath, calls: plan.calls, alphas: collections.flatMap((c) => c.alphas ?? []), leftOut: plan.leftOut, warnings }));
         return;
       }
       const count = collections.reduce((n, c) => n + c.variables.length, 0);
       console.log(`\n${plan.calls.length} use_figma ${plan.calls.length === 1 ? "call" : "calls"} for ${count} variables in ${collections.length} ${collections.length === 1 ? "collection" : "collections"}, planned in ${shownPath(planPath)}`);
       for (const call of plan.calls) console.log(`  ${String(call.seq).padStart(2, "0")} ${call.description} ${chalk.dim(`(${call.chars.toLocaleString("en-US")} characters)`)}`);
+      const alphas = collections.flatMap((c) => c.alphas ?? []);
+      if (alphas.length) console.log(`  with the alpha variables ${shownPath(opts.plan as string)} binds translucent paints to: ${alphas.join(", ")}`);
+      else if (!plan.plan) console.log(chalk.dim(`  No plan at ${shownPath(opts.plan as string)} yet: once \`figma code\` has written one, run this again to make the alpha variables its translucent paints bind to.`));
       for (const t of plan.leftOut) console.log(chalk.yellow(`  ! ${t.category} ${t.name}: left out, ${t.why}`));
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. A response's `stale` lists variables no token has, and `conflicts` those that can't be their token's: ask the user before removing any, then run this again with `--remove <Collection/name>` for each they confirm, and send the calls again."));

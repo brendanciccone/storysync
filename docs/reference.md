@@ -211,14 +211,14 @@ storysync figma code [options]
 
 storysync figma upload --plan <path> --seq <n> [--json]
 storysync figma next --plan <path> --seq <n> [--json]
-storysync figma tokens [--tokens <path>] [--out <dir>] [--remove <Collection/name>]... [--max-variables <n>] [--no-minify] [--json]
+storysync figma tokens [--tokens <path>] [--plan <path>] [--out <dir>] [--remove <Collection/name>]... [--max-variables <n>] [--no-minify] [--json]
 ```
 
-`figma tokens` defaults to `--tokens .storysync/tokens.json`, `--out .storysync/figma/tokens` and `--max-variables 40`.
+`figma tokens` defaults to `--tokens .storysync/tokens.json`, `--plan .storysync/figma/plan.json`, `--out .storysync/figma/tokens` and `--max-variables 40`.
 
 `figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. `plan.json` lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
 
-It prints each call, its warnings, and the push's [estimate](https://github.com/brendanciccone/storysync/blob/main/README.md#what-a-push-costs):
+It prints each call, its warnings, the alpha variables its translucent paints bind to, which `figma tokens` makes from the plan (see [Variable binding](#variable-binding)), and the push's [estimate](https://github.com/brendanciccone/storysync/blob/main/README.md#what-a-push-costs):
 
 ```text
 Estimate: 22 use_figma calls send 274,800 characters of code and read back about 180,000. Plan on about 510k-980k agent tokens for this push of 5 components, setup and verification included (the rule of thumb, 100k a component plus 100k a push, gives 600k).
@@ -227,6 +227,8 @@ Estimate: 22 use_figma calls send 274,800 characters of code and read back about
 `figma upload` posts the pictures a build call left for `upload_assets`. `figma next` writes the call that reads the rest of a read call that stopped short of `use_figma`'s response limit.
 
 `figma tokens` writes a `use_figma` call per token collection (Colors, Spacing, Radius, Typography) under `<out>/calls/`, listed in `<out>/plan.json`. Each call finds its collection and variables by name, adds a Dark mode where the tokens have a dark theme, sets values and scopes, and writes only what differs, so pushing twice changes nothing. A response lists `stale` variables (in the collection but not in the tokens) and `conflicts`. None is removed unless `--remove` names it after you confirm. Shadows, colors it can't convert and em or % lengths are left out, and it prints why.
+
+Once `figma code` has written its plan, `figma tokens` reads it and also makes the plan's alpha variables, each beside its color token: `destructive 10%` holds `destructive`'s light color at 10% in Light and its dark color at 10% in Dark, with its scopes. So run it again after `figma code`, and send its calls before the plan's. A response lists the alpha variables it keeps in `alpha`, and keeps those an earlier push made up to date with their tokens. One whose token is gone is stale. Figma takes no period in a variable name, so an alpha of no whole percent has a comma: `ring 12,5%`.
 
 ### `storysync verify`
 
@@ -484,13 +486,15 @@ Use the version the error prints. Other Playwright versions install a browser th
 
 ### Variable binding
 
-Colors and corner radii are bound to the variables `tokens` names. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color matches a token of its `#rrggbb` and is bound with the paint's opacity at its alpha, as Tailwind's `border-destructive/30` is the `destructive` token at 30%.
+Colors and corner radii are bound to the variables `tokens` names. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color matches a token of its `#rrggbb` and binds to that token's alpha variable, as Tailwind's `border-destructive/30` is the `destructive` token at 30%, bound to `destructive 30%`.
 
 Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, and `rounded-lg` the radius to `lg`. Where the classes name two, as an outline button's `border-border dark:border-input` does, the one the `dark:` class names binds: it has the light value too, and is the token the dark theme paints.
 
-Where no class names one, the project's base styles can, as `tokens` reads them into `defaults`: shadcn/ui's dialog title has no color class and inherits `body`'s `text-foreground` from `@layer base`, so it binds to `foreground`, and a card's border takes `* { @apply border-border }`, so it binds to `border`. `figma code` prints each such binding with its rule. A base style counts only where snap found no class sets the color at all: a palette or arbitrary color such as `text-neutral-950` names no variable, and keeps the value unbound. Where neither names one, the value is left unbound and `figma code` warns with the variables it matches. Values are matched by the light theme's, which snap measures. A bound variable takes its Dark value wherever a designer switches a frame to the Dark mode.
+Where no class names one, the project's base styles can, as `tokens` reads them into `defaults`: shadcn/ui's dialog title has no color class and inherits `body`'s `text-foreground` from `@layer base`, so it binds to `foreground`, and a card's border takes `* { @apply border-border }`, so it binds to `border`. `figma code` prints each such binding with its rule. A base style counts only where snap found no class sets the color at all: a palette or arbitrary color such as `text-neutral-950` names no variable, and keeps the value unbound. Where neither names one, the value is left unbound and `figma code` warns with the variables it matches. Values are matched by the light theme's, which snap measures. A bound variable takes its Dark value wherever a designer switches a frame, or a frame around it, to the Dark mode.
 
-Shadow colors stay unbound: Figma gives a bound shadow its variable's alpha at the first mode switch, so a 10% ring would draw fully opaque.
+Figma resolves a bound paint again at every mode switch, and gives it its variable's own alpha as its opacity, and a bound shadow its variable's alpha. Bound to `destructive` at 10%, a `bg-destructive/10` fill turns opaque at the first switch to Dark and stays so back in Light. So a translucent paint binds to an alpha variable, which holds the alpha in both modes, and `figma tokens` makes each one the plan binds. A build that finds none, as before `figma tokens` has read the plan, binds the token at the paint's opacity, as earlier versions did, and lists it in its `fallbacks`.
+
+A shadow's color binds only where a `ring-*` or `shadow-*` class names its token, as shadcn/ui's dialog's `ring-foreground/10` binds to `foreground 10%`. Tailwind's default shadow scale draws in a black no token was set from, so its shadows stay unbound.
 
 A frame built at its padding box inside a translucent, dashed or partly transparent border is drawn at the inner radius, which no token holds, so that radius is left unbound and `figma code` says why.
 

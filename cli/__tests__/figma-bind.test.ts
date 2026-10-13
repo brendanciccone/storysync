@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Binder } from "../figma-bind.js";
+import { ALPHA_VARIABLE, Binder, alphaVariableName, parseAlphaVariable } from "../figma-bind.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 
 
@@ -180,4 +180,52 @@ test("Binder: a Tailwind config's DEFAULT key is unnamed in a class", () => {
   // shadcn/ui v3's `primary: { DEFAULT: "hsl(var(--primary))" }` is the token primary/DEFAULT, and bg-primary names it.
   const binder = new Binder({ collections: [{ category: "colors", tokens: [{ name: "primary/DEFAULT", value: "", hex: "#18181b" }, { name: "foreground", value: "", hex: "#18181b" }] }] });
   assert.equal(binder.color("#18181b", "fill", ["bg-primary"]).variable, "primary/DEFAULT");
+});
+
+test("Binder: a shadow's color binds only where a ring-* or shadow-* class names its token, never by its value alone", () => {
+  // shadcn/ui's dialog: ring-1 ring-foreground/10, measured #0a0a0a1a.
+  const binder = new Binder(SHADCN_TOKENS);
+  assert.deepEqual(binder.color("#0a0a0a1a", "effect", ["bg-background", "ring-foreground", "rounded-xl"]), {
+    variable: "foreground", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"],
+  });
+  assert.equal(binder.color("#171717", "effect", ["shadow-primary"]).variable, "primary");
+  // A fill's class names no shadow's token, and a value one token has
+  // binds a stroke without a class, but no shadow: Tailwind's shadow scale
+  // draws in a black no token was set from.
+  assert.equal(binder.color("#0a0a0a1a", "effect", ["text-foreground"]).variable, null);
+  assert.deepEqual(binder.color("#a1a1a1", "effect", undefined), { variable: null, candidates: ["ring"] });
+  assert.equal(binder.color("#a1a1a1", "effect", ["ring-ring"]).variable, "ring");
+});
+
+test("Binder: a token is opaque where its light value is, which a translucent paint then takes at an alpha", () => {
+  const binder = new Binder({ collections: [{ category: "colors", tokens: [
+    { name: "destructive", value: "", hex: "#df2225" }, { name: "overlay", value: "", hex: "#0000001a" }, { name: "white", value: "", hex: "#ffffffff" },
+  ] }] });
+  assert.deepEqual(["destructive", "overlay", "white", "missing"].map((t) => binder.opaque(t)), [true, false, true, false]);
+});
+
+test("alpha variables: a token at an alpha is named by its percent, whole where Tailwind's /NN gives it, and the name gives back the byte snap measured", () => {
+  assert.equal(alphaVariableName("destructive", 0x1a / 255), "destructive 10%");
+  assert.equal(alphaVariableName("destructive", 0.302), "destructive 30%");
+  assert.equal(alphaVariableName("card/foreground", 0.5), "card/foreground 50%");
+  assert.equal(alphaVariableName("muted", 0.051), "muted 5%");
+  // Every Tailwind modifier, /0 to /100, has a whole name, from the byte
+  // snap measures it at: the browser's alpha, n / 100, times 255, rounded.
+  for (let n = 0; n <= 100; n++) assert.equal(alphaVariableName("x", Math.round((n / 100) * 255) / 255), `x ${n}%`);
+  // An alpha of no whole percent, /[.125], has a tenth, after a comma: Figma refuses a period in a name (probe 7c).
+  assert.equal(alphaVariableName("ring", 32 / 255), "ring 12,5%");
+  // Each byte has one name, which reads back as that byte, and holds no period.
+  const names = new Set<string>();
+  for (let byte = 0; byte < 256; byte++) {
+    const name = alphaVariableName("destructive", byte / 255);
+    assert.doesNotMatch(name, /\./);
+    assert.match(name, ALPHA_VARIABLE);
+    assert.deepEqual(parseAlphaVariable(name), { token: "destructive", alpha: byte / 255 }, name);
+    names.add(name);
+  }
+  assert.equal(names.size, 256);
+  // No token's name is one: a CSS variable has no space or %.
+  assert.equal(parseAlphaVariable("destructive"), null);
+  assert.equal(parseAlphaVariable("destructive/10"), null);
+  assert.equal(parseAlphaVariable("x 101%"), null);
 });

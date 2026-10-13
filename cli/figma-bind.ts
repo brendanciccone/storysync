@@ -28,8 +28,8 @@ import type { BaseDefault, TokenExtractionResult } from "./tokens.js";
 import { SIDE, utilitySetsColor } from "./tree-types.js";
 import type { NoClassPaint } from "./tree-types.js";
 
-/** What a paint colors, which decides the classes that can name its token. */
-export type PaintRole = "fill" | "text" | "stroke" | "vector";
+/** What a paint colors, which decides the classes that can name its token: `effect` is a shadow's color. */
+export type PaintRole = "fill" | "text" | "stroke" | "vector" | "effect";
 
 /**
  * The class prefixes that name a token for each role. A vector's strokes and
@@ -42,8 +42,16 @@ const PREFIXES: Record<PaintRole | "radius", string[]> = {
   text: ["text"],
   stroke: ["border", "ring"],
   vector: ["fill", "stroke", "text"],
+  effect: ["ring", "shadow"],
   radius: ["rounded"],
 };
+
+/**
+ * The roles whose value alone binds none: a shadow's color binds only where
+ * a class names its token, since Tailwind's shadow scale draws in a black
+ * no token was set from, which a project's one `black` token would match.
+ */
+const NAMED_ONLY = new Set<PaintRole>(["effect"]);
 
 /**
  * The property of the base styles' defaults a role takes when no class
@@ -69,6 +77,8 @@ export class Binder {
   private readonly colors = new Map<string, string[]>();
   private readonly radii: { name: string; px: number }[] = [];
   private readonly defaults = new Map<BaseDefault["property"], BaseDefault>();
+  /** Each color token whose light value is opaque, which a translucent paint of its color binds through an alpha variable. */
+  private readonly opaqueColors = new Set<string>();
   /** Every color token as a class names it (`card-foreground`), and each font size as its `text-*` class. */
   private readonly colorNames = new Set<string>();
   private readonly sizeClasses = new Set<string>();
@@ -97,6 +107,7 @@ export class Binder {
           const names = this.colors.get(key) ?? [];
           if (!names.includes(token.name)) names.push(token.name);
           this.colors.set(key, names);
+          if (key.length === 7) this.opaqueColors.add(token.name);
         }
         if (collection.category === "radius" && typeof token.px === "number") this.radii.push({ name: token.name, px: token.px });
       }
@@ -116,7 +127,7 @@ export class Binder {
   color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[]): BindDecision {
     const value = hex.toLowerCase();
     const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
-    const decision = decide(candidates, PREFIXES[role], cls);
+    const decision = decide(candidates, PREFIXES[role], cls, !NAMED_ONLY.has(role));
     if (decision.variable || decision.named) return { variable: decision.variable, candidates };
     // No class names any of them: the base style for the property, where
     // snap found no class sets it, and none of the classes it lists sets it
@@ -144,6 +155,16 @@ export class Binder {
     });
   }
 
+  /**
+   * Whether a color token's light value is opaque: a translucent paint
+   * bound to it is the token at an alpha (`border-destructive/30`), which
+   * its alpha variable holds (alphaVariableName). A translucent token's own
+   * variable holds its alpha already.
+   */
+  opaque(name: string): boolean {
+    return this.opaqueColors.has(name);
+  }
+
   /** The radius token a corner radius of `px` binds to, given the node's classes. */
   radius(px: number, cls: readonly string[] | undefined): BindDecision {
     const candidates = [...new Set(this.radii.filter((t) => Math.abs(t.px - px) < 0.01).map((t) => t.name))].sort();
@@ -152,15 +173,15 @@ export class Binder {
 }
 
 /**
- * The one candidate the classes name, or the only candidate; `named` says
- * how many the classes named, so a value two classes name isn't then
- * handed to a default. Where they name several, the one a `dark:` class
+ * The one candidate the classes name, or the only candidate where the value
+ * alone may bind (`byValue`); `named` says how many the classes named, so a
+ * value two classes name isn't then handed to a default. Where they name several, the one a `dark:` class
  * names, alone: it has the light value measured, and is the token the dark
  * theme paints, so its variable is right in both modes, as an outline
  * button's `border-border dark:border-input` border is `input`.
  */
-function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined): { variable: string | null; named: number } {
-  if (candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
+function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined, byValue = true): { variable: string | null; named: number } {
+  if (byValue && candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
   const named = new Set<string>();
   const dark = new Set<string>();
   for (const entry of cls ?? []) {
@@ -176,4 +197,60 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
   }
   const variable = named.size === 1 ? [...named][0] : dark.size === 1 ? [...dark][0] : null;
   return { variable, named: named.size };
+}
+
+// --- Alpha variables ------------------------------------------------------------
+//
+// Figma resolves a paint bound to a color variable again at every explicit
+// mode switch, on its frame or one around it, and gives it the variable's
+// own alpha as its opacity, a shadow its variable's alpha: probe 7b saw
+// shadcn/ui's `bg-destructive/10` and `ring-foreground/10`, bound to
+// `destructive` and `foreground` at 10%, turn opaque at the first switch to
+// Dark and stay so back in Light. A variable that carries the alpha keeps
+// it: probe 7c bound a fill, an OUTSIDE stroke and a ring to
+// `destructive 10%`, `destructive 30%` and `foreground 10%`, each mode's
+// value the token's at that alpha, and each kept its alpha through every
+// switch, its frame's, a frame's around it and an instance's, in a call of
+// their own too. So `figma tokens` makes a variable for each token and alpha
+// the plan binds below 1, beside the token in its collection, and the build
+// binds the paint to it. The name is the token's and the alpha as a percent,
+// `destructive 10%`: no token is named with a space or `%`, so none can
+// clash, and Figma lists it beside its token. Figma refuses a period in a
+// name (probe 7c), so an alpha of no whole percent, which Tailwind's `/NN`
+// never gives, has a comma: `destructive 12,5%`.
+
+/** An alpha variable's name: its token's, a space, and the alpha in percent. */
+export const ALPHA_VARIABLE = /^(.+) (\d{1,3}(?:,\d)?)%$/;
+
+/** An alpha 0-1 as the byte `#rrggbbaa` writes, which is what snap measures. */
+const alphaByte = (alpha: number): number => Math.max(0, Math.min(255, Math.round(alpha * 255)));
+
+/**
+ * The alpha variable of `token` at `alpha` (0-1): `destructive 10%`. The
+ * percent is the shortest, whole or to a tenth, that reads back as the same
+ * byte, so each byte has one name and the name gives the byte.
+ */
+export function alphaVariableName(token: string, alpha: number): string {
+  const byte = alphaByte(alpha);
+  const whole = Math.round((byte * 100) / 255);
+  const percent = alphaOfPercent(whole) === byte ? String(whole) : (Math.round((byte * 1000) / 255) / 10).toFixed(1).replace(".", ",");
+  return `${token} ${percent}%`;
+}
+
+/**
+ * The byte a percent, as an alpha variable's name writes it, stands for:
+ * the alpha `percent / 100` as snap writes it in `#rrggbbaa`, rounded as
+ * snap rounds it, so each of Tailwind's `/NN` has its whole name.
+ */
+function alphaOfPercent(percent: number): number {
+  return Math.round((percent / 100) * 255);
+}
+
+/** The token and alpha (0-1, as the byte gives it) an alpha variable's name stands for, or null for another name. */
+export function parseAlphaVariable(name: string): { token: string; alpha: number } | null {
+  const m = ALPHA_VARIABLE.exec(name);
+  if (!m) return null;
+  const percent = Number(m[2].replace(",", "."));
+  if (percent > 100) return null;
+  return { token: m[1], alpha: alphaOfPercent(percent) / 255 };
 }

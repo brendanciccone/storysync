@@ -249,6 +249,13 @@ export interface FigmaPlan {
   calls: PlanCall[];
   /** Each value bound by the project's base styles, where no class names its token, with the rule (section 8.9). */
   bindings?: PlanBinding[];
+  /** The alpha variables the build binds translucent paints to, by name, which `figma tokens` makes from this list. */
+  alphas?: PlanAlpha[];
+}
+
+/** A token's color at an alpha below 1, 0-1 as `#rrggbbaa` gives it: the variable `figma tokens` makes, named `variable`. */
+export interface PlanAlpha {
+  variable: string; token: string; alpha: number;
 }
 
 /** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it, in the layers `keys`. */

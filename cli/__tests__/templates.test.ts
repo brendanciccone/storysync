@@ -36,8 +36,11 @@ import type { TemplateName } from "../figma-code.js";
  * - A read call is its template, the guard and a header of a few hundred
  *   characters, nowhere near 45,000, and what it returns is held by its
  *   LIMIT, not by its code.
+ * - A variables call is its template, the guard and 40 variables at most,
+ *   with the alpha variables of their colors (figma-bind.ts), under 10,000.
+ *   Its budget was raised by 500 for those alpha variables.
  */
-const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000, variables: 3_000 } as const;
+const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000, variables: 3_500 } as const;
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 

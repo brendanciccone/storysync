@@ -35,7 +35,7 @@ import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import type { TokenExtractionResult } from "./tokens.js";
 import { expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
-import type { Box, ComponentTree, FigmaPlan, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
+import type { Box, ComponentTree, FigmaPlan, PlanAlpha, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
 export interface FigmaCodeOptions {
@@ -186,6 +186,8 @@ interface Findings {
   unbound: Unbound[];
   byDefault: BoundByDefault[];
   absolute: Map<string, { why: string; slugs: string[] }>;
+  /** The alpha variables bound, by name, across the plan. */
+  alphas?: Map<string, PlanAlpha>;
 }
 
 /**
@@ -229,7 +231,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
     const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, parentCls: parent?.cls, spike, around };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, parentCls: parent?.cls, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
@@ -434,13 +436,13 @@ function labelLine(component: SnapComponent): string {
   return parts.join("; ");
 }
 
-function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike): CompiledComponent | null {
+function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike, alphas: Map<string, PlanAlpha>): CompiledComponent | null {
   const key = componentKey(component);
   if (component.error || !component.base) {
     warnings.push(`${key}: not built: ${component.error ?? "snap measured no variant of it"}`);
     return null;
   }
-  const findings: Findings = { notBuilt: [], unbound: [], byDefault: [], absolute: new Map() };
+  const findings: Findings = { notBuilt: [], unbound: [], byDefault: [], absolute: new Map(), alphas };
   const variants = component.variants.map((variant, i) => (variant.status === "ok"
     ? compileVariant(component, variant as SnapVariantWithTree, i, binder, findings, spike)
     : compilePlaceholder(component, variant as SnapVariantWithTree, i)));
@@ -610,7 +612,7 @@ function clearPlanFiles(out: string): void {
  * earlier plan's calls and results under `out` (clearPlanFiles). Two runs
  * over the same inputs write the same bytes.
  */
-export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: FigmaPlan; planPath: string; warnings: string[]; bindings: PlanBinding[] }> {
+export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: FigmaPlan; planPath: string; warnings: string[]; bindings: PlanBinding[]; alphas: PlanAlpha[] }> {
   const maxChars = opts.maxChars ?? MAX_CALL_CHARS;
   const spike: Spike = { ...SPIKE, ...opts.spike };
   const maxNodes = opts.maxNodes ?? spike.maxNodes;
@@ -636,7 +638,8 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       "figma code builds from trees: take the snap again without --root-only, or build it with the skill's root-only templates.",
     );
   }
-  const components = picked.map((c) => compileComponent(c, binder, warnings, spike)).filter((c): c is CompiledComponent => c !== null);
+  const bound = new Map<string, PlanAlpha>();
+  const components = picked.map((c) => compileComponent(c, binder, warnings, spike, bound)).filter((c): c is CompiledComponent => c !== null);
   if (!components.length) throw new Error("No component to build: snap measured none of those named, or each failed");
 
   const pages: string[] = [];
@@ -783,9 +786,14 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   };
   const bindings = built.flatMap((c) => c.bindings);
   if (bindings.length) plan.bindings = bindings;
+  // Each alpha variable a translucent paint binds to, for `figma tokens` to
+  // make before the builds are sent: a build without it binds the token at
+  // the paint's opacity, which a mode switch resets.
+  const alphas = [...bound.values()].sort((a, b) => (a.variable < b.variable ? -1 : a.variable > b.variable ? 1 : 0));
+  if (alphas.length) plan.alphas = alphas;
   const planPath = join(out, "plan.json");
   writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
-  return { plan, planPath, warnings, bindings };
+  return { plan, planPath, warnings, bindings, alphas };
 }
 
 // --- Estimate ---------------------------------------------------------------
