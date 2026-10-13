@@ -143,14 +143,9 @@ const setPaints = async (n, key, list, property) => {
   n[key] = paints;
   if (paints.some((p) => p.boundVariables)) n[key] = n[key].map((p, i) => Object.assign({}, p, { opacity: paints[i].opacity }));
 };
-// An effect from a style's: a blur, or a shadow, its color bound where it
-// names a variable (e[7]).
-const effect = async (e) => {
-  if (e.length === 2) return { type: e[0] === 'L' ? 'LAYER_BLUR' : 'BACKGROUND_BLUR', radius: e[1], visible: true };
-  const out = Object.assign({ type: e[0] === 'I' ? 'INNER_SHADOW' : 'DROP_SHADOW', color: Object.assign(rgb(e[5]), { a: e[6] }), offset: { x: e[1], y: e[2] }, radius: e[3], spread: e[4], visible: true, blendMode: 'NORMAL' }, e[0] === 'D' ? { showShadowBehindNode: false } : {});
-  const v = e[7] && (await variable('COLOR', e[7], 'effect'));
-  return v ? figma.variables.setBoundVariableForEffect(out, 'color', v) : out;
-};
+const effect = (e) => (e.length === 2
+  ? { type: e[0] === 'L' ? 'LAYER_BLUR' : 'BACKGROUND_BLUR', radius: e[1], visible: true }
+  : Object.assign({ type: e[0] === 'I' ? 'INNER_SHADOW' : 'DROP_SHADOW', color: Object.assign(rgb(e[5]), { a: e[6] }), offset: { x: e[1], y: e[2] }, radius: e[3], spread: e[4], visible: true, blendMode: 'NORMAL' }, e[0] === 'D' ? { showShadowBehindNode: false } : {}));
 
 // Images already on the page, by asset id: reused rather than uploaded again.
 const HASHES = {};
@@ -253,8 +248,7 @@ const style = async (n, rec, parent, root) => {
   n.visible = st.v !== 0;
   n.opacity = st.o === undefined ? 1 : st.o;
   n.blendMode = st.b || (isFrame(n) && kind !== 'T' ? 'PASS_THROUGH' : 'NORMAL');
-  const fx = [];
-  for (const e of st.e || []) fx.push(await effect(e));
+  const fx = (st.e || []).map(effect);
   try {
     n.effects = fx;
   } catch (e) {
@@ -264,10 +258,6 @@ const style = async (n, rec, parent, root) => {
     n.effects = fx.map((f) => Object.assign({}, f, { spread: 0 }));
     fallback('shadow spread left out', e);
   }
-  // Figma gives an effect freshly bound to a variable the variable's alpha:
-  // assigning them once more, bound as they now are, puts each shadow's own
-  // alpha back, which it keeps in every mode (probe 7b).
-  if (fx.some((f) => f.boundVariables)) n.effects = n.effects.map((f, i) => (f.boundVariables && f.boundVariables.color ? Object.assign({}, f, { color: Object.assign({}, f.color, { a: st.e[i][6] }) }) : f));
   if (kind === 'T') {
     const t = st.t;
     const font = await loadFont(t);

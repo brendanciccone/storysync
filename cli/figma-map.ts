@@ -33,11 +33,8 @@ export interface FigmaStroke {
   o?: 1;
 }
 
-/**
- * `[D|I, x, y, blur, spread, #rrggbb, alpha, variable?]` for a shadow, its
- * color bound to the variable where one is named; `[L|B, radius]` for a blur.
- */
-export type FigmaEffect = [string, number, number, number, number, string, number, string?] | [string, number];
+/** `[D|I, x, y, blur, spread, #rrggbb, alpha]` for a shadow, `[L|B, radius]` for a blur. */
+export type FigmaEffect = [string, number, number, number, number, string, number] | [string, number];
 
 /** A text node's properties. */
 export interface FigmaText {
@@ -373,24 +370,13 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
 
 const BLUR = /^blur\((-?[\d.]+)px\)$/;
 
-/**
- * Shadows and blurs. A shadow's color binds where a `ring-*` or `shadow-*`
- * class names its token, as shadcn/ui's dialog's `ring-foreground/10`
- * names `foreground`, at the shadow's own alpha (the build keeps it, probe
- * 7b); a value alone binds none, since Tailwind's shadow scale draws in a
- * black no token was set from.
- */
 function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
   const out: FigmaEffect[] = [];
   for (const [x, y, blur, spread, color, inset] of node.sh ?? []) {
     if (!color) continue;
     const [rgb, alpha] = splitHex(color);
     if (alpha === 0) continue;
-    const effect: FigmaEffect = [inset ? "I" : "D", x, y, blur, spread, rgb, alpha];
-    const decision = ctx.binder.color(color, "effect", node.cls);
-    if (decision.variable) effect.push(decision.variable);
-    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
-    out.push(effect);
+    out.push([inset ? "I" : "D", x, y, blur, spread, rgb, alpha]);
   }
   for (const [fact, kind, name] of [[node.fl, "L", "filter"], [node.bf, "B", "backdrop-filter"]] as const) {
     if (!fact) continue;

@@ -706,23 +706,26 @@ test("bindings: what no class colors binds to the base styles' token, so Dark mo
   assert.equal((root.strokes as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, border);
 });
 
-test("bindings: a dialog's ring binds to the token its ring-* class names, at its own 10% alpha, built again the same", async () => {
+test("bindings: a dialog's ring stays unbound at its own 10% alpha, which a switch to Dark keeps, where a bound ring turns opaque", async () => {
   // The fifth live push's Dialog: ring-1 ring-foreground/10, a spread-only
-  // shadow, stayed #0a0a0a1a in Dark, its color never bound. Figma gives a
-  // shadow bound afresh its variable's alpha, 1 here; the build assigns it
-  // once more with its own put back, which probe 7b saw it keep, bound.
+  // shadow. Probe 7b bound it to foreground at 10%, which Figma kept only
+  // until the frame's mode changed: then it drew foreground opaque, in
+  // Dark and back in Light, as a stroke at the paint's opacity did too.
+  // Unbound, it draws #0a0a0a at 10% in every mode.
   const dialog = loadTreeFixture("dialog");
   const coded = await codeFor(dialog, {}, SHADCN_TOKENS);
   const mock = mockFor([dialog]);
-  const foreground = mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors").id;
-  for (const run of ["built", "built again"]) {
-    const [build] = await runPlan(mock, coded, ["build"]);
-    assert.equal(result(build).unbound.some((u) => u[2] === "effect"), false, run);
-    const root = mock.handle(variantsBySlug(mock).get("default")!.id) as { effects: { type: string; spread: number; color: { r: number; a: number }; boundVariables?: { color?: { id: string } } }[] };
-    assert.deepEqual(root.effects.map((e) => [e.type, e.spread, Math.round(e.color.r * 255), Math.round(e.color.a * 255), e.boundVariables?.color?.id]), [
-      ["DROP_SHADOW", 1, 0x0a, 0x1a, foreground],
-    ], run);
-  }
+  mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors");
+  await runPlan(mock, coded, ["build"]);
+  const variant = variantsBySlug(mock).get("default")!;
+  const ring = () => (mock.handle(variant.id) as { effects: { type: string; spread: number; color: { r: number; a: number }; boundVariables?: { color?: { id: string } } }[] }).effects
+    .map((e) => [e.type, e.spread, Math.round(e.color.r * 255), Math.round(e.color.a * 255), e.boundVariables?.color?.id]);
+  assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, undefined]]);
+  const run = await mock.run(`const [fg] = (await figma.variables.getLocalVariablesAsync('COLOR')).filter((v) => v.name === 'foreground');
+    const col = await figma.variables.getVariableCollectionByIdAsync(fg.variableCollectionId);
+    (await figma.getNodeByIdAsync('${variant.id}')).parent.setExplicitVariableModeForCollection(col, col.modes[1].modeId);`);
+  assert.ok(run.ok, run.text);
+  assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, undefined]], "in Dark");
 });
 
 test("label: a set measured from its closed trigger says so on one line, written once, its description unescaped", async () => {

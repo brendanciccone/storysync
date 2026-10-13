@@ -934,16 +934,13 @@ function figmaDocument() {
     return at;
   };
   const boundTo = (paint) => paint?.boundVariables?.color?.id ?? null;
-  // What Figma stores when a node's fills, strokes or effects are assigned:
-  // one bound afresh takes its variable's alpha, as a paint's opacity or a
-  // shadow's color's; one bound as before keeps its own (probe 7b).
+  // What Figma stores when a node's fills, strokes or effects are assigned.
   const stored = (key, before, list) => list.map((paint, i) => {
     const id = boundTo(paint);
     if (!id) return { ...paint };
     const { r, g, b, a } = variables.get(id).value;
-    const kept = boundTo(before[i]) === id;
-    if (key === "effects") return { ...paint, color: { r, g, b, a: kept ? paint.color.a : a } };
-    return { ...paint, color: { r, g, b }, opacity: kept ? paint.opacity : a };
+    if (key === "effects") return { ...paint, color: { r, g, b, a } };
+    return { ...paint, color: { r, g, b }, opacity: boundTo(before[i]) === id ? paint.opacity : a };
   });
   const create = (type, name) => {
     const node = { id: `${count++}:1`, type, name, parent: null, width: 100, height: 100 };
@@ -1718,8 +1715,8 @@ function buildScenarios(snapDir) {
       // A live push bound Attachment's error border, #df22254d, to the
       // destructive variable, and it read back #df2225: Figma sets a paint
       // freshly bound to opacity 1 when it is assigned. setPaints puts each
-      // paint's opacity back, and each shadow's alpha, where binding gave it
-      // its variable's: probe 7b saw Figma keep it, bound, in every mode.
+      // paint's opacity back, and leaves a shadow unbound where binding gave
+      // it its variable's alpha, keeping one whose variable has its alpha.
       const { measured } = data();
       const doc = figmaDocument();
       const vars = {
@@ -1752,11 +1749,11 @@ function buildScenarios(snapDir) {
       const read = slice.readback["state-error"];
       const got = `${read.backgroundColor} ${read.borderUniform?.color}`;
       assert(got === "#4b556322 #df22254d", `the bound fill and stroke read back ${got}, not #4b556322 #df22254d`);
-      const [black, kept] = variant.effects;
+      const [unbound, kept] = variant.effects;
       const alpha = (effect) => Math.round(effect.color.a * 255);
-      assert(bound(black) === vars.black.id && alpha(black) === 0x1a, `a shadow bound to an opaque black kept ${bound(black)} at alpha ${alpha(black)}`);
+      assert(bound(unbound) === null && alpha(unbound) === 0x1a, `a shadow bound to an opaque black kept ${bound(unbound)} at alpha ${alpha(unbound)}`);
       assert(bound(kept) === vars.shadow.id && alpha(kept) === 0x1a, `a shadow bound to shadow/sm kept ${bound(kept)} at alpha ${alpha(kept)}`);
-      return `fill ${read.backgroundColor} and stroke ${read.borderUniform.color} bound; both shadows bound at their own alpha`;
+      return `fill ${read.backgroundColor} and stroke ${read.borderUniform.color} bound; a shadow left unbound where binding took its alpha, one kept bound`;
     },
 
     async fonts(build) {
@@ -4128,8 +4125,8 @@ async function main() {
       own: "(n.type === want || n.type === 'COMPONENT_SET' || idOf(n))",
       other: "componentSet && idOf(componentSet) && idOf(componentSet) !== ID ?",
       overlaps: "const overlaps = (node) => node.parent.children.filter(",
-      restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : p.color ? { ...p, color: { ...p.color, a: raw[i].color.a } } : p));\n",
-      effect: "p.color ? { ...p, color: { ...p.color, a: raw[i].color.a } } : p",
+      restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));\n",
+      effect: "!p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]",
       families: "for (const f of new Set([family, alt, 'Inter'])) {",
       serif: "? 'Noto Serif' :",
       ladder: "[i, i + d, i + 2 * d, 3]",
@@ -4151,7 +4148,7 @@ async function main() {
       "overwrites another component's id on a set of its name": (code) => code.replace(T.other, "false ?"),
       "counts no overlaps": (code) => code.replace(T.overlaps, "const overlaps = (node) => [].filter("),
       "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
-      "leaves a bound shadow at its variable's alpha": (code) => code.replace(T.effect, "p"),
+      "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p"),
       "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),
       "sets a serif face in Inter": (code) => code.replace(T.serif, "? 'Inter' :"),
       "falls to Regular for a weight the family lacks": (code) => code.replace(T.ladder, "[i, 3]"),

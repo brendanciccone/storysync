@@ -28,8 +28,8 @@ import type { BaseDefault, TokenExtractionResult } from "./tokens.js";
 import { SIDE, utilitySetsColor } from "./tree-types.js";
 import type { NoClassPaint } from "./tree-types.js";
 
-/** What a paint colors, which decides the classes that can name its token: `effect` is a shadow's color. */
-export type PaintRole = "fill" | "text" | "stroke" | "vector" | "effect";
+/** What a paint colors, which decides the classes that can name its token. */
+export type PaintRole = "fill" | "text" | "stroke" | "vector";
 
 /**
  * The class prefixes that name a token for each role. A vector's strokes and
@@ -42,16 +42,8 @@ const PREFIXES: Record<PaintRole | "radius", string[]> = {
   text: ["text"],
   stroke: ["border", "ring"],
   vector: ["fill", "stroke", "text"],
-  effect: ["ring", "shadow"],
   radius: ["rounded"],
 };
-
-/**
- * The roles whose value alone binds none: a shadow's color binds only where
- * a class names its token, since Tailwind's shadow scale draws in a black
- * no token was set from, which a project's one `black` token would match.
- */
-const NAMED_ONLY = new Set<PaintRole>(["effect"]);
 
 /**
  * The property of the base styles' defaults a role takes when no class
@@ -124,7 +116,7 @@ export class Binder {
   color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[]): BindDecision {
     const value = hex.toLowerCase();
     const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
-    const decision = decide(candidates, PREFIXES[role], cls, !NAMED_ONLY.has(role));
+    const decision = decide(candidates, PREFIXES[role], cls);
     if (decision.variable || decision.named) return { variable: decision.variable, candidates };
     // No class names any of them: the base style for the property, where
     // snap found no class sets it, and none of the classes it lists sets it
@@ -160,16 +152,15 @@ export class Binder {
 }
 
 /**
- * The one candidate the classes name, or the only candidate where the value
- * alone may bind (`byValue`); `named` says
+ * The one candidate the classes name, or the only candidate; `named` says
  * how many the classes named, so a value two classes name isn't then
  * handed to a default. Where they name several, the one a `dark:` class
  * names, alone: it has the light value measured, and is the token the dark
  * theme paints, so its variable is right in both modes, as an outline
  * button's `border-border dark:border-input` border is `input`.
  */
-function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined, byValue = true): { variable: string | null; named: number } {
-  if (byValue && candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
+function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined): { variable: string | null; named: number } {
+  if (candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
   const named = new Set<string>();
   const dark = new Set<string>();
   for (const entry of cls ?? []) {

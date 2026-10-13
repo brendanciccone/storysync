@@ -50,21 +50,6 @@ test("Binder: a value one token has binds without a class; one no token has bind
   assert.deepEqual(binder.color("#123456", "fill", ["bg-primary"]), { variable: null, candidates: [] });
 });
 
-test("Binder: a shadow's color binds only where a ring-* or shadow-* class names its token, never by its value alone", () => {
-  // shadcn/ui's dialog: ring-1 ring-foreground/10, measured #0a0a0a1a.
-  const binder = new Binder(SHADCN_TOKENS);
-  assert.deepEqual(binder.color("#0a0a0a1a", "effect", ["bg-background", "ring-foreground", "rounded-xl"]), {
-    variable: "foreground", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"],
-  });
-  assert.equal(binder.color("#171717", "effect", ["shadow-primary"]).variable, "primary");
-  // A fill's class names no shadow's token, and a value one token has
-  // binds a stroke without a class, but no shadow: Tailwind's shadow scale
-  // draws in a black no token was set from.
-  assert.equal(binder.color("#0a0a0a1a", "effect", ["text-foreground"]).variable, null);
-  assert.deepEqual(binder.color("#a1a1a1", "effect", undefined), { variable: null, candidates: ["ring"] });
-  assert.equal(binder.color("#a1a1a1", "effect", ["ring-ring"]).variable, "ring");
-});
-
 test("Binder: radius binds by rounded-* among the radius tokens of its value, a side prefix allowed", () => {
   const binder = new Binder(SHADCN_TOKENS);
   assert.equal(binder.radius(10, ["rounded-lg"]).variable, "lg");
