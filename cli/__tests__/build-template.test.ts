@@ -1288,16 +1288,17 @@ test("drawnInSet: a group's shapes draw where the frame around the group puts th
 });
 
 test("build: the set's grid gives room to an outside stroke and a layer blur, which draw past a box too", async () => {
-  // A badge over the corner with a 30px border it keeps its fill inside,
-  // built as a frame its fill's size with an OUTSIDE stroke, and an icon
-  // blurred by 40px: each draws further past its frame than GAP, so laid
-  // out by boxes and shadows alone, the variants drew over each other.
+  // A badge over the corner with a 30px translucent border it keeps its
+  // fill inside, built as a frame its fill's size with an OUTSIDE stroke,
+  // and an icon blurred by 40px: each draws further past its frame than
+  // GAP, so laid out by boxes and shadows alone, the variants drew over
+  // each other.
   const fixture = copy(loadTreeFixture("button-icon"));
   const c = fixture.components[0];
   c.variantProperties = [{ name: "look", type: "VARIANT", values: ["plain", "ring", "blur"], defaultValue: "plain" }];
   const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
   const keys = c.tree!.base.map((n) => n.k);
-  const ring = { k: "ring", t: "F", el: "span", box: [150, -40, 100, 110], abs: 1, bg: "#ffffff", bgc: "padding-box", bd: { w: 30, s: "solid", c: "#ff0000" } };
+  const ring = { k: "ring", t: "F", el: "span", box: [150, -40, 100, 110], abs: 1, bg: "#ffffff", bgc: "padding-box", bd: { w: 30, s: "solid", c: "#ff000080" } };
   Object.assign(c.base!, { combination: { look: "plain" }, slug: "look-plain" });
   c.variants = [
     { ...base, combination: { look: "plain" }, slug: "look-plain" },
@@ -1309,6 +1310,8 @@ test("build: the set's grid gives room to an outside stroke and a layer blur, wh
   const set = mock.nodes("COMPONENT_SET")[0];
   const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
   const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
+  const badge = mock.handle(mock.nodes("FRAME").find((n) => n.data["storysync.k"] === "ring")!.id) as Record<string, number | string>;
+  assert.deepEqual([badge.strokeAlign, badge.strokeWeight, badge.width, badge.height], ["OUTSIDE", 30, 40, 50]);
   // The stroke draws the badge's border box, 40px above the button's and
   // 70 down, the button's frame being its border box, its transparent
   // border built INSIDE; the blur 40px round the icon at 10 down.
