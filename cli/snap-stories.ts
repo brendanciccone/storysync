@@ -14,7 +14,8 @@
 // fit equally, the plainest wins: Toggle's `variant=outline` from Outline,
 // not WithText, which adds a label to it. Every other variant is
 // measured from the component's story, Default or the one `--stories`
-// names. Deterministic: the same stories and combination always pick the
+// names; a story it names ending in `!` measures every variant, none
+// picked here. Deterministic: the same stories and combination always pick the
 // same story.
 
 import type { FigmaVariantProperty } from "./mapper.js";

@@ -1613,6 +1613,27 @@ test("every message a skill's scoring step quotes is one verify prints, as it pr
   }
 });
 
+test("every skill says which story measures each variant, how --stories overrides it, and what to do about content past its box", () => {
+  // The Cursor rule still said --stories measured the whole component, with
+  // nothing of per-variant stories or the overflow warning.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    for (const path of [join(".claude", "skills", "storysync", "SKILL.md"), join(".agents", "skills", "storysync", "SKILL.md"), join(".cursor", "rules", "storysync.mdc")]) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /a variant from another of its stories where that story's own args set the variant's values/, `${path} doesn't say snap picks a story per variant`);
+      assert.match(text, /That story then measures every variant no other story fits/, `${path} says --stories measures the whole component`);
+      assert.match(text, /end it with `!`, in single quotes: `--stories 'ui-base-toggle=ui-base-toggle--default!'`[^\n]*`storyOnly: true`/, `${path} has no way to override a story snap picked`);
+      assert.match(text, /When snap warns that variants draw past their box/, `${path} doesn't say what to do about content past its box`);
+      assert.match(text, /with the story and its `!` where it had one, for an audit/, `${path}'s summary drops the \`!\` an audit needs`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("every audit can score how the sets look, reading Figma and changing nothing in it", () => {
   // The audit compared variant names and token values, so a set with its
   // icon missing or its title misplaced was "in sync". It can now read the
@@ -1634,6 +1655,7 @@ test("every audit can score how the sets look, reading Figma and changing nothin
       assert.match(audit, /npx storysync snap [^`\n]*--variants all[^`\n]*--out \.storysync\/audit\/snaps/, `${path} snaps over the push's snap`);
       // From the story the push measured each component from, which styles.json records.
       assert.match(audit, /the push's `--exclude-props`, and the push's `--stories`[^\n]*`storyId`[^\n]*\.storysync\/snaps\/styles\.json/, `${path} snaps the audit from the default stories, not the push's`);
+      assert.match(audit, /`storyId`[^\n]*ending it with `!` where the component records `storyOnly: true`/, `${path} lets the audit pick stories per variant where the push measured every variant from one`);
       assert.match(audit, /npx storysync figma code --snap \.storysync\/audit\/snaps\/styles\.json --out \.storysync\/audit\/figma/, `${path} writes its calls over the push's`);
       assert.match(audit, /only the plan's `read` calls[^\n]*[Nn]ever[^\n]*`build`, `images` or `label` calls/, `${path} lets the audit send calls that change the file`);
       assert.match(audit, /npx storysync figma next --plan \.storysync\/audit\/figma\/plan\.json/, `${path} never continues a read that stopped`);

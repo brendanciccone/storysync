@@ -1379,3 +1379,21 @@ S10. **Text draws down to its lines, not its content area.** A text's
     and `--strict-warnings` failed. contentOverflow now takes a text's
     extent across from its ink and down from its own box, its lines, which
     the build sets it to.
+S11. **`--stories` with `!` measures every variant from one story**
+    (review of S6, S7). S6 left no way to undo a story snap picked for a
+    variant: `--stories` sets only the component's story, so Toggle's
+    outline variants stayed on WithText whatever it named, and the
+    overflow warning's `--stories` advice couldn't help variants from a
+    picked story. A story ending in `!` (`ui-base-toggle=ui-base-toggle--
+    default!`) now measures every variant, snap reads no stories' args for
+    it, and the component records `storyOnly: true`, which `--merge` keeps
+    and an audit passes back as `!` (the skills' Audit step, the diff
+    command). `--stories` without it still sets only the component's
+    story, so an audit's pairs from styles.json reproduce the push's
+    per-variant picks. describeOverflow now advises by where the variants
+    came from: for the component's story, a story for their values (its
+    example never one they came from) or `--stories`; for a story snap
+    picked, that story given content that fits or `!`; for a component
+    named with `!`, another story or dropping the `!`. The Cursor rule says
+    all of this as the Claude Code and Codex skills do, and setup.test.ts
+    holds all three to it.

@@ -1972,8 +1972,11 @@ test("resolveStoryOverrides: by ID or title; a name two components share is refu
     { id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds: ["ui-base-button--default", "ui-base-button--with-icon"] },
     { id: "ui-radix-button", name: "Button", title: "ui/radix/Button", storyIds: ["ui-radix-button--default"] },
   ];
-  assert.deepEqual([...resolveStoryOverrides(entries, { "ui/radix/button": "ui-radix-button--default" })], [["ui-radix-button", "ui-radix-button--default"]]);
-  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon" })], [["ui-base-button", "ui-base-button--with-icon"]]);
+  assert.deepEqual([...resolveStoryOverrides(entries, { "ui/radix/button": "ui-radix-button--default" })], [["ui-radix-button", { storyId: "ui-radix-button--default" }]]);
+  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon" })], [["ui-base-button", { storyId: "ui-base-button--with-icon" }]]);
+  // A story ending in `!` measures every variant: checked as the story it names.
+  assert.deepEqual([...resolveStoryOverrides(entries, { Button: "ui-base-button--with-icon!" })], [["ui-base-button", { storyId: "ui-base-button--with-icon", only: true }]]);
+  assert.throws(() => resolveStoryOverrides(entries, { "ui-base-button": "ui-base-button--x!" }), /--stories gives ui-base-button the story "ui-base-button--x", which isn't one of its stories/);
   assert.throws(() => resolveStoryOverrides(entries, { Button: "ui-x--y" }), /--stories names "Button", which is 2 components \(ui-base-button, ui-radix-button\)/);
   assert.equal(resolveStoryOverrides(entries, undefined).size, 0);
 });
@@ -1986,7 +1989,7 @@ test("resolveStoryOverrides: a pair for a component Storybook has and the run do
   // A push's pairs, given to a re-measure of the Switch alone.
   const measured = [listed[1]];
   assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon" }, listed)], []);
-  assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon", Switch: "ui-base-switch--default" }, listed)], [["ui-base-switch", "ui-base-switch--default"]]);
+  assert.deepEqual([...resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--with-icon", Switch: "ui-base-switch--default" }, listed)], [["ui-base-switch", { storyId: "ui-base-switch--default" }]]);
   // Still a typo when it names no component Storybook has, or a story not the component's.
   assert.throws(() => resolveStoryOverrides(measured, { Nope: "nope--x" }, listed), /--stories names "Nope", which is none of the components being measured \(ui-base-switch\)/);
   assert.throws(() => resolveStoryOverrides(measured, { "ui-base-button": "ui-base-button--x" }, listed), /--stories gives ui-base-button the story "ui-base-button--x", which isn't one of its stories/);
@@ -2332,6 +2335,30 @@ test("runSnap: where the stories' args can't be read, every variant is measured 
   }
 });
 
+test("runSnap: a story --stories names ending in ! measures every variant, recorded as storyOnly, which --merge keeps", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf: BUTTON_CSF });
+    const progress: string[] = [];
+    const run = (more: Partial<SnapOptions>) => runSnap(options(dir, { selector: "button", ...more }), { storybook: buttonDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [button] = (await run({ stories: { "ui-base-button": "ui-base-button--default!" } })).components;
+    assert.equal(button.storyId, "ui-base-button--default");
+    assert.equal(button.storyOnly, true);
+    // The icon size from Default too, its label spilling out, though Icon is for it.
+    assert.ok(button.variants.every((v) => v.storyId === undefined));
+    assert.equal(button.variants[1].boundingBox!.width, 36);
+    assert.match(button.warnings.join("\n"), /--stories names ui-base-button--default with `!`, for every variant: name another story, or drop the `!`/);
+    assert.equal((readJson(join(dir, "styles.json")) as { components: { storyOnly?: true }[] }).components[0].storyOnly, true);
+    // A re-measure keeps it; --stories without `!` drops it.
+    const kept = (await run({ merge: true, components: ["ui-base-button"] })).components[0];
+    assert.deepEqual([kept.storyId, kept.storyOnly, kept.variants[1].storyId], ["ui-base-button--default", true, undefined]);
+    const picked = (await run({ merge: true, components: ["ui-base-button"], stories: { "ui-base-button": "ui-base-button--default" } })).components[0];
+    assert.deepEqual([picked.storyOnly, picked.variants[1].storyId], [undefined, "ui-base-button--icon"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /** A tree node, with only what contentOverflow reads. */
 const node = (k: string, box: [number, number, number, number], extra: Partial<TreeNode> = {}): TreeNode =>
   ({ k, t: "F", el: k ? k.split("/").pop()! : "button", box, bg: "#000000", ...extra }) as TreeNode;
@@ -2397,11 +2424,24 @@ test("describeOverflow: the variants by the values they share, how far, and the 
   const said = describeOverflow(component, [over(variant("icon-xs", "default"), 6.5), over(variant("icon-xs", "secondary"), 6)], 6, { own, properties });
   assert.equal(said,
     "the 2 variants with `size=icon-xs` draw past their box, by up to 6.5px at the right and left (`#text`), so Figma shows them spilling out: " +
-    "ui-base-button--default gives them content that doesn't fit. A story whose own args set size=icon-xs and give it content that fits, " +
+    "ui-base-button--default gives them content that doesn't fit. A story whose own args set size=icon-xs and give them content that fits, " +
     "as ui-base-button--icon is for `size=icon`, would measure them; snap picks such a story by itself. " +
     "Or measure the component from another of its stories, with --stories ui-base-button=<story ID>.");
   // Every variant, or some sharing nothing: by slug, and the story each was measured from.
   const all = describeOverflow(component, [over(variant("default", "default"), 2), over(variant("icon", "secondary", "ui-base-button--icon"), 3)], 2, null)!;
-  assert.match(all, /^all 2 variants draw past their box, by up to 3px .* ui-base-button--default and ui-base-button--icon give them content that doesn't fit\. Or measure/);
+  assert.match(all, /^all 2 variants draw past their box, by up to 3px .* ui-base-button--default and ui-base-button--icon give them content that doesn't fit\. Measure the component from another of its stories instead, with --stories ui-base-button=<story ID>\. ui-base-button--icon is the story snap picked for some of their values: give it content that fits, or measure every variant from one story, ending it with `!`: --stories ui-base-button=<story ID>!\.$/);
   assert.equal(describeOverflow(component, [], 6, null), null);
+  // Variants from the story snap picked for them: --stories alone, which sets the component's story, can't help, and the story itself is no example.
+  const picked = describeOverflow(component, [over(variant("icon", "default", "ui-base-button--icon"), 4), over(variant("icon", "secondary", "ui-base-button--icon"), 4)], 6, { own, properties })!;
+  assert.equal(picked,
+    "the 2 variants with `size=icon` draw past their box, by up to 4px at the right and left (`#text`), so Figma shows them spilling out: " +
+    "ui-base-button--icon gives them content that doesn't fit. ui-base-button--icon is the story snap picked for their values: give it content that fits, " +
+    "or measure every variant from one story, ending it with `!`: --stories ui-base-button=<story ID>!.");
+  assert.doesNotMatch(picked, /snap picks such a story by itself|as ui-base-button--icon is for/);
+  // Variants from the component's story that is the only story for another value: no example from the stories they came from.
+  const fromIcon = describeOverflow({ ...component, storyId: "ui-base-button--icon" }, [over(variant("icon-xs", "default"), 3)], 6, { own, properties })!;
+  assert.doesNotMatch(fromIcon, /as ui-base-button--icon is for/);
+  // A component --stories named with `!`: drop it, or name another.
+  const only = describeOverflow({ ...component, storyId: "ui-base-button--icon", storyOnly: true }, [over(variant("default", "default"), 3)], 6, { own, properties })!;
+  assert.match(only, /ui-base-button--icon gives it content that doesn't fit\. --stories names ui-base-button--icon with `!`, for every variant: name another story, or drop the `!` so snap measures a variant from a story that is for its values\.$/);
 });

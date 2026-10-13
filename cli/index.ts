@@ -253,7 +253,7 @@ const collect = (value: string, previous: string[] = []): string[] => [...previo
 
 /**
  * Parses --stories: `component=storyId` pairs, comma-separated or given as
- * the flag more than once. Which component each names, and whether the
+ * the flag more than once, a story ending in `!` kept so. Which component each names, and whether the
  * story is one of its own, runSnap checks against Storybook's list
  * (resolveStoryOverrides) before anything is measured; this refuses what
  * can't be a pair at all, before connecting, rather than measuring the
@@ -267,7 +267,8 @@ function parseStories(values: string[] | undefined): Record<string, string> | un
     const at = pair.indexOf("=");
     const name = pair.slice(0, at).trim();
     const story = pair.slice(at + 1).trim();
-    if (at < 0 || !name || !story || story.includes("=")) {
+    // A story may end in `!`, to measure every variant from it.
+    if (at < 0 || !name || !story.replace(/!$/, "").trim() || story.includes("=") || story.slice(0, -1).includes("!")) {
       throw new Error(`--stories takes component=storyId pairs, such as ui-base-button=ui-base-button--with-icon, received "${pair}"`);
     }
     if (seen.has(name.toLowerCase())) throw new Error(`--stories names "${name}" twice: give each component one story`);
@@ -415,7 +416,7 @@ program
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
   .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
-  .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the component's story, in place of the one snap picks, which measures every variant no other story's own args are for; a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
+  .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the component's story, in place of the one snap picks, which measures every variant no other story's own args are for, or every variant where the story ends in ! (ui-base-toggle=ui-base-toggle--default!); a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or component could not be measured, none were, a variant's args could not be checked, or a component was capped")
   .option("--strict-warnings", "Implies --strict, and also fails on warnings such as variants measuring identically")

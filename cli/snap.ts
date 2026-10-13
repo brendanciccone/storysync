@@ -71,7 +71,8 @@ export interface SnapOptions {
    * The component's story, by the component's ID or title, in place of the
    * one snap picks (`--stories ui-base-button=ui-base-button--with-icon`):
    * each variant is measured from it, except one another of the
-   * component's stories is for (snap-stories.ts).
+   * component's stories is for (snap-stories.ts). A story ending in `!`
+   * measures every variant, no story chosen for any.
    */
   stories?: Record<string, string>;
 }
@@ -155,6 +156,12 @@ export interface SnapComponent {
   title?: string;
   category?: string;
   storyId: string | null;
+  /**
+   * Every variant was measured from `storyId`, as `--stories` named it
+   * ending in `!`: no story was chosen for any variant (snap-stories.ts).
+   * An audit names it so again.
+   */
+  storyOnly?: true;
   variantProperties: FigmaVariantProperty[];
   /** Full styles for the reference combination; deltas are relative to this. */
   base: { combination: Record<string, string>; slug: string; styles: NormalizedStyles } | null;
@@ -674,14 +681,19 @@ export function contentOverflow(nodes: readonly TreeNode[]): ContentOverflow | n
 /**
  * Warning for a component some of whose variants draw past their box, or
  * null: the variants, by the values they share where they share any, how
- * far, and the story to measure them from instead. `stories`, the
+ * far, the stories they were measured from, and what would measure them
+ * with content that fits. For variants from the component's story, a story
+ * of their values would, which snap picks by itself: `stories`, the
  * component's stories' own annotations where snap read them, names one
- * that draws something of its own for another value of the same property,
- * as Icon is for `size=icon`, so the user can see what such a story looks
- * like.
+ * that is for another value of the same property, as Icon is for
+ * `size=icon`, so the user can see what such a story looks like; or
+ * `--stories` names another component's story. For variants from a story
+ * snap picked for their values, `--stories` with `!` measures every variant
+ * from one story; for a component `--stories` named with `!`, dropping it
+ * lets snap pick.
  */
 export function describeOverflow(
-  component: { id: string; label: string; storyId: string },
+  component: { id: string; label: string; storyId: string; storyOnly?: boolean },
   over: { variant: SnapVariant; overflow: ContentOverflow }[],
   measured: number,
   stories: { own: StoryOwn[]; properties: FigmaVariantProperty[] } | null,
@@ -693,32 +705,51 @@ export function describeOverflow(
   const which = shared.length && over.length < measured
     ? `the ${over.length === 1 ? "variant" : `${over.length} variants`} with ${shared.map(([n, v]) => `\`${n}=${v}\``).join(" ")}`
     : over.length === measured ? (measured === 1 ? "the variant" : `all ${measured} variants`) : `${over.length} of ${measured} variants (${nameSlugs(over.map((o) => o.variant.slug))})`;
+  const one = over.length === 1;
+  const them = one ? "it" : "them";
   const by = Math.max(...over.map((o) => o.overflow.by));
   const sides = ["top", "right", "bottom", "left"].filter((side) => over.some((o) => o.overflow.sides.includes(side as ContentOverflow["sides"][number])));
   const elements = [...new Set(over.flatMap((o) => o.overflow.elements))].slice(0, 3).map((el) => `\`${el}\``).join(", ");
   const from = [...new Set(over.map((o) => o.variant.storyId ?? component.storyId))];
-  // A story that is for another value of a property these share.
-  let example = "";
-  if (stories) {
-    const keys = storyKeys(stories.own, stories.properties);
-    for (const story of stories.own) {
-      const key = Object.entries(keys.get(story.id) ?? {});
-      if (story.play || !storyAddsContent(story, stories.properties)) continue;
-      if (key.length && shared.some(([name]) => key.some(([k]) => k === name))) {
-        example = `, as ${story.id} is for ${key.map(([n, v]) => `\`${n}=${v}\``).join(" ")},`;
-        break;
+  const fromComponent = over.some((o) => !o.variant.storyId);
+  const picked = [...new Set(over.flatMap((o) => (o.variant.storyId ? [o.variant.storyId] : [])))];
+  const pairs = `--stories ${component.id}=<story ID>`;
+  let advice: string;
+  if (component.storyOnly) {
+    advice = `--stories names ${component.storyId} with \`!\`, for every variant: name another story, or drop the \`!\` so snap measures a variant from a story that is for its values.`;
+  } else {
+    // A story that is for another value of a property these share, and isn't one they came from.
+    let example = "";
+    if (stories && fromComponent) {
+      const keys = storyKeys(stories.own, stories.properties);
+      for (const story of stories.own) {
+        const key = Object.entries(keys.get(story.id) ?? {});
+        if (story.play || from.includes(story.id) || !storyAddsContent(story, stories.properties)) continue;
+        if (key.length && shared.some(([name]) => key.some(([k]) => k === name))) {
+          example = `, as ${story.id} is for ${key.map(([n, v]) => `\`${n}=${v}\``).join(" ")},`;
+          break;
+        }
       }
     }
+    const values = shared.length && over.length < measured ? shared.map(([n, v]) => `${n}=${v}`).join(" ") : null;
+    const parts: string[] = [];
+    if (fromComponent && values) {
+      parts.push(`A story whose own args set ${values} and give ${them} content that fits${example} would measure ${them}; snap picks such a story by itself.`);
+    }
+    if (fromComponent) parts.push(`${parts.length ? "Or measure the component from another of its stories" : "Measure the component from another of its stories instead"}, with ${pairs}.`);
+    if (picked.length) {
+      const story = picked.length === 1 ? `${picked[0]} is the story` : `${picked.join(" and ")} are the stories`;
+      parts.push(
+        `${story} snap picked for ${picked.length === 1 && !fromComponent ? `${one ? "its" : "their"} values` : "some of their values"}: ` +
+        `give ${picked.length === 1 ? "it" : "them"} content that fits, or measure every variant from one story, ending it with \`!\`: ${pairs}!.`,
+      );
+    }
+    advice = parts.join(" ");
   }
-  const values = shared.length && over.length < measured ? shared.map(([n, v]) => `${n}=${v}`).join(" ") : null;
   return (
-    `${which} ${over.length === 1 ? "draws" : "draw"} past ${over.length === 1 ? "its" : "their"} box, by up to ${by}px at the ${sides.join(" and ")} ` +
-    `(${elements}), so Figma shows ${over.length === 1 ? "it" : "them"} spilling out: ${from.join(" and ")} ${from.length === 1 ? "gives" : "give"} ` +
-    `${over.length === 1 ? "it" : "them"} content that doesn't fit. ` +
-    (values
-      ? `A story whose own args set ${values} and give it content that fits${example} would measure ${over.length === 1 ? "it" : "them"}; snap picks such a story by itself. `
-      : "") +
-    `Or measure the component from another of its stories, with --stories ${component.id}=<story ID>.`
+    `${which} ${one ? "draws" : "draw"} past ${one ? "its" : "their"} box, by up to ${by}px at the ${sides.join(" and ")} ` +
+    `(${elements}), so Figma shows ${them} spilling out: ${from.join(" and ")} ${from.length === 1 ? "gives" : "give"} ` +
+    `${them} content that doesn't fit. ${advice}`
   );
 }
 
@@ -1111,19 +1142,28 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
   return { result, meta };
 }
 
+/** The story `--stories` names for a component, and whether it measures every variant (`!`). */
+export interface StoryOverride {
+  storyId: string;
+  /** Every variant from the story, none from a story snap picks for it: the story ended in `!`. */
+  only?: true;
+}
+
 /**
  * The story `--stories` names for each component it names, by the
- * component's ID: refused before anything is measured when a name matches
+ * component's ID, and whether it ended in `!`: refused before anything is measured when a name matches
  * no component Storybook lists (`listed`), or several, or the story isn't
  * one of the component's, so a typo isn't measured as the default story.
  * A pair for a component Storybook has that this run doesn't measure,
  * under `--components`, is checked the same way and left out: a push
  * passes the same pairs to every snap, re-measures of a few included.
  */
-export function resolveStoryOverrides(entries: readonly ComponentEntry[], stories: Record<string, string> | undefined, listed: readonly ComponentEntry[] = entries): Map<string, string> {
-  const out = new Map<string, string>();
+export function resolveStoryOverrides(entries: readonly ComponentEntry[], stories: Record<string, string> | undefined, listed: readonly ComponentEntry[] = entries): Map<string, StoryOverride> {
+  const out = new Map<string, StoryOverride>();
   const measured = new Set(entries.map((e) => e.id));
-  for (const [name, storyId] of Object.entries(stories ?? {})) {
+  for (const [name, given] of Object.entries(stories ?? {})) {
+    const only = given.trim().endsWith("!");
+    const storyId = only ? given.trim().slice(0, -1) : given;
     const key = name.trim().toLowerCase();
     const exact = listed.filter((e) => e.id.toLowerCase() === key || e.title?.toLowerCase() === key);
     const named = exact.length ? exact : listed.filter((e) => e.name.toLowerCase() === key || e.title?.split("/").pop()?.toLowerCase() === key);
@@ -1140,7 +1180,7 @@ export function resolveStoryOverrides(entries: readonly ComponentEntry[], storie
     if (entry.storyIds?.length && !entry.storyIds.includes(story)) {
       throw new Error(`--stories gives ${entry.id} the story "${story}", which isn't one of its stories: ${entry.storyIds.join(", ")}.`);
     }
-    if (measured.has(entry.id)) out.set(entry.id, story);
+    if (measured.has(entry.id)) out.set(entry.id, { storyId: story, ...(only ? { only: true as const } : {}) });
   }
   return out;
 }
@@ -1160,8 +1200,10 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   // from where --stories names none, so a re-measure of a push that chose
   // another story doesn't switch it back to the default.
   for (const entry of earlier ? entries : []) {
-    const was = earlier!.result.components.find((c) => (c.id ?? componentKey(c)) === entry.id)?.storyId;
-    if (!stories.has(entry.id) && was && entry.storyIds?.includes(was)) stories.set(entry.id, was);
+    const was = earlier!.result.components.find((c) => (c.id ?? componentKey(c)) === entry.id);
+    if (!stories.has(entry.id) && was?.storyId && entry.storyIds?.includes(was.storyId)) {
+      stories.set(entry.id, { storyId: was.storyId, ...(was.storyOnly ? { only: true as const } : {}) });
+    }
   }
   let browserVersion: string | undefined;
 
@@ -1374,7 +1416,7 @@ async function snapComponent(
   progress: (m: string) => void,
   checkpoint: () => void,
   stage: ScreenshotStage,
-  storyOverride?: string,
+  storyOverride?: StoryOverride,
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     id: entry.id,
@@ -1400,9 +1442,10 @@ async function snapComponent(
 
   const maxCombinations = opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS;
   let definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), maxCombinations);
-  const storyId = storyOverride ?? pickStory(entry.storyIds, component);
+  const storyId = storyOverride?.storyId ?? pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;
+  if (storyOverride?.only) shell.storyOnly = true;
 
   if (!storyId) {
     shell.error = "no stories found for this component";
@@ -1453,7 +1496,7 @@ async function snapComponent(
   // the story each variant is measured from: null where there is one story
   // or they can't be read.
   const storyIds = entry.storyIds?.length ? entry.storyIds : component.stories.map((s) => s.id);
-  let owns: StoryOwn[] | null | undefined = storyIds.length > 1 ? undefined : null;
+  let owns: StoryOwn[] | null | undefined = storyIds.length > 1 && !storyOverride?.only ? undefined : null;
   let ownsError: string | undefined;
   try {
     checkpoint();
@@ -1691,7 +1734,7 @@ async function snapComponent(
     return overflow ? [{ variant, overflow }] : [];
   });
   const overflowWarning = describeOverflow(
-    { id: entry.id, label, storyId }, overflowed, measured, owns ? { own: owns, properties: definition.variantProperties } : null,
+    { id: entry.id, label, storyId, storyOnly: shell.storyOnly }, overflowed, measured, owns ? { own: owns, properties: definition.variantProperties } : null,
   );
   if (overflowWarning) shell.warnings.push(overflowWarning);
 
