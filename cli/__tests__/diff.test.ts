@@ -142,6 +142,16 @@ test("figmaCollectionToCategory: unknown name lowercased", () => {
 
 // --- diffTokens ---
 
+test("diffTokens: an earlier push's radius DEFAULT that repeats a step is not missing from code; one that doesn't is", () => {
+  // tokens leaves out shadcn/ui's --radius as DEFAULT, since --radius-lg is it.
+  const code: TokenCollection[] = [{ category: "radius", tokens: [{ name: "sm", value: "calc(0.625rem - 4px)", px: 6 }, { name: "lg", value: "0.625rem", px: 10 }] }];
+  const radius = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Radius", resolvedType: "FLOAT", mode: "Mode 1" });
+  const repeated = diffTokens(code, [radius("DEFAULT", "10"), radius("sm", "6"), radius("lg", "10")]);
+  assert.deepEqual(repeated.map((e) => [e.name, e.status]), [["sm", "match"], ["lg", "match"]]);
+  const own = diffTokens(code, [radius("DEFAULT", "4"), radius("sm", "6"), radius("lg", "10")]);
+  assert.deepEqual(own.map((e) => [e.name, e.status]), [["sm", "match"], ["lg", "match"], ["DEFAULT", "missing_from_code"]]);
+});
+
 test("diffTokens: matching color in different formats", () => {
   const code: TokenCollection[] = [
     { category: "colors", tokens: [{ name: "primary/500", value: "rgb(59, 130, 246)" }] },

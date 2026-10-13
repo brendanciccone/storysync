@@ -615,7 +615,25 @@ const APPLY_STYLES = `const applyStyles = async (variant, styles) => {
       variant.resize(styles.width, styles.height);
     };`;
 
-test("templates: the skill's Tokens step 3 makes a collection in Light and Dark, and the Audit's read gives each mode", async () => {
+test("mock: a variable's scopes are ALL_SCOPES until set, and Figma's for its type only", async () => {
+  const figma = new MockFigma();
+  const make = (type: string, scopes: string) => `const c = figma.variables.createVariableCollection('C${type}${scopes.length}');
+const v = figma.variables.createVariable('x', c, '${type}');
+const was = v.scopes;
+v.scopes = ${scopes};
+return JSON.stringify([was, (await figma.variables.getVariableByIdAsync(v.id)).scopes]);`;
+  assert.deepEqual(JSON.parse((await ok(figma, make("FLOAT", "['CORNER_RADIUS']"))) as string), [["ALL_SCOPES"], ["CORNER_RADIUS"]]);
+  for (const [type, scopes, error] of [
+    ["COLOR", "['CORNER_RADIUS']", /CORNER_RADIUS is not a scope of a COLOR variable/],
+    ["COLOR", "['ALL_FILLS', 'TEXT_FILL']", /ALL_FILLS takes no other fill scope/],
+  ] as const) {
+    const run = await figma.run(make(type, scopes));
+    assert.equal(run.ok, false);
+    assert.match(run.text, error);
+  }
+});
+
+test("templates: the skill's Tokens step 3 makes a collection in Light and Dark, scoped, and the Audit's read gives each mode", async () => {
   // tokens gives a dark value, and the push makes it a Dark mode beside
   // Light; a token without one keeps its light value there.
   const blocks = skillBlocks();
@@ -631,6 +649,15 @@ test("templates: the skill's Tokens step 3 makes a collection in Light and Dark,
     { name: "primary", type: "COLOR", value: "#171717", collection: "Colors", modes: { Light: "#171717", Dark: "#e5e5e5" } },
     { name: "chart/1", type: "COLOR", value: "#3b82f6", collection: "Colors", modes: { Light: "#3b82f6", Dark: "#3b82f6" } },
   ] });
+
+  // Each variable in the color pickers alone, not in every picker as ALL_SCOPES puts it.
+  const scopes = JSON.parse((await ok(figma, "return JSON.stringify((await figma.variables.getLocalVariablesAsync()).map((v) => v.scopes));")) as string);
+  assert.deepEqual(scopes, Array(3).fill(["ALL_FILLS", "STROKE_COLOR", "EFFECT_COLOR"]));
+  // A collection with no dark value: one mode, named, not Figma's "Mode 1".
+  const single = new MockFigma();
+  const lightCode = create[0].code.replace(/, dark: \{ hex: '#[0-9a-f]+' \}/g, "");
+  assert.notEqual(lightCode, create[0].code);
+  assert.deepEqual(JSON.parse((await ok(single, lightCode)) as string), { collection: "Colors", modes: ["Default"], variables: 3, darkError: null });
 
   // A plan of one mode: Light alone, and the error to tell the user.
   const free = new MockFigma({ maxModes: 1 });

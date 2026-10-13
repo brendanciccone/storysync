@@ -64,12 +64,35 @@ export interface TokenExtractionResult {
   collections: TokenCollection[];
   warnings: string[];
   /**
-   * The Figma variable modes the tokens fill: `["Light", "Dark"]` when a
-   * token has a `dark` value, else `["Light"]`. extractTokens always sets
-   * it, so a baseline that has it was written by a storysync that reads the
-   * dark theme, and `--check` compares dark values only against one that has.
+   * The Figma variable modes the tokens fill, as the skill names them:
+   * `["Light", "Dark"]` when a token has a `dark` value, else `["Default"]`
+   * (`["Light"]` in a baseline an earlier build wrote). extractTokens
+   * always sets it, so a baseline that has it, either way, was written by a
+   * storysync that reads the dark theme, and `--check` compares dark values
+   * only against one that has.
    */
   modes?: string[];
+  /**
+   * The color tokens the project's base styles give an element no class
+   * colors (baseDefaults): absent when they give none a token names.
+   * `figma code` binds a value several tokens share by them, and `--check`
+   * doesn't compare them.
+   */
+  defaults?: BaseDefault[];
+}
+
+/**
+ * A color the project's base styles set for every element, as shadcn/ui's
+ * `@layer base { * { @apply border-border } body { @apply text-foreground } }`
+ * does: a text inherits `color` from `body`, and a border takes its color
+ * from `*`, with no class on the element to say so.
+ */
+export interface BaseDefault {
+  property: "color" | "border-color" | "outline-color";
+  /** The color token it is, by name. */
+  token: string;
+  /** The rule that sets it, as written, after its file: `app/globals.css, @layer base: body { @apply text-foreground }`. */
+  from: string;
 }
 
 /**
@@ -333,8 +356,120 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
       return out;
     });
   }
+  result.collections = withoutRepeatedDefault(result.collections);
   const hasDark = result.collections.some((c) => c.tokens.some((t) => t.dark));
-  return { ...result, modes: hasDark ? ["Light", "Dark"] : ["Light"] };
+  const colors = result.collections.filter((c) => c.category === "colors").flatMap((c) => c.tokens.map((t) => t.name));
+  const defaults = colors.length ? baseDefaults(projectPath, colors) : [];
+  return { ...result, modes: hasDark ? ["Light", "Dark"] : ["Default"], ...(defaults.length ? { defaults } : {}) };
+}
+
+/**
+ * The collections less a radius `DEFAULT` that only repeats another radius
+ * step, in every mode. shadcn/ui's `:root` holds `--radius`, read as radius
+ * `DEFAULT`, and its `@theme inline` sets `--radius-lg: var(--radius)`: the
+ * push made two variables of one value, and a 10px corner, bound by value
+ * alone, matched both and stayed unbound. A baseline or a Figma file from
+ * before still has it: `--check` and diff read theirs through this too.
+ */
+export function withoutRepeatedDefault<T extends Pick<TokenCollection, "category" | "tokens">>(collections: T[]): T[] {
+  const radii = collections.filter((c) => c.category === "radius").flatMap((c) => c.tokens);
+  const length = (v: { value: string; px?: number } | undefined) => (v === undefined ? undefined : v.px ?? lengthToPx(v.value) ?? v.value.trim());
+  const repeats = (a: TokenValue, b: TokenValue) => length(a) === length(b) && length(a.dark) === length(b.dark);
+  const repeated = (t: TokenValue) => t.name === "DEFAULT" && radii.some((other) => other.name !== "DEFAULT" && repeats(t, other));
+  if (!radii.some(repeated)) return collections;
+  return collections.map((c) => (c.category === "radius" ? { ...c, tokens: c.tokens.filter((t) => !repeated(t)) } : c));
+}
+
+/** The class form of a token's name, as Tailwind writes it in a utility: `card/foreground` is `card-foreground`, and a `DEFAULT` key is unnamed, so `primary/DEFAULT` is `primary`. */
+export function tokenClassName(name: string): string {
+  return name.toLowerCase().replace(/\/default$/, "").replace(/\//g, "-");
+}
+
+// --- Base styles ---
+
+/**
+ * How near an element a selector in a list sets its color, or Infinity: `*`
+ * sets it on the element itself, and `body` hands it down nearer than the
+ * root does.
+ */
+function colorRank(selector: string): number {
+  if (selector === "*") return 0;
+  if (/^body$/i.test(selector)) return 1;
+  if (ROOT_SELECTOR.test(selector) || /^:host$/i.test(selector)) return 2;
+  return /^html$/i.test(selector) ? 3 : Infinity;
+}
+
+/** The utilities and properties that set each default, and how a utility names its token. */
+const DEFAULT_UTILITIES: [RegExp, BaseDefault["property"]][] = [[/^text-(.+)$/, "color"], [/^border-(.+)$/, "border-color"], [/^outline-(.+)$/, "outline-color"]];
+const DEFAULT_PROPERTIES: Record<string, BaseDefault["property"]> = {
+  color: "color", "border-color": "border-color", border: "border-color", "outline-color": "outline-color", outline: "outline-color",
+};
+
+/**
+ * The color tokens the project's base styles set for every element: `color`
+ * from a `*`, `body` or root rule, which a text inherits where no class
+ * colors it nearer, and `border-color` and `outline-color` from a `*` rule.
+ * Rules in `@layer base` or in no layer count, in the stylesheets of the
+ * project, by `@apply text-foreground` or `color: var(--foreground)`. A
+ * later rule wins one as near, and a value no token names (`color: red`,
+ * or the `border: 0 solid` that resets it) ends what an earlier one set. A
+ * property the stylesheets set to different tokens is left out, as is one
+ * they set to none: shadcn/ui's `#0a0a0a` is four tokens, and a guess among
+ * them would be wrong in Dark mode.
+ */
+export function baseDefaults(projectPath: string, colorNames: string[]): BaseDefault[] {
+  const byClass = new Map(colorNames.map((name) => [tokenClassName(name), name]));
+  const tokenOf = (value: string): string | null => {
+    const ref = /var\(\s*--([\w-]+)/.exec(value)?.[1] ?? /theme\(\s*['"]?(?:colors\.|--color-)([\w.-]+)/.exec(value)?.[1]?.replace(/\./g, "-");
+    if (!ref) return null;
+    return byClass.get(ref.toLowerCase()) ?? byClass.get(ref.toLowerCase().replace(/^colors?-/, "")) ?? null;
+  };
+  const found = new Map<BaseDefault["property"], { tokens: Set<string>; first?: BaseDefault }>();
+  for (const file of findCSS(projectPath, (css) => /@apply|color|border|outline/.test(css))) {
+    // Per file, what each property is, nearest selector first, later rules winning.
+    const set = new Map<BaseDefault["property"], { rank: number; token: string | null; from: string }>();
+    const rules = styleRules(readCss(file)).filter((rule) => !rule.nested && rule.atRules.every((at) => /^@layer\s+base$/i.test(at)));
+    // Unlayered rules override the base layer's, whatever their order.
+    for (const rule of [...rules.filter((r) => r.atRules.length), ...rules.filter((r) => !r.atRules.length)]) {
+      const selectors = splitTopLevel(rule.selector, ",").map((s) => s.trim());
+      const nearest = Math.min(...selectors.map(colorRank));
+      const universal = selectors.includes("*");
+      if (nearest === Infinity) continue;
+      const where = `${relative(projectPath, file).split("\\").join("/")}${rule.atRules.length ? `, ${rule.atRules.join(" ")}` : ""}`;
+      const put = (property: BaseDefault["property"], token: string | null, declaration: string) => {
+        const rank = property === "color" ? nearest : universal ? 0 : Infinity;
+        if (rank === Infinity) return;
+        const was = set.get(property);
+        if (was && was.rank < rank) return;
+        set.set(property, { rank, token, from: `${where}: ${rule.selector.trim()} { ${declaration} }` });
+      };
+      for (const raw of splitTopLevel(rule.declarations, ";")) {
+        const declaration = raw.trim().replace(/\s+/g, " ");
+        if (declaration.startsWith("@apply ")) {
+          for (const utility of declaration.slice(7).split(" ")) {
+            // A variant applies it only sometimes (`dark:`, `hover:`).
+            if (!utility || utility.includes(":") || utility === "!important") continue;
+            const name = utility.replace(/^!|!$/g, "").replace(/\/[^/]*$/, "");
+            for (const [re, property] of DEFAULT_UTILITIES) {
+              const token = byClass.get(re.exec(name)?.[1] ?? "");
+              if (token) put(property, token, declaration);
+            }
+          }
+          continue;
+        }
+        const colon = declaration.indexOf(":");
+        const property = DEFAULT_PROPERTIES[declaration.slice(0, colon).trim().toLowerCase()];
+        if (colon > 0 && property) put(property, tokenOf(declaration.slice(colon + 1)), declaration);
+      }
+    }
+    for (const [property, { token, from }] of set) {
+      const entry = found.get(property) ?? { tokens: new Set<string>() };
+      entry.tokens.add(token ?? "");
+      if (token && !entry.first) entry.first = { property, token, from };
+      found.set(property, entry);
+    }
+  }
+  return [...found.values()].filter((e) => e.tokens.size === 1 && e.first).map((e) => e.first!);
 }
 
 /** A resolved value's `hex`, for a color, or `px`, for a length, when it has one. */
@@ -2108,8 +2243,10 @@ export function compareTokens(baseline: TokenBaseline, current: TokenExtractionR
   const darkChecked = Array.isArray(baseline.modes);
   if (!darkChecked && current.collections.some((c) => c.tokens.some((t) => t.dark))) drift.darkNotChecked = true;
 
-  const baseMap = tokensByCategory(baseline.collections);
-  const currMap = tokensByCategory(current.collections);
+  // A baseline from before holds a radius DEFAULT that repeats a step,
+  // which extraction now leaves out: neither side compares it.
+  const baseMap = tokensByCategory(withoutRepeatedDefault(baseline.collections));
+  const currMap = tokensByCategory(withoutRepeatedDefault(current.collections));
 
   // Find added and changed
   for (const [category, currTokens] of currMap) {

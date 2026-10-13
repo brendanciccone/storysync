@@ -20,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
+import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 import { drawnInSet, withConstant } from "./figma-build-harness.js";
@@ -875,6 +875,25 @@ test("verify --roots-only: scores each variant's outer element alone, as 0.4.0 d
 });
 
 // --- figma code and upload ----------------------------------------------------
+
+test("figma code: prints each value the base styles bound, with the rule, and lists them under --json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-tree-e2e-"));
+  try {
+    const snapPath = join(dir, "styles.json");
+    const dialog = withNoClass(loadTreeFixture("dialog"), { "dialog-header/dialog-title": ["color"], "dialog-footer/dialog-close/#text": ["color"] });
+    writeFileSync(snapPath, stylesJsonText(asSnap(dialog) as Parameters<typeof stylesJsonText>[0]));
+    const from = "app/globals.css, @layer base: body { @apply bg-background text-foreground }";
+    writeFileSync(join(dir, "tokens.json"), JSON.stringify({ ...SHADCN_TOKENS, defaults: [{ property: "color", token: "foreground", from }] }));
+    const args = ["figma", "code", "--snap", snapPath, "--tokens", join(dir, "tokens.json"), "--out", join(dir, "figma")];
+    const run = await cli(args);
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(run.stdout.includes(`  = ui/base/Dialog: color #0a0a0a bound to foreground, which no class names, by the base style ${from} (dialog-footer/dialog-close/#text, dialog-header/dialog-title)\n`), run.stdout);
+    const keys = ["dialog-footer/dialog-close/#text", "dialog-header/dialog-title"];
+    assert.deepEqual(jsonOf(await cli([...args, "--json"])).bindings, [{ component: "ui/base/Dialog", property: "color", value: "#0a0a0a", variable: "foreground", from, keys }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("figma code: prints the calls it planned and where, and refuses a snap without element trees, naming --root-only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-tree-e2e-"));

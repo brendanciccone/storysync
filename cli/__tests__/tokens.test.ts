@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES } from "../tokens.js";
-import type { TokenBaseline } from "../tokens.js";
+import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES, baseDefaults, withoutRepeatedDefault } from "../tokens.js";
+import type { TokenBaseline, TokenExtractionResult } from "../tokens.js";
 
 function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-test-"));
@@ -605,7 +605,8 @@ test("Tailwind v4: var() resolves against the theme, :root and Tailwind's own th
     // the scale @theme builds from it.
     assert.deepEqual(tokenTable(extractTokens(dir, "css")), [
       ["colors", [["background", "oklch(1 0 0)"]]],
-      ["radius", [["DEFAULT", "0.625rem"], ["sm", "calc(0.625rem - 4px)"], ["lg", "0.625rem"]]],
+      // --radius is lg, so it isn't made a variable of its own as DEFAULT.
+      ["radius", [["sm", "calc(0.625rem - 4px)"], ["lg", "0.625rem"]]],
     ]);
   } finally { cleanup(dir); }
 });
@@ -800,7 +801,6 @@ test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @t
     assert.deepEqual(auto.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.value, t.hex ?? t.px])]), [
       ["colors", [["primary", "oklch(0.205 0 0)", "#171717"], ["background", "oklch(1 0 0)", "#ffffff"]]],
       ["radius", [
-        ["DEFAULT", "0.625rem", 10],
         ["sm", "calc(0.625rem - 4px)", 6],
         ["md", "calc(0.625rem - 2px)", 8],
         ["lg", "0.625rem", 10],
@@ -823,14 +823,21 @@ test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @t
     // as added once, and nothing changed or removed.
     const colorsOnly = baselineOf({ ...auto, collections: auto.collections.filter((c) => c.category === "colors") });
     const upgraded = compareTokens(colorsOnly, auto);
-    assert.deepEqual(upgraded.added.map((a) => [a.category, a.tokens.map((t) => t.name)]), [["radius", ["DEFAULT", "sm", "md", "lg", "xl"]]]);
+    assert.deepEqual(upgraded.added.map((a) => [a.category, a.tokens.map((t) => t.name)]), [["radius", ["sm", "md", "lg", "xl"]]]);
     assert.deepEqual([upgraded.removed, upgraded.changed], [[], []]);
 
-    // And a changed --radius is drift on every radius.
+    // A baseline from before holds the DEFAULT that repeats lg: it checks clean.
+    const withDefault = (from: TokenExtractionResult, value: string, px: number) => ({
+      ...from, collections: from.collections.map((c) => (c.category === "radius" ? { ...c, tokens: [{ name: "DEFAULT", value, px }, ...c.tokens] } : c)),
+    });
+    const before = baselineOf(withDefault(auto, "0.625rem", 10));
+    assert.equal(hasDrift(compareTokens(before, auto)), false);
+
+    // And a changed --radius is drift on every radius, that baseline's included.
     const baseline = baselineOf(auto);
     writeFileSync(join(dir, "app/globals.css"), SHADCN_V4_GLOBALS.replace("--radius: 0.625rem", "--radius: 0.5rem"));
+    assert.deepEqual(compareTokens(before, extractTokens(dir)).changed.map((c) => c.token), ["sm", "md", "lg", "xl"]);
     assert.deepEqual(compareTokens(baseline, extractTokens(dir)).changed.map((c) => [c.token, c.to]), [
-      ["DEFAULT", "0.5rem"],
       ["sm", "calc(0.5rem - 4px)"],
       ["md", "calc(0.5rem - 2px)"],
       ["lg", "0.5rem"],
@@ -2078,15 +2085,18 @@ test("CSS: each token gets the dark theme's value, from every dark selector, a l
   const light = makeProject({ "app/globals.css": `:root { --background: #ffffff; }\n.card { --inset: 4px; }\n` });
   try {
     const result = extractTokens(light);
-    assert.deepEqual(result.modes, ["Light"]);
+    // The one mode Tokens step 3 makes, named as the skill names it.
+    assert.deepEqual(result.modes, ["Default"]);
     assert.equal(result.collections[0].tokens[0].dark, undefined);
+    // A baseline an earlier build wrote names its one mode Light: it checks clean, its dark theme read.
+    assert.equal(hasDrift(compareTokens(baselineOf({ ...result, modes: ["Light"] }), extractTokens(light))), false);
   } finally { cleanup(light); }
 
   // A theme file holds no stylesheet's dark theme.
   const theme = makeProject({ "src/theme.ts": `export const colors = { primary: "#0000ff" };`, "src/app.css": `.dark { --primary: #ffffff; }` });
   try {
     const result = extractTokens(theme, "theme");
-    assert.deepEqual([result.modes, result.collections[0].tokens[0].dark], [["Light"], undefined]);
+    assert.deepEqual([result.modes, result.collections[0].tokens[0].dark], [["Default"], undefined]);
   } finally { cleanup(theme); }
 });
 
@@ -2165,4 +2175,81 @@ test("drift: a dark value is compared against a baseline that read the dark them
     writeFileSync(join(plain, "app/globals.css"), `:root { --background: #ffffff; --muted: #dddddd; }\n.dark { --background: #0a0a0a; }\n`);
     assert.deepEqual(compareTokens(baseline, extractTokens(plain)).changed, [{ category: "colors", token: "muted", from: "#eeeeee", to: "#dddddd" }]);
   } finally { cleanup(plain); }
+});
+
+// --- Base styles (figma code's evidence where no class names a token) ---
+
+test("base styles: shadcn/ui's @layer base gives body's text-foreground and *'s border-border and outline-ring, with the rule", () => {
+  const dir = makeProject({
+    "app/globals.css": `@import "tailwindcss";
+:root { --background: oklch(1 0 0); --foreground: oklch(0.145 0 0); --card-foreground: oklch(0.145 0 0); --border: oklch(0.922 0 0); --input: oklch(0.922 0 0); --ring: oklch(0.708 0 0); }
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}`,
+  });
+  try {
+    assert.deepEqual(extractTokens(dir).defaults, [
+      { property: "border-color", token: "border", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+      { property: "outline-color", token: "ring", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+      { property: "color", token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+    ]);
+  } finally { cleanup(dir); }
+});
+
+test("base styles: the nearest selector's color wins, a value no token names ends one, and other rules don't count", () => {
+  const names = ["foreground", "muted/foreground", "border", "input", "primary", "ring"];
+  const dir = makeProject({
+    "src/base.css": `body { color: hsl(var(--foreground)); border-color: var(--input); }
+html { color: var(--muted-foreground); }
+*, ::before, ::after { border-color: var(--color-border); outline-color: var(--ring); }
+* { outline: 2px solid transparent; }
+.dark body { color: var(--primary); }
+@media (prefers-color-scheme: dark) { body { color: var(--primary); } }
+@layer components { * { color: var(--primary); } }
+body { @apply hover:text-primary; }
+:root { --x: 1px; }`,
+  });
+  try {
+    // body hands its color down nearer than html, whatever their order;
+    // body's border-color is body's own; the outline shorthand resets it.
+    assert.deepEqual(baseDefaults(dir, names), [
+      { property: "color", token: "foreground", from: "src/base.css: body { color: hsl(var(--foreground)) }" },
+      { property: "border-color", token: "border", from: "src/base.css: *, ::before, ::after { border-color: var(--color-border) }" },
+    ]);
+    // A later `color: red` on body ends what it set.
+    writeFileSync(join(dir, "src/base.css"), "body { color: var(--foreground); }\nbody { color: red; }\n");
+    assert.deepEqual(baseDefaults(dir, names), []);
+  } finally { cleanup(dir); }
+});
+
+test("base styles: stylesheets that set a default to different tokens leave it out; agreeing ones keep it", () => {
+  const names = ["foreground", "card/foreground", "border"];
+  const dir = makeProject({
+    "app/globals.css": "@layer base { body { @apply text-foreground; } * { @apply border-border; } }",
+    "src/other.css": "body { color: var(--card-foreground); } * { border-color: var(--border); }",
+  });
+  try {
+    assert.deepEqual(baseDefaults(dir, names).map((d) => [d.property, d.token]), [["border-color", "border"]]);
+  } finally { cleanup(dir); }
+});
+
+test("radius: a DEFAULT that repeats a step in every mode is left out; one that differs is kept", () => {
+  const radius = (tokens: TokenExtractionResult["collections"][number]["tokens"]) => [{ category: "radius" as const, tokens }];
+  const names = (c: TokenExtractionResult["collections"]) => c.flatMap((x) => x.tokens.map((t) => t.name));
+  assert.deepEqual(names(withoutRepeatedDefault(radius([{ name: "DEFAULT", value: "0.625rem", px: 10 }, { name: "lg", value: "0.625rem", px: 10 }]))), ["lg"]);
+  // A baseline from before has no px: the value is worked out.
+  assert.deepEqual(names(withoutRepeatedDefault(radius([{ name: "DEFAULT", value: "0.5rem" }, { name: "md", value: "8px" }]))), ["md"]);
+  // A Tailwind config's own DEFAULT, the `rounded` step, stays.
+  assert.deepEqual(names(withoutRepeatedDefault(radius([{ name: "DEFAULT", value: "0.25rem", px: 4 }, { name: "sm", value: "0.125rem", px: 2 }]))), ["DEFAULT", "sm"]);
+  // So does one whose dark value differs.
+  assert.deepEqual(names(withoutRepeatedDefault(radius([
+    { name: "DEFAULT", value: "0.5rem", px: 8, dark: { value: "0.75rem", px: 12 } }, { name: "lg", value: "0.5rem", px: 8 },
+  ]))), ["DEFAULT", "lg"]);
+  // Spacing's DEFAULT is a step of its own.
+  assert.deepEqual(names(withoutRepeatedDefault([{ category: "spacing", tokens: [{ name: "DEFAULT", value: "4px", px: 4 }, { name: "1", value: "4px", px: 4 }] }])), ["DEFAULT", "1"]);
 });

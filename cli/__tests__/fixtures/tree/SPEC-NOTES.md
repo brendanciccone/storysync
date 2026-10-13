@@ -304,12 +304,32 @@ A9. **Not stored**, as T note 12 says, since the contract has no fields: the
 A10. **Class evidence.**
     - A token's variant prefixes are cut at the last `:` outside brackets, so
       `data-[state=checked]:bg-primary` counts, which 6.3's regex misses.
-    - Unprefixed tokens come first, capped at 8, then sorted.
+    - Sorted, and not capped (6.3 says 8): the cap dropped an outline
+      button's `dark:border-input`, which names its border in Dark mode, and
+      a tabs trigger's `data-active:bg-background` (push 5 review).
+    - A `dark:` prefix alone stays (`dark:border-input`), and a text takes
+      the `dark:text-*` of the element it inherits its color from with
+      that color: figma code picks, among the tokens the classes name, the
+      one a `dark:` class names, whose variable is right in both modes
+      (note 40). With a state after it (`dark:hover:`) it's cut as any.
     - T and V nodes also get the text color class of the nearest element around
       them, a collapsed wrapper included, so `text-card-foreground` reaches the
       Card title, as B's binding example needs.
     - State-prefixed tokens (`hover:`, `data-[state=open]:`) and `text-*` sizes
       can appear, so B keeps filtering candidates by hex (8.9).
+    - The page leaves out an unprefixed `text-*` that sets no color, tried on
+      a probe that inherits a color nothing else gives it: a project's own
+      font size (`text-body`, a v4 `--text-body`) no longer stops the walk
+      for the color a text inherits. Where the probe can't tell (a rule
+      colors every element), every one stays.
+    - `nocls` (not in the spec) says what no class colors: `color` on a T or
+      V node where no unprefixed class on it or up the DOM, `outer`
+      included, sets one (a palette or arbitrary color does, `text-current`
+      doesn't), and none sets one in a state with an arbitrary color;
+      `border-color` on a node that draws a border none of its own
+      unprefixed classes colors (`border`, a side, a width or a style
+      don't). An icon's own `fill-*` or `stroke-*` counts. figma code takes
+      the base styles only there (note 40). It is a root field too.
 A11. **Spec problem: the line box of a wrapped run.** Section 6.4's
     `y = inkTop − (lh − inkH/n)/2` is wrong for n > 1. The union of a run's
     line rects is (n − 1)·lh plus one line's glyphs, so the formula put every
@@ -537,11 +557,41 @@ commit that made it.
       only when it has none.
     - A vector's paints also accept `text-*` classes, since lucide draws in
       `currentColor`.
+    - Where the classes name several of a value's tokens, the one a `dark:`
+      class alone names binds (A10): `border-border dark:border-input` is
+      `input`, #e5e5e5 in light like `border`, and the dark theme's.
     - A radius is not bound when its border is built OUTSIDE, because the
       inner radius matches no token.
     - Candidates are the tokens' light `hex` and `px`, which snap measures;
       a token's `dark` value is never one. A variable with Light and Dark
       modes binds by name as one of one mode does (tokens 0.4.0, item #8).
+    - **Base styles (push 5, bugs 1 and 2).** Where no class names one of
+      a value's tokens, tokens' `defaults` can: the `color` a `*`, `body`
+      or root rule sets (`body { @apply text-foreground }`), for a text
+      or an icon, and the `border-color` a `*` rule sets
+      (`* { @apply border-border }`), for a stroke, from rules in
+      `@layer base` or no layer. A fill takes none: no background is
+      inherited. The default binds only where the node's `nocls` names
+      the property (A10), when it is one of the value's tokens, not when
+      two classes name two, and not when a class in `cls` sets the
+      property to a color no token names (`hover:text-neutral-950`, which
+      may be the one measured); a token's class in another state, a size
+      (a typography token's `text-*` included) or a width doesn't stop it.
+      Stylesheets that set a property to different tokens leave it out.
+      Each such binding is in plan.json's `bindings` with its rule and
+      node keys, printed with `=`, and not warned. Without `defaults` (a
+      tokens.json from before), or `nocls` (a tree snapped before it, or
+      a class list cut at 8), nothing changes: re-snap.
+    - Snap's text evidence walks past the root: `outer` holds the
+      evidence classes of each element around it, innermost first, up to
+      `<html>`, so a story wrapper's `text-muted-foreground` is found
+      before the base styles are. Absent where none has any, which keeps
+      every fixture's tree as it was.
+    - tokens leaves out a radius `DEFAULT` that repeats another step in
+      every mode (shadcn/ui's `--radius`, which `--radius-lg` is); the
+      Binder, `--check`'s baseline and diff's Figma variables drop it the
+      same way, so a tokens.json, baseline or Figma file from before
+      still works. A class's `primary` names a config's `primary/DEFAULT`.
 41. **Label call (section 8.11).** DATA is `{ pages, sets: [[id, line]] }`,
     because the template loads only those pages. It returns
     `{ kind, changed, missing, pageOne }` and switches page at most once,
@@ -848,6 +898,13 @@ D13. **The grep test (section 15, D's acceptance) is a unit test** in
    requires each new command and no `use_figma` code in steps 5 to 7.
    setup.test.ts's checks of 0.4.0's templates now read the skills alone:
    the push command points to their root-only section.
+D14. **The variable template sets `scopes` and names one mode `Default`**
+   (push 5, bug 8; figma-use's rule on scopes). Colors keep every color
+   picker (`ALL_FILLS`, `STROKE_COLOR`, `EFFECT_COLOR`): Tailwind paints any
+   color token as a background, text, border, ring or shadow, and
+   shadcn/ui's tooltip is `bg-foreground text-background`, so scoping by
+   name would hide a token where the code uses it. The readback's variable
+   kinds come out as before: the three colors, a radius, a gap.
 
 ## End to end
 

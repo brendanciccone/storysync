@@ -208,6 +208,12 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
     const category = figmaCollectionToCategory(fv.collection);
     figmaMap.set(`${category}/${fv.name}`, fv);
   }
+  // An earlier push made a radius DEFAULT that repeats a step, which tokens
+  // now leaves out (withoutRepeatedDefault): it isn't missing from code.
+  const radii = [...figmaMap].filter(([key]) => key.startsWith("radius/")).map(([, fv]) => fv);
+  const valuesOf = (fv: FigmaVariable) => JSON.stringify([normalizeForCompare("radius", fv.value), ...Object.values(fv.modes ?? {}).map((v) => normalizeForCompare("radius", v))]);
+  const repeat = figmaMap.get("radius/DEFAULT");
+  if (repeat && !codeMap.has("radius/DEFAULT") && radii.some((fv) => fv !== repeat && valuesOf(fv) === valuesOf(repeat))) figmaMap.delete("radius/DEFAULT");
 
   const same = (category: string, code: Side, figmaValue: string) =>
     (code.workedOut ?? normalizeForCompare(category, code.value)) === normalizeForCompare(category, figmaValue);

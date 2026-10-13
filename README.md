@@ -232,7 +232,7 @@ Storysync reads design tokens from your codebase and previews the Figma variable
 | Source | What it reads |
 |---|---|
 | **Tailwind** | `tailwind.config.ts`, `.js`, `.mjs`, `.cjs`, `.mts`, or `.cts` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`, and those of a preset in a relative file, [see below](#tailwind-presets-and-configs-built-by-code)), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
-| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`. |
+| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`, but a radius `DEFAULT` another radius step repeats, as shadcn/ui's `--radius-lg: var(--radius)` does, is left out. |
 | **Theme files** | `tokens.ts`, `theme.ts`, and similar: exported objects with `colors`, `spacing`, and so on |
 
 Detection takes the first of these a project has: a `tailwind.config.ts`, `.js`, `.mjs`, or `.cjs`; a stylesheet with a `:root { }` rule; a Tailwind v4 `@theme` block; a theme file; a `tailwind.config.mts` or `.cts`; and last, a stylesheet whose variables are only in a selector list such as `:root, .light { }`. Earlier versions found neither of the last two, so they come after every source those versions read, and a project keeps the source its baseline was written from. A warning names a `.mts` or `.cts` config passed over this way. Pass `--source tailwind` to read it.

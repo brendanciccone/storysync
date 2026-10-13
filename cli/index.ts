@@ -1022,7 +1022,7 @@ figma
     const maxNodes = parsePositiveInteger(opts.maxNodes, "--max-nodes");
     const readLimit = parsePositiveInteger(opts.readLimit, "--read-limit");
     try {
-      const { plan, planPath, warnings } = await runFigmaCode({
+      const { plan, planPath, warnings, bindings } = await runFigmaCode({
         snap: opts.snap as string,
         tokens: opts.tokens as string,
         components: opts.components ? (opts.components as string).split(",") : undefined,
@@ -1034,7 +1034,7 @@ figma
         minify: opts.minify !== false,
       });
       if (json) {
-        console.log(JSON.stringify({ planPath, calls: plan.calls, warnings }));
+        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, warnings }));
         return;
       }
       const where = shownPath(planPath);
@@ -1045,6 +1045,12 @@ figma
       for (const call of plan.calls) {
         const size = `${call.chars.toLocaleString("en-US")} characters${call.nodes !== undefined ? `, ${call.nodes} nodes` : ""}`;
         console.log(`  ${String(call.seq).padStart(2, "0")} ${call.kind.padEnd(6)} ${call.description} ${chalk.dim(`(${size})`)}`);
+      }
+      // What no class showed, and the project's base styles did: a text that
+      // inherits body's color, a border that takes `*`'s.
+      for (const b of bindings) {
+        const layers = b.keys.map((k) => (k === "" ? "its root" : k)).join(", ");
+        console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from} (${layers})`));
       }
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
@@ -1316,6 +1322,7 @@ program
         // Always written, so a baseline says it was read for the dark theme.
         modes: result.modes,
         collections: result.collections,
+        ...(result.defaults ? { defaults: result.defaults } : {}),
         warnings: result.warnings,
         summary: { totalTokens, collections: result.collections.length },
       }));

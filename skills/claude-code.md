@@ -43,11 +43,14 @@ This auto-detects the token source (a Tailwind config or Tailwind v4 `@theme` bl
       "tokens": [{ "name": "4", "value": "1rem", "px": 16 }, ...]
     }
   ],
+  "defaults": [
+    { "property": "color", "token": "foreground", "from": "app/globals.css, @layer base: body { @apply bg-background text-foreground }" }
+  ],
   "summary": { "totalTokens": 42, "collections": 4 }
 }
 ```
 
-A token with a `dark` has a different value in the project's dark theme (`.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`), with its own `hex` or `px`. `modes` is `["Light", "Dark"]` when any token has one.
+A token with a `dark` has a different value in the project's dark theme (`.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`), with its own `hex` or `px`. `modes` is `["Light", "Dark"]` when any token has one, else `["Default"]`: the Figma modes step 3 makes. `defaults`, where there is one, names the color tokens the project's base styles give an element no class colors: the text color `body` hands down, and the border and outline colors a `*` rule sets, each with the rule. It makes no variable; `figma code` binds by it (Variable binding, below).
 
 If a `warnings` entry says storysync can't read or find part of the Tailwind config, or doesn't follow it, such as a preset from a package, a config built by a function, or a file it names, or that it read no theme from the config, tell the user what it names: those tokens are missing from the output, so they won't reach Figma. If one says it read another source rather than a `tailwind.config.mts` or `.cts`, tell the user, who can pass `--source tailwind` to read the config. If the command returns no collections, skip to Components.
 
@@ -61,6 +64,8 @@ use_figma({
     // One collection's tokens from the storysync output: each color's hex,
     // and its dark's hex where it has one.
     const NAME = 'Colors';
+    // The pickers its variables show in, by category (the table below).
+    const SCOPES = ['ALL_FILLS', 'STROKE_COLOR', 'EFFECT_COLOR'];
     const TOKENS = [
       { name: 'background', hex: '#ffffff', dark: { hex: '#0a0a0a' } },
       { name: 'primary', hex: '#171717', dark: { hex: '#e5e5e5' } },
@@ -78,9 +83,13 @@ use_figma({
         // The file's plan allows fewer modes: Light alone, said in the summary.
         darkError = String((e && e.message) || e);
       }
+    } else {
+      // One mode, for every theme: named, not Figma's "Mode 1".
+      collection.renameMode(light, 'Default');
     }
     for (const token of TOKENS) {
       const variable = figma.variables.createVariable(token.name, collection, 'COLOR');
+      variable.scopes = token.scopes || SCOPES;
       variable.setValueForMode(light, figma.util.rgba(token.hex));
       if (dark) variable.setValueForMode(dark, figma.util.rgba((token.dark || token).hex));
     }
@@ -92,7 +101,20 @@ use_figma({
 })
 ```
 
-   A `FLOAT` collection is made the same way, with `createVariable(token.name, collection, 'FLOAT')` and each mode set from `px` (`token.px`, and `token.dark.px` in Dark). If a call returns a `darkError`, the file's Figma plan allows the collection one mode: it holds the light theme alone, so tell the user, with the error, that the dark values weren't pushed, and that a plan with more modes, or a Dark mode added by hand, would take them.
+   A `FLOAT` collection is made the same way, with `createVariable(token.name, collection, 'FLOAT')` and each mode set from `px` (`token.px`, and `token.dark.px` in Dark). A collection's one mode is `Default`, and its two `Light` and `Dark`. If a call returns a `darkError`, the file's Figma plan allows the collection one mode: it holds the light theme alone, so tell the user, with the error, that the dark values weren't pushed, and that a plan with more modes, or a Dark mode added by hand, would take them.
+
+   Set every variable's `scopes`, which pick the property pickers it shows in, as the template does: left out, it is `ALL_SCOPES`, and a radius shows in the opacity and stroke weight pickers. By category, in `SCOPES`, or per token in its `scopes` where a collection mixes them:
+
+   | Tokens | `scopes` |
+   |---|---|
+   | colors | `ALL_FILLS`, `STROKE_COLOR`, `EFFECT_COLOR`: Tailwind paints any color as a background, text, border, ring or shadow, as shadcn/ui's tooltip is `bg-foreground text-background` |
+   | radius | `CORNER_RADIUS` |
+   | spacing | `GAP`, `WIDTH_HEIGHT` |
+   | typography `text/*`, `font/size/*` or `fs/*`, and a Tailwind config's `fontSize` tokens, which have no namespace (`sm`, `base`) | `FONT_SIZE` |
+   | typography `font/weight/*` | `FONT_WEIGHT` |
+   | typography `leading/*`, `line/height/*` or `lh/*` | `LINE_HEIGHT` |
+   | typography `tracking/*` | `LETTER_SPACING` |
+   | typography, other `font/*` | `FONT_FAMILY` |
 
    Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6, and `value` is as the source writes it. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, such as one in em or % (as letter spacing often is), which depends on the element. Leave out too, and say which, any token a `tokens` warning starting `Unresolved:` names: its `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). The tokens such a warning says were not read from `@theme`, shadcn/ui's `font/sans` and `font/mono` among them, are out of the output already: name them all the same. So are the tokens a warning starting `Skipped dynamic value:` names, a value the config only computes when it runs, such as a template literal that interpolates or a `theme()` call: name them too. A `value` can keep a `var()` that did resolve, as `calc(var(--radius) - 4px)` in `:root` does; set that token from its `px` or `hex` as usual. If no token in the output has a `px` at all, an older storysync ran: use a plain rem `value` times 16, or a px one as is, in place of `px`.
 
@@ -187,7 +209,7 @@ npx storysync tokens --json --project . > .storysync/tokens.json
 npx storysync figma code --components <the agreed IDs>
 ```
 
-   It reads `.storysync/snaps/styles.json` and `.storysync/tokens.json`, and writes `.storysync/figma/plan.json` and the calls under `.storysync/figma/calls/`, in this order: the builds, a page at a time, several sets a call; an `images` call for each page that shows a picture; one `label` call; and the reads, a page at a time. It prints each call, then its warnings. Note each warning for the summary:
+   It reads `.storysync/snaps/styles.json` and `.storysync/tokens.json`, and writes `.storysync/figma/plan.json` and the calls under `.storysync/figma/calls/`, in this order: the builds, a page at a time, several sets a call; an `images` call for each page that shows a picture; one `label` call; and the reads, a page at a time. It prints each call, each value the project's base styles bound, starting `=` (Variable binding, below), then its warnings. Note each warning for the summary:
 
    - `built as a "Not measured" placeholder`: variants snap couldn't measure (step 3), each built as a dashed frame labeled `Not measured: <status>`.
    - `left unbound: it matches …, and no class names one`: a value several variables share, left unbound rather than bound to a guess (Variable binding, below).
@@ -269,7 +291,7 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
 
 ## Variable binding
 
-`figma code` binds each fill, stroke, text color, icon color and corner radius to a variable from `.storysync/tokens.json`, the `tokens --json` output Components step 5 saves, so that when tokens change in code and storysync runs again, updating the variables updates every component. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color, `#rrggbbaa`, matches a token of its `#rrggbb`, and is bound with the paint's opacity at its alpha, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, `text-card-foreground` the text to `card/foreground`, `border-input` the stroke to `input`, and `rounded-lg` the radius to `lg`. Where no class names one, the value is left unbound, and `figma code` warns with the variables it matches: list them in the summary rather than bind one by hand. The build finds each variable by its name in the file, as Tokens step 3 created it from `tokens`, so a name Figma has none of, or two of, leaves the value unbound too, listed in the build response's `unbound`. Values are matched by the light theme's, which snap measures: a token's `dark` value picks no variable. A variable bound this way takes its `Dark` value wherever a designer switches a frame to the Dark mode. Shadows stay unbound, and a project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
+`figma code` binds each fill, stroke, text color, icon color and corner radius to a variable from `.storysync/tokens.json`, the `tokens --json` output Components step 5 saves, so that when tokens change in code and storysync runs again, updating the variables updates every component. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color, `#rrggbbaa`, matches a token of its `#rrggbb`, and is bound with the paint's opacity at its alpha, as Tailwind's `border-destructive/30` is the `destructive` token at 30%. Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens, `primary` and `sidebar/primary` among them. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, `text-card-foreground` the text to `card/foreground`, `border-input` the stroke to `input`, and `rounded-lg` the radius to `lg`. Where the classes name two, as an outline button's `border-border dark:border-input` does, the one a `dark:` class names binds: it has the light value too, and is the token the dark theme paints, so its variable is right in both modes. Where no class names one, the project's base styles can, as `tokens` reads them into `defaults`: shadcn/ui's dialog title has no color class and inherits `body`'s `text-foreground` from `@layer base`, and a card's border takes `* { @apply border-border }`, so the title binds to `foreground` and the border to `border`, and `figma code` prints each such binding with the rule, starting `=`. Snap records the text color class a text inherits from the nearest element around it, past the component's root too, and the base style counts only where snap found that no class sets the color at all: a palette or arbitrary color (`text-neutral-950`, `text-[#0a0a0a]`) on the element, or on one it inherits from, names no variable, and keeps the value unbound. Where neither names one, the value is left unbound, and `figma code` warns with the variables it matches: list them in the summary rather than bind one by hand. A `tokens.json` saved before `defaults` has none, and a snap from before this version doesn't say what no class colors: save the tokens, or snap, again for these. The build finds each variable by its name in the file, as Tokens step 3 created it from `tokens`, so a name Figma has none of, or two of, leaves the value unbound too, listed in the build response's `unbound`. Values are matched by the light theme's, which snap measures: a token's `dark` value picks no variable. A variable bound this way takes its `Dark` value wherever a designer switches a frame to the Dark mode. Shadows stay unbound, and a project that uses Tailwind's default spacing, type or shadow scales has no tokens for them, so those values stay as measured.
 
 ## Root-only snaps (`--root-only`)
 

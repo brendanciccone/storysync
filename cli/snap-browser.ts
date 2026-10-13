@@ -1982,6 +1982,39 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
   // rgba() with alpha 0, or the slash syntax's `/ 0`: not rgb(r, g, 0), which is opaque.
   const clear = (c: string) => !c || c === "transparent" || /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(c) || /\/\s*0(?:\.0+)?\s*\)$/.test(c);
   const evidence = /(?:^|[:!])(?:bg|text|border|ring|fill|stroke|outline|rounded|shadow)-/;
+  // Whether an unprefixed `text-*` class sets the text color, tried on a
+  // probe that inherits a color nothing else gives it: a project's own font
+  // size (`text-body`) sets none, and a text inherits its color past it, as
+  // `text-sm` does. Where the probe can't tell, as when a rule colors every
+  // element, it counts as one that does.
+  const SENTINEL = "rgb(1, 2, 3)";
+  const colorClasses = new Map<string, boolean>();
+  const setsTextColor = (token: string): boolean => {
+    let sets = colorClasses.get(token);
+    if (sets !== undefined) return sets;
+    const host = document.createElement("div");
+    const probe = document.createElement("div");
+    for (const [name, v] of Object.entries({ position: "absolute", left: "0", top: "0", visibility: "hidden", color: SENTINEL })) host.style.setProperty(name, v, "important");
+    probe.setAttribute("class", token);
+    host.appendChild(probe);
+    document.body.appendChild(host);
+    sets = getComputedStyle(host).color !== SENTINEL || getComputedStyle(probe).color !== SENTINEL;
+    host.remove();
+    colorClasses.set(token, sets);
+    return sets;
+  };
+  const unprefixed = (token: string): boolean => {
+    let depth = 0;
+    for (const ch of token) {
+      if (ch === "[" || ch === "(") depth++;
+      else if (ch === "]" || ch === ")") depth--;
+      else if (ch === ":" && depth === 0) return false;
+    }
+    return true;
+  };
+  // A class's tokens that may be class evidence (snap-tree.ts's classEvidence), less a text size.
+  const evidenceIn = (classes: string[]): string[] =>
+    classes.filter((t) => t && evidence.test(t) && !(/^!?text-/.test(t) && unprefixed(t) && !setsTextColor(t)));
 
   // Radii only layout can resolve, calc() of a percentage, sized on a probe
   // the element's size, as readComputedStyles sizes the root's.
@@ -2255,7 +2288,7 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     const role = el.getAttribute("role");
     if (role) node.role = role;
     const classes = (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
-    const cls = classes.filter((t) => evidence.test(t));
+    const cls = evidenceIn(classes);
     if (cls.length) node.cls = cls;
     // Its own size, where something turns or scales it: snap-tree.ts
     // centers that where it drew. A `rotate` or `scale` set on its own,
@@ -2308,6 +2341,14 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
 
   try {
     const out: RawTreeCapture = { root: walk(root, [], 0), fonts };
+    // The class evidence around the root, up to <html>: a text it holds
+    // inherits its color from there where nothing inside sets one, as from
+    // a story's wrapper.
+    const outer: string[][] = [];
+    for (let at = root.parentElement; at; at = at.parentElement) {
+      outer.push(evidenceIn((at.getAttribute("class") ?? "").split(/\s+/)));
+    }
+    if (outer.some((cls) => cls.length)) out.outer = outer;
     // What places an overlay's content, from outside it: up to the page's
     // own elements, which place nothing a component draws.
     if (args.around) {

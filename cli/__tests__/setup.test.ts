@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { runSetup } from "../setup.js";
+import { extractTokens } from "../tokens.js";
 import type { Client } from "../setup.js";
 import { COMPARABLE_PROPERTIES, READBACK_FIELDS, READBACK_LATER_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
@@ -1668,3 +1669,42 @@ test("every audit can score how the sets look, reading Figma and changing nothin
   }
 });
 
+
+test("skills: the variable scopes name one for every typography token tokens reads, a config's fontSize included", () => {
+  // A Tailwind v3 config's fontSize keys have no namespace (`sm`), and a
+  // stylesheet's custom properties keep theirs (`font/size/sm`): each is a
+  // font size, not the font family "other font/*" would make it.
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const rows = readFileSync(join(root, "skills", "claude-code.md"), "utf8").split("\n")
+    .filter((line) => /^\s*\| typography/.test(line))
+    .map((line) => {
+      const [names, scopes] = line.split("|").slice(1, 3);
+      return { globs: [...names.matchAll(/`([\w/]+)\/\*`/g)].map((m) => m[1]), bare: /no namespace/.test(names), other: /other/.test(names), scope: /`(\w+)`/.exec(scopes)![1] };
+    });
+  const scopeOf = (name: string): string | undefined => {
+    if (!name.includes("/")) return rows.find((r) => r.bare)?.scope;
+    const exact = rows.filter((r) => !r.other).flatMap((r) => r.globs.map((g) => ({ g, scope: r.scope }))).filter(({ g }) => name.startsWith(`${g}/`)).sort((a, b) => b.g.length - a.g.length)[0];
+    return exact?.scope ?? rows.find((r) => r.other && r.globs.some((g) => name.startsWith(`${g}/`)))?.scope;
+  };
+  const projects: [Record<string, string>, Record<string, string>][] = [
+    [{ "tailwind.config.js": "module.exports = { theme: { extend: { fontSize: { sm: '0.875rem', base: '1rem' } } } };" }, { sm: "FONT_SIZE", base: "FONT_SIZE" }],
+    [{ "app.css": ":root { --font-size-sm: 0.875rem; --line-height-tight: 1.25; --font-weight-bold: 700; --fs-lg: 1.125rem; --lh-snug: 1.375; }" },
+      { "font/size/sm": "FONT_SIZE", "line/height/tight": "LINE_HEIGHT", "font/weight/bold": "FONT_WEIGHT", "fs/lg": "FONT_SIZE", "lh/snug": "LINE_HEIGHT" }],
+    [{ "app.css": "@import 'tailwindcss';\n@theme { --text-sm: 0.875rem; --font-weight-bold: 700; --leading-tight: 1.25; --tracking-wide: 0.025em; --font-sans: Inter, sans-serif; }" },
+      { "text/sm": "FONT_SIZE", "font/weight/bold": "FONT_WEIGHT", "leading/tight": "LINE_HEIGHT", "tracking/wide": "LETTER_SPACING", "font/sans": "FONT_FAMILY" }],
+  ];
+  for (const [files, expected] of projects) {
+    const project = tempProject();
+    try {
+      for (const [file, text] of Object.entries(files)) writeFileSync(join(project, file), text);
+      const typography = extractTokens(project).collections.filter((c) => c.category === "typography").flatMap((c) => c.tokens.map((t) => t.name));
+      assert.deepEqual(Object.fromEntries(typography.map((name) => [name, scopeOf(name)])), expected, JSON.stringify(files));
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  }
+  // Cursor's step 3 says the same in a sentence.
+  const cursor = readFileSync(join(root, "skills", "cursor.mdc"), "utf8");
+  assert.match(cursor, /a Tailwind config's `fontSize` tokens, which have no namespace \(`sm`, `base`\), `\['FONT_SIZE'\]`/);
+  assert.match(cursor, /`line\/height\/\*` or `lh\/\*` `\['LINE_HEIGHT'\]`/);
+});

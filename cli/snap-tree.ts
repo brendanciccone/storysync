@@ -26,9 +26,9 @@ import type { FontProbe } from "./snap-normalize.js";
 import { isStandInFamily, stackFamilies, standInDrawn } from "./fonts.js";
 import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
-import { ROOT_FIELDS, TREE_LIMITS } from "./tree-types.js";
+import { ROOT_FIELDS, TREE_LIMITS, utilitySetsColor } from "./tree-types.js";
 import { canonicalJson } from "./checksum.js";
-import type { Box, Shadow, Sides, TextFacts, TreeLayout, TreeNode, TreeSelf } from "./tree-types.js";
+import type { Box, NoClassPaint, Shadow, Sides, TextFacts, TreeLayout, TreeNode, TreeSelf } from "./tree-types.js";
 
 // --- What the page reads ------------------------------------------------------
 
@@ -83,7 +83,11 @@ export interface RawTreeElement {
   tag: string;
   slot?: string;
   role?: string;
-  /** Class tokens that may be class evidence, as written; classEvidence picks them. */
+  /**
+   * Class tokens that may be class evidence, as written; classEvidence picks
+   * them. An unprefixed `text-*` the page found sets no color, a font size
+   * such as `text-body`, is left out.
+   */
   cls?: string[];
   /** The first `lucide-*` class of an `<svg>`. */
   lucide?: string;
@@ -164,6 +168,13 @@ export interface RawTreeCapture {
    * (anchorToRoot). Absent for any other root.
    */
   around?: Record<string, string>[];
+  /**
+   * The class tokens that may be class evidence (as an element's `cls`) of
+   * each element around the root, innermost first, up to `<html>`: absent
+   * where none has any. A text the root holds inherits its color from them
+   * where nothing inside sets one.
+   */
+  outer?: string[][];
 }
 
 // --- What the build hands on ---------------------------------------------------
@@ -272,24 +283,31 @@ const NATIVE_INPUTS = new Set(["checkbox", "radio", "range", "color", "file"]);
 /** Classes that may say which token a node's paint is: section 6.3's class evidence. */
 const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-z][\w/-]*)$/;
 
-/** `text-*` classes that set no color, passed over when finding the one a text inherits. */
-const TEXT_NOT_COLOR = /^text-(?:xs|sm|base|lg|\d?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip)$/;
-
 /**
  * Class tokens naming what paints a node, for binding its paint to a
  * variable: each token's variant prefixes (`hover:`, `data-[state=on]:`)
  * and any `/NN` opacity cut off, arbitrary values (`bg-[#fff]`) left out,
- * at most 8, the unprefixed first, then sorted.
+ * sorted. A `dark:` prefix alone stays (`dark:border-input`): it names the
+ * token the dark theme paints, which a variable's Dark mode must be.
+ * Every one is kept: at most 8 dropped the `dark:border-input` that names
+ * an outline button's border in Dark mode, so the base styles' color bound
+ * in its place.
  */
 export function classEvidence(tokens: readonly string[]): string[] {
-  const found = evidenceOf(tokens);
-  const ordered = [...found.filter((f) => !f.prefixed), ...found.filter((f) => f.prefixed)].map((f) => f.name);
-  return [...new Set(ordered)].slice(0, 8).sort();
+  return [...new Set(utilitiesOf(tokens).filter((u) => EVIDENCE.test(u.name)).map(evidenceName))].sort();
 }
 
-/** Each token that is class evidence, as its utility, and whether a variant prefix applies it only sometimes. */
-function evidenceOf(tokens: readonly string[]): { name: string; prefixed: boolean }[] {
-  const found: { name: string; prefixed: boolean }[] = [];
+/** A utility as `cls` writes it: `dark:` before one only the dark theme applies. */
+const evidenceName = (u: { name: string; dark: boolean }): string => (u.dark ? `dark:${u.name}` : u.name);
+
+/**
+ * Each class token as its utility, its variant prefixes and any `/NN` or
+ * `/[.5]` opacity cut off (an arbitrary value's own `/` stays), whether a
+ * variant prefix applies it only sometimes, and whether that prefix is
+ * `dark:` alone, the dark theme's.
+ */
+function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean; dark: boolean }[] {
+  const found: { name: string; prefixed: boolean; dark: boolean }[] = [];
   for (const token of tokens) {
     // The utility is what follows the last `:` outside brackets.
     let depth = 0;
@@ -300,11 +318,29 @@ function evidenceOf(tokens: readonly string[]): { name: string; prefixed: boolea
       else if (ch === "]" || ch === ")") depth--;
       else if (ch === ":" && depth === 0) cut = i;
     }
-    const utility = token.slice(cut + 1).replace(/^!|!$/g, "").replace(/\/[^/]*$/, "");
-    if (!EVIDENCE.test(utility)) continue;
-    found.push({ name: utility, prefixed: cut >= 0 });
+    const utility = token.slice(cut + 1).replace(/^!|!$/g, "").replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
+    found.push({ name: utility, prefixed: cut >= 0, dark: token.slice(0, cut + 1).replace(/^!/, "") === "dark:" });
   }
   return found;
+}
+
+/**
+ * The color properties classes among `tokens` set (utilitySetsColor):
+ * `always`, by an unprefixed class; `maybe`, by those and by a state's
+ * arbitrary color (`hover:border-[#e5e5e5]`), which names no token and may
+ * be the one measured. A state's token or palette class is figma code's to
+ * judge, which knows the tokens (figma-bind.ts).
+ */
+function setByClass(tokens: readonly string[]): { always: Set<string>; maybe: Set<string> } {
+  const always = new Set<string>();
+  const maybe = new Set<string>();
+  for (const u of utilitiesOf(tokens)) {
+    const property = utilitySetsColor(u.name);
+    if (!property) continue;
+    if (!u.prefixed) always.add(property);
+    if (!u.prefixed || !EVIDENCE.test(u.name)) maybe.add(property);
+  }
+  return { always, maybe };
 }
 
 // --- Items: the tree after pruning and collapse --------------------------------
@@ -874,6 +910,8 @@ export function lineBox(ink: RawBox, lines: number, lineHeight: number | "normal
 // --- Build -----------------------------------------------------------------------
 
 interface Ctx {
+  /** RawTreeCapture's `outer`. */
+  outer: string[][];
   fonts: Record<string, FontProbe | null>;
   svg: Record<string, string>;
   images: PendingImage[];
@@ -883,26 +921,37 @@ interface Ctx {
 }
 
 /**
- * The `text-*` evidence a text or icon inherits its color by: from the
- * nearest element up the DOM that sets one always, as a card sets its
- * title's; failing that, from the nearest that sets one in some state
- * (`hover:text-accent-foreground`). The DOM's elements are each item's
- * own and then the wrappers collapsed into it, innermost first, which sat
- * between it and its parent: a wrapper's `text-muted-foreground` is
- * nearer than the card's.
+ * The `text-*` evidence a text or icon inherits its color by, and whether a
+ * class sets that color at all (`set`): from the nearest element up the DOM
+ * that sets one always, as a card sets its title's; failing that, from the
+ * nearest that sets one in some state (`hover:text-accent-foreground`),
+ * which isn't `set`. The DOM's elements are each item's own and then the
+ * wrappers collapsed into it, innermost first, which sat between it and its
+ * parent: a wrapper's `text-muted-foreground` is nearer than the card's.
+ * Past the root, the elements around it (`outer`), up to `<html>`. Where
+ * none sets one always, as in a portal, the color is the project's base
+ * styles' (figma-bind.ts). An arbitrary color (`text-[#0a0a0a]`) sets it,
+ * as a palette one does, though neither names a token; a font size the page
+ * found sets no color (`text-body`) is no longer in `cls` to stop the walk.
  */
-function inheritedTextEvidence(item: Item): string[] {
-  const colors = (el: RawTreeElement, prefixed: boolean) => [...new Set(evidenceOf(el.cls ?? [])
-    .filter((e) => e.prefixed === prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name)).map((e) => e.name))].sort();
+function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; set: boolean } {
+  const colors = (cls: string[] | undefined) => utilitiesOf(cls ?? []).filter((u) => u.name.startsWith("text-") && utilitySetsColor(u.name) === "color");
+  const chain: (string[] | undefined)[] = [];
+  for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
   for (const prefixed of [false, true]) {
-    for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) {
-      for (const el of [at.el, ...at.wrappers]) {
-        const found = el ? colors(el, prefixed) : [];
-        if (found.length) return found.slice(0, 8);
-      }
+    for (const cls of [...chain, ...outer]) {
+      const all = colors(cls);
+      const found = all.filter((u) => u.prefixed === prefixed);
+      if (!found.length) continue;
+      // With the color it sets always, the one it sets in the dark theme
+      // (`dark:text-muted-foreground`), which a variable's Dark mode must be.
+      const named = [...found, ...(prefixed ? [] : all.filter((u) => u.dark))].filter((u) => EVIDENCE.test(u.name));
+      // A state's arbitrary color, which may be the one measured, names
+      // nothing either: no base style stands in for it.
+      return { cls: [...new Set(named.map(evidenceName))].sort(), set: !prefixed || found.some((u) => !EVIDENCE.test(u.name)) };
     }
   }
-  return [];
+  return { cls: [], set: false };
 }
 
 function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, ctx: Ctx): TreeNode {
@@ -934,8 +983,9 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       node = { k: key, t: "T", el: "#value", box: rel(box), tx };
     }
     if (holder("visibility") !== "visible") node.vis = 0;
-    const cls = inheritedTextEvidence(item);
-    if (cls.length) node.cls = cls;
+    const inherited = inheritedTextEvidence(item, ctx.outer);
+    if (inherited.cls.length) node.cls = inherited.cls;
+    if (!inherited.set) node.nocls = ["color"];
     return node;
   }
 
@@ -1052,13 +1102,22 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
 
   // Class evidence, on what draws: its own classes, and for text and icons
   // the text color they inherit, as a card's title takes the card's.
+  // And what no class colors, which the project's base styles then do: a
+  // text or icon's color where nothing up the DOM sets one, a border's
+  // where no class of its own does (`border` alone, as a card's).
   if (item.paints || kind === "T" || kind === "V") {
     let cls = classEvidence(el.cls ?? []);
-    const setsColor = evidenceOf(el.cls ?? []).some((e) => !e.prefixed && e.name.startsWith("text-") && !TEXT_NOT_COLOR.test(e.name));
-    if ((kind === "T" || kind === "V") && !setsColor) {
-      cls = [...new Set([...cls, ...inheritedTextEvidence(item)])].sort().slice(0, 8);
+    const set = setByClass(el.cls ?? []);
+    const nocls: NoClassPaint[] = [];
+    if ((kind === "T" || kind === "V") && !set.always.has("color")) {
+      const inherited = inheritedTextEvidence(item, ctx.outer);
+      cls = [...new Set([...cls, ...inherited.cls])].sort();
+      // An icon's own fill-* or stroke-* paints it, whatever its color.
+      if (!inherited.set && !set.maybe.has("color") && !(kind === "V" && (set.maybe.has("fill") || set.maybe.has("stroke")))) nocls.push("color");
     }
+    if (hasBorder(css) && !set.maybe.has("border-color")) nocls.push("border-color");
     if (cls.length) node.cls = cls;
+    if (nocls.length) node.nocls = nocls;
   }
   if (approx.length) node.approx = approx.join(",");
   return isRoot ? rootOnly(node) : node;
@@ -1173,7 +1232,7 @@ function rootOnly(node: TreeNode): TreeNode {
 export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {}): BuiltTree {
   const maxNodes = options.maxNodes ?? TREE_LIMITS.maxNodes;
   const maxDepth = options.maxDepth ?? TREE_LIMITS.maxDepth;
-  const ctx: Ctx = { fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
+  const ctx: Ctx = { outer: capture.outer ?? [], fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
   const [root] = buildItem(capture.root, true);
   anchorToRoot(root, capture.around);
 

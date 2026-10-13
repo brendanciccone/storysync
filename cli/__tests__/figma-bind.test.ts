@@ -54,7 +54,8 @@ test("Binder: radius binds by rounded-* among the radius tokens of its value, a 
   const binder = new Binder(SHADCN_TOKENS);
   assert.equal(binder.radius(10, ["rounded-lg"]).variable, "lg");
   assert.equal(binder.radius(10, ["rounded-t-lg"]).variable, "lg");
-  assert.deepEqual(binder.radius(10, undefined), { variable: null, candidates: ["DEFAULT", "lg"] });
+  // tokens.json from before held a DEFAULT that repeats lg: it is no candidate.
+  assert.deepEqual(binder.radius(10, undefined), { variable: "lg", candidates: ["lg"] });
   assert.equal(binder.radius(8, undefined).variable, "md");
   assert.equal(binder.radius(9999, ["rounded-full"]).variable, null);
 });
@@ -86,4 +87,97 @@ test("Binder: a token's dark value is no candidate, since snap measures the ligh
   assert.deepEqual(binder.color("#0a0a0a", "fill", ["bg-background"]), { variable: "foreground", candidates: ["foreground"] });
   assert.deepEqual(binder.radius(12, ["rounded-lg"]), { variable: null, candidates: [] });
   assert.equal(binder.radius(8, ["rounded-lg"]).variable, "lg");
+});
+
+// The project's base styles, as tokens reads shadcn/ui's @layer base.
+const DEFAULTS = [
+  { property: "color" as const, token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+  { property: "border-color" as const, token: "border", from: "app/globals.css, @layer base: * { @apply border-border outline-ring/50 }" },
+];
+const WITH_DEFAULTS = { ...SHADCN_TOKENS, defaults: DEFAULTS };
+
+test("Binder: a text no class colors takes body's color from the base styles, with the rule as its evidence", () => {
+  // Dialog's title: inherited from body, so no class says it, and #0a0a0a is four tokens.
+  assert.deepEqual(new Binder(WITH_DEFAULTS).color("#0a0a0a", "text", undefined, ["color"]), {
+    variable: "foreground", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"], from: DEFAULTS[0].from,
+  });
+  // An icon in currentColor too.
+  assert.equal(new Binder(WITH_DEFAULTS).color("#0a0a0a", "vector", undefined, ["color"]).variable, "foreground");
+  // A ghost button's text: its hover:text-accent-foreground names no candidate, and only a state.
+  assert.equal(new Binder(WITH_DEFAULTS).color("#0a0a0a", "text", ["text-accent-foreground"], ["color"]).variable, "foreground");
+});
+
+test("Binder: a border no class colors takes *'s border color from the base styles, a width or another state's color aside", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // Attachment: `border` and data-[state=error]:border-destructive/30, measured #e5e5e5.
+  assert.deepEqual(binder.color("#e5e5e5", "stroke", ["border-destructive", "border-dashed"], ["border-color"]), {
+    variable: "border", candidates: ["border", "input"], from: DEFAULTS[1].from,
+  });
+  // Sheet: border-l names a side, no color.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-l"], ["border-color"]).variable, "border");
+  // A translucent paint of it too.
+  assert.equal(binder.color("#e5e5e540", "stroke", undefined, ["border-color"]).variable, "border");
+});
+
+test("Binder: a base style binds only where snap found no class sets the property, and only a candidate", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // A class that names one wins: an Input's border-input.
+  assert.deepEqual(binder.color("#e5e5e5", "stroke", ["border-input"], ["border-color"]), { variable: "input", candidates: ["border", "input"] });
+  // Two classes naming two: ambiguous, and no default settles it.
+  assert.equal(binder.color("#0a0a0a", "text", ["text-card-foreground", "text-popover-foreground"], ["color"]).variable, null);
+  // No background is inherited: a fill takes no default.
+  assert.equal(binder.color("#f5f5f5", "fill", undefined, ["color", "border-color"]).variable, null);
+  // The default isn't one of the value's tokens.
+  assert.deepEqual(binder.color("#171717", "text", undefined, ["color"]), {
+    variable: null, candidates: ["accent/foreground", "primary", "secondary/foreground", "sidebar/primary"],
+  });
+  // Without defaults, as tokens.json from before: unbound, as it was.
+  assert.equal(new Binder(SHADCN_TOKENS).color("#e5e5e5", "stroke", undefined, ["border-color"]).variable, null);
+});
+
+test("Binder: where a class sets the color, or snap didn't say none does, the base style is no evidence", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // snap found a class that sets it (text-neutral-950, text-[#0a0a0a], a
+  // mismatched text-muted-foreground, or one on an element it inherits
+  // from), so it wrote no nocls: unbound, as before the base styles.
+  for (const cls of [["text-neutral-950"], undefined, ["text-muted-foreground"], ["text-body"]]) {
+    assert.deepEqual(binder.color("#0a0a0a", "text", cls), {
+      variable: null, candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"],
+    }, String(cls));
+  }
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-neutral-200"]).variable, null);
+  // A tree snapped before nocls: none, whatever its classes, and a class list cut at 8 can't hide one.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-l"]).variable, null);
+  // A palette color in some state may be the one measured: not the base style's.
+  assert.equal(binder.color("#0a0a0a", "text", ["text-neutral-950"], ["color"]).variable, null);
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-t-neutral-200"], ["border-color"]).variable, null);
+  assert.equal(binder.color("#0a0a0a", "vector", ["fill-neutral-950"], ["color"]).variable, null);
+  // A size or a width sets no color, and a token's class in a state that isn't on names none here.
+  assert.equal(binder.color("#0a0a0a", "text", ["text-sm", "text-primary"], ["color"]).variable, "foreground");
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-2", "border-dashed", "border-t-destructive"], ["border-color"]).variable, "border");
+  // A project's own font size, a v4 theme's --text-body or a config's fontSize, is a size.
+  const sized = { ...WITH_DEFAULTS, collections: [...WITH_DEFAULTS.collections, { category: "typography" as const, tokens: [{ name: "text/body", value: "15px", px: 15 }, { name: "caption", value: "12px", px: 12 }] }] };
+  assert.equal(new Binder(sized).color("#0a0a0a", "text", ["text-body", "text-caption"], ["color"]).variable, "foreground");
+  assert.equal(binder.color("#0a0a0a", "text", ["text-body"], ["color"]).variable, null);
+});
+
+test("Binder: of the tokens the classes name, the one a dark: class names fits both modes", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // An outline button: border-border, dark:border-input. Both are #e5e5e5 in
+  // light, and input is the dark theme's, so input is right in both modes.
+  assert.deepEqual(binder.color("#e5e5e5", "stroke", ["border-border", "dark:border-input"]), { variable: "input", candidates: ["border", "input"] });
+  assert.equal(binder.color("#ffffff", "fill", ["bg-card", "dark:bg-background"]).variable, "background");
+  // A dark: class alone names one as any class does.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["dark:border-input"], ["border-color"]).variable, "input");
+  // Two a dark: class names: still ambiguous.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["dark:border-border", "dark:border-input"]).variable, null);
+  // A dark theme's palette color is no token's: no base style stands in for it.
+  assert.equal(binder.color("#0a0a0a", "text", ["dark:text-neutral-50"], ["color"]).variable, null);
+  assert.equal(binder.color("#0a0a0a", "text", ["dark:text-muted-foreground"], ["color"]).variable, "foreground");
+});
+
+test("Binder: a Tailwind config's DEFAULT key is unnamed in a class", () => {
+  // shadcn/ui v3's `primary: { DEFAULT: "hsl(var(--primary))" }` is the token primary/DEFAULT, and bg-primary names it.
+  const binder = new Binder({ collections: [{ category: "colors", tokens: [{ name: "primary/DEFAULT", value: "", hex: "#18181b" }, { name: "foreground", value: "", hex: "#18181b" }] }] });
+  assert.equal(binder.color("#18181b", "fill", ["bg-primary"]).variable, "primary/DEFAULT");
 });
