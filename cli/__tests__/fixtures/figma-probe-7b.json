@@ -1,0 +1,178 @@
+{
+ "about": "Probe 7b: its one use_figma response, as use_figma returned it. Figma file rPGAMu9hIKY9BwFWRkDpY3, page \"storysync probe 7b\", 2026-10-13. Call 1 is spikes/figma-probe-7b-ring.js. A drop shadow whose color is bound with setBoundVariableForEffect takes the variable's alpha when assigned (A); assigned once more with its own alpha put back, it keeps that alpha and stays bound, and draws the variable's color of each mode at it (A2, the SVG export's feColorMatrix). An OUTSIDE stroke bound with the alpha as its paint's opacity draws the same (B), so the ring is built as a shadow.",
+ "call1": {
+  "variable": "VariableID:1:33",
+  "modes": {
+   "Light": [
+    0.039,
+    0.039,
+    0.039,
+    1
+   ],
+   "Dark": [
+    0.98,
+    0.98,
+    0.98,
+    1
+   ]
+  },
+  "nodes": {
+   "Light": {
+    "A": {
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_3\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 1 0\"/>"
+     ]
+    },
+    "A2": {
+     "effects": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_4\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0 0.0392157 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "B": {
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.039,
+        0.039,
+        0.039,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "align": "OUTSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "stroke=\"#0A0A0A\"",
+      "stroke-opacity=\"0.101961\""
+     ]
+    }
+   },
+   "Dark": {
+    "A": {
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        1
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_6\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 1 0\"/>"
+     ]
+    },
+    "A2": {
+     "effects": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        0.102
+       ],
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "strokes": [],
+     "align": "INSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "<feColorMatrix in=\"SourceAlpha\" type=\"matrix\" values=\"0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0\" result=\"hardAlpha\"/>",
+      "<feMorphology radius=\"1\" operator=\"dilate\" in=\"SourceAlpha\" result=\"effect1_dropShadow_44_7\"/>",
+      "<feColorMatrix type=\"matrix\" values=\"0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0 0.980392 0 0 0 0.101961 0\"/>"
+     ]
+    },
+    "B": {
+     "effects": [],
+     "strokes": [
+      {
+       "color": [
+        0.98,
+        0.98,
+        0.98,
+        null
+       ],
+       "opacity": 0.102,
+       "bound": "VariableID:1:33"
+      }
+     ],
+     "align": "OUTSIDE",
+     "size": [
+      100,
+      60
+     ],
+     "svg": [
+      "stroke=\"#FAFAFA\"",
+      "stroke-opacity=\"0.101961\""
+     ]
+    }
+   }
+  },
+  "createdNodeIds": [
+   "44:3",
+   "44:4",
+   "44:5",
+   "44:6",
+   "44:7",
+   "44:8"
+  ]
+ }
+}

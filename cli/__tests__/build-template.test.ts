@@ -706,6 +706,25 @@ test("bindings: what no class colors binds to the base styles' token, so Dark mo
   assert.equal((root.strokes as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, border);
 });
 
+test("bindings: a dialog's ring binds to the token its ring-* class names, at its own 10% alpha, built again the same", async () => {
+  // The fifth live push's Dialog: ring-1 ring-foreground/10, a spread-only
+  // shadow, stayed #0a0a0a1a in Dark, its color never bound. Figma gives a
+  // shadow bound afresh its variable's alpha, 1 here; the build assigns it
+  // once more with its own put back, which probe 7b saw it keep, bound.
+  const dialog = loadTreeFixture("dialog");
+  const coded = await codeFor(dialog, {}, SHADCN_TOKENS);
+  const mock = mockFor([dialog]);
+  const foreground = mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors").id;
+  for (const run of ["built", "built again"]) {
+    const [build] = await runPlan(mock, coded, ["build"]);
+    assert.equal(result(build).unbound.some((u) => u[2] === "effect"), false, run);
+    const root = mock.handle(variantsBySlug(mock).get("default")!.id) as { effects: { type: string; spread: number; color: { r: number; a: number }; boundVariables?: { color?: { id: string } } }[] };
+    assert.deepEqual(root.effects.map((e) => [e.type, e.spread, Math.round(e.color.r * 255), Math.round(e.color.a * 255), e.boundVariables?.color?.id]), [
+      ["DROP_SHADOW", 1, 0x0a, 0x1a, foreground],
+    ], run);
+  }
+});
+
 test("label: a set measured from its closed trigger says so on one line, written once, its description unescaped", async () => {
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].warnings = ['snap measured button[data-slot="dialog-trigger"], a closed trigger, rather than Switch. What it opens renders only while open.'];

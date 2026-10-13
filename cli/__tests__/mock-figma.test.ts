@@ -639,6 +639,27 @@ test("variables: a paint bound afresh takes the variable's alpha as its opacity;
   assert.deepEqual(result, { fresh: 0.302, again: 1, color: true, radius: 10, bound: radius.id, names: ["destructive"] });
 });
 
+test("variables: a shadow bound afresh takes the variable's alpha; assigned again with its own put back, it keeps it, bound, as probe 7b saw", async () => {
+  // Probe 7b's frames A and A2 in Light: a ring, #0a0a0a at 26 / 255, its
+  // color bound to foreground. A read back at alpha 1; A2, assigned once
+  // more with its alpha put back, at 0.102, still bound.
+  const probe = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-7b.json`, "utf8")).call1.nodes.Light as Record<string, { effects: { color: number[] }[] }>;
+  const figma = new MockFigma();
+  const { id } = figma.addVariable("foreground", "COLOR", "#0a0a0a");
+  const got = await ok(figma, `
+    const fg = await figma.variables.getVariableByIdAsync('${id}');
+    const A = 26 / 255;
+    const shadow = { type: 'DROP_SHADOW', color: { r: 10 / 255, g: 10 / 255, b: 10 / 255, a: A }, offset: { x: 0, y: 0 }, radius: 0, spread: 1, visible: true, blendMode: 'NORMAL', showShadowBehindNode: false };
+    const read = (n) => n.effects.map((e) => [[e.color.r, e.color.g, e.color.b, e.color.a].map((v) => Math.round(v * 1000) / 1000), e.boundVariables.color.id]);
+    const a = figma.createFrame();
+    a.effects = [figma.variables.setBoundVariableForEffect(shadow, 'color', fg)];
+    const a2 = figma.createFrame();
+    a2.effects = [figma.variables.setBoundVariableForEffect(shadow, 'color', fg)];
+    a2.effects = a2.effects.map((e) => Object.assign({}, e, { color: Object.assign({}, e.color, { a: A }) }));
+    return { A: read(a), A2: read(a2) };`) as Record<string, [number[], string][]>;
+  for (const key of ["A", "A2"]) assert.deepEqual(got[key], [[probe[key].effects[0].color, id]], key);
+});
+
 // --- The 0.4.0 skill templates, unchanged -----------------------------------------------
 
 const SKILL = readFileSync(`${ROOT}skills/claude-code.md`, "utf8");

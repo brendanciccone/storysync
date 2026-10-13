@@ -153,6 +153,20 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
   ]);
 });
 
+test("nodeStyle: a shadow's color binds to the token its ring-* class names, at its own alpha; one no class names is listed", () => {
+  // The fifth live push's Dialog: ring-1 ring-foreground/10, a spread-only
+  // shadow left #0a0a0a1a in Dark, since no effect color was bound.
+  const ring = (cls: string[]) => frame({ k: "", sh: [[0, 0, 0, 1, "#0a0a0a1a"], [0, 1, 2, 0, "#0000000d"]], bg: "#ffffff", r: 14, cls });
+  const c = ctx(new Binder(SHADCN_TOKENS));
+  assert.deepEqual(nodeStyle(ring(["bg-background", "ring-foreground", "rounded-xl"]), c).e, [
+    ["D", 0, 0, 0, 1, "#0a0a0a", 0.102, "foreground"], ["D", 0, 1, 2, 0, "#000000", 0.051],
+  ]);
+  assert.deepEqual(c.unbound.filter((u) => u.property === "effect"), []);
+  const c2 = ctx(new Binder(SHADCN_TOKENS));
+  assert.deepEqual(nodeStyle(ring(["bg-background"]), c2).e![0], ["D", 0, 0, 0, 1, "#0a0a0a", 0.102]);
+  assert.deepEqual(c2.unbound, [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"] }]);
+});
+
 test("nodeStyle: a turn in the plane of a childless node, nothing transformed around it, out of the flow or in it where its turned box is its own, is built as Figma's rotation; any other transform is named", () => {
   // The fifth push's Tooltip arrow: Tailwind's rotate-45, out of the flow.
   const arrow = (fields: Partial<TreeNode>) => frame({ k: "div", abs: 1, bg: "#0a0a0a", r: 2, box: [45.5, 21, 10, 10], tf: "rotate: 45deg", approx: "transform", ...fields });
