@@ -36,9 +36,19 @@ import { connectWithFallback, isRequestTimeout, requestTimeoutError, DEFAULT_REQ
 export interface FigmaVariable {
   name: string;
   resolvedType: string;
+  /** Its value in `mode`. */
   value: string;
   collection: string;
+  /** The mode `value` is in: its collection's first, or the one `--mode` named. */
   mode: string;
+  /**
+   * Its value in each of its collection's modes, by mode name, where the
+   * collection has more than one and no one mode was asked for: diff
+   * compares the Dark one with the code's dark theme. Read with each mode
+   * resolved through its aliases, so a Semantic variable aliasing a
+   * palette step takes the step's value in that mode.
+   */
+  modes?: Record<string, string>;
 }
 
 export interface FigmaComponentInfo {
@@ -246,24 +256,29 @@ for (const coll of collections) {
   for (const varId of coll.variableIds) all.push({ coll, targetMode, varId });
 }
 
+// A variable's value in a mode, through its aliases, as text.
+async function valueIn(v, mode) {
+  let raw = v.valuesByMode[mode.modeId] ?? v.valuesByMode[Object.keys(v.valuesByMode)[0]];
+  if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'VARIABLE_ALIAS') {
+    const resolved = await resolveAlias(raw.id, mode.modeId, 0);
+    raw = resolved.value;
+  }
+  if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) return rgbToHex(raw);
+  if (v.resolvedType === 'BOOLEAN') return String(Boolean(raw));
+  return String(raw);
+}
+
+// With no mode asked for, a variable of a collection with several modes
+// gives its value in each, by name, for diff to compare the Dark one too.
 async function describe({ coll, targetMode, varId }) {
   const v = await figma.variables.getVariableByIdAsync(varId);
   if (!v) return null;
-  let raw = v.valuesByMode[targetMode.modeId] ?? v.valuesByMode[Object.keys(v.valuesByMode)[0]];
-  let type = v.resolvedType;
-  if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'VARIABLE_ALIAS') {
-    const resolved = await resolveAlias(raw.id, targetMode.modeId, 0);
-    raw = resolved.value;
+  const entry = { name: v.name, resolvedType: v.resolvedType, value: await valueIn(v, targetMode), collection: coll.name, mode: targetMode.name };
+  if (!MODE_NAME && coll.modes.length > 1) {
+    entry.modes = {};
+    for (const mode of coll.modes) entry.modes[mode.name] = await valueIn(v, mode);
   }
-  let value = '';
-  if (type === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
-    value = rgbToHex(raw);
-  } else if (type === 'BOOLEAN') {
-    value = String(Boolean(raw));
-  } else {
-    value = String(raw);
-  }
-  return { name: v.name, resolvedType: type, value, collection: coll.name, mode: targetMode.name };
+  return entry;
 }
 
 return await slice(

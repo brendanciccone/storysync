@@ -1818,7 +1818,8 @@ function variablesFigma(variables, modes = {}) {
     }
     const id = `VariableID:${i}`;
     coll.variableIds.push(id);
-    byId.set(id, { name: v.name, resolvedType: v.type, valuesByMode: { [coll.modes[0].modeId]: v.value } });
+    // `values` gives one per mode, in order; `value` is the default mode's alone.
+    byId.set(id, { name: v.name, resolvedType: v.type, valuesByMode: Object.fromEntries(coll.modes.map((m, at) => [m.modeId, v.values ? v.values[at] : v.value]).filter(([, value]) => value !== undefined)) });
   });
   return {
     variables: {
@@ -4488,20 +4489,22 @@ async function main() {
     return `${counts.join(", ")}; ${refused}`;
   });
 
-  await check("the audit's variables read returns each collection's modes once, for the summary to name the ones not compared", async () => {
-    // It reads each collection's first mode, and an audit of shadcn/ui said
+  await check("the audit's variables read gives each variable's value in every mode of a collection of several, for the Dark one to be compared", async () => {
+    // It read each collection's first mode, and an audit of shadcn/ui said
     // "39 matched" with no word of a Dark mode it never compared.
     const code = useFigmaBlock(/^Read all variable collections/);
     const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
     const variables = Array.from({ length: batch + 3 }, (_, i) => (i < batch
-      ? { collection: "Colors", name: `color/${i}`, type: "COLOR", value: { r: 0, g: 0, b: 0, a: 1 } }
+      ? { collection: "Colors", name: `color/${i}`, type: "COLOR", values: [{ r: 0, g: 0, b: 0, a: 1 }, { r: 1, g: 1, b: 1, a: 1 }] }
       : { collection: "Radius", name: `radius/${i}`, type: "FLOAT", value: i }));
     const read = await readAllSlices(code, () => variablesFigma(variables, { Colors: ["Light", "Dark"] }));
     assert(read.length === 2, `read in ${read.length} calls`);
-    assert(JSON.stringify(read[0].modes) === JSON.stringify([{ collection: "Colors", modes: ["Light", "Dark"] }, { collection: "Radius", modes: ["Default"] }]),
-      `the first slice returns modes ${JSON.stringify(read[0].modes)}`);
-    assert(read.slice(1).every((slice) => slice.modes === undefined), "a later slice returns the modes again");
-    return "Colors: Light, Dark; Radius: Default, on the first of 2 slices";
+    const all = read.flatMap((slice) => slice.variables);
+    const colors = all.filter((v) => v.collection === "Colors");
+    assert(colors.length === batch && colors.every((v) => v.value === "#000000" && JSON.stringify(v.modes) === JSON.stringify({ Light: "#000000", Dark: "#ffffff" })),
+      `a Colors variable reads ${JSON.stringify(colors[0])}`);
+    assert(all.filter((v) => v.collection === "Radius").every((v) => v.modes === undefined), "a collection of one mode gives modes");
+    return `${batch} Colors variables in Light and Dark, 3 Radius in one mode, in 2 slices`;
   });
 
   await check("the audit reads the component sets on every page, not only the one loaded first", async () => {

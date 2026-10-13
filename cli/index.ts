@@ -10,7 +10,7 @@ import { FigmaClient } from "./figma.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, requestLimit } from "./mcp-connect.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
-import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences, modesNotCompared } from "./diff.js";
 import { describeFontStandIns, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
@@ -1115,14 +1115,20 @@ function checkTokens(
   }
 
   const drift = compareTokens(baseline, result);
+  // A baseline from before the dark theme was read: its dark values weren't
+  // compared, which the check says rather than pass as though they were.
+  const darkNote = `The baseline at ${baselinePath} was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared. Recreate it with \`${create}\` to check them.`;
   if (!hasDrift(drift)) {
-    if (json) console.log(JSON.stringify({ drift: false }));
-    else console.log(chalk.green("\nNo token drift detected."));
+    if (json) console.log(JSON.stringify({ drift: false, ...(drift.darkNotChecked ? { darkNotChecked: true } : {}) }));
+    else {
+      console.log(chalk.green("\nNo token drift detected."));
+      if (drift.darkNotChecked) console.log(chalk.dim(darkNote));
+    }
     return;
   }
 
   if (json) {
-    console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed }));
+    console.log(JSON.stringify({ drift: true, added: drift.added, removed: drift.removed, changed: drift.changed, ...(drift.darkNotChecked ? { darkNotChecked: true } : {}) }));
   } else {
     console.log(chalk.red("\nToken drift detected:\n"));
     for (const a of drift.added) {
@@ -1132,8 +1138,9 @@ function checkTokens(
       console.log(`  ${chalk.red("-")} ${r.category}: ${r.tokens.map((t) => t.name).join(", ")}`);
     }
     for (const c of drift.changed) {
-      console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}: ${c.from} → ${c.to}`);
+      console.log(`  ${chalk.yellow("~")} ${c.category}/${c.token}${c.mode ? ` (${c.mode})` : ""}: ${c.from} → ${c.to}`);
     }
+    if (drift.darkNotChecked) console.log(chalk.dim(`\n${darkNote}`));
     // A newer storysync can read tokens an older one left out, shadcn/ui's
     // radius scale say, which a baseline the older one wrote lists as added.
     const why = drift.removed.length || drift.changed.length
@@ -1215,17 +1222,20 @@ program
     }
 
     if (!found) {
-      if (json) console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
+      if (json) console.log(JSON.stringify({ source: result.source, sourcePath: result.sourcePath, modes: result.modes, collections: [], warnings: result.warnings, summary: { totalTokens: 0, collections: 0 } }));
       return;
     }
 
     // Default: pretty-print discovered tokens
     const totalTokens = result.collections.reduce((sum, c) => sum + c.tokens.length, 0);
+    const darkTokens = result.collections.reduce((sum, c) => sum + c.tokens.filter((t) => t.dark).length, 0);
 
     if (json) {
       console.log(JSON.stringify({
         source: result.source,
         sourcePath: result.sourcePath,
+        // Always written, so a baseline says it was read for the dark theme.
+        modes: result.modes,
         collections: result.collections,
         warnings: result.warnings,
         summary: { totalTokens, collections: result.collections.length },
@@ -1238,13 +1248,16 @@ program
         for (const token of shown) {
           // The px a FLOAT variable gets, when the value doesn't say it already.
           const px = token.px === undefined || token.value === `${token.px}px` ? "" : ` = ${token.px}px`;
-          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value + px)}`);
+          const dark = token.dark ? `   dark: ${token.dark.value}${token.dark.px === undefined || token.dark.value === `${token.dark.px}px` ? "" : ` = ${token.dark.px}px`}` : "";
+          console.log(`    ${token.name.padEnd(24)} ${chalk.dim(token.value + px + dark)}`);
         }
         if (!opts.all && collection.tokens.length > 8) {
           console.log(chalk.dim(`    ... and ${collection.tokens.length - 8} more (use --all to show)`));
         }
       }
       console.log(`\n${totalTokens} tokens in ${result.collections.length} collections`);
+      // Figma gets a Dark mode for them, the rest taking their light value there.
+      if (darkTokens) console.log(`${darkTokens} with a dark theme value, for a Dark mode beside Light`);
       if (result.warnings.length) {
         console.log(chalk.dim(`\nWarnings:`));
         for (const w of result.warnings) console.log(chalk.dim(`  ${w}`));
@@ -1300,7 +1313,7 @@ program
   .option("--request-timeout <ms>", requestTimeoutHelp("Figma MCP and Storybook MCP"))
   .option("--project <path>", "Project root to scan for tokens", ".")
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
-  .option("--mode <name>", "Figma variable mode to read (default: each collection's first mode)")
+  .option("--mode <name>", "Figma variable mode to read, alone (default: every mode, the first compared with the light theme and one named Dark with the dark theme)")
   .option("--components <names>", "Comma-separated component names, titles or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
   .option("--exclude-props <names>", "Comma-separated prop names the push left out with --exclude-props, left out of every component here too, so they aren't reported missing from Figma")
   .option("--json", "Output JSON instead of formatted text")
@@ -1357,7 +1370,9 @@ program
       }
 
       const codeResult = extractTokens(opts.project as string, source);
-      const tokenDiffs = figmaReadFailed ? [] : diffTokens(codeResult.collections, figmaVars);
+      const tokenOptions = { codeModes: codeResult.modes, mode };
+      const tokenDiffs = figmaReadFailed ? [] : diffTokens(codeResult.collections, figmaVars, tokenOptions);
+      const notCompared = figmaReadFailed ? [] : modesNotCompared(figmaVars, tokenOptions);
 
       // --- Component diff ---
       let componentDiffs: ComponentDiffEntry[] = [];
@@ -1454,6 +1469,8 @@ program
           storybookReadFailed,
           // The components code has that were never compared.
           mappingFailures,
+          // The Figma modes no code value was compared with.
+          modesNotCompared: notCompared,
         }));
       } else {
         if (figmaReadFailed) {
@@ -1470,12 +1487,14 @@ program
         if (mismatched.length) {
           console.log(chalk.bold("\nToken differences:\n"));
           for (const t of mismatched) {
+            const mode = t.mode ? ` (${t.mode})` : "";
             if (t.status === "missing_from_figma") {
-              console.log(`  ${chalk.yellow("+")} ${t.category}/${t.name} ${chalk.dim(`(${t.codeValue})`)} ${chalk.yellow("not in Figma")}`);
+              const where = t.mode ? `no ${t.mode} mode in Figma` : "not in Figma";
+              console.log(`  ${chalk.yellow("+")} ${t.category}/${t.name}${mode} ${chalk.dim(`(${t.codeValue})`)} ${chalk.yellow(where)}`);
             } else if (t.status === "missing_from_code") {
               console.log(`  ${chalk.cyan("-")} ${t.category}/${t.name} ${chalk.dim(`(${t.figmaValue})`)} ${chalk.cyan("not in code")}`);
             } else if (t.status === "value_mismatch") {
-              console.log(`  ${chalk.red("~")} ${t.category}/${t.name} code=${chalk.dim(t.codeValue!)} figma=${chalk.dim(t.figmaValue!)}`);
+              console.log(`  ${chalk.red("~")} ${t.category}/${t.name}${mode} code=${chalk.dim(t.codeValue!)} figma=${chalk.dim(t.figmaValue!)}`);
             }
           }
         } else if (!figmaReadFailed && (figmaVars.length || codeResult.collections.length)) {
@@ -1513,6 +1532,10 @@ program
         if (summary.tokensMissingFromFigma) parts.push(chalk.yellow(`${summary.tokensMissingFromFigma} missing from Figma`));
         if (summary.tokensMissingFromCode) parts.push(chalk.cyan(`${summary.tokensMissingFromCode} missing from code`));
         if (parts.length) console.log(`Tokens: ${parts.join(", ")}`);
+        // So a count of matches isn't read as covering every mode.
+        for (const { collection, modes } of notCompared) {
+          console.log(chalk.dim(`Not compared: the ${modes.join(", ")} ${modes.length === 1 ? "mode" : "modes"} of ${collection}`));
+        }
 
         if (storybook) {
           const cParts: string[] = [];

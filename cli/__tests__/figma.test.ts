@@ -315,21 +315,25 @@ const TOKENS: FileSpec = {
         { name: "color/overlay", type: "COLOR", values: [{ r: 0, g: 0, b: 0, a: 0.5 }, { r: 1, g: 1, b: 1, a: 0.5 }] },
       ],
     },
-    { name: "Semantic", modes: ["Light", "Dark"], variables: [{ name: "primary", type: "COLOR", values: [{ alias: "Colors/color/palette-0/100" }, { alias: "Colors/color/palette-0/100" }] }] },
+    { name: "Semantic", modes: ["Light", "Dark"], variables: [{ name: "primary", type: "COLOR", values: [{ alias: "Colors/color/palette-0/100" }, { alias: "Colors/color/palette-0/200" }] }] },
     { name: "Spacing", modes: ["Default"], variables: Array.from({ length: 50 }, (_, i) => ({ name: `space/${i}`, type: "FLOAT" as const, values: [i * 4] })) },
   ],
 };
 
-test("getVariables: reads every variable a slice at a time, in each collection's first mode", async () => {
+test("getVariables: reads every variable a slice at a time, in its collection's first mode and, where it has several, in each", async () => {
   const { result, error, calls } = await read(TOKENS, (client) => client.getVariables("file-key"));
   assert.equal(error, null);
   assert.equal(result?.length, 452);
   assert.ok(calls.length > 1 && calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD && !c.switches.length), calls.map((c) => c.bytes).join(", "));
   assert.equal(new Set(result?.map((v) => `${v.collection}/${v.name}`)).size, 452);
   const byName = new Map(result?.map((v) => [`${v.collection}/${v.name}`, v]));
-  assert.deepEqual(byName.get("Colors/color/palette-0/100"), { name: "color/palette-0/100", resolvedType: "COLOR", value: "#000000", collection: "Colors", mode: "Light" });
-  assert.equal(byName.get("Colors/color/overlay")?.value, "#00000080");
-  assert.equal(byName.get("Semantic/primary")?.value, "#000000");
+  // Every mode, for diff to compare the Dark one with the code's dark
+  // theme: only the first was read, so a wrong dark value never showed.
+  assert.deepEqual(byName.get("Colors/color/palette-0/100"), { name: "color/palette-0/100", resolvedType: "COLOR", value: "#000000", collection: "Colors", mode: "Light", modes: { Light: "#000000", Dark: "#243355" } });
+  assert.deepEqual(byName.get("Colors/color/overlay")?.modes, { Light: "#00000080", Dark: "#ffffff80" });
+  // Each mode's alias is followed, to another variable here.
+  assert.deepEqual(byName.get("Semantic/primary")?.modes, { Light: "#000000", Dark: "#243355" });
+  // A collection of one mode gives no modes.
   assert.deepEqual(byName.get("Spacing/space/3"), { name: "space/3", resolvedType: "FLOAT", value: "12", collection: "Spacing", mode: "Default" });
 });
 
@@ -337,7 +341,7 @@ test("getVariables: --mode reads that mode, from the collections that have it", 
   const { result, error } = await read(TOKENS, (client) => client.getVariables("file-key", "Dark"));
   assert.equal(error, null);
   assert.equal(result?.length, 402);
-  assert.ok(result?.every((v) => v.mode === "Dark" && v.collection !== "Spacing"));
+  assert.ok(result?.every((v) => v.mode === "Dark" && v.collection !== "Spacing" && v.modes === undefined));
   assert.equal(result?.find((v) => v.name === "color/palette-0/100")?.value, "#243355");
   assert.equal(result?.find((v) => v.name === "color/overlay")?.value, "#ffffff80");
 });

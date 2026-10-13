@@ -622,6 +622,27 @@ test("bindings: paints, text colors and radii bind to the variables their classe
   }
 });
 
+test("bindings: a variable with Light and Dark modes binds by its name, as one of one mode does, its paint showing Light", async () => {
+  // The push makes a Dark mode for the dark theme's values. The build finds
+  // a variable by name, so the modes change nothing it does: the paint is
+  // bound, and shows the default mode's value, the light theme snap measured.
+  const button = copy(loadTreeFixture("button-icon"));
+  button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
+  const coded = await codeFor(button, {}, SHADCN_TOKENS);
+  const mock = mockFor([button]);
+  const primary = mock.addVariable("primary", "COLOR", { Light: "#171717", Dark: "#e5e5e5" }, "Colors").id;
+  const foreground = mock.addVariable("primary/foreground", "COLOR", { Light: "#fafafa", Dark: "#171717" }, "Colors").id;
+  const [build] = await runPlan(mock, coded, ["build"]);
+  // The other variants' tokens are no variable here; primary's are found.
+  assert.equal(result(build).unbound.some((u) => /^primary/.test(u[3])), false, JSON.stringify(result(build).unbound));
+  const root = mock.handle(variantsBySlug(mock).get("variant-default--size-default")!.id) as Record<string, unknown>;
+  const fill = (root.fills as { boundVariables?: { color: { id: string } }; color: { r: number } }[])[0];
+  assert.equal(fill.boundVariables?.color.id, primary);
+  assert.equal(Math.round(fill.color.r * 255), 0x17);
+  const label = mock.nodes("TEXT").find((n) => n.name === "Login with Email Button")!;
+  assert.equal((mock.handle(label.id).fills as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, foreground);
+});
+
 test("label: a set measured from its closed trigger says so on one line, written once, its description unescaped", async () => {
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].warnings = ['snap measured button[data-slot="dialog-trigger"], a closed trigger, rather than Switch. What it opens renders only while open.'];

@@ -70,3 +70,20 @@ test("Binder: no tokens binds nothing", () => {
   assert.equal(binder.empty, true);
   assert.deepEqual(binder.color("#171717", "fill", ["bg-primary"]), { variable: null, candidates: [] });
 });
+
+test("Binder: a token's dark value is no candidate, since snap measures the light theme the variable's default mode holds", () => {
+  const tokens = {
+    collections: [
+      { category: "colors" as const, tokens: [
+        { name: "background", value: "#ffffff", hex: "#ffffff", dark: { value: "#0a0a0a", hex: "#0a0a0a" } },
+        { name: "foreground", value: "#0a0a0a", hex: "#0a0a0a", dark: { value: "#fafafa", hex: "#fafafa" } },
+      ] },
+      { category: "radius" as const, tokens: [{ name: "lg", value: "0.5rem", px: 8, dark: { value: "0.75rem", px: 12 } }] },
+    ],
+  };
+  const binder = new Binder(tokens);
+  // bg-background would pick background, were its dark #0a0a0a a candidate.
+  assert.deepEqual(binder.color("#0a0a0a", "fill", ["bg-background"]), { variable: "foreground", candidates: ["foreground"] });
+  assert.deepEqual(binder.radius(12, ["rounded-lg"]), { variable: null, candidates: [] });
+  assert.equal(binder.radius(8, ["rounded-lg"]).variable, "lg");
+});

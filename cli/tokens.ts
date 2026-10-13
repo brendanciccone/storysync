@@ -33,6 +33,24 @@ export interface TokenValue {
    */
   px?: number;
   group?: string;
+  /**
+   * The dark theme's value, where the project's stylesheets set one that
+   * differs from this: in `.dark`, `[data-theme="dark"]` and the like, or a
+   * `:root` in `@media (prefers-color-scheme: dark)`. Read as the light value
+   * is, with the dark theme's variables over `:root`'s, so shadcn/ui's
+   * `background`, `hsl(var(--background))` in a v3 config or `var(--background)`
+   * in v4's `@theme inline`, gets `.dark`'s `--background`. The push makes it
+   * the variable's Dark mode; where a token has none, its Dark mode is its
+   * light value, as in the browser, where `.dark` leaves it as `:root` sets it.
+   */
+  dark?: TokenModeValue;
+}
+
+/** A token's value in a mode other than the default, with its `hex` or `px` as the default's has them. */
+export interface TokenModeValue {
+  value: string;
+  hex?: string;
+  px?: number;
 }
 
 export interface TokenCollection {
@@ -45,6 +63,13 @@ export interface TokenExtractionResult {
   sourcePath: string;
   collections: TokenCollection[];
   warnings: string[];
+  /**
+   * The Figma variable modes the tokens fill: `["Light", "Dark"]` when a
+   * token has a `dark` value, else `["Light"]`. extractTokens always sets
+   * it, so a baseline that has it was written by a storysync that reads the
+   * dark theme, and `--check` compares dark values only against one that has.
+   */
+  modes?: string[];
 }
 
 /**
@@ -284,13 +309,13 @@ const LENGTH_CATEGORIES: ReadonlySet<TokenCategory> = new Set(["radius", "spacin
 
 export function extractTokens(projectPath: string, sourceType?: TokenSourceType): TokenExtractionResult {
   const { vars, written, varsFrom, ...result } = extractFromSource(projectPath, sourceType);
-  // Where the tokens came through the stylesheets' variables, say that a
-  // dark theme's are not among them, so a comparison of these tokens, an
-  // audit's "39 matched" say, isn't read as covering both themes.
-  if (vars && varsFrom !== "the theme file") {
-    const dark = darkThemeWarning(projectPath);
-    if (dark) result.warnings.push(dark);
-  }
+  // Where the tokens came through the stylesheets' variables, they are read
+  // again with the dark theme's variables over :root's, for each token's
+  // dark value. Only the light theme's were read, with a warning, so the
+  // push made one mode and an audit's "39 matched" covered half the colors.
+  const darkFiles = vars && varsFrom !== "the theme file" ? findDarkCSS(projectPath) : [];
+  const dark = darkFiles.length ? extractFromSource(projectPath, sourceType, darkFiles) : null;
+  const darkTokens = dark ? tokensByCategory(dark.collections) : null;
   for (const collection of result.collections) {
     collection.tokens = collection.tokens.map((token) => {
       // `value` stays as the source writes it, for --check. CSS custom
@@ -299,18 +324,30 @@ export function extractTokens(projectPath: string, sourceType?: TokenSourceType)
       const resolved = vars ? resolveTailwindCssRefs(token.value, vars) : token.value;
       const unresolved = unresolvedRefs(resolved, written ?? vars, varsFrom ?? ":root", token.value);
       if (unresolved) result.warnings.push(`Unresolved: ${collection.category} ${token.name} = ${token.value} (${unresolved})`);
-      if (collection.category === "colors") {
-        const hex = tokenColorToHex(resolved);
-        return hex ? { ...token, hex } : token;
+      const out: TokenValue = { ...token, ...workedOut(collection.category, resolved) };
+      const other = darkTokens?.get(collection.category)?.get(token.name);
+      if (other) {
+        const darkResolved = dark?.vars ? resolveTailwindCssRefs(other.value, dark.vars) : other.value;
+        if (darkResolved !== resolved) out.dark = { value: other.value, ...workedOut(collection.category, darkResolved) };
       }
-      if (LENGTH_CATEGORIES.has(collection.category)) {
-        const px = lengthToPx(resolved);
-        return px === null ? token : { ...token, px };
-      }
-      return token;
+      return out;
     });
   }
-  return result;
+  const hasDark = result.collections.some((c) => c.tokens.some((t) => t.dark));
+  return { ...result, modes: hasDark ? ["Light", "Dark"] : ["Light"] };
+}
+
+/** A resolved value's `hex`, for a color, or `px`, for a length, when it has one. */
+function workedOut(category: TokenCategory, resolved: string): { hex?: string; px?: number } {
+  if (category === "colors") {
+    const hex = tokenColorToHex(resolved);
+    return hex ? { hex } : {};
+  }
+  if (LENGTH_CATEGORIES.has(category)) {
+    const px = lengthToPx(resolved);
+    return px === null ? {} : { px };
+  }
+  return {};
 }
 
 /**
@@ -360,19 +397,24 @@ function whyUnresolved(name: string, written: Map<string, string> | undefined, w
   return `${name} is set through var()s nested deeper than storysync follows`;
 }
 
-function extractFromSource(projectPath: string, sourceType?: TokenSourceType): Extraction {
+/**
+ * The extraction of `sourceType`, or of the source detected. With
+ * `darkFiles`, the stylesheets that set a dark theme, it is read with their
+ * dark theme's variables over :root's, for the dark values.
+ */
+function extractFromSource(projectPath: string, sourceType?: TokenSourceType, darkFiles?: string[]): Extraction {
   if (sourceType) {
     switch (sourceType) {
       case "tailwind": {
         const config = findTailwindConfig(projectPath);
-        if (config) return extractFromTailwind(config, projectPath);
+        if (config) return extractFromTailwind(config, projectPath, darkFiles);
         const themeCss = findTailwindThemeCSS(projectPath);
-        if (themeCss.length) return extractFromTailwindTheme(themeCss, projectPath);
+        if (themeCss.length) return extractFromTailwindTheme(themeCss, projectPath, darkFiles);
         return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No tailwind.config or CSS @theme block found"] };
       }
       case "css": {
         const files = findCSSWithCustomProperties(projectPath);
-        if (files.length) return extractFromCSS(files, projectPath);
+        if (files.length) return extractFromCSS(files, projectPath, darkFiles);
         return { source: "css", sourcePath: "", collections: [], warnings: ["No CSS files with custom properties found"] };
       }
       case "theme": {
@@ -388,7 +430,7 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): E
     return { source: "tailwind", sourcePath: "", collections: [], warnings: ["No token source detected"] };
   }
 
-  const extraction = extractDetected(detected, projectPath);
+  const extraction = extractDetected(detected, projectPath, darkFiles);
   // A tailwind.config.mts or .cts that detection passed over is named, so
   // the user can choose it.
   const passedOver = findTailwindConfig(projectPath, LATE_TAILWIND_CONFIGS);
@@ -398,20 +440,20 @@ function extractFromSource(projectPath: string, sourceType?: TokenSourceType): E
   return extraction;
 }
 
-function extractDetected(detected: DetectedSource, projectPath: string): Extraction {
+function extractDetected(detected: DetectedSource, projectPath: string, darkFiles?: string[]): Extraction {
   switch (detected.type) {
     case "tailwind":
       return detected.path.endsWith(".css")
-        ? extractFromTailwindTheme(findTailwindThemeCSS(projectPath), projectPath)
-        : extractFromTailwind(detected.path, projectPath);
-    case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath), projectPath);
+        ? extractFromTailwindTheme(findTailwindThemeCSS(projectPath), projectPath, darkFiles)
+        : extractFromTailwind(detected.path, projectPath, darkFiles);
+    case "css": return extractFromCSS(findCSSWithCustomProperties(projectPath), projectPath, darkFiles);
     case "theme": return extractFromTheme(detected.path);
   }
 }
 
 // --- Tailwind extraction ---
 
-function extractFromTailwind(configPath: string, projectRoot?: string): Extraction {
+function extractFromTailwind(configPath: string, projectRoot?: string, darkFiles?: string[]): Extraction {
   const content = stripComments(readFileSync(configPath, "utf8"));
   const warnings: string[] = [];
 
@@ -478,7 +520,7 @@ function extractFromTailwind(configPath: string, projectRoot?: string): Extracti
   let vars: Map<string, string> | undefined;
   let written: Map<string, string> | undefined;
   if (cssFiles.length && collectionsHaveCssVarRefs(collections)) {
-    const declared = readRootDeclarations(cssFiles);
+    const declared = readRootDeclarations(cssFiles, undefined, darkFiles);
     const cssVars = resolveRootVars(declared);
     if (cssVars.size) {
       for (const coll of collections) {
@@ -586,42 +628,44 @@ function themeLayer(blocks: ThemeBlocks, warnings: string[]): ThemeLayer {
 const DARK_SELECTOR = /\.(?:dark|dark-mode|dark-theme|theme-dark)(?![\w-])|\[data-[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?dark["']?\s*\]/i;
 
 /**
- * A warning naming how many custom properties the project's stylesheets set
- * for a dark theme, none of which tokens reads: in a rule for a dark
- * selector, or a `:root` in `@media (prefers-color-scheme: dark)`. Null
- * when they set none. tokens extracts the light theme's alone, and said
- * nothing of it, so an audit of shadcn/ui's 31 colors reported them
- * matched with no word of the 31 dark values never compared. Tailwind's
- * own `--tw-` variables, which a compiled `dark:` utility sets, are no
- * theme's, and left out.
+ * Whether a selector sets the variables of a dark theme for the page: a
+ * dark selector alone, as `.dark` or `[data-theme="dark"]`, or on the root
+ * or the body, as `:root.dark`, `html.dark` or `body.dark`, or nested in
+ * `:root` as `&.dark`, or `.dark *`. `.dark .card { }` sets a card's.
  */
-function darkThemeWarning(projectPath: string): string | null {
-  const found: string[] = [];
-  for (const file of new Set(findCSSWithCustomProperties(projectPath).map((f) => resolve(f)))) {
-    let css: string;
-    try {
-      css = readCss(file);
-    } catch {
-      continue;
+function isDarkThemeSelector(selector: string): boolean {
+  const m = DARK_SELECTOR.exec(selector);
+  if (!m) return false;
+  const rest = (selector.slice(0, m.index) + selector.slice(m.index + m[0].length)).replace(/\s+/g, "");
+  return /^(?:html|body|&|\*)?(?::root)*\*?$/i.test(rest);
+}
+
+/** Whether a rule sets the dark theme: one for a dark selector, or a `:root` in `@media (prefers-color-scheme: dark)`. */
+function setsDarkTheme(rule: StyleRule): boolean {
+  const selectors = splitTopLevel(rule.selector, ",").map((selector) => selector.trim());
+  if (rule.atRules.some(isDarkScheme) && selectors.some((selector) => ROOT_SELECTOR.test(selector))) return true;
+  return selectors.some(isDarkThemeSelector);
+}
+
+/**
+ * The custom properties a stylesheet declares for the dark theme, as
+ * written, in order. Tailwind's own `--tw-` variables, which a compiled
+ * `dark:` utility sets, are no theme's, and left out.
+ */
+function darkDeclarations(css: string): [string, string][] {
+  const declarations: [string, string][] = [];
+  for (const rule of styleRules(css)) {
+    if (!setsDarkTheme(rule)) continue;
+    for (const decl of rule.declarations.matchAll(/\s*(--[\w-]+)\s*:\s*([^;}]+);?/g)) {
+      if (!decl[1].startsWith("--tw-")) declarations.push([decl[1].trim(), decl[2].trim()]);
     }
-    const names = new Set<string>();
-    const where = new Set<string>();
-    // Each rule's own declarations, as rootDeclarations reads the default
-    // theme's: a `:root` in the dark color scheme's @media, or a rule for a
-    // dark selector, nested in another or not.
-    for (const rule of styleRules(css)) {
-      const selector = rule.selector.replace(/\s+/g, " ");
-      const inMedia = rule.atRules.some(isDarkScheme) && /:root/.test(selector);
-      if (!inMedia && !DARK_SELECTOR.test(selector)) continue;
-      const declared = [...rule.declarations.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]).filter((name) => !name.startsWith("--tw-"));
-      if (!declared.length) continue;
-      for (const name of declared) names.add(name);
-      where.add(inMedia ? "@media (prefers-color-scheme: dark)" : selector);
-    }
-    if (names.size) found.push(`${relative(resolve(projectPath), file) || file} sets ${names.size} ${names.size === 1 ? "variable" : "variables"} for ${[...where].join(", ")}`);
   }
-  if (!found.length) return null;
-  return `Only the light theme is read: ${found.join("; ")}, which no token here holds, so a comparison of these tokens covers the light theme alone`;
+  return declarations;
+}
+
+/** The project's stylesheets that declare a custom property for the dark theme. */
+function findDarkCSS(projectPath: string): string[] {
+  return findCSS(projectPath, (css) => darkDeclarations(css).length > 0);
 }
 
 /**
@@ -1106,8 +1150,11 @@ function rootDeclarations(css: string, bundled = false): [string, string][] {
  * written, a later declaration winning: those of each rule whose selector
  * list holds `:root`, leaving out the dark color scheme's. A file that
  * can't be read is skipped, and named in `warnings` when there are any.
+ * With `darkFiles`, the dark theme's declarations in them follow, over
+ * the default theme's, as `.dark` on the root overrides `:root` in the
+ * browser: the variables the dark theme renders with.
  */
-function readRootDeclarations(files: string[], warnings?: string[]): Map<string, string> {
+function readRootDeclarations(files: string[], warnings?: string[], darkFiles?: string[]): Map<string, string> {
   const declared = new Map<string, string>();
   for (const file of files) {
     try {
@@ -1115,6 +1162,11 @@ function readRootDeclarations(files: string[], warnings?: string[]): Map<string,
     } catch {
       warnings?.push(`Could not read ${file}`);
     }
+  }
+  for (const file of darkFiles ?? []) {
+    try {
+      for (const [name, value] of darkDeclarations(readCss(file))) declared.set(name, value);
+    } catch { /* read as the light theme was */ }
   }
   return declared;
 }
@@ -1539,10 +1591,10 @@ function isThemeTokenName(varName: string): boolean {
  * defaults are not tokens themselves, as a Tailwind config's aren't. A
  * namespace that is no token category is reported as uncategorized.
  */
-function extractFromTailwindTheme(files: string[], projectPath: string): Extraction {
+function extractFromTailwindTheme(files: string[], projectPath: string, darkFiles?: string[]): Extraction {
   const warnings: string[] = [];
   const declared = readThemeDeclarations(files, warnings);
-  const root = readRootDeclarations(findCSSWithCustomProperties(projectPath));
+  const root = readRootDeclarations(findCSSWithCustomProperties(projectPath), undefined, darkFiles);
   const vars = themeVars(projectPath, resolveRootVars(root), declared);
   // The same, with :root's as written, to say why a var() didn't resolve.
   const written = new Map(vars);
@@ -1672,9 +1724,9 @@ const BARE_SCALES = new Map<string, TokenCategory>([
  * radius `radius/md`. A Tailwind v4 project's `@theme` variables built from
  * them are added by addRootDerivedTheme.
  */
-function extractFromCSS(files: string[], projectPath: string): Extraction {
+function extractFromCSS(files: string[], projectPath: string, darkFiles?: string[]): Extraction {
   const warnings: string[] = [];
-  const declared = readRootDeclarations(files, warnings);
+  const declared = readRootDeclarations(files, warnings, darkFiles);
 
   if (!declared.size) {
     return { source: "css", sourcePath: files[0] ?? "", collections: [], warnings: [...warnings, "No custom properties found"] };
@@ -1950,6 +2002,8 @@ export interface TokenBaseline {
   sourcePath: string;
   collections: TokenCollection[];
   generatedAt: string;
+  /** As TokenExtractionResult's: absent from a baseline an earlier storysync wrote, which `--check` compares no dark values against. */
+  modes?: string[];
 }
 
 /**
@@ -1989,6 +2043,9 @@ export function readTokenBaseline(path: string): TokenBaseline | null {
     if (!collection.tokens.every((t: unknown) => isRecord(t) && typeof t.name === "string" && typeof t.value === "string")) {
       throw new Error(`The token baseline at ${path} has a ${collection.category} token without a "name" and a "value", so it is not a baseline`);
     }
+    if (!collection.tokens.every((t: Record<string, unknown>) => t.dark === undefined || (isRecord(t.dark) && typeof t.dark.value === "string"))) {
+      throw new Error(`The token baseline at ${path} has a ${collection.category} token whose "dark" has no "value", so it is not a baseline`);
+    }
   }
   return parsed as TokenBaseline;
 }
@@ -2011,7 +2068,13 @@ export function baselineCommand(path: string, opts: { project?: string; source?:
 export interface TokenDrift {
   added: { category: TokenCategory; tokens: TokenValue[] }[];
   removed: { category: TokenCategory; tokens: TokenValue[] }[];
-  changed: { category: TokenCategory; token: string; from: string; to: string }[];
+  /** A token's value changed, or with `mode: "Dark"`, its dark theme's. */
+  changed: { category: TokenCategory; token: string; from: string; to: string; mode?: "Dark" }[];
+  /**
+   * The baseline was written by a storysync that didn't read the dark
+   * theme, so the dark values the current tokens have weren't compared.
+   */
+  darkNotChecked?: boolean;
 }
 
 /**
@@ -2032,8 +2095,18 @@ function tokensByCategory(collections: TokenCollection[]): Map<TokenCategory, Ma
   return byCategory;
 }
 
+/**
+ * What changed from `baseline` to `current`. A token's dark value is
+ * compared only against a baseline that has `modes`, one a storysync that
+ * reads the dark theme wrote: an earlier one's has no dark values, and
+ * would otherwise report every dark token as changed. Its dark value is
+ * its light one where it has none, as in the browser, so a token whose
+ * light value changed, with no dark value on either side, changed once.
+ */
 export function compareTokens(baseline: TokenBaseline, current: TokenExtractionResult): TokenDrift {
   const drift: TokenDrift = { added: [], removed: [], changed: [] };
+  const darkChecked = Array.isArray(baseline.modes);
+  if (!darkChecked && current.collections.some((c) => c.tokens.some((t) => t.dark))) drift.darkNotChecked = true;
 
   const baseMap = tokensByCategory(baseline.collections);
   const currMap = tokensByCategory(current.collections);
@@ -2051,8 +2124,12 @@ export function compareTokens(baseline: TokenBaseline, current: TokenExtractionR
       const base = baseTokens.get(token.name);
       if (!base) {
         newTokens.push(token);
-      } else if (base.value !== token.value) {
-        drift.changed.push({ category, token: token.name, from: base.value, to: token.value });
+      } else {
+        if (base.value !== token.value) drift.changed.push({ category, token: token.name, from: base.value, to: token.value });
+        const [was, now] = [base.dark?.value, token.dark?.value];
+        if (darkChecked && (was !== undefined || now !== undefined) && (was ?? base.value) !== (now ?? token.value)) {
+          drift.changed.push({ category, token: token.name, from: was ?? base.value, to: now ?? token.value, mode: "Dark" });
+        }
       }
     }
     if (newTokens.length) drift.added.push({ category, tokens: newTokens });

@@ -14,6 +14,14 @@ inputs:
   components:
     description: "Comma-separated list of component names, titles or IDs to validate (default: all). A name that matches no component fails the Map components step, which lists the names available"
     required: false
+  exclude_props:
+    description: "Comma-separated prop names never to map as variant properties, in any component, as map's --exclude-props. Give the props the push left out, and write the baseline with the same list"
+    required: false
+    default: ""
+  request_timeout:
+    description: "How long Map components waits for each Storybook MCP request, in milliseconds, as map's --request-timeout (default: storysync's own, five minutes). Raise it for a slow or busy Storybook"
+    required: false
+    default: ""
   node_version:
     description: "Node.js version to use"
     required: false
@@ -99,15 +107,17 @@ runs:
       with:
         package_json_file: ${{ steps.storysync.outputs.package_json }}
 
-    - name: Install project dependencies
+    # Which package manager installs the project, found here so a bun
+    # project gets bun from setup-bun below when the runner has none.
+    - name: Find the package manager
+      id: package-manager
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
         INSTALL_COMMAND: ${{ inputs.install_command }}
       run: |
         if [ -n "$INSTALL_COMMAND" ]; then
-          echo "$INSTALL_COMMAND"
-          eval "$INSTALL_COMMAND"
+          echo "install_command is set, so it installs the dependencies"
           exit 0
         fi
 
@@ -154,12 +164,13 @@ runs:
         # packageManager names the one to use, as it does for corepack. A
         # stale lockfile from another package manager left beside the real
         # one is common, and no order of preference is right for everyone.
-        declared="$(node -e '
+        packageManager="$(node -e '
           try {
             const pm = JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager;
-            if (typeof pm === "string") console.log(pm.split("@")[0]);
+            if (typeof pm === "string") console.log(pm);
           } catch {}
         ')"
+        declared="${packageManager%%@*}"
         if [ -n "$declared" ]; then
           case "$declared" in
             pnpm | yarn | npm | bun) ;;
@@ -184,8 +195,51 @@ runs:
           fi
           pm="$1"
         fi
+        {
+          echo "manager=$pm"
+          echo "dir=$dir"
+        } >> "$GITHUB_OUTPUT"
 
-        case "$pm" in
+        # Run it rather than look it up: a shim an earlier step put on PATH
+        # answers to `command -v bun` whether or not bun is installed. Where
+        # it doesn't run, setup-bun installs the version packageManager
+        # names, or the latest.
+        if [ "$pm" = bun ] && ! bun --version > /dev/null 2>&1; then
+          version="${packageManager#bun@}"
+          version="${version%%+*}"
+          if [ "$declared" != bun ] || [ -z "$version" ] || [ "$version" = "$packageManager" ]; then
+            version=latest
+          fi
+          echo "bun isn't installed, so setup-bun installs bun $version"
+          {
+            echo "setup_bun=true"
+            echo "bun_version=$version"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup Bun
+      if: steps.package-manager.outputs.setup_bun == 'true'
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ steps.package-manager.outputs.bun_version }}
+
+    - name: Install project dependencies
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install_command }}
+        MANAGER: ${{ steps.package-manager.outputs.manager }}
+        MANAGER_DIR: ${{ steps.package-manager.outputs.dir }}
+      run: |
+        if [ -n "$INSTALL_COMMAND" ]; then
+          echo "$INSTALL_COMMAND"
+          eval "$INSTALL_COMMAND"
+          exit 0
+        fi
+
+        # Where Find the package manager found the lockfile.
+        cd "$MANAGER_DIR"
+        case "$MANAGER" in
           pnpm)
             cmd=(pnpm install --frozen-lockfile)
             ;;
@@ -223,12 +277,7 @@ runs:
             cmd=(npm ci)
             ;;
           bun)
-            # As for yarn, a shim an earlier step put on PATH answers to
-            # `command -v bun` whether or not bun is installed.
-            if ! bun --version > /dev/null 2>&1; then
-              echo "::error::Found ${lockfiles[*]}, but bun isn't installed. Add oven-sh/setup-bun before this action, or set install_command."
-              exit 1
-            fi
+            # Installed by Setup Bun when the runner had none.
             cmd=(bun install --frozen-lockfile)
             ;;
         esac
@@ -409,7 +458,8 @@ runs:
         try { baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")); } catch {}
         const isRecord = (v) => typeof v === "object" && v !== null;
         const isCollection = (c) => isRecord(c) && typeof c.category === "string" && Array.isArray(c.tokens)
-          && c.tokens.every(t => isRecord(t) && typeof t.name === "string" && typeof t.value === "string");
+          && c.tokens.every(t => isRecord(t) && typeof t.name === "string" && typeof t.value === "string"
+            && (t.dark === undefined || (isRecord(t.dark) && typeof t.dark.value === "string")));
         if (!isRecord(baseline) || !Array.isArray(baseline.collections) || !baseline.collections.every(isCollection)) {
           const held = isRecord(baseline) && typeof baseline.error === "string" ? " (it holds an error: " + baseline.error.replace(/^Error: /, "") + ")" : "";
           console.log(escape("::error::The token baseline at " + baselinePath + " (relative to " + where + ") is not tokens --json output" + held + ". Recreate it by " + create));
@@ -419,17 +469,29 @@ runs:
         // A category can have several collections: a theme file's fontSizes
         // and fontWeights are both typography. Keyed on the category alone,
         // only the last of them was compared, so each side's are merged into
-        // one map of token name to value, as tokens --check does.
+        // one map of token name to token, as tokens --check does.
         const byCategory = (cols) => {
           const map = new Map();
           for (const c of cols) {
             if (!map.has(c.category)) map.set(c.category, new Map());
-            for (const t of c.tokens) map.get(c.category).set(t.name, t.value);
+            for (const t of c.tokens) map.get(c.category).set(t.name, t);
           }
           return map;
         };
         const baseMap = byCategory(baseline.collections);
         const currMap = byCategory(collections);
+
+        // Dark values are compared, as tokens --check compares them, against
+        // a baseline with modes, which a storysync that reads the dark theme
+        // writes. An earlier one's has none, and every dark token would read
+        // as changed. A token's dark value is its light one where it has none.
+        const darkChecked = Array.isArray(baseline.modes);
+        const darkOf = (t) => (isRecord(t.dark) ? t.dark.value : undefined);
+        const darkChanged = (was, now) => darkChecked && (darkOf(was) !== undefined || darkOf(now) !== undefined)
+          && (darkOf(was) ?? was.value) !== (darkOf(now) ?? now.value);
+        if (!darkChecked && collections.some(c => c.tokens.some(t => darkOf(t) !== undefined))) {
+          console.log(escape("::notice::The token baseline at " + baselinePath + " (relative to " + where + ") was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared. Recreate it by " + create));
+        }
 
         const added = [];
         const removed = [];
@@ -438,12 +500,14 @@ runs:
         for (const [cat, tokens] of currMap) {
           const base = baseMap.get(cat);
           if (!base) { added.push({ category: cat, count: tokens.size }); continue; }
-          let newCount = 0, changedCount = 0;
-          for (const [name, value] of tokens) {
-            if (!base.has(name)) newCount++;
-            else if (base.get(name) !== value) changedCount++;
+          let newCount = 0, changedCount = 0, darkCount = 0;
+          for (const [name, token] of tokens) {
+            const was = base.get(name);
+            if (!was) { newCount++; continue; }
+            if (was.value !== token.value) changedCount++;
+            if (darkChanged(was, token)) darkCount++;
           }
-          if (newCount || changedCount) changed.push({ category: cat, added: newCount, changed: changedCount });
+          if (newCount || changedCount || darkCount) changed.push({ category: cat, added: newCount, changed: changedCount, dark: darkCount });
         }
         for (const [cat, tokens] of baseMap) {
           const curr = currMap.get(cat);
@@ -465,7 +529,7 @@ runs:
         // A newer storysync can read tokens an older one left out, shadcn/ui's
         // radius scale say, which a baseline the older one wrote lists as
         // added. Said only in the CLI, CI went red with no reason given.
-        const onlyAdded = !removed.length && changed.every(c => !c.changed);
+        const onlyAdded = !removed.length && changed.every(c => !c.changed && !c.dark);
         const why = onlyAdded ? "If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't" : "If they're intended";
         output("error", escape("Design tokens differ from " + baselinePath + " (relative to " + where + "). Detect token drift lists the changes. " + why + ", update the baseline by " + create));
 
@@ -487,7 +551,7 @@ runs:
         }
         if (changed.length) {
           body += "### Changed collections\n";
-          for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed\n";
+          for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed" + (c.dark ? ", " + c.dark + " changed in the dark theme" : "") + "\n";
           body += "\n";
         }
         if (onlyAdded) body += "Every change is an added token. " + why + ", update the baseline by " + create + ".\n\n";
@@ -513,11 +577,22 @@ runs:
       env:
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
+        EXCLUDE_PROPS: ${{ inputs.exclude_props }}
+        REQUEST_TIMEOUT: ${{ inputs.request_timeout }}
+        # A line on stderr per component as it is read, so a long map shows
+        # in the log where it is rather than nothing for minutes.
+        STORYSYNC_PROGRESS: "1"
       run: |
         STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--storybook "$STORYBOOK_URL" --json)
         if [ -n "$COMPONENTS" ]; then
           ARGS+=(--components "$COMPONENTS")
+        fi
+        if [ -n "$EXCLUDE_PROPS" ]; then
+          ARGS+=(--exclude-props "$EXCLUDE_PROPS")
+        fi
+        if [ -n "$REQUEST_TIMEOUT" ]; then
+          ARGS+=(--request-timeout "$REQUEST_TIMEOUT")
         fi
         # Fails on a components name that matches nothing, listing the names
         # there are, rather than mapping fewer components than asked for.
@@ -561,6 +636,7 @@ runs:
         BASELINE_PATH: ${{ inputs.baseline }}
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
+        EXCLUDE_PROPS: ${{ inputs.exclude_props }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
@@ -586,6 +662,8 @@ runs:
         // with the storysync it runs.
         let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " map --storybook " + quote(process.env.STORYBOOK_URL);
         if (process.env.COMPONENTS) command += " --components " + quote(process.env.COMPONENTS);
+        // The props left out change the mapping, so the baseline leaves them out too.
+        if (process.env.EXCLUDE_PROPS) command += " --exclude-props " + quote(process.env.EXCLUDE_PROPS);
         command += " --json > " + quote(baselinePath);
         if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
         const create = "running this in " + where + " with Storybook running, then commit it: " + command + " (the action's json output holds the same JSON)";

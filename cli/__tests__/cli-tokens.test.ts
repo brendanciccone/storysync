@@ -375,3 +375,39 @@ test("tokens CLI: --check says how to update the baseline, and that a newer stor
     assert.match(changed.out, /If the change is intended, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
   });
 });
+
+test("tokens CLI: a dark theme's values are in --json and the text output, and --check names a dark change, or that an earlier baseline left them unchecked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-tokens-cli-"));
+  const globals = (darkBg: string) => `:root { --background: #ffffff; --muted: #f5f5f5; }\n.dark { --background: ${darkBg}; }\n`;
+  try {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), globals("#0a0a0a"));
+    const json = tokens(dir, "--json");
+    assert.equal(json.status, 0, json.out);
+    const data = JSON.parse(json.stdout) as { modes: string[]; collections: { tokens: { name: string; dark?: { value: string; hex?: string } }[] }[] };
+    assert.deepEqual(data.modes, ["Light", "Dark"]);
+    assert.deepEqual(data.collections[0].tokens.map((t) => [t.name, t.dark]), [["background", { value: "#0a0a0a", hex: "#0a0a0a" }], ["muted", undefined]]);
+
+    const text = tokens(dir);
+    assert.match(text.out, /background\s+#ffffff {3}dark: #0a0a0a\n/);
+    assert.match(text.out, /\n1 with a dark theme value, for a Dark mode beside Light\n/);
+
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), json.stdout);
+    writeFileSync(join(dir, "app", "globals.css"), globals("#000000"));
+    const changed = tokens(dir, "--check", "--strict");
+    assert.equal(changed.status, 1, changed.out);
+    assert.match(changed.out, /~ colors\/background \(Dark\): #0a0a0a → #000000/);
+
+    // A baseline an earlier storysync wrote has no modes: it checks clean, and says so.
+    const old = JSON.parse(json.stdout) as Record<string, unknown>;
+    delete old.modes;
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), JSON.stringify(old));
+    const unchecked = tokens(dir, "--check", "--strict");
+    assert.equal(unchecked.status, 0, unchecked.out);
+    assert.match(unchecked.out, /No token drift detected\.\nThe baseline at \.storysync\/tokens-baseline\.json was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared\. Recreate it with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json` to check them\./);
+    assert.deepEqual(JSON.parse(tokens(dir, "--check", "--json").stdout), { drift: false, darkNotChecked: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

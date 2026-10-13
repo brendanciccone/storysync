@@ -151,6 +151,11 @@ export interface MockFigmaOptions {
    * layers it didn't make.
    */
   moveNeedsFonts?: boolean;
+  /**
+   * The most modes a variable collection can have, as a Figma plan limits
+   * them: addMode past it throws. Default no limit.
+   */
+  maxModes?: number;
 }
 
 /**
@@ -786,7 +791,12 @@ const SIDED = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "RECTANGLE"]
 
 export const MIXED: unique symbol = Symbol("figma.mixed");
 
-interface Variable { id: string; name: string; resolvedType: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"; value: unknown; collection: string }
+/**
+ * A local variable: `value` is its value in its collection's default mode,
+ * the first, which a bound paint or field shows, as Figma shows a node in
+ * no explicit mode; `modes` is its value in each mode by name, in order.
+ */
+interface Variable { id: string; name: string; resolvedType: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"; value: unknown; collection: string; modes: [string, unknown][] }
 
 class Doc {
   next = 1;
@@ -796,6 +806,8 @@ class Doc {
   dirty = true;
   images = new Map<string, { bytes: Uint8Array; size: { width: number; height: number } | null }>();
   variables = new Map<string, Variable>();
+  /** Each variable collection's modes, by name, in order: a mode's id is `1:` and its place. */
+  collections = new Map<string, string[]>();
   call: Call | null = null;
   constructor(readonly options: Required<Omit<MockFigmaOptions, "pages" | "reencodeImage">> & Pick<MockFigmaOptions, "reencodeImage">, pages: string[]) {
     this.root = new Node(this, "DOCUMENT", "Document", "0:0");
@@ -1848,10 +1860,48 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
     return node;
   };
   const variablesOf = (type?: string) => [...doc.variables.values()].filter((v) => !type || v.resolvedType === type);
+  // A mode's id is `1:` and its place in its collection.
+  const modeIndex = (collection: string, modeId: unknown, where: string) => {
+    const i = doc.collections.get(collection)!.findIndex((_, at) => `1:${at}` === String(modeId));
+    if (i < 0) throw new Error(`in ${where}: no mode ${JSON.stringify(modeId)} in collection ${collection}`);
+    return i;
+  };
   const variableHandle = (v: Variable) => ({
     id: v.id, name: v.name, resolvedType: v.resolvedType,
     variableCollectionId: `VariableCollectionId:${v.collection}`,
-    valuesByMode: { "1:0": structuredClone(v.value) },
+    valuesByMode: Object.fromEntries(v.modes.map(([, value], i) => [`1:${i}`, structuredClone(value)])),
+    setValueForMode: (modeId: unknown, value: unknown) => {
+      const i = modeIndex(v.collection, modeId, "setValueForMode");
+      if (v.resolvedType === "COLOR" && !(value && typeof value === "object" && "r" in value)) throw new Error("in setValueForMode: a COLOR variable takes an RGB or RGBA value");
+      if (v.resolvedType === "FLOAT" && typeof value !== "number") throw new Error("in setValueForMode: a FLOAT variable takes a number");
+      const stored = v.resolvedType === "COLOR" ? { a: 1, ...(value as object) } : value;
+      v.modes[i][1] = stored;
+      if (i === 0) v.value = stored;
+    },
+  });
+  const collectionHandle = (name: string) => ({
+    id: `VariableCollectionId:${name}`,
+    name,
+    get modes() {
+      return doc.collections.get(name)!.map((mode, i) => ({ modeId: `1:${i}`, name: mode }));
+    },
+    defaultModeId: "1:0",
+    get variableIds() {
+      return variablesOf().filter((v) => v.collection === name).map((v) => v.id);
+    },
+    renameMode: (modeId: unknown, newName: unknown) => {
+      const i = modeIndex(name, modeId, "renameMode");
+      doc.collections.get(name)![i] = String(newName);
+      for (const v of variablesOf()) if (v.collection === name) v.modes[i][0] = String(newName);
+    },
+    // A new mode takes each variable's default value, as Figma's does.
+    addMode: (modeName: unknown) => {
+      const modes = doc.collections.get(name)!;
+      if (modes.length >= doc.options.maxModes) throw new Error(`in addMode: Limited to ${doc.options.maxModes} modes only`);
+      modes.push(String(modeName));
+      for (const v of variablesOf()) if (v.collection === name) v.modes.push([String(modeName), structuredClone(v.value)]);
+      return `1:${modes.length - 1}`;
+    },
   });
   const bindTo = (item: unknown, field: unknown, variable: unknown) => {
     const v = doc.variables.get(String((variable as { id?: string } | null)?.id));
@@ -2007,10 +2057,24 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
     },
     variables: {
       getLocalVariablesAsync: async (type?: unknown) => variablesOf(type as string | undefined).map(variableHandle),
-      getLocalVariableCollectionsAsync: async () => [...new Set(variablesOf().map((v) => v.collection))].map((name) => ({
-        id: `VariableCollectionId:${name}`, name, modes: [{ modeId: "1:0", name: "Mode 1" }], defaultModeId: "1:0",
-        variableIds: variablesOf().filter((v) => v.collection === name).map((v) => v.id),
-      })),
+      getLocalVariableCollectionsAsync: async () => [...doc.collections.keys()].map(collectionHandle),
+      createVariableCollection: (name: unknown) => {
+        const key = String(name);
+        if (doc.collections.has(key)) throw new Error(`mock-figma: a second collection named ${key} is not modeled`);
+        doc.collections.set(key, ["Mode 1"]);
+        return collectionHandle(key);
+      },
+      // Takes the collection, or its id as an earlier API did.
+      createVariable: (name: unknown, collection: unknown, type: unknown) => {
+        const id = typeof collection === "string" ? collection : String((collection as { id?: unknown } | null)?.id);
+        const key = id.replace(/^VariableCollectionId:/, "");
+        if (!doc.collections.has(key)) throw new Error(`in createVariable: no collection ${id}`);
+        const resolvedType = oneOf("createVariable", type, ["COLOR", "FLOAT", "STRING", "BOOLEAN"] as const);
+        const blank = resolvedType === "COLOR" ? { r: 0, g: 0, b: 0, a: 1 } : resolvedType === "FLOAT" ? 0 : resolvedType === "STRING" ? "" : false;
+        const v: Variable = { id: `VariableID:1:${doc.variables.size + 1}`, name: String(name), resolvedType, value: blank, collection: key, modes: doc.collections.get(key)!.map((mode) => [mode, structuredClone(blank)]) };
+        doc.variables.set(v.id, v);
+        return variableHandle(v);
+      },
       getVariableByIdAsync: async (id: unknown) => {
         const v = doc.variables.get(String(id));
         return v ? variableHandle(v) : null;
@@ -2075,6 +2139,7 @@ export class MockFigma {
       shadowSpread: options.shadowSpread ?? "keep",
       textTruncation: options.textTruncation ?? "keep",
       moveNeedsFonts: options.moveNeedsFonts ?? false,
+      maxModes: options.maxModes ?? Number.POSITIVE_INFINITY,
       reencodeImage: options.reencodeImage,
     }, options.pages ?? ["Page 1"]);
   }
@@ -2139,11 +2204,22 @@ export class MockFigma {
     });
   }
 
-  /** Adds a local variable, in one mode: a COLOR's value as hex, a FLOAT's as a number. */
-  addVariable(name: string, type: Variable["resolvedType"], value: string | number | boolean, collection = "Tokens"): { id: string } {
+  /**
+   * Adds a local variable: a COLOR's value as hex, a FLOAT's as a number,
+   * in one mode, `Mode 1`, or in each of several by name, `{ Light: "#ffffff",
+   * Dark: "#0a0a0a" }`, the first the collection's default. Every variable
+   * of a collection takes the first one's modes.
+   */
+  addVariable(name: string, type: Variable["resolvedType"], value: string | number | boolean | Record<string, string | number | boolean>, collection = "Tokens"): { id: string } {
     const id = `VariableID:1:${this.doc.variables.size + 1}`;
-    const stored = type === "COLOR" ? parseHexColor(String(value)) : value;
-    this.doc.variables.set(id, { id, name, resolvedType: type, value: stored, collection });
+    const store = (v: string | number | boolean) => (type === "COLOR" ? parseHexColor(String(v)) : v);
+    const modes: [string, unknown][] = typeof value === "object" ? Object.entries(value).map(([mode, v]) => [mode, store(v)]) : [["Mode 1", store(value)]];
+    const others = this.doc.collections.get(collection);
+    if (!modes.length || (others && others.join() !== modes.map(([mode]) => mode).join())) {
+      throw new Error(`mock-figma: ${name} has modes ${modes.map(([mode]) => mode).join(", ") || "none"}, but ${collection}'s are ${others?.join(", ")}`);
+    }
+    if (!others) this.doc.collections.set(collection, modes.map(([mode]) => mode));
+    this.doc.variables.set(id, { id, name, resolvedType: type, value: modes[0][1], collection, modes });
     return { id };
   }
 

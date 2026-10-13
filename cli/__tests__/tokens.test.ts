@@ -810,8 +810,13 @@ test("CSS: shadcn/ui v4 gives :root's colors and radius, and the radius scale @t
     // --source tailwind would find them unresolved too, so it isn't offered.
     assert.deepEqual(auto.warnings, [
       "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-sans is set only in terms of itself), font/mono (--font-geist-mono isn't set in :root or @theme)",
-      // The .dark block's variables, which no token holds.
-      "Only the light theme is read: app/globals.css sets 1 variable for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
+    ]);
+    // The .dark block's background is the token's dark value; primary,
+    // which .dark leaves alone, has none.
+    assert.deepEqual(auto.modes, ["Light", "Dark"]);
+    assert.deepEqual(auto.collections[0].tokens.map((t) => [t.name, t.dark]), [
+      ["primary", undefined],
+      ["background", { value: "oklch(0.145 0 0)", hex: "#0a0a0a" }],
     ]);
 
     // A baseline from before lists the colors alone, so it sees the radius
@@ -923,8 +928,13 @@ test("CSS: a :root for the dark color scheme doesn't override the light one", ()
     assert.deepEqual(tokenTable(extractTokens(dir, "tailwind")).slice(0, 1), light);
     assert.deepEqual(extractTokens(dir).warnings, [
       "Unresolved: not read from @theme, since a var() in them doesn't resolve: typography font/sans (--font-geist-sans isn't set in :root or @theme), font/mono (--font-geist-mono isn't set in :root or @theme)",
-      "Only the light theme is read: app/globals.css sets 2 variables for @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
     ]);
+    // The dark scheme's :root is the dark theme, through @theme's var()s
+    // too; the `not` one is light, so it never reaches dark.
+    const dark = [["background", "#0a0a0a"], ["foreground", "#ededed"]];
+    for (const source of [undefined, "tailwind"] as const) {
+      assert.deepEqual(extractTokens(dir, source).collections[0].tokens.map((t) => [t.name, t.dark?.hex]), dark, String(source));
+    }
   } finally { cleanup(dir); }
 
   // A Tailwind config resolves against the light :root too.
@@ -937,6 +947,7 @@ test("CSS: a :root for the dark color scheme doesn't override the light one", ()
   });
   try {
     assert.deepEqual(tokenTable(extractTokens(v3)), [["colors", [["background", "hsl(0 0% 100%)"]]]]);
+    assert.deepEqual(extractTokens(v3).collections[0].tokens[0].dark, { value: "hsl(0 0% 4%)", hex: "#0a0a0a" });
   } finally { cleanup(v3); }
 });
 
@@ -1904,7 +1915,7 @@ test("drift: identical tokens report no drift", () => {
 
 /** A baseline as `tokens --json` would write it for this extraction. */
 function baselineOf(result: ReturnType<typeof extractTokens>): TokenBaseline {
-  return { version: 1, source: result.source, sourcePath: result.sourcePath, collections: result.collections, generatedAt: FIXED_TIMESTAMP };
+  return { version: 1, source: result.source, sourcePath: result.sourcePath, modes: result.modes, collections: result.collections, generatedAt: FIXED_TIMESTAMP };
 }
 
 test("drift: a category a theme file splits across exports is compared whole", () => {
@@ -1980,6 +1991,7 @@ test("readTokenBaseline: rejects collections and tokens that are not what tokens
     "unnamed-token.json": `{"collections":[{"category":"colors","tokens":[{"value":"#fff"}]}]}`,
     "numeric-value.json": `{"collections":[{"category":"spacing","tokens":[{"name":"4","value":4}]}]}`,
     "null-token.json": `{"collections":[{"category":"colors","tokens":[null]}]}`,
+    "valueless-dark.json": `{"collections":[{"category":"colors","tokens":[{"name":"bg","value":"#fff","dark":{"hex":"#000"}}]}]}`,
   });
   try {
     for (const name of ["empty-collection", "no-tokens", "no-category", "null-collection"]) {
@@ -1988,6 +2000,8 @@ test("readTokenBaseline: rejects collections and tokens that are not what tokens
     assert.throws(() => readTokenBaseline(join(dir, "unnamed-token.json")), /has a colors token without a "name" and a "value", so it is not a baseline$/);
     assert.throws(() => readTokenBaseline(join(dir, "numeric-value.json")), /has a spacing token without a "name" and a "value"/);
     assert.throws(() => readTokenBaseline(join(dir, "null-token.json")), /has a colors token without/);
+    // Compared as a string, a dark value without one crashed the check.
+    assert.throws(() => readTokenBaseline(join(dir, "valueless-dark.json")), /has a colors token whose "dark" has no "value", so it is not a baseline$/);
   } finally { cleanup(dir); }
 });
 
@@ -2032,48 +2046,123 @@ test("baselineCommand: quotes paths the shell would split", () => {
   );
 });
 
-test("CSS: a dark theme's variables are named as not read, by selector, and a light-only project warns of none", () => {
-  // tokens reads the light theme alone. An audit of shadcn/ui's tokens
-  // reported 39 matched with no word of the dark values it never compared.
+test("CSS: each token gets the dark theme's value, from every dark selector, a later one winning, and a light-only project has none", () => {
+  // tokens read the light theme alone, and warned of the dark one, so the
+  // push made one mode and an audit of shadcn/ui compared half its colors.
   const dir = makeProject({
     "app/globals.css": `@custom-variant dark (&:is(.dark *));
-:root { --background: #ffffff; --foreground: #171717; --radius: 0.625rem; }
+:root { --background: #ffffff; --foreground: #171717; --muted: #f5f5f5; --radius: 0.625rem; }
 .dark { --background: #0a0a0a; --foreground: #ededed; }
 [data-theme="dark"] { --background: #000000; --ring: #333333; }
-.darker { --background: #111111; }
-@media (prefers-color-scheme: dark) { :root { --background: #0a0a0a; } }
+.darker { --muted: #111111; }
+.dark .card { --muted: #222222; }
+:root { &.dark { --radius: 0.5rem; } }
+@media (prefers-color-scheme: dark) { :root { --background: #0b0b0b; } }
 `,
   });
   try {
-    const dark = extractTokens(dir).warnings.filter((w) => w.startsWith("Only the light theme is read:"));
-    assert.deepEqual(dark, [
-      "Only the light theme is read: app/globals.css sets 3 variables for .dark, [data-theme=\"dark\"], @media (prefers-color-scheme: dark), which no token here holds, so a comparison of these tokens covers the light theme alone",
+    const result = extractTokens(dir);
+    assert.deepEqual(result.modes, ["Light", "Dark"]);
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.dark])]), [
+      ["colors", [
+        ["background", { value: "#0b0b0b", hex: "#0b0b0b" }],
+        ["foreground", { value: "#ededed", hex: "#ededed" }],
+        // .darker is no dark theme, and .dark .card sets a card's.
+        ["muted", undefined],
+      ]],
+      ["radius", [["DEFAULT", { value: "0.5rem", px: 8 }]]],
     ]);
+    assert.equal(result.warnings.some((w) => /light theme/i.test(w)), false, result.warnings.join("\n"));
   } finally { cleanup(dir); }
 
   const light = makeProject({ "app/globals.css": `:root { --background: #ffffff; }\n.card { --inset: 4px; }\n` });
   try {
-    assert.equal(extractTokens(light).warnings.some((w) => w.startsWith("Only the light theme")), false);
+    const result = extractTokens(light);
+    assert.deepEqual(result.modes, ["Light"]);
+    assert.equal(result.collections[0].tokens[0].dark, undefined);
   } finally { cleanup(light); }
+
+  // A theme file holds no stylesheet's dark theme.
+  const theme = makeProject({ "src/theme.ts": `export const colors = { primary: "#0000ff" };`, "src/app.css": `.dark { --primary: #ffffff; }` });
+  try {
+    const result = extractTokens(theme, "theme");
+    assert.deepEqual([result.modes, result.collections[0].tokens[0].dark], [["Light"], undefined]);
+  } finally { cleanup(theme); }
 });
 
 test("CSS: a built Storybook's stylesheet, and Tailwind's own --tw- variables, are no dark theme", () => {
   // storybook build writes the stories' compiled CSS to storybook-static,
-  // where a dark: utility sets --tw- variables under .dark, and the warning
-  // counted them as dark tokens, naming the bundle.
+  // where a dark: utility sets --tw- variables under .dark: neither is the
+  // project's dark theme.
   const dir = makeProject({
-    "src/globals.css": `:root { --background: #ffffff; }\n.dark { --background: #0a0a0a; }\n`,
-    "storybook-static/assets/iframe-abc123.css": `:root { --background: #ffffff; }\n.dark { --background: #0a0a0a; --ring: #333333; }\n.dark\\:shadow-xs:is(.dark *) { --tw-shadow: 0 1px 2px #0000000d; }\n`,
-    "src/compiled.css": `:root { --tw-ring-offset-width: 0px; }\n.dark\\:ring:is(.dark *) { --tw-ring-color: #333333; --tw-ring-shadow: 0 0 0 1px; }\n`,
-    "out/_next/static/css/app.css": `.dark { --background: #0a0a0a; }\n`,
-    "coverage/lcov-report/base.css": `.dark { --background: #0a0a0a; }\n`,
+    "src/globals.css": `:root { --background: #ffffff; --ring: #999999; }\n.dark { --background: #0a0a0a; }\n`,
+    "storybook-static/assets/iframe-abc123.css": `:root { --background: #ffffff; }\n.dark { --background: #010101; --ring: #333333; }\n.dark\\:shadow-xs:is(.dark *) { --tw-shadow: 0 1px 2px #0000000d; }\n`,
+    "src/compiled.css": `:root { --tw-ring-offset-width: 0px; }\n.dark\\:ring:is(.dark *) { --tw-ring-color: #333333; --ring: #444444; }\n`,
+    "out/_next/static/css/app.css": `.dark { --ring: #555555; }\n`,
+    "coverage/lcov-report/base.css": `.dark { --ring: #666666; }\n`,
   });
   try {
     const result = extractTokens(dir);
-    const dark = result.warnings.filter((w) => w.startsWith("Only the light theme is read:"));
-    assert.deepEqual(dark, [
-      "Only the light theme is read: src/globals.css sets 1 variable for .dark, which no token here holds, so a comparison of these tokens covers the light theme alone",
-    ]);
+    const colors = result.collections.find((c) => c.category === "colors");
+    assert.deepEqual(colors?.tokens.map((t) => [t.name, t.dark?.hex]), [["background", "#0a0a0a"], ["ring", undefined]]);
     assert.equal(JSON.stringify(result).includes("storybook-static"), false, "the built bundle is read as a source");
   } finally { cleanup(dir); }
+});
+
+test("Tailwind config: shadcn/ui v3's hsl(var()) colors get .dark's channels, and radius its --radius", () => {
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = { darkMode: ["class"], theme: { extend: {
+  colors: { background: "hsl(var(--background))", primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" } },
+  borderRadius: { lg: "var(--radius)", md: "calc(var(--radius) - 2px)" },
+} } };`,
+    "app/globals.css": `@tailwind base;
+@layer base {
+  :root { --background: 0 0% 100%; --primary: 240 5.9% 10%; --primary-foreground: 0 0% 98%; --radius: 0.5rem; }
+  .dark { --background: 240 10% 3.9%; --primary: 0 0% 98%; --primary-foreground: 240 5.9% 10%; --radius: 0.75rem; }
+}`,
+  });
+  try {
+    const result = extractTokens(dir);
+    assert.equal(result.source, "tailwind");
+    assert.deepEqual(result.collections.map((c) => [c.category, c.tokens.map((t) => [t.name, t.hex ?? t.px, t.dark?.hex ?? t.dark?.px])]), [
+      ["colors", [["background", "#ffffff", "#09090b"], ["primary/DEFAULT", "#18181b", "#fafafa"], ["primary/foreground", "#fafafa", "#18181b"]]],
+      ["radius", [["lg", 8, 12], ["md", 6, 10]]],
+    ]);
+    assert.equal(result.collections[0].tokens[0].dark?.value, "hsl(240 10% 3.9%)");
+  } finally { cleanup(dir); }
+});
+
+test("drift: a dark value is compared against a baseline that read the dark theme, and an earlier one's is left alone", () => {
+  const globals = (bg: string, darkBg: string, darkFg = "#ededed") =>
+    `:root { --background: ${bg}; --foreground: #171717; }\n.dark { --background: ${darkBg}; --foreground: ${darkFg}; }\n`;
+  const dir = makeProject({ "app/globals.css": globals("#ffffff", "#0a0a0a") });
+  try {
+    const before = extractTokens(dir);
+    const baseline = baselineOf(before);
+    assert.equal(hasDrift(compareTokens(baseline, before)), false);
+
+    // A changed dark value is drift on that token's dark theme alone.
+    writeFileSync(join(dir, "app/globals.css"), globals("#ffffff", "#000000"));
+    const darker = compareTokens(baseline, extractTokens(dir));
+    assert.deepEqual(darker.changed, [{ category: "colors", token: "background", from: "#0a0a0a", to: "#000000", mode: "Dark" }]);
+
+    // A dark value that goes, leaving the light one, changed to it.
+    writeFileSync(join(dir, "app/globals.css"), globals("#ffffff", "#0a0a0a", "#171717"));
+    assert.deepEqual(compareTokens(baseline, extractTokens(dir)).changed, [{ category: "colors", token: "foreground", from: "#ededed", to: "#171717", mode: "Dark" }]);
+
+    // An earlier storysync's baseline has no dark values and no modes: it
+    // still checks clean, saying the dark theme wasn't compared.
+    const { modes: _modes, ...old } = baseline;
+    const oldBaseline = { ...old, collections: before.collections.map((c) => ({ ...c, tokens: c.tokens.map(({ dark: _dark, ...t }) => t) })) };
+    const fromOld = compareTokens(oldBaseline, extractTokens(dir));
+    assert.deepEqual([hasDrift(fromOld), fromOld.darkNotChecked], [false, true]);
+  } finally { cleanup(dir); }
+
+  // A light value that changes, with no dark value on either side, changed once.
+  const plain = makeProject({ "app/globals.css": `:root { --background: #ffffff; --muted: #eeeeee; }\n.dark { --background: #0a0a0a; }\n` });
+  try {
+    const baseline = baselineOf(extractTokens(plain));
+    writeFileSync(join(plain, "app/globals.css"), `:root { --background: #ffffff; --muted: #dddddd; }\n.dark { --background: #0a0a0a; }\n`);
+    assert.deepEqual(compareTokens(baseline, extractTokens(plain)).changed, [{ category: "colors", token: "muted", from: "#eeeeee", to: "#dddddd" }]);
+  } finally { cleanup(plain); }
 });

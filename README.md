@@ -140,7 +140,7 @@ jobs:
 
 It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
 
-Runners don't come with bun, so a bun project needs [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun) as a step before the action, or its own `install_command`. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`.
+For a bun project on a runner without bun, the action installs it with [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun), at the version `packageManager` names, or the latest. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`. The log shows a line per component as it goes.
 
 **Create the baselines first.** With Storybook running, in the project's directory:
 
@@ -152,7 +152,7 @@ npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
 
 Commit both files. Use the Storysync version the action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the action maps. The action's warnings and errors print these commands with the version filled in. You can also save the action's `json` and `tokens_json` outputs as your baselines.
 
-- If you set `components` or `token_source`, pass the same values to `map --components` and `tokens --source`.
+- If you set `components`, `exclude_props` or `token_source`, pass the same values to `map --components`, `map --exclude-props` and `tokens --source`.
 - A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
 - With no baseline, drift is `new` and the action warns that nothing was checked. With `fail_on_drift`, the job fails and prints the command that writes it.
 - A baseline that isn't `map --json` or `tokens --json` output always fails the job. That includes the `{"error": ...}` that `map --json` writes when Storybook isn't running.
@@ -162,9 +162,11 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 | Input | Default | |
 |---|---|---|
 | `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens, and baseline paths all use it. |
-| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile` (set up bun first). Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
+| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile`. Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
 | `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
 | `components` | all | Comma-separated component names, titles or IDs. A name that matches nothing fails the job. |
+| `exclude_props` | none | Comma-separated props to leave out of every component, as `map --exclude-props`. |
+| `request_timeout` | 5 minutes | How long mapping waits for each Storybook request, in ms, as `map --request-timeout`. Raise it for a slow Storybook. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
 | `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A baseline from Storysync 0.3.0 has no IDs, so it's matched by title, with a warning to recreate it. |
 | `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
@@ -252,7 +254,15 @@ The push sets Figma variables from `hex`, since Figma's color helpers only accep
 
 A value in em or %, or with no unit, like a font weight, has no `px`. `tokens --check` compares only `value`, so baselines written before `hex` and `px` existed still pass.
 
-A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. An `@theme` token whose `var()` doesn't resolve is left out, and an `Unresolved:` warning names it too. Only the light theme is read. Where the stylesheets also set variables for a dark theme, in `.dark`, `[data-theme="dark"]` or `prefers-color-scheme: dark`, a warning says how many, so a comparison of these tokens isn't taken to cover both themes. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read. Earlier versions read `storybook-static`, `out` and `coverage`, so a baseline one of them wrote lists a token found only there as removed. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
+**Dark theme.** Where the stylesheets set variables for a dark theme, in `.dark`, `[data-theme="dark"]`, `:root.dark` and the like, or a `:root` inside `@media (prefers-color-scheme: dark)`, each token is read again with them, and a token whose value differs gets a `dark` value. `modes` says which modes the tokens fill. The push makes them a Dark mode beside Light, and `diff` compares each mode:
+
+```json
+{ "name": "background", "value": "oklch(1 0 0)", "hex": "#ffffff", "dark": { "value": "oklch(0.145 0 0)", "hex": "#0a0a0a" } }
+```
+
+`tokens --check` compares dark values too, against a baseline that has `modes`. A baseline from an earlier version has none, so it still passes, with a note to recreate it.
+
+A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. An `@theme` token whose `var()` doesn't resolve is left out, and an `Unresolved:` warning names it too. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read. Earlier versions read `storybook-static`, `out` and `coverage`, so a baseline one of them wrote lists a token found only there as removed. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
 
 ### shadcn/ui and Tailwind configs that reference CSS variables
 
@@ -276,7 +286,7 @@ That resolves to `hsl(0 0% 100%)`. It also handles:
 
 A reference with no matching variable and no fallback, or an empty one as in `var(--x,)`, is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
 
-Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, a rule nested in `:root` such as `&.dark { }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read. Earlier versions read `.dark:root { }` as the default theme, and read a `&.dark { }` nested in `:root` as part of it, dropping the declarations after it, so a baseline one of them wrote lists those tokens as changed, and the dropped ones as added. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A minified `.min.css` bundles other packages' styles, such as Bootstrap's `:root, [data-bs-theme=light] { }`, so in one a selector list is read only when it ends in `:root`, as earlier versions read it.
+Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, a rule nested in `:root` such as `&.dark { }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read for it. A dark theme's rules give the tokens' `dark` values instead ([see above](#token-extraction)). Earlier versions read `.dark:root { }` as the default theme, and read a `&.dark { }` nested in `:root` as part of it, dropping the declarations after it, so a baseline one of them wrote lists those tokens as changed, and the dropped ones as added. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A minified `.min.css` bundles other packages' styles, such as Bootstrap's `:root, [data-bs-theme=light] { }`, so in one a selector list is read only when it ends in `:root`, as earlier versions read it.
 
 ### Tailwind presets and configs built by code
 
@@ -708,7 +718,8 @@ Options:
   --project <path>       Project root to scan for tokens (default: ".")
   --source <type>        Token source: tailwind, css, or theme (auto-detect if omitted
                          or auto); any other value is an error
-  --mode <name>          Figma variable mode to read (default: each collection's first mode)
+  --mode <name>          Figma variable mode to read, alone (default: every mode, the first
+                         compared with the light theme and one named Dark with the dark theme)
   --components <names>   Comma-separated component names, titles or IDs to diff, with --storybook
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
@@ -755,12 +766,11 @@ Options:
 
 - **Figma MCP auth:** CLI `diff` needs an authenticated Figma MCP endpoint, which usually means OAuth in a supported client. If it returns `401`/`403`, use the skill's audit flow in Claude Code, Cursor, or Codex.
 - **`use_figma` return values:** the audit needs `use_figma` to return the plugin code's result. That works in supported clients but isn't guaranteed elsewhere.
-- **Variable modes:** only each collection's first mode is read. Use `--mode <name>`, or ask the agent, for another mode like "Dark".
+- **Variable modes:** a collection's first mode is compared with the light theme, and a mode named Dark with the dark theme. Use `--mode <name>` to read one mode only.
 - **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
 - **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
 - **Component names:** a component set without a Storybook ID stored on it, as an earlier push left it, is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
 - **Wide-gamut color tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
-- **Dark mode:** only the default theme's values are read, from rules whose selector list includes `:root`. Overrides like `.dark { ... }` or `:root.dark { ... }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, aren't followed, for the push or for `diff`.
 
 ### Code → Figma: `snap`, the push, and `verify`
 
