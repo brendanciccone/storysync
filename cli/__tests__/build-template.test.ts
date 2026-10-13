@@ -1270,6 +1270,42 @@ test("build: the set's grid gives room to an outside stroke and a layer blur, wh
   }
 });
 
+test("build: the set's grid gives room to a turned layer, by the box its turned corners span", async () => {
+  // A bar 120 by 4 out of the flow, centered on the button, turned 90
+  // degrees: it draws 4 wide and 120 tall, 42px above the button and 42
+  // below. Laid out by its unturned box, the variants above and below
+  // would draw over it.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [
+    { name: "variant", type: "VARIANT", values: ["plain", "turned"], defaultValue: "plain" },
+    { name: "size", type: "VARIANT", values: ["default", "wide"], defaultValue: "default" },
+  ];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const keys = c.tree!.base.map((n) => n.k);
+  const bar = { k: "bar", t: "F", el: "span", box: [43.4, 16, 120, 4], abs: 1, bg: "#ff0000", tf: "rotate: 90deg", approx: "transform" };
+  Object.assign(c.base!, { combination: { variant: "plain", size: "default" }, slug: "variant-plain--size-default" });
+  c.variants = (["plain", "turned"] as const).flatMap((variant) => (["default", "wide"] as const).map((size) => ({
+    ...base, combination: { variant, size }, slug: `variant-${variant}--size-${size}`, delta: {},
+    treeDelta: variant === "turned" ? { keys: [...keys, "bar"], set: { bar } } : {},
+  }))) as typeof c.variants;
+  const { mock, results } = await buildAll(fixture);
+  assert.deepEqual([results[0].sets[0].variants, results[0].fallbacks], [4, []]);
+  const set = mock.nodes("COMPONENT_SET")[0];
+  const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
+  const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
+  // From the variant's frame, inside the button's 1px border: 43 above it, to 77 down.
+  const turned = "variant=turned, size=default";
+  assert.deepEqual([at.get(turned)![1] - own.get(turned)![1], at.get(turned)![3] - own.get(turned)![1]].map(Math.round), [-43, 77]);
+  const drawn = [...at.entries()];
+  for (const [i, [name, a]] of drawn.entries()) {
+    assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);
+    for (const [other, b] of drawn.slice(i + 1)) {
+      assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `${name} (${a.map(Math.round)}) draws over ${other} (${b.map(Math.round)})`);
+    }
+  }
+});
+
 test("boxDrift: a layer may move by what packs it, the siblings between it and where its row is packed, not by any sibling's growth", () => {
   // A flex row packed at its start, buttons a then b, each 40x20 and only its label, as snap measured them.
   const nodes = [
