@@ -2411,12 +2411,35 @@ function buttonCapture(args: Record<string, unknown>, storyId: string): RawTreeC
   return capture;
 }
 
-function buttonDocs(storyIds = ["ui-base-button--default", "ui-base-button--icon"]) {
+function buttonDocs(storyIds = ["ui-base-button--default", "ui-base-button--icon"], props: object[] = [BUTTON_SIZE]) {
   return {
     listComponents: async () => [{ id: "ui-base-button", name: "Button", title: "ui/base/Button", storyIds }],
-    getComponent: async () => ({ name: "Button", props: [BUTTON_SIZE], stories: storyIds.map((id) => ({ id, name: id })) }),
+    getComponent: async () => ({ name: "Button", props, stories: storyIds.map((id) => ({ id, name: id })) }),
   } as never;
 }
+
+/**
+ * buttonCapture with `size=icon-xs` too, a 24px square no story is for:
+ * from Icon its icon alone, or with `iconSpills` an icon 8px past the
+ * square a side as well; from any other story its label, 11px past it a side.
+ */
+function buttonXsCapture(iconSpills = false) {
+  return (args: Record<string, unknown>, storyId: string): RawTreeCapture => {
+    if (args.size !== "icon-xs") return buttonCapture(args, storyId);
+    const capture = structuredClone(rawCapture("button-icon"));
+    const [svg, text] = capture.root.kids as [RawTreeCapture["root"], { rects: number[][]; text: string }];
+    capture.root.box = [0, 0, 24, 24];
+    if (storyId.endsWith("--icon")) {
+      svg.box = iconSpills ? [-8, 4, 40, 16] : [4, 4, 16, 16];
+      capture.root.kids = [svg];
+    } else {
+      capture.root.kids = [{ ...text, text: "Button", rects: [[-11, 3.5, 46, 17]] }] as never;
+    }
+    return capture;
+  };
+}
+const BUTTON_XS = { name: "size", type: { name: "union", raw: '"default" | "icon" | "icon-xs"' }, defaultValue: "default" };
+const XS_ARG_TYPES = { size: { options: ["default", "icon", "icon-xs"] } };
 
 const BUTTON_CSF = {
   "ui-base-button--default": { args: {} },
@@ -2520,6 +2543,60 @@ test("runSnap: a story --stories names ending in ! measures every variant, recor
     assert.deepEqual([kept.storyId, kept.storyOnly, kept.variants[1].storyId], ["ui-base-button--default", true, undefined]);
     const picked = (await run({ merge: true, components: ["ui-base-button"], stories: { "ui-base-button": "ui-base-button--default" } })).components[0];
     assert.deepEqual([picked.storyOnly, picked.variants[1].storyId], [undefined, "ui-base-button--icon"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a variant the component's story draws past its box, which no story is for, is measured from a story for another of its values where that fits, recorded", async () => {
+  const dir = tempDir();
+  try {
+    const run = async (iconSpills = false) => {
+      const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonXsCapture(iconSpills), argTypes: XS_ARG_TYPES, csf: BUTTON_CSF });
+      return (await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(undefined, [BUTTON_XS]), launch })).components[0];
+    };
+    const button = await run();
+    const [base, icon, xs] = button.variants;
+    // Default's label fits its own size: Default measures it, though Icon is for another size too.
+    assert.deepEqual([base.combination, base.storyId, base.refit], [{ size: "default" }, undefined, undefined]);
+    assert.equal(icon.storyId, "ui-base-button--icon");
+    assert.equal(icon.refit, undefined);
+    // icon-xs from Icon, its icon alone in the 24px square, and why.
+    assert.deepEqual([xs.combination, xs.storyId, xs.status], [{ size: "icon-xs" }, "ui-base-button--icon", "ok"]);
+    assert.deepEqual(xs.refit, { from: "ui-base-button--default", by: 11, for: ["size=icon"] });
+    assert.deepEqual(Object.keys(xs).slice(0, 5), ["combination", "slug", "storyId", "refit", "status"]);
+    assert.equal(xs.boundingBox!.width, 24);
+    assert.deepEqual(xs.treeDelta!.keys, ["", "svg"]);
+    assert.deepEqual(button.warnings, []);
+    assert.equal(describeVariantStories(button),
+      "measured `size=icon` from ui-base-button--icon and `size=icon-xs` from ui-base-button--icon (ui-base-button--default drew it 11px past its box), the rest from ui-base-button--default");
+    assert.deepEqual((readJson(join(dir, "styles.json")) as { components: { variants: SnapVariant[] }[] }).components[0].variants[2].refit, xs.refit);
+    // The same again.
+    assert.deepEqual((await run()).variants, button.variants);
+    // Where Icon draws it past its box as well, Default's measurement stays, and the warning says snap tried Icon.
+    const spills = await run(true);
+    assert.deepEqual([spills.variants[2].storyId, spills.variants[2].refit, spills.variants[2].boundingBox!.width], [undefined, undefined, 24]);
+    const [warning] = spills.warnings;
+    assert.match(warning, /^the variant with `size=icon-xs` draws past its box, by up to 11px at the right and left \(`#text`\), so Figma shows it spilling out: ui-base-button--default gives it content that doesn't fit\. snap measured it from ui-base-button--icon as well, a story for another of its values, which drew it past its box too\. A story whose own args set size=icon-xs and give it content that fits would measure it;/);
+    assert.doesNotMatch(warning, /as ui-base-button--icon is for/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a variant measured before a late read of the stories' args, which drew past its box and has a story to try, is measured again", async () => {
+  const dir = tempDir();
+  try {
+    // icon-xs is the default, so it is measured first, before the read succeeds.
+    const { launch } = treeBrowser({ storyId: "ui-base-button--default", capture: buttonXsCapture(), argTypes: XS_ARG_TYPES, csf: BUTTON_CSF, storiesReadFails: 1 });
+    const progress: string[] = [];
+    const docs = buttonDocs(undefined, [{ ...BUTTON_XS, defaultValue: "icon-xs" }]);
+    const [button] = (await runSnap(options(dir, { selector: "button" }), { storybook: docs, launch, onProgress: (m) => progress.push(m) })).components;
+    assert.deepEqual(button.variants.map((v) => [v.combination.size, v.storyId, v.refit?.from]), [
+      ["icon-xs", "ui-base-button--icon", "ui-base-button--default"], ["default", undefined, undefined], ["icon", "ui-base-button--icon", undefined],
+    ]);
+    assert.deepEqual(progress.filter((m) => /stories' args/.test(m)), ["  ui/base/Button: snap read its stories' args late; measuring its variants again"]);
+    assert.deepEqual(button.warnings, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

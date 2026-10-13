@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chooseStory, storyAddsContent, storyClaims, storyKeys } from "../snap-stories.js";
+import { SIBLING_TRIES, chooseStory, siblingStories, storyAddsContent, storyClaims, storyKeys } from "../snap-stories.js";
 import type { StoryOwn } from "../snap-stories.js";
 import type { FigmaVariantProperty } from "../mapper.js";
 
@@ -140,4 +140,38 @@ test("chooseStory: Toggle's outline variants from Outline, not WithText, which a
   ];
   assert.equal(chooseStory({ variant: "outline", size: "sm" }, tied, TOGGLE_PROPERTIES, "default").storyId, "plain");
   assert.equal(chooseStory({ variant: "outline", size: "sm" }, [...tied].reverse(), TOGGLE_PROPERTIES, "default").storyId, "plain");
+});
+
+test("siblingStories: Button's icon-xs, which no story is for, may come from the Icon stories, Icon first", () => {
+  const icons = ["ui-base-button--icon", "ui-base-button--icon-small", "ui-base-button--icon-large"];
+  for (const variant of PROPERTIES[0].values) {
+    const combination = { variant, size: "icon-xs" };
+    assert.equal(chooseStory(combination, BUTTON, PROPERTIES, "ui-base-button--default").storyId, "ui-base-button--default");
+    assert.deepEqual(siblingStories(combination, BUTTON, PROPERTIES, "ui-base-button--default"), [
+      { storyId: icons[0], values: ["size=icon"] }, { storyId: icons[1], values: ["size=icon-sm"] }, { storyId: icons[2], values: ["size=icon-lg"] },
+    ]);
+  }
+  // Never the component's story, nor Small, Outline or WithIcon, which are for nothing of their own or add nothing.
+  assert.deepEqual(siblingStories({ variant: "outline", size: "icon-xs" }, BUTTON, PROPERTIES, "ui-base-button--icon").map((s) => s.storyId), icons.slice(1));
+  assert.deepEqual(siblingStories({ variant: "outline", size: "sm" }, BUTTON, PROPERTIES, "ui-base-button--default").map((s) => s.storyId), icons);
+});
+
+test("siblingStories: a story for all the variant's values but one, the most of them first, then the plainest, then the first; at most SIBLING_TRIES", () => {
+  const stories: StoryOwn[] = [
+    { id: "ghost-lg", args: { variant: "ghost", size: "lg", children: "Both", title: "t" } },
+    { id: "lg", args: { size: "lg", children: "Large", title: "t" } },
+    { id: "outline-lg", args: { variant: "outline", size: "lg", children: "Both" } },
+    { id: "ghost", args: { variant: "ghost", children: "Ghost" } },
+    { id: "played", args: { size: "xs", children: "Played" }, play: true },
+    { id: "plain-sm", args: { size: "sm" } },
+  ];
+  // For outline/sm: outline-lg, which shares its variant, first; not ghost-lg, for two values it lacks, nor a story with a play function or one that adds nothing.
+  const ids = (variant: string, size: string) => siblingStories({ variant, size }, stories, PROPERTIES, "default").map((s) => s.storyId);
+  assert.deepEqual(ids("outline", "sm"), ["outline-lg", "ghost", "lg"]);
+  assert.deepEqual(siblingStories({ variant: "outline", size: "sm" }, stories, PROPERTIES, "default")[0].values, ["variant=outline", "size=lg"]);
+  // Of two for one value each, the plainer first, whichever comes first.
+  assert.deepEqual(ids("default", "sm"), ["ghost", "lg"]);
+  assert.equal(SIBLING_TRIES, 3);
+  const many: StoryOwn[] = ["xs", "sm", "lg", "icon", "icon-sm"].map((size) => ({ id: size, args: { size, children: size } }));
+  assert.deepEqual(siblingStories({ variant: "default", size: "icon-xs" }, many, PROPERTIES, "default").map((s) => s.storyId), ["xs", "sm", "lg"]);
 });

@@ -15,8 +15,12 @@
 // not WithText, which adds a label to it. Every other variant is
 // measured from the component's story, Default or the one `--stories`
 // names; a story it names ending in `!` measures every variant, none
-// picked here. Deterministic: the same stories and combination always pick the
-// same story.
+// picked here. Where the component's story draws a variant past its box,
+// as Default's label does Button's `size=icon-xs` square, which no story
+// is for, a story for another value of the same property measures it
+// instead if that draws it within its box: Icon, for `size=icon`
+// (siblingStories). Deterministic: the same stories and combination always
+// pick the same story.
 
 import type { FigmaVariantProperty } from "./mapper.js";
 
@@ -149,4 +153,47 @@ export function chooseStory(
   const chosen = best as { story: StoryOwn; key: Record<string, string> } | null;
   if (!chosen || chosen.story.id === fallback) return { storyId: fallback };
   return { storyId: chosen.story.id, values: Object.entries(chosen.key).map(([name, value]) => `${name}=${value}`) };
+}
+
+/** At most how many stories snap measures a variant from where the component's story draws it past its box (siblingStories). */
+export const SIBLING_TRIES = 3;
+
+/** A story for another value of one of a variant's properties (siblingStories). */
+export interface SiblingStory {
+  storyId: string;
+  /** The values the story is for (storyKeys), as `prop=value`: all the variant's but one, another value of that property. */
+  values: string[];
+}
+
+/**
+ * The stories that may measure `combination` in its place where `fallback`,
+ * the component's story, draws it past its box, in the order to try them:
+ * shadcn/ui Button's `size=icon-xs`, which no story is for, from Icon,
+ * which is for `size=icon` and draws an icon alone, so the 24px square
+ * holds the icon and not the Default story's label. Each adds content of
+ * its own and is for (storyKeys) all of the variant's values but one, and
+ * another value of that property: a story for the same kind of variant,
+ * which the variant's own values, given it in its URL, then override. The
+ * most of the variant's values first, then the plainest, then the earlier,
+ * as chooseStory ranks; never `fallback` or one with a play function; at
+ * most SIBLING_TRIES. Deterministic: the same stories and combination
+ * always give the same list.
+ */
+export function siblingStories(
+  combination: Record<string, string>,
+  stories: readonly StoryOwn[],
+  properties: readonly FigmaVariantProperty[],
+  fallback: string,
+  keys: Map<string, Record<string, string>> = storyKeys(stories, properties),
+): SiblingStory[] {
+  const found: { story: StoryOwn; key: [string, string][]; index: number }[] = [];
+  stories.forEach((story, index) => {
+    const key = Object.entries(keys.get(story.id) ?? {});
+    if (!key.length || story.id === fallback || story.play || !storyAddsContent(story, properties)) return;
+    const other = key.filter(([name, value]) => combination[name] !== value);
+    if (other.length !== 1 || combination[other[0][0]] === undefined) return;
+    found.push({ story, key, index });
+  });
+  found.sort((a, b) => b.key.length - a.key.length || weight(a.story) - weight(b.story) || a.index - b.index);
+  return found.slice(0, SIBLING_TRIES).map(({ story, key }) => ({ storyId: story.id, values: key.map(([name, value]) => `${name}=${value}`) }));
 }
