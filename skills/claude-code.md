@@ -64,6 +64,8 @@ use_figma({
     // One collection's tokens from the storysync output: each color's hex,
     // and its dark's hex where it has one.
     const NAME = 'Colors';
+    // The pickers its variables show in, by category (the table below).
+    const SCOPES = ['ALL_FILLS', 'STROKE_COLOR', 'EFFECT_COLOR'];
     const TOKENS = [
       { name: 'background', hex: '#ffffff', dark: { hex: '#0a0a0a' } },
       { name: 'primary', hex: '#171717', dark: { hex: '#e5e5e5' } },
@@ -81,9 +83,13 @@ use_figma({
         // The file's plan allows fewer modes: Light alone, said in the summary.
         darkError = String((e && e.message) || e);
       }
+    } else {
+      // One mode, for every theme: named, not Figma's "Mode 1".
+      collection.renameMode(light, 'Default');
     }
     for (const token of TOKENS) {
       const variable = figma.variables.createVariable(token.name, collection, 'COLOR');
+      variable.scopes = token.scopes || SCOPES;
       variable.setValueForMode(light, figma.util.rgba(token.hex));
       if (dark) variable.setValueForMode(dark, figma.util.rgba((token.dark || token).hex));
     }
@@ -95,7 +101,20 @@ use_figma({
 })
 ```
 
-   A `FLOAT` collection is made the same way, with `createVariable(token.name, collection, 'FLOAT')` and each mode set from `px` (`token.px`, and `token.dark.px` in Dark). If a call returns a `darkError`, the file's Figma plan allows the collection one mode: it holds the light theme alone, so tell the user, with the error, that the dark values weren't pushed, and that a plan with more modes, or a Dark mode added by hand, would take them.
+   A `FLOAT` collection is made the same way, with `createVariable(token.name, collection, 'FLOAT')` and each mode set from `px` (`token.px`, and `token.dark.px` in Dark). A collection's one mode is `Default`, and its two `Light` and `Dark`. If a call returns a `darkError`, the file's Figma plan allows the collection one mode: it holds the light theme alone, so tell the user, with the error, that the dark values weren't pushed, and that a plan with more modes, or a Dark mode added by hand, would take them.
+
+   Set every variable's `scopes`, which pick the property pickers it shows in, as the template does: left out, it is `ALL_SCOPES`, and a radius shows in the opacity and stroke weight pickers. By category, in `SCOPES`, or per token in its `scopes` where a collection mixes them:
+
+   | Tokens | `scopes` |
+   |---|---|
+   | colors | `ALL_FILLS`, `STROKE_COLOR`, `EFFECT_COLOR`: Tailwind paints any color as a background, text, border, ring or shadow, as shadcn/ui's tooltip is `bg-foreground text-background` |
+   | radius | `CORNER_RADIUS` |
+   | spacing | `GAP`, `WIDTH_HEIGHT` |
+   | typography `text/*` | `FONT_SIZE` |
+   | typography `font/weight/*` | `FONT_WEIGHT` |
+   | typography `leading/*` | `LINE_HEIGHT` |
+   | typography `tracking/*` | `LETTER_SPACING` |
+   | typography, other `font/*` | `FONT_FAMILY` |
 
    Use Figma `COLOR` type for colors and `FLOAT` type for spacing, radius, and font sizes. A Tailwind v4 `@theme` names its typography tokens by namespace: `text/*` are font sizes, `font/weight/*` weights, `leading/*` line heights and `tracking/*` letter spacing, all `FLOAT`, and the other `font/*` are font families, `STRING`. Set each `FLOAT` variable from its token's `px`, not its `value`: `px` is the value in pixels with rem (16px) and `calc()` worked out, so `calc(0.625rem - 4px)` is 6, and `value` is as the source writes it. A weight or a unitless line height has no `px`, and its `value` is the number to set. Leave out, and say which, any other `FLOAT` token with no `px`, such as one in em or % (as letter spacing often is), which depends on the element. Leave out too, and say which, any token a `tokens` warning starting `Unresolved:` names: its `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). The tokens such a warning says were not read from `@theme`, shadcn/ui's `font/sans` and `font/mono` among them, are out of the output already: name them all the same. So are the tokens a warning starting `Skipped dynamic value:` names, a value the config only computes when it runs, such as a template literal that interpolates or a `theme()` call: name them too. A `value` can keep a `var()` that did resolve, as `calc(var(--radius) - 4px)` in `:root` does; set that token from its `px` or `hex` as usual. If no token in the output has a `px` at all, an older storysync ran: use a plain rem `value` times 16, or a px one as is, in place of `px`.
 

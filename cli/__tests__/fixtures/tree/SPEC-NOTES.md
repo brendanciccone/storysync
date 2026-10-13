@@ -870,6 +870,13 @@ D13. **The grep test (section 15, D's acceptance) is a unit test** in
    requires each new command and no `use_figma` code in steps 5 to 7.
    setup.test.ts's checks of 0.4.0's templates now read the skills alone:
    the push command points to their root-only section.
+D14. **The variable template sets `scopes` and names one mode `Default`**
+   (push 5, bug 8; figma-use's rule on scopes). Colors keep every color
+   picker (`ALL_FILLS`, `STROKE_COLOR`, `EFFECT_COLOR`): Tailwind paints any
+   color token as a background, text, border, ring or shadow, and
+   shadcn/ui's tooltip is `bg-foreground text-background`, so scoping by
+   name would hide a token where the code uses it. The readback's variable
+   kinds come out as before: the three colors, a radius, a gap.
 
 ## End to end
 
