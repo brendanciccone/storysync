@@ -710,6 +710,18 @@ test("captureTreeInPage: for an overlay's content, reads what is around it, inne
   assert.equal(inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content).around, undefined);
 });
 
+test("captureTreeInPage: an element a rotate or scale of its own turns gives its own size, an svg its CSS size", () => {
+  const read = readTree({
+    tag: "span", rect: [0, 0, 10, 10], style: { "box-sizing": "border-box" },
+    kids: [
+      { tag: "svg", rect: [-2.07, -9.07, 14.14, 14.14], style: { rotate: "45deg", width: "10px", height: "10px", "box-sizing": "border-box" } },
+      { tag: "div", rect: [0, 0, 15, 15], offset: [10, 10], style: { scale: "1.5", "box-sizing": "border-box" } },
+      { tag: "div", rect: [0, 0, 10, 10], style: { rotate: "0deg", "box-sizing": "border-box" } },
+    ],
+  });
+  assert.deepEqual(read.root.kids.map((k) => (k as RawTreeElement).size), [[10, 10], [10, 10], undefined]);
+});
+
 test("captureTreeInPage: a pseudo-element that draws, though its color's last channel is 0, and none that is transparent", () => {
   // rgb(255, 165, 0) is orange: read as transparent, its ::after went missing.
   const raw = readTree({

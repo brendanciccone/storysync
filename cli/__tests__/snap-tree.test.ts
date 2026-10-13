@@ -625,6 +625,22 @@ test("buildTree: under a rotation, a box is its element's own size, centered whe
   assert.equal(nodes[2].tf, undefined);
 });
 
+test("buildTree: a rotate or scale set on its own turns an element as a transform does, as Tailwind 4's rotate-45 turns a tooltip's arrow", () => {
+  // The registry's Tooltip arrow: a 10px svg at `rotate: 45deg`, which
+  // `transform` doesn't show. Read as unturned, it was a 14.14px square.
+  const arrow = el("svg", [-2.07, -9.07, 14.14, 14.14], { "background-color": "rgb(10, 10, 10)", rotate: "45deg" }, [], { size: [10, 10], shapes: [[0, 0, 14.14, 14.14]] });
+  const [, turned] = buildTree(tree(el("span", [0, 0, 10, 10], {}, [arrow]))).nodes;
+  assert.deepEqual([turned.tf, turned.approx, turned.box], ["rotate: 45deg", "transform", [0, -7, 10, 10]]);
+  const scaled = el("div", [-5, -5, 30, 30], { ...BORDER, scale: "1.5", transform: "matrix(1, 0, 0, 1, 2, 0)" }, [], { size: [20, 20] });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 20, 20], {}, [scaled]))).nodes[1].tf, "scale: 1.5");
+  const both = el("div", [0, 0, 20, 20], { ...BORDER, rotate: "90deg", transform: "matrix(2, 0, 0, 2, 0, 0)" }, [], { size: [10, 10] });
+  assert.equal(buildTree(tree(el("div", [0, 0, 20, 20], {}, [both]))).nodes[1].tf, "matrix(2, 0, 0, 2, 0, 0); rotate: 90deg");
+  // Turned by nothing, nothing is said.
+  for (const cs of [{ rotate: "0deg" }, { scale: "1" }, { scale: "1 1" }] as Record<string, string>[]) {
+    assert.equal(buildTree(tree(el("div", [0, 0, 20, 20], {}, [el("div", [0, 0, 10, 10], { ...BORDER, ...cs })]))).nodes[1].tf, undefined, JSON.stringify(cs));
+  }
+});
+
 test("buildTree: a pseudo-element's box as the page found it, flagged where it can only be approximate", () => {
   const flow: RawTreePseudo = { k: "p", which: "before", cs: { "background-color": "rgb(0, 0, 0)" }, content: "", box: [0, 0, 8, 8], how: "flow", moved: true };
   const unanchored: RawTreePseudo = { k: "p", which: "after", cs: { position: "absolute", ...BORDER }, content: "", box: [0, 0, 20, 20], how: "abs", unanchored: true };

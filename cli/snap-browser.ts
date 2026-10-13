@@ -2247,7 +2247,16 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     const classes = (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
     const cls = classes.filter((t) => evidence.test(t));
     if (cls.length) node.cls = cls;
-    if (cs.transform !== "none" && !/^matrix\(1, 0, 0, 1, [^,]+, [^,]+\)$/.test(cs.transform) && el instanceof HTMLElement) {
+    // Its own size, where something turns or scales it: snap-tree.ts
+    // centers that where it drew. A `rotate` or `scale` set on its own,
+    // as Tailwind 4 sets them, doesn't show in `transform`.
+    const turned = (cs.transform !== "none" && !/^matrix\(1, 0, 0, 1, [^,]+, [^,]+\)$/.test(cs.transform)) ||
+      (!!cs.rotate && cs.rotate !== "none" && !/^0(?:deg|rad|grad|turn)?$/.test(cs.rotate)) ||
+      (!!cs.scale && cs.scale !== "none" && !/^1(?: 1){0,2}$/.test(cs.scale));
+    if (turned && tag === "svg") {
+      // No offsetWidth: an `<svg>` is no HTMLElement.
+      if (parseFloat(cs.width) >= 0 && parseFloat(cs.height) >= 0) node.size = [parseFloat(cs.width), parseFloat(cs.height)];
+    } else if (turned && el instanceof HTMLElement) {
       node.size = [el.offsetWidth, el.offsetHeight];
     }
     if (tag === "svg") {

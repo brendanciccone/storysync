@@ -88,7 +88,11 @@ export interface RawTreeElement {
   /** The first `lucide-*` class of an `<svg>`. */
   lucide?: string;
   box: RawBox;
-  /** offsetWidth and offsetHeight, when a transform other than a translation is set. */
+  /**
+   * Its own size, unturned (offsetWidth and offsetHeight, or an `<svg>`'s
+   * CSS width and height), when a transform other than a translation is
+   * set, or a `rotate` or `scale` of its own.
+   */
   size?: [number, number];
   /** TREE_PROPERTY_DEFAULTS' properties whose computed value differs from its default. */
   cs: Record<string, string>;
@@ -732,6 +736,24 @@ function selfFacts(item: Item, parentCss: Css): TreeSelf | undefined {
 }
 
 /** A transform other than a translation, which moves a box without changing its shape. */
+/**
+ * What turns or scales an element, which a box can't hold: its
+ * `transform` other than a translation (shapeTransform), and its own
+ * `rotate` and `scale`, which `transform` doesn't show. Tailwind 4 sets
+ * those apart: `rotate-45` turns a tooltip's arrow with `rotate: 45deg`.
+ * A `translate` is in its box already. Null where nothing turns it.
+ */
+function transformOf(css: Css): string | null {
+  const rotate = css("rotate");
+  const scale = css("scale");
+  const parts = [
+    shapeTransform(css("transform")),
+    rotate !== "none" && !/^0(?:deg|rad|grad|turn)?$/.test(rotate) ? `rotate: ${rotate}` : null,
+    scale !== "none" && !/^1(?: 1){0,2}$/.test(scale) ? `scale: ${scale}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join("; ") : null;
+}
+
 function shapeTransform(value: string): string | null {
   if (!value || value === "none") return null;
   const m = /^matrix\(([^)]*)\)$/.exec(value);
@@ -926,7 +948,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     if (p.how === "abs") node.abs = 1;
     // A translation is in its box already; a rotation or scale is not one
     // a box can hold, as on an element.
-    const transform = shapeTransform(css("transform"));
+    const transform = transformOf(css);
     if (transform) node.tf = transform;
     applyPaint(node, p.cs, p.box, css);
     applyEffects(node, css, false);
@@ -943,7 +965,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
 
   const el = item.el!;
   const css = item.css!;
-  const transform = shapeTransform(css("transform"));
+  const transform = transformOf(css);
   let box = item.box;
   // Under a rotation or scale, the box the transform drew is no rectangle
   // Figma can hold: keep the element's own size, centered where it drew.

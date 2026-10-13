@@ -1766,3 +1766,13 @@ O14. **What earlier variants found** (`OpenMemory`, one per component,
     `defaultOpen` set to false only starts it closed, and snap opens it
     as a user does. Area A leaves both out of the variant axes; until it
     lands, Drawer's `open` is one.
+O15. **Spec problem: a `rotate` or `scale` of its own** (section 6.9's
+    transforms). snap read a turn from `transform` alone. Tailwind 4 sets
+    `rotate-45` as `rotate: 45deg`, which `transform` doesn't show, so
+    the opened Tooltip's arrow, a 10px svg turned 45 degrees, was read as
+    an unturned 14.14px square with nothing flagged, and its triangle
+    stretched into it. A `rotate` or `scale` other than none, 0 or 1 now
+    turns an element as a transform does: `tf` says it (`rotate: 45deg`,
+    after any matrix), `approx: "transform"`, and its box is its own
+    size centered where it drew (an `<svg>`'s CSS size, as it has no
+    offsetWidth). A `translate` stays in its box.
