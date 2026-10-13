@@ -82,10 +82,23 @@ export function callSum(values: readonly unknown[]): string {
 }
 
 /**
+ * JSON with every character past ASCII written as its `\u` escape: the
+ * same value read back, in characters an agent retyping a call can't turn
+ * into others, as a no-break space into a space, which SUM would refuse
+ * again on every resend. An escape is only ever inside a string, where
+ * JSON and JavaScript read it alike, and SUM is over the values, so it
+ * doesn't change.
+ */
+export function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/**
  * The lines a call writes before its template: each constant, one a line,
- * as `const NAME = <JSON>;`, then `const SUM = "<callSum of their values>";`.
+ * as `const NAME = <JSON>;` (asciiJson), then `const SUM = "<callSum of
+ * their values>";`.
  */
 export function callConstants(constants: readonly (readonly [name: string, value: unknown])[]): string {
-  const lines = constants.map(([name, value]) => `const ${name} = ${JSON.stringify(value)};\n`);
+  const lines = constants.map(([name, value]) => `const ${name} = ${asciiJson(value)};\n`);
   return `${lines.join("")}const SUM = ${JSON.stringify(callSum(constants.map(([, value]) => value)))};\n`;
 }

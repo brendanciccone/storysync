@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { callSum } from "../checksum.js";
+import { callConstants, callSum } from "../checksum.js";
 import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
@@ -464,4 +464,15 @@ test("figma code: a measured variant without its tree delta is refused, rather t
   const snap = copy(loadTreeFixture("switch"));
   delete (snap.components[0].variants[1] as { treeDelta?: unknown }).treeDelta;
   await assert.rejects(codeFor(snap), /ui\/base\/Switch size-sm was measured, but has no treeDelta/);
+});
+
+test("figma code: a call's constants are written in ASCII, the same values, which still match their SUM", () => {
+  // A no-break space an agent retyping the call turns into a space, a
+  // zero-width space, a soft hyphen, an emoji, U+2028 and a lone surrogate.
+  const value = { name: "Save draft​­", icon: "\u{1f600}", line: "a b", lone: "\ud800", big: 1e21, keys: { "é": 1 } };
+  const text = callConstants([["DATA", value], ["PAGE", "ui/café"]]);
+  assert.match(text, /^[\n\x20-\x7e]*$/, "ASCII only");
+  const [data, page, sum] = new Function(`${text}return [DATA, PAGE, SUM];`)() as [unknown, unknown, string];
+  assert.deepEqual([data, page], [value, "ui/café"]);
+  assert.equal(sum, callSum([data, page]));
 });

@@ -5,7 +5,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { callSum } from "../checksum.js";
+import { asciiJson, callSum } from "../checksum.js";
 import { runFigmaCode } from "../figma-code.js";
 import type { FigmaCodeOptions } from "../figma-code.js";
 import type { Box, FigmaPlan, PlanCall, TreeNode } from "../tree-types.js";
@@ -29,7 +29,7 @@ export const STUB_READBACK = "return { kind: 'read', tpl: 3, page: PAGE, sets: [
 export function withConstant(code: string, name: string, value: unknown): string {
   const line = new RegExp(`\\nconst ${name} = .*;\\n`);
   if (!line.test(code)) throw new Error(`the call declares no ${name}`);
-  const changed = code.replace(line, () => `\nconst ${name} = ${JSON.stringify(value)};\n`);
+  const changed = code.replace(line, () => `\nconst ${name} = ${asciiJson(value)};\n`);
   const constants: unknown[] = [];
   for (const m of changed.matchAll(/^const (\w+) = (.*);$/gm)) {
     if (m[1] === "SUM") break;

@@ -1295,6 +1295,11 @@ BV2. **Every call checks a checksum of its own data before it does
    - The template itself isn't covered: use_figma runs the code as the
      body of a function, and nothing in it can read its own text. A
      change there mostly fails to parse or to run.
+   - Each constant is written in ASCII (`asciiJson`): every character
+     past it as its `\u` escape, inside a string, where JSON and
+     JavaScript read it alike. A no-break space an agent retyping the
+     call turns into a space would fail SUM on every resend; written
+     `\u00a0`, it can't be. SUM is over the values, so it doesn't change.
    - `CALL_CONSTANTS` ends each kind's list with `SUM`. Tests that need a
      call figma code doesn't write change a constant with `withConstant`
      (`figma-build-harness.ts`), which writes the SUM again.
