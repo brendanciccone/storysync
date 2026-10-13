@@ -64,8 +64,10 @@ test("build: a faithful build puts every keyed layer where snap measured it, wit
       // A component with no variant properties is one plain component, named as the set would be.
       assert.equal(node.name, variant.name || fixture.components[0].title!.split("/").pop());
       assert.deepEqual(boxDrift(mock, node, variant.nodes, absoluteBoxes(variant.nodes)), [], `${name} ${variant.slug}`);
-      // Each icon's shapes where the browser drew them in it, as verify's shape gate checks.
-      for (const icon of variant.nodes.filter((n) => n.t === "V")) {
+      // Each icon's shapes where the browser drew them in it, as verify's
+      // shape gate checks: not one snap could measure only roughly, as a
+      // turned one, which verify leaves unscored.
+      for (const icon of variant.nodes.filter((n) => n.t === "V" && !n.approx && !n.raster)) {
         const view: NodeView = keyed(node, icon.k)!;
         const shapes: number[][] = view.children!.map((c) => [c.x, c.y, c.width, c.height]);
         const tol = Math.max(0.5, 0.03 * icon.box[2]);

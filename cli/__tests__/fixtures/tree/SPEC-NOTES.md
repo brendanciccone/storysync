@@ -1776,3 +1776,16 @@ O15. **Spec problem: a `rotate` or `scale` of its own** (section 6.9's
     after any matrix), `approx: "transform"`, and its box is its own
     size centered where it drew (an `<svg>`'s CSS size, as it has no
     offsetWidth). A `translate` stays in its box.
+O16. **The `tooltip` and `select` fixtures** are the ui-base-tooltip and
+    ui-base-select stories as snap measured them live with O10, O11 and
+    O15, opened by a hover and a click, written by snap's writer with
+    only the `fixture` block added. Every fixture test takes them: the
+    tooltip's arrow, placed by Base UI's positioner and turned 45
+    degrees, builds as its own 10px box at 45.5,21, past the 28px
+    bubble, its turn unscored (`transform`), as verify leaves it; none
+    of the select's 14 items paints. Two fixture checks met what CSS
+    does here: the build harness's shape check skips a vector snap
+    measured only roughly (`approx`, or a raster), as verify's shape
+    gate does, and the check that an in-flow node lies inside its
+    parent skips a parent that clips, as the listbox scrolls its groups
+    past its bottom and hangs its separators 4px past its sides.

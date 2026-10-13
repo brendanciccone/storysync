@@ -1,0 +1,200 @@
+{
+  "fixture": {
+    "name": "select",
+    "sources": [
+      "storysync snap of ui-base-select--default (0.4.0 with overlays measured open), against the shadcn/ui registry's Storybook (MIT), --components ui-base-select"
+    ],
+    "notes": [
+      "The story renders only the select's closed field. snap clicked it open, moved the pointer off the page, and measured div[data-slot=select-content], the listbox, in its portal, as the variant's `opened` and `portal` record.",
+      "No item is measured hovered or highlighted: the listbox opens over the field, under the pointer the click left there (SPEC-NOTES O11). Its separators hang 4px past each side of the list (`-mx-1`).",
+      "Written by snap's own writer from the live run, unchanged but for this block."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://127.0.0.1:6006",
+  "variantSelection": "representative",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-select",
+      "name": "Select",
+      "title": "ui/base/Select",
+      "category": "ui/base",
+      "storyId": "ui-base-select--default",
+      "variantProperties": [],
+      "base": {
+        "combination": {},
+        "slug": "default",
+        "styles": {
+          "display": "block",
+          "flexDirection": null,
+          "alignItems": null,
+          "justifyContent": null,
+          "gap": null,
+          "width": 384,
+          "height": 333,
+          "backgroundColor": "#ffffff",
+          "color": "#0a0a0a",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 8,
+            "topRight": 8,
+            "bottomRight": 8,
+            "bottomLeft": 8
+          },
+          "borderRadiusUniform": 8,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "fontFamily": "Inter",
+          "fontSize": 16,
+          "fontWeight": 400,
+          "lineHeight": 24,
+          "letterSpacing": 0,
+          "boxShadow": [
+            {
+              "offsetX": 0,
+              "offsetY": 0,
+              "blur": 0,
+              "spread": 1,
+              "color": "#0a0a0a1a",
+              "inset": false
+            },
+            {
+              "offsetX": 0,
+              "offsetY": 4,
+              "blur": 6,
+              "spread": -1,
+              "color": "#0000001a",
+              "inset": false
+            },
+            {
+              "offsetX": 0,
+              "offsetY": 2,
+              "blur": 4,
+              "spread": -2,
+              "color": "#0000001a",
+              "inset": false
+            }
+          ],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": true,
+          "text": {
+            "color": "#737373",
+            "fontFamily": "Inter",
+            "fontSize": 12,
+            "fontWeight": 400
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {},
+          "slug": "default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 384,
+            "height": 333
+          },
+          "element": "div[data-slot=\"select-content\"]",
+          "portal": true,
+          "opened": {
+            "via": "click",
+            "trigger": "button[data-slot=\"select-trigger\"]"
+          },
+          "delta": {}
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "argTypes": {
+        "onValueChange": {
+          "type": "function"
+        }
+      },
+      "storyFile": "./registry/ui/select-story/select-base.stories.tsx",
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"d":"block"},"box":[0,0,384,333],"clip":1,"cls":["bg-popover","ring-foreground","rounded-md","shadow-md","text-popover-foreground"],"el":"div[data-slot=select-content]","k":"","t":"F"},
+          {"L":{"d":"block"},"box":[0,0,384,333],"clip":1,"el":"div[role=listbox]","k":"div","t":"F"},
+          {"L":{"d":"block","pad":[4,4,4,4]},"box":[0,0,384,196],"el":"div[data-slot=select-group]","k":"div/select-group","t":"F"},
+          {"L":{"d":"block","pad":[6,8,6,8]},"box":[4,4,376,28],"cls":["text-muted-foreground","text-xs"],"el":"div[data-slot=select-label]","k":"div/select-group/select-label","t":"F"},
+          {"box":[8,5.5,31.79,16],"cls":["text-muted-foreground"],"el":"#text","k":"div/select-group/select-label/#text","t":"T","tx":{"c":"Fruits","col":"#737373","f":"Inter","fs":"system-ui","ink":[0,0.5,31.78,15],"lh":16,"n":1,"sz":12,"wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,32,376,32],"el":"div[data-slot=select-item]","k":"div/select-group/select-item","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group/select-item/div","t":"T","tx":{"c":"Apple","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,38,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,64,376,32],"el":"div[data-slot=select-item]","k":"div/select-group/select-item:2","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group/select-item:2/div","t":"T","tx":{"c":"Banana","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,49.16,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,96,376,32],"el":"div[data-slot=select-item]","k":"div/select-group/select-item:3","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group/select-item:3/div","t":"T","tx":{"c":"Blueberry","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,64,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,128,376,32],"el":"div[data-slot=select-item]","k":"div/select-group/select-item:4","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group/select-item:4/div","t":"T","tx":{"c":"Grapes","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,47.5,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,160,376,32],"el":"div[data-slot=select-item]","k":"div/select-group/select-item:5","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group/select-item:5/div","t":"T","tx":{"c":"Pineapple","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,64.97,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"bg":"#e5e5e5","box":[-4,200,392,1],"cls":["bg-border"],"el":"div[data-slot=select-separator]","k":"div/select-separator","t":"F"},
+          {"L":{"d":"block","pad":[4,4,4,4]},"box":[0,205,384,196],"el":"div[data-slot=select-group]","k":"div/select-group:2","t":"F"},
+          {"L":{"d":"block","pad":[6,8,6,8]},"box":[4,4,376,28],"cls":["text-muted-foreground","text-xs"],"el":"div[data-slot=select-label]","k":"div/select-group:2/select-label","t":"F"},
+          {"box":[8,5.5,63.47,16],"cls":["text-muted-foreground"],"el":"#text","k":"div/select-group:2/select-label/#text","t":"T","tx":{"c":"Vegetables","col":"#737373","f":"Inter","fs":"system-ui","ink":[0,0.5,63.47,15],"lh":16,"n":1,"sz":12,"wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,32,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:2/select-item","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:2/select-item/div","t":"T","tx":{"c":"Aubergine","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,67.61,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,64,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:2/select-item:2","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:2/select-item:2/div","t":"T","tx":{"c":"Broccoli","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,53.08,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,96,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:2/select-item:3","op":0.5,"r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:2/select-item:3/div","t":"T","tx":{"c":"Carrot","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,41.7,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,128,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:2/select-item:4","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:2/select-item:4/div","t":"T","tx":{"c":"Courgette","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,66.58,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,160,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:2/select-item:5","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:2/select-item:5/div","t":"T","tx":{"c":"Leek","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,31.8,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"bg":"#e5e5e5","box":[-4,405,392,1],"cls":["bg-border"],"el":"div[data-slot=select-separator]","k":"div/select-separator:2","t":"F"},
+          {"L":{"d":"block","pad":[4,4,4,4]},"box":[0,410,384,164],"el":"div[data-slot=select-group]","k":"div/select-group:3","t":"F"},
+          {"L":{"d":"block","pad":[6,8,6,8]},"box":[4,4,376,28],"cls":["text-muted-foreground","text-xs"],"el":"div[data-slot=select-label]","k":"div/select-group:3/select-label","t":"F"},
+          {"box":[8,5.5,28.79,16],"cls":["text-muted-foreground"],"el":"#text","k":"div/select-group:3/select-label/#text","t":"T","tx":{"c":"Meat","col":"#737373","f":"Inter","fs":"system-ui","ink":[0,0.5,28.78,15],"lh":16,"n":1,"sz":12,"wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,32,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:3/select-item","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:3/select-item/div","t":"T","tx":{"c":"Beef","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,30.45,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,64,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:3/select-item:2","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:3/select-item:2/div","t":"T","tx":{"c":"Chicken","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,53.25,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,96,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:3/select-item:3","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:3/select-item:3/div","t":"T","tx":{"c":"Lamb","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,36.64,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[6,32,6,8]},"box":[4,128,376,32],"el":"div[data-slot=select-item]","k":"div/select-group:3/select-item:4","r":6,"t":"F"},
+          {"S":{"basis":"0%","grow":1,"shrink":0},"box":[8,6,336,20],"cls":["text-popover-foreground"],"el":"div","k":"div/select-group:3/select-item:4/div","t":"T","tx":{"c":"Pork","col":"#0a0a0a","f":"Inter","fs":"system-ui","ink":[0,1,29.98,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","jc":"center","pad":[4,0,4,0]},"S":{"z":10},"abs":1,"bg":"#ffffff","box":[0,309,384,24],"cls":["bg-popover"],"el":"div[data-slot=select-scroll-down-button]","k":"select-scroll-down-button","t":"F"},
+          {"box":[184,4,16,16],"clip":1,"cls":["text-popover-foreground"],"el":"svg.lucide-chevron-down","k":"select-scroll-down-button/svg","shapes":[[4,6,8,4]],"svg":"svg:2647da07","t":"V"}
+        ],
+        "assets": {
+          "svg": {
+            "svg:2647da07": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 9 6 6 6-6\"/></svg>"
+          },
+          "img": {}
+        }
+      },
+      "fontStandIns": [
+        [
+          "system-ui",
+          "Inter"
+        ]
+      ]
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 1,
+    "rendered": 1,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

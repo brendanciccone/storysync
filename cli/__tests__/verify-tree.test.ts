@@ -84,7 +84,7 @@ test("faithful build: every fixture's elements are all scored, not passed by def
   }
   assert.deepEqual(counts, {
     attachment: [32, 32, 396], avatar: [9, 9, 93], "button-icon": [30, 30, 360], card: [46, 46, 648], dialog: [11, 11, 156], "example-button": [24, 24, 312],
-    inputotp: [8, 8, 94], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102],
+    inputotp: [8, 8, 94], select: [43, 43, 633], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102], tooltip: [3, 3, 41],
   });
 });
 

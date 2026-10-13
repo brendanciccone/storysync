@@ -388,7 +388,7 @@ for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture
     const e = elementsOf(json);
     assert.equal(json.elementFidelity === 1, !sum(cut));
     assert.equal(e.verified, e.measured - sum(cut));
-    assert.equal(e.measured, 201);
+    assert.equal(e.measured, 247);
   } finally {
     cleanup(p);
   }
@@ -482,6 +482,56 @@ test("tree e2e: a Dialog snap clicked open is built from its open content, read 
     }]);
     assert.ok(text.stdout.includes('  i ui/base/Dialog: measured open: snap clicked button[data-slot="dialog-trigger"] to open it, and measured div[data-slot="dialog-content"]'), text.stdout);
     assert.doesNotMatch(text.stdout, /a closed trigger/);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a Tooltip snap hovered open keeps its arrow below the bubble, where the browser drew it, and verifies by element", async () => {
+  // The registry's Tooltip story renders only its trigger: snap hovered
+  // over it and measured the content in its portal (fixtures/tree/tooltip.json).
+  const tooltip = asSnap(loadTreeFixture("tooltip"));
+  const [variant] = tooltip.components[0].variants;
+  assert.deepEqual([variant.element, variant.opened, variant.movedInside], [
+    'div[data-slot="tooltip-content"]', { via: "hover", trigger: 'button[data-slot="tooltip-trigger"]' }, undefined,
+  ]);
+  const p = await push(tooltip);
+  try {
+    // The bubble hugs its label, which Figma sets a whole pixel wide.
+    const bubble = layerOf(p.mock, variant.slug, "");
+    assert.deepEqual([bubble.width, bubble.height], [101, 28]);
+    // The arrow past the bubble's bottom, where Base UI's positioner placed it.
+    const arrow = layerOf(p.mock, variant.slug, "div");
+    assert.deepEqual([arrow.x, arrow.y, arrow.width, arrow.height], [45.5, 21, 10, 10]);
+    assert.doesNotMatch(descriptionOf(p.mock, "ui-base-tooltip"), /storysync:/);
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    const e = elementsOf(json);
+    assert.deepEqual([e.verified, e.drifted, e.missing], [e.measured, 0, 0]);
+    assert.ok(text.stdout.includes('  i ui/base/Tooltip: measured open: snap hovered over button[data-slot="tooltip-trigger"] to open it, and measured div[data-slot="tooltip-content"]'), text.stdout);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a Select snap clicked open is built from its listbox with no item hovered, and verifies by element", async () => {
+  const select = asSnap(loadTreeFixture("select"));
+  const [variant] = select.components[0].variants;
+  assert.deepEqual([variant.element, variant.opened], ['div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+  const nodes = expandTree(select.components[0].tree as never, undefined);
+  // No item paints: the first isn't measured hovered and highlighted.
+  const items = nodes.filter((n) => /select-item(:\d+)?$/.test(n.k));
+  assert.equal(items.length, 14);
+  assert.deepEqual(items.filter((n) => n.bg), []);
+  const p = await push(select);
+  try {
+    assert.deepEqual((p.mock.handle(layerOf(p.mock, variant.slug, "div/select-group/select-item").id) as { fills: unknown[] }).fills, []);
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    const e = elementsOf(json);
+    assert.deepEqual([e.measured, e.verified, e.drifted, e.missing], [43, 43, 0, 0]);
   } finally {
     cleanup(p);
   }
