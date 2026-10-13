@@ -289,8 +289,9 @@ test("tokens CLI: each --source there is still reads that source", () => {
 });
 
 test("tokens CLI: --source auto detects the source, as leaving it out does", () => {
-  // auto is the drift-check action's token_source default, which the README
-  // tells action users to pass on to --source when they write the baseline.
+  // auto is the drift-check action's token_source default, which
+  // docs/reference.md tells action users to pass on to --source when they
+  // write the baseline.
   withProject((dir) => {
     const auto = tokens(dir, "--source", "auto", "--json");
     assert.equal(auto.status, 0, auto.out);
