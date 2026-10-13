@@ -1347,3 +1347,27 @@ BV6. **A clamped text shows at most its clamp's lines** (section 10.2's
    included (BV3), and Figma shows at most maxLines, so `lines` expects
    `min(n, cl)` for a clamped text: one both cut at two lines of five
    drifted `lines measured 5, Figma 2` though the two agree.
+BV7. **An ellipsis is measured against the box it ends the text at**
+   (BV3's `cutInBrowser`). snap gives a `#text` run in a frame the box of
+   its glyphs, so its ink always spans its box, and an ellipsis on a run
+   in a `truncate` element with padding, a background or centered content
+   (which stays a frame) read as drawn whole: verify reported Figma's cut
+   backwards, or missed it.
+   - A `#text` run is measured against its parent's content box (the
+     parent's box less `L.pad` and `bd.w`), where the parent lays it out
+     in a block. In a flex or grid parent the run is an anonymous item
+     that text-overflow doesn't reach: Chrome 155 clips it with no
+     ellipsis (a padded `truncate` div drew one, its `display: flex` twin
+     didn't, compared by screenshot against `text-overflow: clip`), so
+     it is not cut, as Figma's clipping frame shows it.
+   - An input's `#value` has the input's content box and snap caps its
+     advance there, so a value whose ink fills its box ran past it.
+   - A pseudo-element's text is measured as its box: its `cut` is listed
+     as unscorable, and truncation is scored on the settings.
+   - Planned: the build makes a cut `#text` run as wide as its glyphs, so
+     Figma holds it whole and its frame clips it, with no ellipsis. verify
+     now reports that as drift on truncation; building the run at its
+     parent's content width needs snap to measure it there too, or every
+     such run drifts on its width instead. A text element that is only
+     its text and lays it out with `display: flex` (not centered, so snap
+     keeps it a text) has no layout facts to tell, and still reads as cut.

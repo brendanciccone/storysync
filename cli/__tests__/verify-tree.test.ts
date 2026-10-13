@@ -856,3 +856,39 @@ test("lines: a clamped text the browser and Figma both cut shows the clamp's lin
   // One Figma shows three lines of, past the clamp, still drifts.
   assert.deepEqual(textVerdict(scoreOne({ box: [0, 0, 116, 40] }, text, { h: 60, maxLines: 2, cut: 1 }), "p", ["lines"]).differences, [{ property: "lines", measured: 2, figma: 3 }]);
 });
+
+test("truncation: an ellipsis on a run in a padded frame is measured against the frame's content box, not the run's own glyph box", () => {
+  // A `truncate` div with 8px of padding stays a frame, and its run's box is
+  // its glyphs': 227 wide where the browser cut it at 100 (Chrome: range
+  // rects 227 wide, scrollWidth 243 against clientWidth 116).
+  const run: TreeNode = { k: "#text", t: "T", el: "#text", box: [8, 0, 227, 20], tx: { c: LONG, f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, el: 1, ws: "nowrap", n: 1, ink: [0, 2, 227, 16] } };
+  const block: Partial<TreeNode> = { L: { d: "block", pad: [0, 8, 0, 8] }, clip: 1 };
+  const truncation = (holder: Partial<TreeNode>, cut: 0 | 1) => textVerdict(scoreOne(holder, run, { maxLines: 1, cut }), "#text", ["truncation"]).differences;
+  // Figma holding it whole, its frame clipping it, shows no ellipsis.
+  assert.deepEqual(truncation(block, 0), [{ property: "truncation", measured: { maxLines: 1, cut: true }, figma: { truncation: "ENDING", maxLines: 1, cut: false } }]);
+  assert.deepEqual(truncation(block, 1), []);
+  // A border is inside the box too.
+  assert.deepEqual(truncation({ ...block, L: { d: "block" }, bd: { w: [0, 8, 0, 8], s: "solid", c: "#000000" } }, 1), []);
+  // A run that fits its content box was drawn whole.
+  const fits: TreeNode = { ...run, box: [8, 0, 90, 20], tx: { ...run.tx!, ink: [0, 2, 90, 16] } };
+  assert.deepEqual(textVerdict(scoreOne(block, fits, { maxLines: 1, cut: 0 }), "#text", ["truncation"]).differences, []);
+  // In a flex container the run is an anonymous item text-overflow doesn't
+  // reach: Chrome clips it with no ellipsis, as Figma's frame does.
+  assert.deepEqual(truncation({ ...block, L: { d: "flex", pad: [0, 8, 0, 8] } }, 0), []);
+  assert.deepEqual(truncation({ ...block, L: { d: "inline-grid", pad: [0, 8, 0, 8] } }, 1).map((d) => d.measured), [{ maxLines: 1, cut: false }]);
+});
+
+test("truncation: an input's value as wide as its box ran past it, and a pseudo-element's cut is unscored", () => {
+  // snap caps a value's advance at its content box: the ink fills it.
+  const value: TreeNode = { k: "#value", t: "T", el: "#value", box: [8, 0, 100, 20], tx: { c: LONG, f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, el: 1, ws: "nowrap", n: 1, ink: [0, 0, 100, 20] } };
+  const input: Partial<TreeNode> = { el: "input", L: { d: "inline-block", pad: [0, 8, 0, 8] } };
+  assert.deepEqual(textVerdict(scoreOne(input, value, { maxLines: 1, cut: 1 }), "#value", ["truncation"]).differences, []);
+  assert.deepEqual(textVerdict(scoreOne(input, value, { maxLines: 1, cut: 0 }), "#value", ["truncation"]).differences.map((d) => d.measured), [{ maxLines: 1, cut: true }]);
+  const short: TreeNode = { ...value, tx: { ...value.tx!, c: "short", ink: [0, 0, 36.5, 20] } };
+  assert.deepEqual(textVerdict(scoreOne(input, short, { maxLines: 1, cut: 0 }), "#value", ["truncation"]).differences, []);
+  // A pseudo-element's text is measured as its box, whatever it holds.
+  const after: TreeNode = { k: "::after", t: "T", el: "::after", box: [0, 0, 100, 20], tx: { ...value.tx!, ink: [0, 0, 100, 20] } };
+  for (const cut of [0, 1] as const) {
+    assert.deepEqual(textVerdict(scoreOne({}, after, { maxLines: 1, cut }), "::after", ["truncation"]), { differences: [], unscorable: ["cut"] });
+  }
+});

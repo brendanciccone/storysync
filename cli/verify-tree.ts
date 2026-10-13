@@ -559,7 +559,7 @@ export function scoreTree(input: TreeInput): TreeScore {
       continue;
     }
 
-    if (n.t === "T" && n.tx) scoreText(n, rec, field, check, unscorable, spike);
+    if (n.t === "T" && n.tx) scoreText(n, rec, field, check, unscorable, spike, snap.get(parentKey(n.k) ?? ""));
     else if (n.t === "V") scoreVector(n, field, assets, tolerance, check, unscorable);
     else if (n.t === "I") scoreImage(n, field, assets, tolerance, check, unscorable, spike);
     else scoreFrame(n, field, tolerance, check, unscorable, spike);
@@ -650,7 +650,7 @@ type Check = (property: string, ok: boolean, measured: unknown, figma: unknown) 
 type Unscorable = (property: string, reason: string) => void;
 type Field = (name: string) => unknown;
 
-function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable: Unscorable, spike: SpikeAssumptions): void {
+function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable: Unscorable, spike: SpikeAssumptions, parent: TreeNode | undefined): void {
   const tx = n.tx!;
   const chars = readbackChars(tx.c);
   check("chars", field("chars") === chars, chars, field("chars"));
@@ -681,9 +681,11 @@ function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable
   const seen = cut === 0 || cut === 1;
   if (maxLines !== null && !spike.textTruncation) unscorable("truncation", "Figma's text truncation is unavailable (spike item 3)");
   else if (maxLines !== null) {
-    const want = cutInBrowser(n);
-    check("truncation", truncation === "ENDING" && field("maxLines") === maxLines && (!seen || (cut === 1) === want),
-      { maxLines, ...(seen ? { cut: want } : {}) }, { truncation, maxLines: field("maxLines"), ...(seen ? { cut: cut === 1 } : {}) });
+    const want = cutInBrowser(n, parent);
+    if (want === null) unscorable("cut", "snap measures a pseudo-element's text as its box, so not whether the browser cut it");
+    const scored = seen && want !== null;
+    check("truncation", truncation === "ENDING" && field("maxLines") === maxLines && (!scored || (cut === 1) === want),
+      { maxLines, ...(scored ? { cut: want } : {}) }, { truncation, maxLines: field("maxLines"), ...(scored ? { cut: cut === 1 } : {}) });
   } else check("truncation", truncation !== "ENDING", { maxLines: null }, { truncation, maxLines: field("maxLines") });
   // The lines it shows: Chrome counts the lines a clamp hides in `n`
   // (cutInBrowser), and Figma shows at most maxLines, so a text both cut
@@ -695,16 +697,38 @@ function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable
 
 /**
  * Whether the browser cut a text short, from snap's facts: on one line with
- * an ellipsis (`el`), where its glyphs run past its box, since a range lays
- * a text out whole however much of it shows; with a line clamp (`cl`),
- * where it took more lines than the clamp shows, since Chrome lays out the
- * lines it hides too. Written here rather than taken from the build's
- * textWhole (design D9).
+ * an ellipsis (`el`), where its glyphs run past the box the ellipsis ends
+ * it at, since a range lays a text out whole however much of it shows;
+ * with a line clamp (`cl`), where it took more lines than the clamp shows,
+ * since Chrome lays out the lines it hides too. Written here rather than
+ * taken from the build's textWhole (design D9).
+ *
+ * The box an ellipsis ends a text at is its holder's content box. A text
+ * element that is only its text is its own holder, with no padding (snap
+ * keeps one with padding a frame). But a `#text` run in a frame has the box
+ * of its glyphs, so it is measured against its parent's content box,
+ * where its parent lays it out in a block: Chrome draws no ellipsis on a
+ * run in a flex or grid container, an anonymous item text-overflow doesn't
+ * reach, and only clips it, as Figma's frame does (both checked in Chrome
+ * 155, a `truncate` div with padding cut, its `display: flex` twin not).
+ * An input's `#value` has its content box, its glyphs' advance capped at
+ * it, so a value as wide as its box ran past it. A pseudo-element's text
+ * is measured as its box: null, as nothing says whether it was cut.
  */
-export function cutInBrowser(n: TreeNode): boolean {
+export function cutInBrowser(n: TreeNode, parent?: TreeNode): boolean | null {
   const tx = n.tx!;
-  if (tx.el) return tx.ink[0] < -0.5 || tx.ink[0] + tx.ink[2] > n.box[2] + 0.5;
-  return tx.cl !== undefined && tx.n > tx.cl;
+  if (!tx.el) return tx.cl !== undefined && tx.n > tx.cl;
+  if (n.el === "#value") return tx.ink[2] >= n.box[2];
+  if (n.el.startsWith("::")) return null;
+  let [start, end] = [0, n.box[2]];
+  if (n.el === "#text" && parent) {
+    if (/flex|grid/.test(parent.L?.d ?? "")) return false;
+    const [, padR, , padL] = parent.L?.pad ?? [0, 0, 0, 0];
+    const [, bdR, , bdL] = sides(parent.bd?.w ?? 0);
+    start = padL + bdL - n.box[0];
+    end = parent.box[2] - padR - bdR - n.box[0];
+  }
+  return tx.ink[0] < start - 0.5 || tx.ink[0] + tx.ink[2] > end + 0.5;
 }
 
 function scoreVector(n: TreeNode, field: Field, assets: ComponentTree["assets"], tolerance: number, check: Check, unscorable: Unscorable): void {
