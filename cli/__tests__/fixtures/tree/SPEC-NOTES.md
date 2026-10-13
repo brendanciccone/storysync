@@ -307,6 +307,11 @@ A10. **Class evidence.**
     - Sorted, and not capped (6.3 says 8): the cap dropped an outline
       button's `dark:border-input`, which names its border in Dark mode, and
       a tabs trigger's `data-active:bg-background` (push 5 review).
+    - A `dark:` prefix alone stays (`dark:border-input`), and a text takes
+      the `dark:text-*` of the element it inherits its color from with
+      that color: figma code picks, among the tokens the classes name, the
+      one a `dark:` class names, whose variable is right in both modes
+      (note 40). With a state after it (`dark:hover:`) it's cut as any.
     - T and V nodes also get the text color class of the nearest element around
       them, a collapsed wrapper included, so `text-card-foreground` reaches the
       Card title, as B's binding example needs.
@@ -552,6 +557,9 @@ commit that made it.
       only when it has none.
     - A vector's paints also accept `text-*` classes, since lucide draws in
       `currentColor`.
+    - Where the classes name several of a value's tokens, the one a `dark:`
+      class alone names binds (A10): `border-border dark:border-input` is
+      `input`, #e5e5e5 in light like `border`, and the dark theme's.
     - A radius is not bound when its border is built OUTSIDE, because the
       inner radius matches no token.
     - Candidates are the tokens' light `hex` and `px`, which snap measures;

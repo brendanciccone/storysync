@@ -161,6 +161,21 @@ test("Binder: where a class sets the color, or snap didn't say none does, the ba
   assert.equal(binder.color("#0a0a0a", "text", ["text-body"], ["color"]).variable, null);
 });
 
+test("Binder: of the tokens the classes name, the one a dark: class names fits both modes", () => {
+  const binder = new Binder(WITH_DEFAULTS);
+  // An outline button: border-border, dark:border-input. Both are #e5e5e5 in
+  // light, and input is the dark theme's, so input is right in both modes.
+  assert.deepEqual(binder.color("#e5e5e5", "stroke", ["border-border", "dark:border-input"]), { variable: "input", candidates: ["border", "input"] });
+  assert.equal(binder.color("#ffffff", "fill", ["bg-card", "dark:bg-background"]).variable, "background");
+  // A dark: class alone names one as any class does.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["dark:border-input"], ["border-color"]).variable, "input");
+  // Two a dark: class names: still ambiguous.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["dark:border-border", "dark:border-input"]).variable, null);
+  // A dark theme's palette color is no token's: no base style stands in for it.
+  assert.equal(binder.color("#0a0a0a", "text", ["dark:text-neutral-50"], ["color"]).variable, null);
+  assert.equal(binder.color("#0a0a0a", "text", ["dark:text-muted-foreground"], ["color"]).variable, "foreground");
+});
+
 test("Binder: a Tailwind config's DEFAULT key is unnamed in a class", () => {
   // shadcn/ui v3's `primary: { DEFAULT: "hsl(var(--primary))" }` is the token primary/DEFAULT, and bg-primary names it.
   const binder = new Binder({ collections: [{ category: "colors", tokens: [{ name: "primary/DEFAULT", value: "", hex: "#18181b" }, { name: "foreground", value: "", hex: "#18181b" }] }] });

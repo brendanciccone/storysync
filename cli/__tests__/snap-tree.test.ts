@@ -751,13 +751,28 @@ test("buildTree: past the root, a text takes the text color class of the element
 test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, every one", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x", "bg-muted/[.5]"]),
-    ["bg-input", "bg-muted", "bg-primary", "rounded-md", "text-primary-foreground", "text-x"],
+    ["bg-muted", "bg-primary", "dark:bg-input", "rounded-md", "text-primary-foreground", "text-x"],
   );
   // An outline button's: past 8, the dark:border-input that names its border in Dark mode is kept.
   const outline = ["focus-visible:border-ring", "focus-visible:ring-ring/50", "aria-invalid:ring-destructive/20", "aria-invalid:border-destructive",
     "rounded-md", "border", "bg-background", "shadow-xs", "hover:bg-accent", "hover:text-accent-foreground", "dark:bg-input/30", "dark:border-input", "text-sm"];
-  assert.deepEqual(classEvidence(outline), ["bg-accent", "bg-background", "bg-input", "border-destructive", "border-input", "border-ring",
+  assert.deepEqual(classEvidence(outline), ["bg-accent", "bg-background", "border-destructive", "border-ring", "dark:bg-input", "dark:border-input",
     "ring-destructive", "ring-ring", "rounded-md", "shadow-xs", "text-accent-foreground", "text-sm"]);
+});
+
+test("classEvidence and buildTree: a dark: prefix alone stays, naming the token the dark theme paints", () => {
+  // dark: alone is the dark theme's color; with a state after it, a state's.
+  assert.deepEqual(classEvidence(["border-border", "dark:border-input", "dark:hover:bg-input/50", "hover:dark:bg-muted", "!dark:text-x"]),
+    ["bg-input", "bg-muted", "border-border", "dark:border-input", "dark:text-x"]);
+  // A text takes the dark theme's color with the one it inherits.
+  const p = el("p", [0, 0, 200, 20], {}, [run("Muted", [[0, 1.5, 40, 17]])], { text: TEXT });
+  const card = el("div", [0, 0, 200, 20], { display: "flex" }, [p], { cls: ["text-foreground", "dark:text-muted-foreground", "dark:bg-card"] });
+  const nodes = byKey(buildTree(tree(card)).nodes);
+  assert.deepEqual([nodes.get("p")!.cls, nodes.get("p")!.nocls], [["dark:text-muted-foreground", "text-foreground"], undefined]);
+  // Alone, the dark theme's sets nothing snap measured: the base styles still color the light theme.
+  const lone = el("div", [0, 0, 200, 20], { display: "flex" }, [p], { cls: ["dark:text-muted-foreground"] });
+  const alone = byKey(buildTree(tree(lone)).nodes).get("p")!;
+  assert.deepEqual([alone.cls, alone.nocls], [["dark:text-muted-foreground"], ["color"]]);
 });
 
 test("buildTree: nocls says what no class colors: a text with no color class up the DOM, a border none of its own colors", () => {

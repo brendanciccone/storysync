@@ -287,21 +287,27 @@ const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-
  * Class tokens naming what paints a node, for binding its paint to a
  * variable: each token's variant prefixes (`hover:`, `data-[state=on]:`)
  * and any `/NN` opacity cut off, arbitrary values (`bg-[#fff]`) left out,
- * sorted. Every one is kept: at most 8 dropped the `dark:border-input` that
- * names an outline button's border in Dark mode, so the base styles' color
- * bound in its place.
+ * sorted. A `dark:` prefix alone stays (`dark:border-input`): it names the
+ * token the dark theme paints, which a variable's Dark mode must be.
+ * Every one is kept: at most 8 dropped the `dark:border-input` that names
+ * an outline button's border in Dark mode, so the base styles' color bound
+ * in its place.
  */
 export function classEvidence(tokens: readonly string[]): string[] {
-  return [...new Set(utilitiesOf(tokens).filter((u) => EVIDENCE.test(u.name)).map((u) => u.name))].sort();
+  return [...new Set(utilitiesOf(tokens).filter((u) => EVIDENCE.test(u.name)).map(evidenceName))].sort();
 }
+
+/** A utility as `cls` writes it: `dark:` before one only the dark theme applies. */
+const evidenceName = (u: { name: string; dark: boolean }): string => (u.dark ? `dark:${u.name}` : u.name);
 
 /**
  * Each class token as its utility, its variant prefixes and any `/NN` or
- * `/[.5]` opacity cut off (an arbitrary value's own `/` stays), and whether
- * a variant prefix applies it only sometimes.
+ * `/[.5]` opacity cut off (an arbitrary value's own `/` stays), whether a
+ * variant prefix applies it only sometimes, and whether that prefix is
+ * `dark:` alone, the dark theme's.
  */
-function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean }[] {
-  const found: { name: string; prefixed: boolean }[] = [];
+function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean; dark: boolean }[] {
+  const found: { name: string; prefixed: boolean; dark: boolean }[] = [];
   for (const token of tokens) {
     // The utility is what follows the last `:` outside brackets.
     let depth = 0;
@@ -313,7 +319,7 @@ function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boole
       else if (ch === ":" && depth === 0) cut = i;
     }
     const utility = token.slice(cut + 1).replace(/^!|!$/g, "").replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
-    found.push({ name: utility, prefixed: cut >= 0 });
+    found.push({ name: utility, prefixed: cut >= 0, dark: token.slice(0, cut + 1).replace(/^!/, "") === "dark:" });
   }
   return found;
 }
@@ -929,16 +935,20 @@ interface Ctx {
  * found sets no color (`text-body`) is no longer in `cls` to stop the walk.
  */
 function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; set: boolean } {
-  const colors = (cls: string[] | undefined, prefixed: boolean) => [...new Set(utilitiesOf(cls ?? [])
-    .filter((u) => u.prefixed === prefixed && u.name.startsWith("text-") && utilitySetsColor(u.name) === "color").map((u) => u.name))].sort();
+  const colors = (cls: string[] | undefined) => utilitiesOf(cls ?? []).filter((u) => u.name.startsWith("text-") && utilitySetsColor(u.name) === "color");
   const chain: (string[] | undefined)[] = [];
   for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
   for (const prefixed of [false, true]) {
     for (const cls of [...chain, ...outer]) {
-      const found = colors(cls, prefixed);
+      const all = colors(cls);
+      const found = all.filter((u) => u.prefixed === prefixed);
+      if (!found.length) continue;
+      // With the color it sets always, the one it sets in the dark theme
+      // (`dark:text-muted-foreground`), which a variable's Dark mode must be.
+      const named = [...found, ...(prefixed ? [] : all.filter((u) => u.dark))].filter((u) => EVIDENCE.test(u.name));
       // A state's arbitrary color, which may be the one measured, names
       // nothing either: no base style stands in for it.
-      if (found.length) return { cls: found.filter((name) => EVIDENCE.test(name)), set: !prefixed || found.some((name) => !EVIDENCE.test(name)) };
+      return { cls: [...new Set(named.map(evidenceName))].sort(), set: !prefixed || found.some((u) => !EVIDENCE.test(u.name)) };
     }
   }
   return { cls: [], set: false };

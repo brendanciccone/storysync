@@ -132,10 +132,11 @@ export class Binder {
   /**
    * A class among `cls` that sets the role's color to one no token names:
    * a palette color, `hover:text-neutral-950`, which may be the color
-   * measured in that state. A project's font size (`text-body`) sets none.
+   * measured in that state, or `dark:text-neutral-50`, the dark theme's.
+   * A project's font size (`text-body`) sets none.
    */
   private unnamedColor(role: PaintRole, cls: readonly string[] | undefined): string | undefined {
-    return (cls ?? []).find((c) => {
+    return (cls ?? []).map((c) => c.replace(/^dark:/, "")).find((c) => {
       const property = utilitySetsColor(c);
       if (!property || !SETS[role]?.includes(property) || this.sizeClasses.has(c)) return false;
       const name = c.slice(c.indexOf("-") + 1);
@@ -153,19 +154,26 @@ export class Binder {
 /**
  * The one candidate the classes name, or the only candidate; `named` says
  * how many the classes named, so a value two classes name isn't then
- * handed to a default.
+ * handed to a default. Where they name several, the one a `dark:` class
+ * names, alone: it has the light value measured, and is the token the dark
+ * theme paints, so its variable is right in both modes, as an outline
+ * button's `border-border dark:border-input` border is `input`.
  */
 function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined): { variable: string | null; named: number } {
   if (candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
   const named = new Set<string>();
-  for (const c of cls ?? []) {
+  const dark = new Set<string>();
+  for (const entry of cls ?? []) {
+    const c = entry.replace(/^dark:/, "");
     const prefix = prefixes.find((p) => c.startsWith(`${p}-`));
     if (!prefix) continue;
     const rest = c.slice(prefix.length + 1).toLowerCase();
     for (const name of [rest, rest.replace(SIDE, "")]) {
       const token = candidates.find((t) => tokenClassName(t) === name);
       if (token) named.add(token);
+      if (token && c !== entry) dark.add(token);
     }
   }
-  return { variable: named.size === 1 ? [...named][0] : null, named: named.size };
+  const variable = named.size === 1 ? [...named][0] : dark.size === 1 ? [...dark][0] : null;
+  return { variable, named: named.size };
 }
