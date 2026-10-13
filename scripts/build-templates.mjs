@@ -1,8 +1,8 @@
 // Minifies templates/*.js into dist/templates/*.min.js for `storysync figma code`.
 //
-// A template is the body of the function use_figma runs: it reads constants a
-// generated call puts before it (DATA, PAGE, ...), and awaits and returns at
-// its top level. terser takes a script or a module, not a function body, so
+// A template is the body of the async function a call runs it as: it reads
+// the constants the call passes it (DATA, PAGE, ...), and awaits and returns
+// at its top level (cli/checksum.ts, callCode). terser takes a script or a module, not a function body, so
 // each is minified as the body of a function and taken back out of it. Names
 // the template only reads, such as `figma` and DATA, are never declared in
 // that function, so they keep their names.

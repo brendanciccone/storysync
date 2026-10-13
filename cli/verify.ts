@@ -116,8 +116,9 @@ export interface ReadbackStyles {
    */
   unbound?: string[];
   /**
-   * The element-tree readback's (templates/readback.js, `tpl: 3`, or 2
-   * before its T records said whether Figma cuts a text short): the
+   * The element-tree readback's (templates/readback.js, `tpl: 4`; 3
+   * before its records read a layer's turn, 2 before its T records said
+   * whether Figma cuts a text short): the
    * variant's name in Figma; the digest of the facts the build built it
    * from, `built`; for a variant read in parts, which records this part
    * holds, `part: [first, count, total]`; the records, `tree`; and the

@@ -115,6 +115,15 @@ function outside(mock: MockFigma, id: string): [number, number, number, number] 
 }
 
 /**
+ * A layer's x and y as snap measures a turned one, its box unturned about
+ * its center: Figma's x and y are where its top left corner turned to.
+ */
+function unturned(n: NodeView): [number, number] {
+  const t = ((n.rotation ?? 0) * Math.PI) / 180;
+  return [n.x + ((Math.cos(t) - 1) * n.width) / 2 + (Math.sin(t) * n.height) / 2, n.y - (Math.sin(t) * n.width) / 2 + ((Math.cos(t) - 1) * n.height) / 2];
+}
+
+/**
  * Each keyed layer's border box relative to the variant root's, by key, the
  * root `""`: as the browser measures a box, a stroke built outside a frame
  * included in it, so it compares with absoluteBoxes of snap's facts.
@@ -127,7 +136,7 @@ export function readBoxes(mock: MockFigma, variant: NodeView): Map<string, Box> 
     if (n.data["storysync.svg"] && key !== "") return;
     for (const c of n.children ?? []) {
       const k = c.data["storysync.k"];
-      if (k) visit(c, [origin[0] + c.x, origin[1] + c.y], k);
+      if (k) visit(c, [origin[0] + unturned(c)[0], origin[1] + unturned(c)[1]], k);
     }
   };
   const o = outside(mock, variant.id);

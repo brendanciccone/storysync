@@ -308,6 +308,33 @@ test("auto layout: an ABSOLUTE child keeps its place and takes no space; a hidde
   assert.deepEqual((await layout(HUG, [[20, 20]], "kids[0].x = 50;")).kids[0], [0, 0, 20, 20]);
 });
 
+test("rotation: a layer turns about its top left corner, as the sixth probe saw Figma turn one, and in an auto layout's flow it is refused", async () => {
+  // Probe call 1's absolute, free and resized layers, replayed (fixtures/figma-tsum-probe.json).
+  const probe = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-tsum-probe.json`, "utf8")).call1.rot as Record<string, { x: number; y: number; w: number; h: number; rot: number; rt: number[][]; abb: Record<string, number> }>;
+  const figma = new MockFigma();
+  const got = await ok(figma, `
+    const info = (n) => ({ x: n.x, y: n.y, w: n.width, h: n.height, rot: n.rotation, rt: n.relativeTransform, abb: n.absoluteBoundingBox });
+    const box = (parent) => { const n = figma.createFrame(); n.resize(10, 10); parent.appendChild(n); return n; };
+    const auto = figma.createFrame(); auto.resize(120, 40); auto.layoutMode = 'HORIZONTAL'; auto.primaryAxisSizingMode = 'FIXED';
+    const a = box(auto); a.layoutPositioning = 'ABSOLUTE'; a.rotation = -45; a.x = 50.5; a.y = 18.93;
+    const b = box(auto); b.layoutPositioning = 'ABSOLUTE'; b.x = 50.5; b.y = 18.93; b.rotation = -45;
+    const free = figma.createFrame(); free.x = 0; free.y = 100; free.resize(120, 40);
+    const e = box(free); e.rotation = -45; e.x = 50.5; e.y = 18.93;
+    const g = box(free); g.rotation = -45; g.x = 50.5; g.y = 18.93; g.resize(12, 12);
+    const h = box(free); h.rotation = -45; h.x = 50.5; h.y = 18.93; h.rotation = 0;
+    return { a: info(a), b: info(b), e: info(e), g: info(g), h: info(h) };`) as typeof probe;
+  const close = (a: unknown, b: unknown, where: string): void => {
+    if (typeof a === "number") return assert.ok(Math.abs(a - (b as number)) < 0.01, `${where}: ${a}, not ${b}`);
+    if (a && typeof a === "object") for (const k of Object.keys(b as object)) close((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${where}.${k}`);
+  };
+  for (const key of ["a", "b", "e", "g", "h"]) close(got[key], probe[key], key);
+  // In the flow Figma lays a turned layer out by its turned box (probe c, d); the mock refuses.
+  assert.match(await fails(figma, `
+    const auto = figma.createFrame(); auto.layoutMode = 'HORIZONTAL';
+    const c = figma.createFrame(); auto.appendChild(c); c.rotation = -45;
+    return c.x;`), /a turned layer in an auto layout's flow is not modeled/);
+});
+
 test("auto layout: strokes included in layout inset the children by the frame's own stroke, when INSIDE", async () => {
   const stroke = "f.strokes = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }]; f.strokeWeight = 2;";
   assert.deepEqual(await layout(`${HUG} ${stroke} f.strokesIncludedInLayout = true;`, [[20, 10]]), { frame: [24, 14], kids: [[2, 2, 20, 10]] });

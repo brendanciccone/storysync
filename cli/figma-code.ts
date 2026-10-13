@@ -86,22 +86,24 @@ const AsyncFunction = (async () => {}).constructor as new (...args: string[]) =>
 /**
  * Refuses a call that isn't JavaScript use_figma can run, before any is
  * sent: compiled, not run. And `template`, the call's own of `kind`, which
- * runs inside the call as T (checksum.ts, callCode), compiled after the
- * constants its call writes: a template that declares one would read its
- * own value and not the call's on every call of its kind.
+ * the call compiles and runs as the body of an async function of `figma`,
+ * the constants its call writes and TC (checksum.ts, callCode), compiled
+ * here the same way: a template that declares one of them fails to compile,
+ * as it would in Figma.
  */
 export function assertCompiles(code: string, file: string, kind: TemplateName, template: string): void {
-  const constants = CALL_CONSTANTS[kind].map((name) => `const ${name} = 0;\n`).join("");
-  for (const text of [code, constants + template]) {
+  const params = [...CALL_CONSTANTS[kind].filter((name) => name !== "SUM"), "TC"];
+  for (const compile of [() => new AsyncFunction("figma", code), () => new AsyncFunction("figma", ...params, template)]) {
     try {
-      new AsyncFunction("figma", text);
+      compile();
     } catch (e) {
       throw new Error(`${file} is not code use_figma can run (${(e as Error).message}): a template must not declare the constants its call writes before it`);
     }
   }
 }
 
-export const DEFAULT_READ_LIMIT = 14_000;
+/** What figma code packs each read call's slices to, predicted (figma-results.ts READ_LIMIT says why). */
+export const DEFAULT_READ_LIMIT = 17_000;
 
 /** The readback template's own limit sits this far above what each call is predicted to return. */
 const READ_GUARD_MARGIN = 1_000;
@@ -222,7 +224,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   const styleOf = new Map<string, FigmaStyle & { markup?: string }>();
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, parentCls: parent?.cls, spike };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, parentCls: parent?.cls, spike, children: kids.get(node.k)?.length ?? 0 };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
@@ -308,6 +310,15 @@ function compileVariant(
         const fill = plan.fill[node.k] ?? [false, false];
         style.z = [fill[0] ? "L" : own(node, 0), fill[1] ? "L" : own(node, 1)];
       }
+    }
+    if (style.rt) {
+      // Figma turns a layer about its top left corner, and x and y are where
+      // that corner goes: placed so the box turns about its center, as CSS
+      // turns it (tree-types builtTurn).
+      const t = (style.rt * Math.PI) / 180;
+      const [cx, cy, w, h] = [box[0] + box[2] / 2, box[1] + box[3] / 2, box[2], box[3]];
+      box[0] = round2(cx - (Math.cos(t) * w) / 2 - (Math.sin(t) * h) / 2);
+      box[1] = round2(cy + (Math.sin(t) * w) / 2 - (Math.cos(t) * h) / 2);
     }
     if (node.img) images.push(node.img);
     const at = records.length;
@@ -432,13 +443,14 @@ function compileComponent(component: SnapComponentWithTree, binder: Binder, warn
   for (const [where, { slugs }] of findings.absolute) {
     warnings.push(`${key} › ${where}, so it is built without auto layout (${slugs.length === variants.length ? "every variant" : `${slugs.length} of ${variants.length} variants`})`);
   }
-  const notBuilt = new Map<string, string>();
-  for (const n of findings.notBuilt) notBuilt.set(`${n.key || "(root)"}: ${n.what}`, "");
-  for (const what of notBuilt.keys()) warnings.push(`${key} › ${what} is not built`);
+  // Each once: what isn't built, or what is built in its place.
+  const notBuilt = new Set<string>();
+  for (const n of findings.notBuilt) notBuilt.add(`${n.key || "(root)"}: ${n.what} ${n.as ? `is built as ${n.as}` : "is not built"}`);
+  for (const line of notBuilt) warnings.push(`${key} › ${line}`);
   const unbound = new Map<string, Unbound>();
   for (const u of findings.unbound) unbound.set(`${u.property} ${u.value}`, u);
   for (const u of [...unbound.values()].sort((a, b) => `${a.property} ${a.value}`.localeCompare(`${b.property} ${b.value}`))) {
-    warnings.push(`${key}: ${u.property} ${u.value} left unbound: it matches ${u.candidates.join(", ")}, and no class names one`);
+    warnings.push(`${key}: ${u.property} ${u.value} left unbound: ${u.why ?? `it matches ${u.candidates.join(", ")}, and no class names one`}`);
   }
   return {
     key, id: component.id ?? key, title: component.title, name: setNameOf(component), page: pageOf(component),
@@ -864,7 +876,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     // The template and the limit the call it continues was written with: the
     // readable template, which keeps its comments, after `figma code --no-minify`.
     const parent = existsSync(join(dir, call.file)) ? readFileSync(join(dir, call.file), "utf8") : "";
-    const template = loadTemplate("readback", opts.minify ?? !parent.includes("\n// storysync readback, template"), opts.templates);
+    const template = loadTemplate("readback", opts.minify ?? !parent.includes("// storysync readback, template"), opts.templates);
     const written = /\nconst LIMIT = (\d+);/.exec(parent);
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];

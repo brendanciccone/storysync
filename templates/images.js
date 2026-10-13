@@ -2,8 +2,8 @@
 // file, one page per call, carrying no data but the page's name.
 //
 // `storysync figma code` writes the call as `const PAGE = "...";`, then
-// this file as the function T, whose checksum, TSUM, the call checks with
-// PAGE's, SUM, before T runs (cli/checksum.ts, callCode). The build lists
+// this file as the string T, whose checksum, TSUM, the call checks with
+// PAGE's, SUM, before it runs T (cli/checksum.ts, callCode). The build lists
 // one layer per image it could not fill for upload_assets, which puts the
 // image on that layer; every other layer that shows the same image, by its
 // shared plugin data `img`, the asset id snap gave it, takes the same

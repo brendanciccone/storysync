@@ -107,40 +107,50 @@ export function refusal(what: "data" | "template", name: "SUM" | "TSUM"): string
   return `This call differs from the file storysync figma code wrote: its ${what} fails its checksum, ${name}. Nothing was changed. Send the file again, exactly as it is.`;
 }
 
-/** The function a call runs its template as, `const T = <this>;`: TSUM is fnv1a32 over this text. */
-export function templateFunction(template: string): string {
-  return `async()=>{\n${template}\n}`;
+/**
+ * The template as the JavaScript template literal a call carries it in,
+ * `const T = <this>;`: its text exactly, with each backslash, backtick and
+ * `${` escaped, so the string the literal makes is the template, which TSUM
+ * covers and the call runs. A minified template has no backtick or `${`
+ * and a few backslashes, so it costs a few characters; a readable one
+ * (`figma code --no-minify`) keeps its lines.
+ */
+export function templateLiteral(template: string): string {
+  return `\`${template.replace(/\\|`|\$\{/g, (m) => `\\${m}`)}\``;
 }
 
 /**
  * A call's code after its header comment: its constants and SUM
- * (callConstants), TSUM, the template as the function T, and a guard that
- * checks SUM and then TSUM before T runs, and returns what T returns.
+ * (callConstants), TSUM, the template as the string T (templateLiteral), and
+ * a guard that checks SUM, then TSUM, and runs T as the body of an async
+ * function of `figma`, the call's constants and TC, returning what it
+ * returns.
  *
  * The template is 17,000 of a build call's 45,000 characters, and a digit
  * mistyped in one of its numbers, a tolerance or keepLines' 1.27, would
- * change every build without a word. It runs as T so the guard can read
- * its text back: ES2019 has Function.prototype.toString give a function's
- * source text exactly, as V8 does. Nothing yet shows Figma's plugin
- * runtime does: the guard compares TSUM only where it gives back
- * the text of P, a function of T's kind with a line break in it, exactly
- * (TC). A runtime that strips a function's source, or code rewritten on
- * its way, line ends included, then skips the check rather than refusing
- * every honest call; the build returns TC as `tc`, so a live push shows
- * which it was. SUM, over values, is checked either way, and first, so a
- * changed TPL is a call to send again, not a template to doubt.
+ * change every build without a word. 0.4.0 ran it as a function and
+ * checked the text String() gave back, which ES2019 has be the source, as
+ * V8 and Figma's runtime both give it. But use_figma rewrites some calls
+ * before they run: the sixth probe (cli/__tests__/fixtures/figma-tsum-probe.json)
+ * saw the guard's own `async()=>{\nreturn 1.50}` come back as
+ * `async () => {\n      return 1.50;}`, so that guard skipped the check, as
+ * it did in every build of the fifth live push (`tc: 0`). A string's
+ * characters survive any rewrite that keeps what the code does, and the
+ * same probe saw the AsyncFunction constructor compile and run code there.
+ * So T is a string: the guard checks the very text it then compiles, every
+ * time, and passes TC as 1, which the build returns as `tc`. SUM, over
+ * values, is checked first, so a changed TPL is a call to send again, not
+ * a template to doubt.
  */
 export function callCode(constants: readonly (readonly [name: string, value: unknown])[], template: string): string {
-  const fn = templateFunction(template);
-  const names = constants.map(([name]) => name).join(",");
+  const names = constants.map(([name]) => name);
   return [
-    `${callConstants(constants)}const TSUM = ${JSON.stringify(fnv1a32(fn))};`,
-    `const T = ${fn};`,
+    `${callConstants(constants)}const TSUM = ${JSON.stringify(fnv1a32(template))};`,
+    `const T = ${templateLiteral(template)};`,
     `const fnv=x=>{let h=2166136261;for(let i=0;i<x.length;i++)h=Math.imul(h^x.charCodeAt(i),16777619)>>>0;return h.toString(16).padStart(8,"0")};`,
-    `if(fnv(JSON.stringify([${names}]))!==SUM)throw new Error(${JSON.stringify(refusal("data", "SUM"))});`,
-    `const P=async()=>{\nreturn 1.50},TC=String(P)==="async()=>{\\nreturn 1.50}";`,
-    `if(TC&&fnv(String(T))!==TSUM)throw new Error(${JSON.stringify(refusal("template", "TSUM"))});`,
-    "return await T();",
+    `if(fnv(JSON.stringify([${names.join(",")}]))!==SUM)throw new Error(${JSON.stringify(refusal("data", "SUM"))});`,
+    `if(fnv(T)!==TSUM)throw new Error(${JSON.stringify(refusal("template", "TSUM"))});`,
+    `return await new(async()=>{}).constructor(${["figma", ...names, "TC"].map((n) => JSON.stringify(n)).join(",")},T)(figma,${names.join(",")},1);`,
     "",
   ].join("\n");
 }

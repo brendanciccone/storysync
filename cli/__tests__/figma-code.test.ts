@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callConstants, callSum } from "../checksum.js";
 import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
-import { loadPlanResults } from "../figma-results.js";
+import { READ_LIMIT, loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
 import { componentKey } from "../storybook.js";
@@ -88,7 +88,7 @@ test("figma code: every call is at most --max-chars and --max-nodes, and no vari
   component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 60 }, (_, i) => String(i)), defaultValue: "0" }];
   component.variants = Array.from({ length: 60 }, (_, i) => ({ ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`, ...(i ? { treeDelta: {} } : {}) }));
   component.base!.slug = "n-0";
-  for (const [maxChars, maxNodes] of [[45_000, 400], [25_000, 400], [45_000, 100]]) {
+  for (const [maxChars, maxNodes] of [[45_000, 400], [26_000, 400], [45_000, 100]]) {
     const coded = await codeFor(snap, { maxChars, maxNodes });
     const builds = coded.plan.calls.filter((c) => c.kind === "build");
     assert.ok(builds.length > 1, `${maxChars}/${maxNodes} packs into ${builds.length} calls`);
@@ -161,7 +161,7 @@ test("figma next: a continuation is written from the template its call was, read
   for (const minify of [true, false]) {
     const coded = await codeFor(loadTreeFixture("card"), { minify, templates: {} });
     const read = coded.plan.calls.find((c) => c.kind === "read")!;
-    const readable = (code: string) => code.includes("\n// storysync readback, template");
+    const readable = (code: string) => code.includes("// storysync readback, template");
     assert.equal(readable(coded.code(read)), !minify);
     writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
     const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq });
@@ -171,7 +171,8 @@ test("figma next: a continuation is written from the template its call was, read
 
 /** A call's constants, in order, each line's value parsed, SUM's as written. */
 function constantsOf(code: string): { names: string[]; values: unknown[]; sum: unknown } {
-  const lines = [...code.matchAll(/^const (\w+) = (.*);$/gm)].map((m) => [m[1], JSON.parse(m[2])] as const);
+  // The constants, as JSON, a line each; T, the template, is a string of code.
+  const lines = [...code.matchAll(/^const (?!T = )(\w+) = (.*);$/gm)].map((m) => [m[1], JSON.parse(m[2])] as const);
   const at = lines.findIndex(([name]) => name === "SUM");
   return { names: lines.slice(0, at + 1).map(([name]) => name), values: lines.slice(0, at).map(([, v]) => v), sum: lines[at]?.[1] };
 }
@@ -210,6 +211,18 @@ test("figma code: a call's variants share their base's records and styles, each 
   assert.equal(markups.length, 1, "the icon's markup is in the table once");
 });
 
+test("figma code: reads pack to 17,000 predicted, stopping at 18,000, under what use_figma was seen to return whole", async () => {
+  // The fifth live push's 12 reads came back at 10,700 to 12,700 bytes,
+  // packed to 14,000 predicted, each carrying the 8,000 character
+  // template. The sixth probe saw use_figma return 18,999 bytes whole.
+  const probe = JSON.parse(readFileSync(new URL("../../../cli/__tests__/fixtures/figma-tsum-probe.json", import.meta.url), "utf8")) as { call5: { bytes: number } };
+  assert.equal(DEFAULT_READ_LIMIT, 17_000);
+  assert.equal(READ_LIMIT, DEFAULT_READ_LIMIT + 1000);
+  assert.ok(READ_LIMIT < probe.call5.bytes, "a read stops under what came back whole");
+  // And the template's guard throws past 19,000, a byte over that.
+  assert.match(loadTemplate("readback"), />19e3\)throw/);
+});
+
 test("figma code: reads slice each page's variants in order, each call predicted under --read-limit", async () => {
   const snap = allFixtures();
   for (const readLimit of [DEFAULT_READ_LIMIT, 4_000]) {
@@ -221,7 +234,7 @@ test("figma code: reads slice each page's variants in order, each call predicted
       const code = coded.code(call);
       assert.match(code, new RegExp(`\\nconst PAGE = ${JSON.stringify(call.page).replace(/\//g, "\\/")};\\nconst SLICES = `));
       // The constants the readback template reads, and none it declares.
-      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 3;\\nconst SUM = "[0-9a-f]{8}";\\nconst TSUM = "[0-9a-f]{8}";\\nconst T = async\\(\\)=>\\{\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n\\};\\n`));
+      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 4;\\nconst SUM = "[0-9a-f]{8}";\\nconst TSUM = "[0-9a-f]{8}";\\nconst T = \`${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\`;\\n`));
       assert.deepEqual([...code.matchAll(/^const (\w+) = /gm)].map((m) => m[1]), ["PAGE", "SLICES", "LIMIT", "TPL", "SUM", "TSUM", "T"]);
       for (const [id, first, last] of call.slices!) seen.set(id, [...(seen.get(id) ?? []), ...Array.from({ length: last - first + 1 }, (_, i) => first + i)]);
     }
@@ -310,6 +323,19 @@ test("figma code: a component that failed is left out and said; variants snap co
   assert.ok(!coded.plan.calls.some((c) => c.components.includes("ui/base/Switch")));
   assert.ok(coded.warnings.includes("ui/base/Switch: not built: Story failed to render"));
   assert.ok(coded.warnings.includes('ui/base/Button: 2 variants built as a "Not measured" placeholder, since snap couldn\'t measure them'));
+});
+
+test("figma code: what it builds another way says what it builds instead, and never that it isn't built", async () => {
+  // The fifth push's warning: `transform rotate: 45deg, built as its
+  // bounding box is not built`. The Tooltip's arrow out of the flow is now
+  // built turned, and says nothing; in the flow, it says how it is built.
+  assert.deepEqual((await codeFor(loadTreeFixture("tooltip"))).warnings, []);
+  const inFlow = copy(loadTreeFixture("tooltip"));
+  delete inFlow.components[0].tree.base[2].abs;
+  const coded = await codeFor(inFlow);
+  assert.deepEqual(coded.warnings.filter((w) => /transform/.test(w)), [
+    "ui/base/Tooltip › div: transform rotate: 45deg is built as its own box, unturned, as Figma's auto layout would place it by its turned box",
+  ]);
 });
 
 test("figma code: what it can't build, and values several tokens share with no class to pick, are said per component", async () => {
@@ -427,7 +453,7 @@ test("figma next: a read result with `more` gets its continuation, b then c; wit
   });
   const code = readFileSync(next!.file, "utf8");
   assert.ok(code.startsWith(`// storysync figma code, call ${nn}b: read back on page "ui/base"`));
-  assert.match(code, /\nconst SLICES = \[\["ui-base-card",1,1,12\]\];\nconst LIMIT = 15000;\n/);
+  assert.match(code, /\nconst SLICES = \[\["ui-base-card",1,1,12\]\];\nconst LIMIT = 18000;\n/);
   assert.deepEqual(await runFigmaNext(opts), next, "until its result is saved, the same file");
   writeFileSync(join(coded.out, `results/${nn}b.json`), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 20]] } }));
   assert.equal((await runFigmaNext(opts))!.file, join(coded.out, `calls/${nn}c-read-ui-base.js`));

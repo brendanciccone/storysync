@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { callCode, callConstants } from "../checksum.js";
+import { callCode, callConstants, templateLiteral } from "../checksum.js";
 import { CALL_CONSTANTS, loadTemplate } from "../figma-code.js";
 import { MAX_CALL_CHARS, USE_FIGMA_CODE_LIMIT } from "../figma-spike.js";
 import type { TemplateName } from "../figma-code.js";
@@ -18,8 +18,11 @@ import type { TemplateName } from "../figma-code.js";
  * The build's and the readback's have each been raised once, by 1,000, to
  * make room for the call's checksums and for the readback's check of what
  * Figma cuts short, against these limits, which the test below holds them
- * to. Each call also carries the guard that checks its SUM and TSUM
- * (checksum.ts, callCode), about 700 characters, outside the template:
+ * to. A call carries a template as a string (checksum.ts, templateLiteral),
+ * a few characters of escapes more than the minified file, which the
+ * budget counts. Each call also carries the guard that checks its SUM and
+ * TSUM and runs it (checksum.ts, callCode), about 700 characters, outside
+ * the template:
  *
  * - A build call is its template, the guard and DATA, packed to
  *   MAX_CALL_CHARS (45,000) in all, so the template takes from what a call
@@ -38,10 +41,11 @@ const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000 } 
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 
-test("templates: each minified template is within its budget", () => {
+test("templates: each minified template, as the string a call carries it in, is within its budget", () => {
   for (const [name, budget] of Object.entries(BUDGETS)) {
     const code = loadTemplate(name as keyof typeof BUDGETS);
-    assert.ok(code.length <= budget, `${name}.min.js is ${code.length} characters, more than ${budget}`);
+    const carried = templateLiteral(code).length;
+    assert.ok(carried <= budget, `${name}.min.js takes ${carried} characters in a call, more than ${budget}`);
     assert.ok(code.length < loadTemplate(name as keyof typeof BUDGETS, false).length, `${name} is minified`);
   }
 });
@@ -55,6 +59,20 @@ test("templates: the build's budget leaves a call room for its data, packed and 
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - guard >= 26_000, "a packed call keeps 26,000 for DATA");
   assert.ok(USE_FIGMA_CODE_LIMIT - BUDGETS.build - guard >= 4 * 7_454, "a variant alone has four times the room the largest took");
   assert.ok(BUDGETS.readback + guard + 1_000 < MAX_CALL_CHARS, "a read call is its template, the guard and a short header");
+});
+
+test("templates: a call carries its template as a string whose value is the template exactly, which TSUM covers and the call runs", async () => {
+  const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => () => Promise<unknown>;
+  for (const text of ["a`b${c}\\d", "/^#\\w{6}00$/.test(x)", "`${`", "\\`", ...Object.keys(BUDGETS).map((name) => loadTemplate(name as keyof typeof BUDGETS)), loadTemplate("readback", false)]) {
+    assert.equal(new Function(`return ${templateLiteral(text)};`)(), text);
+  }
+  // The guard checks T, the string, and runs that string: a template's
+  // text changed in its literal is refused, wherever the runtime would
+  // give back a function's text otherwise.
+  const call = callCode([["DATA", 1]], "return DATA + TC;");
+  assert.match(call, /\nconst T = `return DATA \+ TC;`;\n/);
+  assert.equal(await new AsyncFunction("figma", call)(), 2);
+  await assert.rejects(new AsyncFunction("figma", call.replace("return DATA + TC;`", "return DATA + 2;`"))(), /its template fails its checksum, TSUM/);
 });
 
 test("templates: each minified template is ASCII, so no character of the text TSUM covers can be retyped as another", () => {

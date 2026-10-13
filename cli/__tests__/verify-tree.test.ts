@@ -75,7 +75,8 @@ test("faithful build: every fixture's elements are all scored, not passed by def
   // Elements measured, elements verified, and properties compared: every
   // element of every variant, each on its kind's properties (design 10.2).
   // A property left uncompared, or an element passed without its record,
-  // changes the count.
+  // changes the count. The tooltip's arrow, turned, is scored on its turn
+  // too.
   const counts: Record<string, [number, number, number]> = {};
   for (const name of treeFixtureNames()) {
     const { fixture, readback } = await buildAndRead(name, { autoLayout: true });
@@ -84,7 +85,7 @@ test("faithful build: every fixture's elements are all scored, not passed by def
   }
   assert.deepEqual(counts, {
     attachment: [32, 32, 396], avatar: [9, 9, 93], "button-icon": [30, 30, 360], card: [46, 46, 648], dialog: [11, 11, 156], "example-button": [24, 24, 312],
-    inputotp: [8, 8, 94], select: [43, 43, 633], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102], tooltip: [3, 3, 41],
+    inputotp: [8, 8, 94], select: [43, 43, 633], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102], tooltip: [3, 3, 42],
   });
 });
 
@@ -127,6 +128,24 @@ test("falsify: a Switch without its thumb scores 50%", async () => {
   const whole = verify(fixture, readback, 0.5).summary;
   assert.equal(result.summary.propertiesCompared, whole.propertiesCompared);
   assert.equal(result.summary.propertiesMatched, whole.propertiesMatched - 2 * 12, "x, y, w, h, fills, stroke, radius, effects, opacity, blend, clip and visible, twice");
+});
+
+test("falsify: the Tooltip's arrow built unturned, as the fifth live push built it, drifts on its turn alone", async () => {
+  const result = await falsified("tooltip", ({ figma, built }) => {
+    for (const { id } of layers(built, "div")) Object.assign(node(figma, id), { rotation: 0, x: 45.5, y: 21 });
+  });
+  assert.deepEqual(findings(result), ["default div: turn"]);
+  assert.deepEqual(result.variants[0].nodes!.find((n) => n.key === "div")!.differences, [{ property: "turn", measured: 45, figma: 0 }]);
+  // Turned the wrong way, it drifts on its turn too; turned right but
+  // about its corner, as Figma turns a layer, it drifts on its place.
+  const other = await falsified("tooltip", ({ figma, built }) => {
+    for (const { id } of layers(built, "div")) Object.assign(node(figma, id), { rotation: 45, x: 45.5, y: 21 });
+  });
+  assert.deepEqual(findings(other), ["default div: x,y,turn"]);
+  const corner = await falsified("tooltip", ({ figma, built }) => {
+    for (const { id } of layers(built, "div")) Object.assign(node(figma, id), { rotation: -45, x: 45.5, y: 21 });
+  });
+  assert.deepEqual(findings(corner), ["default div: x,y"]);
 });
 
 test("falsify: a thumb moved from x 1 to 15 drifts on x alone", async () => {
@@ -590,7 +609,7 @@ test("integrity: a record of the wrong length is incomplete", async () => {
   const readback = assemble(await readBack(figma, [[built.component, 0, 1, 0]], { template: cut }));
   const result = verify(fixture, readback, 0.5);
   assert.deepEqual(result.readbackIssues.map((i) => [i.slug, i.problem]), [["size-default", "incomplete"], ["size-sm", "incomplete"]]);
-  assert.match(result.readbackIssues[0].missing!.join(), /an F record of 14 fields, not 15/);
+  assert.match(result.readbackIssues[0].missing!.join(), /an F record of 15 fields, not 16/);
 });
 
 /**
@@ -618,27 +637,38 @@ test("falsify: a title Figma cuts short where the browser drew it whole drifts o
   }
 });
 
-test("integrity: an entry read with template 2, which can't tell what Figma cuts, scores truncation by its settings, as it did", async () => {
+test("integrity: an entry read with template 2, which can't tell what Figma cuts, or 3, which reads no turn, scores as it did", async () => {
   const { fixture, readback } = await titleScaled(1.2);
   const component = Object.keys(readback.components)[0];
-  // What template 2 returned: no `cut` on a text's record.
-  const read = (tpl: number) => {
+  // What template 2 returned, no `cut` on a text's record and no `turn` on
+  // any; and template 3, no `turn`.
+  const read = (tpl: number, lengths: Record<string, number>) => {
     const copy = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
     for (const [key, entry] of Object.entries(copy.components[component].variants)) {
       const { checksum: _checksum, ...rest } = entry;
       rest.tpl = tpl;
-      rest.tree = rest.tree!.map((r) => (r[1] === "T" ? r.slice(0, 23) : r));
+      rest.tree = rest.tree!.map((r) => r.slice(0, lengths[r[1] as string]));
       copy.components[component].variants[key] = { ...rest, checksum: readbackChecksum(copy.components[component].nodeId!, key, rest) };
     }
     return verify(fixture, copy, 0.5);
   };
-  const old = read(2);
+  const old = read(2, { F: 15, T: 23, V: 10 });
   assert.deepEqual(old.readbackIssues, []);
   assert.equal(old.elementFidelity, 1, drift(old));
-  // A template 3 entry without it was read with the template cut down.
-  const cut = read(3);
+  // Template 3 scores what Figma cuts, as template 4 does, which cuts the
+  // titles 1.2 times as wide: the same score, nothing turned to miss.
+  const three = read(3, { F: 15, T: 24, V: 10 });
+  assert.deepEqual(three.readbackIssues, []);
+  assert.equal(three.elementFidelity, verify(fixture, readback, 0.5).elementFidelity);
+  assert.ok((three.elementFidelity ?? 1) < 1);
+  // A template 3 entry without `cut`, or a template 4 one without `turn`,
+  // was read with the template cut down.
+  const cut = read(3, { F: 15, T: 23, V: 10 });
   assert.deepEqual(cut.readbackIssues.map((i) => i.problem), ["incomplete", "incomplete", "incomplete", "incomplete"]);
   assert.match(cut.readbackIssues[0].missing!.join(), /a T record of 23 fields, not 24/);
+  const unturned = read(4, { F: 15, T: 24, V: 10 });
+  assert.deepEqual(unturned.readbackIssues.map((i) => i.problem), ["incomplete", "incomplete", "incomplete", "incomplete"]);
+  assert.match(unturned.readbackIssues[0].missing!.join(), /an F record of 15 fields, not 16/);
 });
 
 test("integrity: a variant renamed in Figma is a name_mismatch, not scored", async () => {

@@ -111,6 +111,8 @@ interface Push {
   mock: MockFigma;
   /** Each read call's results, continuations included, by seq. */
   reads: Map<number, string[]>;
+  /** What figma code warned of. */
+  warnings: string[];
 }
 
 /**
@@ -148,7 +150,7 @@ async function push(
   const out = join(dir, "figma");
   const code = await cli(["figma", "code", "--snap", snapPath, "--tokens", join(dir, "tokens.json"), "--out", out, "--json", ...codeArgs]);
   assert.equal(code.status, 0, `figma code exited ${code.status}\n${code.stdout}${code.stderr}`);
-  const { planPath } = jsonOf(code) as { planPath: string };
+  const { planPath, warnings = [] } = jsonOf(code) as { planPath: string; warnings?: string[] };
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as FigmaPlan;
 
   // Text as wide as Figma sets it in its own fonts, Inter for the system-ui
@@ -196,7 +198,7 @@ async function push(
       reads.set(call.seq, results);
     }
   }
-  return { dir, snapPath, planPath, plan, mock, reads };
+  return { dir, snapPath, planPath, plan, mock, reads, warnings };
 }
 
 /**
@@ -500,15 +502,23 @@ test("tree e2e: a Tooltip snap hovered open keeps its arrow below the bubble, wh
     // The bubble hugs its label, which Figma sets a whole pixel wide.
     const bubble = layerOf(p.mock, variant.slug, "");
     assert.deepEqual([bubble.width, bubble.height], [101, 28]);
-    // The arrow past the bubble's bottom, where Base UI's positioner placed it.
+    // The arrow past the bubble's bottom, where Base UI's positioner placed
+    // it, turned 45 degrees about its center into a diamond, as the browser
+    // drew it: Figma's rotation -45, about its top left corner, which sits
+    // at the diamond's top, 50.5,18.93. The fifth live push built it as an
+    // unturned 10px square, a flat tab under the bubble.
     const arrow = layerOf(p.mock, variant.slug, "div");
-    assert.deepEqual([arrow.x, arrow.y, arrow.width, arrow.height], [45.5, 21, 10, 10]);
+    assert.deepEqual([arrow.x, arrow.y, arrow.width, arrow.height, arrow.rotation], [50.5, 18.93, 10, 10, -45]);
     assert.doesNotMatch(descriptionOf(p.mock, "ui-base-tooltip"), /storysync:/);
+    assert.ok(!p.warnings.some((w) => /transform/.test(w)), p.warnings.join("\n"));
     const { status, json, text } = await verifyPlan(p, "--strict");
     assert.equal(status, 0, `${text.stdout}${text.stderr}`);
     assert.equal(json.elementFidelity, 1);
     const e = elementsOf(json);
     assert.deepEqual([e.verified, e.drifted, e.missing], [e.measured, 0, 0]);
+    // Its turn is scored, and nothing is left unscored for it.
+    assert.deepEqual((json.unscorable as { property: string }[]).filter((u) => u.property === "transform"), []);
+    assert.ok(!text.stdout.includes("transform"), text.stdout);
     assert.ok(text.stdout.includes('  i ui/base/Tooltip: measured open: snap hovered over button[data-slot="tooltip-trigger"] to open it, and measured div[data-slot="tooltip-content"]'), text.stdout);
   } finally {
     cleanup(p);
