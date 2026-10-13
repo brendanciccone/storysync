@@ -13,6 +13,7 @@ import {
   tableCells,
   StorybookClient,
   indexTitles,
+  indexDocsOnly,
   indexUrls,
   titleLeaf,
   componentKey,
@@ -663,6 +664,36 @@ test("selectComponents: no list, or a list of only empty entries, selects everyt
   // so it means what leaving the flag off means.
   assert.equal(selectComponents(ENTRIES, ["", " "]), ENTRIES);
   assert.deepEqual(selectComponents(ENTRIES, ["Card", ""]).map((e) => e.name), ["Card"]);
+});
+
+test("indexDocsOnly: the components none of whose stories has a componentPath, unless the index records none at all", () => {
+  const entry = (id: string, extra: object = {}) => [id, { id, title: "t", type: "story", ...extra }];
+  const index = {
+    entries: Object.fromEntries([
+      entry("ui-base-button--default", { componentPath: "./button.tsx" }),
+      entry("design-base-color--docs", { type: "docs" }),
+      entry("design-base-color--functional"),
+      // One story of two naming a component makes it a component.
+      entry("ui-base-form--default"), entry("ui-base-form--field", { componentPath: "./form.tsx" }),
+    ]),
+  };
+  assert.deepEqual([...indexDocsOnly(index)!], ["design-base-color"]);
+  // An index from before Storybook recorded componentPath tells nothing.
+  assert.equal(indexDocsOnly({ entries: Object.fromEntries([entry("ui-base-button--default"), entry("design-base-color--x")]) }), null);
+  assert.equal(indexDocsOnly(null), null);
+});
+
+test("selectComponents: an entry whose stories name no component is left out unless a name names it, and no component", () => {
+  const entries = [
+    ...ENTRIES,
+    { id: "design-base-color", name: "Color", title: "design/base/Color", docsOnly: true as const },
+    { id: "design-base-button", name: "Button", title: "design/base/Button", docsOnly: true as const },
+  ];
+  assert.deepEqual(selectComponents(entries, undefined).map((e) => e.id), ENTRIES.map((e) => e.id));
+  assert.deepEqual(selectComponents(entries, ["Button", "design/base/Color"]).map((e) => e.id), ["forms-button", "design-base-color"]);
+  // Named by its own title, it is picked even where a component shares its last segment.
+  assert.deepEqual(selectComponents(entries, ["design/base/button"]).map((e) => e.id), ["design-base-button"]);
+  assert.throws(() => selectComponents(entries, ["Colour"]), /matched no component named "Colour"\. Available: Button, Card, IconButton$/);
 });
 
 test("selectComponents: a name that matches nothing throws, quoting it as typed and listing what exists", () => {

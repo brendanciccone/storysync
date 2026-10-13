@@ -34,6 +34,10 @@ inputs:
     description: "Command that installs the project's dependencies, run in working_directory (default: chosen by package.json's packageManager field, or else by the lockfile)"
     required: false
     default: ""
+  snap_dir:
+    description: "Directory of the committed snap (styles.json) whose recorded argTypes and left-out props map uses, as storysync map --snap takes it: props only a story's argTypes declare become variant properties, and props snap left out as behavior stay out. Empty uses none, as --no-snap does"
+    required: false
+    default: ".storysync/snaps"
   baseline:
     description: "Path to baseline mapping JSON for drift detection, as written by storysync map --json"
     required: false
@@ -582,6 +586,7 @@ runs:
         # A line on stderr per component as it is read, so a long map shows
         # in the log where it is rather than nothing for minutes.
         STORYSYNC_PROGRESS: "1"
+        SNAP_DIR: ${{ inputs.snap_dir }}
       run: |
         STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--storybook "$STORYBOOK_URL" --json)
@@ -593,6 +598,13 @@ runs:
         fi
         if [ -n "$REQUEST_TIMEOUT" ]; then
           ARGS+=(--request-timeout "$REQUEST_TIMEOUT")
+        fi
+        # The snap the push was measured into: map takes the props the
+        # stories' argTypes add, and leaves out what snap left out, from it.
+        if [ -n "$SNAP_DIR" ]; then
+          ARGS+=(--snap "$SNAP_DIR")
+        else
+          ARGS+=(--no-snap)
         fi
         # Fails on a components name that matches nothing, listing the names
         # there are, rather than mapping fewer components than asked for.
@@ -637,6 +649,7 @@ runs:
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
         EXCLUDE_PROPS: ${{ inputs.exclude_props }}
+        SNAP_DIR: ${{ inputs.snap_dir }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
@@ -658,12 +671,23 @@ runs:
         const baselinePath = process.env.BASELINE_PATH;
         const current = JSON.parse(fs.readFileSync("storysync-current.json", "utf8"));
 
+        // Said once: map couldn't see some stories' argTypes, which only a
+        // snap records, so props they add or mark as behavior were missed.
+        const unseen = current.props && Array.isArray(current.props.argTypesUnseen) ? current.props.argTypesUnseen : [];
+        if (unseen.length) {
+          const missing = current.props.snap ? current.props.snap + " doesn't have them" : process.env.SNAP_DIR ? "there is no snap at " + process.env.SNAP_DIR + "/styles.json" : "snap_dir is empty";
+          console.log(escape("::notice::storysync map couldn't see the argTypes of " + unseen.length + " component" + (unseen.length === 1 ? "" : "s") + " (" + unseen.slice(0, 5).join(", ") + (unseen.length > 5 ? " and " + (unseen.length - 5) + " more" : "") + "): " + missing + ". Commit the snap the push was measured into, or point snap_dir at it."));
+        }
+
         // The command that writes the baseline, as the action maps components,
         // with the storysync it runs.
         let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " map --storybook " + quote(process.env.STORYBOOK_URL);
         if (process.env.COMPONENTS) command += " --components " + quote(process.env.COMPONENTS);
         // The props left out change the mapping, so the baseline leaves them out too.
         if (process.env.EXCLUDE_PROPS) command += " --exclude-props " + quote(process.env.EXCLUDE_PROPS);
+        const snapDir = process.env.SNAP_DIR ?? ".storysync/snaps";
+        if (!snapDir) command += " --no-snap";
+        else if (path.normalize(snapDir).replace(/\/+$/, "") !== ".storysync/snaps") command += " --snap " + quote(snapDir);
         command += " --json > " + quote(baselinePath);
         if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
         const create = "running this in " + where + " with Storybook running, then commit it: " + command + " (the action's json output holds the same JSON)";
@@ -760,7 +784,9 @@ runs:
         // baseline or without Storybook's index, differs from Storybook's own as
         // letters and digits never do. So a title counts only if those changed,
         // as when a story moves to another folder under an ID of its own.
-        const mapping = ({ id, title, category, ...rest }) => JSON.stringify(rest);
+        // What was left out, and why, is said with a change rather than
+        // being one: a prop left out is a change to variantProperties.
+        const mapping = ({ id, title, category, excludedProps, ...rest }) => JSON.stringify(rest);
         const retitled = (b, c) => b.title != null && c.title != null && loose(b.title) !== loose(c.title);
         const matched = new Set(baseOf.values());
         const added = current.components.filter(c => !baseOf.has(c));
@@ -829,6 +855,9 @@ runs:
             body += "- **" + label(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
             body += b.combinations + " → " + c.combinations + " combinations" + (retitled(b, c) ? ", was " + label(b) : "");
             const reasons = b.variantProperties.length === c.variantProperties.length && b.combinations === c.combinations ? why(b, c) : [];
+            // A prop the baseline had that is now left out, and why.
+            const left = (Array.isArray(c.excludedProps) ? c.excludedProps : []).filter((e) => b.variantProperties.some((p) => p.name === e.name));
+            for (const e of left) reasons.push(e.name + " left out (" + (e.reason === "excluded" ? "--exclude-props" : e.reason === "no-op" ? "every value measured the same" : e.reason === "opens" ? "measured open, with " + e.name + "=" + e.value : "the story's argTypes mark it as behavior") + ")");
             body += (reasons.length ? " (" + reasons.join("; ") + ")" : "") + "\n";
           }
           body += "\n";

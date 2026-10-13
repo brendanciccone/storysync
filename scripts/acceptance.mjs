@@ -29,6 +29,9 @@ const EXAMPLE_BUTTON = join(ROOT, "examples", "storybook-vite", "src", "Button.t
 const EXAMPLE_STORIES = join(ROOT, "examples", "storybook-vite", "src", "Button.stories.tsx");
 const STORYBOOK = (process.env.STORYBOOK_URL ?? "http://localhost:6006").replace(/\/+$/, "");
 const WORK = mkdtempSync(join(tmpdir(), "storysync-acceptance-"));
+// Frozen's story ignores its args, so snap leaves its one prop out as measuring
+// the same; the push checks build it as a set of three, so it is kept there.
+const KEEP_FROZEN = ["--keep-props", "variant"];
 
 const results = [];
 let section = "";
@@ -2554,8 +2557,10 @@ async function main() {
     // templates, which build and read back each variant's outer element. A
     // snap with element trees, scored against a readback of roots alone,
     // fails --strict, as design section 10.7 has it; the tree snap is
-    // checked on its own below.
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all", "--root-only"]);
+    // checked on its own below. Frozen's story ignores its args, so snap
+    // would leave its variant out as measuring the same (checked below):
+    // kept, it is the set of three the push checks build.
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all", "--root-only", ...KEEP_FROZEN]);
     assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
     const snap = readJson(join(snapDir, "styles.json"));
     const byName = Object.fromEntries(snap.components.map((c) => [c.name, c]));
@@ -2571,7 +2576,7 @@ async function main() {
     // (section 7.5): --root-only adds only how many elements it left out.
     const texts = ["tree", "tree-again"].map((name) => {
       const out = join(WORK, name);
-      const r = cli(["snap", "--storybook", STORYBOOK, "--out", out, "--variants", "all"]);
+      const r = cli(["snap", "--storybook", STORYBOOK, "--out", out, "--variants", "all", ...KEEP_FROZEN]);
       assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
       return readFileSync(join(out, "styles.json"), "utf8");
     });
@@ -2660,7 +2665,7 @@ async function main() {
     const unchecked = snap.components.flatMap((c) => c.variants.filter((v) => v.argsChecked === false).map((v) => `${c.name} ${v.slug}`));
     assert(unchecked.length === 0, `variants whose args snap couldn't check: ${unchecked.join(", ")}`);
     assert(!snap.components.some((c) => c.warnings.some((w) => /story URL|Storybook's preview/.test(w))), "an args warning on the example");
-    assert(JSON.stringify(button.argTypes?.variant) === JSON.stringify({ type: "enum", control: "select", options: ["primary", "danger", "outline"] }),
+    assert(JSON.stringify(button.argTypes?.variant) === JSON.stringify({ type: "enum", control: "select", options: ["primary", "danger", "outline"], initial: "primary" }),
       `Button's variant argType: ${JSON.stringify(button.argTypes)}`);
     assert(button.storyFile === "./src/Button.stories.tsx", `story file: ${button.storyFile}`);
     return `argTypes ${Object.keys(button.argTypes).join(", ")}, none rejected`;
@@ -2706,7 +2711,7 @@ async function main() {
     }
     const outline = Object.fromEntries(expandVariants(button).map((v) => [v.slug, v.styles]))["variant-outline--size-lg--disabled-false"];
     assert(outline?.backgroundColor === null && outline.fontSize === 18, `outline/lg: ${JSON.stringify(outline)}`);
-    assert(JSON.stringify(button.argTypes?.size) === JSON.stringify({ type: "enum", control: "select", options: ["sm", "lg"], if: { arg: "variant", neq: "outline" } }),
+    assert(JSON.stringify(button.argTypes?.size) === JSON.stringify({ type: "enum", control: "select", options: ["sm", "lg"], if: { arg: "variant", neq: "outline" }, initial: "sm" }),
       `the rewritten story wasn't served: size is ${JSON.stringify(button.argTypes?.size)}`);
 
     // Through the preview: the outline variants, each for both reasons.
@@ -3205,7 +3210,7 @@ async function main() {
     // meant to be committed and diffed, so neither a rerun nor a different
     // --out (another machine, another checkout) may change a byte of it.
     const again = join(WORK, "elsewhere", "snap-again");
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all", "--root-only"]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all", "--root-only", ...KEEP_FROZEN]);
     assert(r.status === 0, `second snap exited ${r.status}`);
     const first = readFileSync(join(snapDir, "styles.json"), "utf8");
     const second = readFileSync(join(again, "styles.json"), "utf8");
@@ -3238,7 +3243,10 @@ async function main() {
     const warnings = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").warnings;
     assert(warnings.some((w) => /^all 3 rendered variants measured identically and rendered the same markup — the story may not pass args through/.test(w)),
       `Frozen warned ${JSON.stringify(warnings)}`);
-    return "Frozen fails, blaming its story, Button passes";
+    // Left out as measuring the same, so Figma gets the one look the story draws.
+    const excluded = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").excludedProps;
+    assert(JSON.stringify(excluded) === JSON.stringify([{ name: "variant", reason: "no-op", markup: "same" }]), `Frozen left out ${JSON.stringify(excluded)}`);
+    return "Frozen fails, blaming its story, its variant left out; Button passes";
   });
 
   heading("Snap guards");
@@ -3264,7 +3272,7 @@ async function main() {
     for (const file of ["styles.json", "meta.json"]) cpSync(join(snapDir, file), join(out, file));
     const before = readJson(join(out, "styles.json"));
     const earlier = readJson(join(out, "meta.json")).measuredAt;
-    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--variants", "all", "--merge", "--out", out, "--root-only"]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--variants", "all", "--merge", "--out", out, "--root-only", ...KEEP_FROZEN]);
     assert(r.status === 0, `snap --merge exited ${r.status}\n${r.out.trim()}`);
     const after = readJson(join(out, "styles.json"));
     const key = (c) => c.title ?? c.id ?? c.name;
@@ -3279,7 +3287,7 @@ async function main() {
     assert(meta.measuredAt === earlier, `measuredAt ${meta.measuredAt}, not the oldest component's, ${earlier}`);
 
     // Another --variants would mix two kinds of measurement in one snap.
-    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--root-only"]);
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--root-only", ...KEEP_FROZEN]);
     assert(refused.status === 1 && /measured with --variants all: pass the same/.test(refused.out), `--variants representative merged: ${refused.out.trim()}`);
     return "Frozen measured again, Button kept, measuredAt the oldest";
   });
@@ -4939,8 +4947,9 @@ async function main() {
         ["says what an arg_rejected variant is", /An `arg_rejected` variant is/],
         ["says a variant set through the preview was measured", /`appliedVia: "preview"`|`appliedVia` is `"preview"`/],
         ["says to measure a variant marked argsChecked: false again", /marked `argsChecked: false`[^.]*measure those components again with `--components <their IDs> --merge`/],
-        ["says what argsNotInDocs lists", /`argsNotInDocs` lists choices its story declares/],
-        ["names both in the summary", /any variant snap marked `argsChecked: false`, each component's `argsNotInDocs`,/],
+        ["says what argsNotInDocs lists", /`argsNotInDocs` lists choices its story's argTypes declare/],
+        ["says what excludedProps lists", /`excludedProps`[^.]*`reason`/],
+        ["names them in the summary", /any variant snap marked `argsChecked: false`, each component's `argsNotInDocs` and `excludedProps`,/],
       ]) assert(pattern.test(steps), `${file}: the push never ${what}`);
     }
     return `${files.length} files`;
@@ -4957,7 +4966,7 @@ async function main() {
       assert(/npx storysync map /.test(audit), `${file}: the audit never runs map`);
       for (const [what, pattern] of [
         ["passes the push's --exclude-props", /--exclude-props/],
-        ["says where snap records them", /`excludeProps`[^.]*`\.storysync\/snaps\/styles\.json`/],
+        ["says where snap records them", /`excludedProps`[^.]*`\.storysync\/snaps\/styles\.json`/],
         ["passes a scope with --components", /--components/],
         ["lists every component to pair a scope with", /npx storysync list --storybook \S+ --json/],
         ["pairs by the Storybook ID the push stored", /getSharedPluginData\('storysync', 'id'\)|storybookId/],

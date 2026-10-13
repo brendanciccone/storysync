@@ -72,6 +72,14 @@ export interface StoryArgType {
   if?: Record<string, unknown>;
   /** Whether the argType maps option keys to other values. */
   mapping?: true;
+  /** Set when the story hides it from the docs table (`table: { disable: true }`). */
+  hidden?: true;
+  /** Its docs table category (`table.category`), such as `events`. */
+  category?: string;
+  /** Set when the argType has an action (`action: "clicked"`), which marks an event. */
+  action?: true;
+  /** The value the story's own args give it, before any snap asks for: a string, number, boolean or null. */
+  initial?: string | number | boolean | null;
 }
 
 /** What the page read from Storybook's preview about the story it rendered. */
@@ -313,6 +321,10 @@ export function compactArgTypes(raw: Record<string, StoryArgType>): Record<strin
     if (Array.isArray(t.options)) entry.options = t.options;
     if (t.if && typeof t.if === "object") entry.if = t.if;
     if (t.mapping) entry.mapping = true;
+    if (t.hidden) entry.hidden = true;
+    if (typeof t.category === "string" && t.category) entry.category = t.category;
+    if (t.action) entry.action = true;
+    if (t.initial === null || ["string", "number", "boolean"].includes(typeof t.initial)) entry.initial = t.initial;
     out[name] = entry;
   }
   return out;

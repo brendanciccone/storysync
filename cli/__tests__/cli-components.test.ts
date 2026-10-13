@@ -70,6 +70,8 @@ interface Catalog {
   index?: unknown;
   /** Whether a request for index.json is never answered. */
   indexHangs?: boolean;
+  /** Storybook's component manifest, which the docs cache keys by; none served unless given. */
+  manifest?: unknown;
 }
 
 async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = [], figma: FileSpec = FIGMA_FILE, catalog: Catalog = { list: LIST, docs: DOCS }): Promise<StandIn> {
@@ -103,6 +105,10 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
     if (req.method === "GET" && req.url === "/index.json" && catalog.indexHangs) return;
     if (req.method === "GET" && req.url === "/index.json" && catalog.index !== undefined) {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(catalog.index));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/manifests/components.json" && catalog.manifest !== undefined) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(catalog.manifest));
       return;
     }
     // No standalone event stream: the client asks for one and carries on
@@ -161,8 +167,13 @@ after(() => {
  * keeping the whole run alive.
  */
 function run(...args: string[]): Promise<{ status: number; stdout: string; out: string }> {
+  return runIn(process.cwd(), ...args);
+}
+
+/** Runs the CLI as run() does, in `cwd`. */
+function runIn(cwd: string, ...args: string[]): Promise<{ status: number; stdout: string; out: string }> {
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { encoding: "utf8", timeout: 25_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
+    execFile(process.execPath, [CLI, ...args], { cwd, encoding: "utf8", timeout: 25_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
       const status = err ? Number((err as { code?: unknown }).code ?? -1) : 0;
       resolve({ status, stdout, out: `${stdout}${stderr}`.replace(/\u001b\[[0-9;]*m/g, "") });
     });
@@ -569,6 +580,164 @@ test("list CLI: each component by its Storybook title and ID, its stories counte
   const derived = await run("list", "--storybook", storybook);
   assert.match(derived.out, /^ {2}Forms\/Button forms-button \(1 story\)$/m);
   assert.match(derived.out, /2 titles were rebuilt from IDs, since Storybook's index\.json couldn't be read or doesn't list them\./);
+});
+
+// shadcn's registry, cut down: a Button with a component behind its
+// stories, and a design/* token page, a table of swatches with none.
+const TOKEN_PAGES: Catalog = {
+  list: [
+    "# Components", "",
+    "- Button (ui-base-button)", "  - Default (ui-base-button--default)",
+    "- Color (design-base-color)", "  - Functional (design-base-color--functional)",
+  ].join("\n"),
+  docs: {
+    "ui-base-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n}\n```",
+    "design-base-color": "# Color\n\n## Stories\n\n### Functional\n\nStory ID: design-base-color--functional",
+  },
+  index: {
+    v: 5,
+    entries: {
+      "ui-base-button--default": { id: "ui-base-button--default", title: "ui/base/Button", name: "Default", importPath: "./button.stories.tsx", componentPath: "./button.tsx", type: "story", tags: [] },
+      "design-base-color--docs": { id: "design-base-color--docs", title: "design/base/Color", name: "Docs", importPath: "./color.stories.tsx", type: "docs", tags: [] },
+      "design-base-color--functional": { id: "design-base-color--functional", title: "design/base/Color", name: "Functional", importPath: "./color.stories.tsx", type: "story", tags: [] },
+    },
+  },
+  manifest: { v: 0, components: { "ui-base-button": { id: "ui-base-button", name: "Button" }, "design-base-color": { id: "design-base-color", error: { name: "No component found" } } } },
+};
+
+test("list CLI: an entry whose stories name no component is listed as skipped, and map and diff leave it out unless named", async () => {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], { pages: [{ name: "ui/base", nodes: [set("Button", { size: ["sm", "lg"] })] }] }, TOKEN_PAGES);
+  standIns.push(standIn);
+  const r = await run("list", "--storybook", standIn.url);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /^1 components:\n\n {2}ui\/base\/Button ui-base-button \(1 story\)\n\n1 entry skipped, as Storybook's index shows its stories name no component \(no meta\.component\), so there is none to push; name one with --components to measure it anyway:\n\n {2}design\/base\/Color design-base-color \(1 story\)$/m);
+  const json = await run("list", "--storybook", standIn.url, "--json");
+  assert.deepEqual((JSON.parse(json.stdout) as { components: { id: string; docsOnly?: boolean }[] }).components.map((c) => [c.id, c.docsOnly]), [["ui-base-button", undefined], ["design-base-color", true]]);
+
+  const mapped = await run("map", "--storybook", standIn.url, "--no-snap", "--no-cache", "--json");
+  assert.equal(mapped.status, 0, mapped.out);
+  assert.deepEqual((JSON.parse(mapped.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["ui-base-button"]);
+  assert.ok(!standIn.calls.includes("docs-show design-base-color"), standIn.calls.join(", "));
+  const text = await run("map", "--storybook", standIn.url, "--no-snap", "--no-cache");
+  assert.match(text.out, /Skipped 1 entry whose stories name no component \(see list\)/);
+
+  // Named, it is mapped, as what the user asked for.
+  const named = await run("map", "--storybook", standIn.url, "--components", "design/base/Color", "--no-snap", "--no-cache", "--json");
+  assert.equal(named.status, 0, named.out);
+  assert.deepEqual((JSON.parse(named.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["design-base-color"]);
+
+  // diff compares the Button alone: the token page isn't missing from Figma.
+  const diffed = await diffAgainst(standIn, "--no-snap", "--no-cache", "--strict");
+  assert.equal(diffed.status, 0, diffed.out);
+  assert.match(diffed.out, /Components in sync/);
+});
+
+test("map CLI: the docs cache serves each component's docs until Storybook's index or the component's manifest entry changes; --no-cache reads them", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "storysync-cache-cli-"));
+  const catalog: Catalog = structuredClone(TOKEN_PAGES);
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, catalog);
+  standIns.push(standIn);
+  const shows = () => standIn.calls.filter((c) => c === "docs-show ui-base-button").length;
+  try {
+    const map = (...more: string[]) => runIn(cwd, "map", "--storybook", standIn.url, "--no-snap", "--json", ...more);
+    const first = await map();
+    assert.equal(first.status, 0, first.out);
+    assert.equal(shows(), 1);
+    assert.ok(existsSync(join(cwd, ".storysync", "cache", "docs")));
+    const second = await map();
+    assert.equal(second.stdout, first.stdout);
+    assert.equal(shows(), 1, "the second map asked Storybook again");
+    await map("--no-cache");
+    assert.equal(shows(), 2);
+    // A prop changed: the manifest entry the docs are made from changes with it.
+    (catalog.manifest as { components: Record<string, unknown> }).components["ui-base-button"] = { id: "ui-base-button", name: "Button", props: ["size", "tone"] };
+    catalog.docs["ui-base-button"] = "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" | \"xl\" = \"sm\";\n}\n```";
+    const changed = await map();
+    assert.equal(shows(), 3);
+    assert.deepEqual((JSON.parse(changed.stdout) as { components: { variantProperties: { values: string[] }[] }[] }).components[0].variantProperties[0].values, ["sm", "lg", "xl"]);
+    // A story added changes the index, and so every component's key.
+    (catalog.index as { entries: Record<string, unknown> }).entries["ui-base-button--outline"] = { id: "ui-base-button--outline", title: "ui/base/Button", name: "Outline", importPath: "./button.stories.tsx", componentPath: "./button.tsx", type: "story", tags: [] };
+    await map();
+    assert.equal(shows(), 4);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+/** A snap's styles.json in a directory of its own, as --snap takes it. */
+function snapDir(components: object[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-snap-props-"));
+  writeFileSync(join(dir, "styles.json"), JSON.stringify({ version: 1, components }));
+  return dir;
+}
+
+// What snap recorded of the stand-in's Button: its story declares `disabled`,
+// which the docs don't list, and every shape measured the same.
+const BUTTON_SNAP = {
+  id: "forms-button",
+  argTypes: { disabled: { type: "boolean", control: "boolean", initial: false }, size: { type: "enum", options: ["sm", "lg"] } },
+  excludedProps: [{ name: "shape", reason: "no-op", markup: "changed" }],
+};
+
+test("map CLI: takes the props a snap's argTypes add and leaves out what it left out, says what it can't see, and --keep-props keeps one", async () => {
+  const dir = snapDir([BUTTON_SNAP]);
+  try {
+    const r = await run("map", "--storybook", storybook, "--snap", dir, "--json");
+    assert.equal(r.status, 0, r.out);
+    const data = JSON.parse(r.stdout) as { components: { id: string; variantProperties: { name: string }[]; excludedProps?: unknown }[]; props: { snap: string; argTypesUnseen: string[] } };
+    const [button, card] = data.components;
+    assert.deepEqual(button.variantProperties.map((p) => p.name), ["size", "disabled"]);
+    assert.deepEqual(button.excludedProps, [{ name: "shape", reason: "no-op", markup: "changed" }]);
+    assert.equal(card.excludedProps, undefined);
+    assert.equal(data.props.snap, join(dir, "styles.json"));
+    assert.deepEqual(data.props.argTypesUnseen, ["data-display-card"]);
+
+    const text = await run("map", "--storybook", storybook, "--snap", dir);
+    assert.match(text.out, /^ {6}left out `shape` \(every value measured the same though the markup changed with it: behavior only\); to make it a variant property again, pass --keep-props shape$/m);
+    assert.match(text.out, /can't see the argTypes of 1 of 2 components \(data-display-card\): .*styles\.json doesn't have those\./);
+
+    const kept = await run("map", "--storybook", storybook, "--snap", dir, "--keep-props", "shape", "--json");
+    assert.deepEqual((JSON.parse(kept.stdout) as typeof data).components[0].variantProperties.map((p) => p.name), ["size", "shape", "disabled"]);
+    const both = await run("map", "--storybook", storybook, "--snap", dir, "--keep-props", "shape", "--exclude-props", "Shape", "--json");
+    assert.equal(both.status, 1);
+    assert.match((JSON.parse(both.stdout) as { error: string }).error, /--exclude-props and --keep-props both name "Shape"/);
+
+    // With no snap, the docs alone, and said so.
+    const none = await run("map", "--storybook", storybook, "--no-snap");
+    assert.match(none.out, /Without a browser, storysync can't see the stories' argTypes: there is no snap to read them from\./);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("inspect CLI: says which props the story's argTypes add, and which are left out and why", async () => {
+  const dir = snapDir([BUTTON_SNAP]);
+  try {
+    const r = await run("inspect", "--storybook", storybook, "--component", "Button", "--snap", dir);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /shape \(union\) -> left out: every value measured the same though the markup changed with it: behavior only$/m);
+    assert.match(r.out, /disabled \(boolean\) -> BOOLEAN \[true, false\], default false \(from the story's argTypes\)$/m);
+    assert.match(r.out, /2 variant properties, 4 combinations/);
+    assert.match(r.out, /To make one a variant property again, pass --keep-props shape\./);
+    assert.doesNotMatch(r.out, /can't see/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("diff CLI: leaves out what the snap records the push left out, without --exclude-props", async () => {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm", "lg"], disabled: ["true", "false"] })] }, ...FIGMA_FILE.pages.slice(1)],
+  });
+  standIns.push(standIn);
+  const dir = snapDir([BUTTON_SNAP]);
+  try {
+    const r = await diffAgainst(standIn, "--components", "Button", "--snap", dir, "--strict");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /Components in sync/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("list CLI: an index.json that never answers holds the listing up for seconds, not half a minute", async () => {

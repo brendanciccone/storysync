@@ -8,7 +8,9 @@ import ora from "ora";
 import { StorybookClient, selectComponents, findComponent } from "./storybook.js";
 import { FigmaClient } from "./figma.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, requestLimit } from "./mcp-connect.js";
-import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, explainProp, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { checkPropFlags, describeExclusions, describeUnseenArgTypes, exclusionReason, readSnapProps, snapPropSource } from "./props.js";
+import type { PropExclusion, SnapProps } from "./props.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences, modesNotCompared } from "./diff.js";
 import { describeFontStandIns, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
@@ -91,8 +93,8 @@ async function connectMcp<T extends { connect(): Promise<void> }>(client: T, ser
 // Each request once connected has its own limit: a docs-show that never
 // answers fails that component, naming the flag, rather than waiting on the
 // SDK's own 60 seconds whatever the flags said.
-function connectStorybook(url: string, json: boolean, { connectMs, requestMs }: McpTimeouts): Promise<StorybookClient> {
-  return connectMcp(new StorybookClient(url, { requestTimeoutMs: requestMs, connectTimeoutMs: connectMs }), "Storybook MCP", url, json, connectMs);
+function connectStorybook(url: string, json: boolean, { connectMs, requestMs }: McpTimeouts, cache = false): Promise<StorybookClient> {
+  return connectMcp(new StorybookClient(url, { requestTimeoutMs: requestMs, connectTimeoutMs: connectMs, ...(cache ? {} : { cacheDir: null }) }), "Storybook MCP", url, json, connectMs);
 }
 
 const MAX_TIMER_MS = 2_147_483_647;
@@ -304,6 +306,40 @@ function exactPercent(share: number): string {
   return `${Number((share * 100).toFixed(3))}%`;
 }
 
+/**
+ * --exclude-props and --keep-props, parsed, refusing a name in both, with
+ * a clear message under --json too.
+ */
+function parsePropFlags(opts: { excludeProps?: unknown; keepProps?: unknown }, json: boolean): { exclude: string[]; keep: string[] } {
+  const exclude = parsePropNames(opts.excludeProps);
+  const keep = parsePropNames(opts.keepProps);
+  try {
+    checkPropFlags(exclude, keep);
+  } catch (err) {
+    reportError(err, json);
+    process.exit(1);
+  }
+  return { exclude, keep };
+}
+
+/**
+ * The snap whose argTypes and exclusions map, inspect and diff read
+ * (`--snap`, `.storysync/snaps` by default), or null with `--no-snap` or
+ * none there. One that can't be read as JSON is an error.
+ */
+function readPropSnap(opts: { snap?: unknown }, json: boolean): SnapProps | null {
+  if (opts.snap === false) return null;
+  try {
+    return readSnapProps(String(opts.snap ?? ".storysync/snaps"));
+  } catch (err) {
+    reportError(err, json);
+    process.exit(1);
+  }
+}
+
+const SNAP_OPTION_HELP = "Directory of the snap whose recorded argTypes and left-out props to use, as snap wrote them; --no-snap uses none";
+const KEEP_PROPS_HELP = "Comma-separated prop names never to leave out on their own, in any component: not for what the story's argTypes mark as behavior, nor for snap measuring every value the same";
+
 program
   .command("map")
   .description("Map all Storybook components to Figma variant definitions")
@@ -314,12 +350,17 @@ program
   .option("--json", "Output JSON instead of formatted text")
   .option("--max-combinations <n>", "Most combinations to generate per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--exclude-props <names>", "Comma-separated prop names never to map as variant properties, in any component")
+  .option("--keep-props <names>", KEEP_PROPS_HELP)
+  .option("--snap <dir>", SNAP_OPTION_HELP, ".storysync/snaps")
+  .option("--no-snap", "Use no snap: see only what Storybook's docs list")
+  .option("--no-cache", "Read every component's docs from Storybook, not from the docs cache in .storysync/cache")
   .option("--strict", "Exit with code 1 if any component fails or is capped")
   .action(async (opts) => {
     const json = !!opts.json;
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
-    const excludeProps = parsePropNames(opts.excludeProps);
-    const storybook = await connectStorybook(opts.storybook, json, parseTimeouts(opts));
+    const flags = parsePropFlags(opts, json);
+    const snap = readPropSnap(opts, json);
+    const storybook = await connectStorybook(opts.storybook, json, parseTimeouts(opts), opts.cache !== false);
     try {
       const spinner = json ? null : ora("Reading components...").start();
       let entries: ComponentEntry[];
@@ -331,12 +372,13 @@ program
       }
       spinner?.succeed(`Found ${entries.length} components`);
 
-      if (opts.components) {
-        // A typo'd name is an error whatever the flags. Filtered out silently,
-        // map would exit 0 with an empty or partial mapping and CI go green.
-        entries = selectComponents(entries, (opts.components as string).split(","));
-        if (!json) console.log(chalk.dim(`  Filtered to ${entries.length}`));
-      }
+      // Entries whose stories name no component aren't mapped unless named.
+      const pages = entries.filter((e) => e.docsOnly).length;
+      // A typo'd name is an error whatever the flags. Filtered out silently,
+      // map would exit 0 with an empty or partial mapping and CI go green.
+      entries = selectComponents(entries, opts.components ? (opts.components as string).split(",") : undefined);
+      if (!json && opts.components) console.log(chalk.dim(`  Filtered to ${entries.length}`));
+      else if (!json && pages) console.log(chalk.dim(`  Skipped ${pages} ${pages === 1 ? "entry" : "entries"} whose stories name no component (see list)`));
 
       if (!entries.length) {
         if (json) console.log(JSON.stringify({ components: [], summary: { total: 0, mapped: 0, failed: 0, capped: 0, totalCombinations: 0 } }));
@@ -347,8 +389,10 @@ program
       // Each result carries the component's Storybook ID: unique where the
       // name, and a title rebuilt without Storybook's index, needn't be, and
       // what the Action matches a baseline's components by.
-      const results: { id: string; name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; error: string | null }[] = [];
+      const results: { id: string; name: string; title?: string; category?: string; variantProperties: { name: string; type: string; values: string[]; defaultValue: string }[]; combinations: number; capped: boolean; cap?: CapInfo; excludedProps?: PropExclusion[]; error: string | null }[] = [];
       let total = 0, capped = 0, failed = 0;
+      // The components whose argTypes no snap recorded.
+      const unseen: string[] = [];
 
       // Under --json nothing is printed until every component is read, which
       // takes minutes on a large library, so say which one the run is on (on
@@ -357,14 +401,17 @@ program
       for (const entry of entries) {
         progress?.component(results.length + 1, entries.length, entry.title ?? entry.name);
         try {
-          const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
-          const def = mapComponent(component, maxCombinations);
-          results.push({ id: entry.id, name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), error: null });
+          const source = snapPropSource(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), entry.id, snap, flags);
+          if (!source.argTypes) unseen.push(entry.id);
+          const def = mapComponent(source.component, maxCombinations);
+          results.push({ id: entry.id, name: entry.name, title: entry.title, category: entry.category, variantProperties: def.variantProperties, combinations: def.variantCombinations.length, capped: def.wasCapped, ...(def.cap ? { cap: def.cap } : {}), ...(source.excluded.length ? { excludedProps: source.excluded } : {}), error: null });
           if (!json) {
             const info = def.variantProperties.map((p) => `${p.name}(${p.values.length})`).join(", ");
             const tag = def.cap ? chalk.yellow(` [CAPPED ${def.cap.generated}/${def.cap.totalPossible}]`) : "";
             const label = entry.title ?? entry.name;
             console.log(`  ${chalk.green("✓")} ${chalk.bold(label)} ${chalk.dim(info || "no variants")} -> ${def.variantCombinations.length} combination${def.variantCombinations.length === 1 ? "" : "s"}${tag}`);
+            const left = describeExclusions(source.excluded);
+            if (left) console.log(chalk.dim(`      ${left}`));
             if (def.cap) {
               const example = def.cap.droppedSample[0];
               const suffix = example ? `, e.g. ${JSON.stringify(example)}` : "";
@@ -381,9 +428,13 @@ program
       }
       progress?.done();
 
+      // Said once: which argTypes a command without a browser could see.
+      const unseenNote = describeUnseenArgTypes(snap ? shownPath(snap.path) : null, unseen, entries.length - failed);
       if (json) {
-        console.log(JSON.stringify({ components: results, summary: { total: entries.length, mapped: entries.length - failed, failed, capped, totalCombinations: total } }));
+        const props = { snap: snap ? shownPath(snap.path) : null, argTypesUnseen: unseen };
+        console.log(JSON.stringify({ components: results, summary: { total: entries.length, mapped: entries.length - failed, failed, capped, totalCombinations: total }, props }));
       } else {
+        if (unseenNote) console.log(chalk.dim(`\n${unseenNote}`));
         console.log(`\n${entries.length} components, ${total} total variants${capped ? `, ${capped} capped` : ""}`);
         console.log(chalk.dim("To write to Figma, use the Claude Code skill or Cursor rules file."));
       }
@@ -410,6 +461,8 @@ program
   .option("--variants <mode>", "Which combinations to measure: representative or all", "representative")
   .option("--max-combinations <n>", "With --variants all, most combinations to measure per component before capping", String(DEFAULT_MAX_COMBINATIONS))
   .option("--exclude-props <names>", "Comma-separated prop names never to make variant properties, in any component; the story's own args set them")
+  .option("--keep-props <names>", KEEP_PROPS_HELP)
+  .option("--no-cache", "Read every component's docs from Storybook, not from the docs cache in .storysync/cache")
   .option("--screenshots", "Also save a PNG per variant (off by default)")
   .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
@@ -435,6 +488,7 @@ program
     }
     const maxCombinations = parseMaxCombinations(opts.maxCombinations);
     const timeouts = parseTimeouts(opts);
+    const flags = parsePropFlags(opts, json);
     // Without --components there is nothing to merge: the run measures
     // every component, which is the whole snap. As JSON under --json, as a
     // merge refused for its base is, since the push reads the reason there.
@@ -484,7 +538,7 @@ program
     for (const [signal, handler] of handlers) process.on(signal, handler);
     const unlisten = () => { for (const [signal, handler] of handlers) process.off(signal, handler); };
 
-    const storybook = await connectStorybook(opts.storybook, json, timeouts);
+    const storybook = await connectStorybook(opts.storybook, json, timeouts, opts.cache !== false);
     try {
       const result = await runSnap(
         {
@@ -496,7 +550,8 @@ program
           selector: opts.selector as string | undefined,
           variants,
           maxCombinations,
-          excludeProps: parsePropNames(opts.excludeProps),
+          excludeProps: flags.exclude,
+          keepProps: flags.keep,
           merge: !!opts.merge,
           rootOnly: !!opts.rootOnly,
           channelArgs: opts.channelArgs !== false,
@@ -533,11 +588,15 @@ program
           const stories = describeVariantStories(component);
           if (stories) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${stories}`));
         }
-        // Said, not warned: snap still takes variant properties from the docs alone.
-        for (const component of result.components.filter((c) => c.argsNotInDocs?.length)) {
-          const names = component.argsNotInDocs!.map((name) => `\`${name}\``).join(", ");
-          const one = component.argsNotInDocs!.length === 1;
-          console.log(chalk.dim(`\n  i ${component.title ?? component.name}: the story declares ${names}, which Storybook's docs don't list, so ${one ? "it isn't a variant property" : "they aren't variant properties"}`));
+        // Said, not warned: the props the story's argTypes add, and those left out, and why.
+        for (const component of result.components) {
+          const added = (component.argsNotInDocs ?? []).filter((name) => component.variantProperties.some((p) => p.name === name));
+          if (added.length) {
+            const names = added.map((name) => `\`${name}\``).join(", ");
+            console.log(chalk.dim(`\n  i ${component.title ?? component.name}: the story's argTypes declare ${names}, which Storybook's docs don't list, so snap made ${added.length === 1 ? "it a variant property" : "them variant properties"}`));
+          }
+          const left = describeExclusions(component.excludedProps ?? []);
+          if (left) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${left}`));
         }
         const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
         if (failed.length) {
@@ -1051,18 +1110,26 @@ program
     const json = !!opts.json;
     const storybook = await connectStorybook(opts.storybook, json, parseTimeouts(opts));
     try {
-      const entries = await storybook.listComponents();
+      const listed = await storybook.listComponents();
       if (json) {
-        console.log(JSON.stringify({ components: entries.map((e) => ({ id: e.id, name: e.name, title: e.title, category: e.category, ...(e.titleDerived ? { titleDerived: true } : {}), storyIds: e.storyIds ?? [] })) }));
+        console.log(JSON.stringify({ components: listed.map((e) => ({ id: e.id, name: e.name, title: e.title, category: e.category, ...(e.titleDerived ? { titleDerived: true } : {}), ...(e.docsOnly ? { docsOnly: true } : {}), storyIds: e.storyIds ?? [] })) }));
         return;
       }
+      const entries = listed.filter((e) => !e.docsOnly);
+      const pages = listed.filter((e) => e.docsOnly);
       // Each by its title and ID, either of which --components and inspect
       // take: names alone left Base UI's Button and Radix's indistinguishable.
       console.log(`\n${entries.length} components:\n`);
-      for (const e of entries) {
+      const line = (e: ComponentEntry) => {
         const count = e.storyIds?.length ?? 0;
         const stories = count ? chalk.dim(` (${count} ${count === 1 ? "story" : "stories"})`) : "";
-        console.log(`  ${e.title ?? e.name} ${chalk.dim(e.id)}${stories}`);
+        return `  ${e.title ?? e.name} ${chalk.dim(e.id)}${stories}`;
+      };
+      for (const e of entries) console.log(line(e));
+      // Said, not hidden: what map, snap and diff skip, and why.
+      if (pages.length) {
+        console.log(`\n${pages.length} ${pages.length === 1 ? "entry" : "entries"} skipped, as Storybook's index shows ${pages.length === 1 ? "its" : "their"} stories name no component (no meta.component), so there is none to push; name one with --components to measure it anyway:\n`);
+        for (const e of pages) console.log(line(e));
       }
       const derived = entries.filter((e) => e.titleDerived).length;
       if (derived) {
@@ -1273,28 +1340,48 @@ program
   .requiredOption("--component <name>", "Component name, title or ID; a name that matches nothing, or several, is an error")
   .option("--connect-timeout <ms>", "How long to wait to connect to Storybook MCP before failing, in milliseconds", String(DEFAULT_CONNECT_TIMEOUT_MS))
   .option("--request-timeout <ms>", requestTimeoutHelp("Storybook MCP"))
+  .option("--exclude-props <names>", "Comma-separated prop names to leave out, as map and snap take them")
+  .option("--keep-props <names>", KEEP_PROPS_HELP)
+  .option("--snap <dir>", SNAP_OPTION_HELP, ".storysync/snaps")
+  .option("--no-snap", "Use no snap: see only what Storybook's docs list")
+  .option("--no-cache", "Read the component's docs from Storybook, not from the docs cache in .storysync/cache")
   .action(async (opts) => {
-    const storybook = await connectStorybook(opts.storybook, false, parseTimeouts(opts));
+    const flags = parsePropFlags(opts, false);
+    const snap = readPropSnap(opts, false);
+    const storybook = await connectStorybook(opts.storybook, false, parseTimeouts(opts), opts.cache !== false);
     try {
       // A name that matches nothing fails here, naming what exists, before
       // asking Storybook for the documentation of a component it never listed.
       const entry = findComponent(await storybook.listComponents(), opts.component as string);
-      const component = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+      const docs = await storybook.getComponent(entry.id, entry.name, entry.title, entry.category);
+      const source = snapPropSource(docs, entry.id, snap, flags);
+      const component = source.component;
       const def = mapComponent(component);
+      const left = new Map(source.excluded.map((e) => [e.name, e]));
 
       console.log(`\n${chalk.bold(entry.title ?? entry.name)} ${chalk.dim(entry.id)}\n`);
-      for (const prop of component.props) {
+      for (const prop of source.all) {
+        const exclusion = left.get(prop.name);
+        if (exclusion) {
+          console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> left out: ${exclusionReason(exclusion)}`);
+          continue;
+        }
+        const from = source.added.includes(prop.name) ? chalk.dim(" (from the story's argTypes)") : "";
         // Says why a prop was left out, and when a default is a guess, so
         // a missing variant can be traced to its rule rather than to "skipped".
         const { property: v, reason, defaultAssumed } = explainProp(prop);
         if (v) {
           const assumed = defaultAssumed ? chalk.dim(" (assumed: the docs give no usable default)") : "";
-          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}], default ${v.defaultValue}${assumed}`);
+          console.log(`  ${chalk.green("✓")} ${prop.name} (${prop.type.name}) -> ${v.type} [${v.values.join(", ")}], default ${v.defaultValue}${assumed}${from}`);
         } else {
           console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> skipped: ${reason}`);
         }
       }
       console.log(`\n${def.variantProperties.length} variant properties, ${def.variantCombinations.length} combinations${def.wasCapped ? " (capped)" : ""}\n`);
+      const auto = source.excluded.filter((e) => e.reason !== "excluded");
+      if (auto.length) console.log(chalk.dim(`To make one a variant property again, pass --keep-props ${auto[0].name}.\n`));
+      const unseen = describeUnseenArgTypes(snap ? shownPath(snap.path) : null, source.argTypes ? [] : [entry.id], 1);
+      if (unseen) console.log(chalk.dim(`${unseen}\n`));
     } catch (err) {
       reportError(err, false);
       process.exitCode = 1;
@@ -1315,12 +1402,19 @@ program
   .option("--source <type>", "Token source: tailwind, css, or theme (auto-detect if omitted or auto); any other value is an error")
   .option("--mode <name>", "Figma variable mode to read, alone (default: every mode, the first compared with the light theme and one named Dark with the dark theme)")
   .option("--components <names>", "Comma-separated component names, titles or IDs to diff, with --storybook; a name in neither Storybook nor Figma is an error when both were read")
-  .option("--exclude-props <names>", "Comma-separated prop names the push left out with --exclude-props, left out of every component here too, so they aren't reported missing from Figma")
+  .option("--exclude-props <names>", "Comma-separated prop names to leave out of every component, besides those the snap records the push left out")
+  .option("--keep-props <names>", KEEP_PROPS_HELP)
+  .option("--snap <dir>", SNAP_OPTION_HELP, ".storysync/snaps")
+  .option("--no-snap", "Use no snap: see only what Storybook's docs list")
+  .option("--no-cache", "Read every component's docs from Storybook, not from the docs cache in .storysync/cache")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any differences found or a Figma or Storybook read fails")
   .action(async (opts) => {
     const json = !!opts.json;
-    const excludeProps = parsePropNames(opts.excludeProps);
+    const flags = parsePropFlags(opts, json);
+    const snap = readPropSnap(opts, json);
+    const unseen: string[] = [];
+    let mapped = 0;
 
     // Without --storybook there is no component diff for --components to
     // narrow, so the flag would be ignored and the run pass having diffed none.
@@ -1347,7 +1441,7 @@ program
     // Optionally connect to Storybook MCP
     let storybook: StorybookClient | null = null;
     if (opts.storybook) {
-      storybook = await connectStorybook(opts.storybook as string, json, timeouts);
+      storybook = await connectStorybook(opts.storybook as string, json, timeouts, opts.cache !== false);
     }
 
     let figmaReadFailed = false;
@@ -1398,7 +1492,8 @@ program
           let others: ComponentEntry[] = [];
           let figmaReported = figmaComponents;
           try {
-            entries = await storybook.listComponents();
+            // Entries whose stories name no component aren't diffed.
+            entries = selectComponents(await storybook.listComponents(), undefined);
           } catch (err) {
             storybookReadFailed = true;
             mapSpinner?.fail("Failed to list Storybook components");
@@ -1435,8 +1530,10 @@ program
             if (mapSpinner) mapSpinner.text = `Mapping Storybook components ${position}/${entries.length} ${entry.title ?? entry.name}`;
             progress?.component(position, entries.length, entry.title ?? entry.name);
             try {
-              const component = withoutProps(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), excludeProps);
-              codeComponents.push({ ...mapComponent(component), id: entry.id });
+              const source = snapPropSource(await storybook.getComponent(entry.id, entry.name, entry.title, entry.category), entry.id, snap, flags);
+              if (!source.argTypes) unseen.push(entry.id);
+              mapped++;
+              codeComponents.push({ ...mapComponent(source.component), id: entry.id });
             } catch (err) {
               unmappedEntries.push(entry);
               mappingFailures.push({ name: entry.name, id: entry.id, ...(entry.title ? { title: entry.title } : {}), error: String(err) });
@@ -1471,6 +1568,7 @@ program
           mappingFailures,
           // The Figma modes no code value was compared with.
           modesNotCompared: notCompared,
+          ...(storybook ? { props: { snap: snap ? shownPath(snap.path) : null, argTypesUnseen: unseen } } : {}),
         }));
       } else {
         if (figmaReadFailed) {
@@ -1479,6 +1577,8 @@ program
         if (storybookReadFailed) {
           console.log(chalk.yellow("\nStorybook listing failed — component results are partial: nothing in code was read to match Figma against. See errors for details."));
         }
+        const unseenNote = storybook ? describeUnseenArgTypes(snap ? shownPath(snap.path) : null, unseen, mapped) : null;
+        if (unseenNote) console.log(chalk.dim(`\n${unseenNote}`));
         if (mappingFailures.length) {
           console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.title ?? f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
         }

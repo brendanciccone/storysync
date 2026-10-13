@@ -356,7 +356,7 @@ export function selectDiffComponents(
   names: readonly string[] | undefined,
 ): DiffSelection {
   const selected = selectComponents(entries, names, figmaComponents.flatMap(figmaNames));
-  if (!componentNames(names).length) return { entries, others: [], figmaReported: figmaComponents };
+  if (!componentNames(names).length) return { entries: selected, others: [], figmaReported: figmaComponents };
   const chosen = new Set(selected);
   return {
     entries: selected,

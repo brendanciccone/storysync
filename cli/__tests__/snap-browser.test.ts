@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { Page } from "playwright-core";
 import { fakePreview, inPage } from "./preview-standin.js";
+import { compactArgTypes } from "../snap-args.js";
 import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
@@ -228,15 +229,34 @@ const BADGE_TYPES: Record<string, FakeArgType> = {
   children: { type: { name: "string" }, control: { type: "text" } },
 };
 
+test("storyArgsInPage: reads the marks of an arg that changes no look, and the story's own value of each", async () => {
+  const fake = fakePreview({
+    argTypes: {
+      open: { type: { name: "boolean" }, control: { type: "boolean" }, table: { disable: true } },
+      onOpenChange: { type: { name: "function" }, action: "onOpenChange", table: { category: "events" } },
+      loop: { type: { name: "boolean" }, control: false },
+    },
+    initial: { open: false, onOpenChange: () => {}, loop: true },
+    url: {},
+  });
+  const snapshot = await inPage(fake.preview, () => storyArgsInPage({ storyId: fake.storyId, waitMs: 100 }));
+  assert.ok(snapshot && "argTypes" in snapshot);
+  assert.deepEqual(compactArgTypes(snapshot.argTypes), {
+    loop: { type: "boolean", control: false, initial: true },
+    onOpenChange: { type: "function", category: "events", action: true },
+    open: { type: "boolean", control: "boolean", hidden: true, initial: false },
+  });
+});
+
 test("storyArgsInPage: reads what the store holds, what the story is given, and its argTypes", async () => {
   const fake = fakePreview({ argTypes: BADGE_TYPES, initial: { variant: "default", size: "sm", children: "Badge" }, url: { variant: "ghost", size: "lg" } });
   const snapshot = await inPage(fake.preview, () => storyArgsInPage({ storyId: fake.storyId, waitMs: 100 }));
   assert.deepEqual(snapshot, {
     fileName: "./badge.stories.tsx",
     argTypes: {
-      variant: { type: "enum", control: "select", options: ["default", "secondary"], if: undefined, mapping: undefined },
-      size: { type: "enum", control: undefined, options: ["sm", "lg"], if: { arg: "variant", neq: "link" }, mapping: undefined },
-      children: { type: "string", control: "text", options: undefined, if: undefined, mapping: undefined },
+      variant: { type: "enum", control: "select", options: ["default", "secondary"], if: undefined, mapping: undefined, hidden: undefined, category: undefined, action: undefined, initial: "default" },
+      size: { type: "enum", control: undefined, options: ["sm", "lg"], if: { arg: "variant", neq: "link" }, mapping: undefined, hidden: undefined, category: undefined, action: undefined, initial: "sm" },
+      children: { type: "string", control: "text", options: undefined, if: undefined, mapping: undefined, hidden: undefined, category: undefined, action: undefined, initial: "Badge" },
     },
     // ghost was dropped, as Storybook drops a value outside the options.
     stored: { variant: "default", size: "lg", children: "Badge" },

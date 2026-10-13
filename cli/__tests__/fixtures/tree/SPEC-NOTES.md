@@ -222,16 +222,47 @@ A1. **5.1 keeps r3/args's names**, as the owner decided:
    With `channelArgs: false`, a value the story refuses gives `arg_rejected`
    (`args_unsupported` for a value the URL can't carry), and the error names
    `--no-channel-args`.
-A2. **5.2's options supplement can restart the plan.**
-   - A new axis renames every combination, so the plan starts again and
-     measures the base once more: one page load more than the spec says.
+A2. **5.2's options supplement always restarts the plan.**
+   - Any change the argTypes make to the variant properties starts the plan
+     again: a new axis renames every combination, and a value added before
+     the props are judged (A4) must be measured before they are. The argTypes
+     are read with the first variant, so this measures that one again: one
+     page load more than the spec says.
    - Everything measured under the old plan is dropped, a variant that failed
      before its args were read included. Kept, it had a combination without
      the new property.
-   - Values the options add to a plan already at `--max-combinations` restart
-     it too, with the wider plan's capped set. Appended, they were cut off with
-     the tail and never measured.
+   - The values the options add land in the plan's order, not after the
+     planned ones; under `--variants all` the set keeps the plan's order.
    - `null` options are left out: Storybook lists null for cva unions.
+   - Beyond 5.2, the argTypes also add props the docs don't list at all
+     (`argsNotInDocs`, such as Button's `disabled`), their default the story's
+     own arg, and leave out props they mark as behavior (`control: false`,
+     `table.disable`, an events category or an action). All of it is
+     `cli/props.ts`, which map, inspect and diff use too, reading the argTypes
+     snap recorded; each argType now records `hidden`, `category`, `action`
+     and the story's `initial` value.
+A4. **Props that measure as behavior are left out (beyond 5.3).** 5.3 warns;
+   snap now acts on the evidence (`detectBehaviorProps`), judged once the
+   representative combinations are measured (under `--variants all`, they
+   are measured first):
+   - a prop every value of which measured the same, on variants whose args
+     Storybook confirmed, is left out as `no-op`, with whether its markup
+     changed;
+   - where the defaults measured a closed trigger, a boolean one of whose
+     values measured the content instead (Drawer's `open=true`) is pinned:
+     every variant is measured with it, and it is left out as `opens`, with
+     its value. Nothing else is judged on a closed trigger, since a prop
+     that styles the content (Sheet's `side`) measures the same on it.
+   Each is recorded in the component's `excludedProps`, with the user's
+   `--exclude-props`; `--keep-props` keeps one. The 5.3 warnings still fire
+   for props kept, or measured on a closed trigger.
+A5. **Section 11: map, diff and the Action read styles.json, though not its
+   styles.** Their variant properties come from the same source as snap's
+   (A2), so they read each component's `argTypes` and `excludedProps` from
+   the snap (`--snap`, `.storysync/snaps` by default; the Action's
+   `snap_dir`), and say which components' argTypes they couldn't see. The
+   Action compares variant properties as before, leaving `excludedProps` out
+   of the comparison and naming a prop it left out in the report.
 A3. **5.3's first bullet and 5.5's root `truncate: true`** were already covered
    by r3/small: the behavior-only warning is keyed on the markup, and
    `text.layout.truncation` records truncation. No new field. In a tree snap,

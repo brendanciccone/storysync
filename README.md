@@ -168,6 +168,7 @@ Commit both files. Use the Storysync version the action runs, which is the `vers
 | `exclude_props` | none | Comma-separated props to leave out of every component, as `map --exclude-props`. |
 | `request_timeout` | 5 minutes | How long mapping waits for each Storybook request, in ms, as `map --request-timeout`. Raise it for a slow Storybook. |
 | `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
+| `snap_dir` | `.storysync/snaps` | The committed snap whose argTypes and left-out props `map` uses. Set it to `''` for none. |
 | `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A baseline from Storysync 0.3.0 has no IDs, so it's matched by title, with a warning to recreate it. |
 | `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
 | `fail_on_drift` | `false` | Fail the job on drift, or when a baseline is missing. |
@@ -338,9 +339,11 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 | `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
 | `aria-*` / `data-*` attributes | Skipped |
 
-Props come from the Props section of the component's Storybook docs. Subcomponents' props, attached MDX pages and a story's `argTypes` don't become variant properties. Storybook's MCP docs leave `argTypes` out, so a prop the docs don't list, like a `disabled` inherited from Radix or Base UI, isn't mapped.
+Props come from the Props section of the component's Storybook docs, and from the story's `argTypes`, which `snap` reads in the browser and records in `styles.json`: a choice only the argTypes declare, like Button's `disabled` or Sheet's `side`, becomes a variant property too, its default the story's own arg. `map`, `inspect` and `diff` read the argTypes from that snap (`--snap <dir>`, `.storysync/snaps` by default, or `--no-snap`), and say when they can't see them. Subcomponents' props and attached MDX pages don't become variant properties.
 
-A boolean prop the table doesn't skip becomes a variant property, behavioral ones like `modal` or `loop` included, so a component with many can reach the combination cap. `--exclude-props` on `map`, `snap` and `diff` leaves out the props it names.
+Props that don't change the look are left out on their own, and each is recorded in `styles.json` with why, so `map`, `diff` and the Action leave out the same: one every value of which `snap` measured the same (cmdk's `loop`, input-otp's `textAlign`), one the argTypes mark with `control: false`, a hidden table row or an event, and an `open` that opens what a closed trigger hides, which `snap` then sets on every variant so Drawer is measured open. `--keep-props` keeps one, and `--exclude-props` leaves out others, on `map`, `inspect`, `snap` and `diff`.
+
+`list` shows entries whose stories name no component, such as shadcn's `design/*` token pages, as skipped, and the other commands leave them out unless `--components` names one. `map`, `inspect`, `snap` and `diff` keep each component's docs in `.storysync/cache/docs` until Storybook's `index.json` or the component's manifest entry changes; `--no-cache` reads them again.
 
 A union prop's values start with its default, and the push lays a boolean out with its default first, so Figma's default variant is the code's. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
 
@@ -427,6 +430,10 @@ Options:
   --exclude-props <names>
                          Comma-separated prop names never to map as variant properties,
                          in any component
+  --keep-props <names>   Comma-separated prop names never to leave out on their own
+  --snap <dir>           Snap whose recorded argTypes and left-out props to use
+                         (default: ".storysync/snaps"); --no-snap uses none
+  --no-cache             Read every component's docs from Storybook, not the docs cache
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any component fails or is capped
 ```
@@ -449,6 +456,8 @@ Options:
   --exclude-props <names>
                          Comma-separated prop names never to make variant properties,
                          in any component; the story's own args set them
+  --keep-props <names>   Comma-separated prop names never to leave out on their own
+  --no-cache             Read every component's docs from Storybook, not the docs cache
   --screenshots          Also save a PNG per variant (off by default)
   --timeout <ms>         Per-story timeout (default: 10000); a story that times out loading is tried
                          once more
@@ -526,13 +535,13 @@ Use the version the error prints. Other Playwright versions install a browser th
 - **Fonts** as the family the browser drew with. Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI, so it sets that text in Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it. Figma rounds each letter's width a little, so Storysync's copies of Inter, Roboto Mono and Noto Serif are rounded the same way, and a label sets as wide in the browser as in Figma, within a thousandth of a pixel on every string Figma was measured setting but one in Noto Serif Bold, which Figma has in another version. Its Inter also has Inter's arrows, check marks and other symbols, so "Next →" isn't measured in another font. Figma keeps a line whole only in a box at least as wide as the text, so snap rounds the width of anything that holds text up to the next hundredth of a pixel, never down. A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `Inter`, with the family the code asked for, `system-ui`, beside it, and snap says once a run which fonts it drew this way. A font your project loads itself, such as Geist or Inter, is measured as it is. snap warns when a named font your code asks for didn't load and the browser used a fallback, but not about another platform's font listed after a system keyword, like `SFMono-Regular`. Figma also needs the font installed, which Storysync can't do for you.
 - **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
 
-**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. When every variant measures the same, snap also compares the markup each one rendered. The same markup means the story likely drops its args. Markup that changed with them means the args reach the component and its props change only what snap doesn't measure, such as behavior, so the warning names them for `--exclude-props` instead of blaming the story. Plain CSF3 args-driven stories are the reliable shape.
+**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. When every variant measures the same, snap also compares the markup each one rendered. The same markup means the story likely drops its args. Markup that changed with them means the args reach the component and its props change only what snap doesn't measure, such as behavior. Either way snap leaves such props out (see Component mapping rules) unless `--keep-props` keeps them, and then warns. Plain CSF3 args-driven stories are the reliable shape.
 
 Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so snap leaves a value like `Nav/Primary` out of the URL and sets it through Storybook's preview once the story loads, as below. No story change would let the URL carry it, so snap doesn't warn. If the preview won't take it either, the variant is marked `args_unsupported` and not measured.
 
 **Values the story's argTypes don't allow.** Storybook drops a URL value that the story's argTypes `options` don't list, or that an argTypes `if` hides for that combination, and renders the default instead. shadcn/ui's Badge story lists four of its six variants, for example. After each story renders, snap reads the args Storybook gave it from the preview. When a value is missing, snap sets it through the preview, as the Controls panel does, and measures what the component renders with it. The variant records the values as `rejectedArgs`, with `appliedVia: "preview"`, and snap warns with the story change that would let the URL take them. `--no-channel-args` turns this off: such a variant is marked `arg_rejected` and not measured, and `meta.json` records `"channelArgs": false`. Storybook's URL reads a value like `2` as a number, so when the story's options list it only as the string `"2"`, no story change lets the URL carry it. snap sets it through the preview without a warning, sending each value typed as the story's options list it. If the preview won't apply a value either, the variant is marked `arg_rejected` and not measured, so `--strict` fails and `verify` names it under the score. If snap can't read the preview for a variant at all, it can't tell whether the story took its values. It measures the variant, marks it `argsChecked: false` and warns, naming it. `--strict` fails on it, and `verify` names it under the score and fails it under `--strict-measured`.
 
-snap also records each story's argTypes as `argTypes`, with each arg's type, control, options and `if`, and lists the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`. Variant properties still come from the docs alone, so the push names these in its summary as choices Figma won't have.
+snap also records each story's argTypes as `argTypes`, with each arg's type, control, options, `if`, table marks and the story's own value, and lists the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`. It makes those variant properties, and records each prop it left out, and why, as `excludedProps`.
 
 **Variant names ignore case and punctuation**, so `Small` and `small` would get the same name. snap numbers the duplicate (`size-small--2`) and warns. Renaming the values is the real fix.
 
@@ -690,7 +699,7 @@ The checksum isn't a signature, though (see [Limitations](#limitations)).
 
 ### `storysync list`
 
-Lists the components in Storybook, each by its title and ID, either of which `--components` and `inspect` take. MDX docs pages, like an introduction, are left out here and in every other command that reads components.
+Lists the components in Storybook, each by its title and ID, either of which `--components` and `inspect` take. MDX docs pages, like an introduction, are left out here and in every other command that reads components. Entries whose stories name no component, like shadcn's `design/*` token pages, are listed as skipped, and left out of `map`, `snap` and `diff` unless `--components` names them.
 
 ```text
 Options:
@@ -724,8 +733,12 @@ Options:
                          (default: all); a name in neither Storybook nor Figma is an error
                          when both were read
   --exclude-props <names>
-                         Comma-separated prop names the push left out with --exclude-props,
-                         left out here too, so they aren't reported missing from Figma
+                         Comma-separated prop names to leave out of every component, besides
+                         those the snap records the push left out
+  --keep-props <names>   Comma-separated prop names never to leave out on their own
+  --snap <dir>           Snap whose recorded argTypes and left-out props to use
+                         (default: ".storysync/snaps"); --no-snap uses none
+  --no-cache             Read every component's docs from Storybook, not the docs cache
   --json                 Output JSON instead of formatted text
   --strict               Exit with code 1 if any differences found or a Figma or Storybook read fails
 ```
@@ -758,6 +771,8 @@ Options:
                          a name that matches nothing, or several, is an error
   --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
   --request-timeout <ms> How long each request may take once connected (default: 300000)
+  --exclude-props, --keep-props, --snap, --no-snap, --no-cache
+                         As map takes them
 ```
 
 ## Limitations
@@ -778,7 +793,7 @@ Options:
 - **Overlays are measured closed** unless their story renders them open, so a Dialog's Figma component would be its trigger. snap warns when it measures a closed trigger, and the push then asks whether to build the trigger, skip it, or stop so you can add a story that renders it open. `verify` names it under the score. A trigger built anyway says so on a `storysync:` line of its Figma description, and a skipped one is left out of the score with `verify --skip`.
 - **Variant values outside the URL's characters are set through Storybook's preview.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported` only when the preview won't take them either.
 - **Values the story's argTypes reject are set through Storybook's preview.** That needs `window.__STORYBOOK_PREVIEW__`, which Storybook has had since version 7. When snap can't read it, a rejected value would measure as the default, so snap marks those variants `argsChecked: false`, warns, and fails `--strict`. A value the preview won't apply either is reported as `arg_rejected`.
-- **Props need literal types.** Only a boolean or a union of string literals becomes a variant property. A `string` or `number` prop doesn't, even with `options` in its argType, since variant properties come from Storybook's docs. snap records the argTypes but doesn't make variants of them.
+- **Props need literal types or options.** A boolean, a union of string literals, or a prop whose story's argTypes give `options` becomes a variant property. A free `string` or `number` prop doesn't.
 - **Text can be a pixel off.** Figma rounds the width of a text that sizes itself up to a whole pixel, so a label, and a frame that hugs it, can come out up to a pixel wider than in the browser. snap measures text in the font Figma sets it in, but a font your project loads that Figma lacks is still set in a stand-in. `verify` allows 3% or 1px, whichever is larger, and 6% for a text Figma draws in another font than snap measured it in. These allowances are set from the first live pushes, and may change.
 - **Transparent borders are filled as the browser fills them.** The browser paints the background under a transparent or translucent border unless the background is clipped to the padding box, as Tailwind's `bg-clip-padding` does. snap records which, and the push builds the border to match: an `INSIDE` stroke the fill runs under, or, with `bg-clip-padding`, an `OUTSIDE` stroke the fill stops at, so Figma shows the same unfilled ring the browser does. The size is right either way, and the summary names those variants.
 - **Some CSS isn't built or scored.** Figma has no equivalent for filters other than blur, `clip-path`, radial, conic and repeating gradients, some blend modes, borders with a different color on each side, and `outline`, so a focus ring drawn with `outline` never reaches Figma. Rotation and scaling are built as their bounding box, and text that mixes styles inline is approximated. `verify` lists each as coverage it couldn't score, never as a match. A push through the root-only templates doesn't score shadows, gradients, image fills, text transform or letter spacing at all.
@@ -794,7 +809,7 @@ Storysync splits deterministic extraction (the CLI) from Figma writes (the AI cl
 | Step | How it's produced |
 |---|---|
 | Design tokens | **Measured:** parsed from your Tailwind config, CSS custom properties, or theme file |
-| Component variant structure | **Measured:** derived from the prop types in Storybook's docs, not story argTypes |
+| Component variant structure | **Measured:** derived from the prop types in Storybook's docs and the story's argTypes |
 | Component styling | **Measured:** `getComputedStyle` on the real render, via `storysync snap` |
 | Drift reports | **Measured:** deterministic comparison, normalized on both sides |
 | Figma writes | **Generated:** `figma code` writes every component call from the snap, and the client sends them unchanged; it writes the token variables from `tokens --json` |

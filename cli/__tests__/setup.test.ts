@@ -423,7 +423,7 @@ test("every push instruction lays a set out in snap's order, not its children's"
       const text = readFileSync(join(project, path), "utf8");
       assert.match(text, /`variantProperties`[^\n]*copied as they are/, `${path} never has each part carry snap's variantProperties`);
       assert.match(text, /never by the set's children/, `${path} lets the layout follow the set's child order`);
-      assert.match(text, /in the order snap records them: a `VARIANT`'s default value first, then the rest in the order of the component's prop type as Storybook's docs list it \(a story's `argTypes` options are not read\)/,
+      assert.match(text, /in the order snap records them: a `VARIANT`'s default value first, then the rest in the order of the component's prop type as Storybook's docs list it, then any only the story's `argTypes` options list/,
         `${path} never says the values run default first, then in Storybook's declared order`);
       assert.doesNotMatch(text, /not default first/, `${path} still says snap's values are not default first`);
       assert.doesNotMatch(text, /all-defaults variant[^\n]*top-left/, `${path} says the all-defaults variant is the top-left one, which it is not where a BOOLEAN defaults to true`);
@@ -1655,7 +1655,7 @@ test("every audit can score how the sets look, reading Figma and changing nothin
       // A snap of its own, so the push's snap and readback stay as they were.
       assert.match(audit, /npx storysync snap [^`\n]*--variants all[^`\n]*--out \.storysync\/audit\/snaps/, `${path} snaps over the push's snap`);
       // From the story the push measured each component from, which styles.json records.
-      assert.match(audit, /the push's `--exclude-props`, and the push's `--stories`[^\n]*`storyId`[^\n]*\.storysync\/snaps\/styles\.json/, `${path} snaps the audit from the default stories, not the push's`);
+      assert.match(audit, /the push's `--exclude-props` and `--keep-props`, and the push's `--stories`[^\n]*`storyId`[^\n]*\.storysync\/snaps\/styles\.json/, `${path} snaps the audit from the default stories, not the push's`);
       assert.match(audit, /`storyId`[^\n]*ending it with `!` where the component records `storyOnly: true`/, `${path} lets the audit pick stories per variant where the push measured every variant from one`);
       assert.match(audit, /npx storysync figma code --snap \.storysync\/audit\/snaps\/styles\.json --out \.storysync\/audit\/figma/, `${path} writes its calls over the push's`);
       assert.match(audit, /only the plan's `read` calls[^\n]*[Nn]ever[^\n]*`build`, `images` or `label` calls/, `${path} lets the audit send calls that change the file`);

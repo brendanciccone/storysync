@@ -10,7 +10,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
-import { mapComponent, withoutProps, representativeCombinations, supplementOptions, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
+import { mapComponent, representativeCombinations, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import type { CapInfo } from "./mapper.js";
 import type { FigmaVariantProperty, StorybookComponent } from "./mapper.js";
 import { selectComponents, componentKey } from "./storybook.js";
@@ -32,6 +32,8 @@ import { stylesJsonText } from "./snap-tree.js";
 import { chooseStory, storyAddsContent, storyKeys } from "./snap-stories.js";
 import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
+import { resolveProps } from "./props.js";
+import type { PropExclusion } from "./props.js";
 
 export const SNAP_SCHEMA_VERSION = 1;
 
@@ -49,6 +51,11 @@ export interface SnapOptions {
   maxCombinations?: number;
   /** Props never to make variant properties of, in any component (`--exclude-props`). */
   excludeProps?: string[];
+  /**
+   * Props never to leave out on their own, in any component (`--keep-props`):
+   * not for what the story's argTypes mark, nor for measuring the same.
+   */
+  keepProps?: string[];
   /**
    * Measure only the components `components` names and merge them into the
    * styles.json already in `outDir`, replacing those and keeping the rest
@@ -186,18 +193,27 @@ export interface SnapComponent {
   };
   /**
    * The argTypes of the story snap rendered, as Storybook's preview holds
-   * them: each arg's type, control, options and `if`. Recorded, not acted
-   * on: variant properties still come from Storybook's docs.
+   * them: each arg's type, control, options, `if`, table marks and the
+   * story's own value. They add to the props Storybook's docs list
+   * (props.ts), and map, inspect and diff read them from here.
    */
   argTypes?: Record<string, StoryArgType>;
   /** The story's file, as Storybook records it. */
   storyFile?: string;
   /**
    * Args the story declares as a choice (options, or a boolean or select
-   * control) that Storybook's docs don't list, so they are not variant
+   * control) that Storybook's docs don't list, which snap makes variant
    * properties: shadcn/ui Button's `disabled`, say.
    */
   argsNotInDocs?: string[];
+  /**
+   * Each prop that would be a variant property and was left out, and why
+   * (props.ts): `--exclude-props`, the story's argTypes marking it as
+   * behavior, every value measuring the same (`no-op`), or a value opening
+   * what the component shows (`opens`, with the value every variant was
+   * measured with). map, inspect, diff and the Action leave out the same.
+   */
+  excludedProps?: PropExclusion[];
   /** What was measured of each variant: its element tree, or (`--root-only`) its root alone. Absent from a root-only snap. */
   capture?: "tree" | "root";
   /** The base variant's element tree, and the assets every variant's draws. */
@@ -221,6 +237,8 @@ export interface SnapResult {
    * leave out too, or it reports each as missing from Figma.
    */
   excludeProps?: string[];
+  /** The props `--keep-props` kept from being left out on their own, when it named any. */
+  keepProps?: string[];
   /** The element-tree format, on a snap that measured trees; absent from a root-only one. */
   treeVersion?: number;
   /** Where the tree walk stopped: elements, depth, and SVG markup kept as a vector. */
@@ -493,6 +511,69 @@ export function detectNoOpProperties(properties: FigmaVariantProperty[], variant
     if (compared.length && compared.every((group) => new Set(group.values()).size === 1)) noOps.push(property.name);
   }
   return noOps;
+}
+
+/**
+ * The props measuring shows don't belong as variant properties (props.ts),
+ * judged from the representative combinations, each prop's values against
+ * the defaults of the rest:
+ *
+ * - `opens`: where the defaults measured a closed trigger (`closed` holds
+ *   the slugs that did), a boolean one of whose values measured what the
+ *   trigger opens instead, as Drawer's `open=true` measures its content.
+ *   Its other values only hide what the component shows, so every variant
+ *   is measured with that one (with `pin`, at most one prop). Where the
+ *   defaults measured a closed trigger and no prop opens it, nothing else
+ *   is judged: a prop that styles the content, as Sheet's `side` does,
+ *   measures the same on the trigger.
+ * - `no-op`: one every value of which measured the same
+ *   (detectNoOpProperties), with whether the markup changed with it, so
+ *   the args reached the component (`markups`, by slug), or didn't.
+ *
+ * Props `keep` names are never judged, and only variants Storybook
+ * confirmed it gave their values are evidence.
+ */
+export function detectBehaviorProps(
+  properties: FigmaVariantProperty[],
+  variants: SnapVariant[],
+  options: { closed: ReadonlySet<string>; markups: ReadonlyMap<string, string | null>; keep?: readonly string[]; pin?: boolean },
+): PropExclusion[] {
+  const kept = new Set((options.keep ?? []).map((n) => n.toLowerCase()));
+  const judged = properties.filter((p) => !kept.has(p.name.toLowerCase()));
+  // Only a variant Storybook confirmed it gave its values is evidence: one
+  // whose args couldn't be checked may have measured the story's default.
+  const measured = variants.filter((v) => v.status === "ok" && v.argsChecked !== false);
+  const defaults = (combination: Record<string, string>, except?: string) =>
+    properties.every((p) => p.name === except || combination[p.name] === p.defaultValue);
+  const base = measured.find((v) => defaults(v.combination));
+  if (!base) return [];
+
+  if (options.closed.has(base.slug)) {
+    if (!options.pin) return [];
+    for (const property of judged.filter((p) => p.type === "BOOLEAN")) {
+      const open = measured.find((v) => defaults(v.combination, property.name) && v.combination[property.name] !== property.defaultValue);
+      if (open && !options.closed.has(open.slug) && (open.portal || open.element !== base.element)) {
+        return [{ name: property.name, reason: "opens", value: open.combination[property.name] }];
+      }
+    }
+    return [];
+  }
+
+  const noOps = new Set(detectNoOpProperties(judged, measured));
+  return judged.filter((p) => noOps.has(p.name)).map((property) => {
+    // The markup of each value against the same values of the rest.
+    const groups = new Map<string, (string | null | undefined)[]>();
+    for (const v of measured) {
+      if (v.combination[property.name] === undefined) continue;
+      const others = JSON.stringify(Object.entries(v.combination).filter(([name]) => name !== property.name));
+      groups.set(others, [...(groups.get(others) ?? []), options.markups.get(v.slug)]);
+    }
+    const compared = [...groups.values()].filter((g) => g.length >= 2);
+    const known = compared.length > 0 && compared.every((g) => g.every((m) => typeof m === "string"));
+    const changed = compared.some((g) => new Set(g.filter((m) => typeof m === "string")).size > 1);
+    const markup = changed ? "changed" as const : known ? "same" as const : undefined;
+    return { name: property.name, reason: "no-op" as const, ...(markup ? { markup } : {}) };
+  });
 }
 
 /** Whether a variant's tree differs from its base's. */
@@ -1141,6 +1222,10 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
     const was = result.excludeProps?.length ? `--exclude-props ${result.excludeProps.join(",")}` : "no --exclude-props";
     throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or run snap without --merge.`);
   }
+  if (excluded(result.keepProps) !== excluded(opts.keepProps)) {
+    const was = result.keepProps?.length ? `--keep-props ${result.keepProps.join(",")}` : "no --keep-props";
+    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or run snap without --merge.`);
+  }
   // A tree snap's components carry their elements, a root-only one's don't:
   // mixed, a push would build some components whole and some as their outer
   // element, and verify score them two ways.
@@ -1383,6 +1468,7 @@ function writeSnap(
     storybookUrl: opts.storybookUrl,
     variantSelection: opts.variants,
     ...(opts.excludeProps?.length ? { excludeProps: opts.excludeProps } : {}),
+    ...(opts.keepProps?.length ? { keepProps: opts.keepProps } : {}),
     ...(opts.rootOnly ? {} : { treeVersion: TREE_VERSION, treeLimits: { ...TREE_LIMITS } }),
     ...(standIns.length ? { fontStandIns: standIns.map((pair) => JSON.parse(pair) as [string, string]) } : {}),
     components,
@@ -1456,7 +1542,20 @@ async function snapComponent(
   }
 
   const maxCombinations = opts.maxCombinations ?? DEFAULT_MAX_COMBINATIONS;
-  let definition = mapComponent(withoutProps(component, opts.excludeProps ?? []), maxCombinations);
+  // Which props are variant properties (props.ts): the docs', until the
+  // story's argTypes are read with the first variant, then theirs too, less
+  // what is left out, and what measuring finds changes nothing (`found`).
+  const flags = { exclude: opts.excludeProps ?? [], keep: opts.keepProps ?? [] };
+  let seenArgTypes: Record<string, StoryArgType> | undefined;
+  const found: PropExclusion[] = [];
+  let source = resolveProps(component, flags);
+  let definition = mapComponent(source.component, maxCombinations);
+  // A prop whose value opens what the component shows: every variant is
+  // measured with it, though it isn't one of their properties.
+  const pinned: { property: FigmaVariantProperty; value: string }[] = [];
+  // Whether measuring has said which props change nothing, and how many times it has looked.
+  let judged = false;
+  let judgments = 0;
   const storyId = storyOverride?.storyId ?? pickStory(entry.storyIds, component);
   shell.variantProperties = definition.variantProperties;
   shell.storyId = storyId;
@@ -1468,7 +1567,21 @@ async function snapComponent(
     return shell;
   }
 
-  let combinations = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
+  // The plan, and the index at which what was measured is judged for props
+  // that change nothing: after the representative combinations, which
+  // under --variants all are measured first, so a prop left out isn't
+  // first measured in every combination of the others.
+  const planOf = (): { plan: Record<string, string>[]; judgeAt: number } => {
+    const plan = selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations);
+    if (judged || !definition.variantProperties.length) return { plan, judgeAt: -1 };
+    if (opts.variants !== "all") return { plan, judgeAt: plan.length };
+    const key = (c: Record<string, string>) => JSON.stringify(c);
+    const planned = new Set(plan.map(key));
+    const first = representativeCombinations(definition.variantProperties).filter((c) => planned.has(key(c)));
+    const firstKeys = new Set(first.map(key));
+    return { plan: [...first, ...plan.filter((c) => !firstKeys.has(key(c)))], judgeAt: first.length };
+  };
+  let { plan: combinations, judgeAt } = planOf();
   // Only the full product can exceed the ceiling; representative mode measures
   // one value at a time and never approaches it.
   const capOf = () => {
@@ -1505,8 +1618,8 @@ async function snapComponent(
   const climbed: { slug: string; element: string; from: string }[] = [];
   // Each [asked, drawn] family a variant was measured in a stand-in for.
   const standIns = new Set<string>();
-  // Whether the story's argTypes options have been read into the variant properties yet.
-  let supplemented = false;
+  // Each measured variant's markup checksum, by slug, for judging props that change nothing.
+  const markupBySlug = new Map<string, string | null>();
   // The component's stories' own args, read once a story has loaded, for
   // the story each variant is measured from: null where there is one story
   // or they can't be read.
@@ -1524,6 +1637,7 @@ async function snapComponent(
     uncheckedError = undefined;
     notes.length = 0;
     markups.length = 0;
+    markupBySlug.clear();
     trees.length = 0;
     for (const id of Object.keys(svgAssets)) delete svgAssets[id];
     images.clear();
@@ -1532,17 +1646,74 @@ async function snapComponent(
     standIns.clear();
     stage.drop(entry);
   };
+  // The variant properties again, from what is now known, and the plan with them.
+  const replan = () => {
+    source = resolveProps(component, { ...flags, argTypes: seenArgTypes, measured: found });
+    definition = mapComponent(source.component, maxCombinations);
+    shell.variantProperties = definition.variantProperties;
+    ({ plan: combinations, judgeAt } = planOf());
+    ({ slugs, collisions } = assignVariantSlugs(combinations));
+    capOf();
+  };
+  // Said once the props are left out where every variant measured the same
+  // and rendered the same markup: the story may not pass its args through.
+  let argsIgnored: string | null = null;
+  // Judges what was measured for props that change nothing, or that open
+  // what the component shows; true when that starts the plan again.
+  const judge = (): boolean => {
+    judgments++;
+    const closed = new Set(notes.filter((n) => n.note.kind === "closed-trigger").map((n) => n.slug));
+    const more = detectBehaviorProps(definition.variantProperties, shell.variants, {
+      closed, markups: markupBySlug, keep: flags.keep, pin: pinned.length === 0,
+    });
+    // Every prop left out, nothing on the page changed by any: the one
+    // failure measurement can't see, a story that drops its args, looks
+    // just so, so it is still warned of, as it was before props were left out.
+    if (more.length && more.length === definition.variantProperties.length && more.every((e) => e.reason === "no-op" && e.markup === "same")) {
+      const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups, { tree: trees.length > 0 });
+      const names = more.map((e) => `\`${e.name}\``).join(", ");
+      const one = more.length === 1;
+      argsIgnored = identical && `${identical} snap left out ${names}, so it is one variant: if the story drops ${one ? "it" : "them"}, pass ${one ? "it" : "them"} through and measure it again; if ${one ? "it changes" : "they change"} only behavior, this is as it should be.`;
+    }
+    // After a prop is pinned open, what opened is judged again; after
+    // that, or props found to change nothing, there is no more to find.
+    judged = !more.some((e) => e.reason === "opens") || judgments >= 2;
+    if (!more.length) return false;
+    for (const e of more) {
+      const property = definition.variantProperties.find((p) => p.name === e.name);
+      if (e.reason === "opens" && property) pinned.push({ property, value: e.value! });
+    }
+    found.push(...more);
+    replan();
+    const opened = more.find((e) => e.reason === "opens");
+    progress(opened
+      ? `  ${entry.title ?? entry.name}: ${opened.name}=${opened.value} opens what it shows; measuring every variant with it`
+      : `  ${entry.title ?? entry.name}: ${more.map((e) => e.name).join(", ")} measured the same for every value; ${combinations.length} ${combinations.length === 1 ? "variant" : "variants"} planned without ${more.length === 1 ? "it" : "them"}`);
+    return true;
+  };
   try {
     checkpoint();
     context = await createContext(browser);
     const page = await context.newPage();
 
-    for (let index = 0; index < combinations.length; index++) {
+    for (let index = 0; index <= combinations.length; index++) {
+      if (index === judgeAt) {
+        if (judge()) {
+          startOver();
+          index = -1;
+          continue;
+        }
+        judgeAt = -1;
+      }
+      if (index >= combinations.length) break;
       const combination = combinations[index];
       deps.onVariantStart?.(index + 1, combinations.length);
+      // What the story is given: the combination, and any prop pinned open.
+      const asked = { ...combination, ...Object.fromEntries(pinned.map((p) => [p.property.name, p.value])) };
+      const properties = [...definition.variantProperties, ...pinned.map((p) => p.property)];
       // A value the URL can't carry is left out of it and set through
       // Storybook's preview once the story loads, as one it refused is.
-      const { param, unsupported, unsupportedNames } = encodeStoryArgs(combination, definition.variantProperties);
+      const { param, unsupported, unsupportedNames } = encodeStoryArgs(asked, properties);
       // The story whose own args are for this variant's values, else the component's.
       const choose = (): StoryChoice => (owns ? chooseStory(combination, owns, definition.variantProperties, storyId) : { storyId });
       let choice = choose();
@@ -1554,7 +1725,7 @@ async function snapComponent(
           selector: opts.selector,
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title },
-          story: { id: choice.storyId, args: combination, properties: definition.variantProperties, notInUrl: unsupportedNames },
+          story: { id: choice.storyId, args: asked, properties, notInUrl: unsupportedNames },
           channelArgs: opts.channelArgs ?? true,
           tree: opts.rootOnly ? "count" : "tree",
         });
@@ -1599,39 +1770,34 @@ async function snapComponent(
       }
       const fromStory = choice.storyId !== storyId ? { storyId: choice.storyId } : {};
 
-      // The story's argTypes options, read with the first variant, add the
-      // values the docs' types don't list, and make a prop whose type lists
-      // none an axis (section 5.2 of the design): planned now, measured in
-      // this run, after the planned ones. A new axis renames every
-      // combination, the first one measured included, so then the plan
-      // starts again; so does one the added values would push past
-      // --max-combinations, whose tail, the added values, would be cut
-      // off, where the wider plan's capped set covers every value.
-      if (!supplemented && captured.args?.argTypes) {
-        supplemented = true;
-        const wider = mapComponent(withoutProps(supplementOptions(component, captured.args.argTypes), opts.excludeProps ?? []), maxCombinations);
-        if (JSON.stringify(wider.variantProperties) !== JSON.stringify(definition.variantProperties)) {
-          const known = new Set(definition.variantProperties.map((p) => p.name));
-          const axis = wider.variantProperties.some((p) => !known.has(p.name));
-          const plan = selectCombinations(opts.variants, wider.variantProperties, wider.variantCombinations);
-          const same = (a: Record<string, string>, b: Record<string, string>) => JSON.stringify(a) === JSON.stringify(b);
-          const appended = [...combinations, ...plan.filter((c) => !combinations.some((d) => same(c, d)))];
-          const restart = axis || (opts.variants === "all" && appended.length > Math.max(maxCombinations, 1));
-          combinations = restart ? plan : appended;
-          definition = wider;
-          shell.variantProperties = definition.variantProperties;
-          ({ slugs, collisions } = assignVariantSlugs(combinations));
-          capOf();
-          progress(`  ${entry.title ?? entry.name}: the story's argTypes options add ${axis ? "a variant property" : "values"}; ${combinations.length} variants planned`);
-          if (restart) {
-            // Nothing measured under the old plan stands: a variant that
-            // failed before the args could be read has a combination
-            // without the new property, which no variant of the set names,
-            // and a cold Storybook's first story is the likeliest to time out.
-            startOver();
-            index = -1;
-            continue;
-          }
+      // The story's argTypes, read with the first variant, change the
+      // variant properties (props.ts): their options add the values the
+      // docs' types don't list, and make a prop whose type lists none an
+      // axis (section 5.2 of the design); a choice the docs don't list at
+      // all becomes one; and one they mark as behavior is left out. Planned
+      // now and measured in this run, the plan starting again: a new axis
+      // renames every combination, the first one measured included, and a
+      // variant that failed before the args could be read has a
+      // combination without it. It is the first variant that reads them,
+      // so starting again measures that one again, and no other.
+      if (!seenArgTypes && captured.args?.argTypes) {
+        seenArgTypes = captured.args.argTypes;
+        const before = definition.variantProperties;
+        replan();
+        if (JSON.stringify(definition.variantProperties) !== JSON.stringify(before)) {
+          const known = new Set(before.map((p) => p.name));
+          const now = new Set(definition.variantProperties.map((p) => p.name));
+          const added = definition.variantProperties.filter((p) => !known.has(p.name)).map((p) => p.name);
+          const removed = before.filter((p) => !now.has(p.name)).map((p) => p.name);
+          const change = [
+            added.length ? `add ${added.join(", ")}` : "",
+            removed.length ? `leave out ${removed.join(", ")}` : "",
+            !added.length && !removed.length ? "add values" : "",
+          ].filter(Boolean).join(" and ");
+          progress(`  ${entry.title ?? entry.name}: the story's argTypes ${change}; ${combinations.length} ${combinations.length === 1 ? "variant" : "variants"} planned`);
+          startOver();
+          index = -1;
+          continue;
         }
       }
 
@@ -1692,6 +1858,7 @@ async function snapComponent(
       if (captured.climbedFrom) climbed.push({ slug, element: captured.element ?? "", from: captured.climbedFrom });
       for (const pair of captured.standIns ?? []) standIns.add(JSON.stringify(pair));
       markups.push(captured.markup ?? null);
+      markupBySlug.set(slug, captured.markup ?? null);
 
       // The first successful render becomes the reference for every delta.
       if (!shell.base) {
@@ -1723,6 +1890,14 @@ async function snapComponent(
       shell.variants.push(variant);
     }
 
+    // Under --variants all the representative combinations were measured
+    // first; the set keeps the plan's order, which the build lays out.
+    if (opts.variants === "all") {
+      const order = new Map(selectCombinations(opts.variants, definition.variantProperties, definition.variantCombinations).map((c, i) => [JSON.stringify(c), i]));
+      const at = (v: SnapVariant) => order.get(JSON.stringify(v.combination)) ?? order.size;
+      shell.variants = shell.variants.map((v, i) => ({ v, i })).sort((a, b) => at(a.v) - at(b.v) || a.i - b.i).map(({ v }) => v);
+    }
+
     // Each image's thumbnail, drawn in the page from its source's bytes.
     if (trees.length) {
       const assets = await writeImageAssets(page, entry, images, stage, shell.warnings);
@@ -1737,6 +1912,7 @@ async function snapComponent(
     await context?.close().catch(() => { /* already gone */ });
   }
 
+  if (source.excluded.length) shell.excludedProps = source.excluded;
   if (standIns.size) shell.fontStandIns = [...standIns].sort().map((pair) => JSON.parse(pair) as [string, string]);
   if (ownsError) {
     shell.storiesUnread = ownsError;
@@ -1755,6 +1931,7 @@ async function snapComponent(
   const uncheckedWarning = describeUncheckedArgs(label, unchecked, captures, { error: uncheckedError, id: entry.id });
   if (uncheckedWarning) shell.warnings.push(uncheckedWarning);
 
+  if (argsIgnored) shell.warnings.push(argsIgnored);
   const identical = describeIdenticalVariants(shell.variants, definition.variantProperties, markups, { tree: trees.length > 0 });
   if (identical) {
     shell.warnings.push(identical);

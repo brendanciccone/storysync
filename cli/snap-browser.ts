@@ -1172,6 +1172,8 @@ interface PreviewInPage {
 interface StoryInPage {
   argTypes?: Record<string, ArgTypeInPage | undefined>;
   parameters?: { fileName?: unknown };
+  /** The story's own args, before the URL's. */
+  initialArgs?: Record<string, unknown>;
 }
 
 interface ArgTypeInPage {
@@ -1180,6 +1182,8 @@ interface ArgTypeInPage {
   options?: unknown;
   if?: unknown;
   mapping?: unknown;
+  table?: { disable?: unknown; category?: unknown };
+  action?: unknown;
 }
 
 /**
@@ -1234,6 +1238,12 @@ export async function storyArgsInPage(args: { storyId: string; waitMs: number })
         options: Array.isArray(t.options) ? t.options.map(plain) : undefined,
         if: condition,
         mapping: t.mapping ? true : undefined,
+        hidden: t.table?.disable === true ? true : undefined,
+        category: typeof t.table?.category === "string" ? t.table.category : undefined,
+        action: t.action ? true : undefined,
+        initial: story.initialArgs && Object.hasOwn(story.initialArgs, name) && (story.initialArgs[name] === null || ["string", "number", "boolean"].includes(typeof story.initialArgs[name]))
+          ? story.initialArgs[name] as string | number | boolean | null
+          : undefined,
       };
     }
 
