@@ -1668,3 +1668,29 @@ test("every audit can score how the sets look, reading Figma and changing nothin
   }
 });
 
+
+test("every push instruction shows figma code's estimate and asks before sending a call", () => {
+  // A push isn't lightweight: every call passes through the agent's context.
+  // The user hears what this one costs, and says yes, before the first call.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    setupOutput(project, false, "cursor");
+    const files = [
+      join(".claude", "skills", "storysync", "SKILL.md"),
+      join(".agents", "skills", "storysync", "SKILL.md"),
+      join(".cursor", "rules", "storysync.mdc"),
+      join(".claude", "commands", "storysync-push.md"),
+    ];
+    for (const path of files) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.match(text, /`Estimate:` line/, `${path} doesn't name figma code's estimate`);
+      assert.match(text, /ask whether to go ahead/, `${path} doesn't ask before sending`);
+      assert.match(text, /send nothing until they say yes/i, `${path} sends before the user agrees`);
+      assert.match(text, /roughly 100k agent tokens a component, plus about 100k a push/, `${path} doesn't give the rule of thumb when asking what to push`);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
