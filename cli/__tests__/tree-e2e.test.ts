@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { MockFigma, TREE_FIXTURES_DIR, figmaFonts, loadTreeFixture, measureFromTrees, treeFixtureNames } from "./mock-figma.js";
 import type { NodeView, TreeFixture } from "./mock-figma.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
-import { drawnInSet } from "./figma-build-harness.js";
+import { drawnInSet, withConstant } from "./figma-build-harness.js";
 import { parseReadResult } from "../figma-results.js";
 import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
@@ -267,22 +267,70 @@ async function editInFigma(mock: MockFigma, code: string): Promise<void> {
 
 const cleanup = (p: Push) => rmSync(p.dir, { recursive: true, force: true });
 
-// --- Every fixture at 100% --------------------------------------------------
+/**
+ * The texts a push's build responses name `cut short`, by component and
+ * key, with the variants each was in: a text that fills its row, which
+ * Figma's font sets wider than the box the browser drew it whole in, so
+ * its truncation cuts it short there. The fixtures were measured in
+ * system-ui, which Figma sets in a wider Inter, as a snap from before the
+ * stand-ins (fonts.ts) was.
+ */
+function cutShortNamed(p: Push): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const call of p.plan.calls.filter((c) => c.kind === "build")) {
+    const result = JSON.parse(readFileSync(join(dirname(p.planPath), call.result), "utf8")) as { fallbacks: [string, string, string, number][] };
+    for (const [component, key, what, variants] of result.fallbacks) {
+      if (what.startsWith("cut short")) out[`${component} ${key}`] = (out[`${component} ${key}`] ?? 0) + variants;
+    }
+  }
+  return out;
+}
+
+/**
+ * What verify drifted, the same way: each a text Figma cuts short where the
+ * browser drew it whole, on its truncation alone, by component and key;
+ * anything else by its variant and key, so it shows.
+ */
+function cutShortDrifted(json: Record<string, unknown>): Record<string, number> {
+  type Found = { component: string; slug: string; nodes?: { key: string; status: string; differences: { property: string; measured: { cut?: boolean }; figma: { cut?: boolean } }[] }[] };
+  const out: Record<string, number> = {};
+  for (const v of json.variants as Found[]) {
+    for (const n of v.nodes ?? []) {
+      const [d] = n.differences;
+      const cut = n.status === "drifted" && n.differences.length === 1 && d.property === "truncation" && d.measured.cut === false && d.figma.cut === true;
+      const at = cut ? `${v.component} ${n.key}` : `not a cut text: ${v.slug} ${n.key} ${n.status}`;
+      out[at] = (out[at] ?? 0) + 1;
+    }
+  }
+  return out;
+}
+
+const sum = (counts: Record<string, number>) => Object.values(counts).reduce((a, b) => a + b, 0);
+
+// --- Every fixture at 100%, but what Figma cuts short -------------------------
 
 for (const name of treeFixtureNames()) {
-  test(`tree e2e: ${name} is built, read back and verified at 100% of its elements, and passes --strict`, async () => {
+  test(`tree e2e: ${name} is built, read back and verified at 100% of its elements but the texts the build says Figma cuts short, and passes --strict without them`, async () => {
     const p = await push(asSnap(loadTreeFixture(name)));
     try {
       const { status, json, text } = await verifyPlan(p, "--strict");
       const e = elementsOf(json);
-      assert.equal(status, 0, `verify --strict exited ${status}\n${text.stdout}${text.stderr}`);
-      assert.equal(json.elementFidelity, 1);
-      assert.equal(json.fidelity, 1);
+      // What the build named, verify now scores: Figma cutting a title the
+      // browser drew whole is drift, as the fourth live push's was, where
+      // verify once saw only matching truncation.
+      const cut = cutShortNamed(p);
+      assert.deepEqual(cutShortDrifted(json), cut, text.stdout);
+      assert.equal(sum(cut) > 0, name === "attachment", "the fixture with a title that fills its row");
+      assert.equal(status, sum(cut) ? 1 : 0, `verify --strict exited ${status}\n${text.stdout}${text.stderr}`);
+      if (!sum(cut)) {
+        assert.equal(json.elementFidelity, 1);
+        assert.equal(json.fidelity, 1);
+        assert.match(text.stdout, /Fidelity: 100\.0% of elements/);
+      }
       assert.ok(e.measured > 0);
-      assert.deepEqual([e.verified, e.drifted, e.missing, e.extra, e.designerLayers, e.notReadBack], [e.measured, 0, 0, 0, 0, 0]);
+      assert.deepEqual([e.verified, e.drifted, e.missing, e.extra, e.designerLayers, e.notReadBack], [e.measured - sum(cut), sum(cut), 0, 0, 0, 0]);
       assert.deepEqual(json.readbackIssues, []);
       assert.deepEqual(json.plan, { path: p.planPath, readback: join(p.dir, "figma-readback.json"), problems: [] });
-      assert.match(text.stdout, /Fidelity: 100\.0% of elements/);
       // The readback was assembled beside the plan's directory, for committing.
       assert.ok(existsSync(join(p.dir, "figma-readback.json")));
     } finally {
@@ -324,7 +372,7 @@ test("tree e2e: variants that draw past their boxes are laid out apart, each whe
   }
 });
 
-for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture in one push packs several components a call, and all of it verifies under --strict, with text as wide as ${fonts === "figma" ? "Figma sets it" : "the browser drew it"}`, async () => {
+for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture in one push packs several components a call, and all of it verifies under --strict, with text as wide as ${fonts === "figma" ? "Figma sets it, but the titles it cuts short" : "the browser drew it"}`, async () => {
   const all = treeFixtureNames().map((n) => asSnap(loadTreeFixture(n)));
   const snap = { ...all[0], components: all.flatMap((s) => s.components) } as SnapResult;
   const p = await push(snap, { fonts });
@@ -332,10 +380,14 @@ for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture
     const builds = p.plan.calls.filter((c) => c.kind === "build");
     assert.ok(builds.some((c) => c.components.length > 1), "no build call packed two components");
     const { status, json, text } = await verifyPlan(p, "--strict", "--min-fidelity", "100");
-    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    // In Figma's fonts, the titles the build names cut short drift, and nothing else.
+    const cut = cutShortNamed(p);
+    assert.deepEqual(cutShortDrifted(json), cut, text.stdout);
+    assert.equal(sum(cut) > 0, fonts === "figma");
+    assert.equal(status, sum(cut) ? 1 : 0, `${text.stdout}${text.stderr}`);
     const e = elementsOf(json);
-    assert.equal(json.elementFidelity, 1);
-    assert.equal(e.verified, e.measured);
+    assert.equal(json.elementFidelity === 1, !sum(cut));
+    assert.equal(e.verified, e.measured - sum(cut));
     assert.equal(e.measured, 190);
   } finally {
     cleanup(p);
@@ -393,7 +445,7 @@ test("tree e2e: what snap warned is said beside the score, before the drift unde
 test("tree e2e: a read that stops at its LIMIT is continued with figma next, and the parts verify as one", async () => {
   // A low prediction, as a read call whose responses ran long: the template
   // stops at LIMIT and returns `more`, and figma next writes the rest.
-  const squeeze = (code: string, kind: string) => (kind === "read" ? code.replace(/\nconst LIMIT = \d+;\n/, "\nconst LIMIT = 2500;\n") : code);
+  const squeeze = (code: string, kind: string) => (kind === "read" ? withConstant(code, "LIMIT", 2500) : code);
   const p = await push(asSnap(loadTreeFixture("card")), { edit: squeeze });
   try {
     const continued = [...p.reads.values()].flat().filter((r) => /\d+[b-z]\.json$/.test(r));
@@ -408,7 +460,7 @@ test("tree e2e: a read that stops at its LIMIT is continued with figma next, and
 });
 
 test("tree e2e: a read call sent again after a change in Figma has its continuations asked for again, so the change is read", async () => {
-  const squeeze = (code: string, kind: string) => (kind === "read" ? code.replace(/\nconst LIMIT = \d+;\n/, "\nconst LIMIT = 2500;\n") : code);
+  const squeeze = (code: string, kind: string) => (kind === "read" ? withConstant(code, "LIMIT", 2500) : code);
   // At the browser's widths, so the changed text, which the line below it
   // stretches across, keeps that line within its width tolerance: drift on
   // the changed text alone.
@@ -419,7 +471,8 @@ test("tree e2e: a read call sent again after a change in Figma has its continuat
     // A text only the call's last continuation read, changed by a designer.
     const last = parseReadResult(readFileSync(resolve(out, results[results.length - 1]), "utf8"))!;
     const text = Object.values(last.sets[0].entries).flatMap((e) => (e as { tree?: unknown[][] }).tree ?? []).find((r) => r[1] === "T")!;
-    const [key, id] = [text[0] as string, text[text.length - 1] as string];
+    // A T record's node id, before its `cut`.
+    const [key, id] = [text[0] as string, text[22] as string];
     await editInFigma(p.mock, `const t = await figma.getNodeByIdAsync(${JSON.stringify(id)}); await figma.loadFontAsync(t.fontName); t.characters = "Changed by a designer";`);
 
     // The read call alone sent again: its continuations are from before.
@@ -502,8 +555,12 @@ test("tree e2e: each of the spec's hand edits is reported as exactly that elemen
   const snap = { ...all[0], components: all.flatMap((s) => s.components) } as SnapResult;
   const p = await push(snap);
   try {
+    // Before any edit: Attachment's titles that Figma's font cuts short,
+    // and nothing else (the fixtures were measured in system-ui).
     const base = await verifyPlan(p, "--strict");
-    assert.equal(base.status, 0, `${base.text.stdout}${base.text.stderr}`);
+    const cut = findingsOf(base.json);
+    assert.deepEqual(cutShortDrifted(base.json), cutShortNamed(p));
+    assert.equal(cut.length, 2, `${base.text.stdout}${base.text.stderr}`);
     const baseline = readFileSync(join(p.dir, "figma-readback.json"), "utf8");
     const attachment = (snap.components as TreeComponent[]).find((c) => c.id === "ui-base-attachment")!;
     const iconSlug = attachment.variants.find((v) => v.status === "ok" && expandTree(attachment.tree, (v as { treeDelta?: TreeDelta }).treeDelta).some((n) => n.k === "attachment-media/svg"))!.slug;
@@ -529,10 +586,11 @@ test("tree e2e: each of the spec's hand edits is reported as exactly that elemen
     assert.equal(edited.status, 1);
     assert.deepEqual(findingsOf(edited.json), [
       `ui/base/Attachment ${iconSlug} attachment-media/svg: drifted paint (id)`,
+      ...cut,
       "ui/base/Card size-default card-header/card-title: drifted [chars] (id)",
       "ui/base/InputOTP default input-otp-group/input-otp-slot:3: drifted [visible] (id)",
       "ui/base/Switch size-sm switch-thumb: missing",
-    ]);
+    ].sort());
     assert.equal(elementsOf(edited.json).designerLayers, 1);
     assert.match(edited.text.stdout, /"Sticker" \(RECTANGLE, node [^)]+\): a designer's, not scored/);
 
@@ -549,8 +607,8 @@ test("tree e2e: each of the spec's hand edits is reported as exactly that elemen
       assert.ok(run.ok, run.text);
     }
     await readAgain(p);
-    const undone = await verifyPlan(p, "--strict", "--min-fidelity", "100");
-    assert.equal(undone.status, 0, `${undone.text.stdout}${undone.text.stderr}`);
+    const undone = await verifyPlan(p, "--strict");
+    assert.deepEqual(findingsOf(undone.json), cut, `${undone.text.stdout}${undone.text.stderr}`);
     // The readback is the baseline's, but for when it was read, its seals, and the two layers built again.
     const plain = (text: string) => JSON.stringify(JSON.parse(text), (k, v) => (k === "readAt" || k === "checksum" ? undefined : typeof v === "string" && /^\d+:\d+$/.test(v) ? "id" : v));
     assert.equal(plain(readFileSync(join(p.dir, "figma-readback.json"), "utf8")), plain(baseline));

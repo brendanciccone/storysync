@@ -1,4 +1,4 @@
-// storysync readback, template 2: reads back, off the Figma nodes, what
+// storysync readback, template 3: reads back, off the Figma nodes, what
 // `storysync figma code` built, for `storysync verify --plan` to score
 // element by element against snap.
 //
@@ -10,14 +10,15 @@
 // its asset id `svg`. So a call carries no slugs, sources or expected values
 // for an agent to fill in, and returns only what Figma has.
 //
-// A call file is four lines the CLI writes (cli/figma-results.ts
+// A call file is five lines the CLI writes (cli/figma-results.ts
 // readbackHeader, as `storysync figma code` writes them), then this
-// template:
+// template, as the function T, and a guard (cli/checksum.ts, callCode):
 //
 //   const PAGE = "ui/base";
 //   const SLICES = [["ui-base-card",0,1,0]];
 //   const LIMIT = 15000;
-//   const TPL = 2;
+//   const TPL = 3;
+//   const SUM = "6f3c0a1e";
 //
 // PAGE is the page the sets are on, switched to once. Each slice is a set's
 // storysync id, the first and last variant index `i` to read, and the node
@@ -26,7 +27,10 @@
 // the bytes of the response: when the next entry would pass it, the call
 // stops and returns `more`, the slices left, from which `storysync figma
 // next` writes the next call. TPL is the template the CLI pairs the call
-// with, this one, 2; any other refuses to run.
+// with, this one, 3; any other refuses to run. SUM is the checksum of the
+// four, and TSUM, after it, this template's: the guard checks both before
+// T runs, SUM first, so a call changed on its way from the file, its TPL
+// too, is refused as one to send again before anything is read.
 //
 // It returns, for each set read, its entries by slug, each sealed with the
 // checksum verify recomputes (FNV-1a over canonical JSON under the set's id
@@ -48,8 +52,8 @@
 // cut down to fewer fields is told apart:
 //
 //   F (15) [k, "F", x, y, w, h, fills, stroke, radius, effects, opacity, blend, clip, visible, id]
-//   T (23) [k, "T", x, y, w, h, chars, family, weight, italic, size, lineHeight, letterSpacing,
-//           color, textCase, decoration, align, truncation, maxLines, autoResize, opacity, visible, id]
+//   T (24) [k, "T", x, y, w, h, chars, family, weight, italic, size, lineHeight, letterSpacing,
+//           color, textCase, decoration, align, truncation, maxLines, autoResize, opacity, visible, id, cut]
 //   V (10) [k, "V", x, y, w, h, shapes, opacity, visible, id]
 //
 // In the browser's terms, which snap's facts are in: x and y relative to the
@@ -64,8 +68,10 @@
 // chars: verbatim to 300 characters, else `fnv:<8>:<length>:<first 60>`.
 // shapes: `[x, y, w, h, fill, stroke, strokeWeight]` for each shape of the
 // vector, relative to it. An image is an F record whose fills hold `img:`.
+// cut: 1 where Figma's truncation hides some of a text, 0 where it shows
+// all of it, null where that can't be told (template 2 had no cut).
 
-if (TPL !== 2) throw new Error('This is readback template 2, not ' + TPL);
+if (TPL !== 3) throw new Error('This is readback template 3, not ' + TPL);
 
 // How use_figma shows what a call returns (design section 14, item 7): the
 // spike saw the tool write a returned object as JSON, so false returns the
@@ -180,6 +186,31 @@ const SHAPES = /^(VECTOR|ELLIPSE|RECTANGLE|LINE|POLYGON|STAR|BOOLEAN_OPERATION)$
 const corner = (r, own, i) => (r > 0 ? r2(r + Math.max(own[i], own[(i + 3) % 4])) : 0);
 const effectsOf = (n) => (Array.isArray(n.effects) ? n.effects : []).filter((e) => e.visible !== false);
 
+// Whether Figma cuts a text short, which it doesn't say: an ellipsis where
+// the browser drew a title whole reads as truncation that matches. A copy
+// of the text that wraps at its width, with no limit, holds every line
+// the text has there; taller than the text by half a line, it holds lines
+// the text cuts off. Only a text that truncates is copied, and the copy is
+// removed: nothing the read finds changes. null where it can't be told: a
+// text of mixed fonts or sizes, or a font that won't load.
+const cutOf = async (n) => {
+  if (n.textTruncation !== 'ENDING') return 0;
+  if (typeof n.fontName !== 'object' || typeof n.fontSize !== 'number') return null;
+  let copy = null;
+  try {
+    await figma.loadFontAsync(n.fontName);
+    copy = n.clone();
+    // Any write of textAutoResize turns truncation off; DISABLED says so.
+    copy.textAutoResize = 'HEIGHT';
+    copy.textTruncation = 'DISABLED';
+    return copy.height > n.height + n.fontSize / 2 ? 1 : 0;
+  } catch (e) {
+    return null;
+  } finally {
+    if (copy) copy.remove();
+  }
+};
+
 // One keyed layer's record. `around` is its parent's stroke outside its box.
 const record = async (n, k, around, root) => {
   const own = outside(n);
@@ -200,7 +231,7 @@ const record = async (n, k, around, root) => {
       !lh ? null : lh.unit === 'PIXELS' ? r2(lh.value) : lh.unit === 'PERCENT' ? r2((lh.value * size) / 100) : 'auto',
       !ls ? null : r2(ls.unit === 'PIXELS' ? ls.value : (ls.value * size) / 100),
       fills.length ? fills[fills.length - 1] : null,
-      n.textCase, n.textDecoration, n.textAlignHorizontal, n.textTruncation, n.maxLines, n.textAutoResize, ...tail];
+      n.textCase, n.textDecoration, n.textAlignHorizontal, n.textTruncation, n.maxLines, n.textAutoResize, ...tail, await cutOf(n)];
   }
   if (get(n, 'svg')) {
     head[1] = 'V';

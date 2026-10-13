@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { callConstants, callSum } from "../checksum.js";
+import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { componentKey } from "../storybook.js";
@@ -167,6 +168,29 @@ test("figma next: a continuation is written from the template its call was, read
   }
 });
 
+/** A call's constants, in order, each line's value parsed, SUM's as written. */
+function constantsOf(code: string): { names: string[]; values: unknown[]; sum: unknown } {
+  const lines = [...code.matchAll(/^const (\w+) = (.*);$/gm)].map((m) => [m[1], JSON.parse(m[2])] as const);
+  const at = lines.findIndex(([name]) => name === "SUM");
+  return { names: lines.slice(0, at + 1).map(([name]) => name), values: lines.slice(0, at).map(([, v]) => v), sum: lines[at]?.[1] };
+}
+
+test("figma code: every call, and a read's continuation, ends its constants with SUM, the checksum of their values its template checks", async () => {
+  const coded = await codeFor(allFixtures());
+  assert.deepEqual([...new Set(coded.plan.calls.map((c) => c.kind))], ["build", "images", "label", "read"]);
+  for (const call of coded.plan.calls) {
+    const { names, values, sum } = constantsOf(coded.code(call));
+    assert.deepEqual(names, CALL_CONSTANTS[call.kind === "read" ? "readback" : call.kind], call.file);
+    assert.equal(sum, callSum(values), call.file);
+  }
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq });
+  const { values, sum } = constantsOf(readFileSync(next!.file, "utf8"));
+  assert.deepEqual(values.slice(1, 3), [[["ui-base-card", 1, 1, 12]], DEFAULT_READ_LIMIT + 1000]);
+  assert.equal(sum, callSum(values));
+});
+
 test("figma code: a variant over --max-nodes gets a call of its own, and a warning", async () => {
   const coded = await codeFor(loadTreeFixture("sidebar"), { maxNodes: 10 });
   assert.equal(coded.plan.calls.filter((c) => c.kind === "build").length, 1);
@@ -196,8 +220,8 @@ test("figma code: reads slice each page's variants in order, each call predicted
       const code = coded.code(call);
       assert.match(code, new RegExp(`\\nconst PAGE = ${JSON.stringify(call.page).replace(/\//g, "\\/")};\\nconst SLICES = `));
       // The constants the readback template reads, and none it declares.
-      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 2;\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n$`));
-      assert.deepEqual([...code.matchAll(/^const (\w+) = /gm)].map((m) => m[1]), ["PAGE", "SLICES", "LIMIT", "TPL"]);
+      assert.match(code, new RegExp(`\\nconst LIMIT = ${readLimit + 1000};\\nconst TPL = 3;\\nconst SUM = "[0-9a-f]{8}";\\nconst TSUM = "[0-9a-f]{8}";\\nconst T = async\\(\\)=>\\{\\n${STUB_READBACK.replace(/[()[\]{}.*+?^$|\\]/g, "\\$&")}\\n\\};\\n`));
+      assert.deepEqual([...code.matchAll(/^const (\w+) = /gm)].map((m) => m[1]), ["PAGE", "SLICES", "LIMIT", "TPL", "SUM", "TSUM", "T"]);
       for (const [id, first, last] of call.slices!) seen.set(id, [...(seen.get(id) ?? []), ...Array.from({ length: last - first + 1 }, (_, i) => first + i)]);
     }
     for (const component of snap.components) {
@@ -454,4 +478,15 @@ test("figma code: a measured variant without its tree delta is refused, rather t
   const snap = copy(loadTreeFixture("switch"));
   delete (snap.components[0].variants[1] as { treeDelta?: unknown }).treeDelta;
   await assert.rejects(codeFor(snap), /ui\/base\/Switch size-sm was measured, but has no treeDelta/);
+});
+
+test("figma code: a call's constants are written in ASCII, the same values, which still match their SUM", () => {
+  // A no-break space an agent retyping the call turns into a space, a
+  // zero-width space, a soft hyphen, an emoji, U+2028 and a lone surrogate.
+  const value = { name: "Save draft​­", icon: "\u{1f600}", line: "a b", lone: "\ud800", big: 1e21, keys: { "é": 1 } };
+  const text = callConstants([["DATA", value], ["PAGE", "ui/café"]]);
+  assert.match(text, /^[\n\x20-\x7e]*$/, "ASCII only");
+  const [data, page, sum] = new Function(`${text}return [DATA, PAGE, SUM];`)() as [unknown, unknown, string];
+  assert.deepEqual([data, page], [value, "ui/café"]);
+  assert.equal(sum, callSum([data, page]));
 });

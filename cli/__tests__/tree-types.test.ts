@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { canonicalJson, fnv1a32, fnv1a32Bytes } from "../checksum.js";
 import * as verifyModule from "../verify.js";
 import {
-  RECORD, ROOT_FIELDS, TREE_LIMITS, TREE_VERSION,
+  RECORD, RECORD_BY_TPL, ROOT_FIELDS, TREE_LIMITS, TREE_VERSION,
   absoluteBoxes, diffTree, expandTree, flowOf, parentKey, rootWithStyles, textHugs, treeDigest,
 } from "../tree-types.js";
 import type { Box, ComponentTree, TreeDelta, TreeNode } from "../tree-types.js";
@@ -45,7 +45,8 @@ test("fnv1a32Bytes: FNV-1a's published vectors, and the same digest as fnv1a32 o
 test("constants: the limits, record arities and root fields the design fixes", () => {
   assert.equal(TREE_VERSION, 1);
   assert.deepEqual(TREE_LIMITS, { maxNodes: 400, maxDepth: 24, maxSvgChars: 20_000 });
-  assert.deepEqual(RECORD, { F: 15, T: 23, V: 10 });
+  assert.deepEqual(RECORD, { F: 15, T: 24, V: 10 });
+  assert.deepEqual(RECORD_BY_TPL, { 2: { F: 15, T: 23, V: 10 }, 3: RECORD });
   // Paint, size and type stay in the root's styles, so the root node never carries them.
   for (const paint of ["bg", "bd", "r", "sh", "op", "tx", "S", "abs"]) assert.ok(!(ROOT_FIELDS as readonly string[]).includes(paint), paint);
   // What no style holds does go on it, so a root that is an <svg> or an <img> can be written down.

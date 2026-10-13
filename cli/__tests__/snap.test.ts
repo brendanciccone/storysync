@@ -908,7 +908,7 @@ test("parseSnapWarning: names each warning snap writes as it writes it, so verif
       { kind: "identical-values", values: ["collapsible=offcanvas", "collapsible=icon"] },
       { kind: "no-op-properties", properties: ["asChild", "modal"] },
       { kind: "preview-set" }, { kind: "args-rejected" }, { kind: "args-unchecked" }, { kind: "truncated-tree" },
-      { kind: "font-stand-in", fonts: ["Inter"] }, { kind: "shared-key" },
+      { kind: "font-not-rendered", fonts: ["Inter"] }, { kind: "shared-key" },
     ],
   );
   // The rest verify says as snap wrote them.

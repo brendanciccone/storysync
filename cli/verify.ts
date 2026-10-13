@@ -113,7 +113,8 @@ export interface ReadbackStyles {
    */
   unbound?: string[];
   /**
-   * The element-tree readback's (templates/readback.js, `tpl: 2`): the
+   * The element-tree readback's (templates/readback.js, `tpl: 3`, or 2
+   * before its T records said whether Figma cuts a text short): the
    * variant's name in Figma; the digest of the facts the build built it
    * from, `built`; for a variant read in parts, which records this part
    * holds, `part: [first, count, total]`; the records, `tree`; and the
@@ -522,7 +523,7 @@ export interface ScoreCaveat {
    * `identical-variants` has it.
    */
   kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
-    | "identical-values" | "no-op-properties" | "preview-set" | "font-stand-in" | "snap-warning" | "variant-stories"
+    | "identical-values" | "no-op-properties" | "preview-set" | "font-not-rendered" | "snap-warning" | "variant-stories"
     | "root-only" | "truncated-tree" | "built-from-other-measurement";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
@@ -541,7 +542,12 @@ export interface ScoreCaveat {
    */
   values?: string[];
   variants?: number;
-  /** For `font-stand-in`: the fonts the browser couldn't render, so it drew another. */
+  /**
+   * For `font-not-rendered`: the fonts the browser couldn't render, so it
+   * drew another. Named `font-stand-in` until snap drew text in stand-ins
+   * of its own, Figma's fonts, which a component's `fontStandIns` lists:
+   * nothing reads a caveat back, so no file holds the old name to read.
+   */
   fonts?: string[];
   /** For `snap-warning`: a warning of snap's no other kind stands for, as snap wrote it. */
   warning?: string;
@@ -982,7 +988,7 @@ export function missingReadbackFields(entry: object): string[] {
     if (has("tree")) {
       if (!Array.isArray(record.tree)) missing.push("tree, as a list of records");
       else record.tree.forEach((r, i) => {
-        const problem = recordProblem(r, i);
+        const problem = recordProblem(r, i, record.tpl);
         if (problem) missing.push(problem);
       });
     }
@@ -1722,7 +1728,7 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     const note = parseSnapWarning(warning);
     if (note?.kind === "identical-values") caveats.push({ component: key, kind: "identical-values", values: note.values });
     else if (note?.kind === "no-op-properties") caveats.push({ component: key, kind: "no-op-properties", properties: note.properties });
-    else if (note?.kind === "font-stand-in") caveats.push({ component: key, kind: "font-stand-in", fonts: note.fonts });
+    else if (note?.kind === "font-not-rendered") caveats.push({ component: key, kind: "font-not-rendered", fonts: note.fonts });
   }
   return caveats;
 }
@@ -1915,11 +1921,15 @@ export function formatElementReport(result: VerifyResult, beside: readonly strin
   const clean = !e.missing && !e.drifted && !e.extra && !e.notReadBack && !unread;
   lines.push(`  ${(clean ? chalk.dim : chalk.red)(counts.join(" · "))}`);
 
+  // Coverage always, 100% too: the skill has the agent report it, and a
+  // line that only appeared below 100% read as missing.
   const unscorable = result.unscorable ?? [];
   if (unscorable.length) {
     const named = unscorable.slice(0, 3).map((u) => `${u.reason} on ${u.component} › ${u.key || "(root)"}`);
     const more = unscorable.length > 3 ? `, and ${unscorable.length - 3} more (--json lists them)` : "";
     lines.push(chalk.dim(`  coverage ${percent(result.coverage)}: not scored: ${named.join("; ")}${more}`));
+  } else if (result.coverage != null) {
+    lines.push(chalk.dim(`  coverage ${percent(result.coverage)}: every property was scored`));
   }
   // What the caller says beside the score, such as what snap warned, before the drift under it.
   lines.push(...beside);

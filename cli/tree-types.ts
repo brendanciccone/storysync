@@ -211,8 +211,18 @@ export const ROOT_FIELDS = [
   "cp", "svg", "shapes", "img", "raster", "approx",
 ] as const;
 
-/** Readback record lengths by Figma node kind (section 9.2 of the design); an image is an F record. */
-export const RECORD = { F: 15, T: 23, V: 10 } as const;                        // readback arities (section 9.2)
+/**
+ * Readback record lengths by Figma node kind (section 9.2 of the design);
+ * an image is an F record. Template 3's T record ends with `cut`, whether
+ * Figma's truncation hides some of the text.
+ */
+export const RECORD = { F: 15, T: 24, V: 10 } as const;                        // readback arities (section 9.2)
+
+/** The record lengths of each readback template by its `tpl`, an entry read with template 2 having no `cut`. */
+export const RECORD_BY_TPL: Readonly<Record<number, { readonly F: number; readonly T: number; readonly V: number }>> = {
+  2: { F: 15, T: 23, V: 10 },
+  3: RECORD,
+};
 
 // --- plan.json --------------------------------------------------------------
 

@@ -28,7 +28,9 @@ for (const name of readdirSync(source).filter((f) => f.endsWith(".js")).sort()) 
     ecma: 2020,
     compress: { passes: 2, unused: false },
     mangle: true,
-    format: { comments: false },
+    // ASCII only: the call's TSUM is over this text, so a character an
+    // agent retyping it could turn into another is written as its escape.
+    format: { comments: false, ascii_only: true },
   });
   const out = result.code ?? "";
   if (!out.startsWith(OPEN) || !out.endsWith("}")) {

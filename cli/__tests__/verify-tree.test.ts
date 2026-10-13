@@ -10,8 +10,10 @@ import type { MockFont, TreeFixture } from "./mock-figma.js";
 import { READBACK_TEMPLATE, assemble, buildAndRead, buildFixture, fixtureMeasure, linearGradientPaint, newFigma, readBack, reread } from "./tree-harness.js";
 import { readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import type { ReadbackFile, ReadbackStyles, VerifyResult } from "../verify.js";
-import { SPIKE, cssLinearGradient, svgShapePaints, visibleReorder } from "../verify-tree.js";
-import type { Box } from "../tree-types.js";
+import { SPIKE, cssLinearGradient, scoreTree, svgShapePaints, visibleReorder } from "../verify-tree.js";
+import type { TreeScore } from "../verify-tree.js";
+import type { Box, TreeNode } from "../tree-types.js";
+import type { NormalizedStyles } from "../snap-normalize.js";
 
 /** Every node verify didn't verify, as `slug key: property measured→figma`, for an assertion's message. */
 function drift(result: VerifyResult): string {
@@ -32,15 +34,26 @@ for (const name of treeFixtureNames()) {
 
 // Every fixture but example-button draws its text in system-ui, which Figma
 // sets in a stand-in, Inter, a few percent wider: that text's width is
-// allowed 6% (design 10.5). example-button's is Inter in both, so the same
-// font drawn 4.5% wider is drift, on that text alone, below.
+// allowed 6% (design 10.5), and costs nothing around it. example-button's
+// is Inter in both, so the same font drawn 4.5% wider is drift, on that
+// text alone, below. But a text that truncates at the box the browser drew
+// it whole in is cut short there in Inter, as the fourth live push's
+// Attachment titles were: drift on its truncation alone, that many in
+// these fixtures. (The build widens such a label where it can, keepLines;
+// this harness builds every box as measured.)
+const CUT_SHORT_IN_INTER: Record<string, number> = { attachment: 2, sidebar: 5 };
 for (const name of treeFixtureNames().filter((n) => n !== "example-button")) {
-  test(`faithful build: ${name} still scores 100% with its text in Figma's Inter, laid out absolute or in auto layout`, async () => {
+  test(`faithful build: ${name} in Figma's Inter costs nothing but the texts Inter cuts short, laid out absolute or in auto layout`, async () => {
     for (const autoLayout of [false, true]) {
       for (const [fonts, measure] of [["the browser's widths", fixtureMeasure()], ["Figma's Inter", figmaFonts()]] as const) {
         const { fixture, readback } = await buildAndRead(name, { figma: newFigma({ measure }), autoLayout });
         const result = verify(fixture, readback, 0.5);
-        assert.equal(result.elementFidelity, 1, `${autoLayout ? "auto layout" : "absolute"}, ${fonts}:\n${drift(result)}`);
+        const where = `${autoLayout ? "auto layout" : "absolute"}, ${fonts}:\n${drift(result)}`;
+        const nodes = result.variants.flatMap((v) => v.nodes ?? []);
+        assert.equal(nodes.length, fonts === "Figma's Inter" ? CUT_SHORT_IN_INTER[name] ?? 0 : 0, where);
+        for (const n of nodes) {
+          assert.deepEqual(n.differences, [{ property: "truncation", measured: { maxLines: 1, cut: false }, figma: { truncation: "ENDING", maxLines: 1, cut: true } }], where);
+        }
       }
     }
   });
@@ -580,6 +593,54 @@ test("integrity: a record of the wrong length is incomplete", async () => {
   assert.match(result.readbackIssues[0].missing!.join(), /an F record of 14 fields, not 15/);
 });
 
+/**
+ * Attachment built faithfully where Figma sets its title `scale` times as
+ * wide as the browser drew it: wider, it cuts short the horizontal titles
+ * the browser drew whole, as the fourth live push's Figma did; narrower, it
+ * shows whole the vertical ones the browser cut.
+ */
+async function titleScaled(scale: number) {
+  const browser = fixtureMeasure();
+  const measure = { advance: (chars: string, font: MockFont) => browser.advance(chars, font) * (chars === "sales-dashboard.pdf" ? scale : 1) };
+  return buildAndRead("attachment", { figma: newFigma({ measure }) });
+}
+
+test("falsify: a title Figma cuts short where the browser drew it whole drifts on truncation, and one Figma shows whole where the browser cut it", async () => {
+  for (const [scale, orientation, cut] of [[1.2, "horizontal", true], [0.5, "vertical", false]] as const) {
+    const { fixture, readback } = await titleScaled(scale);
+    const result = verify(fixture, readback, 0.5);
+    const slugs = fixture.components[0].variants.map((v) => v.slug).filter((s) => s.includes(`orientation-${orientation}`));
+    assert.ok(slugs.length > 0);
+    assert.deepEqual(findings(result), slugs.map((s) => `${s} attachment-content/attachment-title: truncation`), `${scale}`);
+    const [title] = result.variants.flatMap((v) => v.nodes ?? []);
+    // Its truncation is as measured: only what it hides differs.
+    assert.deepEqual(title.differences, [{ property: "truncation", measured: { maxLines: 1, cut: !cut }, figma: { truncation: "ENDING", maxLines: 1, cut } }]);
+  }
+});
+
+test("integrity: an entry read with template 2, which can't tell what Figma cuts, scores truncation by its settings, as it did", async () => {
+  const { fixture, readback } = await titleScaled(1.2);
+  const component = Object.keys(readback.components)[0];
+  // What template 2 returned: no `cut` on a text's record.
+  const read = (tpl: number) => {
+    const copy = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+    for (const [key, entry] of Object.entries(copy.components[component].variants)) {
+      const { checksum: _checksum, ...rest } = entry;
+      rest.tpl = tpl;
+      rest.tree = rest.tree!.map((r) => (r[1] === "T" ? r.slice(0, 23) : r));
+      copy.components[component].variants[key] = { ...rest, checksum: readbackChecksum(copy.components[component].nodeId!, key, rest) };
+    }
+    return verify(fixture, copy, 0.5);
+  };
+  const old = read(2);
+  assert.deepEqual(old.readbackIssues, []);
+  assert.equal(old.elementFidelity, 1, drift(old));
+  // A template 3 entry without it was read with the template cut down.
+  const cut = read(3);
+  assert.deepEqual(cut.readbackIssues.map((i) => i.problem), ["incomplete", "incomplete", "incomplete", "incomplete"]);
+  assert.match(cut.readbackIssues[0].missing!.join(), /a T record of 23 fields, not 24/);
+});
+
 test("integrity: a variant renamed in Figma is a name_mismatch, not scored", async () => {
   const result = await falsified("switch", ({ figma, built }) => {
     node(figma, built.variants[1].id).name = "size=small";
@@ -757,4 +818,89 @@ test("linear gradients: a gradient fill reads back at the angle and stops CSS ga
     const fills = result.sets[0].entries.default.tree![0][6];
     assert.deepEqual(fills, [cssLinearGradient(`linear-gradient(${angle}deg, #ff0000 0%, #0000ff80 100%)`, w, h)], `${angle}deg in ${w}x${h}`);
   }
+});
+
+// --- One text in its holder, scored directly ----------------------------------
+
+/**
+ * A holder, the root, and one text in it, scored against Figma records of
+ * the same boxes and settings as built: Figma's text `h` tall, cut off
+ * after `maxLines` lines, and `cut` as the readback read it (undefined for
+ * template 2's record, which has none).
+ */
+function scoreOne(holder: Partial<TreeNode>, text: TreeNode, figma: { h?: number; maxLines: number; cut: 0 | 1 | null | undefined }): TreeScore {
+  const root: TreeNode = { k: "", t: "F", el: "div", box: [0, 0, 116, 20], ...holder };
+  const tx = text.tx!;
+  const F = ["", "F", 0, 0, root.box[2], root.box[3], [], null, 0, [], 1, "NORMAL", 1, 1, "1:1"];
+  const T = [text.k, "T", text.box[0], text.box[1], text.box[2], figma.h ?? text.box[3], tx.c, tx.f, tx.wt, 0, tx.sz, tx.lh, 0, tx.col,
+    "ORIGINAL", "NONE", "LEFT", "ENDING", figma.maxLines, "HEIGHT", 1, 1, "1:2", ...(figma.cut === undefined ? [] : [figma.cut])];
+  const styles = { borderRadius: { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 }, boxShadow: [], opacity: 1 } as unknown as NormalizedStyles;
+  return scoreTree({ nodes: [root, text], styles, assets: { svg: {}, img: {} }, records: [F, T], tolerance: 0.5 });
+}
+
+/** The text's differences on these properties, and why any of them went unscored. */
+function textVerdict(result: TreeScore, key: string, properties: string[]) {
+  return {
+    differences: (result.nodes.find((n) => n.key === key)?.differences ?? []).filter((d) => properties.includes(d.property)),
+    unscorable: result.unscorable.filter((u) => u.key === key).map((u) => u.property),
+  };
+}
+
+const LONG = "sales-dashboard-quarterly-report.pdf";
+
+test("lines: a clamped text the browser and Figma both cut shows the clamp's lines in each, not the lines Chrome hides", () => {
+  // Chrome lays out a clamp's hidden lines too: five line rects for a
+  // paragraph clamped at two, which Figma, cutting it, shows two of.
+  const text: TreeNode = { k: "p", t: "T", el: "p", box: [0, 0, 116, 40], tx: { c: LONG.repeat(4), f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, cl: 2, n: 5, ink: [0, 2, 116, 96] } };
+  assert.deepEqual(textVerdict(scoreOne({ box: [0, 0, 116, 40] }, text, { maxLines: 2, cut: 1 }), "p", ["lines", "truncation"]).differences, []);
+  // One Figma shows three lines of, past the clamp, still drifts.
+  assert.deepEqual(textVerdict(scoreOne({ box: [0, 0, 116, 40] }, text, { h: 60, maxLines: 2, cut: 1 }), "p", ["lines"]).differences, [{ property: "lines", measured: 2, figma: 3 }]);
+});
+
+test("truncation: an ellipsis on a run in a padded frame is measured against the frame's content box, not the run's own glyph box", () => {
+  // A `truncate` div with 8px of padding stays a frame, and its run's box is
+  // its glyphs': 227 wide where the browser cut it at 100 (Chrome: range
+  // rects 227 wide, scrollWidth 243 against clientWidth 116).
+  const run: TreeNode = { k: "#text", t: "T", el: "#text", box: [8, 0, 227, 20], tx: { c: LONG, f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, el: 1, ws: "nowrap", n: 1, ink: [0, 2, 227, 16] } };
+  const block: Partial<TreeNode> = { L: { d: "block", pad: [0, 8, 0, 8] }, clip: 1 };
+  const truncation = (holder: Partial<TreeNode>, cut: 0 | 1) => textVerdict(scoreOne(holder, run, { maxLines: 1, cut }), "#text", ["truncation"]).differences;
+  // Figma holding it whole, its frame clipping it, shows no ellipsis.
+  assert.deepEqual(truncation(block, 0), [{ property: "truncation", measured: { maxLines: 1, cut: true }, figma: { truncation: "ENDING", maxLines: 1, cut: false } }]);
+  assert.deepEqual(truncation(block, 1), []);
+  // A border is inside the box too.
+  assert.deepEqual(truncation({ ...block, L: { d: "block" }, bd: { w: [0, 8, 0, 8], s: "solid", c: "#000000" } }, 1), []);
+  // A run that fits its content box was drawn whole.
+  const fits: TreeNode = { ...run, box: [8, 0, 90, 20], tx: { ...run.tx!, ink: [0, 2, 90, 16] } };
+  assert.deepEqual(textVerdict(scoreOne(block, fits, { maxLines: 1, cut: 0 }), "#text", ["truncation"]).differences, []);
+  // In a flex container the run is an anonymous item text-overflow doesn't
+  // reach: Chrome clips it with no ellipsis, as Figma's frame does.
+  assert.deepEqual(truncation({ ...block, L: { d: "flex", pad: [0, 8, 0, 8] } }, 0), []);
+  assert.deepEqual(truncation({ ...block, L: { d: "inline-grid", pad: [0, 8, 0, 8] } }, 1).map((d) => d.measured), [{ maxLines: 1, cut: false }]);
+});
+
+test("truncation: an input's value as wide as its box ran past it, and a pseudo-element's cut is unscored", () => {
+  // snap caps a value's advance at its content box: the ink fills it.
+  const value: TreeNode = { k: "#value", t: "T", el: "#value", box: [8, 0, 100, 20], tx: { c: LONG, f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, el: 1, ws: "nowrap", n: 1, ink: [0, 0, 100, 20] } };
+  const input: Partial<TreeNode> = { el: "input", L: { d: "inline-block", pad: [0, 8, 0, 8] } };
+  assert.deepEqual(textVerdict(scoreOne(input, value, { maxLines: 1, cut: 1 }), "#value", ["truncation"]).differences, []);
+  assert.deepEqual(textVerdict(scoreOne(input, value, { maxLines: 1, cut: 0 }), "#value", ["truncation"]).differences.map((d) => d.measured), [{ maxLines: 1, cut: true }]);
+  const short: TreeNode = { ...value, tx: { ...value.tx!, c: "short", ink: [0, 0, 36.5, 20] } };
+  assert.deepEqual(textVerdict(scoreOne(input, short, { maxLines: 1, cut: 0 }), "#value", ["truncation"]).differences, []);
+  // A pseudo-element's text is measured as its box, whatever it holds.
+  const after: TreeNode = { k: "::after", t: "T", el: "::after", box: [0, 0, 100, 20], tx: { ...value.tx!, ink: [0, 0, 100, 20] } };
+  for (const cut of [0, 1] as const) {
+    assert.deepEqual(textVerdict(scoreOne({}, after, { maxLines: 1, cut }), "::after", ["truncation"]), { differences: [], unscorable: ["cut"] });
+  }
+});
+
+test("coverage: where the readback can't say whether Figma cuts a text, its cut is listed as unscorable, and truncation scored on the settings", () => {
+  const title: TreeNode = { k: "title", t: "T", el: "span", box: [0, 0, 100, 20], tx: { c: LONG, f: "Inter", sz: 14, wt: 400, col: "#0a0a0a", lh: 20, el: 1, ws: "nowrap", n: 1, ink: [0, 2, 227, 16] } };
+  // null: a font that won't load; undefined: template 2's record, with no cut.
+  for (const cut of [null, undefined]) {
+    assert.deepEqual(textVerdict(scoreOne({}, title, { maxLines: 1, cut }), "title", ["truncation"]), { differences: [], unscorable: ["cut"] }, String(cut));
+  }
+  for (const cut of [0, 1] as const) assert.deepEqual(textVerdict(scoreOne({}, title, { maxLines: 1, cut }), "title", ["truncation"]).unscorable, [], String(cut));
+  // A text that doesn't truncate has no cut to read.
+  const whole: TreeNode = { ...title, tx: { ...title.tx!, el: undefined, ink: [0, 2, 90, 16] } };
+  assert.deepEqual(textVerdict(scoreOne({}, whole, { maxLines: 1, cut: null }), "title", ["truncation"]).unscorable, []);
 });

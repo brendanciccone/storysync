@@ -5,6 +5,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { asciiJson, callSum } from "../checksum.js";
 import { runFigmaCode } from "../figma-code.js";
 import type { FigmaCodeOptions } from "../figma-code.js";
 import type { Box, FigmaPlan, PlanCall, TreeNode } from "../tree-types.js";
@@ -17,7 +18,25 @@ export { SHADCN_TOKENS } from "./shadcn-tokens.js";
  * A readback template standing in for package C's, which is not in this
  * package: it returns an empty read, so a plan's read calls run.
  */
-export const STUB_READBACK = "return { kind: 'read', tpl: 2, page: PAGE, sets: [], slices: SLICES, limit: LIMIT };";
+export const STUB_READBACK = "return { kind: 'read', tpl: 3, page: PAGE, sets: [], slices: SLICES, limit: LIMIT };";
+
+/**
+ * A call file with its constant `name` set to `value`, and its SUM written
+ * again to match, as figma code would have written the call with that
+ * value: for a test that needs a call figma code doesn't write. Without
+ * the SUM, the template refuses the call as one changed on its way.
+ */
+export function withConstant(code: string, name: string, value: unknown): string {
+  const line = new RegExp(`\\nconst ${name} = .*;\\n`);
+  if (!line.test(code)) throw new Error(`the call declares no ${name}`);
+  const changed = code.replace(line, () => `\nconst ${name} = ${asciiJson(value)};\n`);
+  const constants: unknown[] = [];
+  for (const m of changed.matchAll(/^const (\w+) = (.*);$/gm)) {
+    if (m[1] === "SUM") break;
+    constants.push(JSON.parse(m[2]));
+  }
+  return changed.replace(/\nconst SUM = .*;\n/, () => `\nconst SUM = ${JSON.stringify(callSum(constants))};\n`);
+}
 
 export interface Coded {
   dir: string;

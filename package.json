@@ -14,7 +14,7 @@
     "storysync": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc && node scripts/build-templates.mjs",
+    "build": "tsc && node scripts/build-templates.mjs && node scripts/bin-executable.mjs",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "lint": "tsc --noEmit",

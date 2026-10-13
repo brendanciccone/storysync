@@ -874,7 +874,7 @@ export type SnapWarningNote =
   | { kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "preview-set" | "args-rejected" | "args-unchecked" | "truncated-tree" | "shared-key" }
   | { kind: "identical-values"; values: string[] }
   | { kind: "no-op-properties"; properties: string[] }
-  | { kind: "font-stand-in"; fonts: string[] };
+  | { kind: "font-not-rendered"; fonts: string[] };
 
 export function parseSnapWarning(warning: string): SnapWarningNote | null {
   const ticked = (list: string) => [...list.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
@@ -891,7 +891,7 @@ export function parseSnapWarning(warning: string): SnapWarningNote | null {
   if (/^the element tree of .+ holds more than snap keeps/.test(warning)) return { kind: "truncated-tree" };
   if (SHARED_KEY_WARNING.test(warning)) return { kind: "shared-key" };
   const fonts = /^the browser could not render (.+?), so the measurements describe a substituted typeface/.exec(warning);
-  if (fonts) return { kind: "font-stand-in", fonts: [...fonts[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]) };
+  if (fonts) return { kind: "font-not-rendered", fonts: [...fonts[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]) };
   return null;
 }
 

@@ -1083,7 +1083,8 @@ T20. figma code on the third push's styles.json, Sidebar and Attachment,
 T21. **What verify can't see**: Figma doesn't say whether a text is cut
     short, so an ellipsis Figma draws where the browser drew none scores
     as truncation that matches. The build names it (`cut short`), and a
-    snap that draws stand-ins doesn't give one.
+    snap that draws stand-ins doesn't give one. (Since BV3, the readback
+    measures it and verify scores it.)
 
 # Layout after the third live push
 
@@ -1219,7 +1220,8 @@ LC1. **verify says every warning snap wrote about a scored component**
    its `--json` had `caveats: []`, although snap warned that Attachment's
    and Sidebar's values measured alike and that Badge's and Button's were
    set through the preview. New kinds: `identical-values` (as `prop=value`),
-   `no-op-properties` and `font-stand-in`, read from snap's own words
+   `no-op-properties` and `font-not-rendered` (first named `font-stand-in`,
+   BV4), read from snap's own words
    (`parseSnapWarning` in snap.ts, tested against each function that writes
    them); `preview-set`, from the variants' `appliedVia` and the reasons a
    story change fixes, as snap's warning is; and `snap-warning`, any other
@@ -1468,3 +1470,159 @@ S16. **Noto Serif's Latin faces are rounded too** (review of S3). They
     Each kerning value is now set in the variable font before it is
     instanced, its delta dropped, as the instancer rearranges Noto Serif's
     kerning subtables, so values no longer go by position.
+
+# After the fourth live push: the build, the readback, verify and the CLI
+
+The fourth live push (Figma file nCldItWrdQWKueFNy5dPZM, agents/push4)
+verified 872 of 872 elements. Yet Figma cut short a title the browser
+drew whole, and the agent's paste of one call differed from its file by a
+character. These notes are numbered BV1 on.
+
+BV1. **The build template's budget is 18,000 and the readback's 9,000**
+   (section 8.2's 16,000, which L1 and T15 had taken to 17,000, and 9.1's
+   8,000), to make room for the call checksum (BV2) and the readback's
+   truncation check (BV3). `templates.test.ts` says why each is safe and
+   holds them to it:
+   - A build call is template, the guard of BV2 (about 700) and DATA,
+     packed to 45,000, so a packed call keeps over 26,000 for DATA. Each of the fourth push's 100 variants, in a
+     call of its own, took 1,364 characters beside the template at the
+     median and 7,454 at most: the 1,000 costs a packed call less than
+     one variant.
+   - A variant alone may take use_figma's 50,000: over 31,000 of DATA,
+     four times that push's largest.
+   - A read call is its template and a short header, and what it returns
+     is held by LIMIT, not by its code.
+BV2. **Every call checks a checksum of its own data before it does
+   anything** (no section; 8.1 and 9.1 list the constants a call writes).
+   The agent sends a call by pasting the file, up to 45,000 characters,
+   and push4's agent typed `1.790` for `1.79` in an icon's path in call
+   02: numerically the same, but nothing would have noticed a change that
+   wasn't.
+   - figma code writes `const SUM = "<fnv1a32>";` after a call's
+     constants (`callConstants` in `cli/checksum.ts`): FNV-1a over
+     `JSON.stringify([...values])`, the values in the order the call
+     declares them, DATA for a build or label call, PAGE for images, and
+     PAGE, SLICES, LIMIT and TPL for a read, a continuation included.
+   - The call computes the same from the values it was given, before its
+     template runs, and throws `This call differs from the file storysync
+     figma code wrote: its data fails its checksum, SUM. Nothing was
+     changed. Send the file again, exactly as it is.` A build refuses
+     before it creates its page, a read before it switches to one. JSON.stringify of values
+     parsed from what JSON.stringify wrote is the same text, so an honest
+     call always matches, and a character changed anywhere in its values,
+     inside a string too, doesn't (a number written longer but equal, as
+     `1.790` outside a string, is the same value, and passes).
+   - The template has its own checksum, TSUM (`callCode` in
+     `cli/checksum.ts`). It is 17,000 of a build call's 45,000, and a
+     digit mistyped in keepLines' 1.27 or a tolerance changed every build
+     without a word. figma code writes the template as the function
+     `const T = async()=>{...};`, TSUM as FNV-1a over that text, and a
+     guard after it that checks SUM, then TSUM, and returns `await T()`,
+     refusing a changed template with `... its template fails its
+     checksum, TSUM. ...`. The guard reads T back as `String(T)`: ES2019's
+     Function.prototype.toString gives a function's exact source, as V8
+     does. Whether Figma's plugin runtime does is not yet seen: it takes a
+     live call, and this pass was offline. So the guard compares TSUM only
+     where `String(P)` gives back exactly the text of P, an async arrow
+     function with a line break in it (`TC`): a runtime that strips
+     source, or code rewritten on its way, line ends included, skips the
+     check rather than refusing every honest call. The build returns TC as
+     `tc`, so the next live push's first build result settles it: `tc: 1`
+     is the check running, `tc: 0` the evidence that Figma can't give the
+     template back. Tested in the mock both ways, a runtime that strips
+     source standing in by Function.prototype.toString.
+   - SUM is checked before the template runs, so before the readback's
+     TPL: a TPL changed on its way reads as a call to send again, not as
+     `This is readback template 3, not 2`.
+   - The guard itself, about 700 characters, isn't covered: a change there
+     mostly fails to parse, or refuses every call. The templates no longer
+     check SUM themselves; minified, they are ASCII only (terser
+     `ascii_only`), the build's 16,834 characters and the readback's
+     8,249. A template that declares a constant its call writes no longer
+     fails to compile (T's scope shadows it), so `assertCompiles` compiles
+     each template after its call's constants too, and refuses it as
+     before.
+   - Each constant is written in ASCII (`asciiJson`): every character
+     past it as its `\u` escape, inside a string, where JSON and
+     JavaScript read it alike. A no-break space an agent retyping the
+     call turns into a space would fail SUM on every resend; written
+     `\u00a0`, it can't be. SUM is over the values, so it doesn't change.
+   - `CALL_CONSTANTS` ends each kind's list with `SUM`. Tests that need a
+     call figma code doesn't write change a constant with `withConstant`
+     (`figma-build-harness.ts`), which writes the SUM again.
+BV3. **The readback says whether Figma cuts each text short, and verify
+   scores it** (sections 9.2 and 10.2; T21). Push4 drew all 15 horizontal
+   Attachment titles as "sales-dashboard.p…" where Storybook showed the
+   name whole, and scored them 100%: truncation ENDING at one line, as
+   measured.
+   - Readback template 3 adds `cut` to the end of a T record, after its
+     id, so `RECORD.T` is 24 (`RECORD_BY_TPL` keeps template 2's 23). For
+     a text with ENDING, the template clones it, loads its font, sets the
+     copy to HEIGHT with truncation off, and reads its height: taller than
+     the text by half its font size, the copy holds lines the text cuts
+     off, and `cut` is 1, else 0. The copy goes in a `finally`, so a read
+     changes nothing it reads. A text without ENDING is 0 with no copy; a
+     text of mixed fonts or sizes, or one whose font won't load, is null.
+     Height, not width: it is Figma's own line breaking that decides, and
+     T5's threshold for a line kept whole is in it.
+   - verify's `truncation` passes only where the settings match as before
+     and, where `cut` is 0 or 1, it equals the browser's: on one line with
+     an ellipsis (`el`), the browser cut a text whose ink runs past its
+     box by more than 0.5px; with a line clamp (`cl`), one that took more
+     lines than the clamp (Chrome lays out the lines it hides: checked in
+     Chromium 154). `cutInBrowser` in verify-tree.ts, written apart from
+     the build's textWhole (D9). The difference reads `truncation measured
+     {"maxLines":1,"cut":false}, Figma {"truncation":"ENDING",
+     "maxLines":1,"cut":true}`. The property count doesn't change.
+   - Template 2 entries, with 23-field T records, still verify, scored on
+     the settings alone; a template 3 entry with 23 fields was read with
+     the template cut down, and is incomplete. Where a text truncates and
+     its entry has no `cut` (template 2) or a null one, `cut` is listed as
+     unscorable, so the coverage line doesn't say every property was
+     scored.
+   - The fixtures were measured in system-ui, so in Figma's Inter the
+     faithful harness now drifts 2 Attachment titles and 5 Sidebar labels
+     on this, and tree-e2e, whose build widens what it can (T14), drifts
+     exactly the texts its build responses name `cut short`: Attachment's
+     2 horizontal titles. Those tests hold both counts.
+BV4. **The caveat for a font the browser couldn't render is
+   `font-not-rendered`**, first named `font-stand-in` (LC1). Since T10,
+   `fontStandIns` names the stand-ins snap draws text in on purpose,
+   Figma's fonts, which are no caveat at all, and the two read as one.
+   Nothing persists a caveat to read back: verify draws it each run from
+   the warning snap wrote in styles.json, whose words are unchanged, so a
+   styles.json from before gives the new kind, and no old name is kept.
+BV5. **verify prints its coverage line at 100% too** (section 10.6 shows
+   it with something unscored): `coverage 100.0%: every property was
+   scored`. The skill has the agent report coverage, and push4's verify
+   printed none, with nothing unscored. It is left out only where nothing
+   was compared at all.
+BV6. **A clamped text shows at most its clamp's lines** (section 10.2's
+   `lines`). `n` counts the lines Chrome lays out, the ones a clamp hides
+   included (BV3), and Figma shows at most maxLines, so `lines` expects
+   `min(n, cl)` for a clamped text: one both cut at two lines of five
+   drifted `lines measured 5, Figma 2` though the two agree.
+BV7. **An ellipsis is measured against the box it ends the text at**
+   (BV3's `cutInBrowser`). snap gives a `#text` run in a frame the box of
+   its glyphs, so its ink always spans its box, and an ellipsis on a run
+   in a `truncate` element with padding, a background or centered content
+   (which stays a frame) read as drawn whole: verify reported Figma's cut
+   backwards, or missed it.
+   - A `#text` run is measured against its parent's content box (the
+     parent's box less `L.pad` and `bd.w`), where the parent lays it out
+     in a block. In a flex or grid parent the run is an anonymous item
+     that text-overflow doesn't reach: Chrome 155 clips it with no
+     ellipsis (a padded `truncate` div drew one, its `display: flex` twin
+     didn't, compared by screenshot against `text-overflow: clip`), so
+     it is not cut, as Figma's clipping frame shows it.
+   - An input's `#value` has the input's content box and snap caps its
+     advance there, so a value whose ink fills its box ran past it.
+   - A pseudo-element's text is measured as its box: its `cut` is listed
+     as unscorable, and truncation is scored on the settings.
+   - Planned: the build makes a cut `#text` run as wide as its glyphs, so
+     Figma holds it whole and its frame clips it, with no ellipsis. verify
+     now reports that as drift on truncation; building the run at its
+     parent's content width needs snap to measure it there too, or every
+     such run drifts on its width instead. A text element that is only
+     its text and lays it out with `display: flex` (not centered, so snap
+     keeps it a text) has no layout facts to tell, and still reads as cut.

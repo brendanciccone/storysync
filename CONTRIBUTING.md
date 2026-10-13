@@ -22,7 +22,7 @@ No tokens or config required. Free and open source.
 
 ## Scripts
 
-- `pnpm build` — compile TypeScript to `dist/`
+- `pnpm build` — compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
 - `pnpm dev` — incremental compile in watch mode
 - `pnpm lint` — type-check without emitting
 - `pnpm test` — build and run the node test runner suite
