@@ -695,6 +695,20 @@ test("captureTreeInPage: reads what makes an element hold the fixed and absolute
   assert.deepEqual(readTree({ tag: "div", rect: [0, 0, 16, 16], style: { ...holds, "box-sizing": "border-box" } }).root.cs, holds);
 });
 
+test("captureTreeInPage: for an overlay's content, reads what is around it, innermost first, which places it", () => {
+  // Radix's popper wrapper around a tooltip's content, in a portal holder.
+  const page = {
+    tag: "div", rect: [0, 0, 1280, 720] as [number, number, number, number], style: { "z-index": "50", "box-sizing": "border-box" },
+    kids: [{ tag: "div", rect: [590, 300, 100, 28] as [number, number, number, number], style: { position: "fixed", transform: "matrix(1, 0, 0, 1, 590, 300)", "box-sizing": "border-box" },
+      kids: [{ tag: "div", rect: [590, 300, 100, 28] as [number, number, number, number], attrs: { "data-slot": "tooltip-content" } }] }],
+  };
+  const content = (root: Element) => root.children[0].children[0];
+  const read = inFakePage(page, (el) => captureTreeInPage(el, { ...TREE_ARGS, around: true }), [], content);
+  assert.deepEqual(read.around, [{ position: "fixed", transform: "matrix(1, 0, 0, 1, 590, 300)" }, { "z-index": "50" }]);
+  // Not for any other root.
+  assert.equal(inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content).around, undefined);
+});
+
 test("captureTreeInPage: a pseudo-element that draws, though its color's last channel is 0, and none that is transparent", () => {
   // rgb(255, 165, 0) is orange: read as transparent, its ::after went missing.
   const raw = readTree({
@@ -1058,6 +1072,15 @@ test("captureStory: a story with a closed dialog trigger has it clicked open, it
   // Opened, settled before it was measured, then closed: Escape, the mouse off the page, focus dropped.
   assert.deepEqual(done, ["click", "settled", "Escape", "mouse -1,-1", "blur"]);
   assert.equal(open(), false);
+});
+
+test("captureStory: the tree of an overlay's content is read with what is around it, which places it; a trigger's is not", async () => {
+  const opened = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
+  assert.equal((await captureStory(opened.page, URL_OF, { ...OVERLAY_OPTS, tree: "tree" })).status, "ok");
+  assert.deepEqual(opened.treeArgs.map((a) => a.around), [true]);
+  const shut = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  assert.equal((await captureStory(shut.page, URL_OF, { ...OVERLAY_OPTS, tree: "tree" })).status, "ok");
+  assert.deepEqual(shut.treeArgs.map((a) => a.around), [undefined]);
 });
 
 test("captureStory: a tooltip's trigger is hovered over first, a context menu's right-clicked", async () => {

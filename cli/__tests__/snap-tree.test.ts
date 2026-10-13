@@ -309,6 +309,28 @@ test("buildTree: an element placed against the window or page, drawn outside the
   assert.deepEqual(buildTree(tree(inTransform)).nodes[1].box, [600, 0, 10, 10]);
 });
 
+test("buildTree: an overlay's content keeps an absolute element where the element around it that places it drew it, as a tooltip's arrow", () => {
+  // Radix's Tooltip: the content isn't positioned, and its arrow is
+  // `absolute`, placed by the popper wrapper around the content, which is
+  // `fixed` and translated. It pokes 5px out below the 28px bubble.
+  const arrow = el("span", [45, 28, 10, 10], { position: "absolute", "background-color": "rgb(23, 23, 23)" });
+  const bubble = () => tree(el("div", [0, 0, 100.94, 28], { "background-color": "rgb(23, 23, 23)" }, [structuredClone(arrow)]));
+  const wrapper = { position: "fixed", transform: "matrix(1, 0, 0, 1, 590, 300)" };
+  const placed = buildTree({ ...bubble(), around: [wrapper] });
+  assert.deepEqual([placed.nodes[1].box, placed.nodes[1].abs, placed.movedInside], [[45, 28, 10, 10], 1, []]);
+  // Base UI's positioner is `absolute`, and a `relative` element places one as well.
+  for (const holder of [{ position: "absolute" }, {}, { position: "relative" }] as Record<string, string>[]) {
+    assert.deepEqual(buildTree({ ...bubble(), around: [{}, holder] }).nodes[1].box, Object.keys(holder).length ? [45, 28, 10, 10] : [45, 18, 10, 10], JSON.stringify(holder));
+  }
+  // Without what is around it, as for any root but an overlay's, it is moved inside the root.
+  const alone = buildTree(bubble());
+  assert.deepEqual([alone.nodes[1].box, alone.movedInside], [[45, 18, 10, 10], ["span"]]);
+  // A `fixed` one is placed only by what holds fixed elements: not by a `relative` element.
+  const fixed = () => tree(el("div", [0, 0, 100, 28], {}, [el("span", [600, 0, 10, 10], { position: "fixed", "background-color": "rgb(255, 0, 0)" })]));
+  assert.deepEqual(buildTree({ ...fixed(), around: [{ position: "relative" }] }).nodes[1].box, [90, 0, 10, 10]);
+  assert.deepEqual(buildTree({ ...fixed(), around: [wrapper] }).nodes[1].box, [600, 0, 10, 10]);
+});
+
 test("buildTree: a fixed or absolute element in one that translate, will-change, containment and the like make its containing block stays where it drew", () => {
   // Base UI's Slider: the thumb is at `translate: -50% -50%`, its input
   // `fixed` at the thumb's corner, where Chrome draws it. Read as placed

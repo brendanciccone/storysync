@@ -452,7 +452,8 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     let tree: CapturedTree | undefined;
     let innerElements: number | undefined;
     try {
-      if (opts.tree === "tree") tree = await captureTree(page, target, responses, opts.timeoutMs);
+      // An overlay's content, in a portal or opened inline, is placed by what is around it.
+      if (opts.tree === "tree") tree = await captureTree(page, target, responses, opts.timeoutMs, { overlay: !!(portal || opened) });
       if (opts.tree === "count") innerElements = await countTree(target);
     } catch (err) {
       // Not measured, rather than measured without its tree: a variant
@@ -1831,6 +1832,8 @@ interface TreeInPageArgs {
   svgGroup: readonly string[];
   svgDropped: readonly string[];
   nonRendered: readonly string[];
+  /** Whether to read what is around the root too, for an overlay's content: RawTreeCapture's `around`. */
+  around?: boolean;
 }
 
 /**
@@ -2177,7 +2180,17 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
   };
 
   try {
-    return { root: walk(root, [], 0), fonts };
+    const out: RawTreeCapture = { root: walk(root, [], 0), fonts };
+    // What places an overlay's content, from outside it: up to the page's
+    // own elements, which place nothing a component draws.
+    if (args.around) {
+      const around: Record<string, string>[] = [];
+      for (let at = root.parentElement; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
+        around.push(readCss(getComputedStyle(at), null));
+      }
+      if (around.length) out.around = around;
+    }
+    return out;
   } finally {
     (hider as HTMLStyleElement | null)?.remove();
   }
@@ -2327,15 +2340,18 @@ const dataUrl = (bytes: Buffer, mime: string) => `data:${mime};base64,${bytes.to
  * The tree under `target`, every image's source bytes fetched and every
  * node only a screenshot can keep taken (section 6.7 of the design). An
  * image whose bytes can't be had is kept as a screenshot of its element.
+ * For an `overlay`'s content, what is around it is read too, as what
+ * places it (RawTreeCapture's `around`).
  */
 export async function captureTree(
   page: Page,
   target: ElementHandle<Element>,
   responses: ImageResponses | null,
   timeoutMs: number,
+  { overlay = false }: { overlay?: boolean } = {},
 ): Promise<CapturedTree> {
   const started = Date.now();
-  const raw = await target.evaluate(captureTreeInPage, treeInPageArgs("tree")) as RawTreeCapture | null;
+  const raw = await target.evaluate(captureTreeInPage, { ...treeInPageArgs("tree"), ...(overlay ? { around: true } : {}) }) as RawTreeCapture | null;
   if (!raw?.root) throw new Error("the page returned no tree");
   const built = buildTree(raw);
   const byKey = new Map(built.nodes.map((node) => [node.k, node]));

@@ -152,6 +152,14 @@ export interface RawTreeCapture {
   root: RawTreeElement;
   /** Each font stack the text holders use, as probeFontStack reads it. */
   fonts: Record<string, FontProbe | null>;
+  /**
+   * The computed values (`cs`, as an element's) of each element around the
+   * root, innermost first, up to the page's `<body>`: read for an overlay's
+   * content, whose containing block is the element that places it, outside
+   * it, as Radix's popper wrapper places a tooltip and its arrow
+   * (anchorToRoot). Absent for any other root.
+   */
+  around?: Record<string, string>[];
 }
 
 // --- What the build hands on ---------------------------------------------------
@@ -503,7 +511,11 @@ const holdsFixed = (css: Css) =>
  * starts inside it: each element `fixed` with nothing in the tree a
  * transform or filter makes its containing block, or `absolute` with
  * nothing positioned around it in the tree (it or a wrapper collapsed into
- * it, the outermost such). Where the browser window or the page put them
+ * it, the outermost such). An overlay's content is placed by what is
+ * `around` it, outside the tree: Radix's popper wrapper, `fixed` and
+ * translated, is the containing block of a tooltip's arrow, which pokes
+ * out below the bubble where the browser drew it (section 6.9), so what
+ * an element around it holds stays where it drew. Where the browser window or the page put them
  * is no part of the component: shadcn's Sidebar container is `fixed` at
  * `right-0` for side=right, and drew 1024px to the right of its own 256px
  * root in snap's 1280px window, where a Figma component would hold it off
@@ -511,7 +523,7 @@ const holdsFixed = (css: Css) =>
  * they keep their places relative to each other and one already inside the
  * box stays. Each is given its `shift`, and `drewOutside` where it did.
  */
-function anchorToRoot(root: Item): void {
+function anchorToRoot(root: Item, around: readonly Record<string, string>[] = []): void {
   const outside: Item[] = [];
   const walk = (item: Item, absolute: boolean, fixed: boolean) => {
     for (const kid of item.kids) {
@@ -529,7 +541,9 @@ function anchorToRoot(root: Item): void {
     }
   };
   const css = root.css!;
-  walk(root, positioned(css) || holdsFixed(css), holdsFixed(css));
+  const outer = around.map(reader);
+  const outerFixed = outer.some(holdsFixed);
+  walk(root, positioned(css) || holdsFixed(css) || outerFixed || outer.some(positioned), holdsFixed(css) || outerFixed);
   if (!outside.length) return;
   const by = [0, 1].map((a) => {
     const start = Math.min(...outside.map((i) => i.box[a]));
@@ -1139,7 +1153,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
   const maxDepth = options.maxDepth ?? TREE_LIMITS.maxDepth;
   const ctx: Ctx = { fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
   const [root] = buildItem(capture.root, true);
-  anchorToRoot(root);
+  anchorToRoot(root, capture.around);
 
   const nodes: TreeNode[] = [];
   const movedInside: string[] = [];

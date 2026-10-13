@@ -1706,3 +1706,17 @@ O9. **The `dialog` fixture** is the ui-base-dialog story as snap measured
     it live, opened by a click, written by snap's writer with only the
     `fixture` block added. tree-e2e pushes it through the mock Figma, and
     pushes a closed trigger's warning with its reason too.
+O10. **Spec problem: an overlay's content is placed from outside it**
+    (section 6.9). anchorToRoot moved an `absolute` element with nothing
+    positioned around it in the tree inside the root, as the page placed
+    it. An opened Tooltip's arrow is such an element: its containing
+    block is Radix's popper wrapper (`fixed`, translated) or Base UI's
+    positioner, around the measured content, so the arrow, drawn 5px
+    below the 28px bubble, moved inside it and the pointer was lost. For
+    content in a portal or an overlay snap opened, the page now reads
+    the computed values of each element around the root up to `<body>`
+    (RawTreeCapture's `around`), and what positions or holds fixed
+    elements there places what it holds, as one inside the tree does:
+    the arrow keeps where it drew, `abs: 1`, past the root's box. Any
+    other root reads nothing around it, so a story's own wrappers still
+    place nothing.

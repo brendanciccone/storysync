@@ -39,6 +39,8 @@ export function overlayPage(opts: {
 }) {
   const storyId = "ui-radix-dialog--default";
   const done: string[] = [];
+  // What each tree read was asked to read, in order.
+  const treeArgs: { around?: boolean }[] = [];
   let fake = fakePreview({ storyId, argTypes: opts.argTypes ?? {}, initial: {}, url: {} });
   let interacted = false;
   let clickThrows = opts.clickThrows;
@@ -58,7 +60,10 @@ export function overlayPage(opts: {
         done.push("settled");
         return true;
       }
-      if (fn === captureTreeInPage) return { root: { k: "e", tag: "div", box: [0, 0, 448, 170], cs: {}, path: [], kids: [] }, fonts: {} };
+      if (fn === captureTreeInPage) {
+        treeArgs.push(arg as { around?: boolean });
+        return { root: { k: "e", tag: "div", box: [0, 0, 448, 170], cs: {}, path: [], kids: [] }, fonts: {} };
+      }
       // Whether it has gone, as closeOverlay asks, by a function of its own.
       if (arg === undefined && typeof fn === "function" && /isConnected/.test(String(fn))) return !open();
       return null;
@@ -79,9 +84,12 @@ export function overlayPage(opts: {
   };
   const trigger = {
     click: act("click"), hover: act("hover"), focus: act("focus"),
-    evaluate: async (fn: unknown) => {
+    evaluate: async (fn: unknown, arg?: unknown) => {
       if (fn === triggerOpenInPage) return open();
-      if (fn === captureTreeInPage) return { root: { k: "e", tag: "button", box: [0, 0, 80, 36], cs: {}, path: [], kids: [] }, fonts: {} };
+      if (fn === captureTreeInPage) {
+        treeArgs.push(arg as { around?: boolean });
+        return { root: { k: "e", tag: "button", box: [0, 0, 80, 36], cs: {}, path: [], kids: [] }, fonts: {} };
+      }
       return null;
     },
     evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
@@ -136,5 +144,5 @@ export function overlayPage(opts: {
     },
     mouse: { move: async (x: number, y: number) => { done.push(`mouse ${x},${y}`); } },
   };
-  return { page: page as unknown as Page, done, open, stored: () => fake.stored };
+  return { page: page as unknown as Page, done, open, stored: () => fake.stored, treeArgs };
 }
