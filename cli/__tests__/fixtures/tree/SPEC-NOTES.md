@@ -2025,3 +2025,45 @@ F6-9. **LIMIT 18,000 holds for dense and non-ASCII reads** (F6-5, C2). The
    keeps none of its changes, where the build template's comment had them
    stand. The mock still fails a response at 20,001 bytes, and keeps the
    changes of a call it fails.
+
+# A variant no story is for (after the fifth live push)
+
+Notes R1 on. The fifth live push (Figma file rPGAMu9hIKY9BwFWRkDpY3)
+scored 100%, but shadcn/ui Button's 12 `size=icon-xs` variants held the
+Default story's "Button" label spilling 10.3px out of a 24px square: no
+story's own args set `size=icon-xs`, so S5 left them on the component's
+story, and S7 only warned.
+
+R1. **A story for a sibling value measures what the component's story
+    draws past its box** (`siblingStories`, `cli/snap-stories.ts`). Where
+    a variant measured from the component's story draws more than 1px
+    past its box (S7's contentOverflow), snap measures it again from each
+    story for another value of one of its properties: one that adds
+    content of its own and is for (S5's keys) another value of one or
+    more of the variant's properties. The variant's own values override
+    the story's in its URL, or through the preview where the URL can't
+    carry them, as for any variant, so what the story brings is its
+    content. Ranked first by kinship, the leading words its other values
+    share with the variant's (`icon` and `icon-xs` one, `xs` and
+    `icon-xs` none), as a box is sized for what its family holds; then
+    as S5 and S8 rank (the most values shared, the fewest others, the
+    plainest, the first). So Icon comes first for icon-xs even where
+    plainer stories for `xs`, `sm` and `lg` each draw a label, and even
+    where Icon's `variant=secondary` is for something, no plain story
+    setting it. Never the component's story or one with a play function,
+    at most three a variant. The first that draws it within its box
+    measures it, recorded as its `storyId` with `refit: { from, by,
+    for }`: the component's story, how far it drew past, and the values
+    the story is for. Button's icon-xs variants come from Icon (`size=icon`), its icon
+    alone. A variant that fits keeps its story, and one no sibling draws
+    within its box keeps the component's, the warning naming the stories
+    that drew it past its box too, no longer giving one of them as an
+    example, and apart those snap couldn't measure it from, with why
+    ("ui-base-button--icon (timeout)"), which may still be the example.
+    Each variant is judged on its own measurements, so the choice is the
+    same whatever order the variants are measured in; a late read of the
+    stories' args (S12) measures again a variant that drew past its box
+    and has a story to try. The line snap prints, the set's description
+    and verify's `variant-stories` caveat say such variants apart:
+    "`size=icon-xs` from ui-base-button--icon (ui-base-button--default
+    drew them 10.3px past their box)".

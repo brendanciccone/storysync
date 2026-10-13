@@ -29,7 +29,7 @@ import type { ComponentTree, ImageAsset, TreeDelta, TreeNode } from "./tree-type
 import { imageAssetFile } from "./snap-assets.js";
 import { fnv1a32Bytes } from "./checksum.js";
 import { stylesJsonText } from "./snap-tree.js";
-import { chooseStory, storyAddsContent, storyKeys } from "./snap-stories.js";
+import { chooseStory, siblingStories, storyAddsContent, storyKeys } from "./snap-stories.js";
 import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
 import { resolveProps } from "./props.js";
@@ -107,6 +107,14 @@ export interface SnapVariant {
    * story is for `size=icon` (snap-stories.ts).
    */
   storyId?: string;
+  /**
+   * Why `storyId` measured this variant where no story is for its values:
+   * the component's story, `from`, drew it `by` px past its box, and
+   * `storyId`, a story for `for`, another value of one of its properties,
+   * drew it within (siblingStories), as Icon, for `size=icon`, measures
+   * shadcn/ui Button's `size=icon-xs`.
+   */
+  refit?: { from: string; by: number; for: string[] };
   status: SnapVariantStatus;
   error: string | null;
   /** Differences from the component's base styles. Empty for the base itself. */
@@ -687,24 +695,35 @@ export function describeIdenticalValues(groups: { property: string; values: stri
  * chose no story for any:
  * "measured `size=icon` from ui-base-button--icon and `size=icon-sm` from
  * ui-base-button--icon-small, the rest from ui-base-button--default". Each
- * story by the values its variants share, else by how many there were.
+ * story by the values its variants share, else by how many there were;
+ * variants a story measured because the component's drew them past their
+ * box (`refit`) apart, saying so: "`size=icon-xs` from
+ * ui-base-button--icon (ui-base-button--default drew them 10.3px past
+ * their box)".
  */
 export function describeVariantStories(component: Pick<SnapComponent, "storyId" | "variants" | "storiesUnread">): string | null {
   if (component.storiesUnread) {
     return `snap couldn't read its stories' args (${component.storiesUnread}), so it measured every variant from ${component.storyId}, choosing no story for any`;
   }
+  // By story, and apart where the component's story drew them past their box.
   const byStory = new Map<string, SnapVariant[]>();
   for (const variant of component.variants) {
     if (!variant.storyId) continue;
-    byStory.set(variant.storyId, [...(byStory.get(variant.storyId) ?? []), variant]);
+    const key = JSON.stringify([variant.storyId, variant.refit?.from ?? null]);
+    byStory.set(key, [...(byStory.get(key) ?? []), variant]);
   }
   if (!byStory.size) return null;
-  const parts = [...byStory].map(([story, variants]) => {
+  const parts = [...byStory.values()].map((variants) => {
     const shared = Object.entries(variants[0].combination)
       .filter(([name, value]) => variants.every((v) => v.combination[name] === value))
       .map(([name, value]) => `\`${name}=${value}\``);
-    const which = shared.length ? shared.join(" ") : `${variants.length} ${variants.length === 1 ? "variant" : "variants"} (${nameSlugs(variants.map((v) => v.slug))})`;
-    return `${which} from ${story}`;
+    const one = variants.length === 1;
+    const which = shared.length ? shared.join(" ") : `${variants.length} ${one ? "variant" : "variants"} (${nameSlugs(variants.map((v) => v.slug))})`;
+    const refit = variants[0].refit;
+    const why = refit
+      ? ` (${refit.from} drew ${one ? "it" : "them"} ${Math.max(...variants.map((v) => v.refit?.by ?? 0))}px past ${one ? "its" : "their"} box)`
+      : "";
+    return `${which} from ${variants[0].storyId}${why}`;
   });
   const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
   const rest = component.variants.some((v) => !v.storyId) && component.storyId ? `, the rest from ${component.storyId}` : "";
@@ -794,6 +813,17 @@ export function contentOverflow(nodes: readonly TreeNode[]): ContentOverflow | n
 }
 
 /**
+ * The stories for another of a variant's values snap measured it from as
+ * well, where the component's story drew it past its box and none drew it
+ * within (siblingStories): those that drew it past its box too, and those
+ * it couldn't measure it from, with why (`timeout`).
+ */
+export interface SiblingTries {
+  overflowed: string[];
+  failed: { storyId: string; why: string }[];
+}
+
+/**
  * Warning for a component some of whose variants draw past their box, or
  * null: the variants, by the values they share where they share any, how
  * far, the stories they were measured from, and what would measure them
@@ -805,13 +835,17 @@ export function contentOverflow(nodes: readonly TreeNode[]): ContentOverflow | n
  * `--stories` names another component's story. For variants from a story
  * snap picked for their values, `--stories` with `!` measures every variant
  * from one story; for a component `--stories` named with `!`, dropping it
- * lets snap pick.
+ * lets snap pick. `tried`, by slug, the stories for another of their
+ * values snap measured them from too (siblingStories): those that drew
+ * them past their box as well, said and never the example, and those it
+ * couldn't measure them from, said apart, with why.
  */
 export function describeOverflow(
   component: { id: string; label: string; storyId: string; storyOnly?: boolean },
   over: { variant: SnapVariant; overflow: ContentOverflow }[],
   measured: number,
   stories: { own: StoryOwn[]; properties: FigmaVariantProperty[] } | null,
+  tried: ReadonlyMap<string, SiblingTries> = new Map(),
 ): string | null {
   if (!over.length) return null;
   const first = over[0].variant.combination;
@@ -833,13 +867,18 @@ export function describeOverflow(
   if (component.storyOnly) {
     advice = `--stories names ${component.storyId} with \`!\`, for every variant: name another story, or drop the \`!\` so snap measures a variant from a story that is for its values.`;
   } else {
-    // A story that is for another value of a property these share, and isn't one they came from.
+    // The stories snap measured them from as well, which drew them past their box too.
+    const also = [...new Set(over.flatMap((o) => tried.get(o.variant.slug)?.overflowed ?? []))];
+    // Those snap couldn't measure them from, each with why, the first reason for a story given.
+    const failed = new Map<string, string>();
+    for (const o of over) for (const f of tried.get(o.variant.slug)?.failed ?? []) if (!failed.has(f.storyId)) failed.set(f.storyId, f.why);
+    // A story that is for another value of a property these share, and isn't one they came from or snap tried.
     let example = "";
     if (stories && fromComponent) {
       const keys = storyKeys(stories.own, stories.properties);
       for (const story of stories.own) {
         const key = Object.entries(keys.get(story.id) ?? {});
-        if (story.play || from.includes(story.id) || !storyAddsContent(story, stories.properties)) continue;
+        if (story.play || from.includes(story.id) || also.includes(story.id) || !storyAddsContent(story, stories.properties)) continue;
         if (key.length && shared.some(([name]) => key.some(([k]) => k === name))) {
           example = `, as ${story.id} is for ${key.map(([n, v]) => `\`${n}=${v}\``).join(" ")},`;
           break;
@@ -848,6 +887,13 @@ export function describeOverflow(
     }
     const values = shared.length && over.length < measured ? shared.map(([n, v]) => `${n}=${v}`).join(" ") : null;
     const parts: string[] = [];
+    if (fromComponent && also.length) {
+      parts.push(`snap measured ${them} from ${also.join(" and ")} as well, ${also.length === 1 ? "a story" : "stories"} for another of ${one ? "its" : "their"} values, which drew ${them} past ${one ? "its" : "their"} box too.`);
+    }
+    if (fromComponent && failed.size) {
+      const named = [...failed].map(([story, why]) => `${story} (${why})`).join(" and ");
+      parts.push(`snap couldn't measure ${them} from ${named}, ${failed.size === 1 ? "a story" : "stories"} for another of ${one ? "its" : "their"} values.`);
+    }
     if (fromComponent && values) {
       parts.push(`A story whose own args set ${values} and give ${them} content that fits${example} would measure ${them}; snap picks such a story by itself.`);
     }
@@ -1674,6 +1720,9 @@ async function snapComponent(
   const images = new Map<string, CapturedImage>();
   const treeNotes = new Set<string>();
   const climbed: { slug: string; element: string; from: string }[] = [];
+  // The stories snap measured a variant from as well, by slug, where the
+  // component's story drew it past its box (siblingStories).
+  const refitTried = new Map<string, SiblingTries>();
   // Each [asked, drawn] family a variant was measured in a stand-in for.
   const standIns = new Set<string>();
   // Each measured variant's markup checksum, by slug, for judging props that change nothing.
@@ -1702,6 +1751,7 @@ async function snapComponent(
     images.clear();
     treeNotes.clear();
     climbed.length = 0;
+    refitTried.clear();
     standIns.clear();
     stage.drop(entry);
   };
@@ -1816,7 +1866,12 @@ async function snapComponent(
           owns = read.stories;
           ownsError = undefined;
           const stories = read.stories;
-          if (shell.variants.some((v) => chooseStory(v.combination, stories, definition.variantProperties, storyId).storyId !== storyId)) {
+          // A variant measured before, from the component's story, that
+          // drew past its box and has a story for another of its values to
+          // try (siblingStories) would change too.
+          const refits = trees.some(({ variant, nodes }) => !variant.storyId && contentOverflow(nodes)
+            && siblingStories(variant.combination, stories, definition.variantProperties, storyId).length > 0);
+          if (refits || shell.variants.some((v) => chooseStory(v.combination, stories, definition.variantProperties, storyId).storyId !== storyId)) {
             progress(`  ${entry.title ?? entry.name}: snap read its stories' args late; measuring its variants again`);
             startOver();
             index = -1;
@@ -1829,7 +1884,6 @@ async function snapComponent(
           }
         }
       }
-      const fromStory = choice.storyId !== storyId ? { storyId: choice.storyId } : {};
 
       // The story's argTypes, read with the first variant, change the
       // variant properties (props.ts): their options add the values the
@@ -1861,6 +1915,33 @@ async function snapComponent(
           continue;
         }
       }
+
+      // Where the component's story drew the variant past its box and no
+      // story is for its values, a story for another value of one of its
+      // properties measures it instead, if that draws it within its box
+      // (siblingStories): Button's `size=icon-xs` from Icon, not Default's
+      // label spilling out of the square. A variant that fits keeps its story.
+      let refit: SnapVariant["refit"];
+      const overflow = owns && choice.storyId === storyId && captured.status === "ok" && captured.tree ? contentOverflow(captured.tree.nodes) : null;
+      if (owns && overflow) {
+        const tries: SiblingTries = { overflowed: [], failed: [] };
+        for (const sibling of siblingStories(combination, owns, definition.variantProperties, storyId)) {
+          choice = { storyId: sibling.storyId, values: sibling.values };
+          const again = await captureOnce();
+          const ok = again.status === "ok" && again.raw && again.boundingBox && again.tree;
+          if (ok && !contentOverflow(again.tree!.nodes)) {
+            captured = again;
+            refit = { from: storyId, by: overflow.by, for: sibling.values };
+            break;
+          }
+          // One snap couldn't measure it from is said apart from one that drew it past its box too.
+          if (ok) tries.overflowed.push(sibling.storyId);
+          else tries.failed.push({ storyId: sibling.storyId, why: again.status === "ok" ? "nothing to measure" : again.status.replace(/_/g, " ") });
+          choice = { storyId };
+        }
+        if (!refit && (tries.overflowed.length || tries.failed.length)) refitTried.set(slugs[index], tries);
+      }
+      const fromStory = choice.storyId !== storyId ? { storyId: choice.storyId, ...(refit ? { refit } : {}) } : {};
 
       const slug = slugs[index];
       captures++;
@@ -2015,7 +2096,7 @@ async function snapComponent(
     return overflow ? [{ variant, overflow }] : [];
   });
   const overflowWarning = describeOverflow(
-    { id: entry.id, label, storyId, storyOnly: shell.storyOnly }, overflowed, measured, owns ? { own: owns, properties: definition.variantProperties } : null,
+    { id: entry.id, label, storyId, storyOnly: shell.storyOnly }, overflowed, measured, owns ? { own: owns, properties: definition.variantProperties } : null, refitTried,
   );
   if (overflowWarning) shell.warnings.push(overflowWarning);
 
