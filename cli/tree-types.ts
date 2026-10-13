@@ -223,14 +223,16 @@ export const ROOT_FIELDS = [
 /**
  * Readback record lengths by Figma node kind (section 9.2 of the design);
  * an image is an F record. Template 3's T record ends with `cut`, whether
- * Figma's truncation hides some of the text.
+ * Figma's truncation hides some of the text; template 4's every record
+ * with `turn`, the layer's turn, clockwise in degrees as CSS says it.
  */
-export const RECORD = { F: 15, T: 24, V: 10 } as const;                        // readback arities (section 9.2)
+export const RECORD = { F: 16, T: 25, V: 11 } as const;                        // readback arities (section 9.2)
 
-/** The record lengths of each readback template by its `tpl`, an entry read with template 2 having no `cut`. */
+/** The record lengths of each readback template by its `tpl`: an entry read with template 2 has no `cut`, one read with 3 no `turn`. */
 export const RECORD_BY_TPL: Readonly<Record<number, { readonly F: number; readonly T: number; readonly V: number }>> = {
   2: { F: 15, T: 23, V: 10 },
-  3: RECORD,
+  3: { F: 15, T: 24, V: 10 },
+  4: RECORD,
 };
 
 // --- plan.json --------------------------------------------------------------
@@ -522,6 +524,118 @@ export function textHugs(n: TreeNode): boolean {
 
 const sides = <T>(value: Sides<T>): [T, T, T, T] =>
   (Array.isArray(value) ? value : [value, value, value, value]) as [T, T, T, T];
+
+/** A `#rrggbb[aa]` color's alpha byte, 255 where it has none. */
+const alphaOf = (hex: string): number => (hex.length === 9 ? parseInt(hex.slice(7), 16) : 255);
+
+/**
+ * Whether a border the background stops at (`bgc`, as shadcn/ui's Button's
+ * `bg-clip-padding`) draws the same as a Figma INSIDE stroke over a fill
+ * that runs under it: where there is no background to show under the
+ * border, or every side the border draws is solid and opaque, so it hides
+ * the background beneath it. Such a frame is built at its border box with
+ * the stroke INSIDE and its corner radius the browser's own, which binds to
+ * its radius token. Anywhere else, a transparent border over a background
+ * first, the background stopping short of the border shows, and the frame
+ * is its padding box with the stroke OUTSIDE (figma-map.ts), its radius the
+ * inner one CSS draws the background with. verify takes either where this
+ * holds, since both draw alike.
+ */
+export function insideStrokeDrawsBorder(n: TreeNode): boolean {
+  if (!n.bgc || !n.bd) return false;
+  if (!n.bgi && (!n.bg || alphaOf(n.bg) === 0)) return true;
+  const widths = sides(n.bd.w);
+  const colors = sides(n.bd.c);
+  const styles = sides(n.bd.s);
+  return [0, 1, 2, 3].every((i) => !(widths[i] > 0) || (styles[i] === "solid" && colors[i] !== null && alphaOf(colors[i]!) === 255));
+}
+
+/** Degrees in a CSS angle, or null for something else. */
+function degrees(text: string): number | null {
+  const m = /^(-?[\d.]+(?:e-?\d+)?)(deg|turn|rad|grad)$/.exec(text.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return m[2] === "deg" ? n : m[2] === "turn" ? n * 360 : m[2] === "rad" ? (n * 180) / Math.PI : n * 0.9;
+}
+
+/**
+ * The clockwise turn, in degrees, a node's `tf` (snap's transform and its
+ * own `rotate` and `scale`, section 6.9) gives it, where that is a turn in
+ * the page's plane alone: `rotate: 45deg` (or about `z`), and a
+ * `matrix(...)` of a rotation, its translation already in the box. Null
+ * for anything that scales, skews or turns in 3D, or for no `tf`.
+ */
+export function turnOf(tf: string | undefined): number | null {
+  if (!tf) return null;
+  let turn = 0;
+  for (const part of tf.split(/;\s*/)) {
+    const rotate = /^rotate:\s*(?:z\s+|0\s+0\s+1\s+)?(\S+)$/.exec(part.trim());
+    const matrix = /^matrix\(([^)]*)\)$/.exec(part.trim());
+    if (rotate && degrees(rotate[1]) !== null) turn += degrees(rotate[1])!;
+    else if (matrix) {
+      const [a, b, c, d] = matrix[1].split(",").map((v) => Number(v.trim()));
+      if (!(Math.abs(a - d) < 1e-4 && Math.abs(b + c) < 1e-4 && Math.abs(a * a + b * b - 1) < 1e-3)) return null;
+      turn += (Math.atan2(b, a) * 180) / Math.PI;
+    } else return null;
+  }
+  const out = Math.round((((turn % 360) + 540) % 360 - 180) * 100) / 100;
+  return out === -180 ? 180 : out || 0;
+}
+
+/**
+ * Where a node sits in its tree, which decides whether the build turns it
+ * (builtTurn): how many children it has, and whether a node around it, its
+ * parent or one of theirs, has a transform (`transformedAround`).
+ */
+export interface TurnContext {
+  children: number;
+  transformed: boolean;
+}
+
+/**
+ * Whether a node around `k`, its parent or one of theirs, has a transform
+ * (`tf`): snap measured `k` as the page box that transform drew it in, and
+ * the build builds that node untransformed.
+ */
+export function transformedAround(k: string, get: (key: string) => TreeNode | undefined): boolean {
+  for (let p = parentKey(k); p !== null; p = parentKey(p)) if (get(p)?.tf) return true;
+  return false;
+}
+
+/**
+ * Why the build leaves a node's turn in the plane (turnOf) out, or null
+ * where it builds it: a transform around it, built untransformed, which
+ * would leave the node at another net turn than the browser's; children,
+ * measured turned as their page boxes; or a place in the flow where its
+ * turned box isn't its own. Figma's auto layout places a turned layer by
+ * its turned box, where CSS keeps the unturned one's place (the sixth
+ * probe); turned 180 degrees, or 90 when square, the two are one, and
+ * Figma lays it out as it would unturned (the seventh probe).
+ */
+export function unturnedBecause(n: TreeNode, at: TurnContext): string | null {
+  if (at.transformed) return "a transform around it is built untransformed";
+  if (at.children) return "its children are measured turned";
+  const turn = Math.abs(turnOf(n.tf) ?? 0);
+  if (!n.abs && turn !== 0 && turn !== 180 && !(turn === 90 && n.box[2] === n.box[3])) return "Figma's auto layout would place it by its turned box";
+  return null;
+}
+
+/**
+ * The turn the build gives a node in Figma, clockwise in degrees as CSS
+ * says it, or null where it builds the node unturned at its own size: a
+ * turn in the plane (turnOf) the build can make (unturnedBecause), of a
+ * childless node with no transform around it, out of the flow, or in it
+ * turned 180 degrees, or 90 when square. Figma turns
+ * a layer about its top left corner, and the build places it so that it
+ * turns about its center, as CSS's default origin does; snap's box is the
+ * node's own size centered where it drew, so any origin comes out the
+ * same. verify scores the turn of the nodes this turns, from the same
+ * facts.
+ */
+export function builtTurn(n: TreeNode, at: TurnContext): number | null {
+  const turn = turnOf(n.tf);
+  return turn === null || unturnedBecause(n, at) !== null ? null : turn;
+}
 
 /** Cross-axis alignments that place an item at the end; anything else not centered places it at the start. */
 const END = new Set(["end", "flex-end", "self-end", "right"]);

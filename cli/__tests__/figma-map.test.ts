@@ -73,13 +73,43 @@ test("nodeStyle: a border is an INSIDE stroke; one the background stops at is OU
   assert.deepEqual(inside.s, { w: 1, p: "#e5e5e5" });
   assert.equal(inside.r, 8);
   // shadcn/ui's Button: a transparent 1px border and bg-clip-padding.
-  const button = frame({ bd: { w: 1, s: "solid", c: null }, bgc: "padding-box", r: 8, box: [0, 0, 206.8, 36] });
+  const button = frame({ bd: { w: 1, s: "solid", c: null }, bgc: "padding-box", bg: "#171717", r: 8, box: [0, 0, 206.8, 36] });
   const outside = nodeStyle(button, ctx());
   assert.deepEqual(outside.s, { w: 1, p: ["#000000", 0], o: 1 });
   assert.equal(outside.r, 7);
   assert.deepEqual(outsideInsets(button), [1, 1, 1, 1]);
   assert.deepEqual(figmaSize(button), [204.8, 34]);
   assert.deepEqual(figmaSize(frame({ bd: { w: 1, s: "solid", c: null }, r: 8 })), [100, 40]);
+});
+
+test("nodeStyle: a border the background stops at is INSIDE where that draws the same, so its radius binds; elsewhere the radius that can't is said", () => {
+  // The fifth live push's Button: rounded-md, md = 8, a 1px border and
+  // bg-clip-padding in every variant. Its outline variant's border is
+  // opaque and hides the background under it; ghost and link have none to
+  // show. Each is built INSIDE at its border box, radius 8, bound to md.
+  const button = (fields: Partial<TreeNode>) => frame({ k: "", bgc: "padding-box", r: 8, box: [0, 0, 66.63, 36], cls: ["rounded-md"], ...fields });
+  const outline = button({ bd: { w: 1, s: "solid", c: "#e5e5e5" }, bg: "#ffffff" });
+  const ghost = button({ bd: { w: 1, s: "solid", c: null } });
+  for (const node of [outline, ghost]) {
+    const c = ctx(new Binder(SHADCN_TOKENS));
+    const style = nodeStyle(node, c);
+    assert.equal(style.s!.o, undefined, "INSIDE");
+    assert.deepEqual([style.r, style.rv], [8, "md"]);
+    assert.deepEqual([outsideInsets(node), figmaSize(node)], [[0, 0, 0, 0], [66.63, 36]]);
+    assert.deepEqual(c.unbound.filter((u) => u.property === "radius"), []);
+  }
+  // Its default variant: a transparent border over its background, which
+  // stops 1px inside it, as Figma's fill can't. Built OUTSIDE at the
+  // padding box, radius 7, which no token holds: said, never silent.
+  for (const bd of [{ w: 1, s: "solid", c: null }, { w: 1, s: "solid", c: "#e5e5e580" }, { w: 1, s: "dashed", c: "#e5e5e5" }] as const) {
+    const c = ctx(new Binder(SHADCN_TOKENS));
+    const style = nodeStyle(button({ bd: { ...bd }, bg: "#171717" }), c);
+    assert.deepEqual([style.s!.o, style.r, style.rv], [1, 7, undefined], JSON.stringify(bd));
+    assert.deepEqual(c.unbound.filter((u) => u.property === "radius"), [{
+      key: "", property: "radius", value: "8", candidates: ["md"],
+      why: "its background stops inside a border that would show it (background-clip padding-box), so the frame is built as the padding box, at radius 7, which no token holds",
+    }]);
+  }
 });
 
 test("nodeStyle: per-side widths are kept; per-side colors are built in the most common and named", () => {
@@ -92,7 +122,7 @@ test("nodeStyle: per-side widths are kept; per-side colors are built in the most
   const c2 = ctx();
   const two = nodeStyle(frame({ k: "cell", bd: { w: 1, s: "solid", c: ["#e5e5e5", "#e5e5e5", "#e5e5e5", "#171717"] } }), c2);
   assert.deepEqual(two.s, { w: 1, p: "#e5e5e5" });
-  assert.deepEqual(c2.notBuilt, [{ key: "cell", what: "per-side border colors (#e5e5e5 #e5e5e5 #e5e5e5 #171717), built #e5e5e5" }]);
+  assert.deepEqual(c2.notBuilt, [{ key: "cell", what: "per-side border colors (#e5e5e5 #e5e5e5 #e5e5e5 #171717)", as: "one color, #e5e5e5" }]);
 });
 
 test("nodeStyle: dashes are three widths, dots one; a style strokes lack is built solid and named", () => {
@@ -100,7 +130,7 @@ test("nodeStyle: dashes are three widths, dots one; a style strokes lack is buil
   assert.deepEqual(nodeStyle(frame({ bd: { w: 1, s: "dotted", c: "#000000" } }), ctx()).s!.d, [1, 1]);
   const c = ctx();
   assert.equal(nodeStyle(frame({ bd: { w: 3, s: "double", c: "#000000" } }), c).s!.d, undefined);
-  assert.deepEqual(c.notBuilt.map((n) => n.what), ["border style double, built solid"]);
+  assert.deepEqual(c.notBuilt.map((n) => [n.what, n.as]), [["border style double", "solid"]]);
 });
 
 test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lacks is named", () => {
@@ -116,10 +146,42 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
   assert.deepEqual(c.notBuilt.map((n) => n.what), ["backdrop-filter blur(8px) saturate(1.8)"]);
   const c2 = ctx();
   assert.equal(nodeStyle(frame({ bm: "plus-lighter", cp: "inset(0)", ol: [2, "solid", "#000000", 1], tf: "matrix(0, 1, -1, 0, 0, 0)", clip: "x" }), c2).b, undefined);
-  assert.deepEqual(c2.notBuilt.map((n) => n.what), [
-    "blend mode plus-lighter", "clip-path inset(0)", "outline 2px solid #000000", "transform matrix(0, 1, -1, 0, 0, 0), built as its bounding box",
-    "overflow clipped on x only, built clipping both axes",
+  assert.deepEqual(c2.notBuilt.map((n) => [n.what, n.as]), [
+    ["blend mode plus-lighter", undefined], ["clip-path inset(0)", undefined], ["outline 2px solid #000000", undefined],
+    ["transform matrix(0, 1, -1, 0, 0, 0)", "its own box, unturned, as Figma's auto layout would place it by its turned box"],
+    ["overflow clipped on x only", "clipping both axes"],
   ]);
+});
+
+test("nodeStyle: a turn in the plane of a childless node, nothing transformed around it, out of the flow or in it where its turned box is its own, is built as Figma's rotation; any other transform is named", () => {
+  // The fifth push's Tooltip arrow: Tailwind's rotate-45, out of the flow.
+  const arrow = (fields: Partial<TreeNode>) => frame({ k: "div", abs: 1, bg: "#0a0a0a", r: 2, box: [45.5, 21, 10, 10], tf: "rotate: 45deg", approx: "transform", ...fields });
+  const c = ctx();
+  assert.equal(nodeStyle(arrow({}), c).rt, -45);
+  assert.equal(nodeStyle(arrow({ tf: "matrix(0, 1, -1, 0, 3, 4)" }), c).rt, -90);
+  assert.equal(nodeStyle(arrow({ tf: "matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0); rotate: -0.5turn" }), c).rt, 135);
+  // In the flow, a chevron's rotate-180, and a square icon's rotate-90:
+  // auto layout lays out each turned box where the unturned one would go.
+  assert.equal(nodeStyle(arrow({ abs: undefined, tf: "rotate: 180deg", box: [0, 0, 16, 6] }), c).rt, -180);
+  assert.equal(nodeStyle(arrow({ abs: undefined, tf: "rotate: -90deg", box: [0, 0, 16, 16] }), c).rt, 90);
+  assert.deepEqual(c.notBuilt, []);
+  const leaf = { children: 0, transformed: false };
+  const cases: [Partial<TreeNode>, MapContext["around"], string][] = [
+    [{ abs: undefined }, leaf, "its own box, unturned, as Figma's auto layout would place it by its turned box"],
+    [{ abs: undefined, tf: "rotate: 90deg", box: [0, 0, 16, 6] }, leaf, "its own box, unturned, as Figma's auto layout would place it by its turned box"],
+    [{}, { children: 1, transformed: false }, "its own box, unturned, as its children are measured turned"],
+    // Inside a node turned or scaled, which is built untransformed: turned
+    // on its own, it would show at another net turn than the browser's.
+    [{}, { children: 0, transformed: true }, "its own box, unturned, as a transform around it is built untransformed"],
+    [{ tf: "rotate: 45deg; scale: 2" }, leaf, "the element's own box, untransformed"],
+    [{ tf: "rotate: x 45deg" }, leaf, "the element's own box, untransformed"],
+    [{ tf: "matrix(2, 0, 0, 2, 0, 0)" }, leaf, "the element's own box, untransformed"],
+  ];
+  for (const [fields, around, as] of cases) {
+    const c2: MapContext = { ...ctx(), around };
+    assert.equal(nodeStyle(arrow(fields), c2).rt, undefined, JSON.stringify(fields));
+    assert.deepEqual(c2.notBuilt, [{ key: "div", what: `transform ${fields.tf ?? "rotate: 45deg"}`, as }]);
+  }
 });
 
 const text = (tx: Partial<NonNullable<TreeNode["tx"]>>, box: TreeNode["box"] = [0, 0, 94.17, 24]): TreeNode => ({

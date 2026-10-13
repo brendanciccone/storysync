@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { MockFigma, loadTreeFixture, measureFromTrees, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, TreeFixture } from "./mock-figma.js";
-import { expandTree, parentKey, rootWithStyles, textHugs, treeDigest } from "../tree-types.js";
+import { builtTurn, expandTree, parentKey, rootWithStyles, textHugs, transformedAround, treeDigest } from "../tree-types.js";
 import type { Sides, TreeDelta, TreeNode } from "../tree-types.js";
 import { applyDelta, splitTopLevel } from "../snap-normalize.js";
 import { cssLinearGradient } from "../verify-tree.js";
@@ -106,6 +106,8 @@ export interface LayerSpec {
   blend?: string;
   clip?: boolean;
   visible: boolean;
+  /** Figma's rotation, where the layer turns: x and y are then its turned top left corner. */
+  rotation?: number;
   text?: Record<string, unknown>;
   svg?: { id: string; markup: string };
   img?: string;
@@ -193,6 +195,21 @@ export function layersOf(nodes: TreeNode[], rootStyles: Parameters<typeof rootWi
       spec.blend = n.bm ? BLEND[n.bm] ?? "PASS_THROUGH" : "PASS_THROUGH";
       spec.clip = Boolean(n.clip);
       if (autoLayout) spec.layout = flexLayout(n, nodes, own);
+    }
+    // A turn the build makes (builtTurn), about the box's center, as CSS
+    // turns it, where Figma turns about the top left corner.
+    const turn = i === 0 ? null : builtTurn(n, {
+      children: nodes.filter((c) => parentKey(c.k) === n.k).length,
+      transformed: transformedAround(n.k, (k) => nodes.find((c) => c.k === k)),
+    });
+    if (turn) {
+      const t = (-turn * Math.PI) / 180;
+      const [cx, cy] = [spec.x + spec.w / 2, spec.y + spec.h / 2];
+      Object.assign(spec, {
+        rotation: -turn,
+        x: r2(cx - (Math.cos(t) * spec.w) / 2 - (Math.sin(t) * spec.h) / 2),
+        y: r2(cy + (Math.sin(t) * spec.w) / 2 - (Math.cos(t) * spec.h) / 2),
+      });
     }
     byKey.set(n.k, spec);
     if (parent === null) root = spec;
@@ -302,6 +319,7 @@ const make = async (s, parent) => {
   }
   n.opacity = s.opacity;
   n.visible = s.visible;
+  if (s.rotation) n.rotation = s.rotation;
   for (const c of s.children) await make(c, n);
   const L = s.layout;
   if (L) {

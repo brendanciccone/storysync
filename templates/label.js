@@ -2,8 +2,8 @@
 // removes Figma's empty default page.
 //
 // `storysync figma code` writes the call as `const DATA = {...};`, then
-// this file as the function T, whose checksum, TSUM, the call checks with
-// DATA's, SUM, before T runs (cli/checksum.ts, callCode):
+// this file as the string T, whose checksum, TSUM, the call checks with
+// DATA's, SUM, before it runs T (cli/checksum.ts, callCode):
 //   DATA = { pages, sets: [[storysync id, line], ...] }
 // with every set the build made, on the pages it made them on. A line is a
 // note for a set snap measured from something other than the component, a

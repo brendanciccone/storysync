@@ -53,7 +53,10 @@
 //
 // What it refuses rather than guess, throwing a "mock-figma:" error from the
 // layout, so the call that set it up fails as a build Figma would collapse
-// should: a wrapping auto layout; a group in an auto layout's flow; and FILL
+// should: a wrapping auto layout; a group in an auto layout's flow, or a
+// turned layer there that fills, unless turned 180 degrees (a turned layer
+// is laid out by its turned box, as the sixth and seventh probes saw,
+// fixtures/figma-tsum-probe.json and figma-probe-7.json call 1); and FILL
 // on a text node that sizes itself on that axis (WIDTH_AND_HEIGHT, or HEIGHT
 // for its height) other than through layoutSizingHorizontal, which the spike
 // saw switch it to HEIGHT; the figma-use skill documents Figma ignoring the
@@ -896,6 +899,8 @@ class Node {
   strokeCap = "NONE";
   strokeJoin = "MITER";
   radii: [number, number, number, number] = [0, 0, 0, 0];
+  /** Figma's rotation: counterclockwise degrees about the top left corner, x and y. */
+  rot = 0;
   clipsContent = true;
   layoutMode = "NONE";
   primarySizing = "AUTO";
@@ -1154,7 +1159,11 @@ function layoutTree(node: Node): void {
   const lead = { x: pl, y: pt };
   const trail = { x: pr, y: pb };
   const flow = node.kids.filter((k) => k.inFlow());
-  const size = (k: Node, axis: Axis) => k[SIZE[axis]];
+  // A turned layer takes the room its turned box does, and is placed so
+  // that box starts where its slot does (the sixth probe's call 1, c and
+  // d; the seventh's, at 180 degrees and 90).
+  const size = (k: Node, axis: Axis) => (k.rot ? turnedSpan(k)[SIZE[axis]] : k[SIZE[axis]]);
+  const lag = (k: Node, axis: Axis) => (k.rot ? -turnedSpan(k)[axis] : 0);
   const set = (k: Node, axis: Axis, value: number) => {
     k[SIZE[axis]] = r2(Math.max(0.01, value));
     if (k.type === "TEXT" && axis === "x" && k.textAutoResize === "HEIGHT") sizeText(k);
@@ -1163,6 +1172,9 @@ function layoutTree(node: Node): void {
   const stretches = (k: Node) => k.layoutAlign === "STRETCH";
   for (const k of flow) {
     if (k.type === "GROUP") unmodeled(k, "a group in an auto layout's flow", "nothing the templates build puts one there");
+    if (k.rot && Math.abs(k.rot) !== 180 && (grows(k) || stretches(k))) {
+      unmodeled(k, "FILL on a layer turned other than 180 degrees", "the seventh probe filled one turned 180, its turned box its own, and tried no other");
+    }
     if (stretches(k) && node.counterSizing === "AUTO" && node.doc.options.fillAcrossHug === "refuse") {
       unmodeled(k, "FILL across a parent that hugs that axis", "this MockFigma was made with fillAcrossHug 'refuse', for a build that must not rely on it");
     }
@@ -1200,12 +1212,21 @@ function layoutTree(node: Node): void {
   else if (node.primaryAlign === "MAX") at += room - total - spacing * (flow.length - 1);
   else if (node.primaryAlign === "SPACE_BETWEEN" && flow.length > 1) gap = (room - total) / (flow.length - 1);
   for (const k of flow) {
-    k[main] = r2(at);
+    k[main] = r2(at + lag(k, main));
     at += size(k, main) + gap;
     const free = across - size(k, cross);
     const align = stretches(k) ? "MIN" : node.counterAlign;
-    k[cross] = r2(lead[cross] + (align === "CENTER" ? free / 2 : align === "MAX" ? free : 0));
+    k[cross] = r2(lead[cross] + (align === "CENTER" ? free / 2 : align === "MAX" ? free : 0) + lag(k, cross));
   }
+}
+
+/** Where a turned node's corners reach from its top left corner, least x and y, and the width and height they span. */
+function turnedSpan(n: Node): { x: number; y: number; w: number; h: number } {
+  const [[a, b], [c, d]] = turnMatrix(n.rot, 0, 0);
+  const xs = [0, a * n.w, b * n.h, a * n.w + b * n.h];
+  const ys = [0, c * n.w, d * n.h, c * n.w + d * n.h];
+  const [x, y] = [Math.min(...xs), Math.min(...ys)];
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
 // --- Handles: what scripts see ----------------------------------------------
@@ -1370,11 +1391,38 @@ function rescaleNode(n: Node, s: number, top = true): void {
   changed(n);
 }
 
-function absolutePosition(n: Node): { x: number; y: number } {
+/** Figma's 2x3 transform for a turn of `deg`, counterclockwise, at x, y. */
+function turnMatrix(deg: number, x: number, y: number): number[][] {
+  const t = (deg * Math.PI) / 180;
+  const [cos, sin] = [Math.cos(t), Math.sin(t)];
+  return [[cos, sin, x], [-sin || 0, cos, y]];
+}
+
+/**
+ * A node's transform to its page, Figma's absoluteTransform: each frame's
+ * own (relativeTransform) from the page down, so a frame's turn turns what
+ * it holds. A group's children are in its frame's coordinates, as the
+ * group itself is, so a group adds nothing.
+ */
+function absoluteMatrix(n: Node): number[][] {
   n.doc.settle();
-  let [x, y] = [0, 0];
-  for (let at: Node | null = n; at && at.type !== "PAGE" && at.type !== "DOCUMENT"; at = containerOf(at)) [x, y] = [x + at.x, y + at.y];
-  return { x: r2(x), y: r2(y) };
+  const chain: Node[] = [];
+  for (let at: Node | null = n; at && at.type !== "PAGE" && at.type !== "DOCUMENT"; at = containerOf(at)) chain.unshift(at);
+  let [a, b, x, c, d, y] = [1, 0, 0, 0, 1, 0];
+  for (const at of chain) {
+    const [[a2, b2, x2], [c2, d2, y2]] = turnMatrix(at.rot, at.x, at.y);
+    [a, b, x, c, d, y] = [a * a2 + b * c2, a * b2 + b * d2, a * x2 + b * y2 + x, c * a2 + d * c2, c * b2 + d * d2, c * x2 + d * y2 + y];
+  }
+  return [[a, b, r2(x)], [c, d, r2(y)]];
+}
+
+/** The box a node's corners span on its page, Figma's absoluteBoundingBox. */
+function absoluteBox(n: Node): { x: number; y: number; width: number; height: number } {
+  const [[a, b, x], [c, d, y]] = absoluteMatrix(n);
+  const xs = [0, a * n.w, b * n.h, a * n.w + b * n.h];
+  const ys = [0, c * n.w, d * n.h, c * n.w + d * n.h];
+  const [x0, y0] = [Math.min(...xs), Math.min(...ys)];
+  return { x: x + x0, y: y + y0, width: Math.max(...xs) - x0, height: Math.max(...ys) - y0 };
 }
 
 function cloneNode(n: Node, parent: Node | null): Node {
@@ -1509,10 +1557,24 @@ const PROPS: Record<string, Prop> = {
   y: { types: SCENE, geometry: true, get: (n) => n.y, set: (n, v) => { if (!n.inFlow()) place(n, "y", finite("y", v)); changed(n); } },
   width: { types: SCENE, geometry: true, get: (n) => n.w },
   height: { types: SCENE, geometry: true, get: (n) => n.h },
-  absoluteBoundingBox: { types: SCENE, geometry: true, get: (n) => ({ ...absolutePosition(n), width: n.w, height: n.h }) },
-  absoluteTransform: { types: SCENE, geometry: true, get: (n) => { const p = absolutePosition(n); return [[1, 0, p.x], [0, 1, p.y]]; } },
-  relativeTransform: { types: SCENE, geometry: true, get: (n) => [[1, 0, n.x], [0, 1, n.y]] },
-  rotation: { types: SCENE, get: () => 0 },
+  // A turn as the sixth probe saw Figma's (fixtures/figma-tsum-probe.json,
+  // call 1): about the top left corner, which x and y keep, setting it or a
+  // size; the transform's first two columns are cos, sin and -sin, cos of
+  // the angle, counterclockwise. A frame's turn turns what it holds on the
+  // page, as an imported icon's shapes in its turned frame.
+  absoluteBoundingBox: { types: SCENE, geometry: true, get: (n) => absoluteBox(n) },
+  absoluteTransform: { types: SCENE, geometry: true, get: (n) => absoluteMatrix(n) },
+  relativeTransform: { types: SCENE, geometry: true, get: (n) => turnMatrix(n.rot, n.x, n.y) },
+  rotation: {
+    types: SCENE,
+    get: (n) => n.rot,
+    set: (n, v) => {
+      // Figma keeps 180 and -180 as given (the seventh probe).
+      const deg = finite("rotation", v);
+      n.rot = Math.abs(deg) <= 180 ? deg || 0 : ((((deg + 180) % 360) + 360) % 360) - 180 || 0;
+      changed(n);
+    },
+  },
   visible: { types: SCENE, get: (n) => n.visible, set: (n, v) => { n.visible = Boolean(v); changed(n); } },
   locked: { types: SCENE, get: () => false, set: () => undefined },
   opacity: { types: SCENE, get: (n) => n.opacity, set: (n, v) => { n.opacity = finite("opacity", v, 0, 1); } },
@@ -2140,6 +2202,8 @@ export interface NodeView {
   y: number;
   width: number;
   height: number;
+  /** Figma's rotation, where it has one: counterclockwise degrees about x and y. */
+  rotation?: number;
   data: Record<string, string>;
   children?: NodeView[];
 }
@@ -2276,6 +2340,7 @@ export class MockFigma {
     const data: Record<string, string> = {};
     for (const [key, value] of n.data) data[key.replace("\u0000", ".")] = value;
     const out: NodeView = { id: n.id, type: n.type, name: n.name, x: n.x, y: n.y, width: n.w, height: n.h, data };
+    if (n.rot) out.rotation = n.rot;
     if (CONTAINERS.has(n.type)) out.children = n.kids.map((k) => this.view(k));
     return out;
   }

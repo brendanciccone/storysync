@@ -1,4 +1,4 @@
-// storysync readback, template 3: reads back, off the Figma nodes, what
+// storysync readback, template 4: reads back, off the Figma nodes, what
 // `storysync figma code` built, for `storysync verify --plan` to score
 // element by element against snap.
 //
@@ -12,12 +12,12 @@
 //
 // A call file is five lines the CLI writes (cli/figma-results.ts
 // readbackHeader, as `storysync figma code` writes them), then this
-// template, as the function T, and a guard (cli/checksum.ts, callCode):
+// template, as the string T, and a guard (cli/checksum.ts, callCode):
 //
 //   const PAGE = "ui/base";
 //   const SLICES = [["ui-base-card",0,1,0]];
 //   const LIMIT = 15000;
-//   const TPL = 3;
+//   const TPL = 4;
 //   const SUM = "6f3c0a1e";
 //
 // PAGE is the page the sets are on, switched to once. Each slice is a set's
@@ -27,7 +27,7 @@
 // the bytes of the response: when the next entry would pass it, the call
 // stops and returns `more`, the slices left, from which `storysync figma
 // next` writes the next call. TPL is the template the CLI pairs the call
-// with, this one, 3; any other refuses to run. SUM is the checksum of the
+// with, this one, 4; any other refuses to run. SUM is the checksum of the
 // four, and TSUM, after it, this template's: the guard checks both before
 // T runs, SUM first, so a call changed on its way from the file, its TPL
 // too, is refused as one to send again before anything is read.
@@ -51,15 +51,19 @@
 // Records have one length per kind (cli/tree-types.ts RECORD), so a template
 // cut down to fewer fields is told apart:
 //
-//   F (15) [k, "F", x, y, w, h, fills, stroke, radius, effects, opacity, blend, clip, visible, id]
-//   T (24) [k, "T", x, y, w, h, chars, family, weight, italic, size, lineHeight, letterSpacing,
-//           color, textCase, decoration, align, truncation, maxLines, autoResize, opacity, visible, id, cut]
-//   V (10) [k, "V", x, y, w, h, shapes, opacity, visible, id]
+//   F (16) [k, "F", x, y, w, h, fills, stroke, radius, effects, opacity, blend, clip, visible, id, turn]
+//   T (25) [k, "T", x, y, w, h, chars, family, weight, italic, size, lineHeight, letterSpacing,
+//           color, textCase, decoration, align, truncation, maxLines, autoResize, opacity, visible, id, cut, turn]
+//   V (11) [k, "V", x, y, w, h, shapes, opacity, visible, id, turn]
 //
 // In the browser's terms, which snap's facts are in: x and y relative to the
 // parent's border box, so Figma's x and y plus the parent's stroke outside
 // its box, less the layer's own; w and h with the layer's own stroke outside
-// its box (all of OUTSIDE, half of CENTER); a radius with it added back.
+// its box (all of OUTSIDE, half of CENTER); a radius with it added back. A
+// turned layer's x and y are its box's unturned, about its center, as snap
+// measures a turned element, and its turn is clockwise in degrees, as CSS
+// says it: Figma's rotation, counterclockwise about the top left, the other
+// way round.
 // fills: the visible paints, bottom to top: `#rrggbb[aa]`;
 // `img:<fnv of the bytes>:<scaleMode>:<w>x<h>`, `?` for what can't be read;
 // `lin:<css angle>:<#hex@position,…>`; `other:<TYPE>`. stroke: null, or
@@ -69,9 +73,10 @@
 // shapes: `[x, y, w, h, fill, stroke, strokeWeight]` for each shape of the
 // vector, relative to it. An image is an F record whose fills hold `img:`.
 // cut: 1 where Figma's truncation hides some of a text, 0 where it shows
-// all of it, null where that can't be told (template 2 had no cut).
+// all of it, null where that can't be told (template 2 had no cut). turn:
+// 0 for a layer Figma doesn't turn (template 3 had no turn).
 
-if (TPL !== 3) throw new Error('This is readback template 3, not ' + TPL);
+if (TPL !== 4) throw new Error('This is readback template 4, not ' + TPL);
 
 // How use_figma shows what a call returns (design section 14, item 7): the
 // spike saw the tool write a returned object as JSON, so false returns the
@@ -211,12 +216,15 @@ const cutOf = async (n) => {
   }
 };
 
-// One keyed layer's record. `around` is its parent's stroke outside its box.
+// One keyed layer's record. `around` is its parent's stroke outside its
+// box. A turned layer's x and y are where its center puts its box unturned.
 const record = async (n, k, around, root) => {
   const own = outside(n);
-  const head = [k, 'F', root ? 0 : r2(n.x + around[3] - own[3]), root ? 0 : r2(n.y + around[0] - own[0]),
+  const [[a, b, x], [c, d, y]] = n.relativeTransform;
+  const head = [k, 'F', root ? 0 : r2(x + (a - 1) * n.width / 2 + b * n.height / 2 + around[3] - own[3]),
+    root ? 0 : r2(y + c * n.width / 2 + (d - 1) * n.height / 2 + around[0] - own[0]),
     r2(n.width + own[1] + own[3]), r2(n.height + own[0] + own[2])];
-  const tail = [n.opacity, n.visible ? 1 : 0, n.id];
+  const tail = [n.opacity, n.visible ? 1 : 0, n.id, r2(-n.rotation) || 0];
   if (n.type === 'TEXT') {
     head[1] = 'T';
     const font = typeof n.fontName === 'object' ? n.fontName : null;
@@ -231,7 +239,7 @@ const record = async (n, k, around, root) => {
       !lh ? null : lh.unit === 'PIXELS' ? r2(lh.value) : lh.unit === 'PERCENT' ? r2((lh.value * size) / 100) : 'auto',
       !ls ? null : r2(ls.unit === 'PIXELS' ? ls.value : (ls.value * size) / 100),
       fills.length ? fills[fills.length - 1] : null,
-      n.textCase, n.textDecoration, n.textAlignHorizontal, n.textTruncation, n.maxLines, n.textAutoResize, ...tail, await cutOf(n)];
+      n.textCase, n.textDecoration, n.textAlignHorizontal, n.textTruncation, n.maxLines, n.textAutoResize, ...tail.slice(0, 3), await cutOf(n), tail[3]];
   }
   if (get(n, 'svg')) {
     head[1] = 'V';
@@ -333,7 +341,9 @@ const size = (v) => {
   const t = JSON.stringify(v);
   return (RETURN_TEXT ? JSON.stringify(t) : t).length + (t.match(/[^\x00-\x7f]/g) || []).length * 2 + 1;
 };
-let used = size(out);
+// `more`, should the call stop, counted from the start: at most every
+// slice, each with a node to start at.
+let used = size(Object.assign({ more: { slices: SLICES.map(([id, from, to]) => [id, from, to, 1e5]) } }, out));
 for (let s = 0; s < SLICES.length && !out.more; s++) {
   const [id, from, to, start] = SLICES[s];
   const found = owners.filter((n) => get(n, 'id') === id);

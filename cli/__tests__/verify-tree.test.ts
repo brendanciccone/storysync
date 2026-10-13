@@ -75,7 +75,8 @@ test("faithful build: every fixture's elements are all scored, not passed by def
   // Elements measured, elements verified, and properties compared: every
   // element of every variant, each on its kind's properties (design 10.2).
   // A property left uncompared, or an element passed without its record,
-  // changes the count.
+  // changes the count. The tooltip's arrow, turned, is scored on its turn
+  // too.
   const counts: Record<string, [number, number, number]> = {};
   for (const name of treeFixtureNames()) {
     const { fixture, readback } = await buildAndRead(name, { autoLayout: true });
@@ -84,7 +85,7 @@ test("faithful build: every fixture's elements are all scored, not passed by def
   }
   assert.deepEqual(counts, {
     attachment: [32, 32, 396], avatar: [9, 9, 93], "button-icon": [30, 30, 360], card: [46, 46, 648], dialog: [11, 11, 156], "example-button": [24, 24, 312],
-    inputotp: [8, 8, 94], select: [43, 43, 633], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102], tooltip: [3, 3, 41],
+    inputotp: [8, 8, 94], select: [43, 43, 633], sidebar: [25, 25, 321], switch: [4, 4, 42], toggle: [12, 12, 102], tooltip: [3, 3, 42],
   });
 });
 
@@ -127,6 +128,43 @@ test("falsify: a Switch without its thumb scores 50%", async () => {
   const whole = verify(fixture, readback, 0.5).summary;
   assert.equal(result.summary.propertiesCompared, whole.propertiesCompared);
   assert.equal(result.summary.propertiesMatched, whole.propertiesMatched - 2 * 12, "x, y, w, h, fills, stroke, radius, effects, opacity, blend, clip and visible, twice");
+});
+
+test("falsify: the Tooltip's arrow built unturned, as the fifth live push built it, drifts on its turn alone", async () => {
+  const result = await falsified("tooltip", ({ figma, built }) => {
+    for (const { id } of layers(built, "div")) Object.assign(node(figma, id), { rotation: 0, x: 45.5, y: 21 });
+  });
+  assert.deepEqual(findings(result), ["default div: turn"]);
+  assert.deepEqual(result.variants[0].nodes!.find((n) => n.key === "div")!.differences, [{ property: "turn", measured: 45, figma: 0 }]);
+  // Turned the wrong way, it drifts on its turn too; turned right but
+  // about its corner, as Figma turns a layer, it drifts on its place.
+  const other = await falsified("tooltip", ({ figma, built }) => {
+    for (const { id } of layers(built, "div")) Object.assign(node(figma, id), { rotation: 45, x: 45.5, y: 21 });
+  });
+  assert.deepEqual(findings(other), ["default div: x,y,turn"]);
+  const corner = await falsified("tooltip", ({ figma, built }) => {
+    for (const { id } of layers(built, "div")) Object.assign(node(figma, id), { rotation: -45, x: 45.5, y: 21 });
+  });
+  assert.deepEqual(findings(corner), ["default div: x,y"]);
+});
+
+test("falsify: a Button whose background stops inside its transparent border, built INSIDE at its border box, drifts on its stroke alone", async () => {
+  // shadcn/ui's default Button: bg-clip-padding, a 1px transparent border
+  // over its background. Built INSIDE at radius 8, its fill would run under
+  // the border, 1px past the browser's on every side: only an OUTSIDE
+  // stroke around the padding box draws it. (Where an INSIDE stroke draws
+  // the same, verify takes either: insideStrokeDrawsBorder.)
+  const result = await falsified("button-icon", ({ figma, built }) => {
+    const v = built.variants.find((x) => x.slug === "variant-default--size-default")!;
+    const root = node(figma, v.id);
+    root.strokeAlign = "INSIDE";
+    root.resize(root.width + 2, root.height + 2);
+    root.cornerRadius = 8;
+    for (const child of root.children) Object.assign(child, { x: child.x + 1, y: child.y + 1 });
+  });
+  assert.deepEqual(findings(result), ["variant-default--size-default : stroke"]);
+  const [stroke] = result.variants[0].nodes!.find((n) => n.key === "")!.differences;
+  assert.deepEqual([(stroke.measured as unknown[])[3], (stroke.figma as unknown[])[3]], ["O", "I"]);
 });
 
 test("falsify: a thumb moved from x 1 to 15 drifts on x alone", async () => {
@@ -590,7 +628,7 @@ test("integrity: a record of the wrong length is incomplete", async () => {
   const readback = assemble(await readBack(figma, [[built.component, 0, 1, 0]], { template: cut }));
   const result = verify(fixture, readback, 0.5);
   assert.deepEqual(result.readbackIssues.map((i) => [i.slug, i.problem]), [["size-default", "incomplete"], ["size-sm", "incomplete"]]);
-  assert.match(result.readbackIssues[0].missing!.join(), /an F record of 14 fields, not 15/);
+  assert.match(result.readbackIssues[0].missing!.join(), /an F record of 15 fields, not 16/);
 });
 
 /**
@@ -618,27 +656,38 @@ test("falsify: a title Figma cuts short where the browser drew it whole drifts o
   }
 });
 
-test("integrity: an entry read with template 2, which can't tell what Figma cuts, scores truncation by its settings, as it did", async () => {
+test("integrity: an entry read with template 2, which can't tell what Figma cuts, or 3, which reads no turn, scores as it did", async () => {
   const { fixture, readback } = await titleScaled(1.2);
   const component = Object.keys(readback.components)[0];
-  // What template 2 returned: no `cut` on a text's record.
-  const read = (tpl: number) => {
+  // What template 2 returned, no `cut` on a text's record and no `turn` on
+  // any; and template 3, no `turn`.
+  const read = (tpl: number, lengths: Record<string, number>) => {
     const copy = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
     for (const [key, entry] of Object.entries(copy.components[component].variants)) {
       const { checksum: _checksum, ...rest } = entry;
       rest.tpl = tpl;
-      rest.tree = rest.tree!.map((r) => (r[1] === "T" ? r.slice(0, 23) : r));
+      rest.tree = rest.tree!.map((r) => r.slice(0, lengths[r[1] as string]));
       copy.components[component].variants[key] = { ...rest, checksum: readbackChecksum(copy.components[component].nodeId!, key, rest) };
     }
     return verify(fixture, copy, 0.5);
   };
-  const old = read(2);
+  const old = read(2, { F: 15, T: 23, V: 10 });
   assert.deepEqual(old.readbackIssues, []);
   assert.equal(old.elementFidelity, 1, drift(old));
-  // A template 3 entry without it was read with the template cut down.
-  const cut = read(3);
+  // Template 3 scores what Figma cuts, as template 4 does, which cuts the
+  // titles 1.2 times as wide: the same score, nothing turned to miss.
+  const three = read(3, { F: 15, T: 24, V: 10 });
+  assert.deepEqual(three.readbackIssues, []);
+  assert.equal(three.elementFidelity, verify(fixture, readback, 0.5).elementFidelity);
+  assert.ok((three.elementFidelity ?? 1) < 1);
+  // A template 3 entry without `cut`, or a template 4 one without `turn`,
+  // was read with the template cut down.
+  const cut = read(3, { F: 15, T: 23, V: 10 });
   assert.deepEqual(cut.readbackIssues.map((i) => i.problem), ["incomplete", "incomplete", "incomplete", "incomplete"]);
   assert.match(cut.readbackIssues[0].missing!.join(), /a T record of 23 fields, not 24/);
+  const unturned = read(4, { F: 15, T: 24, V: 10 });
+  assert.deepEqual(unturned.readbackIssues.map((i) => i.problem), ["incomplete", "incomplete", "incomplete", "incomplete"]);
+  assert.match(unturned.readbackIssues[0].missing!.join(), /an F record of 15 fields, not 16/);
 });
 
 test("integrity: a variant renamed in Figma is a name_mismatch, not scored", async () => {
@@ -845,6 +894,25 @@ function textVerdict(result: TreeScore, key: string, properties: string[]) {
     unscorable: result.unscorable.filter((u) => u.key === key).map((u) => u.property),
   };
 }
+
+test("kind gate: a layer of another kind is compared on what its own would be, and its kind, its turn once", () => {
+  // A turned arrow out of the flow, which the build turns, and a turned
+  // box with a child, which it doesn't: each read back as a text.
+  const root: TreeNode = { k: "", t: "F", el: "div", box: [0, 0, 60, 40] };
+  const styles = { borderRadius: { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 }, boxShadow: [], opacity: 1 } as unknown as NormalizedStyles;
+  const F = (k: string, box: Box) => [k, "F", ...box, [], null, 0, [], 1, "NORMAL", 0, 1, `1:${k.length + 1}`, 0];
+  const T = (k: string, box: Box) => [k, "T", ...box, "x", "Inter", 400, 0, 14, 20, 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1, `1:${k.length + 1}`, 0, 0];
+  const arrow: TreeNode = { k: "arrow", t: "F", el: "div", box: [20, 10, 10, 10], abs: 1, tf: "rotate: 45deg" };
+  const wrap: TreeNode = { k: "wrap", t: "F", el: "div", box: [0, 20, 20, 20], abs: 1, tf: "rotate: 90deg" };
+  const dot: TreeNode = { k: "wrap/dot", t: "F", el: "span", box: [5, 5, 4, 4] };
+  const compared = (arrowKind: typeof F, wrapKind: typeof F) => scoreTree({
+    nodes: [root, arrow, wrap, dot], styles, assets: { svg: {}, img: {} }, tolerance: 0.5,
+    records: [F("", root.box), arrowKind("arrow", [37.07, 15, 10, 10]), wrapKind("wrap", [20, 20, 20, 20]), F("wrap/dot", dot.box)],
+  }).compared;
+  const whole = compared(F, F);
+  assert.equal(compared(T, F), whole + 1, "the turned arrow: its turn and box, its kind, and a frame's own properties");
+  assert.equal(compared(F, T), whole + 1, "the box with a child: no turn, which it isn't scored on");
+});
 
 const LONG = "sales-dashboard-quarterly-report.pdf";
 

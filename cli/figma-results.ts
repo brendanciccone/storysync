@@ -54,15 +54,24 @@ export interface ReadResult {
 
 /**
  * The readback template's default LIMIT, the bytes a read call returns at
- * most, as design section 9.1 has it, under use_figma's 20kb. `storysync
- * figma code` packs each call's slices to a predicted 14,000 and writes
- * this, 1,000 above, so a call stops short only where its prediction was
- * low.
+ * most, under use_figma's 20kb and the template's own guard at 19,000.
+ * `storysync figma code` packs each call's slices to a predicted 17,000
+ * and writes this, 1,000 above, so a call stops short only where its
+ * prediction was low. Section 9.1's 15,000 left the fifth live push's
+ * reads at 10,700 to 12,700 bytes each, 12 calls each carrying the 8,000
+ * character template; the sixth probe saw a response of 18,999 bytes come
+ * back whole (fixtures/figma-tsum-probe.json, call 5). The seventh
+ * (fixtures/figma-probe-7.json) saw what use_figma counts: the bytes of
+ * the JSON it returns, not that JSON escaped again, up to 20,480. 18,999
+ * characters, 30% of them quotes or backslashes, twice a read's share,
+ * came back whole, as did 17,969 bytes half outside ASCII, which the
+ * template counts at 19,000; 20,500 was refused, the call's changes not
+ * kept.
  */
-export const READ_LIMIT = 15_000;
+export const READ_LIMIT = 18_000;
 
 /** The readback template this CLI writes calls for (templates/readback.js), which refuses a call for another. */
-export const READBACK_TPL = 3;
+export const READBACK_TPL = 4;
 
 /**
  * The lines the CLI writes ahead of templates/readback.js to make a read

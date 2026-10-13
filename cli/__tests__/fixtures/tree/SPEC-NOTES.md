@@ -561,7 +561,9 @@ commit that made it.
       class alone names binds (A10): `border-border dark:border-input` is
       `input`, #e5e5e5 in light like `border`, and the dark theme's.
     - A radius is not bound when its border is built OUTSIDE, because the
-      inner radius matches no token.
+      inner radius matches no token; figma code says so where a token holds
+      the browser's radius (F6-2). A border the background stops at that
+      an INSIDE stroke draws alike is built INSIDE, and binds.
     - Candidates are the tokens' light `hex` and `px`, which snap measures;
       a token's `dark` value is never one. A variable with Light and Dark
       modes binds by name as one of one mode does (tokens 0.4.0, item #8).
@@ -653,8 +655,8 @@ C1. **The CLI writes all four header lines, TPL included, as 9.1 has them.**
      a TPL other than 2.
    - `readbackHeader` writes them one a line, as B's `figma code` does, so
      `figma next` finds a call's LIMIT again by its line.
-   - LIMIT defaults to 15,000 (`READ_LIMIT`): B packs reads to a predicted
-     14,000 and adds its 1,000 margin.
+   - LIMIT defaults to 18,000 (`READ_LIMIT`): B packs reads to a predicted
+     17,000 and adds its 1,000 margin (15,000 and 14,000 before F6-5).
 C2. **LIMIT and the 19,000 guard count UTF-8 bytes**, where 9.1 says
    "encoded characters". use_figma's 20kb counts bytes, so labels outside
    ASCII could pass it under a character LIMIT. A UTF-16 unit outside ASCII
@@ -1606,7 +1608,8 @@ BV2. **Every call checks a checksum of its own data before it does
    - The template has its own checksum, TSUM (`callCode` in
      `cli/checksum.ts`). It is 17,000 of a build call's 45,000, and a
      digit mistyped in keepLines' 1.27 or a tolerance changed every build
-     without a word. figma code writes the template as the function
+     without a word. (What follows is how 0.4.0 checked it, which never
+     ran live; F6-1 has the string that replaced it.) figma code writes the template as the function
      `const T = async()=>{...};`, TSUM as FNV-1a over that text, and a
      guard after it that checks SUM, then TSUM, and returns `await T()`,
      refusing a changed template with `... its template fails its
@@ -1873,10 +1876,152 @@ O16. **The `tooltip` and `select` fixtures** are the ui-base-tooltip and
     only the `fixture` block added. Every fixture test takes them: the
     tooltip's arrow, placed by Base UI's positioner and turned 45
     degrees, builds as its own 10px box at 45.5,21, past the 28px
-    bubble, its turn unscored (`transform`), as verify leaves it; none
+    bubble, turned 45 degrees about its center (F6-3); none
     of the select's 14 items paints. Two fixture checks met what CSS
     does here: the build harness's shape check skips a vector snap
     measured only roughly (`approx`, or a raster), as verify's shape
     gate does, and the check that an in-flow node lies inside its
     parent skips a parent that clips, as the listbox scrolls its groups
     past its bottom and hangs its separators 4px past its sides.
+
+# After the fifth live push: templates and checksums (fix pass 6)
+
+The fifth push verified at 100%, but by eye its Button radius was bound to
+nothing, its Tooltip arrow was a flat tab, and the template checksum never
+ran. Notes F6-1 on. The sixth probe (2026-10-13, file rPGAMu9hIKY9BwFWRkDpY3,
+page "storysync probe 6", `fixtures/figma-tsum-probe.json`,
+`spikes/figma-tsum-probe-*.js`) settled what Figma does.
+
+F6-1. **The template is carried as a string, checked, then run** (BV2,
+   `callCode` in `cli/checksum.ts`). Both build results of push 5 had
+   `tc: 0`. The probe's call 1 got `String(fn)` back exactly, but call 2,
+   the guard as callCode wrote it, got `async () => {\n      return 1.50;}`
+   for `async()=>{\nreturn 1.50}`: use_figma rewrites some calls before
+   they run (reprinted, its line numbers kept), so a check of a function's
+   text can't be relied on. The probe also saw `eval`, `new Function` and
+   the AsyncFunction constructor run. So `const T` is now the template as a
+   template literal (`templateLiteral`: backslashes, backticks and `${`
+   escaped, 3 to 5 characters for a minified template), TSUM is FNV-1a over
+   the template's own text, and the guard checks SUM, then TSUM over the
+   string T, and runs that string with the AsyncFunction constructor as the
+   body of `async (figma, <the call's constants>, TC)`, TC passed as 1, which
+   the build returns as `tc`. A string's characters survive any rewrite
+   that keeps what the code does. Live: the real build and readback
+   templates passed TSUM and ran this way (calls 3 and 4, `tc: 1`), and a
+   call with one character of its template changed was refused (call 6).
+   The guard is 668 characters. `assertCompiles` compiles a template as
+   that function, so a template declaring a constant still fails. The
+   readable `--no-minify` template keeps its lines inside the literal, and
+   `figma next` finds it by its header comment.
+F6-2. **Spec problem (8.3): a `bg-clip-padding` border is OUTSIDE at
+   `r - w` only where it must be.** Push 5 built all 97 Button frames OUTSIDE
+   at radius 7 (`rounded-md`, md = 8), bound to nothing, with no word.
+   `insideStrokeDrawsBorder` (tree-types.ts) says when an INSIDE stroke over
+   a fill draws the same: no background to show under the border, or every
+   side it draws solid and opaque. Such a frame is built INSIDE at its border
+   box, radius as measured, bound to its token (Button's outline, ghost and
+   link). Elsewhere, a transparent or translucent border over a background,
+   the fill stopping short of the border can only be drawn by the padding
+   box, so the frame stays OUTSIDE at the inner radius, and figma code warns
+   `radius 8 left unbound: its background stops inside a border that would
+   show it (background-clip padding-box), so the frame is built as the
+   padding box, at radius 7, which no token holds` where a token holds the
+   browser's radius (Button's default, secondary, destructive). Figma can't
+   inset a fill, nor bind a variable to a value less one. verify takes `I`
+   or `O` where they draw alike, `O` alone elsewhere, so readbacks of
+   either build score the same.
+F6-3. **A turn in the plane of a childless node out of the flow is built**
+   (6.9, 8.3, 9.2, 10.2). `turnOf` reads `tf` (`rotate: <angle>`, about z,
+   and a rotation `matrix(...)`, summed) as clockwise degrees; anything that
+   scales, skews or turns in 3D is null. `builtTurn` turns a node that is
+   `abs` and has no children: Figma lays a turned layer in an auto layout's
+   flow out by its turned box (probe call 1, `c` and `d`), which CSS
+   doesn't, and a turned node's children are measured as turned page boxes.
+   The build sets Figma's `rotation`, the turn negated (Figma turns
+   counterclockwise about the top left corner, which x and y place, probe
+   call 1, `a` and `b`), and places the corner so the box turns about its
+   center: snap's box is the element's own size centered where it drew, so
+   any transform-origin comes out the same. Readback template 4 adds `turn`,
+   the last field of every record (F 16, T 25, V 11; `RECORD_BY_TPL` keeps
+   2's and 3's), and reads a turned layer's x and y as its box unturned
+   about its center, from `relativeTransform`. verify scores `turn` where
+   the build turns a node and wherever Figma has one, within half a degree;
+   drops `approx: transform` for a node it turns, whose box is exact; and
+   names a turn it leaves out, `built unturned`, or any other transform,
+   `built as the element's own box, untransformed`. A readback from
+   template 3 still verifies, its turn listed as not read. The build's
+   `drawn` takes a turned layer's turned box for the set's grid. figma
+   code's warning that pass said `built as its bounding box is not built`:
+   a NotBuilt now carries `as`, what is built instead, and reads `… is built
+   as …` (F6-4). The mock models rotation as the probe saw it, and refuses a
+   turned layer in an auto layout's flow rather than lay it out unturned.
+F6-4. **A warning says what is built in place of what isn't.** `per-side
+   border colors (…) is built as one color, #e5e5e5`, `border style double
+   is built as solid`, `overflow clipped on x only is built as clipping both
+   axes`, `background-clip content-box is built as padding-box`, and a
+   transform's; what isn't built at all still ends `is not built`.
+F6-5. **Reads pack to 17,000 predicted, LIMIT 18,000** (`DEFAULT_READ_LIMIT`,
+   `READ_LIMIT`). Push 5's 12 reads came back at 10,700 to 12,700 bytes,
+   each carrying the 8,400 character template; the probe saw 18,999 bytes
+   come back whole (call 5), and the template's guard still throws past
+   19,000. On push 5's snap, 10 reads instead of 12, each predicted 15,800
+   to 16,800; in the mock they returned 13,900 to 16,000 bytes, with no
+   continuation. The template now counts the `more` it may add from the
+   start, which it left out, so a call holds LIMIT exactly.
+
+## The review of fix pass 6
+
+F6-6. **A turn inside a transformed node is built unturned** (F6-3).
+   snap measures a node inside a turned or scaled one as the page box that
+   transform drew it in, and the build builds the outer node
+   untransformed (it has children), so turning the inner one alone left it
+   at another net turn than the browser's: an arrow turned 45 degrees
+   inside a box turned 90 showed at 45 against 135, and verify scored its
+   turn as matching. `builtTurn` now takes a `TurnContext`, the node's
+   child count and `transformedAround`, whether a node around it has a
+   `tf`; `unturnedBecause` gives the reason a turn is left out, which figma
+   code's warning and verify's unscorable `transform` both say: `a
+   transform around it is built untransformed`.
+F6-7. **A turned icon's shapes are scored** (10.2, F6-3). verify left them
+   unscored as `the SVG holds what Figma's importer may drop (transform)`:
+   it read the node's `approx`, `transform` included, where the rest of its
+   geometry drops `transform` for a turn the build makes. snap measures a
+   turned icon's shapes turned, in the box the turned icon spans
+   (getBoundingClientRect), and the readback reads each shape's
+   absoluteBoundingBox in the turned frame's, which is the same, so they
+   are now compared. Where the build leaves the transform out, the reason
+   says so: `its shapes are measured as rotate: 45deg draws them, and it
+   is built unturned`. The mock's absoluteTransform and absoluteBoundingBox
+   now compose each frame's turn from the page down, as Figma's do, so a
+   turned frame turns what it holds.
+F6-8. **A turn in the flow is built where the turned box is the node's
+   own** (F6-3). The seventh probe (2026-10-13, same file and page,
+   `fixtures/figma-probe-7.json`, `spikes/figma-probe-7-*.js`) laid out
+   layers turned in auto layout as the build sets them, rotation then
+   sizing: turned 180 degrees in a row, a column and a hugging row, filling
+   its row, resized after turning, and a hugging text, and a 16 square
+   turned 90, each took the room and place its unturned box would, the
+   next layer after it where CSS puts it; a 20 by 6 bar turned 90 took 6,
+   as the sixth probe's 45 took 14.14. So `unturnedBecause` builds a turn
+   in the flow at 180 degrees, and at 90 where the box is square: a
+   chevron's `rotate-180` in an open state, a square icon's `rotate-90`.
+   Other turns in the flow keep their own box, unturned, and the caveat.
+   The record's x and y are the turned corner, as out of the flow, which
+   auto layout puts there, and checkLayout finds it. The mock lays a
+   turned layer in the flow out by its turned box, any angle, replaying
+   both probes; it refuses one that fills at other than 180 degrees,
+   which no probe tried. Figma keeps a rotation of 180 or -180 as given.
+F6-9. **LIMIT 18,000 holds for dense and non-ASCII reads** (F6-5, C2). The
+   sixth probe's 18,999 bytes were almost all `x`, which couldn't tell how
+   use_figma counts its 20kb; a read's records are 15% quotes and
+   backslashes, which, escaped once more, would take an 18,000 read past
+   20,000. The seventh probe's calls 2 to 4: a response of 18,999
+   characters, 30% quotes and backslashes, came back whole, ending with
+   its end marker; so did 17,969 bytes, half of them outside ASCII, which
+   the template counts at 19,000, the most its guard lets through; one of
+   20,500 failed with `Return value exceeds the 20480-byte limit (20500
+   bytes). Canvas edits from this run were not committed.` So the limit is
+   20,480 bytes of the JSON returned, not escaped again, and a call over it
+   keeps none of its changes, where the build template's comment had them
+   stand. The mock still fails a response at 20,001 bytes, and keeps the
+   changes of a call it fails.

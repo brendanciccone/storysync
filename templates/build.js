@@ -2,14 +2,14 @@
 // snap's element trees, one page per call.
 //
 // `storysync figma code` writes every call as `const DATA = {...};`, then
-// this file, minified, as the function T, and the agent sends the file
+// this file, minified, as the string T, and the agent sends the file
 // unchanged. The call checks DATA's checksum, SUM, and this file's, TSUM,
-// before T runs (cli/checksum.ts, callCode): a call changed on its way
-// from the file is refused before anything changes. T returns `tc`, 1
-// where the runtime gave back T's text to check, 0 where it couldn't, TC
-// in the call. Nothing here is specific to a component: everything is in
-// DATA, which emit computes from snap's facts (cli/figma-code.ts), so this
-// file sets plain Figma properties and decides nothing about CSS.
+// before it runs T as the body of an async function (cli/checksum.ts,
+// callCode): a call changed on its way from the file is refused before
+// anything changes. T returns `tc`, 1 where the call checked TSUM, which
+// the call says by TC. Nothing here is specific to a component: everything
+// is in DATA, which emit computes from snap's facts (cli/figma-code.ts), so
+// this file sets plain Figma properties and decides nothing about CSS.
 //
 // DATA = { page, S, sets }
 //   S     the call's table of strings and styles; records refer to it by index.
@@ -337,6 +337,11 @@ const style = async (n, rec, parent, root) => {
   if (root) return;
   const auto = parent.layoutMode !== 'NONE';
   if (auto) n.layoutPositioning = st.a ? 'ABSOLUTE' : 'AUTO';
+  // A turn (`rt`, Figma's rotation), before the place: Figma turns a layer
+  // about its top left corner, which x and y put where emit computed, or
+  // auto layout puts where its turned box starts, the box its unturned one
+  // would take, turned 180 degrees or 90 when square.
+  if ((st.rt || 0) !== n.rotation) n.rotation = st.rt || 0;
   if (auto && !st.a) {
     n.layoutSizingHorizontal = SIZING[sizing[0]];
     n.layoutSizingVertical = SIZING[sizing[1]];
@@ -534,7 +539,8 @@ const checkLayout = (nodes, recs, slug, absolute) => {
 // half of it CENTER (an imported vector's), its widest side's; a shadow by
 // its radius, spread and both offsets; a blur by its radius. Each is taken
 // on every side, and they add up, which is more than draws. A designer's
-// slice has none of them, nor a group strokes.
+// slice has none of them, nor a group strokes. A turned layer's box is
+// the one its turned corners span, about its x and y.
 const drawn = (v) => {
   const d = [0, 0, 0, 0];
   const reach = (n, type, f) => Math.max(0, ...(n.effects || []).map((e) => (e.visible && e.type === type ? f(e) : 0)));
@@ -543,7 +549,10 @@ const drawn = (v) => {
     const o = (s && s * (typeof n.strokeWeight === 'number' ? n.strokeWeight : Math.max(n.strokeTopWeight, n.strokeRightWeight, n.strokeBottomWeight, n.strokeLeftWeight)))
       + reach(n, 'DROP_SHADOW', (e) => e.radius + (e.spread || 0) + Math.abs(e.offset.x) + Math.abs(e.offset.y))
       + reach(n, 'LAYER_BLUR', (e) => e.radius);
-    [x - o, y - o, x + n.width + o, y + n.height + o].map((t, i) => (d[i] = Math[i < 2 ? 'min' : 'max'](d[i], t)));
+    const [[a, b], [c, e]] = n.rotation ? n.relativeTransform : [[1, 0], [0, 1]];
+    const xs = [0, a * n.width, b * n.height, a * n.width + b * n.height];
+    const ys = [0, c * n.width, e * n.height, c * n.width + e * n.height];
+    [x + Math.min(...xs) - o, y + Math.min(...ys) - o, x + Math.max(...xs) + o, y + Math.max(...ys) + o].map((t, i) => (d[i] = Math[i < 2 ? 'min' : 'max'](d[i], t)));
     if (isFrame(n) && !n.clipsContent) for (const c of n.children) if (c.visible) add(c, x + c.x, y + c.y);
   };
   add(v, 0, 0);
@@ -768,10 +777,11 @@ for (const [s, set] of DATA.sets.entries()) {
 }
 
 const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
-// use_figma returns at most 20kb, and a call's changes stand when its
-// response is cut, so the agent would lose `uploads` with it. The lists that
-// grow with nodes are halved, longest first, until the response fits, and
-// `omitted` says how many entries went.
+// use_figma returns at most 20,480 bytes, and refuses a call that would
+// return more, keeping none of its changes (the seventh probe), so a build
+// whose response grew past it would fail each time it was sent. The lists
+// that grow with nodes are halved, longest first, until the response fits,
+// and `omitted` says how many entries went.
 const lists = [unbound, fallbacks, ...results.map((r) => r.absoluteContainers)];
 let omitted = 0;
 while (JSON.stringify(out).length > 16000) {

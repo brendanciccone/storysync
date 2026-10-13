@@ -111,6 +111,8 @@ interface Push {
   mock: MockFigma;
   /** Each read call's results, continuations included, by seq. */
   reads: Map<number, string[]>;
+  /** What figma code warned of. */
+  warnings: string[];
 }
 
 /**
@@ -148,7 +150,7 @@ async function push(
   const out = join(dir, "figma");
   const code = await cli(["figma", "code", "--snap", snapPath, "--tokens", join(dir, "tokens.json"), "--out", out, "--json", ...codeArgs]);
   assert.equal(code.status, 0, `figma code exited ${code.status}\n${code.stdout}${code.stderr}`);
-  const { planPath } = jsonOf(code) as { planPath: string };
+  const { planPath, warnings = [] } = jsonOf(code) as { planPath: string; warnings?: string[] };
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as FigmaPlan;
 
   // Text as wide as Figma sets it in its own fonts, Inter for the system-ui
@@ -196,7 +198,7 @@ async function push(
       reads.set(call.seq, results);
     }
   }
-  return { dir, snapPath, planPath, plan, mock, reads };
+  return { dir, snapPath, planPath, plan, mock, reads, warnings };
 }
 
 /**
@@ -500,18 +502,116 @@ test("tree e2e: a Tooltip snap hovered open keeps its arrow below the bubble, wh
     // The bubble hugs its label, which Figma sets a whole pixel wide.
     const bubble = layerOf(p.mock, variant.slug, "");
     assert.deepEqual([bubble.width, bubble.height], [101, 28]);
-    // The arrow past the bubble's bottom, where Base UI's positioner placed it.
+    // The arrow past the bubble's bottom, where Base UI's positioner placed
+    // it, turned 45 degrees about its center into a diamond, as the browser
+    // drew it: Figma's rotation -45, about its top left corner, which sits
+    // at the diamond's top, 50.5,18.93. The fifth live push built it as an
+    // unturned 10px square, a flat tab under the bubble.
     const arrow = layerOf(p.mock, variant.slug, "div");
-    assert.deepEqual([arrow.x, arrow.y, arrow.width, arrow.height], [45.5, 21, 10, 10]);
+    assert.deepEqual([arrow.x, arrow.y, arrow.width, arrow.height, arrow.rotation], [50.5, 18.93, 10, 10, -45]);
     assert.doesNotMatch(descriptionOf(p.mock, "ui-base-tooltip"), /storysync:/);
+    assert.ok(!p.warnings.some((w) => /transform/.test(w)), p.warnings.join("\n"));
     const { status, json, text } = await verifyPlan(p, "--strict");
     assert.equal(status, 0, `${text.stdout}${text.stderr}`);
     assert.equal(json.elementFidelity, 1);
     const e = elementsOf(json);
     assert.deepEqual([e.verified, e.drifted, e.missing], [e.measured, 0, 0]);
+    // Its turn is scored, and nothing is left unscored for it.
+    assert.deepEqual((json.unscorable as { property: string }[]).filter((u) => u.property === "transform"), []);
+    assert.ok(!text.stdout.includes("transform"), text.stdout);
     assert.ok(text.stdout.includes('  i ui/base/Tooltip: measured open: snap hovered over button[data-slot="tooltip-trigger"] to open it, and measured div[data-slot="tooltip-content"]'), text.stdout);
   } finally {
     cleanup(p);
+  }
+});
+
+test("tree e2e: a turn inside a turned layer is built unturned and named, not scored as the browser's", async () => {
+  // The Tooltip's arrow, turned 45 degrees, inside a box turned 90, out of
+  // the flow: on screen it is turned 135 degrees. The box has a child, so
+  // it is built unturned; turned on its own, the arrow would show at 45
+  // and score as matching.
+  const tooltip = asSnap(loadTreeFixture("tooltip"));
+  const tree = (tooltip.components[0] as TreeComponent).tree!;
+  const arrow = tree.base[2];
+  tree.base.splice(2, 1,
+    { k: "wrap", t: "F", el: "div", box: [30, -6, 40, 20], abs: 1, tf: "rotate: 90deg", approx: "transform", bg: "#ff0000" },
+    { ...arrow, k: "wrap/div", box: [15, 5, 10, 10] });
+  const p = await push(tooltip);
+  try {
+    const slug = tooltip.components[0].variants[0].slug;
+    assert.deepEqual([layerOf(p.mock, slug, "wrap").rotation, layerOf(p.mock, slug, "wrap/div").rotation], [undefined, undefined]);
+    assert.ok(p.warnings.some((w) => w.endsWith("wrap/div: transform rotate: 45deg is built as its own box, unturned, as a transform around it is built untransformed")), p.warnings.join("\n"));
+    const { json } = await verifyPlan(p);
+    const unscorable = (json.unscorable as { key: string; property: string; reason: string }[]).filter((u) => u.property === "transform");
+    assert.deepEqual(unscorable.map((u) => [u.key, u.reason]), [
+      ["wrap", "rotate: 90deg is built unturned, as its children are measured turned"],
+      ["wrap/div", "rotate: 45deg is built unturned, as a transform around it is built untransformed"],
+    ]);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a turned icon's shapes are scored where it is built turned, and named where it isn't", async () => {
+  // The Card's bell, 24 square, turned 90 degrees clockwise out of the
+  // flow: the browser measures each shape turned, in the box the turned
+  // icon spans, (x, y, w, h) to (24 - y - h, x, h, w), and so does the
+  // readback, off Figma's turned frame.
+  const card = (edit: (svg: TreeNode) => void) => {
+    const snap = asSnap(loadTreeFixture("card"));
+    edit((snap.components[0] as TreeComponent).tree!.base.find((n) => n.k === "card-content/div/svg")!);
+    return snap;
+  };
+  const turned = await push(card((svg) => {
+    Object.assign(svg, { abs: 1, tf: "rotate: 90deg", approx: "transform", shapes: svg.shapes!.map(([x, y, w, h]) => [24 - y - h, x, h, w]) });
+  }));
+  try {
+    const { json } = await verifyPlan(turned);
+    assert.equal(json.elementFidelity, 1);
+    assert.deepEqual((json.unscorable as { key: string; property: string }[]).filter((u) => u.key === "card-content/div/svg"), []);
+  } finally {
+    cleanup(turned);
+  }
+  // In the flow at 45 degrees it is built unturned: its shapes, measured
+  // turned, are named, not scored against the unturned ones.
+  const unturned = await push(card((svg) => Object.assign(svg, { tf: "rotate: 45deg", approx: "transform" })));
+  try {
+    const { json } = await verifyPlan(unturned);
+    const shapes = (json.unscorable as { key: string; property: string; reason: string }[]).filter((u) => u.key === "card-content/div/svg" && u.property === "shapes");
+    assert.deepEqual(shapes.map((u) => u.reason), ["its shapes are measured as rotate: 45deg draws them, and it is built unturned"]);
+  } finally {
+    cleanup(unturned);
+  }
+});
+
+test("tree e2e: an icon in the flow turned 180 degrees, or 90 as it is square, is built turned in its place, and verifies with its turn and shapes", async () => {
+  // A chevron's rotate-180 in an open state, on the Card's bell, 24 square,
+  // in its row: Figma's auto layout lays a turned layer out by its turned
+  // box, which at these turns is where the unturned one goes (the seventh
+  // probe). snap measures the shapes turned.
+  for (const [turn, shape] of [
+    [180, ([x, y, w, h]: number[]) => [24 - x - w, 24 - y - h, w, h]],
+    [90, ([x, y, w, h]: number[]) => [24 - y - h, x, h, w]],
+  ] as const) {
+    const snap = asSnap(loadTreeFixture("card"));
+    const svg = (snap.components[0] as TreeComponent).tree!.base.find((n) => n.k === "card-content/div/svg")!;
+    Object.assign(svg, { tf: `rotate: ${turn}deg`, approx: "transform", shapes: svg.shapes!.map(shape) });
+    const p = await push(snap);
+    try {
+      const slug = snap.components[0].variants[0].slug;
+      assert.equal(layerOf(p.mock, slug, "card-content/div/svg").rotation, -turn);
+      assert.ok(!p.warnings.some((w) => /transform|so it is built without auto layout/.test(w)), p.warnings.join("\n"));
+      // Its row stayed in auto layout: the build found the icon where its turned record has it.
+      for (const call of p.plan.calls.filter((c) => c.kind === "build")) {
+        const result = JSON.parse(readFileSync(join(dirname(p.planPath), call.result), "utf8")) as { sets: { absoluteContainers: unknown[] }[] };
+        assert.deepEqual(result.sets.flatMap((set) => set.absoluteContainers), [], `${turn}`);
+      }
+      const { json } = await verifyPlan(p);
+      assert.equal(json.elementFidelity, 1, `${turn}`);
+      assert.deepEqual((json.unscorable as { key: string }[]).filter((u) => u.key === "card-content/div/svg"), [], `${turn}`);
+    } finally {
+      cleanup(p);
+    }
   }
 });
 

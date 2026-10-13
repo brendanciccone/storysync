@@ -15,8 +15,8 @@ import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
-import { textHugs } from "./tree-types.js";
-import type { Box, Sides, TreeNode } from "./tree-types.js";
+import { builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
+import type { Box, Sides, TreeNode, TurnContext } from "./tree-types.js";
 
 /**
  * A paint as the template sets it: `#rrggbb` alone for an opaque, unbound
@@ -91,20 +91,27 @@ export interface FigmaStyle {
   z?: [string, string];
   /** ABSOLUTE in its auto-layout parent. */
   a?: 1;
+  /** Figma's rotation, counterclockwise in degrees: the node's turn (tree-types builtTurn), the other way round. */
+  rt?: number;
 }
 
-/** Something a fact asked for that the build does not draw, by node key. */
+/** Something a fact asked for that the build does not draw, by node key, and what it draws instead, if anything. */
 export interface NotBuilt {
   key: string;
   what: string;
+  as?: string;
 }
 
-/** A paint left unbound because several tokens have its value and no class picks one. */
+/**
+ * A value left unbound: a paint because several tokens have its value and
+ * no class picks one, or `why` it couldn't bind where a token has it.
+ */
 export interface Unbound {
   key: string;
   property: string;
   value: string;
   candidates: string[];
+  why?: string;
 }
 
 /** A paint bound by the project's base styles, not a class: the rule is why (figma-bind.ts). */
@@ -131,6 +138,8 @@ export interface MapContext {
   parentCls?: string[];
   /** The spike's answers; SPIKE's when absent. */
   spike?: Pick<Spike, "svgStrokesScale">;
+  /** Where the node sits, which decides whether the build turns it (builtTurn); a childless node with nothing transformed around it when absent. */
+  around?: TurnContext;
 }
 
 const round2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
@@ -277,10 +286,13 @@ export function outsideInsets(node: TreeNode): [number, number, number, number] 
  * Whether the border is built OUTSIDE: where the background stops at it
  * (`background-clip: padding-box`, as shadcn/ui's Button's `bg-clip-padding`),
  * so Figma's fill, which an INSIDE stroke would sit over, ends where the
- * browser's does, and a transparent border shows what is behind it.
+ * browser's does, and a transparent border shows what is behind it. Not
+ * where an INSIDE stroke draws the same (insideStrokeDrawsBorder): no
+ * background, or a solid opaque border that hides it, which is built INSIDE
+ * at the border box, so its radius is the browser's own and binds.
  */
 function strokeIsOutside(node: TreeNode): boolean {
-  return Boolean(node.bd && node.bgc && sides(node.bd.w).some((w) => w > 0) && node.t === "F");
+  return Boolean(node.bd && node.bgc && sides(node.bd.w).some((w) => w > 0) && node.t === "F" && !insideStrokeDrawsBorder(node));
 }
 
 function strokeOf(node: TreeNode, ctx: MapContext): FigmaStroke | undefined {
@@ -297,9 +309,9 @@ function strokeOf(node: TreeNode, ctx: MapContext): FigmaStroke | undefined {
   for (const i of drawn) counts.set(String(colors[i]), (counts.get(String(colors[i])) ?? 0) + 1);
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const color = ranked[0][0] === "null" ? null : ranked[0][0];
-  if (ranked.length > 1) ctx.notBuilt.push({ key: node.k, what: `per-side border colors (${drawn.map((i) => colors[i] ?? "transparent").join(" ")}), built ${color ?? "transparent"}` });
+  if (ranked.length > 1) ctx.notBuilt.push({ key: node.k, what: `per-side border colors (${drawn.map((i) => colors[i] ?? "transparent").join(" ")})`, as: `one color, ${color ?? "transparent"}` });
   const style = styles[drawn[0]];
-  if (!["solid", "dashed", "dotted"].includes(style)) ctx.notBuilt.push({ key: node.k, what: `border style ${style}, built solid` });
+  if (!["solid", "dashed", "dotted"].includes(style)) ctx.notBuilt.push({ key: node.k, what: `border style ${style}`, as: "solid" });
   const w = collapse(widths);
   const stroke: FigmaStroke = { w, p: color ? solidPaint(color, "stroke", node.cls, node.k, "stroke", ctx, node.nocls) : CLEAR };
   const unit = Math.max(...drawn.map((i) => widths[i]));
@@ -312,7 +324,8 @@ function strokeOf(node: TreeNode, ctx: MapContext): FigmaStroke | undefined {
 function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv"> {
   if (node.r === undefined) return { r: 0 };
   let corners = sides(node.r);
-  if (strokeIsOutside(node)) {
+  const outside = strokeIsOutside(node);
+  if (outside) {
     // The frame is the padding box, whose corners CSS draws with the inner
     // radius: the outer less the border on that corner's sides.
     const [t, r, b, l] = sides(node.bd!.w);
@@ -321,9 +334,18 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
   }
   const out: Pick<FigmaStyle, "r" | "rv"> = { r: collapse(corners) };
   const value = sides(node.r)[0];
-  if (sides(node.r).every((c) => c === value) && value > 0 && !strokeIsOutside(node)) {
+  if (sides(node.r).every((c) => c === value) && value > 0) {
     const decision = ctx.binder.radius(value, node.cls);
-    if (decision.variable) out.rv = decision.variable;
+    if (outside) {
+      // A token has the browser's radius, but the frame is drawn with the
+      // inner one, which none has: said, rather than left without a word.
+      if (decision.variable || decision.candidates.length) {
+        ctx.unbound.push({
+          key: node.k, property: "radius", value: String(value), candidates: decision.candidates,
+          why: `its background stops inside a border that would show it (background-clip ${node.bgc}), so the frame is built as the padding box, at radius ${out.r}, which no token holds`,
+        });
+      }
+    } else if (decision.variable) out.rv = decision.variable;
     else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "radius", value: String(value), candidates: decision.candidates });
   }
   return out;
@@ -458,10 +480,20 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
   }
   if (node.cp) ctx.notBuilt.push({ key: node.k, what: `clip-path ${node.cp}` });
   if (node.ol) ctx.notBuilt.push({ key: node.k, what: `outline ${node.ol[0]}px ${node.ol[1]} ${node.ol[2] ?? "transparent"}` });
-  if (node.tf) ctx.notBuilt.push({ key: node.k, what: `transform ${node.tf}, built as its bounding box` });
+  // A turn the build can make is built (builtTurn), as Figma's rotation,
+  // the other way round; any other transform is named.
+  const around = ctx.around ?? { children: 0, transformed: false };
+  const turn = builtTurn(node, around);
+  if (turn) style.rt = -turn;
+  else if (node.tf && turn === null) {
+    ctx.notBuilt.push({
+      key: node.k, what: `transform ${node.tf}`,
+      as: turnOf(node.tf) === null ? "the element's own box, untransformed" : `its own box, unturned, as ${unturnedBecause(node, around)}`,
+    });
+  }
   if (node.clip) {
     style.c = 1;
-    if (node.clip !== 1) ctx.notBuilt.push({ key: node.k, what: `overflow clipped on ${node.clip} only, built clipping both axes` });
+    if (node.clip !== 1) ctx.notBuilt.push({ key: node.k, what: `overflow clipped on ${node.clip} only`, as: "clipping both axes" });
   }
   const effects = effectsOf(node, ctx);
   if (effects.length) style.e = effects;
@@ -507,7 +539,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
         else ctx.notBuilt.push({ key: node.k, what: `background ${layer.length > 60 ? `${layer.slice(0, 57)}...` : layer}` });
       }
     }
-    if (node.bgc === "content-box") ctx.notBuilt.push({ key: node.k, what: "background-clip content-box, built as padding-box" });
+    if (node.bgc === "content-box") ctx.notBuilt.push({ key: node.k, what: "background-clip content-box", as: "padding-box" });
     style.f = fills;
   }
   const stroke = strokeOf(node, ctx);

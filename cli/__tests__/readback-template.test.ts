@@ -6,9 +6,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FONTS, loadTreeFixture } from "./mock-figma.js";
 import { PAGE, READBACK_TEMPLATE, assemble, buildFixture, newFigma, readBack } from "./tree-harness.js";
-import { callSum, templateFunction } from "../checksum.js";
+import { callSum, templateLiteral } from "../checksum.js";
 import { withConstant } from "./figma-build-harness.js";
-import { parseReadResult, readbackCall, readbackHeader } from "../figma-results.js";
+import { READ_LIMIT, parseReadResult, readbackCall, readbackHeader } from "../figma-results.js";
 import type { ReadSlice } from "../figma-results.js";
 import { RECORD } from "../tree-types.js";
 import { readbackChecksum, verify } from "../verify.js";
@@ -25,13 +25,13 @@ test("template: carries no data of its own, and a call is the five header lines,
   assert.doesNotMatch(code, /SLUG_BY_NAME|SOURCE_BY_SLUG|SET_ID/, "no slugs, sources or set ids to fill in");
   // Design section 9.1's header, one constant a line, as `storysync figma
   // code` writes it, and SUM, the checksum of the four.
-  const sum = callSum(["ui/base", [["ui-base-card", 0, 1, 0]], 9000, 3]);
-  assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), `const PAGE = "ui/base";\nconst SLICES = [["ui-base-card",0,1,0]];\nconst LIMIT = 9000;\nconst TPL = 3;\nconst SUM = "${sum}";\n`);
-  assert.equal(readbackHeader("p", []), `const PAGE = "p";\nconst SLICES = [];\nconst LIMIT = 15000;\nconst TPL = 3;\nconst SUM = "${callSum(["p", [], 15000, 3])}";\n`, "LIMIT 15,000 unless told otherwise");
+  const sum = callSum(["ui/base", [["ui-base-card", 0, 1, 0]], 9000, 4]);
+  assert.equal(readbackHeader("ui/base", [["ui-base-card", 0, 1, 0]], 9000), `const PAGE = "ui/base";\nconst SLICES = [["ui-base-card",0,1,0]];\nconst LIMIT = 9000;\nconst TPL = 4;\nconst SUM = "${sum}";\n`);
+  assert.equal(readbackHeader("p", []), `const PAGE = "p";\nconst SLICES = [];\nconst LIMIT = 18000;\nconst TPL = 4;\nconst SUM = "${callSum(["p", [], 18000, 4])}";\n`, "LIMIT 18,000 unless told otherwise");
   const call = readbackCall(READBACK_TEMPLATE, "p", [], 1);
   assert.ok(call.startsWith(`${readbackHeader("p", [], 1)}const TSUM = "`));
-  assert.ok(call.includes(`\nconst T = ${templateFunction(READBACK_TEMPLATE)};\n`));
-  assert.ok(call.endsWith("\nreturn await T();\n"));
+  assert.ok(call.includes(`\nconst T = ${templateLiteral(READBACK_TEMPLATE)};\n`));
+  assert.ok(call.endsWith(`\nreturn await new(async()=>{}).constructor("figma","PAGE","SLICES","LIMIT","TPL","TC",T)(figma,PAGE,SLICES,LIMIT,TPL,1);\n`));
   // How `storysync figma next` finds the LIMIT a call was written with, to continue it with the same.
   assert.equal(/\nconst LIMIT = (\d+);/.exec(`// storysync figma code, call 07: read back\n${call}`)?.[1], "1");
 });
@@ -47,12 +47,12 @@ test("template: runs as `storysync figma code` writes a read call, and refuses a
   const run = await figma.run(call);
   assert.ok(run.ok, run.text);
   const result = run.value as { tpl: number; sets: { entries: Record<string, unknown> }[] };
-  assert.equal(result.tpl, 3);
+  assert.equal(result.tpl, 4);
   assert.deepEqual(Object.keys(result.sets[0].entries), ["size-default", "size-sm"]);
   // Written for template 2, its SUM to match.
   const other = await figma.run(withConstant(call, "TPL", 2));
   assert.equal(other.ok, false);
-  assert.match(other.text, /This is readback template 3, not 2/);
+  assert.match(other.text, /This is readback template 4, not 2/);
 });
 
 test("template: refuses a call whose template is one character off, before it reads anything", async () => {
@@ -78,9 +78,9 @@ test("template: refuses a call one character off the file figma code wrote, befo
   const sum = /const SUM = "(.)/.exec(call)!;
   for (const changed of [
     call.replace(",0,1,0]]", ",0,0,0]]"),
-    call.replace("const LIMIT = 15000;", "const LIMIT = 15001;"),
+    call.replace("const LIMIT = 18000;", "const LIMIT = 18001;"),
     call.replace(`const PAGE = "${PAGE}";`, `const PAGE = "${PAGE.toLowerCase()}";`),
-    call.replace("const TPL = 3;", "const TPL = 2;"),
+    call.replace("const TPL = 4;", "const TPL = 2;"),
     call.replace(sum[0], `const SUM = "${sum[1] === "0" ? "1" : "0"}`),
   ]) {
     assert.equal(changed.length, call.length);
@@ -109,12 +109,12 @@ test("template: returns an object, each entry sealed under its set's id and key,
   const built = await buildFixture(figma, fixture);
   const [result] = await readBack(figma, [[built.component, 0, 3, 0]]);
   assert.equal(typeof result, "object");
-  assert.deepEqual([result.kind, result.tpl, result.page, result.more], ["read", 3, PAGE, undefined]);
+  assert.deepEqual([result.kind, result.tpl, result.page, result.more], ["read", 4, PAGE, undefined]);
   const [set] = result.sets;
   assert.deepEqual([set.id, set.component, set.title, set.total, set.unbuilt, set.absent], [built.id, "ui-base-attachment", "ui/base/Attachment", 4, [], []]);
   for (const [slug, entry] of Object.entries(set.entries)) {
     assert.equal(entry.checksum, readbackChecksum(set.id, slug, entry));
-    assert.equal(entry.tpl, 3);
+    assert.equal(entry.tpl, 4);
     assert.equal(entry.source, "measured");
     for (const record of entry.tree!) assert.equal(record.length, RECORD[record[1] as "F" | "T" | "V"]);
     assert.deepEqual(entry.tree!.map((r) => r[0]), ["", "attachment-content", "attachment-content/attachment-title", "attachment-content/attachment-description", "attachment-media", "attachment-media/svg", "attachment-action", "attachment-action/svg"]);
@@ -212,20 +212,20 @@ test("template: reads each field as the header says, in the browser's terms", as
   assert.ok(run.ok, run.text);
   const [result] = await readBack(figma, [["enc", 0, 0, 0]], { page: "Page 1" });
   const { tree, designerLayers, readAt: _readAt, checksum: _checksum, ...fields } = result.sets[0].entries.default;
-  // Each record's node id, last but for a text's `cut` after it.
-  const idAt = (r: unknown[]) => (r[1] === "T" ? 22 : r.length - 1);
+  // Each record's node id, before its turn, and a text's `cut` before that.
+  const idAt = (r: unknown[]) => (r[1] === "T" ? 22 : r.length - 2);
   const records = tree!.map((r) => r.filter((_, i) => i !== idAt(r)));
   assert.ok(tree!.every((r) => /^\d+:\d+$/.test(String(r[idAt(r)]))), "each record has its node id");
   assert.deepEqual(records, [
-    ["", "F", 0, 0, 102, 52, ["#112233"], [2, ["#445566"], "solid", "C"], 7, [["D", 1, 2, 3, 4, "#00000080"], ["I", 0, 1, 2, 0, "#ff0000"], ["L", 5], ["B", 6]], 1, "MULTIPLY", 1, 1],
+    ["", "F", 0, 0, 102, 52, ["#112233"], [2, ["#445566"], "solid", "C"], 7, [["D", 1, 2, 3, 4, "#00000080"], ["I", 0, 1, 2, 0, "#ff0000"], ["L", 5], ["B", 6]], 1, "MULTIPLY", 1, 1, 0],
     // Its place from the root's border box, 1px outside the frame, and its own, 4px out on the left.
-    ["a", "F", 0, 5, 26, 14, ["#000000b3"], [[1, 2, 3, 4], ["#0000ff"], "dotted", "O"], 0, [], 1, "PASS_THROUGH", 0, 1],
-    ["b", "F", 1, 1, 10, 10, ["#ffffff"], [1, ["#000000"], "dashed", "I"], 0, [], 1, "PASS_THROUGH", 1, 0],
-    ["t", "T", 1, 1, 100, 15, "Hi", "Inter", 600, 1, 10, 15, 1, "#00ff00", "UPPER", "UNDERLINE", "CENTER", "ENDING", 2, "HEIGHT", 1, 1, 0],
+    ["a", "F", 0, 5, 26, 14, ["#000000b3"], [[1, 2, 3, 4], ["#0000ff"], "dotted", "O"], 0, [], 1, "PASS_THROUGH", 0, 1, 0],
+    ["b", "F", 1, 1, 10, 10, ["#ffffff"], [1, ["#000000"], "dashed", "I"], 0, [], 1, "PASS_THROUGH", 1, 0, 0],
+    ["t", "T", 1, 1, 100, 15, "Hi", "Inter", 600, 1, 10, 15, 1, "#00ff00", "UPPER", "UNDERLINE", "CENTER", "ENDING", 2, "HEIGHT", 1, 1, 0, 0],
     // AUTO line height at 12px is 15, as Figma sets it (the spike's labels).
     // As wide as the measure says, 1986.6, rounded up to a pixel, as Figma sizes a text.
-    ["long", "T", 1, 1, 1987, 15, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1, 0],
-    ["v", "V", 1, 1, 10, 10, [[1, 2, 4, 5, "#0000ff", "#00ff00", 1.5]], 1, 1],
+    ["long", "T", 1, 1, 1987, 15, readbackChars("x".repeat(301)), "Inter", 400, 0, 12, "auto", 0, "#000000", "ORIGINAL", "NONE", "LEFT", "DISABLED", null, "WIDTH_AND_HEIGHT", 1, 1, 0, 0],
+    ["v", "V", 1, 1, 10, 10, [[1, 2, 4, 5, "#0000ff", "#00ff00", 1.5]], 1, 1, 0],
   ]);
   assert.deepEqual(designerLayers!.map(([name, type]) => [name, type]), [["Note", "TEXT"], ...Array.from({ length: 19 }, (_, i) => [`D${i}`, "RECTANGLE"])], "the hidden one not, and the first 20 shown");
   // 0.4.0's root fields, in the same terms: its radius and size with the
@@ -239,8 +239,33 @@ test("template: reads each field as the header says, in the browser's terms", as
       { offsetX: 1, offsetY: 2, blur: 3, spread: 4, color: "#00000080", inset: false },
       { offsetX: 0, offsetY: 1, blur: 2, spread: 0, color: "#ff0000", inset: true },
     ],
-    name: "", source: "measured", tpl: 3, built: "abc",
+    name: "", source: "measured", tpl: 4, built: "abc",
   });
+});
+
+test("template: a turned layer reads back as its box unturned about its center, and its turn clockwise, as CSS says it", async () => {
+  // The fifth push's Tooltip arrow as the build turns it: Figma's rotation
+  // -45 about its top left corner, which sits at 50.5,18.93, out of the
+  // bubble's auto layout. Snap measured it as a 10px box at 45.5,21 turned
+  // 45 degrees clockwise.
+  const figma = newFigma();
+  const run = await figma.run(`
+    const root = figma.createComponent();
+    root.resize(101, 28);
+    root.layoutMode = 'HORIZONTAL';
+    root.setSharedPluginData('storysync', 'id', 'tip'); root.setSharedPluginData('storysync', 'slug', 'default'); root.setSharedPluginData('storysync', 'i', '0');
+    const arrow = figma.createFrame(); root.appendChild(arrow);
+    arrow.layoutPositioning = 'ABSOLUTE';
+    arrow.resize(10, 10); arrow.rotation = -45; arrow.x = 50.5; arrow.y = 18.93;
+    arrow.setSharedPluginData('storysync', 'k', 'div');
+    const label = figma.createText(); root.appendChild(label);
+    label.setSharedPluginData('storysync', 'k', '#text');`);
+  assert.ok(run.ok, run.text);
+  const [result] = await readBack(figma, [["tip", 0, 0, 0]], { page: "Page 1" });
+  const tree = result.sets[0].entries.default.tree!;
+  const arrow = tree.find((r) => r[0] === "div")!;
+  assert.deepEqual([...arrow.slice(2, 6), arrow[arrow.length - 1]], [45.5, 21, 10, 10, 45]);
+  assert.deepEqual(tree.filter((r) => r[0] !== "div").map((r) => r[r.length - 1]), [0, 0], "an unturned layer's turn is 0");
 });
 
 test("template: says whether Figma cuts each truncated text short, from a copy it measures and removes", async () => {
@@ -320,7 +345,7 @@ test("template: counts what it returns in bytes, as use_figma does, so text outs
   assert.ok(run.ok, run.text);
   const results = await readBack(figma, [["wide", 0, 23, 0]], { page: "Page 1" });
   assert.ok(results.length >= 2, "more than one call's worth");
-  for (const r of figma.runs.slice(-results.length)) assert.ok(r.ok && r.bytes <= 15_000 + 100, `${r.bytes} bytes`);
+  for (const r of figma.runs.slice(-results.length)) assert.ok(r.ok && r.bytes <= READ_LIMIT, `${r.bytes} bytes`);
   assert.equal(results.flatMap((r) => Object.keys(r.sets[0].entries)).length, 24);
 });
 

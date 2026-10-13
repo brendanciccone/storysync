@@ -17,8 +17,8 @@
 
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, RECORD_BY_TPL, flowOf, parentKey, rootWithStyles } from "./tree-types.js";
-import type { Box, ComponentTree, Flow, Sides, TreeNode } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
+import type { Box, ComponentTree, Flow, Sides, TreeNode, TurnContext } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
 // --- What the Figma spike saw -------------------------------------------------
@@ -99,12 +99,12 @@ interface Rec {
   raw: ReadRecord;
 }
 
-const F_FIELDS = { fills: 6, stroke: 7, radius: 8, effects: 9, opacity: 10, blend: 11, clip: 12, visible: 13, id: 14 } as const;
+const F_FIELDS = { fills: 6, stroke: 7, radius: 8, effects: 9, opacity: 10, blend: 11, clip: 12, visible: 13, id: 14, turn: 15 } as const;
 const T_FIELDS = {
   chars: 6, family: 7, weight: 8, italic: 9, size: 10, lineHeight: 11, letterSpacing: 12, color: 13, textCase: 14,
-  decoration: 15, align: 16, truncation: 17, maxLines: 18, autoResize: 19, opacity: 20, visible: 21, id: 22, cut: 23,
+  decoration: 15, align: 16, truncation: 17, maxLines: 18, autoResize: 19, opacity: 20, visible: 21, id: 22, cut: 23, turn: 24,
 } as const;
-const V_FIELDS = { shapes: 6, opacity: 7, visible: 8, id: 9 } as const;
+const V_FIELDS = { shapes: 6, opacity: 7, visible: 8, id: 9, turn: 10 } as const;
 
 /**
  * Why a record can't be read, or null: one of another length than its kind
@@ -391,9 +391,14 @@ export function svgShapePaints(markup: string): ShapePaint[] | null {
 
 // --- Scoring -------------------------------------------------------------------
 
-/** The properties each kind is scored on, for a node missing from Figma (design section 10.2). */
-function propertiesOf(n: TreeNode, root: boolean): string[] {
-  const where = root ? ["w", "h"] : ["x", "y", "w", "h"];
+/** Whether two turns, in degrees, are one within half a degree, whichever way round they are written. */
+function sameTurn(a: number, b: number): boolean {
+  return Number.isFinite(a) && Math.abs((((a - b) % 360) + 540) % 360 - 180) <= 0.5;
+}
+
+/** The properties each kind is scored on, for a node missing from Figma (design section 10.2), with its turn where the build turns it (builtTurn, from `at`). */
+function propertiesOf(n: TreeNode, root: boolean, at: TurnContext): string[] {
+  const where = root ? ["w", "h"] : builtTurn(n, at) === null ? ["x", "y", "w", "h"] : ["x", "y", "w", "h", "turn"];
   const shown = root ? [] : ["visible"];
   if (n.t === "T") {
     return [...where, "chars", "family", "weight", "italic", "size", "lineHeight", "letterSpacing", "color", "case", "decoration", "align", "truncation", "lines", "opacity", ...shown];
@@ -491,8 +496,9 @@ export function scoreTree(input: TreeInput): TreeScore {
   for (const n of snap.values()) {
     const isRoot = n.k === "";
     const rec = records.get(n.k);
+    const around: TurnContext = { children: kids.get(n.k)?.length ?? 0, transformed: transformedAround(n.k, (k) => snap.get(k)) };
     if (!rec) {
-      const properties = propertiesOf(n, isRoot);
+      const properties = propertiesOf(n, isRoot, around);
       out.missing++;
       out.compared += properties.length;
       out.nodes.push({ key: n.k, status: "missing", differences: [], score: 0 });
@@ -512,13 +518,17 @@ export function scoreTree(input: TreeInput): TreeScore {
       return at === undefined ? undefined : rec.raw[at];
     };
 
-    // Geometry, for every kind.
-    const approx = n.approx !== undefined;
+    // Geometry, for every kind. A turn the build makes is no longer an
+    // approximation: snap's box is the element's own, centered where it
+    // drew, which the turned layer reads back as (builtTurn).
+    const turned = builtTurn(n, around);
+    const approxBy = (n.approx ?? "").split(",").filter((why) => why && !(why === "transform" && turned !== null)).join(",");
+    const approx = approxBy !== "";
     const geometry = (property: string, ok: (slack: number) => boolean, measured: unknown, figma: unknown) => {
       if (ok(0)) return check(property, true, measured, figma);
       if (approx) {
         if (ok(APPROX_TOLERANCE_PX)) return check(property, true, measured, figma);
-        return unscorable(property, `approximate geometry (${n.approx}) more than ${APPROX_TOLERANCE_PX}px off`);
+        return unscorable(property, `approximate geometry (${approxBy}) more than ${APPROX_TOLERANCE_PX}px off`);
       }
       check(property, false, measured, figma);
     };
@@ -543,14 +553,23 @@ export function scoreTree(input: TreeInput): TreeScore {
       }
       geometry(axis, (slack) => Math.abs(want - got) <= limit + slack + EPSILON, want, got);
     }
-    if (n.tf) unscorable("transform", `${n.tf} is built as its bounding box`);
+    // Its turn, read by template 4 on: scored where the build turns it
+    // (builtTurn), and wherever Figma has one, which nothing measured asks
+    // for. A transform the build leaves out is named: a turn it can't make
+    // (unturnedBecause), built unturned, and anything that scales or
+    // skews, built at the element's own size.
+    const turn = field("turn");
+    if (turn !== undefined && (turned !== null || Number(turn) !== 0)) check("turn", sameTurn(Number(turn), turned ?? 0), turned ?? 0, turn);
+    if (n.tf && turned === null) unscorable("transform", turnOf(n.tf) === null ? `${n.tf} is built as the element's own box, untransformed` : `${n.tf} is built unturned, as ${unturnedBecause(n, around)}`);
+    else if (n.tf && turn === undefined) unscorable("transform", `${n.tf}: read by a readback template before 4, which reads no turn`);
 
     // Another kind of layer where snap measured this one is not this node.
     const kind = n.t === "I" ? "F" : n.t;
     if (rec.kind !== kind) {
       check("kind", false, n.t, rec.kind);
-      // Its kind's own properties can't be compared on another kind's record.
-      const own = propertiesOf(n, isRoot).filter((p) => !["x", "y", "w", "h"].includes(p));
+      // Its kind's own properties can't be compared on another kind's
+      // record; its place, size and turn were, above.
+      const own = propertiesOf(n, isRoot, around).filter((p) => !["x", "y", "w", "h", "turn"].includes(p));
       compared += own.length;
       out.drifted++;
       out.matched += matched;
@@ -560,7 +579,7 @@ export function scoreTree(input: TreeInput): TreeScore {
     }
 
     if (n.t === "T" && n.tx) scoreText(n, rec, field, check, unscorable, spike, snap.get(parentKey(n.k) ?? ""));
-    else if (n.t === "V") scoreVector(n, field, assets, tolerance, check, unscorable);
+    else if (n.t === "V") scoreVector(n, approxBy, field, assets, tolerance, check, unscorable);
     else if (n.t === "I") scoreImage(n, field, assets, tolerance, check, unscorable, spike);
     else scoreFrame(n, field, tolerance, check, unscorable, spike);
 
@@ -733,13 +752,24 @@ export function cutInBrowser(n: TreeNode, parent?: TreeNode): boolean | null {
   return tx.ink[0] < start - 0.5 || tx.ink[0] + tx.ink[2] > end + 0.5;
 }
 
-function scoreVector(n: TreeNode, field: Field, assets: ComponentTree["assets"], tolerance: number, check: Check, unscorable: Unscorable): void {
+/**
+ * A vector's shapes and paint. `approxBy` is why its geometry is
+ * approximate, less a turn the build makes (builtTurn): a turned icon's
+ * shapes are then scored, snap's measured turned in the box the turned
+ * icon spans, as the readback reads Figma's.
+ */
+function scoreVector(n: TreeNode, approxBy: string, field: Field, assets: ComponentTree["assets"], tolerance: number, check: Check, unscorable: Unscorable): void {
   const want = n.shapes ?? [];
   const got = (Array.isArray(field("shapes")) ? field("shapes") : []) as unknown[][];
   const markup = n.svg ? assets.svg[n.svg] : undefined;
-  // Content createNodeFromSvg may drop: its shapes may not come out one for one.
-  if (n.approx || n.raster) {
-    unscorable("shapes", n.raster ? "a raster stands in for the vector" : `the SVG holds what Figma's importer may drop (${n.approx})`);
+  // Content createNodeFromSvg may drop: its shapes may not come out one for
+  // one. A transform the build leaves out: snap measured its shapes as it
+  // drew them, and Figma holds them untransformed.
+  const dropped = approxBy.split(",").filter((why) => why && why !== "transform").join(",");
+  if (n.raster || dropped) {
+    unscorable("shapes", n.raster ? "a raster stands in for the vector" : `the SVG holds what Figma's importer may drop (${dropped})`);
+  } else if (approxBy) {
+    unscorable("shapes", `its shapes are measured as ${n.tf ?? "its transform"} draws them, and it is built ${turnOf(n.tf) === null ? "untransformed" : "unturned"}`);
   } else {
     const limit = Math.max(SHAPE_TOLERANCE.min, SHAPE_TOLERANCE.ratio * Math.max(n.box[2], n.box[3]));
     const same = want.length === got.length && want.every((box, i) => box.every((v, j) => near(Number(got[i][j]), v, limit)));
@@ -841,7 +871,10 @@ function scoreStroke(n: TreeNode, field: Field, tolerance: number, check: Check,
   const drawn = [0, 1, 2, 3].filter((i) => weights[i] > 0);
   const colors = [...new Set(drawn.map((i) => lower(sides(n.bd!.c)[i])))];
   const style = String(sides(n.bd.s)[drawn[0]]);
+  // OUTSIDE where the background stops at the border, INSIDE where it runs
+  // under it; either where they draw alike (insideStrokeDrawsBorder).
   const align = n.bgc === "padding-box" || n.bgc === "content-box" ? "O" : "I";
+  const aligned = (got: unknown) => got === align || (insideStrokeDrawsBorder(n) && got === "I");
   const want = [Array.isArray(n.bd.w) ? weights : weights[0], colors.length === 1 ? (colors[0] ? [colors[0]] : []) : colors, style, align];
   if (colors.length > 1) unscorable("stroke color", "per-side border colors, built as one in phase 1");
   if (!STROKE_STYLES.has(style)) unscorable("stroke style", `a ${style} border, which Figma's strokes don't draw`);
@@ -854,6 +887,6 @@ function scoreStroke(n: TreeNode, field: Field, tolerance: number, check: Check,
   const ok = weights.every((w, i) => near(Number(gotWeights[i]), w, tolerance))
     && (colors.length > 1 || paints.join() === (colors[0] ? [colors[0]] : []).join())
     && (!STROKE_STYLES.has(style) || got[2] === style)
-    && got[3] === align;
+    && aligned(got[3]);
   check("stroke", ok, want, got);
 }

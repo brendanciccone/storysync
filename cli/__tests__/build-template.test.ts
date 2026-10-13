@@ -624,6 +624,36 @@ test("bindings: paints, text colors and radii bind to the variables their classe
   }
 });
 
+test("bindings: a Button's radius binds where its border is built INSIDE, drawn alike, and the one left unbound is said", async () => {
+  // The fifth live push's 97 Button frames: rounded-md, md = 8, a 1px
+  // border with bg-clip-padding, all built OUTSIDE at radius 7, bound to
+  // nothing, and nothing said. Outline's opaque border hides the background
+  // under it, and link has none: both are built INSIDE at the border box,
+  // radius 8, bound to md. Default's and destructive's transparent border
+  // shows their background stopping short of it, which only the padding
+  // box draws: radius 7, which no token holds, said once.
+  const button = copy(loadTreeFixture("button-icon"));
+  button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
+  const coded = await codeFor(button, {}, SHADCN_TOKENS);
+  const mock = mockFor([button]);
+  const md = mock.addVariable("md", "FLOAT", 8, "Radius").id;
+  await runPlan(mock, coded, ["build"]);
+  const built = variantsBySlug(mock);
+  const cases = [["outline", "INSIDE", 8, md], ["link", "INSIDE", 8, md], ["default", "OUTSIDE", 7, undefined], ["destructive", "OUTSIDE", 7, undefined]] as const;
+  for (const [variant, align, radius, bound] of cases) {
+    // Link's other sizes are placeholders: snap couldn't measure them.
+    for (const size of variant === "link" ? ["default"] : ["default", "xs", "sm"]) {
+      const root = mock.handle(built.get(`variant-${variant}--size-${size}`)!.id) as Record<string, unknown>;
+      assert.deepEqual([root.strokeAlign, root.cornerRadius], [align, radius], `${variant} ${size}`);
+      const corner = (root.boundVariables as Record<string, { id: string }>).topLeftRadius;
+      assert.equal(corner?.id, bound, `${variant} ${size}`);
+    }
+  }
+  assert.deepEqual(coded.warnings.filter((w) => /radius/.test(w)), [
+    "ui/base/Button: radius 8 left unbound: its background stops inside a border that would show it (background-clip padding-box), so the frame is built as the padding box, at radius 7, which no token holds",
+  ]);
+});
+
 test("bindings: a variable with Light and Dark modes binds by its name, as one of one mode does, its paint showing Light", async () => {
   // The push makes a Dark mode for the dark theme's values. The build finds
   // a variable by name, so the modes change nothing it does: the paint is
@@ -1020,7 +1050,7 @@ const CHANGED_CALL = /^Error: This call differs from the file storysync figma co
 /** The error every call throws when its template fails its TSUM. */
 const CHANGED_TEMPLATE = /^Error: This call differs from the file storysync figma code wrote: its template fails its checksum, TSUM\. Nothing was changed\. Send the file again, exactly as it is\.$/;
 
-/** `code` with the first digit of its template, run as T, one more, as a mistyped number: keepLines' 1.27 in the build's. */
+/** `code` with the first digit of its template, the string T, one more, as a mistyped number: keepLines' 1.27 in the build's. */
 function templateDigitOff(code: string, after = ""): string {
   const at = code.indexOf(after, code.indexOf("\nconst T = "));
   const digit = at + /\d/.exec(code.slice(at))!.index;
@@ -1090,7 +1120,7 @@ test("build, images and label: a call whose template is one character off is ref
     assert.match(run.text, CHANGED_TEMPLATE);
     assert.deepEqual([run.created, run.switches, JSON.stringify(mock.pages())], [0, [], before], "not even its page made");
   }
-  // The file as written builds, and says the runtime gave its template back to check.
+  // The file as written builds, and says its template was checked.
   const [ran] = await runPlan(mock, coded, ["build"]);
   assert.equal((ran.value as { tc: number }).tc, 1);
   const built = JSON.stringify(mock.pages());
@@ -1101,20 +1131,31 @@ test("build, images and label: a call whose template is one character off is ref
   }
 });
 
-test("build: a runtime that doesn't give back a function's source skips the template's check, and says so, but still checks the data", async () => {
-  // Function.prototype.toString as a runtime that strips source gives it.
+test("build: where use_figma rewrites a call, a changed template is still refused, and an honest one says it was checked", async () => {
+  // The sixth probe (fixtures/figma-tsum-probe.json, call 2) saw use_figma
+  // give back the guard's `async()=>{\nreturn 1.50}` reprinted, as
+  // `async () => {\n      return 1.50;}`: 0.4.0's guard, which compared a
+  // function's text, then skipped the check, in every build of the fifth
+  // live push. Function.prototype.toString here reprints every function so.
+  const probe = JSON.parse(readFileSync(new URL("../../../cli/__tests__/fixtures/figma-tsum-probe.json", import.meta.url), "utf8")) as { call2: { p: string; tc: number } };
+  assert.deepEqual([probe.call2.p, probe.call2.tc], ["async () => {\n      return 1.50;}", 0]);
   const coded = await codeFor(loadTreeFixture("switch"));
   const build = coded.code(coded.plan.calls.find((c) => c.kind === "build")!);
   const original = Function.prototype.toString;
-  Function.prototype.toString = function () { return "function () { [native code] }"; };
+  Function.prototype.toString = function (this: () => unknown) {
+    return original.call(this).replace(/^async\(\)=>\{\n/, "async () => {\n      ").replace(/\}$/, ";}");
+  };
   try {
     const mock = mockFor([loadTreeFixture("switch")], { pages: ["Page 1"] });
+    const before = JSON.stringify(mock.pages());
     const changedData = await mock.run(build.replace(/"size=([^"]+)"/, '"size=$1 "'));
     assert.match(changedData.text, CHANGED_CALL);
-    // The template's change isn't seen; the build runs, and reports it couldn't check.
-    const run = await mock.run(templateDigitOff(build, "||1.27"));
+    const changed = await mock.run(templateDigitOff(build, "||1.27"));
+    assert.match(changed.text, CHANGED_TEMPLATE);
+    assert.deepEqual([changed.created, JSON.stringify(mock.pages())], [0, before], "nothing changed");
+    const run = await mock.run(build);
     assert.ok(run.ok, run.text);
-    assert.equal((run.value as { tc: number }).tc, 0);
+    assert.equal((run.value as { tc: number }).tc, 1);
   } finally {
     Function.prototype.toString = original;
   }
@@ -1251,6 +1292,42 @@ test("build: the set's grid gives room to an outside stroke and a layer blur, wh
   // 40px round the icon at 9 down.
   assert.deepEqual([at.get("look=ring")![1] - own.get("look=ring")![1], at.get("look=ring")![3] - own.get("look=ring")![1]], [-41, 69]);
   assert.equal(at.get("look=blur")![1] - own.get("look=blur")![1], 9 - 40);
+  const drawn = [...at.entries()];
+  for (const [i, [name, a]] of drawn.entries()) {
+    assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);
+    for (const [other, b] of drawn.slice(i + 1)) {
+      assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `${name} (${a.map(Math.round)}) draws over ${other} (${b.map(Math.round)})`);
+    }
+  }
+});
+
+test("build: the set's grid gives room to a turned layer, by the box its turned corners span", async () => {
+  // A bar 120 by 4 out of the flow, centered on the button, turned 90
+  // degrees: it draws 4 wide and 120 tall, 42px above the button and 42
+  // below. Laid out by its unturned box, the variants above and below
+  // would draw over it.
+  const fixture = copy(loadTreeFixture("button-icon"));
+  const c = fixture.components[0];
+  c.variantProperties = [
+    { name: "variant", type: "VARIANT", values: ["plain", "turned"], defaultValue: "plain" },
+    { name: "size", type: "VARIANT", values: ["default", "wide"], defaultValue: "default" },
+  ];
+  const base = c.variants.find((v) => v.slug === "variant-default--size-default")!;
+  const keys = c.tree!.base.map((n) => n.k);
+  const bar = { k: "bar", t: "F", el: "span", box: [43.4, 16, 120, 4], abs: 1, bg: "#ff0000", tf: "rotate: 90deg", approx: "transform" };
+  Object.assign(c.base!, { combination: { variant: "plain", size: "default" }, slug: "variant-plain--size-default" });
+  c.variants = (["plain", "turned"] as const).flatMap((variant) => (["default", "wide"] as const).map((size) => ({
+    ...base, combination: { variant, size }, slug: `variant-${variant}--size-${size}`, delta: {},
+    treeDelta: variant === "turned" ? { keys: [...keys, "bar"], set: { bar } } : {},
+  }))) as typeof c.variants;
+  const { mock, results } = await buildAll(fixture);
+  assert.deepEqual([results[0].sets[0].variants, results[0].fallbacks], [4, []]);
+  const set = mock.nodes("COMPONENT_SET")[0];
+  const at = new Map(set.children!.map((v) => [v.name, drawnInSet(mock, v)]));
+  const own = new Map(set.children!.map((v) => [v.name, [v.x, v.y, v.x + v.width, v.y + v.height]]));
+  // From the variant's frame, inside the button's 1px border: 43 above it, to 77 down.
+  const turned = "variant=turned, size=default";
+  assert.deepEqual([at.get(turned)![1] - own.get(turned)![1], at.get(turned)![3] - own.get(turned)![1]].map(Math.round), [-43, 77]);
   const drawn = [...at.entries()];
   for (const [i, [name, a]] of drawn.entries()) {
     assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= set.width && a[3] <= set.height, `${name} draws past the set: ${a}`);

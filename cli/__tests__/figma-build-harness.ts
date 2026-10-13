@@ -115,6 +115,15 @@ function outside(mock: MockFigma, id: string): [number, number, number, number] 
 }
 
 /**
+ * A layer's x and y as snap measures a turned one, its box unturned about
+ * its center: Figma's x and y are where its top left corner turned to.
+ */
+function unturned(n: NodeView): [number, number] {
+  const t = ((n.rotation ?? 0) * Math.PI) / 180;
+  return [n.x + ((Math.cos(t) - 1) * n.width) / 2 + (Math.sin(t) * n.height) / 2, n.y - (Math.sin(t) * n.width) / 2 + ((Math.cos(t) - 1) * n.height) / 2];
+}
+
+/**
  * Each keyed layer's border box relative to the variant root's, by key, the
  * root `""`: as the browser measures a box, a stroke built outside a frame
  * included in it, so it compares with absoluteBoxes of snap's facts.
@@ -127,7 +136,7 @@ export function readBoxes(mock: MockFigma, variant: NodeView): Map<string, Box> 
     if (n.data["storysync.svg"] && key !== "") return;
     for (const c of n.children ?? []) {
       const k = c.data["storysync.k"];
-      if (k) visit(c, [origin[0] + c.x, origin[1] + c.y], k);
+      if (k) visit(c, [origin[0] + unturned(c)[0], origin[1] + unturned(c)[1]], k);
     }
   };
   const o = outside(mock, variant.id);
@@ -211,14 +220,25 @@ export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], 
  * Where a built variant draws in its set, read off the mock: its box, and
  * each visible layer's that no frame around it clips, with the reach on
  * each side of its stroke (all of an OUTSIDE one's weight, half a CENTER
- * one's), its drop shadows, and its layer blur's radius.
+ * one's), its drop shadows, and its layer blur's radius. A turned layer
+ * draws the box its turned corners span, that reach included, and turns
+ * what it holds with it.
  */
 export function drawnInSet(mock: MockFigma, variant: NodeView): [number, number, number, number] {
   const out: [number, number, number, number] = [variant.x, variant.y, variant.x + variant.width, variant.y + variant.height];
   type Shadow = { type: string; visible: boolean; radius: number; spread?: number; offset: { x: number; y: number } };
   type Stroked = { strokes: { visible?: boolean }[]; strokeAlign: string; strokeWeight: number | symbol; strokeTopWeight: number; strokeRightWeight: number; strokeBottomWeight: number; strokeLeftWeight: number };
-  // `origin` is where the frame n's own x and y are in sits: a group's children's are in that frame too, not the group.
-  const visit = (n: NodeView, x: number, y: number, origin: [number, number]) => {
+  // A 2x3 transform, [a, b, x, c, d, y]: where a point of a layer lands in the set.
+  type Matrix = [number, number, number, number, number, number];
+  const apply = ([a, b, x, c, d, y]: Matrix, px: number, py: number): [number, number] => [a * px + b * py + x, c * px + d * py + y];
+  const within = (m: Matrix, n: NodeView): Matrix => {
+    const t = ((n.rotation ?? 0) * Math.PI) / 180;
+    const [a2, b2, c2, d2] = [Math.cos(t), Math.sin(t), -Math.sin(t), Math.cos(t)];
+    const [a, b, x, c, d, y] = m;
+    return [a * a2 + b * c2, a * b2 + b * d2, a * n.x + b * n.y + x, c * a2 + d * c2, c * b2 + d * d2, c * n.x + d * n.y + y];
+  };
+  // `frame` is where the frame n's own x and y are in puts a point: a group's children's are in that frame too, not the group.
+  const visit = (n: NodeView, frame: Matrix) => {
     const h = mock.handle(n.id) as { visible: boolean; effects: Shadow[]; clipsContent?: boolean; type: string };
     if (!h.visible) return;
     const reach = [[0, 0, 0, 0], ...h.effects.filter((e) => e.visible && e.type === "DROP_SHADOW").map((e) => {
@@ -235,10 +255,13 @@ export function drawnInSet(mock: MockFigma, variant: NodeView): [number, number,
       stroke = [left, top, right, bottom].map((w) => w * share);
     }
     const [l, t, r, b] = [0, 1, 2, 3].map((i) => stroke[i] + Math.max(...reach.map((s) => s[i])) + blur);
-    [x - l, y - t, x + n.width + r, y + n.height + b].forEach((v, i) => { out[i] = i < 2 ? Math.min(out[i], v) : Math.max(out[i], v); });
-    const at: [number, number] = h.type === "GROUP" ? origin : [x, y];
-    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, at[0] + c.x, at[1] + c.y, at);
+    const own = within(frame, n);
+    const corners = [apply(own, -l, -t), apply(own, n.width + r, -t), apply(own, -l, n.height + b), apply(own, n.width + r, n.height + b)];
+    const drawn = [Math.min(...corners.map((p) => p[0])), Math.min(...corners.map((p) => p[1])), Math.max(...corners.map((p) => p[0])), Math.max(...corners.map((p) => p[1]))];
+    drawn.forEach((v, i) => { out[i] = i < 2 ? Math.min(out[i], v) : Math.max(out[i], v); });
+    const inner = h.type === "GROUP" ? frame : own;
+    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, inner);
   };
-  visit(variant, variant.x, variant.y, [0, 0]);
+  visit(variant, [1, 0, 0, 0, 1, 0]);
   return out;
 }
