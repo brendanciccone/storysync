@@ -369,6 +369,23 @@ test("verify CLI: what snap warned about a scored component is said beside the s
   ]);
 });
 
+test("verify CLI: a closed trigger snap didn't open says why beside the score; an overlay it opened is said, failing nothing", () => {
+  const warning = "snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, rather than Dialog: snap didn't open it " +
+    "(clicking it opened nothing within 3000ms). What it opens renders only while open.";
+  const shut = verify(snap({}, { warnings: [warning] }), readback(MATCHING), "--strict");
+  assert.equal(shut.status, 0, shut.out);
+  assert.ok(shut.out.includes(
+    "      Forms/Button: snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, so this scores the trigger, not what it opens; " +
+    "snap didn't open it: clicking it opened nothing within 3000ms",
+  ), shut.out);
+
+  const opened = { element: "div[data-slot=\"dialog-content\"]", portal: true, opened: { via: "hover", trigger: "button[data-slot=\"tooltip-trigger\"]" } };
+  const open = verify(snap({}, { variants: [{ combination: {}, slug: "a", status: "ok", error: null, delta: {}, ...opened }] }), readback(MATCHING), "--strict");
+  assert.equal(open.status, 0, open.out);
+  assert.ok(open.out.includes("  i Forms/Button: measured open: snap hovered over button[data-slot=\"tooltip-trigger\"] to open it, and measured div[data-slot=\"dialog-content\"]"), open.out);
+  assert.doesNotMatch(open.out, /snap warned about that/);
+});
+
 test("verify CLI: props that reach the component and change nothing measured are said as such, not as the story's fault", () => {
   const warning = "all 2 rendered variants measured identically, though their markup changed with the args, so the story passes them through: " +
     "`textAlign` changes nothing snap measures, likely only behavior, or something it doesn't measure, such as a child element. " +

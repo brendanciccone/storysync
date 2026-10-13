@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   runSnap, pickStory, detectFontSubstitution, describeSlugCollisions, writeScreenshot, selectCombinations, describeCap, uncoveredValues,
-  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, BrowserLostError, screenshotName, ScreenshotStage,
+  detectNoOpProperties, describeNoOpProperties, describeMeasurementNotes, describeOpenedOverlays, BrowserLostError, screenshotName, ScreenshotStage,
   describeIdenticalVariants, parseBehaviorOnlyWarning, detectIdenticalVariants,
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
@@ -27,6 +27,7 @@ import { imageAssetId } from "../snap-assets.js";
 import { fnv1a32Bytes } from "../checksum.js";
 import { fakePreview, inPage, urlArgs } from "./preview-standin.js";
 import type { FakeArgType } from "./preview-standin.js";
+import { overlayPage } from "./overlay-standin.js";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "storysync-snap-"));
@@ -836,8 +837,31 @@ test("describeMeasurementNotes: a closed trigger says what to change so the cont
     { slug: "default", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
   ], 1);
   assert.match(warning, /^snap measured button\[data-slot="dialog-trigger"\], a closed trigger, rather than Dialog\./);
-  assert.match(warning, /render Dialog open, with defaultOpen/);
+  assert.match(warning, /give Dialog an `open` or `defaultOpen` prop the story passes through, which snap sets, or have the story snap renders .* render Dialog open/);
   assert.match(warning, /data-slot="dialog-content"/);
+});
+
+test("describeMeasurementNotes: a closed trigger snap couldn't open says why, read back whole whatever the reason holds", () => {
+  const reason = "setting its open arg through Storybook's preview failed (the story didn't render again. Twice); clicking it opened nothing within 3000ms";
+  const notes = [
+    { slug: "a", note: { kind: "closed-trigger" as const, element: 'button[data-slot="dialog-trigger"]', reason } },
+    { slug: "b", note: { kind: "closed-trigger" as const, element: 'button[data-slot="dialog-trigger"]', reason } },
+  ];
+  const [warning] = describeMeasurementNotes("Dialog", notes, 3);
+  assert.match(warning, /^snap measured button\[data-slot="dialog-trigger"\], a closed trigger, rather than Dialog in 2 of 3 measured variants: snap didn't open it \(setting its open arg .* within 3000ms\)\. What it opens renders /);
+  assert.deepEqual(parseMeasurementWarning(warning), { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason });
+  // One reason per warning: variants snap couldn't open for different reasons are said apart.
+  assert.equal(describeMeasurementNotes("Dialog", [notes[0], { slug: "c", note: { ...notes[0].note, reason: "clicking it failed" } }], 2).length, 2);
+});
+
+test("describeOpenedOverlays: how snap opened each overlay it measured, once a way, and nothing where it opened none", () => {
+  const ok = (slug: string, opened?: object) => ({ combination: {}, slug, status: "ok", error: null, element: 'div[data-slot="dialog-content"]', ...(opened ? { opened } : {}) });
+  const click = { via: "click", trigger: 'button[data-slot="dialog-trigger"]' };
+  assert.equal(describeOpenedOverlays({ variants: [ok("a", click), ok("b", click)] } as never),
+    'measured open: snap clicked button[data-slot="dialog-trigger"] to open it, and measured div[data-slot="dialog-content"]');
+  assert.equal(describeOpenedOverlays({ variants: [ok("a", { via: "arg", arg: "open", trigger: "button" }), ok("b", click), ok("c")] } as never),
+    'measured open: snap set its open arg through Storybook\'s preview in 1 of 3 variants and clicked button[data-slot="dialog-trigger"] in 1 of 3 variants to open it, and measured div[data-slot="dialog-content"]');
+  assert.equal(describeOpenedOverlays({ variants: [ok("a"), { combination: {}, slug: "b", status: "timeout", error: "x", opened: click }] } as never), null);
 });
 
 test("describeMeasurementNotes: a closed trigger names the content slots snap takes, from the title too", () => {
@@ -848,7 +872,7 @@ test("describeMeasurementNotes: a closed trigger names the content slots snap ta
   assert.match(tooltip, /carries data-slot="tooltip-content", that/);
   assert.doesNotMatch(tooltip, /content-content/);
   // Or any open overlay's content in a portal, which needs no slot.
-  assert.match(tooltip, /that the trigger's aria-controls names, or that is a dialog, alert dialog, tooltip or menu in a portal\.$/);
+  assert.match(tooltip, /that the trigger's aria-controls names, or that is a dialog, alert dialog, tooltip, menu or listbox in a portal\.$/);
   // A component named apart from its title is matched by both.
   const [demo] = describeMeasurementNotes("DialogDemo", trigger, 1, "Overlays/Dialog");
   assert.match(demo, /data-slot="dialog-demo-content" or "dialog-content"/);
@@ -2586,4 +2610,108 @@ test("describeOverflow: the variants by the values they share, how far, and the 
   // A component --stories named with `!`: drop it, or name another.
   const only = describeOverflow({ ...component, storyId: "ui-base-button--icon", storyOnly: true }, [over(variant("default", "default"), 3)], 6, { own, properties })!;
   assert.match(only, /ui-base-button--icon gives it content that doesn't fit\. --stories names ui-base-button--icon with `!`, for every variant: name another story, or drop the `!` so snap measures a variant from a story that is for its values\.$/);
+});
+
+// --- Overlays opened before they are measured ---
+
+/** A browser whose one page is `page`, as runSnap launches one. */
+function launchOn(page: unknown) {
+  return async () => ({
+    via: "stub",
+    browser: { version: () => "154.0.0.0", newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
+  }) as never;
+}
+
+/** Storybook's docs for a Dialog whose Default story renders only its trigger, documenting `props`. */
+function dialogDocs(props: object[]) {
+  return {
+    listComponents: async () => [{ id: "ui-radix-dialog", name: "Dialog", title: "ui/radix/Dialog", storyIds: ["ui-radix-dialog--default"] }],
+    getComponent: async () => ({ name: "Dialog", props, stories: [{ id: "ui-radix-dialog--default", name: "Default" }] }),
+  } as never;
+}
+
+const DIALOG_TRIGGER_MARKS = { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false", state: "closed" };
+
+test("runSnap: a Dialog story showing only its trigger is measured open, by the defaultOpen prop its docs list, and records how", async () => {
+  const dir = tempDir();
+  try {
+    const { page, done } = overlayPage({ marks: DIALOG_TRIGGER_MARKS, opensOn: ["arg"] });
+    // defaultOpen is no variant property (left out here as the plan leaves it out), but the component takes it.
+    const docs = dialogDocs([{ name: "defaultOpen", type: { name: "boolean" } }, { name: "modal", type: { name: "boolean" } }]);
+    const result = await runSnap(options(dir, { excludeProps: ["defaultOpen", "modal"] }), { storybook: docs, launch: launchOn(page) });
+    const [component] = result.components;
+    const [variant] = component.variants;
+    assert.equal(variant.status, "ok", variant.error ?? "");
+    assert.deepEqual([variant.element, variant.portal, variant.opened], [
+      'div[data-slot="dialog-content"]', true, { via: "arg", arg: "defaultOpen", trigger: 'button[data-slot="dialog-trigger"]' },
+    ]);
+    assert.equal(component.warnings.some((w) => /closed trigger/.test(w)), false, component.warnings.join("\n"));
+    assert.deepEqual(done.slice(0, 3), ["set defaultOpen=true", "mouse -1,-1", "settled"]);
+    // Written beside the element it opened, in styles.json.
+    const written = JSON.parse(readFileSync(join(dir, "styles.json"), "utf8")) as { components: { variants: Record<string, unknown>[] }[] };
+    assert.deepEqual(written.components[0].variants[0].opened, { via: "arg", arg: "defaultOpen", trigger: 'button[data-slot="dialog-trigger"]' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: with openOverlays false, a closed trigger is measured, and its warning says snap was run not to open it", async () => {
+  const dir = tempDir();
+  try {
+    const { page, done } = overlayPage({ marks: DIALOG_TRIGGER_MARKS, opensOn: ["click"] });
+    const result = await runSnap(options(dir, { openOverlays: false }), { storybook: dialogDocs([]), launch: launchOn(page) });
+    const [component] = result.components;
+    assert.equal(component.variants[0].element, 'button[data-slot="dialog-trigger"]');
+    assert.equal(component.variants[0].opened, undefined);
+    assert.ok(component.warnings.some((w) => w.startsWith(`snap measured button[data-slot="dialog-trigger"], a closed trigger, rather than Dialog: snap didn't open it (it was run with --no-open-overlays). `)), component.warnings.join("\n"));
+    assert.deepEqual(done, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a select whose field one variant couldn't open, where others opened, warns that variant was measured closed, and why", async () => {
+  const dir = tempDir();
+  try {
+    const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
+    const { page } = overlayPage({
+      marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" },
+      argTypes: { disabled: { type: { name: "boolean" }, control: { type: "boolean" } } }, heldClosed: (args) => args.disabled === true,
+    });
+    const docs = {
+      listComponents: async () => [{ id: "ui-radix-select", name: "Select", title: "ui/radix/Select", storyIds: ["ui-radix-select--default"] }],
+      getComponent: async () => ({ name: "Select", props: [{ name: "disabled", type: { name: "boolean" } }], stories: [{ id: "ui-radix-select--default", name: "Default" }] }),
+    } as never;
+    const result = await runSnap(options(dir), { storybook: docs, launch: launchOn(page) });
+    const [component] = result.components;
+    const bySlug = new Map(component.variants.map((v) => [v.slug, v]));
+    const [shut, open] = [bySlug.get("disabled-true")!, bySlug.get("disabled-false")!];
+    assert.deepEqual([open.element, open.opened?.via], ['div[data-slot="select-content"]', "click"]);
+    assert.deepEqual([shut.element, shut.opened], ['button[data-slot="select-trigger"]', undefined]);
+    const warning = component.warnings.find((w) => /closed trigger/.test(w));
+    assert.ok(warning?.startsWith(
+      `snap measured button[data-slot="select-trigger"], a closed trigger, rather than Select in 1 of 2 measured variants: snap didn't open it (clicking it opened nothing within 1000ms). `,
+    ), component.warnings.join("\n"));
+    // Where no variant opened, the field is the component, and nothing is warned.
+    const closed = overlayPage({ marks: field, opensOn: [] });
+    const asIs = await runSnap(options(tempDir()), { storybook: docs, launch: launchOn(closed.page) });
+    assert.equal(asIs.components[0].warnings.some((w) => /closed trigger/.test(w)), false, asIs.components[0].warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a component's later variants open its overlay the way an earlier one found, without retrying what failed", async () => {
+  const dir = tempDir();
+  try {
+    // Its trigger's marks say click; hovering opens it.
+    const { page, done } = overlayPage({ marks: DIALOG_TRIGGER_MARKS, opensOn: ["hover"], argTypes: { modal: { type: { name: "boolean" } } } });
+    // modal changes nothing measured; kept so there is a later variant to open.
+    const result = await runSnap(options(dir, { keepProps: ["modal"] }), { storybook: dialogDocs([{ name: "modal", type: { name: "boolean" } }]), launch: launchOn(page) });
+    const variants = result.components[0].variants;
+    assert.deepEqual(variants.map((v) => v.opened?.via), ["hover", "hover"]);
+    assert.deepEqual(done.filter((d) => d === "click" || d === "hover"), ["click", "hover", "hover"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

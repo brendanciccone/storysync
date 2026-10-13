@@ -1408,6 +1408,22 @@ test("verify: caveats are given for the components the readback scored, and fail
   assert.equal(result.fidelity, 1);
 });
 
+test("scoreCaveats: a closed trigger snap didn't open carries why; an overlay it opened is said, not warned", () => {
+  // Two variants that measured apart: the trigger, and what it opened.
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { width: 448 } }]);
+  const reason = "clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each";
+  const warnings = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button", reason } }], 2);
+  const [a, b] = snap.components[0].variants;
+  const component = {
+    ...snap.components[0], warnings,
+    variants: [a, { ...b, element: 'div[data-slot="dialog-content"]', portal: true, opened: { via: "click", trigger: "button" } }],
+  } as never;
+  assert.deepEqual(scoreCaveats(component), [
+    { component: "Forms/Button", kind: "closed-trigger", element: "button", reason },
+    { component: "Forms/Button", kind: "opened", note: 'measured open: snap clicked button in 1 of 2 variants to open it, and measured div[data-slot="dialog-content"]' },
+  ]);
+});
+
 // What a third live push's snap warned, word for word, which its verify
 // left out: caveats [] and nothing under the score.
 const PUSH3_ALIKE = "`state=done`, `state=uploading` and `state=processing` render identically: everything snap measures, the root and the elements in it, is the same wherever they were measured. If the code draws them differently, the story may not pass state through for these values; if it doesn't, they could be one Figma variant.";

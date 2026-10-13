@@ -6,7 +6,7 @@ import { visibleReorder } from "../figma-layout.js";
 import { textSizesItself } from "../figma-map.js";
 import { applyDelta } from "../snap-normalize.js";
 import { absoluteBoxes, parentKey, rootWithStyles, treeDigest } from "../tree-types.js";
-import type { TreeNode } from "../tree-types.js";
+import type { Box, TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS, boxDrift, codeFor, drawnInSet, mockFor, readBoxes, runPlan, variantsBySlug, withConstant } from "./figma-build-harness.js";
 import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import { readFileSync } from "node:fs";
@@ -64,8 +64,10 @@ test("build: a faithful build puts every keyed layer where snap measured it, wit
       // A component with no variant properties is one plain component, named as the set would be.
       assert.equal(node.name, variant.name || fixture.components[0].title!.split("/").pop());
       assert.deepEqual(boxDrift(mock, node, variant.nodes, absoluteBoxes(variant.nodes)), [], `${name} ${variant.slug}`);
-      // Each icon's shapes where the browser drew them in it, as verify's shape gate checks.
-      for (const icon of variant.nodes.filter((n) => n.t === "V")) {
+      // Each icon's shapes where the browser drew them in it, as verify's
+      // shape gate checks: not one snap could measure only roughly, as a
+      // turned one, which verify leaves unscored.
+      for (const icon of variant.nodes.filter((n) => n.t === "V" && !n.approx && !n.raster)) {
         const view: NodeView = keyed(node, icon.k)!;
         const shapes: number[][] = view.children!.map((c) => [c.x, c.y, c.width, c.height]);
         const tol = Math.max(0.5, 0.03 * icon.box[2]);
@@ -1225,4 +1227,31 @@ test("build: the set's grid gives room to an outside stroke and a layer blur, wh
       assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `${name} (${a.map(Math.round)}) draws over ${other} (${b.map(Math.round)})`);
     }
   }
+});
+
+test("boxDrift: a layer may move by what packs it, the siblings between it and where its row is packed, not by any sibling's growth", () => {
+  // A flex row packed at its start, buttons a then b, each 40x20 and only its label, as snap measured them.
+  const nodes = [
+    { k: "", t: "F", L: { d: "flex", dir: "row" } }, { k: "a", t: "F" }, { k: "a/t", t: "T" }, { k: "b", t: "F" }, { k: "b/t", t: "T" },
+  ] as unknown as TreeNode[];
+  const facts = new Map<string, Box>([["", [0, 0, 80, 20]], ["a", [0, 0, 40, 20]], ["a/t", [0, 0, 40, 20]], ["b", [40, 0, 40, 20]], ["b/t", [40, 0, 40, 20]]]);
+  const mock = { handle: () => ({}) } as unknown as MockFigma;
+  // Each button as Figma set it, its label filling it.
+  const built = (a: Box, b: Box) => ({
+    id: "root", x: 0, y: 0, width: a[2] + b[2], height: Math.max(a[3], b[3]), data: {},
+    children: [a, b].map((box, i) => {
+      const k = i ? "b" : "a";
+      const label = { id: `${k}t`, x: 0, y: 0, width: box[2], height: box[3], data: { "storysync.k": `${k}/t` }, children: [] };
+      return { id: k, x: box[0], y: box[1], width: box[2], height: box[3], data: { "storysync.k": k }, children: [label] };
+    }),
+  }) as unknown as NodeView;
+  // a's label set 1px wider moves b along by as much.
+  assert.deepEqual(boxDrift(mock, built([0, 0, 41, 20], [41, 0, 40, 20]), nodes, facts), []);
+  // b's set 1px wider and taller moves nothing before it, along the row or across it.
+  assert.deepEqual(boxDrift(mock, built([1, 0, 40, 20], [40, 0, 41, 21]), nodes, facts), ["a: snap 0,0,40,20, Figma 1,0,40,20"]);
+  assert.deepEqual(boxDrift(mock, built([0, 1, 40, 20], [40, 0, 41, 21]), nodes, facts), ["a: snap 0,0,40,20, Figma 0,1,40,20"]);
+  // Packed at its end, a moves by b's growth and its own, and b by its own alone.
+  const end = [{ ...nodes[0], L: { d: "flex", dir: "row", jc: "flex-end" } }, ...nodes.slice(1)] as TreeNode[];
+  assert.deepEqual(boxDrift(mock, built([-1, 0, 40, 20], [39, 0, 41, 20]), end, facts), []);
+  assert.deepEqual(boxDrift(mock, built([0, 0, 41, 20], [42, 0, 40, 20]), end, facts), ["b/t: snap 40,0,40,20, Figma 42,0,40,20", "b: snap 40,0,40,20, Figma 42,0,40,20"]);
 });

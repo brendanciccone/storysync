@@ -1,0 +1,159 @@
+{
+  "fixture": {
+    "name": "tooltip",
+    "sources": [
+      "storysync snap of ui-base-tooltip--default (0.4.0 with overlays measured open), against the shadcn/ui registry's Storybook (MIT), --components ui-base-tooltip"
+    ],
+    "notes": [
+      "The story renders only the tooltip's closed trigger. snap hovered over it, kept the pointer there while the content settled, and measured div[data-slot=tooltip-content] in its portal, as the variant's `opened` and `portal` record.",
+      "Its arrow, a div Base UI's positioner places from around the content, keeps the place the browser drew it, past the 28px bubble (`abs: 1`), rather than being moved inside it (SPEC-NOTES O10); turned by `rotate: 45deg`, it is its own 10px size with `tf` (O15).",
+      "Written by snap's own writer from the live run, unchanged but for this block."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://127.0.0.1:6006",
+  "variantSelection": "representative",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-tooltip",
+      "name": "TooltipContent",
+      "title": "ui/base/Tooltip",
+      "category": "ui/base",
+      "storyId": "ui-base-tooltip--default",
+      "variantProperties": [],
+      "base": {
+        "combination": {},
+        "slug": "default",
+        "styles": {
+          "display": "block",
+          "flexDirection": null,
+          "alignItems": null,
+          "justifyContent": null,
+          "gap": null,
+          "width": 100.94,
+          "height": 28,
+          "backgroundColor": "#0a0a0a",
+          "color": "#ffffff",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 8,
+            "topRight": 8,
+            "bottomRight": 8,
+            "bottomLeft": 8
+          },
+          "borderRadiusUniform": 8,
+          "padding": {
+            "top": 6,
+            "right": 12,
+            "bottom": 6,
+            "left": 12
+          },
+          "fontFamily": "Inter",
+          "fontSize": 12,
+          "fontWeight": 400,
+          "lineHeight": 16,
+          "letterSpacing": 0,
+          "boxShadow": [],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": true,
+          "text": {
+            "color": "#ffffff",
+            "fontFamily": "Inter",
+            "fontSize": 12,
+            "fontWeight": 400
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {},
+          "slug": "default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 100.94,
+            "height": 28
+          },
+          "element": "div[data-slot=\"tooltip-content\"]",
+          "portal": true,
+          "opened": {
+            "via": "hover",
+            "trigger": "button[data-slot=\"tooltip-trigger\"]"
+          },
+          "delta": {}
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "argTypes": {
+        "children": {
+          "type": "string",
+          "control": "text"
+        },
+        "className": {
+          "type": "other",
+          "control": "object"
+        },
+        "render": {
+          "type": "other",
+          "control": "object"
+        },
+        "side": {
+          "type": "string",
+          "control": "radio",
+          "options": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+          ]
+        },
+        "style": {
+          "type": "other",
+          "control": "object"
+        }
+      },
+      "storyFile": "./registry/ui/tooltip-story/tooltip-base.stories.tsx",
+      "argsNotInDocs": [
+        "side"
+      ],
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"d":"block","pad":[6,12,6,12]},"box":[0,0,100.94,28],"cls":["bg-foreground","rounded-md","text-background","text-xs"],"el":"div[data-slot=tooltip-content]","k":"","t":"F"},
+          {"box":[12,5.5,76.94,16],"cls":["text-background"],"el":"#text","k":"#text","t":"T","tx":{"c":"Add to library","col":"#ffffff","f":"Inter","fs":"system-ui","ink":[0,0.5,76.94,15],"lh":16,"n":1,"sz":12,"wt":400}},
+          {"S":{"z":50},"abs":1,"approx":"transform","bg":"#0a0a0a","box":[45.5,21,10,10],"cls":["bg-foreground","fill-foreground"],"el":"div","k":"div","r":2,"t":"F","tf":"rotate: 45deg"}
+        ],
+        "assets": {
+          "svg": {},
+          "img": {}
+        }
+      },
+      "fontStandIns": [
+        [
+          "system-ui",
+          "Inter"
+        ]
+      ]
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 1,
+    "rendered": 1,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

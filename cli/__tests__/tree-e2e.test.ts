@@ -29,7 +29,7 @@ import { stylesJsonText } from "../snap-tree.js";
 import { expandTree } from "../tree-types.js";
 import type { FigmaPlan, TreeDelta, TreeNode } from "../tree-types.js";
 import type { SnapResult } from "../snap.js";
-import { describeClimbed, describeIdenticalValues } from "../snap.js";
+import { describeClimbed, describeIdenticalValues, describeMeasurementNotes } from "../snap.js";
 import { describeArgRejections } from "../snap-args.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
@@ -388,7 +388,7 @@ for (const fonts of ["figma", "browser"] as const) test(`tree e2e: every fixture
     const e = elementsOf(json);
     assert.equal(json.elementFidelity === 1, !sum(cut));
     assert.equal(e.verified, e.measured - sum(cut));
-    assert.equal(e.measured, 190);
+    assert.equal(e.measured, 247);
   } finally {
     cleanup(p);
   }
@@ -437,6 +437,120 @@ test("tree e2e: what snap warned is said beside the score, before the drift unde
     const strict = await verifyPlan(p, "--strict");
     assert.equal(strict.status, 1);
     assert.deepEqual(strict.json.caveats, run.json.caveats);
+  } finally {
+    cleanup(p);
+  }
+});
+
+// --- Overlays snap opened before it measured them ------------------------------
+
+/** The description a push's label call left on the set or plain component of `id`. */
+function descriptionOf(mock: MockFigma, id: string): string {
+  const built = [...mock.nodes("COMPONENT_SET"), ...mock.nodes("COMPONENT")].find((n) => n.data["storysync.id"] === id && !n.data["storysync.slug"])
+    ?? mock.nodes("COMPONENT").find((n) => n.data["storysync.id"] === id);
+  assert.ok(built, `no set or component for ${id}`);
+  return String(mock.handle(built.id).description ?? "");
+}
+
+test("tree e2e: a Dialog snap clicked open is built from its open content, read back and verified by element, with nothing on its label, and verify says how it was opened", async () => {
+  // The registry's Dialog story renders only its trigger: snap clicked it
+  // open and measured the content in its portal (fixtures/tree/dialog.json).
+  const dialog = asSnap(loadTreeFixture("dialog"));
+  const [variant] = dialog.components[0].variants;
+  assert.deepEqual([variant.element, variant.portal, variant.opened], [
+    'div[data-slot="dialog-content"]', true, { via: "click", trigger: 'button[data-slot="dialog-trigger"]' },
+  ]);
+  assert.deepEqual(dialog.components[0].warnings, []);
+  const p = await push(dialog);
+  try {
+    // The open dialog in Figma: its header, its footer's buttons and its close button.
+    const built = p.mock.nodes("COMPONENT").find((n) => n.data["storysync.id"] === "ui-base-dialog")!;
+    assert.deepEqual([built.name, built.width, built.height], ["Dialog", 448, 170]);
+    for (const key of ["dialog-header/dialog-title", "dialog-footer/dialog-close", "dialog-footer/dialog-close:2/#text", "dialog-close/svg"]) {
+      assert.ok(layerOf(p.mock, variant.slug, key), `${key} built`);
+    }
+    // Its content is the component: no storysync: line.
+    assert.doesNotMatch(descriptionOf(p.mock, "ui-base-dialog"), /storysync:/);
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    const e = elementsOf(json);
+    assert.deepEqual([e.verified, e.drifted, e.missing], [e.measured, 0, 0]);
+    assert.deepEqual((json.caveats as { kind: string }[]).filter((c) => c.kind === "opened"), [{
+      component: "ui/base/Dialog", kind: "opened",
+      note: 'measured open: snap clicked button[data-slot="dialog-trigger"] to open it, and measured div[data-slot="dialog-content"]',
+    }]);
+    assert.ok(text.stdout.includes('  i ui/base/Dialog: measured open: snap clicked button[data-slot="dialog-trigger"] to open it, and measured div[data-slot="dialog-content"]'), text.stdout);
+    assert.doesNotMatch(text.stdout, /a closed trigger/);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a Tooltip snap hovered open keeps its arrow below the bubble, where the browser drew it, and verifies by element", async () => {
+  // The registry's Tooltip story renders only its trigger: snap hovered
+  // over it and measured the content in its portal (fixtures/tree/tooltip.json).
+  const tooltip = asSnap(loadTreeFixture("tooltip"));
+  const [variant] = tooltip.components[0].variants;
+  assert.deepEqual([variant.element, variant.opened, variant.movedInside], [
+    'div[data-slot="tooltip-content"]', { via: "hover", trigger: 'button[data-slot="tooltip-trigger"]' }, undefined,
+  ]);
+  const p = await push(tooltip);
+  try {
+    // The bubble hugs its label, which Figma sets a whole pixel wide.
+    const bubble = layerOf(p.mock, variant.slug, "");
+    assert.deepEqual([bubble.width, bubble.height], [101, 28]);
+    // The arrow past the bubble's bottom, where Base UI's positioner placed it.
+    const arrow = layerOf(p.mock, variant.slug, "div");
+    assert.deepEqual([arrow.x, arrow.y, arrow.width, arrow.height], [45.5, 21, 10, 10]);
+    assert.doesNotMatch(descriptionOf(p.mock, "ui-base-tooltip"), /storysync:/);
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    const e = elementsOf(json);
+    assert.deepEqual([e.verified, e.drifted, e.missing], [e.measured, 0, 0]);
+    assert.ok(text.stdout.includes('  i ui/base/Tooltip: measured open: snap hovered over button[data-slot="tooltip-trigger"] to open it, and measured div[data-slot="tooltip-content"]'), text.stdout);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a Select snap clicked open is built from its listbox with no item hovered, and verifies by element", async () => {
+  const select = asSnap(loadTreeFixture("select"));
+  const [variant] = select.components[0].variants;
+  assert.deepEqual([variant.element, variant.opened], ['div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+  const nodes = expandTree(select.components[0].tree as never, undefined);
+  // No item paints: the first isn't measured hovered and highlighted.
+  const items = nodes.filter((n) => /select-item(:\d+)?$/.test(n.k));
+  assert.equal(items.length, 14);
+  assert.deepEqual(items.filter((n) => n.bg), []);
+  const p = await push(select);
+  try {
+    assert.deepEqual((p.mock.handle(layerOf(p.mock, variant.slug, "div/select-group/select-item").id) as { fills: unknown[] }).fills, []);
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.equal(json.elementFidelity, 1);
+    const e = elementsOf(json);
+    assert.deepEqual([e.measured, e.verified, e.drifted, e.missing], [43, 43, 0, 0]);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("tree e2e: a trigger snap couldn't open is built as measured, and its label and verify say why", async () => {
+  const snap = asSnap(loadTreeFixture("switch"));
+  const reason = "clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each";
+  snap.components[0].warnings = describeMeasurementNotes("Switch", [{ slug: "size-default", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason } }], 2);
+  const p = await push(snap);
+  try {
+    assert.match(descriptionOf(p.mock, "ui-base-switch"),
+      new RegExp(`^storysync: measured from its closed trigger, button\\[data-slot=dialog-trigger\\], not the open Switch, as snap didn't open it \\(${reason}\\)$`, "m"));
+    const { status, json, text } = await verifyPlan(p, "--strict");
+    assert.equal(status, 0, `${text.stdout}${text.stderr}`);
+    assert.deepEqual((json.caveats as { kind: string }[]).filter((c) => c.kind === "closed-trigger"), [
+      { component: "ui/base/Switch", kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason },
+    ]);
+    assert.ok(text.stdout.includes(`      ui/base/Switch: snap measured button[data-slot="dialog-trigger"], a closed trigger, so this scores the trigger, not what it opens; snap didn't open it: ${reason}`), text.stdout);
   } finally {
     cleanup(p);
   }

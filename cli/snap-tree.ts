@@ -88,7 +88,11 @@ export interface RawTreeElement {
   /** The first `lucide-*` class of an `<svg>`. */
   lucide?: string;
   box: RawBox;
-  /** offsetWidth and offsetHeight, when a transform other than a translation is set. */
+  /**
+   * Its own size, unturned (offsetWidth and offsetHeight, or an `<svg>`'s
+   * CSS width and height), when a transform other than a translation is
+   * set, or a `rotate` or `scale` of its own.
+   */
   size?: [number, number];
   /** TREE_PROPERTY_DEFAULTS' properties whose computed value differs from its default. */
   cs: Record<string, string>;
@@ -152,6 +156,14 @@ export interface RawTreeCapture {
   root: RawTreeElement;
   /** Each font stack the text holders use, as probeFontStack reads it. */
   fonts: Record<string, FontProbe | null>;
+  /**
+   * The computed values (`cs`, as an element's) of each element around the
+   * root, innermost first, up to the page's `<body>`: read for an overlay's
+   * content, whose containing block is the element that places it, outside
+   * it, as Radix's popper wrapper places a tooltip and its arrow
+   * (anchorToRoot). Absent for any other root.
+   */
+  around?: Record<string, string>[];
 }
 
 // --- What the build hands on ---------------------------------------------------
@@ -431,17 +443,33 @@ function buildItem(el: RawTreeElement, isRoot: boolean): Item[] {
   // truncation, kept as `el` on the text, so it doesn't stop this. A flex
   // or grid container that moves its text off the start, centering it as
   // a button does, places it where a text the element's size can't say:
-  // it stays a frame, its layout and its text's line box kept.
+  // it stays a frame, its layout and its text's line box kept. So does an
+  // element taller than its text's lines, which a text node its size
+  // can't hold either: a `<button>` stretched in a row centers its label
+  // without flex, as a dialog's footer stretches its Cancel button.
   const text = el.text ?? {};
   const ellipsisOnly = text["text-overflow"] === "ellipsis" && text["white-space"] === "nowrap";
   if (
     only?.kind === "text" && !paintsOwnBox(el.cs) && !hasPadding(css) && (!clips(css) || ellipsisOnly) &&
-    !DRAWING_TAGS.has(el.tag) && !movesItsContent(css)
+    !DRAWING_TAGS.has(el.tag) && !movesItsContent(css) && !tallerThanItsLines(el, only.run!)
   ) {
     item.leaf = only.run;
     item.kids = [];
   }
   return [item];
+}
+
+/**
+ * Whether an element's box reaches more than 1px above or below its text's
+ * line box (lineBox): its text set off its top, as a button centers its
+ * label, or a box taller than the lines in it. Chrome rounds half-leading,
+ * which the 1px allows.
+ */
+function tallerThanItsLines(el: RawTreeElement, run: RawTreeText): boolean {
+  if (!run.rects.length) return false;
+  const lh = normalizeLineHeight((run.style ?? el.text ?? {})["line-height"]);
+  const line = lineBox(inkOf(run.rects), lineCount(run.rects), lh, firstLineHeight(run.rects));
+  return line[1] - el.box[1] > 1 || el.box[1] + el.box[3] - (line[1] + line[3]) > 1;
 }
 
 /**
@@ -487,7 +515,11 @@ const holdsFixed = (css: Css) =>
  * starts inside it: each element `fixed` with nothing in the tree a
  * transform or filter makes its containing block, or `absolute` with
  * nothing positioned around it in the tree (it or a wrapper collapsed into
- * it, the outermost such). Where the browser window or the page put them
+ * it, the outermost such). An overlay's content is placed by what is
+ * `around` it, outside the tree: Radix's popper wrapper, `fixed` and
+ * translated, is the containing block of a tooltip's arrow, which pokes
+ * out below the bubble where the browser drew it (section 6.9), so what
+ * an element around it holds stays where it drew. Where the browser window or the page put them
  * is no part of the component: shadcn's Sidebar container is `fixed` at
  * `right-0` for side=right, and drew 1024px to the right of its own 256px
  * root in snap's 1280px window, where a Figma component would hold it off
@@ -495,7 +527,7 @@ const holdsFixed = (css: Css) =>
  * they keep their places relative to each other and one already inside the
  * box stays. Each is given its `shift`, and `drewOutside` where it did.
  */
-function anchorToRoot(root: Item): void {
+function anchorToRoot(root: Item, around: readonly Record<string, string>[] = []): void {
   const outside: Item[] = [];
   const walk = (item: Item, absolute: boolean, fixed: boolean) => {
     for (const kid of item.kids) {
@@ -513,7 +545,9 @@ function anchorToRoot(root: Item): void {
     }
   };
   const css = root.css!;
-  walk(root, positioned(css) || holdsFixed(css), holdsFixed(css));
+  const outer = around.map(reader);
+  const outerFixed = outer.some(holdsFixed);
+  walk(root, positioned(css) || holdsFixed(css) || outerFixed || outer.some(positioned), holdsFixed(css) || outerFixed);
   if (!outside.length) return;
   const by = [0, 1].map((a) => {
     const start = Math.min(...outside.map((i) => i.box[a]));
@@ -702,6 +736,24 @@ function selfFacts(item: Item, parentCss: Css): TreeSelf | undefined {
 }
 
 /** A transform other than a translation, which moves a box without changing its shape. */
+/**
+ * What turns or scales an element, which a box can't hold: its
+ * `transform` other than a translation (shapeTransform), and its own
+ * `rotate` and `scale`, which `transform` doesn't show. Tailwind 4 sets
+ * those apart: `rotate-45` turns a tooltip's arrow with `rotate: 45deg`.
+ * A `translate` is in its box already. Null where nothing turns it.
+ */
+function transformOf(css: Css): string | null {
+  const rotate = css("rotate");
+  const scale = css("scale");
+  const parts = [
+    shapeTransform(css("transform")),
+    rotate !== "none" && !/^0(?:deg|rad|grad|turn)?$/.test(rotate) ? `rotate: ${rotate}` : null,
+    scale !== "none" && !/^1(?: 1){0,2}$/.test(scale) ? `scale: ${scale}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join("; ") : null;
+}
+
 function shapeTransform(value: string): string | null {
   if (!value || value === "none") return null;
   const m = /^matrix\(([^)]*)\)$/.exec(value);
@@ -896,7 +948,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     if (p.how === "abs") node.abs = 1;
     // A translation is in its box already; a rotation or scale is not one
     // a box can hold, as on an element.
-    const transform = shapeTransform(css("transform"));
+    const transform = transformOf(css);
     if (transform) node.tf = transform;
     applyPaint(node, p.cs, p.box, css);
     applyEffects(node, css, false);
@@ -913,7 +965,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
 
   const el = item.el!;
   const css = item.css!;
-  const transform = shapeTransform(css("transform"));
+  const transform = transformOf(css);
   let box = item.box;
   // Under a rotation or scale, the box the transform drew is no rectangle
   // Figma can hold: keep the element's own size, centered where it drew.
@@ -1123,7 +1175,7 @@ export function buildTree(capture: RawTreeCapture, options: TreeBuildOptions = {
   const maxDepth = options.maxDepth ?? TREE_LIMITS.maxDepth;
   const ctx: Ctx = { fonts: capture.fonts, svg: {}, images: [], rasters: [], notes: new Set(), maxSvgChars: options.maxSvgChars ?? TREE_LIMITS.maxSvgChars };
   const [root] = buildItem(capture.root, true);
-  anchorToRoot(root);
+  anchorToRoot(root, capture.around);
 
   const nodes: TreeNode[] = [];
   const movedInside: string[] = [];

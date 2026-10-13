@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { asciiJson, callSum } from "../checksum.js";
 import { runFigmaCode } from "../figma-code.js";
 import type { FigmaCodeOptions } from "../figma-code.js";
+import { parentKey } from "../tree-types.js";
 import type { Box, FigmaPlan, PlanCall, TreeNode } from "../tree-types.js";
 import { MockFigma, TREE_FIXTURES_DIR, fixtureVariants, measureFromTrees } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
@@ -141,11 +142,55 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
  * missing layer, or a box off by more than 0.5px (1px for text). A frame's
  * size may differ by what its children's sizes differ by, as section 10.4
  * allows a container: so Figma's AUTO line height for a `normal` one, a
- * fraction off Chrome's, moves no score.
+ * fraction off Chrome's, moves no score. Its place may differ by what its
+ * ancestors' places differ by, and by what packs it in its parent: along
+ * a flex row's or column's main axis, the sizes of the siblings between
+ * it and the side the line is packed at (and its own, packed at the end
+ * or the bottom), as a row packed at its end moves a button left by what
+ * Figma's whole-pixel label widths after it add; across it, its own size,
+ * centered or at the end; in any other layout, the siblings that end
+ * before it on that axis, as the blocks above it. An absolute element
+ * moves with its parent alone.
  */
 export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], factBoxes: Map<string, Box>): string[] {
   const got = readBoxes(mock, variant);
   const drift: string[] = [];
+  const grew = (k: string, a: number) => Math.abs((got.get(k)?.[a + 2] ?? 0) - factBoxes.get(k)![a + 2]);
+  const byKey = new Map(nodes.map((n) => [n.k, n]));
+  const moved = new Map<string, [number, number]>();
+  for (const node of nodes) {
+    const parent = node.k === "" ? null : byKey.get(parentKey(node.k) ?? "") ?? null;
+    const above = parent ? moved.get(parent.k) ?? [0, 0] : [0, 0];
+    const own = parent && !node.abs ? [0, 1].map((a) => packedShift(node, parent, a)) : [0, 0];
+    moved.set(node.k, [above[0] + own[0], above[1] + own[1]]);
+  }
+  // How far what packs `node` in `parent` may move it along axis `a`.
+  function packedShift(node: TreeNode, parent: TreeNode, a: number): number {
+    const start = factBoxes.get(node.k)![a];
+    const siblings = nodes.filter((n) => n.k !== node.k && n.k !== "" && !n.abs && parentKey(n.k) === parent.k);
+    const sum = (list: TreeNode[]) => list.reduce((t, n) => t + grew(n.k, a), 0);
+    const layout = parent.L;
+    if (!layout || !/flex/.test(layout.d)) {
+      return sum(siblings.filter((n) => factBoxes.get(n.k)![a] + factBoxes.get(n.k)![a + 2] <= start + 0.5));
+    }
+    const dir = layout.dir ?? "row";
+    const main = dir.startsWith("column") ? 1 : 0;
+    if (a !== main) {
+      const align = layout.ai ?? "normal";
+      return /center/.test(align) ? grew(node.k, a) / 2 : /end/.test(align) ? grew(node.k, a) : 0;
+    }
+    const reverse = dir.endsWith("-reverse");
+    const justify = layout.jc ?? "normal";
+    const atStart = ["normal", "flex-start", "stretch"].includes(justify) ? !reverse
+      : justify === "flex-end" ? reverse
+        : ["start", "left"].includes(justify) ? true : ["end", "right"].includes(justify) ? false : null;
+    const before = siblings.filter((n) => factBoxes.get(n.k)![a] < start);
+    const after = siblings.filter((n) => factBoxes.get(n.k)![a] > start);
+    if (atStart === true) return sum(before);
+    if (atStart === false) return grew(node.k, a) + sum(after);
+    // Centered or spaced: anything in the line may move it.
+    return grew(node.k, a) + sum(siblings);
+  }
   for (const node of [...nodes].reverse()) {
     const fact = factBoxes.get(node.k)!;
     const box = got.get(node.k);
@@ -156,7 +201,7 @@ export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], 
     const tol = node.t === "T" ? 1 : 0.5;
     const kids = nodes.filter((n) => n.k !== node.k && (node.k === "" ? !n.k.includes("/") && n.k !== "" : n.k.startsWith(`${node.k}/`) && !n.k.slice(node.k.length + 1).includes("/")));
     const allow = [0, 1].map((a) => kids.reduce((t, k) => t + Math.abs((got.get(k.k)?.[a + 2] ?? 0) - factBoxes.get(k.k)![a + 2]), 0));
-    const bad = [0, 1].some((a) => Math.abs(box[a] - fact[a]) > tol) || [0, 1].some((a) => Math.abs(box[a + 2] - fact[a + 2]) > tol + allow[a]);
+    const bad = [0, 1].some((a) => Math.abs(box[a] - fact[a]) > tol + moved.get(node.k)![a]) || [0, 1].some((a) => Math.abs(box[a + 2] - fact[a + 2]) > tol + allow[a]);
     if (bad) drift.push(`${node.k || "(root)"}: snap ${fact.join(",")}, Figma ${box.map(r2).join(",")}`);
   }
   return drift;

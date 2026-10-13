@@ -392,10 +392,12 @@ export function setNameOf(component: SnapComponent): string {
 
 /**
  * The description line for a set snap measured from something other than
- * the component, or from more than one story, or "": what it measured, then
- * which variants came from a story of their own (describeVariantStories),
- * so someone looking at the set can see Toggle's outline variants came from
- * another story than its others.
+ * the component, or from more than one story, or "": what it measured, and
+ * for a closed trigger why snap didn't open it, then which variants came
+ * from a story of their own (describeVariantStories), so someone looking at
+ * the set can see Toggle's outline variants came from another story than
+ * its others. An overlay snap opened and measured open is the component,
+ * and gets no line for it.
  */
 function labelLine(component: SnapComponent): string {
   const parts: string[] = [];
@@ -404,8 +406,9 @@ function labelLine(component: SnapComponent): string {
     if (!note) continue;
     // No double quotes: Figma escapes them in a description (D20).
     const element = note.element.replace(/"/g, "");
+    const why = note.kind === "closed-trigger" && note.reason ? `, as snap didn't open it (${note.reason.replace(/"/g, "")})` : "";
     parts.push(note.kind === "closed-trigger"
-      ? `measured from its closed trigger, ${element}, not the open ${component.name}`
+      ? `measured from its closed trigger, ${element}, not the open ${component.name}${why}`
       : `measured from ${element}, which may be the story's layout wrapper rather than ${component.name}`);
     break;
   }

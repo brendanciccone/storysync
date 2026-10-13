@@ -6,7 +6,9 @@
 // `mapping`, and of those only the ones whose argTypes `if` holds on the
 // mapped values, judged when its context is read, so lifting one counts;
 // `updateStoryArgs` writes the store unchecked and answers
-// `storyArgsUpdated` once the rerender is done; `forceRemount` renders
+// `storyArgsUpdated` once the rerender is done, as `resetStoryArgs` does
+// once it has put the args it names back as the story had them, or
+// removed them; `forceRemount` renders
 // again and says `storyRendered`, or, for a story that throws, says
 // `storyThrewException` and shows Storybook's error display.
 
@@ -62,6 +64,14 @@ export function fakePreview(opts: {
       for (const listener of [...(listeners.get(event) ?? [])]) listener(payload);
       if (event === "updateStoryArgs" && !opts.silent) {
         Object.assign(stored, (payload as { updatedArgs: Record<string, unknown> }).updatedArgs);
+        setTimeout(() => channel.emit("storyArgsUpdated", { storyId, args: { ...stored } }), 5);
+      }
+      // Each arg back to the story's own, and one it has none of gone, as Storybook's reset does.
+      if (event === "resetStoryArgs" && !opts.silent) {
+        for (const name of (payload as { argNames: string[] }).argNames) {
+          if (Object.hasOwn(opts.initial, name)) stored[name] = opts.initial[name];
+          else delete stored[name];
+        }
         setTimeout(() => channel.emit("storyArgsUpdated", { storyId, args: { ...stored } }), 5);
       }
       if (event === "forceRemount") {

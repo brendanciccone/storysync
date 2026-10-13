@@ -458,7 +458,8 @@ test("rootWithStyles: the root with its paint from its styles, in the tree's enc
 const FIXTURES = treeFixtureNames();
 
 test("fixtures: the components the design lists are all here", () => {
-  assert.deepEqual(FIXTURES, ["attachment", "avatar", "button-icon", "card", "example-button", "inputotp", "sidebar", "switch", "toggle"]);
+  // And the overlays snap opens: a Dialog, a Tooltip and a Select, each measured open.
+  assert.deepEqual(FIXTURES, ["attachment", "avatar", "button-icon", "card", "dialog", "example-button", "inputotp", "select", "sidebar", "switch", "toggle", "tooltip"]);
 });
 
 function eachFixture(fn: (name: string, fixture: TreeFixture) => void) {
@@ -532,8 +533,11 @@ test("fixtures: boxes are relative to their parent: every in-flow node lies insi
     for (const { slug, nodes } of fixtureVariants(fixture)) {
       const byKey = new Map(nodes.map((n) => [n.k, n]));
       for (const node of nodes.slice(1)) {
-        if (node.abs) continue;
         const parent = byKey.get(parentKey(node.k)!)!;
+        // Or where its parent clips it: the select's listbox scrolls the
+        // groups past its bottom, and its separators, at `-mx-1`, reach
+        // 4px past its sides.
+        if (node.abs || parent.clip) continue;
         const [x, y, w, h] = node.box;
         assert.ok(x >= -1 && y >= -1 && x + w <= parent.box[2] + 1 && y + h <= parent.box[3] + 1,
           `${name} ${slug} ${node.k} ${JSON.stringify(node.box)} outside ${JSON.stringify(parent.box)}`);

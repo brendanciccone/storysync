@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   argMatches, argsNotInDocs, compactArgTypes, conditionHolds, describeArgRejections, describeUncheckedArgs,
-  findRejectedArgs, mapArgs, nameSlugs, parseIllegalValueWarning, previewArgUpdate, rejectionsFromWarnings, stillRejected, typedArgValue,
+  findRejectedArgs, mapArgs, nameSlugs, openArg, parseIllegalValueWarning, previewArgUpdate, rejectionsFromWarnings, stillRejected, typedArgValue,
 } from "../snap-args.js";
 import type { StoryArgsSnapshot } from "../snap-args.js";
 import type { FigmaVariantProperty } from "../mapper.js";
@@ -332,4 +332,15 @@ test("describeUncheckedArgs: says when the preview couldn't be read, naming the 
   const slugs = ["a", "b", "c", "d", "e", "f", "g"];
   assert.match(describeUncheckedArgs("X", slugs, 9)!, /for 7 of 9 variants \(a, b, c, d, e and 2 more\)\./);
   assert.equal(nameSlugs(["a", "b"]), "a, b");
+});
+
+test("openArg: open, else defaultOpen, where the story's argTypes or the component's documented props have it, and nothing else", () => {
+  assert.equal(openArg({ open: { type: "boolean", control: "boolean" }, defaultOpen: { type: "boolean" } }), "open");
+  assert.equal(openArg({ defaultOpen: { control: "boolean" } }), "defaultOpen");
+  assert.equal(openArg({}, ["modal", "defaultOpen"]), "defaultOpen");
+  assert.equal(openArg(undefined, ["open"]), "open");
+  // An `open` that isn't a boolean is something else: a callback's name, say.
+  assert.equal(openArg({ open: { type: "function" } }, ["defaultOpen"]), "defaultOpen");
+  assert.equal(openArg({ side: { options: ["left", "right"] } }, ["modal"]), null);
+  assert.equal(openArg(undefined), null);
 });

@@ -309,6 +309,28 @@ test("buildTree: an element placed against the window or page, drawn outside the
   assert.deepEqual(buildTree(tree(inTransform)).nodes[1].box, [600, 0, 10, 10]);
 });
 
+test("buildTree: an overlay's content keeps an absolute element where the element around it that places it drew it, as a tooltip's arrow", () => {
+  // Radix's Tooltip: the content isn't positioned, and its arrow is
+  // `absolute`, placed by the popper wrapper around the content, which is
+  // `fixed` and translated. It pokes 5px out below the 28px bubble.
+  const arrow = el("span", [45, 28, 10, 10], { position: "absolute", "background-color": "rgb(23, 23, 23)" });
+  const bubble = () => tree(el("div", [0, 0, 100.94, 28], { "background-color": "rgb(23, 23, 23)" }, [structuredClone(arrow)]));
+  const wrapper = { position: "fixed", transform: "matrix(1, 0, 0, 1, 590, 300)" };
+  const placed = buildTree({ ...bubble(), around: [wrapper] });
+  assert.deepEqual([placed.nodes[1].box, placed.nodes[1].abs, placed.movedInside], [[45, 28, 10, 10], 1, []]);
+  // Base UI's positioner is `absolute`, and a `relative` element places one as well.
+  for (const holder of [{ position: "absolute" }, {}, { position: "relative" }] as Record<string, string>[]) {
+    assert.deepEqual(buildTree({ ...bubble(), around: [{}, holder] }).nodes[1].box, Object.keys(holder).length ? [45, 28, 10, 10] : [45, 18, 10, 10], JSON.stringify(holder));
+  }
+  // Without what is around it, as for any root but an overlay's, it is moved inside the root.
+  const alone = buildTree(bubble());
+  assert.deepEqual([alone.nodes[1].box, alone.movedInside], [[45, 18, 10, 10], ["span"]]);
+  // A `fixed` one is placed only by what holds fixed elements: not by a `relative` element.
+  const fixed = () => tree(el("div", [0, 0, 100, 28], {}, [el("span", [600, 0, 10, 10], { position: "fixed", "background-color": "rgb(255, 0, 0)" })]));
+  assert.deepEqual(buildTree({ ...fixed(), around: [{ position: "relative" }] }).nodes[1].box, [90, 0, 10, 10]);
+  assert.deepEqual(buildTree({ ...fixed(), around: [wrapper] }).nodes[1].box, [600, 0, 10, 10]);
+});
+
 test("buildTree: a fixed or absolute element in one that translate, will-change, containment and the like make its containing block stays where it drew", () => {
   // Base UI's Slider: the thumb is at `translate: -50% -50%`, its input
   // `fixed` at the thumb's corner, where Chrome draws it. Read as placed
@@ -437,7 +459,28 @@ test("buildTree: an element that is only its text becomes the text, sized as the
   ]))).nodes.slice(1).map((n) => [n.k, n.t, n.L?.jc ?? n.L?.ai]);
   assert.deepEqual(centered({ display: "flex", "justify-content": "center", "align-items": "center" }), [["span", "F", "center"], ["span/#text", "T", undefined]]);
   assert.deepEqual(centered({ display: "grid", "align-items": "end" }), [["span", "F", "end"], ["span/#text", "T", undefined]]);
-  assert.deepEqual(centered({ display: "flex", "align-items": "stretch" }), [["span", "T", undefined]]);
+  // At the start, a box its lines' height, it is the text.
+  const atStart = buildTree(tree(el("div", [0, 0, 200, 40], {}, [
+    el("span", [0, 0, 200, 20], { display: "flex", "align-items": "stretch" }, [run("Go", [[0, 1.5, 20, 17]])], { text: TEXT }),
+  ]))).nodes.slice(1).map((n) => [n.k, n.t]);
+  assert.deepEqual(atStart, [["span", "T"]]);
+});
+
+test("buildTree: an element taller than its text's lines stays a frame, its text's line box where the browser drew it", () => {
+  // A dialog's Cancel, a <button> with no padding stretched to its 36px
+  // footer: the button centers its label without flex. As a text node 36
+  // tall, Figma set it at the top, 20 tall.
+  const cancel = el("button", [246.83, 0, 45.57, 36], { display: "block" }, [run("Cancel", [[246.83, 9.5, 45.56, 17]])], { text: TEXT });
+  const nodes = buildTree(tree(el("div", [0, 0, 400, 36], { display: "flex" }, [cancel]))).nodes;
+  assert.deepEqual(nodes.map((n) => [n.k, n.t]), [["", "F"], ["button", "F"], ["button/#text", "T"]]);
+  assert.deepEqual(nodes[1].box, [246.83, 0, 45.57, 36]);
+  assert.deepEqual(nodes[2].box, [0, 8, 45.56, 20]);
+  // Its text at the top of a box taller than its line, as a min-height gives it: a frame too.
+  const tall = el("p", [0, 0, 200, 40], {}, [run("Hello", [[0, 1.5, 40, 17]])], { text: TEXT });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 200, 40], {}, [tall]))).nodes.map((n) => [n.k, n.t]), [["", "F"], ["p", "F"], ["p/#text", "T"]]);
+  // Within Chrome's rounding of the half-leading, a pixel, it is the text.
+  const rounded = el("p", [0, 0, 200, 21], {}, [run("Hello", [[0, 2, 40, 17]])], { text: TEXT });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 200, 21], {}, [rounded]))).nodes.map((n) => [n.k, n.t]), [["", "F"], ["p", "T"]]);
 });
 
 test("buildTree: a run that wraps starts where its first line does, whatever its leading and however many lines", () => {
@@ -580,6 +623,22 @@ test("buildTree: under a rotation, a box is its element's own size, centered whe
   assert.equal(nodes[1].approx, "transform");
   // A translation needs nothing: the box is where it drew.
   assert.equal(nodes[2].tf, undefined);
+});
+
+test("buildTree: a rotate or scale set on its own turns an element as a transform does, as Tailwind 4's rotate-45 turns a tooltip's arrow", () => {
+  // The registry's Tooltip arrow: a 10px svg at `rotate: 45deg`, which
+  // `transform` doesn't show. Read as unturned, it was a 14.14px square.
+  const arrow = el("svg", [-2.07, -9.07, 14.14, 14.14], { "background-color": "rgb(10, 10, 10)", rotate: "45deg" }, [], { size: [10, 10], shapes: [[0, 0, 14.14, 14.14]] });
+  const [, turned] = buildTree(tree(el("span", [0, 0, 10, 10], {}, [arrow]))).nodes;
+  assert.deepEqual([turned.tf, turned.approx, turned.box], ["rotate: 45deg", "transform", [0, -7, 10, 10]]);
+  const scaled = el("div", [-5, -5, 30, 30], { ...BORDER, scale: "1.5", transform: "matrix(1, 0, 0, 1, 2, 0)" }, [], { size: [20, 20] });
+  assert.deepEqual(buildTree(tree(el("div", [0, 0, 20, 20], {}, [scaled]))).nodes[1].tf, "scale: 1.5");
+  const both = el("div", [0, 0, 20, 20], { ...BORDER, rotate: "90deg", transform: "matrix(2, 0, 0, 2, 0, 0)" }, [], { size: [10, 10] });
+  assert.equal(buildTree(tree(el("div", [0, 0, 20, 20], {}, [both]))).nodes[1].tf, "matrix(2, 0, 0, 2, 0, 0); rotate: 90deg");
+  // Turned by nothing, nothing is said.
+  for (const cs of [{ rotate: "0deg" }, { scale: "1" }, { scale: "1 1" }] as Record<string, string>[]) {
+    assert.equal(buildTree(tree(el("div", [0, 0, 20, 20], {}, [el("div", [0, 0, 10, 10], { ...BORDER, ...cs })]))).nodes[1].tf, undefined, JSON.stringify(cs));
+  }
 });
 
 test("buildTree: a pseudo-element's box as the page found it, flagged where it can only be approximate", () => {

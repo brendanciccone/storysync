@@ -12,8 +12,9 @@ import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
   captureTree, captureTreeInPage, drawingElementInPage, readStoryTreeInPage, thumbnailInPage, textFontStacksInPage, standInFontsInPage, standInsLoadedInPage, standInsMeasured,
-  storiesOwnInPage, readStoriesOwn,
+  storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage,
 } from "../snap-browser.js";
+import type { OpenMemory } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
@@ -21,6 +22,7 @@ import { NON_RENDERED_TAGS, OVERLAY_SELECTOR, WRAPPER_PROPERTIES } from "../snap
 import { inFakePage } from "./dom-standin.js";
 import { standInFamilies } from "../fonts.js";
 import type { FakeElementSpec } from "./dom-standin.js";
+import { overlayPage } from "./overlay-standin.js";
 
 /** Listening for requests, which captureStory does to wait for images. */
 const LISTENS = { on: () => {}, off: () => {} };
@@ -175,7 +177,8 @@ test("storyReadySelector: waits for an element that can draw, the component's sl
   assert.match(selector, /\[data-slot="input-otp"\], \[data-slot="input-otp-content"\]/);
   // So does an open overlay's content, as a story that renders only an open dialog shows.
   assert.ok(selector.includes(`, ${OVERLAY_SELECTOR}, `));
-  assert.match(OVERLAY_SELECTOR, /\[role="dialog"\], \[role="alertdialog"\], \[role="tooltip"\], \[role="menu"\], \[data-slot\$="-content"\]/);
+  // A select's listbox included, which snap opens a select's field to show.
+  assert.match(OVERLAY_SELECTOR, /\[role="dialog"\], \[role="alertdialog"\], \[role="tooltip"\], \[role="menu"\], \[role="listbox"\], \[data-slot\$="-content"\]/);
   assert.match(selector, /body\.sb-show-errordisplay, body\.sb-show-preparingstory-error$/);
   // A slot already ending in -content is not doubled.
   const tooltip = storyReadySelector(["tooltip-content", "tooltip"]);
@@ -677,10 +680,12 @@ test("readStoryTreeInPage: reads each element's own text, outline, and the ::bef
     tag: "div", rect: [0, 0, 100, 40], attrs: { id: "storybook-root" },
     kids: [
       { tag: "span", rect: [0, 0, 24, 24], before: { content: '"★"', display: "inline-block" } },
-      { tag: "div", rect: [0, 30, 40, 10], style: { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" }, after: { content: "none" }, kids: [{ text: "  ", rects: [] }] },
+      { tag: "div", rect: [0, 30, 40, 10], attrs: { id: "menu-1" }, style: { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" }, after: { content: "none" }, kids: [{ text: "  ", rects: [] }] },
     ],
   }, (el) => readStoryTreeInPage(el, { props: WRAPPER_PROPERTIES, maxDepth: 12, maxNodes: 600 }));
   const [glyph, ring] = read.children;
+  // Its id, which an open trigger's aria-controls may name, inline.
+  assert.deepEqual([glyph.id, ring.id], [null, "menu-1"]);
   assert.deepEqual([glyph.text, glyph.pseudos?.map((p) => [p.content, p.styles.display])], [false, [['"★"', "inline-block"]]]);
   assert.deepEqual([ring.text, ring.pseudos, ring.styles["outline-style"], ring.styles["outline-width"]], [false, undefined, "solid", "2px"]);
   assert.equal(read.pseudos, undefined);
@@ -709,6 +714,32 @@ test("captureTreeInPage: reads what makes an element hold the fixed and absolute
   // Base UI's Slider thumb: `translate`, not `transform`, holds its `fixed` input.
   const holds = { translate: "-50% -50%", rotate: "5deg", scale: "1.1", perspective: "100px", "offset-path": 'path("M 0 0")', "will-change": "transform", contain: "paint", "content-visibility": "auto", "transform-style": "preserve-3d" };
   assert.deepEqual(readTree({ tag: "div", rect: [0, 0, 16, 16], style: { ...holds, "box-sizing": "border-box" } }).root.cs, holds);
+});
+
+test("captureTreeInPage: for an overlay's content, reads what is around it, innermost first, which places it", () => {
+  // Radix's popper wrapper around a tooltip's content, in a portal holder.
+  const page = {
+    tag: "div", rect: [0, 0, 1280, 720] as [number, number, number, number], style: { "z-index": "50", "box-sizing": "border-box" },
+    kids: [{ tag: "div", rect: [590, 300, 100, 28] as [number, number, number, number], style: { position: "fixed", transform: "matrix(1, 0, 0, 1, 590, 300)", "box-sizing": "border-box" },
+      kids: [{ tag: "div", rect: [590, 300, 100, 28] as [number, number, number, number], attrs: { "data-slot": "tooltip-content" } }] }],
+  };
+  const content = (root: Element) => root.children[0].children[0];
+  const read = inFakePage(page, (el) => captureTreeInPage(el, { ...TREE_ARGS, around: true }), [], content);
+  assert.deepEqual(read.around, [{ position: "fixed", transform: "matrix(1, 0, 0, 1, 590, 300)" }, { "z-index": "50" }]);
+  // Not for any other root.
+  assert.equal(inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content).around, undefined);
+});
+
+test("captureTreeInPage: an element a rotate or scale of its own turns gives its own size, an svg its CSS size", () => {
+  const read = readTree({
+    tag: "span", rect: [0, 0, 10, 10], style: { "box-sizing": "border-box" },
+    kids: [
+      { tag: "svg", rect: [-2.07, -9.07, 14.14, 14.14], style: { rotate: "45deg", width: "10px", height: "10px", "box-sizing": "border-box" } },
+      { tag: "div", rect: [0, 0, 15, 15], offset: [10, 10], style: { scale: "1.5", "box-sizing": "border-box" } },
+      { tag: "div", rect: [0, 0, 10, 10], style: { rotate: "0deg", "box-sizing": "border-box" } },
+    ],
+  });
+  assert.deepEqual(read.root.kids.map((k) => (k as RawTreeElement).size), [[10, 10], [10, 10], undefined]);
 });
 
 test("captureTreeInPage: a pseudo-element that draws, though its color's last channel is 0, and none that is transparent", () => {
@@ -1055,4 +1086,283 @@ test("readStoriesOwn: the stories as the page read them, in the order asked; any
     assert.deepEqual(await readStoriesOwn(page(wrong), ids), { error: "Storybook's preview returned nothing snap can read" }, JSON.stringify(wrong));
   }
   assert.deepEqual(await readStoriesOwn(page(new Error("Execution context was destroyed\nmore")), ids), { error: "Execution context was destroyed" });
+});
+
+// --- Overlays opened before they are measured ---
+
+const DIALOG = { name: "Dialog", title: "ui/radix/Dialog" };
+const DIALOG_TRIGGER = { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false", state: "closed" };
+const OVERLAY_OPTS = { ...OPTS, component: DIALOG, openWaitMs: 40 };
+const URL_OF = "http://localhost:6006/iframe.html?id=ui-radix-dialog--default";
+
+test("captureStory: a story with a closed dialog trigger has it clicked open, its content measured in its portal, and closed again after", async () => {
+  const { page, done, open } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
+  const result = await captureStory(page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.element, result.portal, result.notes], ['div[data-slot="dialog-content"]', true, []]);
+  assert.deepEqual(result.opened, { via: "click", trigger: 'button[data-slot="dialog-trigger"]' });
+  assert.deepEqual(result.boundingBox, { x: 416, y: 275, width: 448, height: 170 });
+  // Opened, the pointer moved off it, settled before it was measured, then
+  // closed: Escape, the mouse off the page, focus dropped.
+  assert.deepEqual(done, ["click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur"]);
+  assert.equal(open(), false);
+});
+
+test("captureStory: the tree of an overlay's content is read with what is around it, which places it; a trigger's is not", async () => {
+  const opened = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
+  assert.equal((await captureStory(opened.page, URL_OF, { ...OVERLAY_OPTS, tree: "tree" })).status, "ok");
+  assert.deepEqual(opened.treeArgs.map((a) => a.around), [true]);
+  const shut = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  assert.equal((await captureStory(shut.page, URL_OF, { ...OVERLAY_OPTS, tree: "tree" })).status, "ok");
+  assert.deepEqual(shut.treeArgs.map((a) => a.around), [undefined]);
+});
+
+test("captureStory: a tooltip's trigger is hovered over first, a context menu's right-clicked", async () => {
+  const tooltip = overlayPage({ marks: { slot: "tooltip-trigger", state: "closed" }, opensOn: ["hover"], content: { slot: "tooltip-content", role: "tooltip" } });
+  const hovered = await captureStory(tooltip.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "TooltipContent", title: "ui/radix/Tooltip" } });
+  assert.deepEqual([hovered.element, hovered.opened], ['div[data-slot="tooltip-content"]', { via: "hover", trigger: 'button[data-slot="tooltip-trigger"]' }]);
+  // The pointer stays on the trigger while it is measured: moved off, it would close.
+  assert.deepEqual(tooltip.done.slice(0, 3), ["hover", "settled", "Escape"]);
+
+  const menu = overlayPage({ marks: { slot: "context-menu-trigger", state: "closed" }, opensOn: ["contextmenu"], content: { slot: "context-menu-content", role: "menu" } });
+  const right = await captureStory(menu.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "ContextMenu", title: "ui/radix/ContextMenu" } });
+  assert.deepEqual(right.opened, { via: "contextmenu", trigger: 'button[data-slot="context-menu-trigger"]' });
+  assert.equal(menu.done[0], "contextmenu");
+});
+
+test("captureStory: an overlay with an open arg is opened by setting it through Storybook's preview, and the arg reset after", async () => {
+  const argTypes = { open: { type: { name: "boolean" }, control: { type: "boolean" } } };
+  const { page, done, open, stored } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["arg"], argTypes });
+  const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: {} } });
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual(result.opened, { via: "arg", arg: "open", trigger: 'button[data-slot="dialog-trigger"]' });
+  // The trigger was never touched, and the arg is the story's own again.
+  assert.deepEqual(done, ["set open=true", "mouse -1,-1", "settled", "reset open", "Escape", "mouse -1,-1", "blur"]);
+  assert.equal(open(), false);
+  assert.equal(Object.hasOwn(stored(), "open"), false);
+
+  // The component's documented props say so too, without an argType.
+  const documented = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["arg"] });
+  const viaProps = await captureStory(documented.page, URL_OF, {
+    ...OVERLAY_OPTS, component: { ...DIALOG, props: ["defaultOpen", "modal"] }, story: { id: "ui-radix-dialog--default", args: {} },
+  });
+  assert.deepEqual(viaProps.opened, { via: "arg", arg: "defaultOpen", trigger: 'button[data-slot="dialog-trigger"]' });
+  assert.equal(documented.done[0], "set defaultOpen=true");
+
+  // A variant that sets defaultOpen itself keeps its value: the arg isn't
+  // touched, and the trigger is clicked, as a user opens it.
+  const own = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], argTypes: { defaultOpen: argTypes.open } });
+  const kept = await captureStory(own.page, `${URL_OF}&args=defaultOpen:!false`, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: { defaultOpen: "false" } } });
+  assert.equal(own.done.some((d) => d.startsWith("set ") || d.startsWith("reset ")), false);
+  assert.equal(kept.opened?.via, "click");
+
+  // One that sets open to false holds it closed: nothing is tried, and the note says so.
+  const held = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], argTypes });
+  const shut = await captureStory(held.page, `${URL_OF}&args=open:!false`, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: { open: "false" } } });
+  assert.deepEqual([shut.element, shut.opened, held.done], ['button[data-slot="dialog-trigger"]', undefined, []]);
+  assert.deepEqual(shut.notes, [{ kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason: "the variant sets its open arg to false, which holds it closed" }]);
+});
+
+test("captureStory: when the open arg opens nothing, it is reset and the trigger is clicked", async () => {
+  // The story doesn't pass `open` on to the overlay: setting it opens nothing.
+  const { page, done, stored } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], argTypes: { open: { type: { name: "boolean" } } } });
+  const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, story: { id: "ui-radix-dialog--default", args: {} } });
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual(result.opened, { via: "click", trigger: 'button[data-slot="dialog-trigger"]' });
+  assert.deepEqual(done, ["set open=true", "reset open", "click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur"]);
+  assert.equal(Object.hasOwn(stored(), "open"), false);
+});
+
+test("captureStory: once a click opens a select's listbox, the pointer moves off it before it is measured, so no item is hovered over", async () => {
+  // Radix's item-aligned listbox opens under the pointer, which stayed where
+  // the click left it: its first item was measured hovered and highlighted.
+  const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
+  const select = overlayPage({ marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" } });
+  const result = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
+  assert.equal(result.opened?.via, "click");
+  assert.deepEqual(select.done.slice(0, 3), ["click", "mouse -1,-1", "settled"]);
+  // A context menu, opened at the pointer, too.
+  const menu = overlayPage({ marks: { slot: "context-menu-trigger", state: "closed" }, opensOn: ["contextmenu"], content: { slot: "context-menu-content", role: "menu" } });
+  await captureStory(menu.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "ContextMenu", title: "ui/radix/ContextMenu" } });
+  assert.deepEqual(menu.done.slice(0, 3), ["contextmenu", "mouse -1,-1", "settled"]);
+});
+
+test("captureStory: content a click opened that closes as the pointer leaves is opened by hovering over its trigger instead", async () => {
+  // Opens while the pointer is on its trigger, which a click puts it on.
+  const { page, done } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click", "hover"], closesOnLeave: true });
+  const result = await captureStory(page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual(result.opened, { via: "hover", trigger: 'button[data-slot="dialog-trigger"]' });
+  assert.deepEqual(done.slice(0, 7), ["click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur", "hover"]);
+  // Where nothing keeps it open, the note says so.
+  const restless = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], closesOnLeave: true });
+  const shut = await captureStory(restless.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(shut.notes[0].kind === "closed-trigger" && shut.notes[0].reason,
+    "clicking it opened it, but it closed again as the pointer left; hovering over it, focusing it and right-clicking it opened nothing within 40ms each");
+});
+
+/** What dismiss does after a way that opened nothing, so the next starts from the story as it rendered. */
+const UNDONE = ["Escape", "mouse -1,-1", "blur"];
+
+test("captureStory: a trigger nothing opens is measured as it is, after every way was tried and undone, and the note says why", async () => {
+  const { page, done } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const result = await captureStory(page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.equal(result.element, 'button[data-slot="dialog-trigger"]');
+  assert.equal(result.opened, undefined);
+  assert.equal(result.portal, undefined);
+  assert.deepEqual(result.notes, [{
+    kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]',
+    reason: "clicking it, hovering over it, focusing it and right-clicking it opened nothing within 40ms each",
+  }]);
+  assert.deepEqual(done, ["click", ...UNDONE, "hover", ...UNDONE, "focus", ...UNDONE, "contextmenu", ...UNDONE]);
+});
+
+test("captureStory: the note says when a trigger opened but showed nothing outside the story's root, or a way failed", async () => {
+  const nowhere = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], where: "nowhere" });
+  const result = await captureStory(nowhere.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.notes[0].kind === "closed-trigger" && result.notes[0].reason,
+    "clicking it opened it, but snap found nothing it opened to measure; " +
+    "hovering over it, focusing it and right-clicking it opened nothing within 40ms each");
+
+  // A click Playwright couldn't make is undone too, and the next way opens it.
+  const covered = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["hover"], clickThrows: "elementHandle.click: Timeout 40ms exceeded.\nCall log: ..." });
+  const hovered = await captureStory(covered.page, URL_OF, OVERLAY_OPTS);
+  assert.deepEqual(hovered.opened, { via: "hover", trigger: 'button[data-slot="dialog-trigger"]' });
+  assert.deepEqual(covered.done.slice(0, 5), ["click", ...UNDONE, "hover"]);
+});
+
+test("captureStory: an overlay that opens inline, beside its trigger, is measured where its trigger's aria-controls names it", async () => {
+  // Headless UI's menu renders its items beside its button, in no portal.
+  const { page, done, open } = overlayPage({ marks: { hasPopup: "menu", expanded: "false" }, opensOn: ["click"], where: "inline", content: { slot: null, role: "menu" } });
+  const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Menu", title: "Headless/Menu" } });
+  assert.equal(result.status, "ok", result.error ?? "");
+  assert.deepEqual([result.element, result.portal, result.notes], ['div[role="menu"]', undefined, []]);
+  assert.deepEqual(result.opened, { via: "click", trigger: "button" });
+  assert.deepEqual(done, ["click", "mouse -1,-1", "settled", "Escape", "mouse -1,-1", "blur"]);
+  assert.equal(open(), false);
+});
+
+test("captureStory: a way that leaves the trigger open, with nothing to measure, which Escape doesn't close, has the story mounted again", async () => {
+  // Opens on a click into something snap can't find, and ignores Escape.
+  const stuck = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], where: "nowhere", escapeIgnored: true });
+  const result = await captureStory(stuck.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(result.status, "ok", result.error ?? "");
+  // Measured closed, as it rendered, with the trigger's note and why.
+  assert.deepEqual([result.element, result.opened], ['button[data-slot="dialog-trigger"]', undefined]);
+  assert.deepEqual(result.notes, [{
+    kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]',
+    reason: "clicking it opened it, but snap found nothing it opened to measure; hovering over it, focusing it and right-clicking it opened nothing within 40ms each",
+  }]);
+  assert.deepEqual(stuck.done.slice(0, 6), ["click", ...UNDONE, "remount", "hover"]);
+  assert.equal(stuck.open(), false);
+
+  // One a remount doesn't close either is measured as it is, with the note
+  // of the trigger as it was found, and no other way is tried.
+  const open = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"], where: "nowhere", staysOpen: true });
+  const kept = await captureStory(open.page, URL_OF, OVERLAY_OPTS);
+  assert.equal(kept.status, "ok", kept.error ?? "");
+  assert.equal(kept.opened, undefined);
+  assert.deepEqual(kept.notes, [{
+    kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]',
+    reason: "clicking it opened it, but snap found nothing it opened to measure; it stayed open, though snap mounted the story again",
+  }]);
+  assert.deepEqual(open.done, ["click", ...UNDONE, "remount"]);
+});
+
+test("captureStory: with --no-open-overlays, a closed trigger is measured untouched, and the note says snap was told so", async () => {
+  const { page, done } = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
+  const result = await captureStory(page, URL_OF, { ...OVERLAY_OPTS, openOverlays: false });
+  assert.equal(result.element, 'button[data-slot="dialog-trigger"]');
+  assert.deepEqual(result.notes, [{ kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]', reason: "it was run with --no-open-overlays" }]);
+  assert.deepEqual(done, []);
+});
+
+test("captureStory: a select's field is clicked open and its listbox measured; one that opens nothing is measured as the field, with no note but why", async () => {
+  const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
+  const select = overlayPage({ marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" } });
+  const opened = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
+  assert.deepEqual([opened.element, opened.opened], ['div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+
+  const shut = overlayPage({ marks: field, opensOn: [] });
+  const asIs = await captureStory(shut.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
+  assert.deepEqual([asIs.element, asIs.notes, asIs.opened], ['button[data-slot="select-trigger"]', [], undefined]);
+  // Which runSnap notes where it opened other variants.
+  assert.deepEqual(asIs.unopened, { element: 'button[data-slot="select-trigger"]', reason: "clicking it opened nothing within 40ms" });
+  assert.equal(opened.unopened, undefined);
+  // Clicked, and nothing else: closed, the field is the component.
+  assert.deepEqual(shut.done, ["click", ...UNDONE]);
+});
+
+test("captureStory: a later variant of a story tries the way that opened an earlier one alone, and where none did, only the first way again", async () => {
+  const memory: OpenMemory = new Map();
+  const opts = { ...OVERLAY_OPTS, openMemory: memory, story: { id: "ui-radix-dialog--default", args: {} } };
+  // A tooltip-like trigger whose marks say click, which hovering opens.
+  const first = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["hover"] });
+  assert.equal((await captureStory(first.page, URL_OF, opts)).opened?.via, "hover");
+  assert.deepEqual(first.done.slice(0, 5), ["click", ...UNDONE, "hover"]);
+  assert.deepEqual(memory.get("ui-radix-dialog--default"), { worked: "hover" });
+  const second = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["hover"] });
+  assert.equal((await captureStory(second.page, URL_OF, opts)).opened?.via, "hover");
+  assert.equal(second.done[0], "hover");
+  // A variant it doesn't open, a disabled one, isn't tried every other way.
+  const disabled = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const shut = await captureStory(disabled.page, URL_OF, opts);
+  assert.deepEqual(disabled.done, ["hover", ...UNDONE]);
+  assert.equal(shut.notes[0].kind === "closed-trigger" && shut.notes[0].reason,
+    "hovering over it opened nothing within 40ms; snap tried no other way, as hovering over it opened an earlier variant");
+
+  // Where every way failed, a later variant tries the first again, and says what the first found.
+  memory.clear();
+  const none = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const all = await captureStory(none.page, URL_OF, opts);
+  const again = overlayPage({ marks: DIALOG_TRIGGER, opensOn: [] });
+  const later = await captureStory(again.page, URL_OF, opts);
+  assert.deepEqual(again.done, ["click", ...UNDONE]);
+  assert.deepEqual(later.notes, all.notes);
+  // Where the first way opens it this time, it is remembered as the way.
+  const opens = overlayPage({ marks: DIALOG_TRIGGER, opensOn: ["click"] });
+  assert.equal((await captureStory(opens.page, URL_OF, opts)).opened?.via, "click");
+  assert.deepEqual(memory.get("ui-radix-dialog--default"), { worked: "click" });
+});
+
+test("triggerOpenInPage: ARIA's, Radix's and Base UI's marks of an open trigger", () => {
+  const el = (attrs: Record<string, string>) => ({
+    getAttribute: (name: string) => attrs[name] ?? null,
+    hasAttribute: (name: string) => name in attrs,
+  }) as unknown as Element;
+  assert.equal(triggerOpenInPage(el({ "aria-expanded": "true" })), true);
+  assert.equal(triggerOpenInPage(el({ "data-state": "open" })), true);
+  assert.equal(triggerOpenInPage(el({ "data-state": "delayed-open" })), true);
+  assert.equal(triggerOpenInPage(el({ "data-popup-open": "" })), true);
+  assert.equal(triggerOpenInPage(el({ "aria-expanded": "false", "data-state": "closed" })), false);
+  assert.equal(triggerOpenInPage(el({})), false);
+});
+
+test("overlaySettledInPage: waits out the animations that end, not one that repeats forever, then for boxes that stay put", async () => {
+  const scope = globalThis as unknown as { requestAnimationFrame?: (cb: () => void) => void };
+  scope.requestAnimationFrame = (cb) => { setTimeout(cb, 1); };
+  try {
+    let ended = false;
+    const finite = { playState: "running", effect: { getComputedTiming: () => ({ endTime: 150 }) }, finished: new Promise((r) => setTimeout(() => { ended = true; finite.playState = "finished"; r(null); }, 30)) };
+    const forever = { playState: "running", effect: { getComputedTiming: () => ({ endTime: Infinity }) }, finished: new Promise(() => {}) };
+    // A box that moves twice as it is placed, then stays.
+    let reads = 0;
+    const el = {
+      getAnimations: () => [finite, forever],
+      getBoundingClientRect: () => ({ x: reads++ < 3 ? reads : 3, y: 0, width: 100, height: 40 }),
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    assert.equal(await overlaySettledInPage(el, { ms: 2000, frames: 3 }), true);
+    assert.equal(ended, true, "the animation that ends was waited for");
+
+    // One that never stays put is given up on once the time runs out.
+    let x = 0;
+    const restless = { getAnimations: () => [], getBoundingClientRect: () => ({ x: x++, y: 0, width: 1, height: 1 }), querySelectorAll: () => [] } as unknown as Element;
+    const started = Date.now();
+    assert.equal(await overlaySettledInPage(restless, { ms: 60, frames: 3 }), false);
+    assert.ok(Date.now() - started < 1000);
+  } finally {
+    delete scope.requestAnimationFrame;
+  }
 });

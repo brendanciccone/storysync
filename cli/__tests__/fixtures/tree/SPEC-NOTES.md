@@ -1660,3 +1660,166 @@ BV7. **An ellipsis is measured against the box it ends the text at**
      such run drifts on its width instead. A text element that is only
      its text and lays it out with `display: flex` (not centered, so snap
      keeps it a text) has no layout facts to tell, and still reads as cut.
+
+# Overlays measured open (0.4.0, Tier 1 #3)
+
+Notes O1 on. Section 2's non-goal ("Dialog and Tooltip remain closed
+triggers with a label") and the "open portal capture" of section 20's
+phase 3 are done: a story that renders only an overlay's closed trigger
+has the overlay opened, and its content measured through the portal path
+that stories rendering it open already took.
+
+O1. **How snap opens one** (`snap-browser.ts` openOverlay). First the
+    story's `open` arg, else `defaultOpen`, set to true through Storybook's
+    preview (`updateStoryArgs` and a remount), where the story's argTypes
+    or the component's documented props have it (`snap-args.ts` openArg);
+    never one the variant sets itself. Then the trigger, as a user opens
+    it (`snap-normalize.ts` openInteractions): right-clicked for a context
+    menu's, hovered over for a tooltip's or hover card's (by slot, or
+    Radix's `data-state` with no `aria-haspopup` or `aria-expanded`),
+    clicked for anything else; then the other ways in turn. Each way waits
+    OPEN_WAIT_MS (3000), or --timeout where that is shorter, for content
+    in a portal, or inline where the open trigger's `aria-controls` names
+    it, as Headless UI's menu renders its items beside its button; one
+    that opens nothing is undone (the arg reset with
+    `resetStoryArgs`, Escape, the mouse moved to -1,-1, focus dropped).
+    The registry's shadcn overlays need no arg: none of their docs list
+    `open`. vaul's Drawer does, and opens by it.
+O2. **Settling.** Once open: fonts, images and stand-ins again (the
+    content mounted after the story's own settle), then the content's
+    animations that end (`getAnimations({ subtree: true })`, those with a
+    finite end) and its boxes and its children's unchanged for 3 frames,
+    within OPEN_SETTLE_MS (2000). snap's stylesheet already stops CSS
+    animations and transitions, so Radix's Presence mounts at once; this
+    waits out what scripts move, as a popper's placement.
+O3. **Closed again** after it is measured, whatever came of it: the arg
+    reset, or Escape, the mouse off the page and focus dropped, and up to
+    CLOSE_WAIT_MS (1000) for the content to go. Each variant navigates
+    afresh anyway; navigation carried no hover over in a probe.
+O4. **A select's field is opened too**, and its listbox measured, as the
+    plan lists Select among the overlays. A field that opens nothing
+    (clicked only) is measured as the field, with no note, as before:
+    closed, it is the component. `[role="listbox"]` joined
+    OVERLAY_SELECTOR. A designer who wants the field instead has
+    `--no-open-overlays`.
+O5. **chooseMeasuredElement** (section 6.1, "unchanged") gains two
+    things: an open trigger whose `aria-controls` names an element inline
+    in the story measures it (`content`), one whose `aria-controls` names
+    nothing (Radix's tooltip at `delayed-open`, a hover card) takes the
+    overlay showing, and `data-state` ending `-open` counts as open; and a
+    closed trigger or a closed select's field comes with `trigger`, the
+    ways to open it. StoryNode reads each element's `id` for the first.
+O6. **styles.json.** A variant snap opened records `opened`: `{ via:
+    "click" | "hover" | "focus" | "contextmenu", trigger }`, or `{ via:
+    "arg", arg: "open" | "defaultOpen", trigger }`, beside `portal: true`
+    and the content's `element`. meta.json records `openOverlays: false`
+    for a `--no-open-overlays` run. snap says each on an `i` line
+    (`measured open: snap clicked ... to open it, and measured ...`), and
+    verify as the `opened` caveat, said like `variant-stories`, never
+    warned.
+O7. **A trigger snap couldn't open** keeps today's warning and label
+    (section 8.11), now with why, from every attempt in order
+    (describeOpenFailure): `snap didn't open it (clicking it, hovering over
+    it, focusing it and right-clicking it opened nothing within 3000ms
+    each)`; `... opened it, but snap found nothing it opened to measure`;
+    `... failed (<error>)`; or `it was run with
+    --no-open-overlays`. The wait is fixed, not what --timeout left, so
+    every variant the same way says the same. parseMeasurementWarning reads
+    the reason back up to the sentence after it; verify's `closed-trigger`
+    caveat carries it as `reason`, and the label line ends `, as snap
+    didn't open it (<reason>)`, its double quotes dropped.
+O8. **Spec problem: a text leaf taller than its lines** (section 6.2's
+    collapse). The opened Dialog's Cancel is a `<button>` with no padding
+    that the footer stretches to 36px; a button centers its label without
+    flex (A8 covered flex and grid only), so as a text node 36 tall Figma
+    set it 20 tall at the top, and the footer's padded Continue button,
+    filling across a row that hugged the text, came out 20 tall too. An
+    element whose box reaches more than 1px above or below its text's line
+    box now stays a frame, its `#text` at its line box, as A8's do.
+O9. **The `dialog` fixture** is the ui-base-dialog story as snap measured
+    it live, opened by a click, written by snap's writer with only the
+    `fixture` block added. tree-e2e pushes it through the mock Figma, and
+    pushes a closed trigger's warning with its reason too.
+O10. **Spec problem: an overlay's content is placed from outside it**
+    (section 6.9). anchorToRoot moved an `absolute` element with nothing
+    positioned around it in the tree inside the root, as the page placed
+    it. An opened Tooltip's arrow is such an element: its containing
+    block is Radix's popper wrapper (`fixed`, translated) or Base UI's
+    positioner, around the measured content, so the arrow, drawn 5px
+    below the 28px bubble, moved inside it and the pointer was lost. For
+    content in a portal or an overlay snap opened, the page now reads
+    the computed values of each element around the root up to `<body>`
+    (RawTreeCapture's `around`), and what positions or holds fixed
+    elements there places what it holds, as one inside the tree does:
+    the arrow keeps where it drew, `abs: 1`, past the root's box. Any
+    other root reads nothing around it, so a story's own wrappers still
+    place nothing.
+O11. **The pointer leaves what a click opened** before it is measured.
+    Radix's and Base UI's item-aligned Select opens its listbox over the
+    field, under the pointer the click left there: Chromium hovered and
+    highlighted its first item, and Figma got `bg-accent` on "Apple", a
+    state a designer draws as hover. Once a click, a right-click, focus or
+    an arg has opened it, the mouse moves to -1,-1, and the content
+    settles after; only content hovering opened keeps the pointer on its
+    trigger. Content that closes as the pointer leaves opened only while
+    hovered over: that way's note says `... opened it, but it closed again
+    as the pointer left`, and the next way is tried.
+O12. **A way that leaves the trigger open** with nothing snap measures
+    (it found no content, or the content closed as the pointer left), and
+    that Escape doesn't close, has the story mounted again through
+    Storybook's preview (`forceRemount`, applyStoryArgsInPage's `remount`)
+    before the next way, so each starts from the story as it rendered,
+    and the trigger is measured closed. Before, the next ways ran on an
+    open trigger and the capture measured it open, its closed-trigger
+    note dropped. Where a remount doesn't close it either, snap tries no
+    other way, measures what is there, and keeps the trigger's note as
+    it was found, its reason ending `it stayed open, though snap mounted
+    the story again` (or why it couldn't).
+O13. **A field that opens nothing, where others opened.** O4 measures a
+    select's field that clicking opens nothing as the field, with no
+    note: closed, it is the component. In a set where other variants
+    opened (a disabled variant beside enabled ones), the Figma set then
+    mixed listboxes with closed fields, said only by the `i` line's "in
+    1 of 2 variants". The capture now returns the field and why
+    (`unopened`), and where any variant of the component opened, snap
+    notes each such variant as a closed trigger with that reason: the
+    warning, the label line and verify's caveat, as for any trigger it
+    couldn't open. Where none opened, nothing changes.
+O14. **What earlier variants found** (`OpenMemory`, one per component,
+    by story). Every variant tried every way: a trigger nothing opens
+    took about 12s a variant, and the live registry run took 10:40
+    against 3:17, mostly Drawer's. Now the way that opened an earlier
+    variant of the story is tried alone, as a variant it doesn't open
+    is one its args hold closed (a disabled trigger), the note ending
+    `; snap tried no other way, as clicking it opened an earlier
+    variant`; and where no way opened an earlier variant, only the first
+    way is tried again, its note that variant's where it again opened
+    nothing, so the warning groups them. A variant that sets `open` to
+    false holds a controlled overlay closed, and snap tries nothing:
+    `the variant sets its open arg to false, which holds it closed`.
+    `defaultOpen` set to false only starts it closed, and snap opens it
+    as a user does. Area A leaves both out of the variant axes; until it
+    lands, Drawer's `open` is one.
+O15. **Spec problem: a `rotate` or `scale` of its own** (section 6.9's
+    transforms). snap read a turn from `transform` alone. Tailwind 4 sets
+    `rotate-45` as `rotate: 45deg`, which `transform` doesn't show, so
+    the opened Tooltip's arrow, a 10px svg turned 45 degrees, was read as
+    an unturned 14.14px square with nothing flagged, and its triangle
+    stretched into it. A `rotate` or `scale` other than none, 0 or 1 now
+    turns an element as a transform does: `tf` says it (`rotate: 45deg`,
+    after any matrix), `approx: "transform"`, and its box is its own
+    size centered where it drew (an `<svg>`'s CSS size, as it has no
+    offsetWidth). A `translate` stays in its box.
+O16. **The `tooltip` and `select` fixtures** are the ui-base-tooltip and
+    ui-base-select stories as snap measured them live with O10, O11 and
+    O15, opened by a hover and a click, written by snap's writer with
+    only the `fixture` block added. Every fixture test takes them: the
+    tooltip's arrow, placed by Base UI's positioner and turned 45
+    degrees, builds as its own 10px box at 45.5,21, past the 28px
+    bubble, its turn unscored (`transform`), as verify leaves it; none
+    of the select's 14 items paints. Two fixture checks met what CSS
+    does here: the build harness's shape check skips a vector snap
+    measured only roughly (`approx`, or a raster), as verify's shape
+    gate does, and the check that an in-flow node lies inside its
+    parent skips a parent that clips, as the listbox scrolls its groups
+    past its bottom and hangs its separators 4px past its sides.

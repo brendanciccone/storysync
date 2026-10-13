@@ -688,13 +688,13 @@ test("action Map components: passes exclude_props and request_timeout to map, wi
     mkdirSync(join(dir, "action"));
     writeFileSync(join(cli, "index.js"), `require("fs").writeFileSync(${JSON.stringify(join(dir, "args.json"))}, JSON.stringify({ args: process.argv.slice(2), progress: process.env.STORYSYNC_PROGRESS })); console.log("{}");\n`);
     const map = (env: Record<string, string>) => {
-      const r = runShell("Map components", dir, { GITHUB_ACTION_PATH: join(dir, "action"), STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", EXCLUDE_PROPS: "", REQUEST_TIMEOUT: "", ...env });
+      const r = runShell("Map components", dir, { GITHUB_ACTION_PATH: join(dir, "action"), STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", EXCLUDE_PROPS: "", REQUEST_TIMEOUT: "", SNAP_DIR: "", ...env });
       assert.equal(r.status, 0, r.stdout + r.stderr);
       return JSON.parse(readFileSync(join(dir, "args.json"), "utf8")) as { args: string[] };
     };
-    assert.deepEqual(map({}).args, ["map", "--storybook", "http://localhost:6006", "--json"]);
-    assert.deepEqual(map({ EXCLUDE_PROPS: "asChild,className", REQUEST_TIMEOUT: "900000" }).args,
-      ["map", "--storybook", "http://localhost:6006", "--json", "--exclude-props", "asChild,className", "--request-timeout", "900000"]);
+    assert.deepEqual(map({}).args, ["map", "--storybook", "http://localhost:6006", "--json", "--no-snap"]);
+    assert.deepEqual(map({ EXCLUDE_PROPS: "asChild,className", REQUEST_TIMEOUT: "900000", SNAP_DIR: ".storysync/snaps" }).args,
+      ["map", "--storybook", "http://localhost:6006", "--json", "--exclude-props", "asChild,className", "--request-timeout", "900000", "--snap", ".storysync/snaps"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

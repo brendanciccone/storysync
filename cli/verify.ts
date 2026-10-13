@@ -18,7 +18,10 @@ import type { ComponentTree, TreeDelta, TreeNode } from "./tree-types.js";
 import { SPIKE, recordProblem, scoreTree } from "./verify-tree.js";
 import type { NodeVerdict, ReadRecord, SpikeAssumptions, UnscorableProperty } from "./verify-tree.js";
 import type { NormalizedStyles, BorderSide, BoxShadowLayer, TextLayout } from "./snap-normalize.js";
-import { SNAP_META_FILENAME, describeVariantStories, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning, parseSnapWarning } from "./snap.js";
+import {
+  SNAP_META_FILENAME, describeOpenedOverlays, describeVariantStories, detectIdenticalVariants, parseBehaviorOnlyWarning, parseMeasurementWarning,
+  parseSnapWarning,
+} from "./snap.js";
 import { NO_STORY_FIX } from "./snap-args.js";
 import { componentKey, componentNames, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
@@ -523,10 +526,12 @@ export interface ScoreCaveat {
    * `identical-variants` has it.
    */
   kind: "closed-trigger" | "layout-wrapper" | "identical-variants" | "behavior-only" | "default-assumed" | "args-rejected" | "args-unchecked"
-    | "identical-values" | "no-op-properties" | "preview-set" | "font-not-rendered" | "snap-warning" | "variant-stories"
+    | "identical-values" | "no-op-properties" | "preview-set" | "font-not-rendered" | "snap-warning" | "variant-stories" | "opened"
     | "root-only" | "truncated-tree" | "built-from-other-measurement";
   /** The element snap measured, for a closed trigger or a layout wrapper. */
   element?: string;
+  /** For a closed trigger: why snap didn't open it, as its warning says. */
+  reason?: string;
   /**
    * The properties whose default is assumed, for `default-assumed`, that
    * change nothing measured, for `behavior-only`, or whose every value
@@ -554,7 +559,9 @@ export interface ScoreCaveat {
   /**
    * For `variant-stories`, said rather than warned: the stories variants
    * were measured from other than the component's, each with the variants'
-   * slugs, and `note`, which says it as snap did.
+   * slugs, and `note`, which says it as snap did. For `opened`, also said
+   * rather than warned: how snap opened the overlay it measured, as `note`
+   * (describeOpenedOverlays).
    */
   stories?: { story: string; slugs: string[] }[];
   note?: string;
@@ -1680,7 +1687,7 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     const note = parseMeasurementWarning(warning);
     if (!note || seen.has(note.kind + note.element)) continue;
     seen.add(note.kind + note.element);
-    caveats.push({ component: key, kind: note.kind, element: note.element });
+    caveats.push({ component: key, kind: note.kind, element: note.element, ...(note.kind === "closed-trigger" && note.reason ? { reason: note.reason } : {}) });
   }
   // Which of the two snap said, where it said: an older snap's warning
   // blames the story whatever the markup did.
@@ -1722,6 +1729,9 @@ export function scoreCaveats(component: SnapComponent): ScoreCaveat[] {
     for (const v of component.variants ?? []) if (v.storyId) stories.set(v.storyId, [...(stories.get(v.storyId) ?? []), v.slug]);
     caveats.push({ component: key, kind: "variant-stories", stories: [...stories].map(([story, slugs]) => ({ story, slugs })), note });
   }
+  // How snap opened the overlay it measured, as snap said it.
+  const opened = describeOpenedOverlays({ variants: component.variants ?? [] });
+  if (opened) caveats.push({ component: key, kind: "opened", note: opened });
   // What snap's warnings alone say: values or properties that measured the
   // same, and a font the browser couldn't render.
   for (const warning of component.warnings ?? []) {
