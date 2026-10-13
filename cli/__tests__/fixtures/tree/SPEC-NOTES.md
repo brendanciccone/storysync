@@ -312,6 +312,11 @@ A10. **Class evidence.**
       Card title, as B's binding example needs.
     - State-prefixed tokens (`hover:`, `data-[state=open]:`) and `text-*` sizes
       can appear, so B keeps filtering candidates by hex (8.9).
+    - The page leaves out an unprefixed `text-*` that sets no color, tried on
+      a probe that inherits a color nothing else gives it: a project's own
+      font size (`text-body`, a v4 `--text-body`) no longer stops the walk
+      for the color a text inherits. Where the probe can't tell (a rule
+      colors every element), every one stays.
 A11. **Spec problem: the line box of a wrapped run.** Section 6.4's
     `y = inkTop − (lh − inkH/n)/2` is wrong for n > 1. The union of a run's
     line rects is (n − 1)·lh plus one line's glyphs, so the formula put every

@@ -744,6 +744,22 @@ test("captureTreeInPage: reads the class evidence around the root, innermost fir
   assert.equal(readTree({ tag: "div", rect: [0, 0, 10, 10], attrs: { class: "bg-card" } }).outer, undefined);
 });
 
+test("captureTreeInPage: leaves out an unprefixed text-* class the page found sets no color, a project's font size", () => {
+  // A v4 theme's --text-body: a size, which a text inherits its color past.
+  const page = {
+    tag: "div", rect: [0, 0, 400, 100] as [number, number, number, number], attrs: { class: "text-card-foreground text-body" },
+    kids: [{ tag: "p", rect: [0, 0, 400, 20] as [number, number, number, number], attrs: { class: "text-body md:text-body hover:text-primary text-[14px] text-[#0a0a0a] bg-card" } }],
+  };
+  const colors = { "text-card-foreground": "rgb(10, 10, 10)", "text-primary": "rgb(23, 23, 23)", "text-[#0a0a0a]": "rgb(10, 10, 10)" };
+  const content = (root: Element) => root.children[0];
+  const read = inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content, colors);
+  assert.deepEqual(read.root.cls, ["md:text-body", "hover:text-primary", "text-[#0a0a0a]", "bg-card"]);
+  assert.deepEqual(read.outer, [["text-card-foreground"]]);
+  // Where the page can't tell, every one stays, as before.
+  const unprobed = inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], content);
+  assert.deepEqual(unprobed.root.cls, ["text-body", "md:text-body", "hover:text-primary", "text-[14px]", "text-[#0a0a0a]", "bg-card"]);
+});
+
 test("captureTreeInPage: an element a rotate or scale of its own turns gives its own size, an svg its CSS size", () => {
   const read = readTree({
     tag: "span", rect: [0, 0, 10, 10], style: { "box-sizing": "border-box" },

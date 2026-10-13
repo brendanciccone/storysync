@@ -192,6 +192,8 @@ class FakeElement extends FakeNode {
 class FakeWorld {
   standIns = new Set<FakeElement>();
   moves = new Map<FakeElementSpec, Rect>();
+  /** Elements the page made, other than stand-in spans: probes. */
+  made = new Set<FakeElement>();
 }
 
 /** What getComputedStyle returns: getPropertyValue, camelCase properties, and the list of every property. */
@@ -211,9 +213,12 @@ function computed(values: Record<string, string>): Record<string, unknown> {
 /**
  * Runs `fn` with `root` built as a page's DOM, the globals captureTreeInPage
  * reads set to stand-ins for that page. `moves` gives the rect an element
- * measures at while a stand-in span sits beside it.
+ * measures at while a stand-in span sits beside it. With `classColors`, an
+ * element the page makes computes its `color` as a browser would: its inline
+ * style's, else the color the stylesheet gives its class, else its parent's;
+ * without, its color is the browser default, and the page can't probe one.
  */
-export function inFakePage<T>(root: FakeElementSpec, fn: (el: Element) => T, moves: [FakeElementSpec, Rect][] = [], at?: (root: Element) => Element): T {
+export function inFakePage<T>(root: FakeElementSpec, fn: (el: Element) => T, moves: [FakeElementSpec, Rect][] = [], at?: (root: Element) => Element, classColors?: Record<string, string>): T {
   const world = new FakeWorld();
   for (const [spec, rect] of moves) world.moves.set(spec, rect);
   const element = new FakeElement(root, world);
@@ -233,6 +238,11 @@ export function inFakePage<T>(root: FakeElementSpec, fn: (el: Element) => T, mov
       return computed(own);
     }
     if (world.standIns.has(el)) return computed(el.style.values);
+    if (classColors && world.made.has(el)) {
+      const parent = el.parentElement;
+      const inherited = parent && world.made.has(parent) ? String((scope.getComputedStyle as (e: FakeElement) => Record<string, unknown>)(parent).color) : FAKE_DEFAULTS.color;
+      return computed({ ...el.style.values, color: el.style.values.color ?? classColors[el.attrs.class ?? ""] ?? inherited });
+    }
     return computed(el.spec.style ?? {});
   };
   scope.document = {
@@ -247,6 +257,7 @@ export function inFakePage<T>(root: FakeElementSpec, fn: (el: Element) => T, mov
       if (tag === "canvas") return { getContext: () => ({ font: "", measureText: (text: string) => ({ width: text.length * 7 }) }) };
       const made = new FakeElement({ tag, rect: [0, 0, 0, 0] }, world);
       if (tag === "span") world.standIns.add(made);
+      else world.made.add(made);
       return made;
     },
   };

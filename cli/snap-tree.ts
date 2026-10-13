@@ -83,7 +83,11 @@ export interface RawTreeElement {
   tag: string;
   slot?: string;
   role?: string;
-  /** Class tokens that may be class evidence, as written; classEvidence picks them. */
+  /**
+   * Class tokens that may be class evidence, as written; classEvidence picks
+   * them. An unprefixed `text-*` the page found sets no color, a font size
+   * such as `text-body`, is left out.
+   */
   cls?: string[];
   /** The first `lucide-*` class of an `<svg>`. */
   lucide?: string;
