@@ -123,9 +123,9 @@ use_figma({
    | colors | `ALL_FILLS`, `STROKE_COLOR`, `EFFECT_COLOR`: Tailwind paints any color as a background, text, border, ring or shadow, as shadcn/ui's tooltip is `bg-foreground text-background` |
    | radius | `CORNER_RADIUS` |
    | spacing | `GAP`, `WIDTH_HEIGHT` |
-   | typography `text/*` | `FONT_SIZE` |
+   | typography `text/*`, `font/size/*` or `fs/*`, and a Tailwind config's `fontSize` tokens, which have no namespace (`sm`, `base`) | `FONT_SIZE` |
    | typography `font/weight/*` | `FONT_WEIGHT` |
-   | typography `leading/*` | `LINE_HEIGHT` |
+   | typography `leading/*`, `line/height/*` or `lh/*` | `LINE_HEIGHT` |
    | typography `tracking/*` | `LETTER_SPACING` |
    | typography, other `font/*` | `FONT_FAMILY` |
 
