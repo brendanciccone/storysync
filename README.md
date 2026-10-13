@@ -9,37 +9,65 @@ Sync your design system from code to Figma, and diff Figma back against code, us
 
 ![Claude Code running /storysync-push and reporting 100% fidelity (174 of 174 properties), beside the pushed Button component set in Figma and the Button story in Storybook](assets/screenshot.webp)
 
+**Start here:** [What it does](#what-it-does) · [Install](#install) · [Your first push](#your-first-push) · [What a push costs](#what-a-push-costs) · [Check the result](#check-the-result) · [Find drift](#find-drift)
+
+**Reference:** [Commands](#commands) · [How snap measures](#how-snap-measures) · [How the build works](#how-the-build-works) · [How verify scores](#how-verify-scores) · [Tokens](#tokens) · [Props and variants](#props-and-variants) · [GitHub Action](#github-action) · [Troubleshooting](#troubleshooting) · [What Figma can't do](#what-figma-cant-do)
+
 ## What it does
 
-Storysync reads design tokens from your codebase (Tailwind config, CSS custom properties, or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview). Your AI client then uses [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create matching Figma variables and component sets.
+Storysync reads design tokens from your code (a Tailwind config, CSS custom properties or theme files) and components from [Storybook MCP](https://storybook.js.org/docs/ai/mcp/overview). Your AI client then uses [Figma MCP](https://developers.figma.com/docs/figma-mcp-server/) to create matching Figma variables and component sets.
 
-Component styling is **measured, not guessed**. `storysync snap` renders each variant in a headless browser and reads the computed styles of every element in it that draws, so the fills, spacing, radii, type, icons and pictures in Figma come from the real render, not from an AI reading your source. `storysync figma code` turns those measurements into the Figma calls your AI client sends unchanged, and after a push, `storysync verify` scores what landed in Figma against the measurements, element by element.
+Component styling is measured, not guessed:
 
-| Method | What it does |
+1. `storysync snap` renders every variant of every component in a headless browser and records the computed styles of each element that draws: fills, spacing, radii, type, icons and pictures.
+2. `storysync figma code` turns those measurements into the Figma calls your AI client sends, unchanged.
+3. `storysync verify` reads Figma back and scores it against the measurements, element by element.
+
+There are three workflows: **push** (code to Figma), **verify** (score what landed against what rendered) and **diff** (find drift in either direction). Storysync never writes your code. See [Non-goals](#non-goals).
+
+| Use it from | What it does |
 |---|---|
-| **Claude Code skill** | Runs `storysync tokens`, `list`, `snap` and `figma code` to extract structured data and measured styles from your codebase and write the Figma calls, sends them through `use_figma`, and scores the result with `verify`. Can also audit Figma against code. |
-| **Cursor rules** | Same as above, from Cursor |
-| **Codex** | Same as above, from Codex |
-| **CLI** | Extract tokens, map components, measure rendered styles, write a push's Figma calls, score a push, or diff Figma against code |
-| **GitHub Action** | Detect token and component drift in CI on every push |
+| **Claude Code**, **Cursor** or **Codex** | A skill file runs the CLI commands, sends the Figma calls through `use_figma`, and scores the result with `verify`. It can also audit Figma against code. |
+| **The CLI** | Extract tokens, map components, measure rendered styles, write a push's Figma calls, score a push, or diff Figma against code. |
+| **GitHub Action** | Catch token and component drift in CI. |
 
-> **Why skill files?** Writing to Figma needs Figma's `use_figma` tool, which only works inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor, and Codex. So Storysync does the extracting, the measuring and the writing of every component call with deterministic CLI commands, and the skill file tells your AI client to send those calls and run the commands around them. It writes the token variables itself, from `tokens --json`.
+Why a skill file? Writing to Figma needs Figma's `use_figma` tool, which works only inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor and Codex. So the CLI does the extracting, the measuring and the writing of every component call, and the skill tells your AI client to send those calls and run the commands around them. The skill writes the token variables itself, from `tokens --json`. Storysync needs no Anthropic API key and makes no LLM calls of its own.
 
-## Quick start
+## Before you start
 
-Storysync has three workflows: **push** (code → Figma), **verify** (score what landed against what rendered), and **diff** (find drift in either direction). It never writes code. See [Non-goals](#non-goals).
+**For components:**
+
+- Storybook 10.1 or later with a Vite-based framework: `@storybook/react-vite`, `@storybook/nextjs-vite` or `@storybook/sveltekit`. Storybook 9 supports token extraction only.
+- `@storybook/addon-mcp`, which serves MCP at `/mcp`. `storysync init` sets it up.
+- The Storybook dev server (`storybook dev`), not a static build.
+- Node.js 18 or later, or 20 or later for `snap`.
+- A Chromium-based browser, for `snap` only.
+
+**For writing to Figma:**
+
+- A Full seat on a paid plan. Dev seats are read-only ([Figma's docs](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas)).
+- A supported MCP client, which signs you in to Figma.
+- Figma limits MCP tool calls by plan and seat. See [Figma's rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/).
+
+**For tokens:** nothing else. Token extraction reads only local files, so it needs no Storybook, MCP connection or sign-in.
+
+## Install
 
 ```bash
 npm install -g storysync                # or: pnpm add -g storysync
 
 cd your-project
 npx storysync init                      # set up @storybook/addon-mcp if needed
-npx storysync setup --client claude     # or: --client cursor   --client codex
+npx storysync setup --client claude     # or: --client cursor, --client codex
 ```
 
-`setup` writes the skill file (plus slash commands for Claude Code) and prints the MCP setup commands you still need to run.
+`setup` writes the skill file, plus slash commands for Claude Code, and prints the MCP setup commands you still need to run.
 
-To try it without a project of your own, use [`examples/storybook-vite`](examples/storybook-vite). It's a small Storybook with one component that measures cleanly and one whose story is broken on purpose, so you can see the warning.
+To try Storysync without a project of your own, use [`examples/storybook-vite`](examples/storybook-vite). It's a small Storybook with one component that measures cleanly and one whose story is broken on purpose, so you can see the warning.
+
+## Your first push
+
+Connect your client to both MCP servers, start Storybook, and ask for a push.
 
 ### Claude Code
 
@@ -48,12 +76,7 @@ claude mcp add --transport http storybook http://localhost:6006/mcp
 claude plugin install figma@claude-plugins-official
 ```
 
-Start Storybook, open Claude Code, and run:
-
-- `/storysync-push <figma-file-key>` to push Storybook and tokens into Figma
-- `/storysync-diff <figma-file-key>` to audit Figma against code
-
-You can also just ask in plain English (see [What to say](#what-to-say)).
+Start Storybook, open Claude Code, and run `/storysync-push <figma-file-key>`. The file key is the part of a Figma URL between `/design/` and the next `/`.
 
 ### Cursor
 
@@ -67,9 +90,9 @@ You can also just ask in plain English (see [What to say](#what-to-say)).
 }
 ```
 
-In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma. Then start Storybook and ask the agent to push or diff.
+In Cursor's Agent chat, type `/add-plugin figma` and sign in to Figma. Then start Storybook and ask the agent to push.
 
-Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync list`, `map`, `inspect`, and `snap` outside it, and `figma upload`, which posts pictures to Figma. Approve them, since they need to reach Storybook or Figma.
+Cursor's terminal sandbox blocks `localhost`, so the agent asks to run `storysync list`, `map`, `inspect` and `snap` outside it, and `figma upload`, which posts pictures to Figma. Approve them: they need to reach Storybook or Figma.
 
 ### Codex
 
@@ -80,29 +103,7 @@ codex mcp add storybook --url http://localhost:6006/mcp
 codex mcp add figma --url https://mcp.figma.com/mcp      # signs you in to Figma
 ```
 
-With Storybook running, ask Codex to push or diff. In the CLI, you can type `$storysync` to name the skill.
-
-A few Codex details:
-
-- If Storybook isn't running, `codex mcp add` prints "MCP server may or may not require login". You can ignore it. Storybook's server needs no login.
-- You can install Figma's plugin instead of adding its server by hand: **Plugins** in the desktop app, or `/plugins` in the CLI.
-- `codex mcp add` registers a server for every project. To keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads once you trust the project:
-
-  ```toml
-  [mcp_servers.storybook]
-  url = "http://localhost:6006/mcp"
-  ```
-
-- Codex's sandbox has network access off, so it asks to run `npx storysync` outside it, to reach Storybook, or Figma for `figma upload`. Approve it, or accept the rule Codex offers so it stops asking.
-- Codex gives each MCP call `tool_timeout_sec` seconds (60 or 300 by default, depending on the version). The skill splits large Figma writes across calls, but if one still times out, raise the limit in the table `codex mcp add` wrote to `~/.codex/config.toml`:
-
-  ```toml
-  [mcp_servers.figma]
-  url = "https://mcp.figma.com/mcp"
-  tool_timeout_sec = 600
-  ```
-
-  Figma's plugin has no timeout setting, and a `[mcp_servers.figma]` table replaces the plugin's server. So with the plugin installed, run the `codex mcp add figma` command above and add the line to the table it writes.
+With Storybook running, ask Codex to push. In the CLI, you can type `$storysync` to name the skill. See [Codex details](#codex-details) for the sandbox and timeouts.
 
 ### What to say
 
@@ -110,256 +111,117 @@ These work in every client:
 
 | Goal | Say |
 |---|---|
-| Code → Figma | "Push my Storybook to Figma (file key `<key>`)" |
+| Code to Figma | "Push my Storybook to Figma (file key `<key>`)" |
 | Audit drift | "Diff Figma against code (file key `<key>`)" or "Check if Figma is in sync" |
 | Score the last push | "Verify the Figma file against the measured styles" |
 
-## GitHub Action
+### What happens during a push
 
-The action checks for token and component drift on every push.
+The skill walks your agent through these steps. It stops and asks you whenever a choice is yours.
 
-```yaml
-name: Validate storysync mappings
-on:
-  push:
-    paths: ['src/components/**', 'stories/**', 'tailwind.config.*']
+1. **Tokens.** `storysync tokens --json` reads your tokens, and the agent creates a Figma variable collection per category. A dark theme becomes a Dark mode beside Light.
+2. **Pick components.** `storysync list` counts them. With more than about 20, the agent asks which to push.
+3. **Measure.** `storysync snap --variants all` renders every combination of every component's variant props. It runs in the background, since it can take minutes.
+4. **Ask.** The agent asks you about anything the measurement can't settle on its own: a component with more combinations than the cap, an overlay snap couldn't open, or props that measured the same in every variant.
+5. **Write the calls.** `storysync figma code` writes every Figma call as a file and prints an estimate of what the push will cost. The agent shows you the estimate and waits for your go-ahead.
+6. **Send.** The agent sends each call to `use_figma` unchanged and saves each response unchanged.
+7. **Score.** `storysync verify --plan` reads the responses and scores Figma against the measurement. The agent reports the score, what differs, and what it couldn't score.
 
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: brendanciccone/storysync/action@main
-        with:
-          fail_on_drift: true
-```
+The Figma file mirrors Storybook's sidebar: a page per category, and a component set per component, named by the last segment of its title.
 
-It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
+## What a push costs
 
-For a bun project on a runner without bun, the action installs it with [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun), at the version `packageManager` names, or the latest. Mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`. The log shows a line per component as it goes.
+A push isn't lightweight. Your AI client sends every Figma call through its own context: each build call carries up to 45,000 characters of code, and each read call returns up to 20kb. That adds up in tokens.
 
-**Create the baselines first.** With Storybook running, in the project's directory:
+**Rule of thumb:** plan on roughly 100k tokens per component, plus about 100k per push for setup and verification. Simple components use less. Components with big variant grids use 2 to 3 times more.
 
-```bash
-mkdir -p .storysync
-npx storysync@<version> map --storybook http://localhost:6006 --json > .storysync/baseline.json
-npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
-```
+| Components | Plan on about |
+|---|---|
+| 10 | 1.1M tokens |
+| 30 | 3.1M tokens |
+| 60 | 6.1M tokens, split across sessions |
 
-Commit both files. Use the Storysync version the action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the action maps. The action's warnings and errors print these commands with the version filled in. You can also save the action's `json` and `tokens_json` outputs as your baselines.
+These numbers are calibrated from live pushes. Push 4, for example, built 5 components with 100 variants and 872 elements in 22 calls, for about 570k agent tokens.
 
-- If you set `components`, `exclude_props` or `token_source`, pass the same values to `map --components`, `map --exclude-props` and `tokens --source`.
-- A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
-- With no baseline, drift is `new` and the action warns that nothing was checked. With `fail_on_drift`, the job fails and prints the command that writes it.
-- A baseline that isn't `map --json` or `tokens --json` output always fails the job. That includes the `{"error": ...}` that `map --json` writes when Storybook isn't running.
-- A newer ref's Storysync can read tokens an older one didn't, such as shadcn/ui's radius scale, which token drift lists as added. When drift only adds tokens, the error and the drift report say so and print the command that writes a new baseline.
-- A component whose prop and combination counts didn't change is reported with what did, such as `size`'s values reordered or its default changed. A baseline from Storysync 0.3.0 lists values in declared order, where `map` now puts the default first, so expect these lines until you recreate it.
+**The estimate for your push.** `storysync figma code` prints an estimate for the calls it just wrote: how many calls, the characters the agent must send and read back, and a token range. The low end puts each character the calls carry at about 0.8 tokens, plus 100k for the push and 10k per component; the high end allows for a repair round and questions. The skills show you this estimate and ask before sending anything. `--json` puts it in `estimate`.
 
-| Input | Default | |
-|---|---|---|
-| `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens, and baseline paths all use it. |
-| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile`. Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
-| `storybook_url` | `http://localhost:6006` | With the default, the action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
-| `components` | all | Comma-separated component names, titles or IDs. A name that matches nothing fails the job. |
-| `exclude_props` | none | Comma-separated props to leave out of every component, as `map --exclude-props`. |
-| `request_timeout` | 5 minutes | How long mapping waits for each Storybook request, in ms, as `map --request-timeout`. Raise it for a slow Storybook. |
-| `token_source` | `auto` | `tailwind`, `css`, `theme`, or `auto`. |
-| `snap_dir` | `.storysync/snaps` | The committed snap whose argTypes and left-out props `map` uses. Set it to `''` for none. |
-| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A baseline from Storysync 0.3.0 has no IDs, so it's matched by title, with a warning to recreate it. |
-| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
-| `fail_on_drift` | `false` | Fail the job on drift, or when a baseline is missing. |
-| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found, even if a later step fails. Needs `issues: write`. |
-| `node_version` | `22` | Node.js version. |
+To spend less, push fewer components at a time with `--components`, in separate sessions.
 
-**Outputs:** `drift` and `token_drift` are `true`, `false`, or `new` (no baseline). `token_drift` can also be `none` (no baseline and no tokens) or `skipped` (`token_baseline: ''`). `json` and `tokens_json` hold the `map --json` and `tokens --json` output the action compared.
+Writing to the canvas is free during Figma's beta. [Figma's guide to its MCP server](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) says it will become a usage-based paid feature.
 
-**Aikido Safe Chain:** the action sets up its own Node and pnpm, which come before Safe Chain's shims on `PATH`, so Safe Chain doesn't check the action's installs. To have it check your dependencies, install them in your own steps before the action, following Safe Chain's [GitHub Actions example](https://github.com/AikidoSec/safe-chain#github-actions-example) with the Node version `node_version` names, and set `install_command: 'true'`.
+## Check the result
 
-## How it works
+The push ends with `storysync verify`, which scores what Figma holds against what snap measured:
 
 ```text
-  Tokens                               Components
-
-  tailwind.config.ts / @theme          Storybook MCP
-  globals.css (:root)                        ↓
-  theme.ts                   storysync tokens --json     storysync list --json
-         ↓                          ↓                           ↓
-  storysync extracts         Structured token JSON       components to push,
-  colors, spacing,           (deterministic output)      chosen with the user
-  typography, radius,              ↓                           ↓
-  shadows                   AI client reads JSON,        storysync snap --json
-         ↓                  creates Figma variables            ↓
-  preview with CLI          via use_figma           renders each variant in a
-  (storysync tokens)              ↓                 browser, records every
-                            components bind to      element's computed styles
-                            variables                          ↓
-                                                     storysync figma code
-                                                     writes every use_figma
-                                                     call as a file
-                                                               ↓
-                                                     AI client sends each
-                                                     file unchanged, saves
-                                                     each response
-                                                               ↓
-                                                     storysync verify --plan
-                                                     → element fidelity %
-
-  Audit
-
-  Figma MCP                          Code / Storybook
-  read variables via                 storysync tokens --json
-  use_figma Plugin API               storysync map --json
-         ↓                                  ↓
-  read component sets                deterministic extraction
-  and variant properties             of tokens + components
-         ↓                                  ↓
-         └──────── compare ────────────────┘
-                      ↓
-               drift report:
-               + missing from Figma
-               - missing from code
-               ~ value mismatch
+Fidelity: 99.8% of elements (29 of 30 verified), 99.7% of properties (389/390)
+  worst: Forms/Button 99.8% of elements
+  missing 0 · drifted 1 · extra 0 · designer layers 0 · not measured 0
+  coverage 92.9%: not scored: line-height: normal, which each font's metrics set on Forms/Button › #text; ...
+  ~ Forms/Button variant=primary, size=sm, disabled=false › #text: color measured #ffffff, Figma #ff00ff (node 1:2)
+14 verified, 1 drifted, 0 missing from Figma, across 15 variants
 ```
 
-## Token extraction
+- **Element fidelity** is the headline. Each element snap measured scores the share of its properties that Figma matches.
+- Each line under it names one difference: component, variant, element key and Figma node id.
+- **Coverage** lists what Figma can't represent or verify can't score. It is listed, never counted as a match.
 
-Storysync reads design tokens from your codebase and previews the Figma variable collections the skill will create. Sources are detected automatically:
+The comparison is numeric, not visual, so it's deterministic and free. See [How verify scores](#how-verify-scores) for the details.
 
-| Source | What it reads |
-|---|---|
-| **Tailwind** | `tailwind.config.ts`, `.js`, `.mjs`, `.cjs`, `.mts`, or `.cts` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`, and those of a preset in a relative file, [see below](#tailwind-presets-and-configs-built-by-code)), or Tailwind v4 `@theme` blocks when there's no config ([see below](#tailwind-v4-theme)) |
-| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing`, or `--shadow` is `DEFAULT`. |
-| **Theme files** | `tokens.ts`, `theme.ts`, and similar: exported objects with `colors`, `spacing`, and so on |
+**Test the score once on your own file.** A score is only as good as the readback behind it:
 
-Detection takes the first of these a project has: a `tailwind.config.ts`, `.js`, `.mjs`, or `.cjs`; a stylesheet with a `:root { }` rule; a Tailwind v4 `@theme` block; a theme file; a `tailwind.config.mts` or `.cts`; and last, a stylesheet whose variables are only in a selector list such as `:root, .light { }`. Earlier versions found neither of the last two, so they come after every source those versions read, and a project keeps the source its baseline was written from. A warning names a `.mts` or `.cts` config passed over this way. Pass `--source tailwind` to read it.
+1. After a push, change one element inside a variant in Figma by hand: recolor a button's label or an icon, change a title's text, hide a layer, or delete one.
+2. Have the agent send the push's read calls again, and run `verify --plan`. It should report exactly that element, by its key and node id, and nothing else.
+3. Edit one value in a saved response under `.storysync/figma/results/` and run `verify --plan` again. That entry, and only that one, should fail its checksum.
 
-Token categories are **colors**, **spacing**, **typography**, **radius**, and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped.
+Don't test it by moving a layer that sits in auto layout. To move, it has to leave the flow, so the layers after it move up and the frame around it shrinks, and `verify` reports those too, as Figma now has them. The acceptance suite runs both tests against the example project, and the test suite runs each edit on five shadcn components, then sends the build calls again and checks that everything verifies.
 
-**Colors** can be in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, or the bare HSL channels shadcn/ui uses (`240 5.9% 10%`). A custom property with one of these values counts as a color whatever its name. `tokens --json` keeps the value as written and adds its sRGB `hex`:
+## Find drift
 
-```json
-{ "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }
+Ask your agent to diff Figma against code, or run `/storysync-diff <figma-file-key>` in Claude Code. The audit reads Figma's variables and component sets and compares them with `storysync tokens` and `storysync map`:
+
+```text
++ missing from Figma     in code, not in Figma
+- missing from code      in Figma, not in code
+~ value mismatch         both exist, values differ
 ```
 
-The push sets Figma variables from `hex`, since Figma's color helpers only accept a few formats, and `diff` compares in hex, so this token matches a Figma variable of `#fb2c36`. Translucent colors get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`.
+It compares token values and each component's variant properties. It needs `use_figma` to return what its code returns, which supported clients do. Asked whether the sets still look like the code, it can also score them as `verify` does, reading Figma and changing nothing.
 
-**Lengths** in radius, spacing, and typography get `px`, with rem (16px) and `calc()` worked out. The push sets FLOAT variables from it, and `diff` compares in px:
+The CLI's own [`storysync diff`](#storysync-diff) does the same comparison, given a Figma MCP endpoint it can reach without signing in. To catch drift in CI, use the [GitHub Action](#github-action).
 
-```json
-{ "name": "sm", "value": "calc(0.625rem - 4px)", "px": 6 }
-```
+## Write stories that measure well
 
-A value in em or %, or with no unit, like a font weight, has no `px`. `tokens --check` compares only `value`, so baselines written before `hex` and `px` existed still pass.
+snap measures what your stories render, so a few habits help:
 
-**Dark theme.** Where the stylesheets set variables for a dark theme, in `.dark`, `[data-theme="dark"]`, `:root.dark` and the like, or a `:root` inside `@media (prefers-color-scheme: dark)`, each token is read again with them, and a token whose value differs gets a `dark` value. `modes` says which modes the tokens fill. The push makes them a Dark mode beside Light, and `diff` compares each mode:
+- **Pass args through.** snap sets each variant's values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default for every variant. Plain CSF3 args-driven stories are the reliable shape.
+- **Mark the component's root.** snap measures the first element carrying the component's own `data-slot` (`switch` for `Switch`), as shadcn/ui puts on every component's root. Any project can point snap at a root the same way.
+- **Give variants content that fits.** An icon-size button with a text label spills out of its square. snap picks a story whose own args set those values and give them content of their own, such as shadcn/ui Button's Icon story, or you can name one with `--stories`.
+- **Let overlays open.** snap opens a Dialog, Popover, Tooltip or similar overlay before measuring. An `open` or `defaultOpen` prop the story passes through is the surest way.
 
-```json
-{ "name": "background", "value": "oklch(1 0 0)", "hex": "#ffffff", "dark": { "value": "oklch(0.145 0 0)", "hex": "#0a0a0a" } }
-```
+snap warns about each of these when it sees them. See [How snap measures](#how-snap-measures).
 
-`tokens --check` compares dark values too, against a baseline that has `modes`. A baseline from an earlier version has none, so it still passes, with a note to recreate it.
+---
 
-A `var()` that doesn't resolve stays as written, and an `Unresolved:` warning names the token, for example a font that next/font sets at runtime. An `@theme` token whose `var()` doesn't resolve is left out, and an `Unresolved:` warning names it too. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read. Earlier versions read `storybook-static`, `out` and `coverage`, so a baseline one of them wrote lists a token found only there as removed. A `:root` value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
+The rest of this README is reference. Look things up as you need them.
 
-### shadcn/ui and Tailwind configs that reference CSS variables
+## Commands
 
-Many Tailwind configs, shadcn/ui's included, define colors as `hsl(var(--background))` and put the values in `globals.css` under `:root`. Storysync resolves these references:
+The CLI handles setup (`init`, `setup`) and gives deterministic output you can check locally or in CI (`tokens`, `list`, `map`, `inspect`, `snap`, `figma`, `verify`, `diff`). It never calls Figma's tools itself: `figma code` writes the calls, and your AI client sends them. The one request it sends to Figma is `figma upload`'s, which posts image bytes to the upload URLs Figma's `upload_assets` gave your client.
 
-```ts
-// tailwind.config.ts
-colors: { background: "hsl(var(--background))" }
-```
+**Connecting.** A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it. When the server answers with an HTTP error, the message gives the status and what to do, such as running `storysync init` when Storybook has no `/mcp`.
 
-```css
-/* globals.css */
-:root { --background: 0 0% 100%; }
-```
+**Request timeouts.** Once connected, each request has `--request-timeout` (default 300000 ms, five minutes). A large Storybook can take more than a minute to answer one, since it builds each component's docs when they're asked for. A component whose docs don't come back in time fails on its own, with an error that names the flag, and `--strict` catches it. A `--connect-timeout` longer than five minutes raises the request limit too.
 
-That resolves to `hsl(0 0% 100%)`. It also handles:
+**Progress.** `map`, `snap` and `diff` read components one at a time, which can take minutes for a large library. On a terminal they show which component they're on, on stderr, so `--json` output stays clean. Piped or in CI they print nothing extra, unless you set `STORYSYNC_PROGRESS=1`, which prints a line per component (and per snap variant) to stderr, so you can follow a background run from its stderr file. `STORYSYNC_PROGRESS=0` turns the terminal line off. A terminal that reports 0 columns is treated as 80 wide.
 
-- Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)` → `hsl(0 0% 100%)`)
-- Nested variable chains (`--brand: var(--blue-500)`)
-- Fallback values (`var(--missing, 200 50% 50%)`), including ones with parentheses (`var(--missing, var(--border))`, `var(--missing, rgb(0 0 0))`)
+**Naming components.** `--components`, `--skip` and `inspect --component` take a component's name, its title as `list` prints it (`ui/base/Button`), the title's last segment as the sidebar shows it, or its Storybook ID. A name that matches nothing is an error.
 
-A reference with no matching variable and no fallback, or an empty one as in `var(--x,)`, is left as the raw `var(...)`, with a warning, so you can see what didn't resolve.
-
-Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. These are the default theme. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]`, a rule nested in `:root` such as `&.dark { }`, or a `:root` inside `@media (prefers-color-scheme: dark)`, isn't read for it. A dark theme's rules give the tokens' `dark` values instead ([see above](#token-extraction)). Earlier versions read `.dark:root { }` as the default theme, and read a `&.dark { }` nested in `:root` as part of it, dropping the declarations after it, so a baseline one of them wrote lists those tokens as changed, and the dropped ones as added. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A minified `.min.css` bundles other packages' styles, such as Bootstrap's `:root, [data-bs-theme=light] { }`, so in one a selector list is read only when it ends in `:root`, as earlier versions read it.
-
-### Tailwind presets and configs built by code
-
-Storysync reads a Tailwind config as text and never runs it. A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, or in an object the config file declares, is read the same way, one level deep. They merge as in Tailwind: a key set in `theme` itself, such as `theme.colors`, replaces a preset's, one in `theme.extend` adds to it, and the config's own tokens win over a preset's of the same name, as a later preset's do over an earlier one's. Earlier versions didn't read presets, so a baseline one of them wrote lists a preset's tokens as added. A config that re-exports another relative file, or spreads one in at the top of the object it exports, as `{ ...require("./base"), content }` does, is read through it. A `theme` key after the spread replaces the spread's theme, as in JavaScript.
-
-Anything Storysync can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, or anything spread in at the top of `theme` or `theme.extend`, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too, since Tailwind's default theme and what a plugin adds aren't read. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
-
-Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is skipped with a warning naming the token, since its value is known only when the config runs. Earlier versions kept the backticks, so a baseline one of them wrote lists a backticked token as changed, and one that interpolates as removed.
-
-### Tailwind v4 `@theme`
-
-A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks instead of a config:
-
-```css
-@import "tailwindcss";
-
-@theme {
-  --color-brand-500: oklch(62.3% 0.214 259.815);
-  --spacing-18: 4.5rem;
-  --radius-card: 0.75rem;
-  --text-hero: 3.5rem;
-  --font-display: "Satoshi", sans-serif;
-}
-```
-
-With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has a stylesheet with a `:root { }` rule, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, as earlier versions did, plus the `@theme` spacing, radius, shadow, and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`. Those are named as in the table below, so a category can hold `:root`'s `radius/md` next to `@theme`'s `sm`, and a baseline from an earlier version lists them as added. `@theme` colors aren't read, since `:root` holds what they point at, and a warning names any other `@theme` tokens. Pass `--source tailwind` to read `@theme` instead. A stylesheet whose variables are only in a selector list, such as `:root, .light { }`, doesn't make `:root` the source, so `@theme` is read.
-
-| Namespace | Category | Token name |
-|---|---|---|
-| `--color-*` | colors | without the namespace: `--color-brand-500` → `brand/500` |
-| `--spacing-*`, `--spacing` | spacing | `--spacing-18` → `18`; the bare `--spacing` base unit → `DEFAULT` |
-| `--radius-*` | radius | `--radius-card` → `card` |
-| `--shadow-*` | shadows | `--shadow-soft` → `soft` |
-| `--text-*`, `--font-*`, `--font-weight-*`, `--leading-*`, `--tracking-*` | typography | with the namespace, since they share a category: `text/hero`, `font/display`, `font/weight/bold`, `leading/snug` |
-
-Dashes in a name become `/`. A `var()` is resolved against the theme, the project's `:root`, and Tailwind's default theme when `tailwindcss` is installed, so `--color-primary: var(--color-blue-500)` gets blue-500's value. Tailwind's defaults are only used to resolve references; they aren't read as your tokens, so a project that uses Tailwind's default spacing, type, or shadow scales has no tokens for them. Later declarations win, and `initial` removes a variable (or a whole namespace, as in `--color-*: initial`). Modifiers like `--text-hero--line-height` and nested rules like `@keyframes` are skipped, and other namespaces (`--breakpoint-*`, `--animate-*`, and so on) are listed as uncategorized.
-
-## Component mapping rules
-
-| Storybook prop type | Figma output |
-|---|---|
-| `boolean` | Boolean variant property |
-| `enum` / `union` of string literals (a `null` or `undefined` member is ignored) | Variant property with matching values |
-| `string` (free text) | Skipped |
-| `number` (free value) | Skipped |
-| `function` / `callback` | Skipped |
-| `ReactNode` / `children` | Skipped |
-| `ref` / `className` / `style` | Skipped |
-| `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
-| `aria-*` / `data-*` attributes | Skipped |
-
-Props come from the Props section of the component's Storybook docs, and from the story's `argTypes`, which `snap` reads in the browser and records in `styles.json`: a choice only the argTypes declare, like Button's `disabled` or Sheet's `side`, becomes a variant property too, its default the story's own arg. `map`, `inspect` and `diff` read the argTypes from that snap (`--snap <dir>`, `.storysync/snaps` by default, or `--no-snap`), and say when they can't see them. Subcomponents' props and attached MDX pages don't become variant properties.
-
-Props that don't change the look are left out on their own, and each is recorded in `styles.json` with why, so `map`, `diff` and the Action leave out the same: one every value of which `snap` measured the same (cmdk's `loop`, input-otp's `textAlign`), one the argTypes mark with `control: false`, a hidden table row or an event, and an `open` that opens what a closed trigger hides, which `snap` then sets on every variant so Drawer is measured open. `--keep-props` keeps one, and `--exclude-props` leaves out others, on `map`, `inspect`, `snap` and `diff`.
-
-`list` shows entries whose stories name no component, such as shadcn's `design/*` token pages, as skipped, and the other commands leave them out unless `--components` names one. `map`, `inspect`, `snap` and `diff` keep each component's docs in `.storysync/cache/docs` until Storybook's `index.json` or the component's manifest entry changes; `--no-cache` reads them again.
-
-A union prop's values start with its default, and the push lays a boolean out with its default first, so Figma's default variant is the code's. Where the docs give no usable default, map assumes one, a value named `default` if there is one, else the first value, or `false` for a boolean, and marks the property `defaultAssumed: true`. `inspect` shows why a prop was skipped, and which defaults were assumed.
-
-## CLI reference
-
-The CLI handles setup (`init`, `setup`) and gives deterministic output you can check locally or in CI (`tokens`, `map`, `snap`, `figma`, `verify`, `list`, `inspect`, `diff`). It never calls Figma's tools itself: `figma code` writes the calls, and your AI client sends them, using the skill. The one request it sends to Figma is `figma upload`'s, which posts image bytes to the upload URLs Figma's `upload_assets` gave your client.
-
-A command that can't reach Storybook (or Figma, for `diff`) exits 1. So does one whose server accepts the connection but doesn't answer within `--connect-timeout` (default 60000 ms). With `--json`, the error is printed as JSON, `{"error": "..."}`, so scripts can still parse it. When the server answers with an HTTP error, the message gives the status and what to do about it, such as running `storysync init` when Storybook has no `/mcp`.
-
-Once connected, each request has `--request-timeout` (default 300000 ms, five minutes). A large Storybook can take more than a minute to answer one, since it builds each component's docs when they're asked for. A component whose docs don't come back in time fails on its own, with an error that names the flag, and `--strict` catches it. A `--connect-timeout` longer than five minutes raises the request limit too, as it did before `--request-timeout`.
-
-`map`, `snap`, and `diff` read components one at a time, which can take minutes for a large library. On a terminal they show which component they're on, on stderr, so `--json` output stays clean. Piped or in CI, they print nothing extra, unless you set `STORYSYNC_PROGRESS=1`, which prints a line per component (and per snap variant) to stderr. That lets you follow a run in the background from its stderr file. `STORYSYNC_PROGRESS=0` turns the terminal line off.
+**The docs cache.** `map`, `inspect`, `snap` and `diff` keep each component's docs in `.storysync/cache/docs` until Storybook's `index.json` or the component's manifest entry changes. `--no-cache` reads them again.
 
 ### `storysync init`
 
-Checks your Storybook setup and offers to fix it: the Storybook version (10.1+ is needed for components), whether `@storybook/addon-mcp` is installed, and whether it's registered in `.storybook/main.ts`. It asks before each change.
+Checks your Storybook setup and offers to fix it: the Storybook version (10.1 or later is needed for components), whether `@storybook/addon-mcp` is installed, and whether it's registered in `.storybook/main.ts`. It asks before each change.
 
 ```text
 Options:
@@ -372,7 +234,7 @@ If the install fails, `init` exits 1 and prints the command to run by hand. If t
 
 ### `storysync setup`
 
-Adds the Storysync skill, slash commands, and MCP setup notes to your project for the AI client you use.
+Adds the skill, slash commands and MCP setup notes for your AI client.
 
 ```text
 Options:
@@ -390,9 +252,11 @@ npx storysync setup --client codex
 # writes .agents/skills/storysync/SKILL.md
 ```
 
+`setup` doesn't overwrite files that exist. After upgrading Storysync, run it again with `--force` to update the skill and commands. `--force` replaces any local edits to those files.
+
 ### `storysync tokens`
 
-Extracts design tokens from your project and previews the Figma variable collections they'd create.
+Extracts design tokens and previews the Figma variable collections they'd create. See [Tokens](#tokens).
 
 ```text
 Options:
@@ -407,17 +271,31 @@ Options:
   --strict             Exit with code 1 if no tokens found or drift detected
 ```
 
-`--check` compares against a committed baseline and lists tokens that were added, removed, or changed. Add `--strict` to fail on drift. Write the baseline with the same `--project` and `--source` you check with:
+`--check` compares against a committed baseline and lists tokens that were added, removed or changed. Add `--strict` to fail on drift. Write the baseline with the same `--project` and `--source` you check with:
 
 ```bash
 mkdir -p .storysync && npx storysync tokens --json > .storysync/tokens-baseline.json
 ```
 
-A missing baseline is always an error, so a wrong `--baseline` path can't pass by comparing nothing. A file that isn't `tokens --json` output is an error too. A newer Storysync can read tokens an older one didn't, which a baseline from the older one lists as added; drift prints the command that writes a new one.
+A missing baseline is always an error, so a wrong `--baseline` path can't pass by comparing nothing. A file that isn't `tokens --json` output is an error too. `--check` compares `value`, and dark values against a baseline that has `modes`. `hex` and `px` aren't compared, so they cause no drift on their own. When drift appears, it ends with the command that writes a new baseline. With `--source`, the text output names the source it read.
+
+### `storysync list`
+
+Lists the components in Storybook, each by its title and ID. MDX docs pages, like an introduction, are left out here and in every other command. Entries whose stories name no component, like shadcn's `design/*` token pages, are listed as skipped, and left out of `map`, `snap` and `diff` unless `--components` names them.
+
+```text
+Options:
+  --storybook <url>      URL of the running Storybook instance (required)
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
+  --json                 Output JSON instead of formatted text
+```
+
+`--json` gives each component's `id`, `name`, `title`, `category` and `storyIds`, with `titleDerived: true` on a title rebuilt from its ID, and `docsOnly: true` on an entry with no component behind it.
 
 ### `storysync map`
 
-Maps every component to Figma variant definitions. Each one has its Storybook `id` and `title`. Titles come from Storybook's `index.json`. If Storysync can't read it, it rebuilds them from the IDs, which loses case and folders (`UI Base/Button` for `ui/base/Button`), and `list` says so.
+Maps every component to Figma variant definitions, without rendering anything. Each one has its Storybook `id` and `title`. Titles come from Storybook's `index.json`. If Storysync can't read it within 5 seconds of the docs list answering, it rebuilds them from the IDs, which loses case and folders (`UI Base/Button` for `ui/base/Button`), and `list` says so.
 
 ```text
 Options:
@@ -438,9 +316,26 @@ Options:
   --strict               Exit with code 1 if any component fails or is capped
 ```
 
+Without a browser, `map` can't see the stories' argTypes, so it reads them, and the props snap left out, from the snap in `--snap`, and says when it can't. The push doesn't need `map`: snap's output carries the same variant properties. See [Props and variants](#props-and-variants).
+
+### `storysync inspect`
+
+Shows one component's props, how each maps to Figma, why a prop was skipped, and each variant property's default. A default the docs don't give is marked as assumed.
+
+```text
+Options:
+  --storybook <url>      URL of the running Storybook instance (required)
+  --component <name>     Component name, title or ID to inspect (required);
+                         a name that matches nothing, or several, is an error
+  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
+  --request-timeout <ms> How long each request may take once connected (default: 300000)
+  --exclude-props, --keep-props, --snap, --no-snap, --no-cache
+                         As map takes them
+```
+
 ### `storysync snap`
 
-Renders each component variant in a headless browser and records its computed styles, and those of every element inside it that draws. The push then works from measured values instead of interpreting Tailwind classes, `cva` calls, or theme indirection.
+Renders each component variant in a headless browser and records its computed styles, and those of every element inside it that draws. See [How snap measures](#how-snap-measures).
 
 ```text
 Options:
@@ -465,7 +360,7 @@ Options:
   --merge                With --components, measure only those and merge them into the styles.json
                          in --out, keeping the rest
   --root-only            Measure each variant's outer element alone, without its element tree, as
-                         0.4.0 did: for a push through the skill's root-only templates
+                         0.3.0 did: for a push through the skill's root-only templates
   --no-channel-args      Don't set the values Storybook won't take from the story's URL through its
                          preview: leave those variants unmeasured, as arg_rejected (args_unsupported
                          for a value no URL can carry)
@@ -483,75 +378,11 @@ Options:
   --strict-warnings      Implies --strict, and also fails on warnings
 ```
 
-snap writes `<out>/styles.json`, with full styles for a base variant plus only what each other variant changes. It has no timestamp, so you can commit and diff it. `--screenshots` also saves PNGs under `<out>/<component>/`.
-
-**Element trees.** Besides each variant's outer element, snap measures every element inside it that draws: frames, text with the line boxes the browser drew, pseudo-elements that paint, SVG icons, pictures and the values of inputs. Each gets a key from its place in the component, such as `card-header/card-title`, so `figma code` builds it as its own layer and `verify` scores it on its own. `styles.json` holds the base variant's tree and, for each other variant, only what differs, an element a line, so a change to one element is one changed line in a diff. Icons are kept as their SVG, and pictures as thumbnails under `<out>/assets/`, named by their content, which the push uploads to Figma. A tree stops at 400 elements or 24 levels, and snap warns which variants it cut short. Trees make `styles.json` larger, by tens of kilobytes on a large library.
-
-`--root-only` measures the outer element alone, as 0.4.0 did, and writes what 0.4.0 wrote, plus each variant's `innerElements`, how many elements it left out. `figma code` refuses such a snap: the skill pushes it with its root-only templates. `--merge` refuses to mix a snap of trees with a root-only one.
-
-**Take the snaps you compare on one platform.** Text is drawn a little wider or narrower from one operating system and browser build to the next, and the boxes after it move with it, so two machines' snaps of the same code can differ by fractions of a pixel. `meta.json` records the `platform` and `browser` a snap was taken with. Commit snaps taken in one place, such as CI.
-
-**Which story.** snap measures each component from one of its stories: its Default story, or else its first. A variant can need another. shadcn/ui Button's Icon story sets `size=icon` and puts an icon in the button in place of its label, which would otherwise spill out of the icon size's square. So where a story's own args set some of a variant's values and give it something of its own to draw (other args, such as `children`, or its own `render` or decorators), snap measures the variants with those values from that story: Button's `size=icon` variants from Icon, and `size=icon-sm` from Icon Small. A value that a story which draws nothing of its own also sets doesn't count: Icon also sets `variant=secondary`, as the Secondary story does, so it isn't the story for every secondary button. Nor does a story that only adds to another's args: shadcn/ui Toggle's WithText is its Outline story with a label added, so Outline is the story for `variant=outline`. Where several stories fit, the one that sets the most of the variant's values wins, then the plainest, the one that sets the least of its own, then the first. A story with a play function is never picked. snap records each variant measured from another story as the variant's `storyId`, and says which in its output and beside `verify`'s score.
-
-`--stories ui-base-button=ui-base-button--with-icon` makes the story you name the component's story, by the component's ID or title: every variant no other story fits is measured from it, and recorded as the component's `storyId`, while Button's icon sizes still come from its Icon stories. It refuses a story that isn't the component's, or a name no component has, before measuring anything. A pair for a component the run doesn't measure, under `--components`, is checked the same way and left out, so a push can pass the same pairs to every snap it takes. To measure every variant from the story you name, with no story picked for any variant, end it with `!`: `--stories 'ui-base-toggle=ui-base-toggle--default!'`. snap then records `storyOnly: true` on the component. Use it when snap picks a story for some variants that you don't want them measured from. `--merge` measures a component again from the story the snap in `--out` measured it from, and with its `!` where it had one, unless `--stories` names another.
-
-**Content past its box.** snap warns when a variant's content draws past its own box, by how much, as a label too long for a button sized for an icon does, since Figma shows it spilling out. It names the values those variants share, such as `size=icon-xs`, and the story they were measured from. For variants measured from the component's story, it says a story whose own args set those values and give them content that fits would be picked for them, or that `--stories` can name another component story. For variants measured from a story snap picked for them, it says to give that story content that fits, or to measure every variant from one story with `!`. What the component clips, what is positioned absolutely, transformed or hidden, shadows and focus rings don't count, and text counts as tall as its lines, not its font's full height.
-
-**Measuring some components again.** `--components` alone writes a `styles.json` of just those components. To measure a few again, such as ones that timed out, and keep the rest, add `--merge`: it replaces those components in the `styles.json` already in `--out` and keeps every other one as it was measured. It refuses, before measuring anything, a snap it can't add to: none there, one with no `meta.json`, or one taken by another Storysync version, with other `--variants` or `--exclude-props`, or from another Storybook. `meta.json` then records when each component was measured, and its `measuredAt` is the oldest of them, so `verify` judges the snap by its oldest part.
-
-If snap stops before it finishes, it writes nothing: `styles.json`, `meta.json` and the screenshots stay as the last run left them, and it says so on stderr. It exits 130 after Ctrl-C, 143 after SIGTERM (a canceled job or a command timeout) and 129 after SIGHUP. If the browser crashes or is closed, snap launches it once more and measures the component it was on again. If it goes a second time, snap writes nothing and exits 1, with the reason as its error (`{"error": ...}` on stdout under `--json`).
-
-**Which element is measured.** In each story, snap measures the first element anywhere in it carrying the component's own `data-slot` (`switch` for `Switch`, `input-otp` for `InputOTP`), as shadcn/ui puts on every component's root. Any project can point snap at a component's root the same way. Without one, it measures the story's first element that draws, past wrappers that draw nothing and hold one element. snap warns when that element is likely not the component:
-
-- **A layout wrapper:** an element holding several others and drawing nothing itself, such as a story's `<div className="flex gap-2"><Switch /><Label /></div>`. An element with a `role`, `dir`, `data-orientation` or `aria-label`, or a list, form or table, is taken for a component's root instead.
-- **A closed trigger:** a dialog, popover, menu or tooltip renders its content only while open, usually in a portal. snap opens it and measures the content (see **Overlays** below), and warns only when it couldn't open it, saying why.
-
-A story can also render an overlay open with no trigger, as a dialog with `open: true` does, so nothing in the story's root draws. When the story's root shows nothing that draws, or only a closed trigger, snap measures open overlay content in a portal: an element with the role `dialog`, `alertdialog`, `tooltip` or `menu`, a `-content` slot, or what Radix's popper places.
-
-**Overlays.** When the story renders only an overlay's closed trigger, as a Dialog's, Popover's, Sheet's, DropdownMenu's, Select's, HoverCard's or Tooltip's Default story does, snap opens the overlay before it measures. It sets the story's `open` arg, or `defaultOpen`, to true through Storybook's preview where the component takes one. Otherwise it clicks the trigger, or hovers over it for a tooltip or hover card, or right-clicks it for a context menu, and tries the other ways if that opens nothing, waiting up to 3 seconds for each (less when `--timeout` is shorter). Later variants of the same story try the way that opened an earlier one alone. Unless hovering opened it, it moves the pointer off the page, so nothing in it is measured hovered. It waits for the overlay's animations to end and its boxes to stay put, measures its content, and closes it again. Each such variant records how in `opened`, like `{"via": "click", "trigger": "button[data-slot=\"dialog-trigger\"]"}`, and snap's output says so on an `i` line. A select's field that opens nothing is measured as the field, which is the component while it is closed, and snap warns where other variants of it opened. A variant that sets `open` to false is measured closed. `--no-open-overlays` measures closed triggers as they render.
-
-Each measured variant records the element as `element`, like `span[data-slot="switch"]`, and `portal: true` when it was measured in a portal outside the story's root.
-
-An element placed against the browser window (`position: fixed`), or against the page (`position: absolute` with nothing positioned around it), is drawn where the window puts it, not where the component does: shadcn's Sidebar at `side="right"` draws at the window's right edge, far from its own root. An element in the component with a transform, a translate, a filter or containment holds such an element in place, and snap leaves it there. Otherwise snap measures it moved inside the root's box, as far as it takes, and lists it in the variant's `movedInside`. There is nothing in the story to fix, so this is not a warning.
-
-**Strict modes.** `--strict` fails on anything that couldn't be measured, on a variant whose args snap couldn't check (below), on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, like a story that ignores its args, and is usually what you want in CI. That includes the warnings above about which element was measured, and one about a prop whose values all measure the same, so a closed dialog's story fails it until the story renders the dialog open.
-
-**Variants.** `representative` measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. That's fine for a quick check, but a Figma component set needs every combination, so the push uses `--variants all`.
-
-**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props. `--exclude-props` narrows them: it leaves the props it names, matched ignoring case, out of every component's variant properties. snap records them as `excludeProps` in `styles.json`, and the audit passes the same list to `map` so it doesn't report them as missing from Figma. The skill has the agent pass the same list to every snap of a push, since a run without it drops the record (a `--merge` without it refuses to run), and name the props in its summary. `diff` takes the same option.
-
-**Browser.** snap needs Node 20+ (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
-
-```bash
-npx playwright@<version> install chromium     # note: the full `playwright` package
-```
-
-Use the version the error prints. Other Playwright versions install a browser that Storysync's `playwright-core` can't launch.
-
-**What snap records:**
-
-- **Colors** as sRGB hex (`#rrggbbaa` when translucent), whatever space Chromium reports them in (`oklch`, `oklab`, `lab`, `color()`, and so on). Colors outside sRGB are clipped (see [Limitations](#limitations)).
-- **Gradients and background images** as `backgroundImage`, with colors as hex.
-- **Background clip** as `backgroundClip` when it isn't `border-box`, such as `padding-box` for Tailwind's `bg-clip-padding`. The push uses it to decide whether the fill shows under a transparent border.
-- **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
-- **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
-- **Text** from the element that holds it (often a `<span>` inside the root), including `textTransform`, `letterSpacing`, and any opacity above it folded into its color. Where the browser wrapped the text or cut it off, `text.layout` records the width it was laid out in, the lines it drew, and whether it ends in an ellipsis, so the push can size the label the same way instead of letting it run past its frame.
-- **Fonts** as the family the browser drew with. Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI, so it sets that text in Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it. Figma rounds each letter's width a little, so Storysync's copies of Inter, Roboto Mono and Noto Serif are rounded the same way, and a label sets as wide in the browser as in Figma, within a thousandth of a pixel on every string Figma was measured setting but one in Noto Serif Bold, which Figma has in another version. Its Inter also has Inter's arrows, check marks and other symbols, so "Next →" isn't measured in another font. Figma keeps a line whole only in a box at least as wide as the text, so snap rounds the width of anything that holds text up to the next hundredth of a pixel, never down. A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `Inter`, with the family the code asked for, `system-ui`, beside it, and snap says once a run which fonts it drew this way. A font your project loads itself, such as Geist or Inter, is measured as it is. snap warns when a named font your code asks for didn't load and the browser used a fallback, but not about another platform's font listed after a system keyword, like `SFMono-Regular`. Figma also needs the font installed, which Storysync can't do for you.
-- **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
-
-**Stories must pass args through.** snap sets variant values through Storybook's `?args=` URL. A story that hardcodes props, uses a custom `render` that ignores its args, or has a decorator that drops them renders its default state for every variant. snap warns when all of a component's variants measure the same, or when all of one prop's values do. When every variant measures the same, snap also compares the markup each one rendered. The same markup means the story likely drops its args. Markup that changed with them means the args reach the component and its props change only what snap doesn't measure, such as behavior. Either way snap leaves such props out (see Component mapping rules) unless `--keep-props` keeps them, and then warns. Plain CSF3 args-driven stories are the reliable shape.
-
-Storybook only accepts `[a-zA-Z0-9 _-]` in URL args, so snap leaves a value like `Nav/Primary` out of the URL and sets it through Storybook's preview once the story loads, as below. No story change would let the URL carry it, so snap doesn't warn. If the preview won't take it either, the variant is marked `args_unsupported` and not measured.
-
-**Values the story's argTypes don't allow.** Storybook drops a URL value that the story's argTypes `options` don't list, or that an argTypes `if` hides for that combination, and renders the default instead. shadcn/ui's Badge story lists four of its six variants, for example. After each story renders, snap reads the args Storybook gave it from the preview. When a value is missing, snap sets it through the preview, as the Controls panel does, and measures what the component renders with it. The variant records the values as `rejectedArgs`, with `appliedVia: "preview"`, and snap warns with the story change that would let the URL take them. `--no-channel-args` turns this off: such a variant is marked `arg_rejected` and not measured, and `meta.json` records `"channelArgs": false`. Storybook's URL reads a value like `2` as a number, so when the story's options list it only as the string `"2"`, no story change lets the URL carry it. snap sets it through the preview without a warning, sending each value typed as the story's options list it. If the preview won't apply a value either, the variant is marked `arg_rejected` and not measured, so `--strict` fails and `verify` names it under the score. If snap can't read the preview for a variant at all, it can't tell whether the story took its values. It measures the variant, marks it `argsChecked: false` and warns, naming it. `--strict` fails on it, and `verify` names it under the score and fails it under `--strict-measured`.
-
-snap also records each story's argTypes as `argTypes`, with each arg's type, control, options, `if`, table marks and the story's own value, and lists the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`. It makes those variant properties, and records each prop it left out, and why, as `excludedProps`.
-
-**Variant names ignore case and punctuation**, so `Small` and `small` would get the same name. snap numbers the duplicate (`size-small--2`) and warns. Renaming the values is the real fix.
+snap writes `<out>/styles.json` and `<out>/meta.json`. `--screenshots` also saves PNGs under `<out>/<component>/`. A variant slug too long for a file name gets a shortened, hashed screenshot name.
 
 ### `storysync figma`
 
-Writes every `use_figma` call a push makes, as files your AI client sends to Figma unchanged. No styling code is written by hand: each call is a template that ships with Storysync, minified, after a constant holding exactly the measurements that call needs.
+Writes every `use_figma` call a push makes, as files your AI client sends to Figma unchanged. See [How the build works](#how-the-build-works).
 
 ```text
 storysync figma code [options]
@@ -573,30 +404,19 @@ storysync figma upload --plan <path> --seq <n> [--json]
 storysync figma next --plan <path> --seq <n> [--json]
 ```
 
-`figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. plan.json lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
+`figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. `plan.json` lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
 
-What the build does:
+It prints each call, its warnings, and the push's [estimate](#what-a-push-costs):
 
-- Each component's set goes on the page of its Storybook category, named by the last segment of its title, as earlier pushes placed it. A set an earlier push made is found by its name, or by the Storybook ID stored on it, and restyled in place.
-- Each element snap measured becomes a layer that carries its key. On the next push the layer is found by that key and restyled, so node ids, and the instances built on them, survive. An icon is imported again instead, under a new node id, where its shapes were recolored or changed in Figma, since the build sets an icon's shapes only by importing them. A layer a designer added without a key is left alone.
-- Frames get auto layout where a model of Figma's auto layout puts every child where the browser did, and the build checks it again in Figma. Elsewhere, such as a flex row that wraps, children are placed at their measured positions, and `figma code` says which frames.
-- Text gets its family, weight, size, line height, letter spacing, case and color, and fits its box as the browser fitted it: on one line, wrapped at its width, or cut off with an ellipsis. Figma's plugin context has only Google Fonts, so a font it lacks is drawn in a stand-in at the measured weight, which the build's response names. Text the browser drew whole on one line stays on one line: where Figma sets it wider than snap measured it, as for a snap taken before snap drew stand-ins, the build gives it Figma's own width and lists it in the response's `fallbacks`.
-- Icons are imported from their SVG at their measured size. Pictures are left for `upload_assets`, below.
-- Colors and radii are bound to the variables `tokens` names, when one token has the value or the element's classes name one of several. Values it can't bind for sure are listed, not guessed.
-- A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source.
-- The `label` call writes a `storysync:` line on the description of a set measured from a closed trigger or a layout wrapper, and removes Figma's default `Page 1` while it is empty.
+```text
+Estimate: 22 use_figma calls send 274,800 characters of code and read back about 180,000. Plan on about 510k-980k agent tokens for this push of 5 components, setup and verification included (the rule of thumb, 100k a component plus 100k a push, gives 600k).
+```
 
-Every call can be sent again, and changes only what differs. A build call that throws removes the variants it had added to that set, so none is left loose on the page. Each call also carries a checksum of its data, `SUM`, and one of its template, `TSUM`, and checks both before it changes or reads anything. A call that reached Figma with a character changed, as one pasted by hand can, is refused with `This call differs from the file storysync figma code wrote`, and changes nothing: send the file again exactly as it is.
-
-**Pictures.** `use_figma` can't create an image, so a build call lists the image layers it left empty in its response's `uploads`. The agent calls Figma's `upload_assets` for that many upload URLs, with those layers as targets, and saves its response as the call's `results/NN.upload.json`. `figma upload --plan .storysync/figma/plan.json --seq NN` then posts each thumbnail snap saved to its URL, with its own content type. That is the one request Storysync sends to Figma itself. The `images` call puts each picture on the other layers that show it, and a later push reuses a picture already in the file.
-
-**Reads.** A read call reads back every layer of the variants it covers, data-free: it carries only the page, which variants to read and a size limit, and finds each set by the Storybook ID stored on it. Each entry is sealed with a checksum computed in Figma. A read that would pass `use_figma`'s 20kb response limit stops and says where, in `more`. `figma next --plan ... --seq NN` writes the call that reads the rest (`NNb`, then `NNc`), and prints where to save its response.
-
-**Limits.** `use_figma` takes at most 50,000 characters of code a call, so each build call stays under `--max-chars`. A variant whose layers alone need more than that isn't built, with a warning, and `verify` reports it missing. A call that runs too long fails with `Script exceeded time limit`; run `figma code` again with `--max-nodes 200`. `upload_assets` gives at most 60 URLs a call, so a build call lists at most 60 uploads.
+`figma upload` posts the pictures a build call left for `upload_assets`. `figma next` writes the call that reads the rest of a read call that stopped short of `use_figma`'s response limit.
 
 ### `storysync verify`
 
-Scores what was written to Figma against what `snap` measured. During a push, the agent sends the read calls `figma code` wrote and saves each response, and `verify --plan` reads those responses, assembles them into `.storysync/figma-readback.json` for committing and CI, and compares that with the snap.
+Scores what was written to Figma against what `snap` measured. During a push, the agent sends the read calls `figma code` wrote and saves each response, and `verify --plan` reads those responses, assembles them into `.storysync/figma-readback.json` for committing and CI, and compares that with the snap. See [How verify scores](#how-verify-scores).
 
 ```text
 Options:
@@ -611,7 +431,7 @@ Options:
   --max-age <duration>   Warn when the snap is older than this (e.g. 30m, 2h, 7d) (default: "2h")
   --skip <names>         Comma-separated component names, titles or IDs to leave out of the score,
                          such as ones not pushed; the output names them
-  --roots-only           Score each variant by its outer element alone, as 0.4.0 did, for comparison
+  --roots-only           Score each variant by its outer element alone, as 0.3.0 did, for comparison
                          with an element-tree score
   --min-fidelity <pct>   Exit with code 1 when the score is below this percentage: element fidelity
                          where snap measured element trees, else the share of properties; a run that
@@ -634,90 +454,13 @@ Options:
                          their values, and variants in Figma that snap never measured or no read covered
 ```
 
-| Flag | Fails on |
-|---|---|
-| `--strict` | Elements and properties that disagree, elements or variants missing from Figma, layers for elements snap no longer measures, a variant read back without its tree, readback entries that fail their checks (below), read calls not read whole, designer layers, snap failures, and components in the readback that the snap doesn't have |
-| `--allow-designer-layers` | With `--strict`, passes the layers a designer added inside variants. They are still listed. |
-| `--strict-age` | A snap older than `--max-age`, or one whose age is unknown |
-| `--strict-measured` | Variants that weren't measured: placeholders for variants snap couldn't measure, variants inferred from source by a root-only push, and variants snap measured without checking that the story took their values. This is the one to use in CI. |
-| `--min-fidelity <pct>` | A score below the percentage, with or without `--strict`, or a run that scored nothing. With `--json`, `minFidelity` gives the minimum and the score, both from 0 to 1, and whether it passed. |
-
-**Element fidelity.** With a snap of element trees, `verify` scores every element snap measured, by its key. Each element scores the share of its properties that Figma matches: its place and size, fills, strokes, corner radii, shadows, opacity, blend mode and clipping for a frame; its characters, font, size, weight, line height, letter spacing, color, case, alignment and how it fits its box for a text; its shapes and their colors for an icon; and its picture, compared byte for byte, for an image. An element scores 0 when it is missing, of another kind (a frame where snap measured an icon), hidden, or has the wrong characters, shapes or picture. The headline is the elements' scores over their number, and a layer for an element snap no longer measures counts as one more element, scoring 0. The share of properties is beside it, and in `--json` it stays in `fidelity`, as before, with the element score in `elementFidelity`.
-
-```text
-Fidelity: 99.8% of elements (29 of 30 verified), 99.7% of properties (389/390)
-  worst: Forms/Button 99.8% of elements
-  missing 0 · drifted 1 · extra 0 · designer layers 0 · not measured 0
-  coverage 92.9%: not scored: line-height: normal, which each font's metrics set on Forms/Button › #text; ...
-  ~ Forms/Button variant=primary, size=sm, disabled=false › #text: color measured #ffffff, Figma #ff00ff (node 1:2)
-14 verified, 1 drifted, 0 missing from Figma, across 15 variants
-```
-
-Each difference names its component, variant, element key and Figma node id, missing elements first. A position passes within 1px of where snap measured it, or of where the elements before it put it, so a label a little wider in Figma's stand-in font doesn't move the score of everything after it. A container's size may differ by what its own children's sizes explain, a child deleted or hidden in Figma taking no room, and the layer after a hidden one is placed from the one before it, so a deleted or hidden layer is reported alone. Widths and heights allow 3% or 1px, whichever is larger, and a text's width 6% where Figma draws it in another font than snap measured it in. Colors are compared exactly, alpha included. A text that truncates is scored on what Figma cuts off, too: the read call measures a copy of each such text without its limit, and removes it, so a title Figma ends in an ellipsis where the browser drew it whole drifts, and so does one Figma shows whole where the browser cut it. A readback from before Storysync read this is scored on the truncation set alone.
-
-**Scores fall from 0.4.0's.** 0.4.0 compared each variant's outer element alone, so a Switch built without its thumb, an Avatar without its picture, or a Card with its title at the wrong place scored 100%. Those numbers were overstated. The same pushes score what they hold now: half of the Switch's elements, a third of the Avatar's. A push from the element-tree calls that matches the code still scores 100%.
-
-**What it can't score** is listed under the score as coverage, never counted as a match: a font named by a CSS keyword such as `system-ui`, where snap measured the platform's own font, a line height of `normal`, filters other than blur, `clip-path`, radial, conic and repeating gradients, blend modes Figma lacks, borders with a different color on each side, `outline`, rotation and scaling (the bounding box is still scored), and elements past where snap stopped measuring a large tree. Where there is none, the line says `coverage 100.0%: every property was scored`.
-
-**Designer layers.** A layer inside a variant that carries no key, one a designer added, isn't scored. `verify` lists it by name, type and node id, and it fails `--strict` unless you pass `--allow-designer-layers`.
-
-**Root-only snaps.** A snap taken with `--root-only`, or by Storysync 0.4.0 or earlier, is scored as before, by each variant's outer element, and `verify` says under the score that only the outer element was compared, with how many inner elements weren't measured. `--roots-only` scores an element-tree snap that way too, for comparison. A tree snap scored against a readback of roots alone fails `--strict`: its elements were never read back.
-
-**What the score can't show.** Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists each scored component snap warned about: one where it measured a closed trigger or what may be a layout wrapper, one whose variants all measured the same, saying whether its args reached it, and one with a variant property whose default is assumed. A boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out, and the push lays it out first. These don't fail `--strict`. It also lists a component with variants Storybook wouldn't render with their values (`arg_rejected`), built as placeholders and not scored, and one with variants snap measured without checking that the story took their values (`argsChecked: false`), which fail `--strict-measured`. And it lists the rest of what snap warned about a scored component: some of its values, or every value of a prop, that measured the same, values snap set through Storybook's preview because the story's URL wouldn't take them, a font the browser couldn't render, and any other warning, word for word, such as variants whose content draws past their box. These don't fail `--strict` either. Last, it says which variants snap measured from a story other than the component's, or that snap couldn't read the component's stories' args and so measured every variant from one story, and how snap opened an overlay it measured open. With `--json`, each is in `caveats`, by its `kind`, the last two as `variant-stories` and `opened`.
-
-```text
-  ! The score compares Figma with what snap measured, and snap warned about that for these components:
-      ui/base/Dialog: snap measured button[data-slot="dialog-trigger"], a closed trigger, so this scores the trigger, not what it opens; snap didn't open it: clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each
-      ui/base/Attachment: `state=done`, `state=uploading` and `state=processing` measured the same, so their variants in Figma look alike; if the code draws them differently, the story may not pass `state` through for them
-```
-
-A component in the readback that the snap doesn't have at all fails `--strict`. That's what a snap run again with `--components` and without `--merge` leaves out.
-
-**Leaving components out.** A component you chose not to push, such as a Dialog snap measured closed, is still in the snap, so `verify` would count each of its variants as missing from Figma. Pass it to `--skip` by name, title or ID. It's left out of the score, and of `--strict`, and the line under the score names it. A name that matches nothing is an error.
-
-The comparison is numeric, not visual, so it's deterministic and free. Variants missing from Figma are reported separately instead of lowering the share of properties.
-
-**Readback checks.** `verify` never contacts Figma, so before scoring it checks that the readback is what Figma returned:
-
-- Each entry carries a checksum computed inside Figma over exactly what it returned, so an entry that was edited, made up, or copied from another variant fails.
-- Each entry must have every field its readback template returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties. A root-only entry has 13, and three later fields, `textLayout`, `bound` and `unbound`, aren't required, so a readback from before them still verifies. An entry with some of them must have all three. Where snap recorded a `text.layout` and a root-only entry has no `textLayout`, `verify` says the text's fit wasn't compared, doesn't say Figma matches that component, and fails `--strict`.
-- Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
-- No two components can share a `nodeId`.
-- A variant read in parts must have every part, in order, and its name in Figma must be the one snap gives it.
-
-Entries that fail aren't scored and fail `--strict`. Without `--strict` the run still exits 0, so the score's own line says it left them out, and can't be read as a clean pass:
-
-```text
-Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
-```
-
-With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
-
-The checksum isn't a signature, though (see [Limitations](#limitations)).
-
-**Variable bindings.** A token detached in Figma keeps its value, so no value comparison shows it. A root-only readback names the variable each field is bound to, and the fields bound to none though a variable of their kind in the file has their value. A field is matched only with variables of its kind, by the variable's scopes or else its collection, so a padding of 8 isn't taken for a radius of 8. `verify` lists those under the score, by component and field. It doesn't fail `--strict` on them, since the push leaves a value unbound on purpose where several variables share it and the component's source doesn't say which one it uses. The element-tree readback doesn't read bindings yet, and `verify` says so under the score.
-
-**Staleness.** `snap` writes a `meta.json` next to `styles.json` recording when and against which Storybook it measured. It's a separate file so `styles.json` stays stable to diff. `verify` uses it to catch a snap taken before the code changed, which would otherwise score 100%. `--strict-age` fails when `meta.json` is missing or invalid, since it's often gitignored. After `snap --merge`, each component's readback is checked against the time that component was measured.
-
-**The falsification test.** A score is only as good as the readback behind it, so check it once on your own file. After a push, change one element inside a variant in Figma by hand: recolor a button's label or an icon, say, change a title's text, hide a layer, or delete one. Have the agent send the push's read calls again, and run `verify --plan`. It should report exactly that element, by its key and node id, and nothing else. Don't test it by moving a layer that sits in auto layout: to move, it has to leave the flow, so the layers after it move up and the frame around it shrinks, and `verify` reports those too, as Figma now has them. 0.4.0's outer-element score missed exactly this kind of change. Then edit one value in a saved response under `.storysync/figma/results/` and run `verify --plan` again: that entry, and only that one, should fail its checksum. The acceptance suite runs both against the example project, and the test suite runs each of those edits on five shadcn components, then sends the build calls again and checks that everything verifies.
-
-### `storysync list`
-
-Lists the components in Storybook, each by its title and ID, either of which `--components` and `inspect` take. MDX docs pages, like an introduction, are left out here and in every other command that reads components. Entries whose stories name no component, like shadcn's `design/*` token pages, are listed as skipped, and left out of `map`, `snap` and `diff` unless `--components` names them.
-
-```text
-Options:
-  --storybook <url>      URL of the running Storybook instance (required)
-  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
-  --request-timeout <ms> How long each request may take once connected (default: 300000)
-  --json                 Output JSON instead of formatted text
-```
+`--strict-measured` is the one to use in CI. `--min-fidelity` fails a score below the percentage, with or without `--strict`; with `--json`, `minFidelity` gives the minimum and the score, both from 0 to 1, and whether it passed.
 
 ### `storysync diff`
 
 Compares a Figma file against your code's tokens and, with `--storybook`, your Storybook components.
 
-> Requires a Figma MCP endpoint that works without browser OAuth, usually a local proxy from a supported MCP client. If it hangs on auth or returns `401`/`403`, use the skill's audit flow instead, which runs inside a client that's already signed in.
+It needs a Figma MCP endpoint that works without browser sign-in, usually a local proxy from a supported MCP client. Figma's remote server, `https://mcp.figma.com/mcp`, needs OAuth, so against it `diff` fails with `401` or `403`. Use the skill's audit instead, which runs inside a client that's already signed in.
 
 ```text
 Options:
@@ -749,104 +492,569 @@ Options:
 
 ```bash
 # Diff tokens only
-npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123
+npx storysync diff --figma <endpoint> --file-key abc123
 
-# Diff tokens + components
-npx storysync diff --figma https://mcp.figma.com/mcp --file-key abc123 --storybook http://localhost:6006
+# Diff tokens and components
+npx storysync diff --figma <endpoint> --file-key abc123 --storybook http://localhost:6006
 ```
 
-- `--components` narrows both sides. Each selected component is paired as in a full run, and a set is reported only if it's paired with one or `--components` names it. A name only Figma has is reported as not in code, and a name neither side has is an error. It needs `--storybook`.
+**Tokens.** Figma collections map to categories by name (`Colors` to colors, `Border Radius` to radius). A collection's first mode is compared with the light theme, and a mode named Dark with the dark theme; `--mode <name>` reads one mode alone. Aliases are resolved up to 8 levels deep, with cycle detection. A color is compared by its `hex`, a length by its `px`, with `calc()` worked out, and numbers are rounded to thousandths on both sides.
+
+**Components** are paired in this order:
+
+1. **By the Storybook ID** the push stored on a set or component, wherever it was moved or however it was renamed. One whose ID code doesn't have is reported as `figma_only`.
+2. **By name and page.** A set without an ID is matched by its lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A name two components share, like `ui/base/Button` and `ui/radix/Button`, is matched by page, as the push lays it out. Of the copies left, extra sets are `figma_only` and extra components `code_only`. Copies left on both sides can't be told apart, so they're reported as `ambiguous` and fail `--strict`. A set an earlier push named by a component's `name`, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name.
+3. **Components outside any set** are read too, since the push makes a component with no variant properties a plain component. One with no stored ID is matched only on its component's category page, so an icon named `Calendar` isn't taken for a `Calendar` component.
+
+More about `diff`:
+
+- `--components` narrows both sides. Each selected component is paired as in a full run, and a set is reported only if it's paired with one or `--components` names it. A name only Figma has is reported as not in code. It needs `--storybook`.
 - If Storybook can't be listed or a component can't be mapped, the run is reported as partial (`storybookReadFailed` or `mappingFailures` in `--json`) and fails `--strict`. A partial run never ends with "No differences found".
-- `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later.
-- A component too big for one call, such as a thousand icons as the options of one property, fails the read and is named.
-- A name two components share, like `ui/base/Button` and `ui/radix/Button`, is matched by page, as the push lays it out: each is compared with the set of its name on its category's page. Of the copies left, extra sets, like an archived copy, are reported as `figma_only`, and extra components as `code_only`. Copies left on both sides can't be told apart, so they're reported as `ambiguous` and fail `--strict`.
-- A set or component that carries the Storybook ID the push stored on it is matched by that ID first, wherever it was moved or however it was renamed. One whose ID code doesn't have is reported as `figma_only`. A component no ID matched is still matched by page if another shares its name, so after Base UI's `Button` is matched by ID, Radix's isn't compared with a designer's `Button` on another page. Files without IDs are matched by name and page as above.
-- Components outside any set are read too, since the push makes a component with no variant properties a plain component. One with no stored ID is matched only on its component's category page, so an icon named `Calendar` isn't taken for a `Calendar` component.
+- `diff` reads every page of the Figma file, up to 17,000 bytes per call. Each call counts toward [Figma's MCP rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/), so a large file can hit them. A refused call makes the run partial (`figmaReadFailed`); run it again later. A component too big for one call fails the read and is named.
 - A set Figma flags as errored, which throws `Component set has existing errors` when its properties are read, is reported as `errored` with its page and node id, and fails `--strict`. The rest of its page is still compared.
+- `--json` gives each component entry's `id` and `page`, and each mapping failure's `id` and `title`.
 
-### `storysync inspect`
+## How snap measures
 
-Shows one component's props, how each maps to Figma, and why a prop was skipped. A default the docs don't give is marked as assumed.
+### What it measures
+
+snap renders each variant and records the variant's outer element and every element inside it that draws: frames, text with the line boxes the browser drew, pseudo-elements that paint, SVG icons, pictures and the values of inputs.
+
+- Each element gets a **key** from its place in the component, such as `card-header/card-title`, so `figma code` builds it as its own layer and `verify` scores it on its own.
+- `styles.json` holds full styles for a base variant and, for each other variant, only what differs, an element a line. A change to one element is one changed line in a diff. It has no timestamp, so you can commit and diff it.
+- Icons are kept as their SVG, and pictures as thumbnails under `<out>/assets/`, named by their content, which the push uploads to Figma.
+- Trees make `styles.json` larger, by tens of kilobytes on a large library.
+
+`--root-only` measures the outer element alone, as 0.3.0 did, and records each variant's `innerElements`, how many elements it left out. `figma code` refuses such a snap: the skill pushes it with its root-only templates. `--merge` refuses to mix a snap of trees with a root-only one.
+
+### Which variants
+
+`--variants representative`, the default, measures each value once against the other props' defaults, so a `3 × 2 × 2` button takes 5 renders instead of 12. A Figma component set needs every combination, so the push uses `--variants all`.
+
+**Combination cap.** Above `--max-combinations` (default 256), snap measures a subset that covers every value, records a `cap`, warns, and fails `--strict`. If the limit is too low to cover every value, the warning names the ones left out. The skill has the agent stop and ask whether to build the subset, raise the limit, or narrow the variant props with `--exclude-props`.
+
+### Which story
+
+snap measures each component from one of its stories: its Default story, or else its first. A variant can need another. shadcn/ui Button's Icon story sets `size=icon` and puts an icon in the button in place of its label, which would otherwise spill out of the icon size's square.
+
+So where a story's own args set some of a variant's values and give it something of its own to draw (other args, such as `children`, or its own `render` or decorators), snap measures those variants from that story: Button's `size=icon` from Icon, and `size=icon-sm` from Icon Small.
+
+- A value that a story drawing nothing of its own also sets doesn't count. Icon also sets `variant=secondary`, as the Secondary story does, so it isn't the story for every secondary button.
+- A story that only adds to another's args doesn't count either. shadcn/ui Toggle's WithText is its Outline story with a label added, so Outline is the story for `variant=outline`.
+- Where several stories fit, the one that sets the most of the variant's values wins, then the plainest, the one that sets the least of its own, then the first.
+- A story with a play function is never picked.
+
+snap records each variant measured from another story as the variant's `storyId`, and says which in its output and beside `verify`'s score.
+
+**Naming the story yourself.** `--stories ui-base-button=ui-base-button--with-icon` makes the story you name the component's story, by the component's ID or title. Every variant no other story fits is measured from it, and it's recorded as the component's `storyId`, while Button's icon sizes still come from its Icon stories. snap refuses a story that isn't the component's, or a name no component has, before measuring anything. A pair for a component the run doesn't measure is checked the same way and left out, so a push can pass the same pairs to every snap it takes.
+
+To measure every variant from the story you name, with no story picked for any variant, end it with `!`: `--stories 'ui-base-toggle=ui-base-toggle--default!'`. snap then records `storyOnly: true` on the component. Use it when snap picks a story for some variants that you don't want them measured from.
+
+**Content past its box.** snap warns when a variant's content draws past its own box, by how much, as a label too long for a button sized for an icon does, since Figma shows it spilling out. It names the values those variants share, such as `size=icon-xs`, and the story they were measured from, and says what would fix it: a story whose own args set those values and give them content that fits, `--stories` naming another story, or, for variants from a story snap picked, that story given content that fits, or `!`. What the component clips, what is positioned absolutely, transformed or hidden, shadows and focus rings don't count, and text counts as tall as its lines, not its font's full height.
+
+### Which element
+
+In each story, snap measures, in order:
+
+1. The first element carrying the component's own `data-slot` (`switch` for `Switch`, `input-otp` for `InputOTP`), as shadcn/ui puts on every component's root.
+2. Open overlay content in a portal, when the story's root shows nothing that draws, or only a closed trigger: an element with the role `dialog`, `alertdialog`, `tooltip` or `menu`, a `-content` slot, or what Radix's popper places.
+3. The story's first element that draws, past wrappers that draw nothing and hold one element, and skipping `<noscript>`, `<style>` and `<script>`.
+
+`--selector <css>` measures the element it matches instead. Each measured variant records the element as `element`, like `span[data-slot="switch"]`, and `portal: true` when it was measured in a portal outside the story's root.
+
+snap warns when that element is likely not the component:
+
+- **A layout wrapper:** an element holding several others and drawing nothing itself, such as a story's `<div className="flex gap-2"><Switch /><Label /></div>`. An element with a `role`, `dir`, `data-orientation`, `aria-label` or `aria-labelledby`, or a list, form, fieldset, nav or table, is taken for a component's root instead.
+- **A closed trigger:** an overlay snap couldn't open, saying why.
+
+An element placed against the browser window (`position: fixed`), or against the page (`position: absolute` with nothing positioned around it), is drawn where the window puts it, not where the component does: shadcn's Sidebar at `side="right"` draws at the window's right edge, far from its own root. An element in the component with a transform, a translate, a filter or containment holds such an element in place, and snap leaves it there. Otherwise snap measures it moved inside the root's box, as far as it takes, and lists it in the variant's `movedInside`. There is nothing in the story to fix, so this is not a warning.
+
+### Overlays are measured open
+
+When a story renders only an overlay's closed trigger, as a Dialog's, Popover's, Sheet's, DropdownMenu's, Select's, HoverCard's or Tooltip's Default story does, snap opens the overlay before it measures:
+
+1. It sets the story's `open` arg, or `defaultOpen`, to true through Storybook's preview, where the component takes one.
+2. Otherwise it clicks the trigger, hovers over it for a tooltip or hover card, focuses it, or right-clicks it for a context menu, trying the other ways if that opens nothing and waiting up to 3 seconds for each (less when `--timeout` is shorter). Later variants of the same story try only the way that opened an earlier one.
+3. Unless hovering opened it, it moves the pointer off the page, so nothing in it is measured hovered. It waits for the overlay's animations to end and its boxes to stay put, measures its content, and closes it again.
+
+Each such variant records how in `opened`, like `{"via": "click", "trigger": "button[data-slot=\"dialog-trigger\"]"}`, and snap's output says so on an `i` line. A select's field that opens nothing is measured as the field, which is the component while it is closed, and snap warns where other variants of it opened. A variant that sets `open` to false is measured closed. `--no-open-overlays` measures closed triggers as they render.
+
+Where snap can't open an overlay, it warns that it measured the closed trigger and why. The push then asks whether to build the trigger, skip it, or stop so you can fix the story. A trigger built anyway says so on a `storysync:` line of its Figma description, and a skipped one is left out of the score with `verify --skip`.
+
+### How variant values reach the story
+
+snap sets variant values through Storybook's `?args=` URL. After each story renders, it reads the args Storybook gave it from the preview (`window.__STORYBOOK_PREVIEW__`, which Storybook has had since version 7). When a value is missing, snap sets it through the preview, as the Controls panel does, and measures what the component renders with it:
+
+- **Characters a URL can't carry.** Storybook accepts only `[a-zA-Z0-9 _-]` in URL args, so a value like `Nav/Primary` is set through the preview without a warning. If the preview won't take it either, the variant is marked `args_unsupported` and not measured.
+- **Values the story's argTypes reject.** Storybook drops a URL value that the argTypes `options` don't list, or that an argTypes `if` hides for that combination. shadcn/ui's Badge story lists four of its six variants, for example. The variant records the values as `rejectedArgs`, with `appliedVia: "preview"`, and snap warns with the story change that would let the URL take them.
+- **Numbers.** Storybook's URL reads a value like `2` as a number, so when the options list it only as the string `"2"`, snap sets it through the preview without a warning, typed as the options list it.
+- **A value the preview won't apply** marks the variant `arg_rejected`, not measured, so `--strict` fails and `verify` names it under the score.
+- **When snap can't read the preview** for a variant, it can't tell whether the story took its values. It measures the variant, marks it `argsChecked: false` and warns. `--strict` fails on it, and `verify` fails it under `--strict-measured`.
+
+`--no-channel-args` turns preview-setting off: such a variant is marked `arg_rejected` and not measured, and `meta.json` records `"channelArgs": false`.
+
+snap warns when all of a component's variants measure the same, or all of one prop's values do. When every variant measures the same, it also compares the markup each one rendered. The same markup means the story likely drops its args. Markup that changed with them means the args reach the component and its props change only what snap doesn't measure, such as behavior. Either way snap leaves those props out (see [Props and variants](#props-and-variants)) unless `--keep-props` keeps them, and then warns.
+
+**Variant names ignore case and punctuation**, so `Small` and `small` would get the same name. snap numbers the duplicate (`size-small--2`) and warns. Renaming the values is the real fix.
+
+### What snap records
+
+- **Colors** as sRGB hex (`#rrggbbaa` when translucent), whatever space Chromium reports them in (`oklch`, `oklab`, `lab`, `color()` and so on).
+- **Gradients and background images** as `backgroundImage`, with colors as hex.
+- **Background clip** as `backgroundClip` when it isn't `border-box`, such as `padding-box` for Tailwind's `bg-clip-padding`, which decides whether the fill shows under a transparent border.
+- **Corner radii** as drawn, so `rounded-full` on a 32px-tall pill is 16, not `3.35544e+07px`. Percentages and `calc()` are resolved. Figma has no elliptical corners, so those keep the smaller radius.
+- **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
+- **Text** with its `textTransform`, `letterSpacing`, and any opacity above it folded into its color. Where the browser wrapped the text or cut it off, `text.layout` records the width it was laid out in, the lines it drew, and whether it ends in an ellipsis.
+- **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
+- **argTypes**: each story's argTypes as `argTypes`, with each arg's type, control, options, `if`, table marks and the story's own value, and the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`. It records each prop it left out, and why, as `excludedProps`.
+
+### Fonts
+
+snap records the family the browser drew with. A named font that failed to load is recorded as asked, with `fontAvailable: false` and a warning. Another platform's font listed after a system keyword, like `SFMono-Regular`, gets no warning.
+
+Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI. So it sets that text in a stand-in: Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it:
+
+- Figma rounds each letter's width a little, so Storysync's copies of Inter, Roboto Mono and Noto Serif are rounded the same way. A label sets as wide in the browser as in Figma, to within a fraction of a pixel.
+- Its Inter has Inter's arrows, check marks and other symbols, so "Next →" isn't measured in another font.
+- Figma keeps a line whole only in a box at least as wide as the text, so snap rounds the width of anything that holds text up to the next hundredth of a pixel, never down.
+- A system stack like Tailwind's `-apple-system, BlinkMacSystemFont, ...` is recorded as `Inter`, with the family the code asked for, `system-ui`, beside it, and snap says once a run which fonts it drew this way.
+
+A font your project loads itself, such as Geist or Inter, is measured as it is. Figma needs that font installed to draw it. See [What Figma can't do](#what-figma-cant-do).
+
+**Take the snaps you compare on one platform.** Text is drawn a little wider or narrower from one operating system and browser build to the next, and the boxes after it move with it, so two machines' snaps of the same code can differ by fractions of a pixel. `meta.json` records the `platform` and `browser` a snap was taken with. Commit snaps taken in one place, such as CI.
+
+### Running snap
+
+**Measuring some components again.** `--components` alone writes a `styles.json` of just those components. To measure a few again, such as ones that timed out, and keep the rest, add `--merge`. It replaces those components in the `styles.json` already in `--out` and keeps every other one as it was measured. It measures a component again from the story the snap measured it from, with its `!` where it had one, unless `--stories` names another. It refuses, before measuring anything, a snap it can't add to: none there, one with no `meta.json`, or one taken by another Storysync version, with other `--variants`, `--exclude-props` or `--keep-props`, or from another Storybook. `meta.json` then records when each component was measured, in `componentsMeasuredAt`, and its `measuredAt` is the oldest of them, so `verify` judges the snap by its oldest part.
+
+**Timeouts and failures.** Only a story that timed out while loading is tried again. A story that throws after it loads is reported as `render_error`. A story that never renders costs one `--timeout`, and the error says nothing that draws rendered under `#storybook-root` or `#root`. A screenshot waits no longer than `--timeout`, and with `--screenshots` an element with no width or height is measured without a screenshot.
+
+**Stopping.** If snap stops before it finishes, it writes nothing: `styles.json`, `meta.json` and the screenshots stay as the last run left them, and it says so on stderr. It exits 130 after Ctrl-C, 143 after SIGTERM (a canceled job or a command timeout) and 129 after SIGHUP. If the browser crashes or is closed, snap launches it once more and measures the component it was on again. If it goes a second time, snap writes nothing and exits 1, with the reason as its error (`{"error": ...}` on stdout under `--json`).
+
+**Strict modes.** `--strict` fails on anything that couldn't be measured, on a variant whose args snap couldn't check, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, such as a story that ignores its args, a closed trigger, a layout wrapper, or a prop whose values all measure the same. It's usually what you want in CI.
+
+**Browser.** snap needs Node 20 or later (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
+
+```bash
+npx playwright@<version> install chromium     # note: the full `playwright` package
+```
+
+Use the version the error prints. Other Playwright versions install a browser that Storysync's `playwright-core` can't launch.
+
+## How the build works
+
+`figma code` writes every `use_figma` call. No styling code is written by hand: each call is a template that ships with Storysync, minified, after a constant holding exactly the measurements that call needs.
+
+### Pages and sets
+
+- Each component's set goes on the page of its Storybook category, the whole of it (`ui/base`), or on a `Components` page for a component without one. A page is found ignoring case, spaces, `/`, `-` and `_`, so a page an earlier push named `UI Base` is still the page for `ui/base`.
+- A set is named by the last segment of the component's title, or by its `name` when it has none, so `ui/base/Button` and `ui/radix/Button` stay two sets.
+- A set an earlier push made is found by its name, or by the Storybook ID stored on it, and restyled in place. A new set goes below everything on its page.
+- A component with no variant properties is one plain component, not a set.
+- Each set is laid out as a grid in snap's order, the first property's values as rows, with each property's first value top left. Figma takes the default variant from there, so it's the component's own default.
+- The `label` call writes a `storysync:` line on the description of a set measured from a closed trigger or a layout wrapper, keeping every other line, and removes Figma's default `Page 1` while it is empty.
+
+### Layers
+
+- Each element snap measured becomes a layer that carries its key. On the next push the layer is found by that key and restyled, so node ids, and the instances built on them, survive. A layer a designer added without a key is left alone.
+- Frames get auto layout where a model of Figma's auto layout puts every child where the browser did, and the build checks it again in Figma. Elsewhere, such as a flex row that wraps, children are placed at their measured positions, and `figma code` says which frames.
+- Text gets its family, weight, size, line height, letter spacing, case and color, and fits its box as the browser fitted it: on one line, wrapped at its width, or cut off with an ellipsis. A font Figma lacks is drawn in a stand-in at the measured weight, which the build's response names. Text the browser drew whole on one line stays on one line: where Figma sets it wider than snap measured it, as for a snap taken before snap drew stand-ins, the build gives it Figma's own width and lists it in the response's `fallbacks`.
+- A transparent or translucent border is filled as the browser fills it: an `INSIDE` stroke the fill runs under, or, with `bg-clip-padding`, an `OUTSIDE` stroke the fill stops at.
+- Icons are imported from their SVG at their measured size. An icon whose shapes were recolored or changed in Figma is imported again, under a new node id, since the build sets an icon's shapes only by importing them.
+- A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source.
+- What Figma can't draw is left out and named in `figma code`'s warnings, never approximated silently, and `verify` lists it under coverage.
+
+### Variable binding
+
+Colors and corner radii are bound to the variables `tokens` names. A measured value matches a token when it equals the token's `hex` for a color, or its `px` for a radius. A translucent color matches a token of its `#rrggbb` and is bound with the paint's opacity at its alpha, as Tailwind's `border-destructive/30` is the `destructive` token at 30%.
+
+Several tokens often share a value: on shadcn/ui, `#171717` is five color tokens. Then the classes snap recorded on the element pick the one the source names: `bg-primary` binds the fill to `primary`, and `rounded-lg` the radius to `lg`. Where no class names one, the value is left unbound and `figma code` warns with the variables it matches. Values are matched by the light theme's, which snap measures. A bound variable takes its Dark value wherever a designer switches a frame to the Dark mode. Shadows stay unbound.
+
+### Pictures
+
+`use_figma` can't create an image, so a build call lists the image layers it left empty in its response's `uploads`. The agent calls Figma's `upload_assets` for that many upload URLs, with those layers as targets, and saves its response as the call's `results/NN.upload.json`. `figma upload --plan .storysync/figma/plan.json --seq NN` then posts each thumbnail snap saved to its URL, with its own content type. That is the one request Storysync sends to Figma itself. The `images` call puts each picture on the other layers that show it, and a later push reuses a picture already in the file.
+
+### Reads
+
+A read call reads back every layer of the variants it covers. It carries only the page, which variants to read and a size limit, and finds each set by the Storybook ID stored on it. Each entry is sealed with a checksum computed in Figma. A read that would pass `use_figma`'s 20kb response limit stops and says where, in `more`. `figma next --plan ... --seq NN` writes the call that reads the rest (`NNb`, then `NNc`), and prints where to save its response.
+
+### Sending calls safely
+
+- Every call can be sent again, and changes only what differs.
+- A build call that throws removes the variants it had added to that set, so none is left loose on the page.
+- Each call carries a checksum of its data, `SUM`, and one of its template, `TSUM`, and checks both before it changes or reads anything. A call that reached Figma with a character changed, as one pasted by hand can, is refused with `This call differs from the file storysync figma code wrote`, and changes nothing. Send the file again exactly as it is.
+- `use_figma` takes at most 50,000 characters of code a call, so each build call stays under `--max-chars`.
+- A call that runs too long fails with `Script exceeded time limit`. Run `figma code` again with `--max-nodes 200`.
+- `upload_assets` gives at most 60 URLs a call, so a build call lists at most 60 uploads.
+
+## How verify scores
+
+### Element fidelity
+
+With a snap of element trees, `verify` scores every element snap measured, by its key. Each element scores the share of its properties that Figma matches:
+
+- **A frame:** its place and size, fills, strokes, corner radii, shadows, opacity, blend mode and clipping.
+- **A text:** its characters, font, size, weight, line height, letter spacing, color, case, alignment, how it fits its box, and whether Figma cuts it short.
+- **An icon:** its shapes and their colors.
+- **An image:** its picture, compared byte for byte.
+
+An element scores 0 when it is missing, of another kind (a frame where snap measured an icon), hidden, or has the wrong characters, shapes or picture. The headline is the elements' scores over their number. A layer for an element snap no longer measures counts as one more element, scoring 0. The share of properties is beside it, and in `--json` it stays in `fidelity`, with the element score in `elementFidelity`. Variants missing from Figma are reported separately.
+
+### Tolerances
+
+- A position passes within 1px of where snap measured it, or of where the elements before it put it, so a label a little wider in Figma's stand-in font doesn't move the score of everything after it.
+- A container's size may differ by what its own children's sizes explain. A child deleted or hidden in Figma takes no room, and the layer after a hidden one is placed from the one before it, so a deleted or hidden layer is reported alone.
+- Widths and heights allow 3% or 1px, whichever is larger, and a text's width 6% where Figma draws it in another font than snap measured it in. These allowances were set from the first live pushes, and may change.
+- Colors are compared exactly, alpha included.
+
+**Truncation.** A text that truncates is scored on what Figma cuts off, too. The read call measures a copy of each such text without its limit, and removes it, so a title Figma ends in an ellipsis where the browser drew it whole drifts, and so does one Figma shows whole where the browser cut it. A readback from before Storysync read this is scored on the truncation set alone.
+
+### What it can't score
+
+Under the score, `verify` lists as coverage what it couldn't score, never as a match: a font named by a CSS keyword such as `system-ui` where snap measured the platform's own font, and what `figma code` couldn't build. Where there is none, the line says `coverage 100.0%: every property was scored`.
+
+**Designer layers.** A layer inside a variant that carries no key, one a designer added, isn't scored. `verify` lists it by name, type and node id, and it fails `--strict` unless you pass `--allow-designer-layers`.
+
+**Leaving components out.** A component you chose not to push, such as a Dialog snap measured closed, is still in the snap, so `verify` would count each of its variants as missing from Figma. Pass it to `--skip` by name, title or ID. It's left out of the score, and of `--strict`, and the line under the score names it. A name that matches nothing is an error. A component in the readback that the snap doesn't have at all fails `--strict`: that's what a snap run again with `--components` and without `--merge` leaves out.
+
+### What the score can't show
+
+Figma can match a measurement of the wrong element exactly. So under the score, `verify` lists what snap warned about each scored component:
+
+- a closed trigger or what may be a layout wrapper;
+- variants that all measured the same, saying whether their args reached the component, or values of a prop that did;
+- a variant property whose default is assumed (a boolean isn't listed: one with no default is assumed `false`, as React treats a boolean left out);
+- variants Storybook wouldn't render with their values (`arg_rejected`), built as placeholders and not scored, and variants measured without snap checking the story took their values (`argsChecked: false`), which only `--strict-measured` fails on;
+- values snap set through Storybook's preview, a font the browser couldn't render, and any other warning, word for word, such as variants whose content draws past their box;
+- which variants snap measured from a story other than the component's, or that it couldn't read the stories' args and so measured every variant from one story, and how it opened an overlay it measured open.
+
+None of these fails `--strict`. With `--json`, each is in `caveats`, by its `kind`, the last two as `variant-stories` and `opened`.
 
 ```text
-Options:
-  --storybook <url>      URL of the running Storybook instance (required)
-  --component <name>     Component name, title or ID to inspect (required);
-                         a name that matches nothing, or several, is an error
-  --connect-timeout <ms> How long to wait to connect to Storybook MCP (default: 60000)
-  --request-timeout <ms> How long each request may take once connected (default: 300000)
-  --exclude-props, --keep-props, --snap, --no-snap, --no-cache
-                         As map takes them
+  ! The score compares Figma with what snap measured, and snap warned about that for these components:
+      ui/base/Dialog: snap measured button[data-slot="dialog-trigger"], a closed trigger, so this scores the trigger, not what it opens; snap didn't open it: clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each
+      ui/base/Attachment: `state=done`, `state=uploading` and `state=processing` measured the same, so their variants in Figma look alike; if the code draws them differently, the story may not pass `state` through for them
 ```
 
-## Limitations
+### Readback checks
 
-### Figma → code: `diff` and the audit
+`verify` never contacts Figma, so before scoring it checks that the readback is what Figma returned:
 
-- **Figma MCP auth:** CLI `diff` needs an authenticated Figma MCP endpoint, which usually means OAuth in a supported client. If it returns `401`/`403`, use the skill's audit flow in Claude Code, Cursor, or Codex.
-- **`use_figma` return values:** the audit needs `use_figma` to return the plugin code's result. That works in supported clients but isn't guaranteed elsewhere.
-- **Variable modes:** a collection's first mode is compared with the light theme, and a mode named Dark with the dark theme. Use `--mode <name>` to read one mode only.
-- **Variable aliases:** resolved up to 8 levels deep, with cycle detection. Aliases to remote or team library variables aren't resolved.
-- **Collection names:** collections map to categories by name (`Colors` → `colors`, `Border Radius` → `radius`). A custom name like "Brand Primitives" won't map and shows as missing from code.
-- **Component names:** a component set without a Storybook ID stored on it, as an earlier push left it, is matched by lowercased name, the last segment of the component's Storybook title, so `Button/Primary` in Figma won't match `ButtonPrimary` in code. A set an earlier push named by the component's name, such as `TooltipContent` for `ui/base/Tooltip`, still matches until a set of the new name exists, unless that name is another component's set name. A name used twice on either side, such as `Forms/Button` and `Nav/Button`, is matched by page, and copies left on both sides are reported as `ambiguous` instead of being guessed.
-- **Wide-gamut color tokens** are compared as their clipped sRGB hex, so `color(display-p3 1 0 0)` matches `#ff0000`.
+- Each entry carries a checksum computed inside Figma over exactly what it returned, so an entry that was edited, made up, or copied from another variant fails.
+- Each entry must have every field its readback template returns (`null` where Figma has nothing), so a cut-down readback can't score 100% on fewer properties. A root-only entry has 13, and three later fields, `textLayout`, `bound` and `unbound`, aren't required, so a readback from before them still verifies. An entry with some of them must have all three. Where snap recorded a `text.layout` and a root-only entry has no `textLayout`, `verify` says the text's fit wasn't compared, doesn't say Figma matches that component, and fails `--strict`.
+- Each entry records when Figma read it, and one read before the snap is stale. Five minutes of clock difference is allowed.
+- No two components can share a `nodeId`.
+- A variant read in parts must have every part, in order, and its name in Figma must be the one snap gives it.
 
-### Code → Figma: `snap`, the push, and `verify`
+Entries that fail aren't scored and fail `--strict`. Without `--strict` the run still exits 0, so the score's own line says it left them out, and can't be read as a clean pass:
 
-- **Stories must use their args.** See [`storysync snap`](#storysync-snap).
-- **Overlays are measured open.** snap opens a Dialog, Popover, Tooltip or similar overlay whose story renders only its trigger, and measures its content. Where it can't open one, it warns that it measured the closed trigger and why, and the push then asks whether to build the trigger, skip it, or stop so you can fix the story. `verify` names it under the score. A trigger built anyway says so on a `storysync:` line of its Figma description, and a skipped one is left out of the score with `verify --skip`.
-- **Variant values outside the URL's characters are set through Storybook's preview.** Values outside `[a-zA-Z0-9 _-]` are reported as `args_unsupported` only when the preview won't take them either.
-- **Values the story's argTypes reject are set through Storybook's preview.** That needs `window.__STORYBOOK_PREVIEW__`, which Storybook has had since version 7. When snap can't read it, a rejected value would measure as the default, so snap marks those variants `argsChecked: false`, warns, and fails `--strict`. A value the preview won't apply either is reported as `arg_rejected`.
-- **Props need literal types or options.** A boolean, a union of string literals, or a prop whose story's argTypes give `options` becomes a variant property. A free `string` or `number` prop doesn't.
-- **Text can be a pixel off.** Figma rounds the width of a text that sizes itself up to a whole pixel, so a label, and a frame that hugs it, can come out up to a pixel wider than in the browser. snap measures text in the font Figma sets it in, but a font your project loads that Figma lacks is still set in a stand-in. `verify` allows 3% or 1px, whichever is larger, and 6% for a text Figma draws in another font than snap measured it in. These allowances are set from the first live pushes, and may change.
-- **Transparent borders are filled as the browser fills them.** The browser paints the background under a transparent or translucent border unless the background is clipped to the padding box, as Tailwind's `bg-clip-padding` does. snap records which, and the push builds the border to match: an `INSIDE` stroke the fill runs under, or, with `bg-clip-padding`, an `OUTSIDE` stroke the fill stops at, so Figma shows the same unfilled ring the browser does. The size is right either way, and the summary names those variants.
-- **Some CSS isn't built or scored.** Figma has no equivalent for filters other than blur, `clip-path`, radial, conic and repeating gradients, some blend modes, borders with a different color on each side, and `outline`, so a focus ring drawn with `outline` never reaches Figma. Rotation and scaling are built as their bounding box, and text that mixes styles inline is approximated. `verify` lists each as coverage it couldn't score, never as a match. A push through the root-only templates doesn't score shadows, gradients, image fills, text transform or letter spacing at all.
-- **States and instances.** Hover, focus and pressed states aren't measured, an overlay only when its story renders it open, and a component nested in another is built as layers, not as an instance of its own set.
-- **Large variants.** A tree stops at 400 elements, and a variant whose layers need more than one `use_figma` call's 50,000 characters isn't built. `verify` lists both.
-- **Colors outside sRGB are clipped** channel by channel, as Chromium does on an sRGB screen, so Tailwind v4's `red-600` becomes `#e7000b`. A wide-gamut screen shows the code's color more saturated than Figma's.
-- **The readback checksum isn't a signature.** It is a 32-bit FNV-1a over each entry, computed by the readback template that ships with Storysync, so anyone who runs that code over made-up values gets a passing readback. It catches a response edited, cut down or copied on the way, and a shortcut such as writing the readback from snap's values, not forgery. It also won't catch a readback reused after a fix round, or a template that echoes what it sent instead of reading the nodes. The [falsification test](#storysync-verify) covers that: change an element in Figma by hand, read it back, and `verify` should report exactly that element.
+```text
+Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
+```
 
-## What's measured vs. inferred
+With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
 
-Storysync splits deterministic extraction (the CLI) from Figma writes (the AI client), so it's clear where each value comes from:
+The checksum isn't a signature. See [What Figma can't do](#what-figma-cant-do).
 
-| Step | How it's produced |
+### Staleness
+
+`snap` writes a `meta.json` next to `styles.json` recording when and against which Storybook it measured. It's a separate file so `styles.json` stays stable to diff. `verify` uses it to catch a snap taken before the code changed, which would otherwise score 100%. `--strict-age` fails when `meta.json` is missing or invalid, since it's often gitignored. After `snap --merge`, each component's readback is checked against the time that component was measured.
+
+### Root-only snaps and readbacks
+
+A snap taken with `--root-only`, or by Storysync 0.3.0, is scored by each variant's outer element, and `verify` says under the score that only the outer element was compared, with how many inner elements weren't measured. `--roots-only` scores an element-tree snap that way too, for comparison. A tree snap scored against a readback of roots alone fails `--strict`: its elements were never read back.
+
+Scores fall from root-only ones. Comparing each variant's outer element alone, a Switch built without its thumb, an Avatar without its picture, or a Card with its title at the wrong place scored 100%. Those numbers were overstated. The same pushes score what they hold now: half of the Switch's elements, a third of the Avatar's. A push from the element-tree calls that matches the code still scores 100%.
+
+A root-only readback also names the variable each field is bound to, and the fields bound to none though a variable of their kind in the file has their value, which `verify` lists under the score without failing `--strict`.
+
+## Tokens
+
+### Sources
+
+Storysync detects the token source automatically:
+
+| Source | What it reads |
 |---|---|
-| Design tokens | **Measured:** parsed from your Tailwind config, CSS custom properties, or theme file |
-| Component variant structure | **Measured:** derived from the prop types in Storybook's docs and the story's argTypes |
-| Component styling | **Measured:** `getComputedStyle` on the real render, via `storysync snap` |
-| Drift reports | **Measured:** deterministic comparison, normalized on both sides |
-| Figma writes | **Generated:** `figma code` writes every component call from the snap, and the client sends them unchanged; it writes the token variables from `tokens --json` |
-| Layout and composition | **Measured:** every element's box, relative to its parent, built as auto layout where Figma's places it the same and scored by `verify` |
+| **Tailwind** | `tailwind.config.ts`, `.js`, `.mjs`, `.cjs`, `.mts` or `.cts` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`, and a preset's in a relative file), or Tailwind v4 `@theme` blocks when there's no config |
+| **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing` or `--shadow` is `DEFAULT`. |
+| **Theme files** | `tokens.ts`, `theme.ts` and similar: exported objects with `colors`, `spacing` and so on |
+
+Detection takes the first of these a project has:
+
+1. a `tailwind.config.ts`, `.js`, `.mjs` or `.cjs`;
+2. a stylesheet with a `:root { }` rule;
+3. a Tailwind v4 `@theme` block;
+4. a theme file;
+5. a `tailwind.config.mts` or `.cts`, which a warning names when another source is read first;
+6. last, a stylesheet whose variables are only in a selector list such as `:root, .light { }`.
+
+The last two come last so a project keeps the source its baseline was written from. Pass `--source tailwind`, `css` or `theme` to choose one.
+
+Categories are **colors**, **spacing**, **typography**, **radius** and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read.
+
+### Values
+
+**Colors** can be in any CSS form: hex, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, or the bare HSL channels shadcn/ui uses (`240 5.9% 10%`). A custom property with one of these values counts as a color whatever its name. `tokens --json` keeps the value as written and adds its sRGB `hex`:
+
+```json
+{ "name": "brand", "value": "oklch(63.7% 0.237 25.331)", "hex": "#fb2c36" }
+```
+
+The push sets Figma variables from `hex`, since Figma's color helpers only accept a few formats, and `diff` compares in hex. Translucent colors get `#rrggbbaa`. A value Storysync can't convert, like `currentColor` or an unresolved `var()`, has no `hex`.
+
+**Lengths** in radius, spacing and typography get `px`, with rem (16px) and `calc()` worked out. The push sets FLOAT variables from it, and `diff` compares in px:
+
+```json
+{ "name": "sm", "value": "calc(0.625rem - 4px)", "px": 6 }
+```
+
+A value in em or %, or with no unit, like a font weight, has no `px`. A value the browser would reject has none either. A value can keep a `var()` that does resolve, as in `calc(var(--radius) - 4px)`, and still gets its `hex` or `px`.
+
+### Dark mode
+
+Where the stylesheets set variables for a dark theme, in `.dark`, `[data-theme="dark"]`, `:root.dark` and the like, or a `:root` inside `@media (prefers-color-scheme: dark)`, each token is read again with them. A token whose value differs gets a `dark` value, and `modes` says which modes the tokens fill:
+
+```json
+{ "name": "background", "value": "oklch(1 0 0)", "hex": "#ffffff", "dark": { "value": "oklch(0.145 0 0)", "hex": "#0a0a0a" } }
+```
+
+The push makes them a Dark variable mode beside Light, and `diff` and the audit compare each mode. A dark theme's rules never override the light values: a `:root` inside `prefers-color-scheme: dark` gives `dark` values only.
+
+### `var()` references
+
+Many Tailwind configs, shadcn/ui's included, define colors as `hsl(var(--background))` and put the values in `globals.css` under `:root`. Storysync resolves these:
+
+```ts
+// tailwind.config.ts
+colors: { background: "hsl(var(--background))" }
+```
+
+```css
+/* globals.css */
+:root { --background: 0 0% 100%; }
+```
+
+That resolves to `hsl(0 0% 100%)`. It also handles Tailwind's `<alpha-value>` placeholder (`hsl(var(--bg) / <alpha-value>)`), nested variable chains (`--brand: var(--blue-500)`), and fallback values, including ones with parentheses (`var(--missing, var(--border))`). In CSS mode, a color whose value holds a `var()`, like `hsl(var(--primary-h) 50% 50%)`, gets its `hex`.
+
+A `var()` that doesn't resolve stays as written, with a warning starting `Unresolved:` that names the token and says why: the variable is set nowhere Storysync reads (next/font, say, sets a font's at runtime), or only in terms of itself, or in a loop. The skills leave those tokens out of the push.
+
+**Which rules count as the default theme.** Variables are read from every rule whose selector list includes `:root`, such as `:root, .light { }`, inside `@layer base` or another wrapper too, with later declarations winning. A rule for another theme, such as `.dark`, `:root.dark`, `[data-theme="dark"]` or a rule nested in `:root` such as `&.dark { }`, gives `dark` values instead. `html:root { }` is read as `:root`, but an `html { }` rule isn't, since `:root` overrides it whatever their order. Nor is Tailwind v4's compiled theme, the `:root, :host { }` in `@layer theme` that its build output holds. A minified `.min.css` bundles other packages' styles, such as Bootstrap's, so in one a selector list is read only when it ends in `:root`.
+
+### Tailwind configs
+
+Storysync reads a Tailwind config as text and never runs it.
+
+- A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, or in an object the config file declares, is read the same way, one level deep. They merge as in Tailwind: a key set in `theme` itself replaces a preset's, one in `theme.extend` adds to it, and the config's own tokens win over a preset's of the same name, as a later preset's do over an earlier one's.
+- A config that re-exports another relative file, or spreads one in at the top of the object it exports, as `{ ...require("./base"), content }` does, is read through it. A `theme` key after the spread replaces the spread's theme, as in JavaScript.
+- Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is skipped with a warning starting `Skipped dynamic value:`, since its value is known only when the config runs.
+
+What it can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, or anything spread in at the top of `theme` or `theme.extend`, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
+
+### Tailwind v4 `@theme`
+
+A CSS-first Tailwind v4 project declares its tokens in `@theme` blocks:
+
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-brand-500: oklch(62.3% 0.214 259.815);
+  --spacing-18: 4.5rem;
+  --radius-card: 0.75rem;
+  --text-hero: 3.5rem;
+  --font-display: "Satoshi", sans-serif;
+}
+```
+
+With no `tailwind.config`, Storysync reads `@theme` blocks (`@theme inline` included), unless the project also has a stylesheet with a `:root { }` rule, as shadcn/ui's v4 `globals.css` does. Then it reads `:root`, plus the `@theme` spacing, radius, shadow and typography variables built from a `:root` variable, such as shadcn/ui's `--radius-sm: calc(var(--radius) - 4px)`, resolved with `:root` winning as it does in the browser. For shadcn/ui v4 that is `radius/DEFAULT` plus `sm`, `md`, `lg` and `xl`, and any larger sizes your globals.css declares. `@theme` colors aren't read then, since `:root` holds what they point at, and a warning names the other `@theme` tokens it didn't read and why, suggesting `--source tailwind` for the ones that would resolve. A stylesheet whose variables are only in a selector list, such as `:root, .light { }`, doesn't make `:root` the source, so `@theme` is read.
+
+| Namespace | Category | Token name |
+|---|---|---|
+| `--color-*` | colors | without the namespace: `--color-brand-500` → `brand/500` |
+| `--spacing-*`, `--spacing` | spacing | `--spacing-18` → `18`; the bare `--spacing` base unit → `DEFAULT` |
+| `--radius-*` | radius | `--radius-card` → `card` |
+| `--shadow-*` | shadows | `--shadow-soft` → `soft` |
+| `--text-*`, `--font-*`, `--font-weight-*`, `--leading-*`, `--tracking-*` | typography | with the namespace, since they share a category: `text/hero`, `font/display`, `font/weight/bold`, `leading/snug` |
+
+Dashes in a name become `/`. A `var()` is resolved against the theme, the project's `:root`, and Tailwind's default theme when `tailwindcss` is installed, so `--color-primary: var(--color-blue-500)` gets blue-500's value. Tailwind's defaults are used only to resolve references. Later declarations win, and `initial` removes a variable (or a whole namespace, as in `--color-*: initial`). Modifiers like `--text-hero--line-height` and nested rules like `@keyframes` are skipped, and other namespaces (`--breakpoint-*`, `--animate-*` and so on) are listed as uncategorized. An `@theme` token whose `var()` doesn't resolve is left out, and an `Unresolved:` warning names it.
+
+## Props and variants
+
+| Storybook prop type | Figma output |
+|---|---|
+| `boolean` | Boolean variant property |
+| `enum` / `union` of string literals (a `null` or `undefined` member is ignored) | Variant property with matching values |
+| A prop whose story's argTypes give `options` | Variant property with those values |
+| `string` (free text) | Skipped |
+| `number` (free value) | Skipped |
+| `function` / `callback` | Skipped |
+| `ReactNode` / `children` | Skipped |
+| `ref` / `className` / `style` | Skipped |
+| `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
+| `aria-*` / `data-*` attributes | Skipped |
+
+**Where props come from.** Props come from the Props section of the component's Storybook docs, and from the story's `argTypes`, which snap reads in the browser and records in `styles.json`. A choice only the argTypes declare, like Button's `disabled` or Sheet's `side`, becomes a variant property too, its default the story's own arg. `map`, `inspect` and `diff` read the argTypes from that snap (`--snap <dir>`, or `--no-snap`), and say when they can't see them. A union in a markdown props table (`"a" \| "b"`) is read whole, and a type is split only at its top-level `|`, so a function type or a template literal type isn't taken for a union.
+
+**Defaults.** A union prop's values start with its default, and a boolean is laid out with its default first, so Figma's default variant is the code's. Where the docs give no usable default, `map` assumes one: a value named `default` if there is one (cva's convention), else the first value, or `false` for a boolean. It marks the property `defaultAssumed: true`, and the skills name those properties in the push summary.
+
+**Props that only change behavior are left out on their own.** Each is recorded in `styles.json` with why, so `map`, `diff` and the Action leave out the same:
+
+- one every value of which snap measured the same, such as cmdk's `loop` or input-otp's `textAlign`;
+- one the argTypes mark with `control: false`, a hidden table row, or an event;
+- an `open` that opens what a closed trigger hides, which snap then sets on every variant, so Drawer is measured open.
+
+`--keep-props` keeps one, and `--exclude-props` leaves out others, on `map`, `inspect`, `snap` and `diff`, matched ignoring case. snap passes an excluded prop to no story, so each story's own args set it, and records the list as `excludeProps` in `styles.json`, which the audit reads. Pass the same list to every snap of a push: a run without it drops the record, and a `--merge` without it refuses to run.
+
+**Docs-only pages are skipped.** MDX docs pages, and entries whose stories name no component, such as shadcn's `design/*` token pages, never become components.
+
+## GitHub Action
+
+The Action checks for token and component drift on every push:
+
+```yaml
+name: Validate storysync mappings
+on:
+  push:
+    paths: ['src/components/**', 'stories/**', 'tailwind.config.*']
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: brendanciccone/storysync/action@main
+        with:
+          fail_on_drift: true
+```
+
+It installs your dependencies, starts Storybook on port 6006, extracts tokens, maps components, and compares both against baselines committed to your repo. Once it works, pin `@main` to a commit SHA.
+
+### Create the baselines first
+
+With Storybook running, in the project's directory:
+
+```bash
+mkdir -p .storysync
+npx storysync@<version> map --storybook http://localhost:6006 --json > .storysync/baseline.json
+npx storysync@<version> tokens --json > .storysync/tokens-baseline.json
+```
+
+Commit both files. Use the Storysync version the Action runs, which is the `version` in this repo's [`package.json`](package.json) at the ref you use. A baseline from a different version can differ from what the Action maps. The Action's warnings and errors print these commands with the version filled in. You can also save the Action's `json` and `tokens_json` outputs as your baselines.
+
+- If you set `components`, `exclude_props` or `token_source`, pass the same values to `map --components`, `map --exclude-props` and `tokens --source`.
+- A project with no tokens can skip the token baseline, or set `token_baseline: ''` to check components only.
+- With no baseline, drift is `new` and the Action warns that nothing was checked. With `fail_on_drift`, the job fails and prints the command that writes it.
+- A baseline that isn't `map --json` or `tokens --json` output always fails the job. That includes the `{"error": ...}` that `map --json` writes when Storybook isn't running.
+
+### Inputs
+
+| Input | Default | |
+|---|---|---|
+| `working_directory` | `.` | The project to check, relative to the repo root. The install, Storybook, tokens and baseline paths all use it. |
+| `install_command` | detected | Chosen from the nearest lockfile at or above `working_directory`, or the `packageManager` field in its package.json: `pnpm install --frozen-lockfile`, `yarn install --immutable` (`--frozen-lockfile` on Yarn 1), `npm ci`, or `bun install --frozen-lockfile`. Lockfiles from two package managers, with no `packageManager` to pick one, are an error. Set it to `true` to skip the install. |
+| `storybook_url` | `http://localhost:6006` | With the default, the Action starts Storybook on 6006 and stops it after mapping. It fails if something else is already on 6006. Any other URL is used as is, so start that Storybook in an earlier step. |
+| `components` | all | Comma-separated component names, titles or IDs. A name that matches nothing fails the job. |
+| `exclude_props` | none | Comma-separated props to leave out of every component, as `map --exclude-props`. |
+| `request_timeout` | 5 minutes | How long mapping waits for each Storybook request, in ms, as `map --request-timeout`. Raise it for a slow Storybook. |
+| `token_source` | `auto` | `tailwind`, `css`, `theme` or `auto`. |
+| `snap_dir` | `.storysync/snaps` | The committed snap whose argTypes and left-out props `map` uses. Set it to `''` for none. |
+| `baseline` | `.storysync/baseline.json` | Component baseline from `map --json`. |
+| `token_baseline` | `.storysync/tokens-baseline.json` | Token baseline from `tokens --json`. Set it to `''` to skip tokens. |
+| `fail_on_drift` | `false` | Fail the job on drift, or when a baseline is missing. |
+| `create_issue` | `false` | Open or update a `storysync-drift` issue when drift is found, even if a later step fails, unless the job was canceled. Needs `issues: write`. |
+| `node_version` | `22` | Node.js version. |
+
+**Outputs:** `drift` and `token_drift` are `true`, `false` or `new` (no baseline). `token_drift` can also be `none` (no baseline and no tokens) or `skipped` (`token_baseline: ''`). `json` and `tokens_json` hold the `map --json` and `tokens --json` output the Action compared.
+
+### How it compares
+
+- Components are matched by their Storybook ID, so `Forms/Button` and `Nav/Button` are compared separately. A title counts as drift only if its letters and digits changed.
+- A component whose prop and combination counts didn't change is reported with what did, such as `size`'s values reordered or its default changed.
+- When token drift only adds tokens, the error and the drift report say a newer Storysync can read tokens an older one didn't, and print the command that writes a new baseline.
+- Token warnings are logged on every run, one line each, and a drift report lists the first 20.
+
+### Running it
+
+- **bun:** on a runner without bun, the Action installs it with [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun), at the version `packageManager` names, or the latest.
+- **Time:** mapping reads each component's docs one at a time, which took about 5 seconds a component on one 134-component library, so allow for that in the job's `timeout-minutes`. The log shows a line per component as it goes.
+- **Aikido Safe Chain:** the Action sets up its own Node and pnpm, which come before Safe Chain's shims on `PATH`, so Safe Chain doesn't check the Action's installs. To have it check your dependencies, install them in your own steps before the Action, following Safe Chain's [GitHub Actions example](https://github.com/AikidoSec/safe-chain#github-actions-example) with the Node version `node_version` names, and set `install_command: 'true'`.
+
+## Troubleshooting
+
+### Storybook
+
+- **"Storybook has no MCP endpoint" (HTTP 404).** Run `npx storysync init`, then restart Storybook.
+- **A request timed out.** A busy or shared Storybook is slow rather than down. Run the command again with `--request-timeout 900000`, or `--connect-timeout 180000` for connecting.
+- **A long snap stopped part-way.** An agent's shell stops a command after a few minutes, and snap stopped part-way writes nothing. The skills run it in the background with `STORYSYNC_PROGRESS=1` and check its exit code.
+- **Stories time out.** A busy Storybook times out stories that render. Measure those components again with `--components <IDs> --merge` and a longer `--timeout`, such as 30000.
+
+### snap warnings
+
+- **Every variant measured the same.** If they rendered the same markup, the story likely drops its args: see [Write stories that measure well](#write-stories-that-measure-well). If the markup changed, the props change only behavior, and snap leaves them out.
+- **A closed trigger or a layout wrapper.** Give the component an `open` or `defaultOpen` prop the story passes through, or a story that renders it open or on its own. Then measure it again with `--merge`.
+- **Content past its box.** Use a story whose args give those variants content that fits, or name one with `--stories`.
+- **A capped component.** Raise `--max-combinations`, or leave out props that don't change the look with `--exclude-props`.
+- **A font didn't load.** snap measured the fallback the browser used. Fix the font, or install it in Figma.
+
+### Figma
+
+- **`This call differs from the file storysync figma code wrote`.** A character changed on the way. Nothing was changed: send the file again exactly as it is.
+- **`Script exceeded time limit`.** Run `figma code` again with `--max-nodes 200`, and send the new plan from its first call.
+- **`diff` returns 401 or 403.** Figma's remote MCP server needs OAuth. Use the skill's audit.
+- **A score dropped after an upgrade.** Element trees score every element, not just the outer one. See [Root-only snaps and readbacks](#root-only-snaps-and-readbacks).
+
+### Codex details
+
+- If Storybook isn't running, `codex mcp add` prints "MCP server may or may not require login". You can ignore it. Storybook's server needs no login.
+- You can install Figma's plugin instead of adding its server by hand: **Plugins** in the desktop app, or `/plugins` in the CLI.
+- `codex mcp add` registers a server for every project. To keep Storybook to this one, put it in `.codex/config.toml` instead, which Codex reads once you trust the project:
+
+  ```toml
+  [mcp_servers.storybook]
+  url = "http://localhost:6006/mcp"
+  ```
+
+- Codex's sandbox has network access off, so it asks to run `npx storysync` outside it, to reach Storybook, or Figma for `figma upload`. Approve it, or accept the rule Codex offers so it stops asking.
+- Codex gives each MCP call `tool_timeout_sec` seconds (60 or 300 by default, depending on the version). The skill splits large Figma writes across calls, but if one still times out, raise the limit in the table `codex mcp add` wrote to `~/.codex/config.toml`:
+
+  ```toml
+  [mcp_servers.figma]
+  url = "https://mcp.figma.com/mcp"
+  tool_timeout_sec = 600
+  ```
+
+  Figma's plugin has no timeout setting, and a `[mcp_servers.figma]` table replaces the plugin's server. So with the plugin installed, run the `codex mcp add figma` command above and add the line to the table it writes.
+
+### Baselines from an earlier version
+
+A newer Storysync reads more than an older one, so a baseline the older one wrote shows drift once. Recreate it with the version you run. Expect it when:
+
+- an earlier version read `storybook-static`, `out` or `coverage`, which now aren't read, so a token found only there is listed as removed;
+- an earlier version didn't read presets, shadcn/ui's radius scale, or a bare `--radius`, `--spacing` or `--shadow`, which are listed as added;
+- an earlier version read `.dark:root { }` or a `:root` inside `prefers-color-scheme: dark` as the default theme, or a `&.dark { }` nested in `:root` as part of it, so those tokens are listed as changed;
+- an earlier version kept a template literal's backticks, so a backticked token is listed as changed, and one that interpolates as removed;
+- a 0.3.0 component baseline listed values in declared order, where `map` now puts the default first. It has no IDs either, so the Action matches it by title, with a warning on every run, until you recreate it.
+
+`tokens --check` compares dark values only against a baseline that has `modes`, so an older baseline still passes, with a note to recreate it.
+
+## What Figma can't do
+
+These are true limits of Figma's platform. Each comes with what Storysync does about it.
+
+- **Fonts Figma doesn't have.** A plugin can load only fonts already available in the Figma editor ([`loadFontAsync`](https://developers.figma.com/docs/plugins/api/properties/figma-loadfontasync/)), and the Plugin API can't install one. A font your code loads that Figma lacks is drawn in a stand-in at the measured weight, and the build names it. Install the font in Figma yourself. For system fonts, snap measures in the stand-in Figma will use, so widths match.
+- **Clipping on one axis.** A Figma frame clips its content on both axes or neither ([`clipsContent: boolean`](https://developers.figma.com/docs/plugins/api/FrameNode/)). An element that clips one axis is built clipping both, and `figma code` names it.
+- **A readback that proves where it came from.** The agent sends every line of code that runs in Figma, so no secret can be kept from it, and `use_figma` signs nothing. The readback checksum is a 32-bit FNV-1a over each entry, computed by the readback template that ships with Storysync. It catches a response edited, cut down or copied on the way, and a shortcut such as writing the readback from snap's values. It can't catch forgery, a readback reused after a fix round, or a template that echoes what it sent instead of reading the nodes. The [score test](#check-the-result) covers that: change an element in Figma by hand, read it back, and `verify` should report exactly that element.
+- **One call's size.** `use_figma` takes at most 50,000 characters of code a call and returns at most 20kb ([write to canvas](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas)), and it can't create images. `figma code` packs calls under these limits, reads continue with `figma next`, and pictures go through `upload_assets`.
 
 ## Non-goals
 
-- **Figma → code.** Storysync never writes source. That's the direction where an LLM's mistakes are hardest to notice, and Figma's MCP already does it with `get_design_context`. `storysync diff` reports drift in that direction but doesn't apply it.
-- **Installing fonts into Figma.** The Plugin API can't. `snap` tells you when a font is missing; adding it is up to you.
+- **Figma to code.** Storysync never writes source. That's the direction where an LLM's mistakes are hardest to notice, and Figma's MCP already does it with `get_design_context`. `storysync diff` reports drift in that direction but doesn't apply it.
 - **Pixel-perfect rendering.** `verify` compares numbers, each element's box, paint and text within its tolerances, not rendered pixels, and Figma draws text with its own metrics.
-
-## Requirements
-
-### Storybook (for components)
-
-- **Storybook 10.1+** with a Vite-based framework (`@storybook/react-vite`, `@storybook/nextjs-vite`, or `@storybook/sveltekit`). Storybook 9 supports token extraction only.
-- **`@storybook/addon-mcp`**, which serves MCP at `/mcp`. `storysync init` sets it up.
-- The **dev server** (`storybook dev`), not a static build.
-- **Node.js 18+**, or 20+ for `snap`.
-- A Chromium-based browser, for `snap` only.
-
-### Figma (for writing)
-
-- A **Full seat** on a paid plan. Dev seats are read-only.
-- OAuth, which supported MCP clients handle for you.
-- Writing to the canvas is free during Figma's beta and will become a paid, usage-based feature.
-- Rate limits: Starter plans get 6 tool calls a month, and Full seats on Professional and up get per-minute limits.
-
-### Tokens
-
-Token extraction only reads local files, so it needs no Storybook, MCP connection, or auth.
-
-Storysync needs no Anthropic API key and makes no LLM calls of its own.
 
 ## License
 
