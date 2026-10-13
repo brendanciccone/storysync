@@ -615,6 +615,24 @@ const APPLY_STYLES = `const applyStyles = async (variant, styles) => {
       variant.resize(styles.width, styles.height);
     };`;
 
+test("mock: a variable's scopes are ALL_SCOPES until set, and Figma's for its type only", async () => {
+  const figma = new MockFigma();
+  const make = (type: string, scopes: string) => `const c = figma.variables.createVariableCollection('C${type}${scopes.length}');
+const v = figma.variables.createVariable('x', c, '${type}');
+const was = v.scopes;
+v.scopes = ${scopes};
+return JSON.stringify([was, (await figma.variables.getVariableByIdAsync(v.id)).scopes]);`;
+  assert.deepEqual(JSON.parse((await ok(figma, make("FLOAT", "['CORNER_RADIUS']"))) as string), [["ALL_SCOPES"], ["CORNER_RADIUS"]]);
+  for (const [type, scopes, error] of [
+    ["COLOR", "['CORNER_RADIUS']", /CORNER_RADIUS is not a scope of a COLOR variable/],
+    ["COLOR", "['ALL_FILLS', 'TEXT_FILL']", /ALL_FILLS takes no other fill scope/],
+  ] as const) {
+    const run = await figma.run(make(type, scopes));
+    assert.equal(run.ok, false);
+    assert.match(run.text, error);
+  }
+});
+
 test("templates: the skill's Tokens step 3 makes a collection in Light and Dark, and the Audit's read gives each mode", async () => {
   // tokens gives a dark value, and the push makes it a Dark mode beside
   // Light; a token without one keeps its light value there.

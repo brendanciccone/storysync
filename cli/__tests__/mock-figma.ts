@@ -796,7 +796,15 @@ export const MIXED: unique symbol = Symbol("figma.mixed");
  * the first, which a bound paint or field shows, as Figma shows a node in
  * no explicit mode; `modes` is its value in each mode by name, in order.
  */
-interface Variable { id: string; name: string; resolvedType: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"; value: unknown; collection: string; modes: [string, unknown][] }
+interface Variable { id: string; name: string; resolvedType: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"; value: unknown; collection: string; modes: [string, unknown][]; scopes?: string[] }
+
+/** The scopes Figma takes on a variable of each type; ALL_FILLS takes no other fill scope beside it. */
+const VARIABLE_SCOPES: Record<Variable["resolvedType"], readonly string[]> = {
+  COLOR: ["ALL_SCOPES", "ALL_FILLS", "FRAME_FILL", "SHAPE_FILL", "TEXT_FILL", "STROKE_COLOR", "EFFECT_COLOR"],
+  FLOAT: ["ALL_SCOPES", "TEXT_CONTENT", "CORNER_RADIUS", "WIDTH_HEIGHT", "GAP", "OPACITY", "STROKE_FLOAT", "EFFECT_FLOAT", "FONT_WEIGHT", "FONT_SIZE", "LINE_HEIGHT", "LETTER_SPACING", "PARAGRAPH_SPACING", "PARAGRAPH_INDENT", "FONT_VARIATIONS"],
+  STRING: ["ALL_SCOPES", "TEXT_CONTENT", "FONT_FAMILY", "FONT_STYLE"],
+  BOOLEAN: ["ALL_SCOPES"],
+};
 
 class Doc {
   next = 1;
@@ -1868,6 +1876,17 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
   };
   const variableHandle = (v: Variable) => ({
     id: v.id, name: v.name, resolvedType: v.resolvedType,
+    get scopes() {
+      return [...(v.scopes ?? ["ALL_SCOPES"])];
+    },
+    set scopes(value: unknown) {
+      if (!Array.isArray(value)) throw new Error("in scopes: takes an array of scopes");
+      for (const scope of value) {
+        if (!VARIABLE_SCOPES[v.resolvedType].includes(String(scope))) throw new Error(`in scopes: ${String(scope)} is not a scope of a ${v.resolvedType} variable`);
+      }
+      if (value.includes("ALL_FILLS") && value.some((x) => /^(?:FRAME|SHAPE|TEXT)_FILL$/.test(String(x)))) throw new Error("in scopes: ALL_FILLS takes no other fill scope");
+      v.scopes = value.map(String);
+    },
     variableCollectionId: `VariableCollectionId:${v.collection}`,
     valuesByMode: Object.fromEntries(v.modes.map(([, value], i) => [`1:${i}`, structuredClone(value)])),
     setValueForMode: (modeId: unknown, value: unknown) => {
