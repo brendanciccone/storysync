@@ -34,7 +34,7 @@ import { applyDelta } from "./snap-normalize.js";
 import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import type { TokenExtractionResult } from "./tokens.js";
-import { expandTree, parentKey, rootWithStyles, treeDigest } from "./tree-types.js";
+import { expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
 import type { Box, ComponentTree, FigmaPlan, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
@@ -224,7 +224,8 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   const styleOf = new Map<string, FigmaStyle & { markup?: string }>();
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, parentCls: parent?.cls, spike, children: kids.get(node.k)?.length ?? 0 };
+    const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, parentCls: parent?.cls, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }

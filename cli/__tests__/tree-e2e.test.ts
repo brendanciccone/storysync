@@ -525,6 +525,33 @@ test("tree e2e: a Tooltip snap hovered open keeps its arrow below the bubble, wh
   }
 });
 
+test("tree e2e: a turn inside a turned layer is built unturned and named, not scored as the browser's", async () => {
+  // The Tooltip's arrow, turned 45 degrees, inside a box turned 90, out of
+  // the flow: on screen it is turned 135 degrees. The box has a child, so
+  // it is built unturned; turned on its own, the arrow would show at 45
+  // and score as matching.
+  const tooltip = asSnap(loadTreeFixture("tooltip"));
+  const tree = (tooltip.components[0] as TreeComponent).tree!;
+  const arrow = tree.base[2];
+  tree.base.splice(2, 1,
+    { k: "wrap", t: "F", el: "div", box: [30, -6, 40, 20], abs: 1, tf: "rotate: 90deg", approx: "transform", bg: "#ff0000" },
+    { ...arrow, k: "wrap/div", box: [15, 5, 10, 10] });
+  const p = await push(tooltip);
+  try {
+    const slug = tooltip.components[0].variants[0].slug;
+    assert.deepEqual([layerOf(p.mock, slug, "wrap").rotation, layerOf(p.mock, slug, "wrap/div").rotation], [undefined, undefined]);
+    assert.ok(p.warnings.some((w) => w.endsWith("wrap/div: transform rotate: 45deg is built as its own box, unturned, as a transform around it is built untransformed")), p.warnings.join("\n"));
+    const { json } = await verifyPlan(p);
+    const unscorable = (json.unscorable as { key: string; property: string; reason: string }[]).filter((u) => u.property === "transform");
+    assert.deepEqual(unscorable.map((u) => [u.key, u.reason]), [
+      ["wrap", "rotate: 90deg is built unturned, as its children are measured turned"],
+      ["wrap/div", "rotate: 45deg is built unturned, as a transform around it is built untransformed"],
+    ]);
+  } finally {
+    cleanup(p);
+  }
+});
+
 test("tree e2e: a Select snap clicked open is built from its listbox with no item hovered, and verifies by element", async () => {
   const select = asSnap(loadTreeFixture("select"));
   const [variant] = select.components[0].variants;

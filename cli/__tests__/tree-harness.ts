@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { MockFigma, loadTreeFixture, measureFromTrees, treeFixtureAsset, treeFixtureNames } from "./mock-figma.js";
 import type { MockFigmaOptions, MockRun, TreeFixture } from "./mock-figma.js";
-import { builtTurn, expandTree, parentKey, rootWithStyles, textHugs, treeDigest } from "../tree-types.js";
+import { builtTurn, expandTree, parentKey, rootWithStyles, textHugs, transformedAround, treeDigest } from "../tree-types.js";
 import type { Sides, TreeDelta, TreeNode } from "../tree-types.js";
 import { applyDelta, splitTopLevel } from "../snap-normalize.js";
 import { cssLinearGradient } from "../verify-tree.js";
@@ -198,7 +198,10 @@ export function layersOf(nodes: TreeNode[], rootStyles: Parameters<typeof rootWi
     }
     // A turn the build makes (builtTurn), about the box's center, as CSS
     // turns it, where Figma turns about the top left corner.
-    const turn = i === 0 ? null : builtTurn(n, nodes.filter((c) => parentKey(c.k) === n.k).length);
+    const turn = i === 0 ? null : builtTurn(n, {
+      children: nodes.filter((c) => parentKey(c.k) === n.k).length,
+      transformed: transformedAround(n.k, (k) => nodes.find((c) => c.k === k)),
+    });
     if (turn) {
       const t = (-turn * Math.PI) / 180;
       const [cx, cy] = [spec.x + spec.w / 2, spec.y + spec.h / 2];

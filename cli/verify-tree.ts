@@ -17,8 +17,8 @@
 
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, RECORD_BY_TPL, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, turnOf } from "./tree-types.js";
-import type { Box, ComponentTree, Flow, Sides, TreeNode } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
+import type { Box, ComponentTree, Flow, Sides, TreeNode, TurnContext } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
 // --- What the Figma spike saw -------------------------------------------------
@@ -396,9 +396,9 @@ function sameTurn(a: number, b: number): boolean {
   return Number.isFinite(a) && Math.abs((((a - b) % 360) + 540) % 360 - 180) <= 0.5;
 }
 
-/** The properties each kind is scored on, for a node missing from Figma (design section 10.2), with its turn where the build turns it. */
-function propertiesOf(n: TreeNode, root: boolean, children = 0): string[] {
-  const where = root ? ["w", "h"] : builtTurn(n, children) === null ? ["x", "y", "w", "h"] : ["x", "y", "w", "h", "turn"];
+/** The properties each kind is scored on, for a node missing from Figma (design section 10.2), with its turn where the build turns it (builtTurn, from `at`). */
+function propertiesOf(n: TreeNode, root: boolean, at: TurnContext): string[] {
+  const where = root ? ["w", "h"] : builtTurn(n, at) === null ? ["x", "y", "w", "h"] : ["x", "y", "w", "h", "turn"];
   const shown = root ? [] : ["visible"];
   if (n.t === "T") {
     return [...where, "chars", "family", "weight", "italic", "size", "lineHeight", "letterSpacing", "color", "case", "decoration", "align", "truncation", "lines", "opacity", ...shown];
@@ -496,8 +496,9 @@ export function scoreTree(input: TreeInput): TreeScore {
   for (const n of snap.values()) {
     const isRoot = n.k === "";
     const rec = records.get(n.k);
+    const around: TurnContext = { children: kids.get(n.k)?.length ?? 0, transformed: transformedAround(n.k, (k) => snap.get(k)) };
     if (!rec) {
-      const properties = propertiesOf(n, isRoot, kids.get(n.k)?.length);
+      const properties = propertiesOf(n, isRoot, around);
       out.missing++;
       out.compared += properties.length;
       out.nodes.push({ key: n.k, status: "missing", differences: [], score: 0 });
@@ -520,7 +521,7 @@ export function scoreTree(input: TreeInput): TreeScore {
     // Geometry, for every kind. A turn the build makes is no longer an
     // approximation: snap's box is the element's own, centered where it
     // drew, which the turned layer reads back as (builtTurn).
-    const turned = builtTurn(n, kids.get(n.k)?.length ?? 0);
+    const turned = builtTurn(n, around);
     const approxBy = (n.approx ?? "").split(",").filter((why) => why && !(why === "transform" && turned !== null)).join(",");
     const approx = approxBy !== "";
     const geometry = (property: string, ok: (slack: number) => boolean, measured: unknown, figma: unknown) => {
@@ -554,12 +555,12 @@ export function scoreTree(input: TreeInput): TreeScore {
     }
     // Its turn, read by template 4 on: scored where the build turns it
     // (builtTurn), and wherever Figma has one, which nothing measured asks
-    // for. A transform the build leaves out is named: a turn in the flow,
-    // or of a node with children, built unturned, and anything that scales
-    // or skews, built at the element's own size.
+    // for. A transform the build leaves out is named: a turn it can't make
+    // (unturnedBecause), built unturned, and anything that scales or
+    // skews, built at the element's own size.
     const turn = field("turn");
     if (turn !== undefined && (turned !== null || Number(turn) !== 0)) check("turn", sameTurn(Number(turn), turned ?? 0), turned ?? 0, turn);
-    if (n.tf && turned === null) unscorable("transform", turnOf(n.tf) === null ? `${n.tf} is built as the element's own box, untransformed` : `${n.tf} is built unturned, ${n.abs ? "as its children are measured turned" : "as Figma's auto layout would place it by its turned box"}`);
+    if (n.tf && turned === null) unscorable("transform", turnOf(n.tf) === null ? `${n.tf} is built as the element's own box, untransformed` : `${n.tf} is built unturned, as ${unturnedBecause(n, around)}`);
     else if (n.tf && turn === undefined) unscorable("transform", `${n.tf}: read by a readback template before 4, which reads no turn`);
 
     // Another kind of layer where snap measured this one is not this node.
@@ -568,7 +569,7 @@ export function scoreTree(input: TreeInput): TreeScore {
       check("kind", false, n.t, rec.kind);
       // Its kind's own properties can't be compared on another kind's
       // record; its place, size and turn were, above.
-      const own = propertiesOf(n, isRoot, kids.get(n.k)?.length).filter((p) => !["x", "y", "w", "h", "turn"].includes(p));
+      const own = propertiesOf(n, isRoot, around).filter((p) => !["x", "y", "w", "h", "turn"].includes(p));
       compared += own.length;
       out.drifted++;
       out.matched += matched;

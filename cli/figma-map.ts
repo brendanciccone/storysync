@@ -15,8 +15,8 @@ import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
-import { builtTurn, insideStrokeDrawsBorder, textHugs, turnOf } from "./tree-types.js";
-import type { Box, Sides, TreeNode } from "./tree-types.js";
+import { builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
+import type { Box, Sides, TreeNode, TurnContext } from "./tree-types.js";
 
 /**
  * A paint as the template sets it: `#rrggbb` alone for an opaque, unbound
@@ -127,8 +127,8 @@ export interface MapContext {
   parentCls?: string[];
   /** The spike's answers; SPIKE's when absent. */
   spike?: Pick<Spike, "svgStrokesScale">;
-  /** How many children the node has, which decides whether the build turns it (builtTurn). */
-  children?: number;
+  /** Where the node sits, which decides whether the build turns it (builtTurn); a childless node with nothing transformed around it when absent. */
+  around?: TurnContext;
 }
 
 const round2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
@@ -464,15 +464,15 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
   }
   if (node.cp) ctx.notBuilt.push({ key: node.k, what: `clip-path ${node.cp}` });
   if (node.ol) ctx.notBuilt.push({ key: node.k, what: `outline ${node.ol[0]}px ${node.ol[1]} ${node.ol[2] ?? "transparent"}` });
-  // A turn of a node out of the flow is built (builtTurn), as Figma's
-  // rotation, the other way round; any other transform is named.
-  const turn = builtTurn(node, ctx.children ?? 0);
+  // A turn the build can make is built (builtTurn), as Figma's rotation,
+  // the other way round; any other transform is named.
+  const around = ctx.around ?? { children: 0, transformed: false };
+  const turn = builtTurn(node, around);
   if (turn) style.rt = -turn;
   else if (node.tf && turn === null) {
     ctx.notBuilt.push({
       key: node.k, what: `transform ${node.tf}`,
-      as: turnOf(node.tf) === null ? "the element's own box, untransformed"
-        : `its own box, unturned, as ${node.abs ? "its children are measured turned" : "Figma's auto layout would place it by its turned box"}`,
+      as: turnOf(node.tf) === null ? "the element's own box, untransformed" : `its own box, unturned, as ${unturnedBecause(node, around)}`,
     });
   }
   if (node.clip) {

@@ -153,7 +153,7 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
   ]);
 });
 
-test("nodeStyle: a turn in the plane of a childless node out of the flow is built as Figma's rotation; any other transform is named", () => {
+test("nodeStyle: a turn in the plane of a childless node out of the flow, nothing transformed around it, is built as Figma's rotation; any other transform is named", () => {
   // The fifth push's Tooltip arrow: Tailwind's rotate-45, out of the flow.
   const arrow = (fields: Partial<TreeNode>) => frame({ k: "div", abs: 1, bg: "#0a0a0a", r: 2, box: [45.5, 21, 10, 10], tf: "rotate: 45deg", approx: "transform", ...fields });
   const c = ctx();
@@ -161,15 +161,19 @@ test("nodeStyle: a turn in the plane of a childless node out of the flow is buil
   assert.equal(nodeStyle(arrow({ tf: "matrix(0, 1, -1, 0, 3, 4)" }), c).rt, -90);
   assert.equal(nodeStyle(arrow({ tf: "matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0); rotate: -0.5turn" }), c).rt, 135);
   assert.deepEqual(c.notBuilt, []);
-  const cases: [Partial<TreeNode>, number, string][] = [
-    [{ abs: undefined }, 0, "its own box, unturned, as Figma's auto layout would place it by its turned box"],
-    [{}, 1, "its own box, unturned, as its children are measured turned"],
-    [{ tf: "rotate: 45deg; scale: 2" }, 0, "the element's own box, untransformed"],
-    [{ tf: "rotate: x 45deg" }, 0, "the element's own box, untransformed"],
-    [{ tf: "matrix(2, 0, 0, 2, 0, 0)" }, 0, "the element's own box, untransformed"],
+  const leaf = { children: 0, transformed: false };
+  const cases: [Partial<TreeNode>, MapContext["around"], string][] = [
+    [{ abs: undefined }, leaf, "its own box, unturned, as Figma's auto layout would place it by its turned box"],
+    [{}, { children: 1, transformed: false }, "its own box, unturned, as its children are measured turned"],
+    // Inside a node turned or scaled, which is built untransformed: turned
+    // on its own, it would show at another net turn than the browser's.
+    [{}, { children: 0, transformed: true }, "its own box, unturned, as a transform around it is built untransformed"],
+    [{ tf: "rotate: 45deg; scale: 2" }, leaf, "the element's own box, untransformed"],
+    [{ tf: "rotate: x 45deg" }, leaf, "the element's own box, untransformed"],
+    [{ tf: "matrix(2, 0, 0, 2, 0, 0)" }, leaf, "the element's own box, untransformed"],
   ];
-  for (const [fields, children, as] of cases) {
-    const c2: MapContext = { ...ctx(), children };
+  for (const [fields, around, as] of cases) {
+    const c2: MapContext = { ...ctx(), around };
     assert.equal(nodeStyle(arrow(fields), c2).rt, undefined, JSON.stringify(fields));
     assert.deepEqual(c2.notBuilt, [{ key: "div", what: `transform ${fields.tf ?? "rotate: 45deg"}`, as }]);
   }

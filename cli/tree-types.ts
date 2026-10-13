@@ -528,20 +528,54 @@ export function turnOf(tf: string | undefined): number | null {
 }
 
 /**
+ * Where a node sits in its tree, which decides whether the build turns it
+ * (builtTurn): how many children it has, and whether a node around it, its
+ * parent or one of theirs, has a transform (`transformedAround`).
+ */
+export interface TurnContext {
+  children: number;
+  transformed: boolean;
+}
+
+/**
+ * Whether a node around `k`, its parent or one of theirs, has a transform
+ * (`tf`): snap measured `k` as the page box that transform drew it in, and
+ * the build builds that node untransformed.
+ */
+export function transformedAround(k: string, get: (key: string) => TreeNode | undefined): boolean {
+  for (let p = parentKey(k); p !== null; p = parentKey(p)) if (get(p)?.tf) return true;
+  return false;
+}
+
+/**
+ * Why the build leaves a node's turn in the plane (turnOf) out, or null
+ * where it builds it: a transform around it, built untransformed, which
+ * would leave the node at another net turn than the browser's; children,
+ * measured turned as their page boxes; or a place in the flow, where
+ * Figma's auto layout places a turned layer by its turned box, which CSS
+ * doesn't (the sixth probe).
+ */
+export function unturnedBecause(n: TreeNode, at: TurnContext): string | null {
+  if (at.transformed) return "a transform around it is built untransformed";
+  if (at.children) return "its children are measured turned";
+  if (!n.abs) return "Figma's auto layout would place it by its turned box";
+  return null;
+}
+
+/**
  * The turn the build gives a node in Figma, clockwise in degrees as CSS
  * says it, or null where it builds the node unturned at its own size: a
- * turn in the plane (turnOf) of a node out of the flow, with no children.
- * Figma turns a layer about its top left corner, and the build places it
- * so that it turns about its center, as CSS's default origin does; snap's
- * box is the node's own size centered where it drew, so any origin comes
- * out the same. In auto layout Figma places a turned layer by its turned
- * box, which CSS doesn't (the sixth probe), so a node in the flow is built
- * unturned; and a turned node's children are measured turned, as their
- * page boxes, so one with children is too. verify scores the turn of the
- * nodes this turns, from the same facts.
+ * turn in the plane (turnOf) the build can make (unturnedBecause), of a
+ * childless node out of the flow, with no transform around it. Figma turns
+ * a layer about its top left corner, and the build places it so that it
+ * turns about its center, as CSS's default origin does; snap's box is the
+ * node's own size centered where it drew, so any origin comes out the
+ * same. verify scores the turn of the nodes this turns, from the same
+ * facts.
  */
-export function builtTurn(n: TreeNode, children: number): number | null {
-  return n.abs && !children ? turnOf(n.tf) : null;
+export function builtTurn(n: TreeNode, at: TurnContext): number | null {
+  const turn = turnOf(n.tf);
+  return turn === null || unturnedBecause(n, at) !== null ? null : turn;
 }
 
 /** Cross-axis alignments that place an item at the end; anything else not centered places it at the start. */

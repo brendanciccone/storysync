@@ -1911,3 +1911,17 @@ F6-5. **Reads pack to 17,000 predicted, LIMIT 18,000** (`DEFAULT_READ_LIMIT`,
    to 16,800; in the mock they returned 13,900 to 16,000 bytes, with no
    continuation. The template now counts the `more` it may add from the
    start, which it left out, so a call holds LIMIT exactly.
+
+## The review of fix pass 6
+
+F6-6. **A turn inside a transformed node is built unturned** (F6-3).
+   snap measures a node inside a turned or scaled one as the page box that
+   transform drew it in, and the build builds the outer node
+   untransformed (it has children), so turning the inner one alone left it
+   at another net turn than the browser's: an arrow turned 45 degrees
+   inside a box turned 90 showed at 45 against 135, and verify scored its
+   turn as matching. `builtTurn` now takes a `TurnContext`, the node's
+   child count and `transformedAround`, whether a node around it has a
+   `tf`; `unturnedBecause` gives the reason a turn is left out, which figma
+   code's warning and verify's unscorable `transform` both say: `a
+   transform around it is built untransformed`.
