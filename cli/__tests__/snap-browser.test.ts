@@ -1238,7 +1238,7 @@ test("captureStory: with --no-open-overlays, a closed trigger is measured untouc
   assert.deepEqual(done, []);
 });
 
-test("captureStory: a select's field is clicked open and its listbox measured; one that opens nothing is measured as the field, with no note", async () => {
+test("captureStory: a select's field is clicked open and its listbox measured; one that opens nothing is measured as the field, with no note but why", async () => {
   const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
   const select = overlayPage({ marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" } });
   const opened = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
@@ -1247,6 +1247,9 @@ test("captureStory: a select's field is clicked open and its listbox measured; o
   const shut = overlayPage({ marks: field, opensOn: [] });
   const asIs = await captureStory(shut.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
   assert.deepEqual([asIs.element, asIs.notes, asIs.opened], ['button[data-slot="select-trigger"]', [], undefined]);
+  // Which runSnap notes where it opened other variants.
+  assert.deepEqual(asIs.unopened, { element: 'button[data-slot="select-trigger"]', reason: "clicking it opened nothing within 40ms" });
+  assert.equal(opened.unopened, undefined);
   // Clicked, and nothing else: closed, the field is the component.
   assert.deepEqual(shut.done, ["click", ...UNDONE]);
 });

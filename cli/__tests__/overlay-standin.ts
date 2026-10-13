@@ -43,6 +43,8 @@ export function overlayPage(opts: {
   closesOnLeave?: boolean;
   escapeIgnored?: boolean;
   staysOpen?: boolean;
+  /** Whether the story's args hold it closed, as a disabled trigger's do: nothing done to its trigger opens it. */
+  heldClosed?: (args: Record<string, unknown>) => boolean;
 }) {
   const storyId = "ui-radix-dialog--default";
   const done: string[] = [];
@@ -53,7 +55,7 @@ export function overlayPage(opts: {
   let clickThrows = opts.clickThrows;
   const open = () => {
     const args = fake.preview.storyStoreValue.getStoryContext().args;
-    return interacted || (opts.opensOn.includes("arg") && (args.open === true || args.defaultOpen === true));
+    return (interacted && !opts.heldClosed?.(args)) || (opts.opensOn.includes("arg") && (args.open === true || args.defaultOpen === true));
   };
   const triggerNode = () => ({
     ...storyNode("button", null), styles: { display: "inline-flex", "background-color": "rgb(23, 23, 23)" }, text: true,

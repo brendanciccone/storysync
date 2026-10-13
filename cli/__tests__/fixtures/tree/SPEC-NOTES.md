@@ -1741,3 +1741,13 @@ O12. **A way that leaves the trigger open** with nothing snap measures
     other way, measures what is there, and keeps the trigger's note as
     it was found, its reason ending `it stayed open, though snap mounted
     the story again` (or why it couldn't).
+O13. **A field that opens nothing, where others opened.** O4 measures a
+    select's field that clicking opens nothing as the field, with no
+    note: closed, it is the component. In a set where other variants
+    opened (a disabled variant beside enabled ones), the Figma set then
+    mixed listboxes with closed fields, said only by the `i` line's "in
+    1 of 2 variants". The capture now returns the field and why
+    (`unopened`), and where any variant of the component opened, snap
+    notes each such variant as a closed trigger with that reason: the
+    warning, the label line and verify's caveat, as for any trigger it
+    couldn't open. Where none opened, nothing changes.

@@ -260,6 +260,12 @@ export interface CaptureResult {
    * its closed trigger: see openOverlay. Absent where snap opened nothing.
    */
   opened?: OverlayOpened;
+  /**
+   * A select's or combobox's field snap couldn't open, measured as the
+   * field, and why: no note of its own, as closed it is the component,
+   * but snap.ts notes it as a closed trigger where other variants opened.
+   */
+  unopened?: { element: string; reason: string };
 }
 
 export interface CaptureOptions {
@@ -391,6 +397,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
     // A closed trigger, or a closed select's field: what it opens is measured, where snap can open it.
     let opened: OverlayOpened | undefined;
+    let unopened: CaptureResult["unopened"];
     if (located.trigger) {
       const closed = located as Located & { trigger: OpenableTrigger };
       const opening: Opening = opts.openOverlays === false
@@ -413,6 +420,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       }
       if (!opened) {
         const reason = "reason" in opening ? opening.reason : "";
+        if (closed.trigger.field && opts.openOverlays !== false) unopened = { element: closed.element, reason };
         located.notes = located.notes.map((note) => (note.kind === "closed-trigger" ? { ...note, reason } : note));
         // One an attempt left open, which a remount didn't close, keeps
         // the note of the trigger as it was found, closed.
@@ -470,7 +478,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args,
       ...(standIns.length ? { standIns } : {}),
       ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
-      ...(portal ? { portal } : {}), ...(opened ? { opened } : {}),
+      ...(portal ? { portal } : {}), ...(opened ? { opened } : {}), ...(unopened ? { unopened } : {}),
     };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in

@@ -1544,6 +1544,8 @@ async function snapComponent(
   // context whose first page fails to open still gets closed.
   let context: Awaited<ReturnType<typeof createContext>> | null = null;
   const notes: { slug: string; note: MeasurementNote }[] = [];
+  // The fields snap couldn't open (CaptureResult's `unopened`), by variant.
+  const unopened: { slug: string; element: string; reason: string }[] = [];
   // Each measured variant's markup checksum, for describeIdenticalVariants.
   const markups: (string | null)[] = [];
   // Variants whose args couldn't be checked against Storybook's preview, of
@@ -1577,6 +1579,7 @@ async function snapComponent(
     unchecked.length = 0;
     uncheckedError = undefined;
     notes.length = 0;
+    unopened.length = 0;
     markups.length = 0;
     trees.length = 0;
     for (const id of Object.keys(svgAssets)) delete svgAssets[id];
@@ -1745,6 +1748,7 @@ async function snapComponent(
         ...argsRecord,
       };
       for (const note of captured.notes) notes.push({ slug, note });
+      if (captured.unopened) unopened.push({ slug, ...captured.unopened });
       if (captured.climbedFrom) climbed.push({ slug, element: captured.element ?? "", from: captured.climbedFrom });
       for (const pair of captured.standIns ?? []) standIns.add(JSON.stringify(pair));
       markups.push(captured.markup ?? null);
@@ -1803,6 +1807,11 @@ async function snapComponent(
   if (shell.cap) shell.warnings.unshift(describeCap(entry.title ?? entry.name, shell.cap));
 
   const measured = shell.variants.filter((v) => v.status === "ok").length;
+  // A select's field snap couldn't open, where it opened others: the set
+  // mixes closed fields with open content, so each is a closed trigger.
+  if (shell.variants.some((v) => v.status === "ok" && v.opened)) {
+    for (const { slug, element, reason } of unopened) notes.push({ slug, note: { kind: "closed-trigger", element, reason } });
+  }
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
   const climbedWarning = describeClimbed(climbed, measured);
   if (climbedWarning) shell.warnings.push(climbedWarning);

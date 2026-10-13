@@ -2555,3 +2555,34 @@ test("runSnap: with openOverlays false, a closed trigger is measured, and its wa
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runSnap: a select whose field one variant couldn't open, where others opened, warns that variant was measured closed, and why", async () => {
+  const dir = tempDir();
+  try {
+    const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
+    const { page } = overlayPage({
+      marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" },
+      argTypes: { disabled: { type: { name: "boolean" }, control: { type: "boolean" } } }, heldClosed: (args) => args.disabled === true,
+    });
+    const docs = {
+      listComponents: async () => [{ id: "ui-radix-select", name: "Select", title: "ui/radix/Select", storyIds: ["ui-radix-select--default"] }],
+      getComponent: async () => ({ name: "Select", props: [{ name: "disabled", type: { name: "boolean" } }], stories: [{ id: "ui-radix-select--default", name: "Default" }] }),
+    } as never;
+    const result = await runSnap(options(dir), { storybook: docs, launch: launchOn(page) });
+    const [component] = result.components;
+    const bySlug = new Map(component.variants.map((v) => [v.slug, v]));
+    const [shut, open] = [bySlug.get("disabled-true")!, bySlug.get("disabled-false")!];
+    assert.deepEqual([open.element, open.opened?.via], ['div[data-slot="select-content"]', "click"]);
+    assert.deepEqual([shut.element, shut.opened], ['button[data-slot="select-trigger"]', undefined]);
+    const warning = component.warnings.find((w) => /closed trigger/.test(w));
+    assert.ok(warning?.startsWith(
+      `snap measured button[data-slot="select-trigger"], a closed trigger, rather than Select in 1 of 2 measured variants: snap didn't open it (clicking it opened nothing within 1000ms). `,
+    ), component.warnings.join("\n"));
+    // Where no variant opened, the field is the component, and nothing is warned.
+    const closed = overlayPage({ marks: field, opensOn: [] });
+    const asIs = await runSnap(options(tempDir()), { storybook: docs, launch: launchOn(closed.page) });
+    assert.equal(asIs.components[0].warnings.some((w) => /closed trigger/.test(w)), false, asIs.components[0].warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
