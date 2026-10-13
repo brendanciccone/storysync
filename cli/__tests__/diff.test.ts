@@ -11,6 +11,7 @@ import {
   narrowFigmaComponents,
   computeDiffSummary,
   hasDifferences,
+  modesNotCompared,
 } from "../diff.js";
 import type { TokenCollection } from "../tokens.js";
 import { extractFirstBalancedObject } from "../figma.js";
@@ -775,6 +776,59 @@ test("diffTokens: a translucent color token matches Figma's color with its alpha
   // Without a hex, the value itself is converted, alpha and all.
   const bare: TokenCollection[] = [{ category: "colors", tokens: [{ name: "border", value: "rgba(255, 255, 255, 0.1)" }] }];
   assert.equal(diffTokens(bare, variable("#ffffff1a"))[0].status, "match");
+});
+
+// --- Dark mode ---
+
+test("diffTokens: the code's dark theme is compared with each variable's Dark mode, a token without a dark value by its light one", () => {
+  // Only each collection's first mode was read, so a Dark mode set wrong,
+  // or never set, matched every time.
+  const code: TokenCollection[] = [{ category: "colors", tokens: [
+    { name: "background", value: "oklch(1 0 0)", hex: "#ffffff", dark: { value: "oklch(0.145 0 0)", hex: "#0a0a0a" } },
+    { name: "chart/1", value: "#3b82f6", hex: "#3b82f6" },
+    { name: "primary", value: "#171717", hex: "#171717", dark: { value: "#e5e5e5", hex: "#e5e5e5" } },
+  ] }];
+  const codeModes = ["Light", "Dark"];
+  const variable = (name: string, light: string, dark?: string): FigmaVariable => ({
+    name, value: light, collection: "Colors", resolvedType: "COLOR", mode: "Light", ...(dark ? { modes: { Light: light, Dark: dark } } : {}),
+  });
+  const synced = [variable("background", "#ffffff", "#0a0a0a"), variable("chart/1", "#3b82f6", "#3b82f6"), variable("primary", "#171717", "#e5e5e5")];
+  assert.deepEqual(diffTokens(code, synced, { codeModes }).map((d) => [d.name, d.status, d.mode]), [
+    ["background", "match", undefined], ["chart/1", "match", undefined], ["primary", "match", undefined],
+  ]);
+
+  // A wrong Dark value is a mismatch there alone; one with no dark value
+  // in code is compared with its light value, as the browser renders it.
+  const drifted = [variable("background", "#ffffff", "#111111"), variable("chart/1", "#3b82f6", "#000000"), variable("primary", "#000000", "#e5e5e5")];
+  const entries = diffTokens(code, drifted, { codeModes });
+  assert.deepEqual(entries.map((d) => [d.name, d.status, d.mode ?? null, d.codeValue, d.figmaValue]), [
+    ["background", "value_mismatch", "Dark", "oklch(0.145 0 0)", "#111111"],
+    ["chart/1", "value_mismatch", "Dark", "#3b82f6", "#000000"],
+    ["primary", "value_mismatch", null, "#171717", "#000000"],
+  ]);
+  assert.equal(computeDiffSummary(entries, []).tokensMatched, 0);
+
+  // A collection with no Dark mode is missing the dark values.
+  const oneMode = [variable("background", "#ffffff"), variable("chart/1", "#3b82f6"), variable("primary", "#171717")];
+  assert.deepEqual(diffTokens(code, oneMode, { codeModes }).filter((d) => d.status !== "match").map((d) => [d.name, d.status, d.mode, d.codeValue]), [
+    ["background", "missing_from_figma", "Dark", "oklch(0.145 0 0)"],
+    ["primary", "missing_from_figma", "Dark", "#e5e5e5"],
+  ]);
+
+  // --mode Dark reads that mode, and compares it with the dark theme.
+  const darkOnly = [variable("background", "#0a0a0a"), variable("chart/1", "#3b82f6"), variable("primary", "#e5e5e5")].map((v) => ({ ...v, mode: "Dark" }));
+  assert.ok(diffTokens(code, darkOnly, { codeModes, mode: "Dark" }).every((d) => d.status === "match"));
+  // Without the code's dark theme, as from an earlier storysync, only the first mode is compared.
+  assert.deepEqual(diffTokens(code, drifted).map((d) => [d.name, d.status]), [["background", "match"], ["chart/1", "match"], ["primary", "value_mismatch"]]);
+});
+
+test("modesNotCompared: names each collection's modes no code value was compared with", () => {
+  const v = (collection: string, modes: string[]): FigmaVariable => ({ name: "x", value: "#000000", collection, resolvedType: "COLOR", mode: modes[0], modes: Object.fromEntries(modes.map((m) => [m, "#000000"])) });
+  const vars = [v("Colors", ["Light", "Dark", "High contrast"]), v("Colors", ["Light", "Dark", "High contrast"]), v("Brand", ["Acme", "Globex"])];
+  assert.deepEqual(modesNotCompared(vars, { codeModes: ["Light", "Dark"] }), [{ collection: "Colors", modes: ["High contrast"] }, { collection: "Brand", modes: ["Globex"] }]);
+  // With no dark theme in code, the Dark mode isn't compared either.
+  assert.deepEqual(modesNotCompared(vars, { codeModes: ["Light"] })[0], { collection: "Colors", modes: ["Dark", "High contrast"] });
+  assert.deepEqual(modesNotCompared(vars, { codeModes: ["Light", "Dark"], mode: "Dark" }), []);
 });
 
 // --- Pairing by the Storybook ID the push stored ---

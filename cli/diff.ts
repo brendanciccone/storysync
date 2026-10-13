@@ -16,6 +16,12 @@ export interface TokenDiffEntry {
   codeValue: string | null;
   figmaValue: string | null;
   status: "match" | "value_mismatch" | "missing_from_figma" | "missing_from_code";
+  /**
+   * The Figma mode a difference is in, where it is the dark theme's: the
+   * variable's Dark mode, or `Dark` for a dark value Figma has no mode for.
+   * Absent for the light theme, compared with each collection's first mode.
+   */
+  mode?: string;
 }
 
 // --- Component diff ---
@@ -154,23 +160,57 @@ function normalizeForCompare(category: string, value: string): string {
 
 // --- Token diffing ---
 
-export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariable[]): TokenDiffEntry[] {
+/** Whether a Figma mode is a dark theme's, by its name: `Dark`, `Dark mode`, `dark`. */
+const isDarkMode = (mode: string) => /dark/i.test(mode);
+
+/** The variable's dark mode, by name, other than the one its `value` is in, or undefined. */
+function darkModeOf(fv: FigmaVariable): string | undefined {
+  return Object.keys(fv.modes ?? {}).find((mode) => mode !== fv.mode && isDarkMode(mode));
+}
+
+export interface TokenDiffOptions {
+  /** The modes the code's tokens fill, tokens' `modes`: the dark theme is compared only where they include Dark. */
+  codeModes?: string[];
+  /** The one Figma mode read, as `diff --mode` names it; then no other is compared. */
+  mode?: string;
+}
+
+/**
+ * Each code token against the Figma variable of its category and name: the
+ * light value against the variable's first mode, or the mode `--mode`
+ * read, and, where the code has a dark theme, its dark value against the
+ * variable's Dark mode. A token's dark value is its light one where it has
+ * none, as in the browser. A token with a dark value whose variable has no
+ * Dark mode is missing from Figma there. Each difference is an entry, the
+ * dark theme's with its `mode`; a token that matches in every mode
+ * compared is one `match`.
+ */
+export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariable[], options: TokenDiffOptions = {}): TokenDiffEntry[] {
   const entries: TokenDiffEntry[] = [];
+  const codeDark = !!options.codeModes?.includes("Dark");
+  // With --mode naming the dark one, that mode is compared with the dark theme.
+  const readDark = options.mode !== undefined && codeDark && isDarkMode(options.mode);
 
   // Build code map: "category/tokenName" → value
-  const codeMap = new Map<string, { value: string; category: string; workedOut?: string }>();
+  type Side = { value: string; workedOut?: string };
+  const codeMap = new Map<string, Side & { category: string; dark?: Side }>();
   for (const coll of codeTokens) {
     for (const token of coll.tokens) {
-      codeMap.set(`${coll.category}/${token.name}`, { value: token.value, category: coll.category, workedOut: workedOutForCompare(coll.category, token) });
+      const dark = token.dark ? { value: token.dark.value, workedOut: workedOutForCompare(coll.category, { name: token.name, ...token.dark }) } : undefined;
+      const light = { value: token.value, workedOut: workedOutForCompare(coll.category, token) };
+      codeMap.set(`${coll.category}/${token.name}`, { ...(readDark && dark ? dark : light), category: coll.category, dark: readDark ? undefined : dark });
     }
   }
 
   // Build Figma map: "category/variableName" → value
-  const figmaMap = new Map<string, { value: string; collection: string; resolvedType: string }>();
+  const figmaMap = new Map<string, FigmaVariable>();
   for (const fv of figmaVars) {
     const category = figmaCollectionToCategory(fv.collection);
-    figmaMap.set(`${category}/${fv.name}`, { value: fv.value, collection: fv.collection, resolvedType: fv.resolvedType });
+    figmaMap.set(`${category}/${fv.name}`, fv);
   }
+
+  const same = (category: string, code: Side, figmaValue: string) =>
+    (code.workedOut ?? normalizeForCompare(category, code.value)) === normalizeForCompare(category, figmaValue);
 
   // Code tokens vs Figma
   for (const [key, code] of codeMap) {
@@ -181,17 +221,28 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
 
     if (!figma) {
       entries.push({ category, name, codeValue: code.value, figmaValue: null, status: "missing_from_figma" });
-    } else {
-      const codeNorm = code.workedOut ?? normalizeForCompare(category, code.value);
-      const figmaNorm = normalizeForCompare(category, figma.value);
-      entries.push({
-        category,
-        name,
-        codeValue: code.value,
-        figmaValue: figma.value,
-        status: codeNorm === figmaNorm ? "match" : "value_mismatch",
-      });
+      continue;
     }
+    const light: TokenDiffEntry = {
+      category,
+      name,
+      codeValue: code.value,
+      figmaValue: figma.value,
+      status: same(category, code, figma.value) ? "match" : "value_mismatch",
+    };
+    let dark: TokenDiffEntry | null = null;
+    if (codeDark && options.mode === undefined) {
+      const mode = darkModeOf(figma);
+      const codeValue = code.dark ?? code;
+      if (mode !== undefined) {
+        const figmaValue = figma.modes![mode];
+        if (!same(category, codeValue, figmaValue)) dark = { category, name, codeValue: codeValue.value, figmaValue, status: "value_mismatch", mode };
+      } else if (code.dark) {
+        dark = { category, name, codeValue: code.dark.value, figmaValue: null, status: "missing_from_figma", mode: "Dark" };
+      }
+    }
+    if (light.status !== "match" || !dark) entries.push(light);
+    if (dark) entries.push(dark);
   }
 
   // Figma tokens not in code
@@ -205,6 +256,25 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
   }
 
   return entries;
+}
+
+/**
+ * The Figma modes diffTokens compared with nothing, by collection: every
+ * mode but the first and the Dark one, and the Dark one too where the code
+ * has no dark theme, or `--mode` read one mode. For the report to name, so
+ * a count of matches isn't read as covering them.
+ */
+export function modesNotCompared(figmaVars: FigmaVariable[], options: TokenDiffOptions = {}): { collection: string; modes: string[] }[] {
+  const codeDark = !!options.codeModes?.includes("Dark");
+  const byCollection = new Map<string, Set<string>>();
+  for (const fv of figmaVars) {
+    if (options.mode !== undefined || !fv.modes) continue;
+    const left = byCollection.get(fv.collection) ?? new Set<string>();
+    const dark = codeDark ? darkModeOf(fv) : undefined;
+    for (const mode of Object.keys(fv.modes)) if (mode !== fv.mode && mode !== dark) left.add(mode);
+    byCollection.set(fv.collection, left);
+  }
+  return [...byCollection].filter(([, modes]) => modes.size).map(([collection, modes]) => ({ collection, modes: [...modes] }));
 }
 
 // --- Component diffing ---

@@ -10,7 +10,7 @@ import { FigmaClient } from "./figma.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, requestLimit } from "./mcp-connect.js";
 import { mapComponent, explainProp, withoutProps, parsePropNames, DEFAULT_MAX_COMBINATIONS } from "./mapper.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
-import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences } from "./diff.js";
+import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences, modesNotCompared } from "./diff.js";
 import { describeFontStandIns, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
@@ -1370,7 +1370,9 @@ program
       }
 
       const codeResult = extractTokens(opts.project as string, source);
-      const tokenDiffs = figmaReadFailed ? [] : diffTokens(codeResult.collections, figmaVars);
+      const tokenOptions = { codeModes: codeResult.modes, mode };
+      const tokenDiffs = figmaReadFailed ? [] : diffTokens(codeResult.collections, figmaVars, tokenOptions);
+      const notCompared = figmaReadFailed ? [] : modesNotCompared(figmaVars, tokenOptions);
 
       // --- Component diff ---
       let componentDiffs: ComponentDiffEntry[] = [];
@@ -1467,6 +1469,8 @@ program
           storybookReadFailed,
           // The components code has that were never compared.
           mappingFailures,
+          // The Figma modes no code value was compared with.
+          modesNotCompared: notCompared,
         }));
       } else {
         if (figmaReadFailed) {
@@ -1483,12 +1487,14 @@ program
         if (mismatched.length) {
           console.log(chalk.bold("\nToken differences:\n"));
           for (const t of mismatched) {
+            const mode = t.mode ? ` (${t.mode})` : "";
             if (t.status === "missing_from_figma") {
-              console.log(`  ${chalk.yellow("+")} ${t.category}/${t.name} ${chalk.dim(`(${t.codeValue})`)} ${chalk.yellow("not in Figma")}`);
+              const where = t.mode ? `no ${t.mode} mode in Figma` : "not in Figma";
+              console.log(`  ${chalk.yellow("+")} ${t.category}/${t.name}${mode} ${chalk.dim(`(${t.codeValue})`)} ${chalk.yellow(where)}`);
             } else if (t.status === "missing_from_code") {
               console.log(`  ${chalk.cyan("-")} ${t.category}/${t.name} ${chalk.dim(`(${t.figmaValue})`)} ${chalk.cyan("not in code")}`);
             } else if (t.status === "value_mismatch") {
-              console.log(`  ${chalk.red("~")} ${t.category}/${t.name} code=${chalk.dim(t.codeValue!)} figma=${chalk.dim(t.figmaValue!)}`);
+              console.log(`  ${chalk.red("~")} ${t.category}/${t.name}${mode} code=${chalk.dim(t.codeValue!)} figma=${chalk.dim(t.figmaValue!)}`);
             }
           }
         } else if (!figmaReadFailed && (figmaVars.length || codeResult.collections.length)) {
@@ -1526,6 +1532,10 @@ program
         if (summary.tokensMissingFromFigma) parts.push(chalk.yellow(`${summary.tokensMissingFromFigma} missing from Figma`));
         if (summary.tokensMissingFromCode) parts.push(chalk.cyan(`${summary.tokensMissingFromCode} missing from code`));
         if (parts.length) console.log(`Tokens: ${parts.join(", ")}`);
+        // So a count of matches isn't read as covering every mode.
+        for (const { collection, modes } of notCompared) {
+          console.log(chalk.dim(`Not compared: the ${modes.join(", ")} ${modes.length === 1 ? "mode" : "modes"} of ${collection}`));
+        }
 
         if (storybook) {
           const cParts: string[] = [];

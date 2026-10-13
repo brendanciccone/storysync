@@ -9,7 +9,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -17,7 +17,7 @@ import type { AddressInfo, Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { useFigma, set, component } from "./figma-standin.js";
+import { useFigma, set, component, startFigmaStandIn } from "./figma-standin.js";
 import type { FileSpec, UseFigmaCall } from "./figma-standin.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
@@ -923,5 +923,38 @@ test("map CLI: a --connect-timeout past Node's longest timer is refused, not fir
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /--connect-timeout can be at most 2147483647 milliseconds/);
     assert.doesNotMatch(r.out, /MCP/);
+  }
+});
+
+test("diff CLI: the code's dark theme is compared with each variable's Dark mode, and a mode compared with nothing is named", async () => {
+  const rgb = (hex: string) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a: 1 });
+  const figma = await startFigmaStandIn({
+    pages: [{ name: "Cover", nodes: [] }],
+    collections: [{
+      name: "Colors",
+      modes: ["Light", "Dark", "High contrast"],
+      variables: [
+        { name: "background", type: "COLOR", values: [rgb("#ffffff"), rgb("#111111"), rgb("#ffffff")] },
+        { name: "foreground", type: "COLOR", values: [rgb("#171717"), rgb("#ededed"), rgb("#000000")] },
+      ],
+    }],
+  });
+  const project = mkdtempSync(join(tmpdir(), "storysync-diff-cli-"));
+  try {
+    mkdirSync(join(project, "app"));
+    writeFileSync(join(project, "app", "globals.css"), ":root { --background: #ffffff; --foreground: #171717; }\n.dark { --background: #0a0a0a; --foreground: #ededed; }\n");
+    const text = await run("diff", "--figma", figma.url, "--file-key", "x", "--project", project, "--strict");
+    assert.equal(text.status, 1, text.out);
+    assert.match(text.out, /~ colors\/background \(Dark\) code=#0a0a0a figma=#111111\n/);
+    assert.doesNotMatch(text.out, /colors\/foreground/);
+    assert.match(text.out, /Tokens: 1 tokens matched, 1 value mismatches\nNot compared: the High contrast mode of Colors\n/);
+
+    const json = JSON.parse((await run("diff", "--figma", figma.url, "--file-key", "x", "--project", project, "--json")).stdout) as { tokens: unknown[]; modesNotCompared: unknown[] };
+    assert.deepEqual(json.tokens, [{ category: "colors", name: "background", codeValue: "#0a0a0a", figmaValue: "#111111", status: "value_mismatch", mode: "Dark" }]);
+    assert.deepEqual(json.modesNotCompared, [{ collection: "Colors", modes: ["High contrast"] }]);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+    figma.server.closeAllConnections();
+    figma.server.close();
   }
 });
