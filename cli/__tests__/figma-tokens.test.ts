@@ -365,6 +365,15 @@ test("figma tokens: a large collection puts each alpha variable in the call of i
   assert.deepEqual(results.filter((r) => r.collection === "Colors").map((r) => r.alpha), [["background 10%"], ["border 50%"], []]);
 });
 
+test("figma tokens: a call changed on its way says it differs from the file figma tokens wrote, and changes nothing", async () => {
+  const planned = planFor(TOKENS);
+  const mock = new MockFigma();
+  const run = await mock.run(planned.code(1).replace('"#e5e5e5"', '"#e5e5e6"'));
+  assert.equal(run.ok, false);
+  assert.match(run.text, /^Error: This call differs from the file storysync figma tokens wrote: its data fails its checksum, SUM\. Nothing was changed\./);
+  assert.deepEqual(mock.variableWrites, []);
+});
+
 test("figma tokens: the build binds by name to the variables two pushes made, one of each", async () => {
   const button = loadTreeFixture("button-icon");
   button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
@@ -429,6 +438,7 @@ test("skills: every skill, the push command and the reference run figma tokens a
   for (const file of ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md", "docs/reference.md"]) {
     const text = readFileSync(join(root, file), "utf8");
     assert.match(text, /destructive 10%/, file);
+    assert.match(text, /figma tokens wrote/, file);
     // The claims probe 7c disproved: a bound variable simply taking its Dark value, and shadows left unbound.
     assert.doesNotMatch(text, /takes its `?Dark`? value wherever a designer switches a frame to the Dark mode\. /, file);
     assert.doesNotMatch(text, /Shadows stay unbound|Shadow colors stay unbound/, file);

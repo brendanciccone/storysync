@@ -510,7 +510,7 @@ A read call reads back every layer of the variants it covers. It carries only th
 
 - Every call can be sent again, and changes only what differs.
 - A build call that throws removes the variants it had added to that set, so none is left loose on the page.
-- Each call carries a checksum of its data, `SUM`, and one of its template, `TSUM`, and checks both before it changes or reads anything. A call that reached Figma with a character changed, as one pasted by hand can, is refused with `This call differs from the file storysync figma code wrote`, and changes nothing. Send the file again exactly as it is.
+- Each call carries a checksum of its data, `SUM`, and one of its template, `TSUM`, and checks both before it changes or reads anything. A call that reached Figma with a character changed, as one pasted by hand can, is refused with `This call differs from the file storysync figma code wrote`, or `figma tokens wrote` for a token call, and changes nothing. Send the file again exactly as it is.
 - `use_figma` takes at most 50,000 characters of code a call, so each build call stays under `--max-chars`.
 - A call that runs too long fails with `Script exceeded time limit`. Run `figma code` again with `--max-nodes 200`.
 - `upload_assets` gives at most 60 URLs a call, so a build call lists at most 60 uploads.
@@ -831,7 +831,7 @@ Commit both files. Use the Storysync version the Action runs, which is the `vers
 
 ### Figma
 
-- **`This call differs from the file storysync figma code wrote`.** A character changed on the way. Nothing was changed: send the file again exactly as it is.
+- **`This call differs from the file storysync figma code wrote`** (or `figma tokens wrote`). A character changed on the way. Nothing was changed: send the file again exactly as it is.
 - **`Script exceeded time limit`.** Run `figma code` again with `--max-nodes 200`, and send the new plan from its first call.
 - **`diff` returns 401 or 403.** Figma's remote MCP server needs OAuth. Use the skill's audit.
 - **A score dropped after an upgrade.** Element trees score every element, not just the outer one. See [Root-only snaps and readbacks](#root-only-snaps-and-readbacks).

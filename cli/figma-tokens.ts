@@ -270,7 +270,7 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
       const removing = p === 0 && remove ? `, and remove ${remove.map((r) => `${collection.name}/${r}`).join(", ")}, as the user confirmed` : "";
       const description = `Create or update the ${collection.name} variable collection${span}, ${modes}${removing}`;
       const file = `calls/${pad(seq)}-variables-${pageSlug(collection.name)}.js`;
-      const code = `// storysync figma tokens, call ${pad(seq)}: the ${collection.name} variables. Send this file unchanged as use_figma's code.\n${callCode([["DATA", data]], template)}`;
+      const code = `// storysync figma tokens, call ${pad(seq)}: the ${collection.name} variables. Send this file unchanged as use_figma's code.\n${callCode([["DATA", data]], template, "figma tokens")}`;
       assertCompiles(code, file, "variables", template);
       calls.push({
         seq, kind: "variables", collection: collection.name, part: [p + 1, parts], variables: vars.length, ...(alpha.length ? { alphas: alpha.length } : {}),

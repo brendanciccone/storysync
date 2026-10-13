@@ -106,7 +106,7 @@ npx storysync figma tokens --remove Radius/DEFAULT
 
    They remove those alone, and only a stale variable or a conflicting one, never a token's own, then push each token as before, creating one whose conflicting variable they removed. For those the user keeps, say in the summary that they stay.
 
-   A call that fails with `Script exceeded time limit` holds too many variables for one call: run `figma tokens` again with `--max-variables 20`, and send the new calls from the first. A large collection is split into calls of 40 variables by default, each alpha variable in the call of its token, the first listing what is stale. For `This call differs from the file storysync figma code wrote`, a character changed on the way and nothing was changed: send the file again exactly as it is.
+   A call that fails with `Script exceeded time limit` holds too many variables for one call: run `figma tokens` again with `--max-variables 20`, and send the new calls from the first. A large collection is split into calls of 40 variables by default, each alpha variable in the call of its token, the first listing what is stale. For `This call differs from the file storysync figma tokens wrote`, a character changed on the way and nothing was changed: send the file again exactly as it is.
 
 4. **Verify.** Each response's `variables` is how many its collection holds after the call: its tokens, less those left out, its alpha variables, and any stale variable the user kept. Confirm each collection has them, with a `Dark` mode where its tokens have dark values or a `darkError` says why not. If a call failed, deal with its error and send it again.
 
