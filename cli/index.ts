@@ -17,7 +17,7 @@ import { describeFontStandIns, describeOpenedOverlays, describeVariantStories, r
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
-import { DEFAULT_READ_LIMIT, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
+import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
 import { loadPlanResults } from "./figma-results.js";
@@ -472,7 +472,7 @@ program
   .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
-  .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.4.0 did: for a push through the skill's root-only templates")
+  .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.3.0 did: for a push through the skill's root-only templates")
   .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
   .option("--no-open-overlays", "Measure an overlay's closed trigger as the story renders it, rather than opening the overlay (by its open or defaultOpen arg, or by clicking, hovering over, focusing or right-clicking the trigger) and measuring its content")
   .option("--stories <pairs>", "Comma-separated component=storyId pairs, each component by its ID or title and each story by its ID: the component's story, in place of the one snap picks, which measures every variant no other story's own args are for, or every variant where the story ends in ! (ui-base-toggle=ui-base-toggle--default!); a pair for a component the run doesn't measure is checked and left out (also given more than once)", collect)
@@ -650,7 +650,7 @@ program
   .option("--tolerance <px>", "Allowed difference for lengths, in pixels", "0.5")
   .option("--max-age <duration>", "Warn when the snap is older than this (e.g. 30m, 2h, 7d)", "2h")
   .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out of the score, such as ones not pushed; the output names them")
-  .option("--roots-only", "Score each variant by its outer element alone, as 0.4.0 did, for comparison with an element-tree score")
+  .option("--roots-only", "Score each variant by its outer element alone, as 0.3.0 did, for comparison with an element-tree score")
   .option("--min-fidelity <pct>", "Exit with code 1 when the score is below this percentage: element fidelity where snap measured element trees, else the share of properties; a run that scored nothing fails it too")
   .option("--json", "Output JSON instead of formatted text")
   .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
@@ -1033,8 +1033,10 @@ figma
         readLimit,
         minify: opts.minify !== false,
       });
+      // What the push costs the agent, in tokens: the skills show it and ask before sending.
+      const estimate = estimatePush(plan);
       if (json) {
-        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, warnings }));
+        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, warnings, estimate }));
         return;
       }
       const where = shownPath(planPath);
@@ -1053,6 +1055,7 @@ figma
         console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from} (${layers})`));
       }
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
+      console.log(`\n${describeEstimate(estimate)}`);
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
     } catch (err) {
       reportError(err, json);

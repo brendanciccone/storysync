@@ -115,10 +115,11 @@ test("CLI: snap refuses a --stories pair it can't read before connecting to Stor
   }
 });
 
-test("CLI: the README's verify options say what verify --help says", () => {
-  // The README's block had --strict and --strict-measured as they read
-  // before readback checks and placeholders, so it told CI less than the
-  // flags fail on. Each option's text, whitespace aside, must be the help's.
+test("CLI: the reference's verify options say what verify --help says", () => {
+  // The README's block, now in docs/reference.md, had --strict and
+  // --strict-measured as they read before readback checks and placeholders,
+  // so it told CI less than the flags fail on. Each option's text,
+  // whitespace aside, must be the help's.
   const options = (block: string): Map<string, string> => {
     const out = new Map<string, string>();
     let flag = "";
@@ -136,12 +137,12 @@ test("CLI: the README's verify options say what verify --help says", () => {
     for (const [key, text] of out) out.set(key, text.replace(/\s+/g, " ").trim());
     return out;
   };
-  const readme = readFileSync(join(__dirname, "..", "..", "..", "README.md"), "utf8");
-  const section = readme.slice(readme.indexOf("### `storysync verify`"));
+  const reference = readFileSync(join(__dirname, "..", "..", "..", "docs", "reference.md"), "utf8");
+  const section = reference.slice(reference.indexOf("### `storysync verify`"));
   const block = /```text\n(Options:[\s\S]*?)```/.exec(section)?.[1] ?? "";
   const documented = options(block);
   const help = options(run("verify", "--help"));
   help.delete("--help");
-  assert.deepEqual([...documented.keys()], [...help.keys()], "the README lists other options than verify --help, or in another order");
-  for (const [flag, text] of help) assert.equal(documented.get(flag), text, `the README describes ${flag} otherwise than verify --help`);
+  assert.deepEqual([...documented.keys()], [...help.keys()], "the reference lists other options than verify --help, or in another order");
+  for (const [flag, text] of help) assert.equal(documented.get(flag), text, `the reference describes ${flag} otherwise than verify --help`);
 });

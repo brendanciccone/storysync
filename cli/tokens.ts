@@ -99,7 +99,7 @@ export interface BaseDefault {
  * Reads `--source`, as tokens and diff take it: one of TOKEN_SOURCES, or
  * undefined when it was left out or is `auto`, for the source to be
  * detected. `auto` is the drift-check action's token_source default, which
- * the README has action users pass on to `tokens --source` for their
+ * docs/reference.md has action users pass on to `tokens --source` for their
  * baseline. Anything else throws, naming the sources there are.
  * extractTokens has no case for it and detects a source instead, so
  * `--source scss` read whatever the project had first, a Tailwind config
