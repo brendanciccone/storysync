@@ -315,7 +315,8 @@ function compileVariant(
     if (style.rt) {
       // Figma turns a layer about its top left corner, and x and y are where
       // that corner goes: placed so the box turns about its center, as CSS
-      // turns it (tree-types builtTurn).
+      // turns it (tree-types builtTurn). In the flow, auto layout puts it
+      // there, and the build checks it did (checkLayout).
       const t = (style.rt * Math.PI) / 180;
       const [cx, cy, w, h] = [box[0] + box[2] / 2, box[1] + box[3] / 2, box[2], box[3]];
       box[0] = round2(cx - (Math.cos(t) * w) / 2 - (Math.sin(t) * h) / 2);

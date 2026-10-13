@@ -53,9 +53,10 @@
 //
 // What it refuses rather than guess, throwing a "mock-figma:" error from the
 // layout, so the call that set it up fails as a build Figma would collapse
-// should: a wrapping auto layout; a group, or a turned layer, in an auto
-// layout's flow (Figma lays a turned one out by its turned box, the sixth
-// probe saw, fixtures/figma-tsum-probe.json call 1); and FILL
+// should: a wrapping auto layout; a group in an auto layout's flow, or a
+// turned layer there that fills, unless turned 180 degrees (a turned layer
+// is laid out by its turned box, as the sixth and seventh probes saw,
+// fixtures/figma-tsum-probe.json and figma-probe-7.json call 1); and FILL
 // on a text node that sizes itself on that axis (WIDTH_AND_HEIGHT, or HEIGHT
 // for its height) other than through layoutSizingHorizontal, which the spike
 // saw switch it to HEIGHT; the figma-use skill documents Figma ignoring the
@@ -1150,7 +1151,11 @@ function layoutTree(node: Node): void {
   const lead = { x: pl, y: pt };
   const trail = { x: pr, y: pb };
   const flow = node.kids.filter((k) => k.inFlow());
-  const size = (k: Node, axis: Axis) => k[SIZE[axis]];
+  // A turned layer takes the room its turned box does, and is placed so
+  // that box starts where its slot does (the sixth probe's call 1, c and
+  // d; the seventh's, at 180 degrees and 90).
+  const size = (k: Node, axis: Axis) => (k.rot ? turnedSpan(k)[SIZE[axis]] : k[SIZE[axis]]);
+  const lag = (k: Node, axis: Axis) => (k.rot ? -turnedSpan(k)[axis] : 0);
   const set = (k: Node, axis: Axis, value: number) => {
     k[SIZE[axis]] = r2(Math.max(0.01, value));
     if (k.type === "TEXT" && axis === "x" && k.textAutoResize === "HEIGHT") sizeText(k);
@@ -1159,7 +1164,9 @@ function layoutTree(node: Node): void {
   const stretches = (k: Node) => k.layoutAlign === "STRETCH";
   for (const k of flow) {
     if (k.type === "GROUP") unmodeled(k, "a group in an auto layout's flow", "nothing the templates build puts one there");
-    if (k.rot) unmodeled(k, "a turned layer in an auto layout's flow", "Figma lays it out by its turned box, and the build turns only layers out of the flow");
+    if (k.rot && Math.abs(k.rot) !== 180 && (grows(k) || stretches(k))) {
+      unmodeled(k, "FILL on a layer turned other than 180 degrees", "the seventh probe filled one turned 180, its turned box its own, and tried no other");
+    }
     if (stretches(k) && node.counterSizing === "AUTO" && node.doc.options.fillAcrossHug === "refuse") {
       unmodeled(k, "FILL across a parent that hugs that axis", "this MockFigma was made with fillAcrossHug 'refuse', for a build that must not rely on it");
     }
@@ -1197,12 +1204,21 @@ function layoutTree(node: Node): void {
   else if (node.primaryAlign === "MAX") at += room - total - spacing * (flow.length - 1);
   else if (node.primaryAlign === "SPACE_BETWEEN" && flow.length > 1) gap = (room - total) / (flow.length - 1);
   for (const k of flow) {
-    k[main] = r2(at);
+    k[main] = r2(at + lag(k, main));
     at += size(k, main) + gap;
     const free = across - size(k, cross);
     const align = stretches(k) ? "MIN" : node.counterAlign;
-    k[cross] = r2(lead[cross] + (align === "CENTER" ? free / 2 : align === "MAX" ? free : 0));
+    k[cross] = r2(lead[cross] + (align === "CENTER" ? free / 2 : align === "MAX" ? free : 0) + lag(k, cross));
   }
+}
+
+/** Where a turned node's corners reach from its top left corner, least x and y, and the width and height they span. */
+function turnedSpan(n: Node): { x: number; y: number; w: number; h: number } {
+  const [[a, b], [c, d]] = turnMatrix(n.rot, 0, 0);
+  const xs = [0, a * n.w, b * n.h, a * n.w + b * n.h];
+  const ys = [0, c * n.w, d * n.h, c * n.w + d * n.h];
+  const [x, y] = [Math.min(...xs), Math.min(...ys)];
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
 // --- Handles: what scripts see ----------------------------------------------
@@ -1545,8 +1561,9 @@ const PROPS: Record<string, Prop> = {
     types: SCENE,
     get: (n) => n.rot,
     set: (n, v) => {
+      // Figma keeps 180 and -180 as given (the seventh probe).
       const deg = finite("rotation", v);
-      n.rot = ((((deg + 180) % 360) + 360) % 360) - 180 || 0;
+      n.rot = Math.abs(deg) <= 180 ? deg || 0 : ((((deg + 180) % 360) + 360) % 360) - 180 || 0;
       changed(n);
     },
   },

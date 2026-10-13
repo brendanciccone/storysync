@@ -1937,3 +1937,20 @@ F6-7. **A turned icon's shapes are scored** (10.2, F6-3). verify left them
    is built unturned`. The mock's absoluteTransform and absoluteBoundingBox
    now compose each frame's turn from the page down, as Figma's do, so a
    turned frame turns what it holds.
+F6-8. **A turn in the flow is built where the turned box is the node's
+   own** (F6-3). The seventh probe (2026-10-13, same file and page,
+   `fixtures/figma-probe-7.json`, `spikes/figma-probe-7-*.js`) laid out
+   layers turned in auto layout as the build sets them, rotation then
+   sizing: turned 180 degrees in a row, a column and a hugging row, filling
+   its row, resized after turning, and a hugging text, and a 16 square
+   turned 90, each took the room and place its unturned box would, the
+   next layer after it where CSS puts it; a 20 by 6 bar turned 90 took 6,
+   as the sixth probe's 45 took 14.14. So `unturnedBecause` builds a turn
+   in the flow at 180 degrees, and at 90 where the box is square: a
+   chevron's `rotate-180` in an open state, a square icon's `rotate-90`.
+   Other turns in the flow keep their own box, unturned, and the caveat.
+   The record's x and y are the turned corner, as out of the flow, which
+   auto layout puts there, and checkLayout finds it. The mock lays a
+   turned layer in the flow out by its turned box, any angle, replaying
+   both probes; it refuses one that fills at other than 180 degrees,
+   which no probe tried. Figma keeps a rotation of 180 or -180 as given.

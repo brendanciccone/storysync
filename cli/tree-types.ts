@@ -551,14 +551,17 @@ export function transformedAround(k: string, get: (key: string) => TreeNode | un
  * Why the build leaves a node's turn in the plane (turnOf) out, or null
  * where it builds it: a transform around it, built untransformed, which
  * would leave the node at another net turn than the browser's; children,
- * measured turned as their page boxes; or a place in the flow, where
- * Figma's auto layout places a turned layer by its turned box, which CSS
- * doesn't (the sixth probe).
+ * measured turned as their page boxes; or a place in the flow where its
+ * turned box isn't its own. Figma's auto layout places a turned layer by
+ * its turned box, where CSS keeps the unturned one's place (the sixth
+ * probe); turned 180 degrees, or 90 when square, the two are one, and
+ * Figma lays it out as it would unturned (the seventh probe).
  */
 export function unturnedBecause(n: TreeNode, at: TurnContext): string | null {
   if (at.transformed) return "a transform around it is built untransformed";
   if (at.children) return "its children are measured turned";
-  if (!n.abs) return "Figma's auto layout would place it by its turned box";
+  const turn = Math.abs(turnOf(n.tf) ?? 0);
+  if (!n.abs && turn !== 0 && turn !== 180 && !(turn === 90 && n.box[2] === n.box[3])) return "Figma's auto layout would place it by its turned box";
   return null;
 }
 
@@ -566,7 +569,8 @@ export function unturnedBecause(n: TreeNode, at: TurnContext): string | null {
  * The turn the build gives a node in Figma, clockwise in degrees as CSS
  * says it, or null where it builds the node unturned at its own size: a
  * turn in the plane (turnOf) the build can make (unturnedBecause), of a
- * childless node out of the flow, with no transform around it. Figma turns
+ * childless node with no transform around it, out of the flow, or in it
+ * turned 180 degrees, or 90 when square. Figma turns
  * a layer about its top left corner, and the build places it so that it
  * turns about its center, as CSS's default origin does; snap's box is the
  * node's own size centered where it drew, so any origin comes out the

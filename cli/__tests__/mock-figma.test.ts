@@ -308,7 +308,7 @@ test("auto layout: an ABSOLUTE child keeps its place and takes no space; a hidde
   assert.deepEqual((await layout(HUG, [[20, 20]], "kids[0].x = 50;")).kids[0], [0, 0, 20, 20]);
 });
 
-test("rotation: a layer turns about its top left corner, as the sixth probe saw Figma turn one, and in an auto layout's flow it is refused", async () => {
+test("rotation: a layer turns about its top left corner, as the sixth probe saw Figma turn one", async () => {
   // Probe call 1's absolute, free and resized layers, replayed (fixtures/figma-tsum-probe.json).
   const probe = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-tsum-probe.json`, "utf8")).call1.rot as Record<string, { x: number; y: number; w: number; h: number; rot: number; rt: number[][]; abb: Record<string, number> }>;
   const figma = new MockFigma();
@@ -328,11 +328,58 @@ test("rotation: a layer turns about its top left corner, as the sixth probe saw 
     if (a && typeof a === "object") for (const k of Object.keys(b as object)) close((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${where}.${k}`);
   };
   for (const key of ["a", "b", "e", "g", "h"]) close(got[key], probe[key], key);
-  // In the flow Figma lays a turned layer out by its turned box (probe c, d); the mock refuses.
-  assert.match(await fails(figma, `
-    const auto = figma.createFrame(); auto.layoutMode = 'HORIZONTAL';
-    const c = figma.createFrame(); auto.appendChild(c); c.rotation = -45;
-    return c.x;`), /a turned layer in an auto layout's flow is not modeled/);
+});
+
+test("rotation: in an auto layout's flow a turned layer takes its turned box's room, as the sixth and seventh probes saw Figma lay one out", async () => {
+  type Seen = { x: number; y: number; w: number; h: number; rot: number; rt: number[][]; sizing?: string[] };
+  const close = (a: unknown, b: unknown, where: string): void => {
+    if (typeof a === "number") return assert.ok(Math.abs(a - (b as number)) < 0.01, `${where}: ${a}, not ${b}`);
+    if (a && typeof a === "object") for (const k of Object.keys(b as object)) close((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${where}.${k}`);
+  };
+  // The sixth probe's c and d: turned 45 degrees, a 10 square takes 14.14.
+  const sixth = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-tsum-probe.json`, "utf8")).call1.rot as Record<string, Seen>;
+  const figma = new MockFigma();
+  const info = "const info = (n) => ({ x: n.x, y: n.y, w: n.width, h: n.height, rot: n.rotation, rt: n.relativeTransform, sizing: [n.layoutSizingHorizontal, n.layoutSizingVertical] });";
+  const c45 = await ok(figma, `${info}
+    const auto = figma.createFrame(); auto.resize(120, 40); auto.layoutMode = 'HORIZONTAL'; auto.primaryAxisSizingMode = 'FIXED'; auto.counterAxisSizingMode = 'FIXED'; auto.itemSpacing = 0;
+    const box = () => { const n = figma.createFrame(); n.resize(10, 10); auto.appendChild(n); return n; };
+    const c = box(); c.rotation = -45;
+    const d = box();
+    return { c: info(c), d: info(d) };`) as Record<string, Seen>;
+  for (const key of ["c", "d"]) {
+    const { x, y, w, h, rot, rt } = sixth[key];
+    close(c45[key], { x, y, w, h, rot, rt }, key);
+  }
+  // The seventh probe's call 1, replayed: at 180 degrees, and 90 when square,
+  // in a row, a column, a hugging row, filling, and resized after turning,
+  // each layer laid out where its unturned box would be; at 90, a 20 by 6
+  // bar takes 6.
+  const seventh = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-7.json`, "utf8")).call1 as Record<string, Record<string, Seen>>;
+  const got = await ok(new MockFigma(), `${info}
+    const row = (mode, w, h, hug) => { const f = figma.createFrame(); f.layoutMode = mode; f.itemSpacing = 4; f.counterAxisAlignItems = 'CENTER'; f.resize(w, h);
+      f.primaryAxisSizingMode = hug ? 'AUTO' : 'FIXED'; f.counterAxisSizingMode = hug ? 'AUTO' : 'FIXED'; return f; };
+    const box = (parent, w, h, rotation, sizing) => { const n = figma.createFrame(); n.resize(w, h); parent.appendChild(n);
+      if (rotation !== undefined) n.rotation = rotation; n.layoutSizingHorizontal = sizing || 'FIXED'; n.layoutSizingVertical = 'FIXED'; return n; };
+    const r1 = row('HORIZONTAL', 200, 40), r2 = row('VERTICAL', 100, 100), r3 = row('HORIZONTAL', 50, 50, true), r4 = row('HORIZONTAL', 200, 40), r5 = row('HORIZONTAL', 200, 40), r7 = row('HORIZONTAL', 200, 40);
+    const p = box(r1, 20, 6, -180), q = box(r1, 10, 10), s = box(r1, 16, 16, -90), u = box(r1, 10, 10);
+    const p2 = box(r2, 20, 6, 180), q2 = box(r2, 10, 10);
+    const p3 = box(r3, 20, 6, -180), q3 = box(r3, 10, 10);
+    const p4 = box(r4, 20, 6, -180, 'FILL'), q4 = box(r4, 10, 10);
+    const p5 = box(r5, 20, 6, -180); p5.resize(24, 8); const q5 = box(r5, 10, 10);
+    const p7 = box(r7, 20, 6, -90), q7 = box(r7, 10, 10);
+    return { row: { p: info(p), q: info(q), s: info(s), u: info(u) }, column: { p: info(p2), q: info(q2) }, hug: { frame: info(r3), p: info(p3), q: info(q3) },
+      fill: { p: info(p4), q: info(q4) }, resized: { p: info(p5), q: info(q5) }, oblong90: { p: info(p7), q: info(q7) } };`) as Record<string, Record<string, Seen>>;
+  for (const [where, layers] of Object.entries(got)) {
+    for (const [key, layer] of Object.entries(layers)) {
+      const { x, y, w, h, rot, rt } = seventh[where][key];
+      close(layer, key === "frame" ? { w, h } : { x, y, w, h, rot, rt }, `${where}.${key}`);
+    }
+  }
+  // Filling at another turn is refused rather than guessed.
+  assert.match(await fails(new MockFigma(), `
+    const auto = figma.createFrame(); auto.layoutMode = 'HORIZONTAL'; auto.primaryAxisSizingMode = 'FIXED'; auto.resize(100, 20);
+    const c = figma.createFrame(); auto.appendChild(c); c.rotation = -90; c.layoutSizingHorizontal = 'FILL';
+    return c.x;`), /FILL on a layer turned other than 180 degrees is not modeled/);
 });
 
 test("rotation: a frame's turn turns what it holds on the page, a group's children included, as an imported icon's shapes", async () => {

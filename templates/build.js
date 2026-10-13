@@ -337,9 +337,10 @@ const style = async (n, rec, parent, root) => {
   if (root) return;
   const auto = parent.layoutMode !== 'NONE';
   if (auto) n.layoutPositioning = st.a ? 'ABSOLUTE' : 'AUTO';
-  // A turn (`rt`, Figma's rotation), out of the flow, before the place:
-  // Figma turns a layer about its top left corner, which x and y put where
-  // emit computed.
+  // A turn (`rt`, Figma's rotation), before the place: Figma turns a layer
+  // about its top left corner, which x and y put where emit computed, or
+  // auto layout puts where its turned box starts, the box its unturned one
+  // would take, turned 180 degrees or 90 when square.
   if ((st.rt || 0) !== n.rotation) n.rotation = st.rt || 0;
   if (auto && !st.a) {
     n.layoutSizingHorizontal = SIZING[sizing[0]];

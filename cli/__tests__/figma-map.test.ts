@@ -153,17 +153,22 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
   ]);
 });
 
-test("nodeStyle: a turn in the plane of a childless node out of the flow, nothing transformed around it, is built as Figma's rotation; any other transform is named", () => {
+test("nodeStyle: a turn in the plane of a childless node, nothing transformed around it, out of the flow or in it where its turned box is its own, is built as Figma's rotation; any other transform is named", () => {
   // The fifth push's Tooltip arrow: Tailwind's rotate-45, out of the flow.
   const arrow = (fields: Partial<TreeNode>) => frame({ k: "div", abs: 1, bg: "#0a0a0a", r: 2, box: [45.5, 21, 10, 10], tf: "rotate: 45deg", approx: "transform", ...fields });
   const c = ctx();
   assert.equal(nodeStyle(arrow({}), c).rt, -45);
   assert.equal(nodeStyle(arrow({ tf: "matrix(0, 1, -1, 0, 3, 4)" }), c).rt, -90);
   assert.equal(nodeStyle(arrow({ tf: "matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0); rotate: -0.5turn" }), c).rt, 135);
+  // In the flow, a chevron's rotate-180, and a square icon's rotate-90:
+  // auto layout lays out each turned box where the unturned one would go.
+  assert.equal(nodeStyle(arrow({ abs: undefined, tf: "rotate: 180deg", box: [0, 0, 16, 6] }), c).rt, -180);
+  assert.equal(nodeStyle(arrow({ abs: undefined, tf: "rotate: -90deg", box: [0, 0, 16, 16] }), c).rt, 90);
   assert.deepEqual(c.notBuilt, []);
   const leaf = { children: 0, transformed: false };
   const cases: [Partial<TreeNode>, MapContext["around"], string][] = [
     [{ abs: undefined }, leaf, "its own box, unturned, as Figma's auto layout would place it by its turned box"],
+    [{ abs: undefined, tf: "rotate: 90deg", box: [0, 0, 16, 6] }, leaf, "its own box, unturned, as Figma's auto layout would place it by its turned box"],
     [{}, { children: 1, transformed: false }, "its own box, unturned, as its children are measured turned"],
     // Inside a node turned or scaled, which is built untransformed: turned
     // on its own, it would show at another net turn than the browser's.

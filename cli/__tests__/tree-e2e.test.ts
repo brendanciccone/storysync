@@ -584,6 +584,37 @@ test("tree e2e: a turned icon's shapes are scored where it is built turned, and 
   }
 });
 
+test("tree e2e: an icon in the flow turned 180 degrees, or 90 as it is square, is built turned in its place, and verifies with its turn and shapes", async () => {
+  // A chevron's rotate-180 in an open state, on the Card's bell, 24 square,
+  // in its row: Figma's auto layout lays a turned layer out by its turned
+  // box, which at these turns is where the unturned one goes (the seventh
+  // probe). snap measures the shapes turned.
+  for (const [turn, shape] of [
+    [180, ([x, y, w, h]: number[]) => [24 - x - w, 24 - y - h, w, h]],
+    [90, ([x, y, w, h]: number[]) => [24 - y - h, x, h, w]],
+  ] as const) {
+    const snap = asSnap(loadTreeFixture("card"));
+    const svg = (snap.components[0] as TreeComponent).tree!.base.find((n) => n.k === "card-content/div/svg")!;
+    Object.assign(svg, { tf: `rotate: ${turn}deg`, approx: "transform", shapes: svg.shapes!.map(shape) });
+    const p = await push(snap);
+    try {
+      const slug = snap.components[0].variants[0].slug;
+      assert.equal(layerOf(p.mock, slug, "card-content/div/svg").rotation, -turn);
+      assert.ok(!p.warnings.some((w) => /transform|so it is built without auto layout/.test(w)), p.warnings.join("\n"));
+      // Its row stayed in auto layout: the build found the icon where its turned record has it.
+      for (const call of p.plan.calls.filter((c) => c.kind === "build")) {
+        const result = JSON.parse(readFileSync(join(dirname(p.planPath), call.result), "utf8")) as { sets: { absoluteContainers: unknown[] }[] };
+        assert.deepEqual(result.sets.flatMap((set) => set.absoluteContainers), [], `${turn}`);
+      }
+      const { json } = await verifyPlan(p);
+      assert.equal(json.elementFidelity, 1, `${turn}`);
+      assert.deepEqual((json.unscorable as { key: string }[]).filter((u) => u.key === "card-content/div/svg"), [], `${turn}`);
+    } finally {
+      cleanup(p);
+    }
+  }
+});
+
 test("tree e2e: a Select snap clicked open is built from its listbox with no item hovered, and verifies by element", async () => {
   const select = asSnap(loadTreeFixture("select"));
   const [variant] = select.components[0].variants;
