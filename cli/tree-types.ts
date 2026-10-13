@@ -529,17 +529,24 @@ const sides = <T>(value: Sides<T>): [T, T, T, T] =>
 const alphaOf = (hex: string): number => (hex.length === 9 ? parseInt(hex.slice(7), 16) : 255);
 
 /**
- * Whether a border the background stops at (`bgc`, as shadcn/ui's Button's
- * `bg-clip-padding`) draws the same as a Figma INSIDE stroke over a fill
- * that runs under it: where there is no background to show under the
+ * Whether a border paints nothing: it takes its space, but every side it
+ * has a width on is transparent, as shadcn/ui's Button's
+ * `border-transparent`.
+ */
+export function borderPaintsNothing(n: TreeNode): boolean {
+  if (!n.bd) return false;
+  const widths = sides(n.bd.w);
+  const colors = sides(n.bd.c);
+  const drawn = [0, 1, 2, 3].filter((i) => widths[i] > 0);
+  return drawn.length > 0 && drawn.every((i) => colors[i] === null || alphaOf(colors[i]!) === 0);
+}
+
+/**
+ * Whether an INSIDE stroke over a fill that runs under it draws a border the
+ * background stops at (`bgc`, as shadcn/ui's Button's `bg-clip-padding`)
+ * as the browser does: where there is no background to show under the
  * border, or every side the border draws is solid and opaque, so it hides
- * the background beneath it. Such a frame is built at its border box with
- * the stroke INSIDE and its corner radius the browser's own, which binds to
- * its radius token. Anywhere else, a transparent border over a background
- * first, the background stopping short of the border shows, and the frame
- * is its padding box with the stroke OUTSIDE (figma-map.ts), its radius the
- * inner one CSS draws the background with. verify takes either where this
- * holds, since both draw alike.
+ * the background beneath it.
  */
 export function insideStrokeDrawsBorder(n: TreeNode): boolean {
   if (!n.bgc || !n.bd) return false;
@@ -548,6 +555,25 @@ export function insideStrokeDrawsBorder(n: TreeNode): boolean {
   const colors = sides(n.bd.c);
   const styles = sides(n.bd.s);
   return [0, 1, 2, 3].every((i) => !(widths[i] > 0) || (styles[i] === "solid" && colors[i] !== null && alphaOf(colors[i]!) === 255));
+}
+
+/**
+ * Whether a border the background stops at (`bgc`) is built INSIDE at the
+ * border box all the same, its corner radius the browser's own, which binds
+ * to its radius token: where an INSIDE stroke draws it as the browser does
+ * (insideStrokeDrawsBorder), or where it paints nothing
+ * (borderPaintsNothing), a clear ring. There the fill runs to the border
+ * box, under the clear stroke, a border's width past where the browser
+ * stops it: Figma has no fill inset from its frame's edge, and this keeps
+ * the frame the box the class rounds, at its token's radius, which figma
+ * code says. Anywhere else, a translucent, dashed or partly transparent
+ * border over a background, the frame is its padding box with the stroke
+ * OUTSIDE (figma-map.ts), its radius the inner one CSS draws the
+ * background with. verify takes either where this holds, so a readback
+ * from before it still scores.
+ */
+export function borderBuiltInside(n: TreeNode): boolean {
+  return insideStrokeDrawsBorder(n) || (Boolean(n.bgc) && borderPaintsNothing(n));
 }
 
 /** Degrees in a CSS angle, or null for something else. */

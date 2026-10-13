@@ -68,14 +68,14 @@ test("nodeStyle: a background color under gradients comes first, the CSS top lay
   assert.deepEqual(c.notBuilt.map((n) => n.what), ["background radial-gradient(circle, #000, #fff)"]);
 });
 
-test("nodeStyle: a border is an INSIDE stroke; one the background stops at is OUTSIDE, the frame its padding box", () => {
+test("nodeStyle: a border is an INSIDE stroke; one the background stops at, which shows what is behind it, is OUTSIDE, the frame its padding box", () => {
   const inside = nodeStyle(frame({ bd: { w: 1, s: "solid", c: "#e5e5e5" }, r: 8 }), ctx());
   assert.deepEqual(inside.s, { w: 1, p: "#e5e5e5" });
   assert.equal(inside.r, 8);
-  // shadcn/ui's Button: a transparent 1px border and bg-clip-padding.
-  const button = frame({ bd: { w: 1, s: "solid", c: null }, bgc: "padding-box", bg: "#171717", r: 8, box: [0, 0, 206.8, 36] });
+  // A translucent 1px border and bg-clip-padding.
+  const button = frame({ bd: { w: 1, s: "solid", c: "#e5e5e580" }, bgc: "padding-box", bg: "#171717", r: 8, box: [0, 0, 206.8, 36] });
   const outside = nodeStyle(button, ctx());
-  assert.deepEqual(outside.s, { w: 1, p: ["#000000", 0], o: 1 });
+  assert.deepEqual(outside.s, { w: 1, p: ["#e5e5e5", 0.502], o: 1 });
   assert.equal(outside.r, 7);
   assert.deepEqual(outsideInsets(button), [1, 1, 1, 1]);
   assert.deepEqual(figmaSize(button), [204.8, 34]);
@@ -97,18 +97,43 @@ test("nodeStyle: a border the background stops at is INSIDE where that draws the
     assert.deepEqual([style.r, style.rv], [8, "md"]);
     assert.deepEqual([outsideInsets(node), figmaSize(node)], [[0, 0, 0, 0], [66.63, 36]]);
     assert.deepEqual(c.unbound.filter((u) => u.property === "radius"), []);
+    assert.deepEqual(c.notBuilt, []);
   }
-  // Its default variant: a transparent border over its background, which
-  // stops 1px inside it, as Figma's fill can't. Built OUTSIDE at the
-  // padding box, radius 7, which no token holds: said, never silent.
-  for (const bd of [{ w: 1, s: "solid", c: null }, { w: 1, s: "solid", c: "#e5e5e580" }, { w: 1, s: "dashed", c: "#e5e5e5" }] as const) {
+  // A translucent, dashed or partly transparent border over the
+  // background shows what is behind the element where the background
+  // stops, as Figma's fill under an INSIDE stroke can't. Built OUTSIDE at
+  // the padding box, radius 7, which no token holds: said, never silent.
+  const borders: [TreeNode["bd"], string][] = [
+    [{ w: 1, s: "solid", c: "#e5e5e580" }, "translucent"], [{ w: 1, s: "dashed", c: "#e5e5e5" }, "dashed"],
+    [{ w: 1, s: "solid", c: ["#e5e5e5", null, "#e5e5e5", null] }, "partly transparent"],
+  ];
+  for (const [bd] of borders) {
     const c = ctx(new Binder(SHADCN_TOKENS));
-    const style = nodeStyle(button({ bd: { ...bd }, bg: "#171717" }), c);
+    const style = nodeStyle(button({ bd, bg: "#171717" }), c);
     assert.deepEqual([style.s!.o, style.r, style.rv], [1, 7, undefined], JSON.stringify(bd));
     assert.deepEqual(c.unbound.filter((u) => u.property === "radius"), [{
       key: "", property: "radius", value: "8", candidates: ["md"],
       why: "its background stops inside a border that would show it (background-clip padding-box), so the frame is built as the padding box, at radius 7, which no token holds",
     }]);
+  }
+});
+
+test("nodeStyle: a background inside a border that paints nothing is built at the border box, its radius bound, the fill under the clear ring and said", () => {
+  // The fifth live push's Button, default, secondary and destructive: a
+  // fill under a 1px transparent border, bg-clip-padding, rounded-md. 48 of
+  // its 96 variants were built OUTSIDE at the padding box, radius 7, bound
+  // to nothing. The border draws nothing, so the frame is the border box
+  // the class rounds, radius 8, bound to md; Figma's fill, which no stroke
+  // insets, runs under the clear ring, and figma code says so.
+  const button = frame({ k: "", bd: { w: 1, s: "solid", c: null }, bgc: "padding-box", bg: "#171717", r: 8, box: [0, 0, 66.63, 36], cls: ["bg-primary", "border-transparent", "rounded-md"] });
+  for (const node of [button, frame({ ...button, bd: { w: [1, 0, 1, 0], s: "solid", c: null } })]) {
+    const c = ctx(new Binder(SHADCN_TOKENS));
+    const style = nodeStyle(node, c);
+    assert.deepEqual([style.s, style.r, style.rv], [{ w: node.bd!.w, p: ["#000000", 0] }, 8, "md"]);
+    assert.deepEqual(style.f, [["#171717", 1, "primary"]]);
+    assert.deepEqual([outsideInsets(node), figmaSize(node)], [[0, 0, 0, 0], [66.63, 36]]);
+    assert.deepEqual(c.unbound, []);
+    assert.deepEqual(c.notBuilt, [{ key: "", what: "background-clip padding-box inside a transparent border", as: "a fill to the border box, under the border's clear stroke" }]);
   }
 });
 

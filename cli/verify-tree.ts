@@ -17,7 +17,7 @@
 
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, RECORD_BY_TPL, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, borderBuiltInside, builtTurn, flowOf, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, ComponentTree, Flow, Sides, TreeNode, TurnContext } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
@@ -872,9 +872,11 @@ function scoreStroke(n: TreeNode, field: Field, tolerance: number, check: Check,
   const colors = [...new Set(drawn.map((i) => lower(sides(n.bd!.c)[i])))];
   const style = String(sides(n.bd.s)[drawn[0]]);
   // OUTSIDE where the background stops at the border, INSIDE where it runs
-  // under it; either where they draw alike (insideStrokeDrawsBorder).
+  // under it; either where the build takes INSIDE all the same
+  // (borderBuiltInside), as for a border that paints nothing, which an
+  // earlier build made OUTSIDE at the padding box: both score.
   const align = n.bgc === "padding-box" || n.bgc === "content-box" ? "O" : "I";
-  const aligned = (got: unknown) => got === align || (insideStrokeDrawsBorder(n) && got === "I");
+  const aligned = (got: unknown) => got === align || (borderBuiltInside(n) && got === "I");
   const want = [Array.isArray(n.bd.w) ? weights : weights[0], colors.length === 1 ? (colors[0] ? [colors[0]] : []) : colors, style, align];
   if (colors.length > 1) unscorable("stroke color", "per-side border colors, built as one in phase 1");
   if (!STROKE_STYLES.has(style)) unscorable("stroke style", `a ${style} border, which Figma's strokes don't draw`);
