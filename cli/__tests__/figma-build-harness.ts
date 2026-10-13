@@ -143,20 +143,53 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
  * size may differ by what its children's sizes differ by, as section 10.4
  * allows a container: so Figma's AUTO line height for a `normal` one, a
  * fraction off Chrome's, moves no score. Its place may differ by what its
- * siblings' sizes, and its ancestors' places, differ by: a row packed at
- * its end moves a button left by what Figma's whole-pixel label widths
- * after it add.
+ * ancestors' places differ by, and by what packs it in its parent: along
+ * a flex row's or column's main axis, the sizes of the siblings between
+ * it and the side the line is packed at (and its own, packed at the end
+ * or the bottom), as a row packed at its end moves a button left by what
+ * Figma's whole-pixel label widths after it add; across it, its own size,
+ * centered or at the end; in any other layout, the siblings that end
+ * before it on that axis, as the blocks above it. An absolute element
+ * moves with its parent alone.
  */
 export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], factBoxes: Map<string, Box>): string[] {
   const got = readBoxes(mock, variant);
   const drift: string[] = [];
   const grew = (k: string, a: number) => Math.abs((got.get(k)?.[a + 2] ?? 0) - factBoxes.get(k)![a + 2]);
+  const byKey = new Map(nodes.map((n) => [n.k, n]));
   const moved = new Map<string, [number, number]>();
   for (const node of nodes) {
-    const parent = node.k === "" ? null : parentKey(node.k);
-    const siblings = parent === null ? [] : nodes.filter((n) => n.k !== node.k && n.k !== "" && parentKey(n.k) === parent);
-    const above = parent === null ? [0, 0] : moved.get(parent) ?? [0, 0];
-    moved.set(node.k, [0, 1].map((a) => above[a] + siblings.reduce((t, n) => t + grew(n.k, a), 0)) as [number, number]);
+    const parent = node.k === "" ? null : byKey.get(parentKey(node.k) ?? "") ?? null;
+    const above = parent ? moved.get(parent.k) ?? [0, 0] : [0, 0];
+    const own = parent && !node.abs ? [0, 1].map((a) => packedShift(node, parent, a)) : [0, 0];
+    moved.set(node.k, [above[0] + own[0], above[1] + own[1]]);
+  }
+  // How far what packs `node` in `parent` may move it along axis `a`.
+  function packedShift(node: TreeNode, parent: TreeNode, a: number): number {
+    const start = factBoxes.get(node.k)![a];
+    const siblings = nodes.filter((n) => n.k !== node.k && n.k !== "" && !n.abs && parentKey(n.k) === parent.k);
+    const sum = (list: TreeNode[]) => list.reduce((t, n) => t + grew(n.k, a), 0);
+    const layout = parent.L;
+    if (!layout || !/flex/.test(layout.d)) {
+      return sum(siblings.filter((n) => factBoxes.get(n.k)![a] + factBoxes.get(n.k)![a + 2] <= start + 0.5));
+    }
+    const dir = layout.dir ?? "row";
+    const main = dir.startsWith("column") ? 1 : 0;
+    if (a !== main) {
+      const align = layout.ai ?? "normal";
+      return /center/.test(align) ? grew(node.k, a) / 2 : /end/.test(align) ? grew(node.k, a) : 0;
+    }
+    const reverse = dir.endsWith("-reverse");
+    const justify = layout.jc ?? "normal";
+    const atStart = ["normal", "flex-start", "stretch"].includes(justify) ? !reverse
+      : justify === "flex-end" ? reverse
+        : ["start", "left"].includes(justify) ? true : ["end", "right"].includes(justify) ? false : null;
+    const before = siblings.filter((n) => factBoxes.get(n.k)![a] < start);
+    const after = siblings.filter((n) => factBoxes.get(n.k)![a] > start);
+    if (atStart === true) return sum(before);
+    if (atStart === false) return grew(node.k, a) + sum(after);
+    // Centered or spaced: anything in the line may move it.
+    return grew(node.k, a) + sum(siblings);
   }
   for (const node of [...nodes].reverse()) {
     const fact = factBoxes.get(node.k)!;
