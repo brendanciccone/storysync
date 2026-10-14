@@ -15,7 +15,7 @@ import {
   storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage, storyRenderedInPage, RENDERED_GRACE_MS,
 } from "../snap-browser.js";
 import type { OpenMemory } from "../snap-browser.js";
-import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
+import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId, rawPaint, serializeSvg } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
 import { NON_RENDERED_TAGS, OVERLAY_SELECTOR, WRAPPER_PROPERTIES } from "../snap-normalize.js";
@@ -880,6 +880,38 @@ test("captureTreeInPage: an SVG as structure and computed paint, its painted sha
   assert.deepEqual(icon.shapes, [[2, 2, 8, 0]]);
   const big = readTree({ tag: "div", rect: [0, 0, 36, 36], kids: [svg] }, { maxSvgElements: 2 });
   assert.equal((big.root.kids[0] as RawTreeElement).svgElements, 5);
+});
+
+test("captureTreeInPage: an SVG shape's CSS transform about its origin, which its attributes don't say, as a matrix", () => {
+  // coder's spinner: eight bars at one place, each turned by a style's rotate about the icon's center.
+  const bar = (deg: number): FakeElementSpec => {
+    const r = (deg * Math.PI) / 180;
+    const [c, s] = [Math.cos(r), Math.sin(r)];
+    return { tag: "rect", svg: true, attrs: { x: "10.9", y: "2", width: "2", height: "5.5", rx: "1" }, rect: [10, 10, 2, 6], style: { transform: `matrix(${c}, ${s}, ${-s}, ${c}, 0, 0)`, "transform-origin": "12px 12px" } };
+  };
+  const svg: FakeElementSpec = { tag: "svg", svg: true, attrs: { viewBox: "0 0 24 24" }, rect: [0, 0, 24, 24], kids: [bar(0), bar(90), bar(45)] };
+  const icon = readTree({ tag: "div", rect: [0, 0, 24, 24], kids: [svg] }).root.kids[0] as RawTreeElement;
+  const transforms = icon.svg!.kids!.map((k) => k.attrs.transform);
+  // None where it draws as its attributes say; else turned about (12, 12).
+  assert.deepEqual(transforms, [undefined, "matrix(0 1 -1 0 24 0)", "matrix(0.7071 0.7071 -0.7071 0.7071 12 -4.9706)"]);
+  const { markup } = serializeSvg(icon.svg!, [0, 0, 24, 24]);
+  assert.match(markup, /<rect x="10\.9" y="2" width="2" height="5\.5" rx="1" transform="matrix\(0 1 -1 0 24 0\)"\/>/);
+});
+
+test("captureTreeInPage: a <text> kept as written draws in its CSS paint, which serializeSvg writes as hex", () => {
+  // shadcn's chart tick: fill="#666" as written, drawn in fill-muted-foreground.
+  const tick: FakeElementSpec = {
+    tag: "text", svg: true, attrs: { x: "4", y: "10", fill: "#666", class: "fill-muted-foreground" }, rect: [0, 0, 20, 10],
+    style: { fill: "oklch(0.556 0 0)", stroke: "none" },
+    kids: [{ tag: "tspan", svg: true, attrs: { x: "4" }, rect: [0, 0, 20, 10], style: { fill: "oklch(0.556 0 0)", stroke: "none" }, kids: [{ text: "Jan", rects: [[0, 0, 20, 10]] }] }],
+  };
+  const svg: FakeElementSpec = { tag: "svg", svg: true, attrs: { viewBox: "0 0 40 20" }, rect: [0, 0, 40, 20], kids: [tick] };
+  const chart = readTree({ tag: "div", rect: [0, 0, 40, 20], kids: [svg] }).root.kids[0] as RawTreeElement;
+  const raw = chart.svg!.kids![0].raw!;
+  assert.equal(raw, '<text x="4" y="10" fill="oklch(0.556 0 0)" class="fill-muted-foreground" stroke="none"><tspan x="4">Jan</tspan></text>');
+  const { markup } = serializeSvg(chart.svg!, [0, 0, 40, 20]);
+  assert.match(markup, /<text x="4" y="10" fill="#737373" class="fill-muted-foreground" stroke="none">/);
+  assert.equal(rawPaint('<text fill="rgba(255, 0, 0, 0.5)"/>'), '<text fill="#ff0000" fill-opacity="0.5"/>');
 });
 
 test("captureTreeInPage: an input's value or placeholder, with how wide it draws; an image's source", () => {

@@ -2183,6 +2183,88 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     if (!tree) return { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [] };
     const box = svg.getBoundingClientRect();
     const hidden = "defs, clipPath, mask, symbol, pattern, marker";
+    // The transform the browser draws `el` with, where its CSS gives it one
+    // its attribute doesn't say, as `matrix()`: coder's spinner turns each
+    // of its eight bars with a style's rotate about the icon's center. Its
+    // `translate`, `rotate`, `scale` and `transform`, about its origin, which
+    // is resolved against its transform box. Null where it is the attribute's.
+    type M = [number, number, number, number, number, number];
+    const mul = (m: M, n: M): M => [
+      m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+      m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5],
+    ];
+    const transformOf = (el: Element, cs: CSSStyleDeclaration): string | null => {
+      const px = (v: string | undefined) => parseFloat(v ?? "") || 0;
+      const own = (cs.getPropertyValue("transform") || "none").trim();
+      const turn = (cs.getPropertyValue("rotate") || "none").trim();
+      const scale = (cs.getPropertyValue("scale") || "none").trim();
+      const move = (cs.getPropertyValue("translate") || "none").trim();
+      let m: M = [1, 0, 0, 1, 0, 0];
+      const [ox = 0, oy = 0] = (cs.getPropertyValue("transform-origin") || "").split(/\s+/).map(px);
+      const boxKind = (cs.getPropertyValue("transform-box") || "").trim();
+      const bbox = boxKind === "fill-box" || boxKind === "stroke-box" ? (el as SVGGraphicsElement).getBBox?.() : null;
+      const origin = [ox + (bbox?.x ?? 0), oy + (bbox?.y ?? 0)];
+      m = mul(m, [1, 0, 0, 1, origin[0], origin[1]]);
+      if (move !== "none") {
+        const [tx = 0, ty = 0] = move.split(/\s+/).map(px);
+        m = mul(m, [1, 0, 0, 1, tx, ty]);
+      }
+      if (turn !== "none") {
+        const angle = /^(-?[\d.]+(?:e-?\d+)?)(deg|rad|grad|turn)?$/.exec(turn);
+        if (!angle) return null;
+        const unit = { deg: Math.PI / 180, rad: 1, grad: Math.PI / 200, turn: 2 * Math.PI }[angle[2] ?? "deg"] ?? 0;
+        const r = Number(angle[1]) * unit;
+        m = mul(m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+      }
+      if (scale !== "none") {
+        const [sx, sy] = scale.split(/\s+/).map(Number);
+        m = mul(m, [sx, 0, 0, sy ?? sx, 0, 0]);
+      }
+      if (own !== "none") {
+        const terms = /^matrix\(([^)]*)\)$/.exec(own)?.[1].split(",").map(Number);
+        if (!terms || terms.length !== 6 || terms.some((t) => !Number.isFinite(t))) return null;
+        m = mul(m, terms as M);
+      }
+      m = mul(m, [1, 0, 0, 1, -origin[0], -origin[1]]);
+      // The attribute's own, which an element with no CSS transform computes to.
+      const base = (el as SVGGraphicsElement).transform?.baseVal?.consolidate?.()?.matrix;
+      const attr: M = base ? [base.a, base.b, base.c, base.d, base.e, base.f] : [1, 0, 0, 1, 0, 0];
+      if (m.every((v, i) => Math.abs(v - attr[i]) < 1e-4)) return null;
+      return `matrix(${m.map((v) => String(Math.round(v * 1e4) / 1e4 || 0)).join(" ")})`;
+    };
+    // Paint a `<text>` or `<use>` kept as written draws in, where its CSS
+    // gives it what its attributes don't say: shadcn's chart ticks are
+    // `fill="#666"` drawn in `fill-muted-foreground`. Written on a copy:
+    // fill and stroke as computed (a `url()` paint left as written), where
+    // the element sets one or it differs from the element around it, which
+    // the copy keeps only for the root; opacity and transform where they
+    // aren't the attribute's.
+    const presented = (el: Element): string => {
+      if (typeof el.cloneNode !== "function") return el.outerHTML;
+      const copy = el.cloneNode(true) as Element;
+      const paintOf = (cs: CSSStyleDeclaration, name: string) => {
+        const value = cs.getPropertyValue(name).trim();
+        return /^currentcolor$/i.test(value) ? cs.color : value;
+      };
+      const write = (from: Element, to: Element, around: CSSStyleDeclaration | null) => {
+        const cs = getComputedStyle(from);
+        for (const name of ["fill", "stroke"]) {
+          const value = paintOf(cs, name);
+          if (!value || /^url\(/i.test(value)) continue;
+          if (around && from.getAttribute(name) === null && paintOf(around, name) === value) continue;
+          to.setAttribute(name, value);
+        }
+        const opacity = cs.getPropertyValue("opacity").trim();
+        if (opacity && opacity !== "1" && from.getAttribute("opacity") !== opacity) to.setAttribute("opacity", opacity);
+        const transform = transformOf(from, cs);
+        if (transform) to.setAttribute("transform", transform);
+        Array.from(from.children).forEach((kid, i) => {
+          if (to.children[i]) write(kid, to.children[i], cs);
+        });
+      };
+      write(el, copy, null);
+      return copy.outerHTML;
+    };
     const visit = (el: Element): RawSvgNode | null => {
       const tag = el.tagName;
       if (args.svgDropped.includes(tag)) return null;
@@ -2190,6 +2272,10 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       for (const a of args.svgGeometry) {
         const v = el.getAttribute(a);
         if (v !== null) attrs[a] = v;
+      }
+      if (tag === "g" || args.svgShapes.includes(tag)) {
+        const transform = transformOf(el, getComputedStyle(el));
+        if (transform) attrs.transform = transform;
       }
       if (tag === "g") {
         // What a group does to its shapes as one, which their own computed style doesn't show.
@@ -2208,7 +2294,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
         }
         return { tag, attrs, paint };
       }
-      return { tag, attrs: {}, raw: el.outerHTML.replace(/>\s+</g, "><") };
+      const drawn = (tag === "text" || tag === "use") && !el.closest(hidden);
+      return { tag, attrs: {}, raw: (drawn ? presented(el) : el.outerHTML).replace(/>\s+</g, "><") };
     };
     const attrs: Record<string, string> = {};
     for (const a of ["viewBox", "preserveAspectRatio"]) {
