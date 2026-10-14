@@ -321,6 +321,14 @@ export interface SnapResult {
    * written to styles.json: it is what this run did, not what was measured.
    */
   removedComponents?: string[];
+  /**
+   * The components a merge kept from the earlier snap without measuring
+   * them again, by key. Their warnings and failures stay in styles.json, as
+   * that snap recorded them, but aren't this run's, so snapMessages leaves
+   * them out. Returned by runSnap, and in `snap --json`, but not written to
+   * styles.json.
+   */
+  keptComponents?: string[];
 }
 
 /**
@@ -345,27 +353,32 @@ export interface SnapMessage {
 export function snapMessages(result: SnapResult, notes: readonly string[] = []): SnapMessage[] {
   const out: SnapMessage[] = notes.map((text) => ({ level: "info", text }));
   const label = (c: SnapComponent) => c.title ?? c.name;
-  const standIns = describeFontStandIns(result.fontStandIns);
+  // This run's components: a merge's kept ones said what they said when an
+  // earlier run measured them, and relayed now would read as this run's.
+  const kept = new Set(result.keptComponents ?? []);
+  const components = result.components.filter((c) => !kept.has(componentKey(c)));
+  const pairs = kept.size ? [...new Set(components.flatMap((c) => (c.fontStandIns ?? []).map((pair) => JSON.stringify(pair))))].sort().map((pair) => JSON.parse(pair) as [string, string]) : result.fontStandIns;
+  const standIns = describeFontStandIns(pairs);
   if (standIns) out.push({ level: "info", text: standIns });
   // Said once for the run, not warned: the globals that rendered a dark-by-default Storybook light.
-  const globals = new Set(result.components.filter((c) => c.globals && c.scheme === "light").map((c) => globalsParam(c.globals!)));
+  const globals = new Set(components.filter((c) => c.globals && c.scheme === "light").map((c) => globalsParam(c.globals!)));
   for (const set of globals) {
     out.push({ level: "info", text: `snap measured the light color scheme with globals=${set} in each story's URL, as Storybook renders dark by default` });
   }
-  for (const c of result.components) for (const text of c.warnings) out.push({ level: "warning", component: label(c), text });
-  for (const c of result.components) if (c.error != null) out.push({ level: "error", component: label(c), text: c.error });
+  for (const c of components) for (const text of c.warnings) out.push({ level: "warning", component: label(c), text });
+  for (const c of components) if (c.error != null) out.push({ level: "error", component: label(c), text: c.error });
   // Said, not warned: the stories each variant was measured from, where not the component's.
-  for (const c of result.components) {
+  for (const c of components) {
     const stories = describeVariantStories(c);
     if (stories) out.push({ level: "info", component: label(c), text: stories });
   }
   // Said, not warned: the overlays snap opened to measure.
-  for (const c of result.components) {
+  for (const c of components) {
     const opened = describeOpenedOverlays(c);
     if (opened) out.push({ level: "info", component: label(c), text: opened });
   }
   // Said, not warned: the props the story's argTypes add, and those left out, and why.
-  for (const c of result.components) {
+  for (const c of components) {
     const added = (c.argsNotInDocs ?? []).filter((name) => c.variantProperties.some((p) => p.name === name));
     if (added.length) {
       const names = added.map((name) => `\`${name}\``).join(", ");
@@ -374,7 +387,7 @@ export function snapMessages(result: SnapResult, notes: readonly string[] = []):
     const left = describeExclusions(c.excludedProps ?? []);
     if (left) out.push({ level: "info", component: label(c), text: left });
   }
-  for (const c of result.components) {
+  for (const c of components) {
     for (const v of c.variants) if (v.status !== "ok") out.push({ level: "failed", component: c.name, text: `${v.slug} [${v.status}] ${v.error ?? ""}`.trimEnd() });
   }
   return out;
@@ -1709,7 +1722,8 @@ function writeSnap(
   const removedKeys = removed.map((c) => componentKey(c)).sort();
   if (earlier) {
     const dropped = removedKeys.length ? `, and dropped ${removedKeys.join(", ")}, which Storybook no longer lists` : "";
-    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap${dropped}`);
+    const recorded = kept.length ? `, whose warnings and failures styles.json keeps as that snap recorded them` : "";
+    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap${recorded}${dropped}`);
   }
 
   // Deterministic ordering so repeated runs produce identical output.
@@ -1786,7 +1800,11 @@ function writeSnap(
 
   writeStylesJson(opts.outDir, result);
   writeMetaJson(opts.outDir, result, oldest, times, browserVersion, { noChannelArgs: opts.channelArgs === false, noOpenOverlays: opts.openOverlays === false });
-  return removedKeys.length ? { ...result, removedComponents: removedKeys } : result;
+  return {
+    ...result,
+    ...(removedKeys.length ? { removedComponents: removedKeys } : {}),
+    ...(earlier && kept.length ? { keptComponents: kept.map((c) => componentKey(c)).sort() } : {}),
+  };
 }
 
 /**

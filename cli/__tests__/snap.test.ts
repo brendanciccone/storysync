@@ -1350,7 +1350,10 @@ test("runSnap --merge: measures only the components named and keeps the rest of 
       ["Forms/A", "forms-a--first"], ["Forms/B", "forms-b--second"], ["Forms/C", "forms-c--first"],
     ]);
     assert.equal(merged.summary.components, 3);
-    assert.deepEqual(readJson(join(dir, "styles.json")), JSON.parse(JSON.stringify(merged)));
+    // The components kept are this run's to say, not styles.json's.
+    const { keptComponents, ...measured } = merged;
+    assert.deepEqual(keptComponents, ["Forms/A", "Forms/C"]);
+    assert.deepEqual(readJson(join(dir, "styles.json")), JSON.parse(JSON.stringify(measured)));
     const meta = readJson(join(dir, "meta.json"));
     // As old as its oldest component.
     assert.equal(meta.measuredAt, "2026-10-01T10:00:00.000Z");
@@ -3008,6 +3011,22 @@ test("snapMessages: what the text output says, i, ! and ✗ lines and each varia
   ]);
 });
 
+test("snapMessages: a merge's kept components, which an earlier run measured, say nothing; this run's do", () => {
+  const result = {
+    keptComponents: ["Forms/Old"],
+    components: [
+      { name: "Old", title: "Forms/Old", variantProperties: [], warnings: ["an earlier warning"], error: null, fontStandIns: [["system-ui", "Inter"]],
+        variants: [{ combination: {}, slug: "default", status: "render_error", error: "boom" }] },
+      { name: "New", title: "Forms/New", variantProperties: [], warnings: ["this run's warning"], error: null, variants: [{ combination: {}, slug: "default", status: "ok", error: null }] },
+    ],
+  } as never;
+  const note = "Measured 1 component again and kept 1 from the earlier snap, whose warnings and failures styles.json keeps as that snap recorded them";
+  assert.deepEqual(snapMessages(result, [note]), [
+    { level: "info", text: note },
+    { level: "warning", component: "Forms/New", text: "this run's warning" },
+  ]);
+});
+
 test("runSnap: what progress says of the run, a relaunched browser and the components --merge kept, is a note for --json", async () => {
   const dir = tempDir();
   try {
@@ -3128,12 +3147,14 @@ test("runSnap with --components alone: drops a kept component Storybook no longe
     });
     assert.deepEqual(merged.components.map((c) => c.title), ["Forms/A", "Forms/B"]);
     assert.deepEqual(merged.removedComponents, ["Forms/C"]);
+    assert.deepEqual(merged.keptComponents, ["Forms/A"]);
     assert.equal(merged.summary.components, 2);
     const styles = readJson(join(dir, "styles.json"));
     assert.deepEqual(styles.components.map((c: { title: string }) => c.title), ["Forms/A", "Forms/B"]);
     assert.equal(styles.removedComponents, undefined);
+    assert.equal(styles.keptComponents, undefined);
     assert.deepEqual(readJson(join(dir, "meta.json")).componentsMeasuredAt, { "Forms/A": "2026-10-01T10:00:00.000Z", "Forms/B": "2026-10-01T11:00:00.000Z" });
-    assert.ok(progress.some((m) => /kept 1 from the earlier snap, and dropped Forms\/C, which Storybook no longer lists/.test(m)), progress.join("\n"));
+    assert.ok(progress.some((m) => /kept 1 from the earlier snap, whose warnings and failures styles.json keeps as that snap recorded them, and dropped Forms\/C, which Storybook no longer lists/.test(m)), progress.join("\n"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
