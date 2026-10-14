@@ -206,7 +206,7 @@ storysync figma code [options]
   --max-chars <n>        Most characters of code in one build call (default: 45000)
   --max-nodes <n>        Most layers one build call creates or restyles (default: 400)
   --read-limit <n>       Most characters a read call is predicted to return (default: 17000)
-  --no-minify            Send the templates' readable sources instead of their minified build
+  --no-minify            Send the templates' readable sources, comment lines blanked, instead of their minified build
   --json                 Output JSON instead of formatted text
 
 storysync figma upload --plan <path> --seq <n> [--json]

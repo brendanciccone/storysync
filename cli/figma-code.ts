@@ -124,7 +124,10 @@ const MINIFIED_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
 
 /**
  * A template's code: the minified build output (dist/templates/*.min.js,
- * from scripts/build-templates.mjs) or the readable source.
+ * from scripts/build-templates.mjs) or the readable source. The readable
+ * one has its comment lines blanked but the first, which names it: each
+ * line stays the file's line, and a build call keeps the room for its data
+ * that the comments, a third of the build template, would take.
  */
 export function loadTemplate(name: TemplateName, minify = true, overrides?: FigmaCodeOptions["templates"]): string {
   const given = overrides?.[name];
@@ -137,7 +140,8 @@ export function loadTemplate(name: TemplateName, minify = true, overrides?: Figm
         : `${path} is missing: this storysync has no ${name} template`,
     );
   }
-  return readFileSync(path, "utf8").trim();
+  const code = readFileSync(path, "utf8").trim();
+  return minify ? code : code.split("\n").map((line, i) => (i > 0 && /^\s*\/\//.test(line) ? "" : line)).join("\n");
 }
 
 // --- Records ----------------------------------------------------------------
@@ -1046,7 +1050,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
       }
     }
     // The template and the limit the call it continues was written with: the
-    // readable template, which keeps its comments, after `figma code --no-minify`.
+    // readable template, which keeps its first line, after `figma code --no-minify`.
     const parent = existsSync(join(dir, call.file)) ? readFileSync(join(dir, call.file), "utf8") : "";
     const template = loadTemplate("readback", opts.minify ?? !parent.includes("// storysync readback, template"), opts.templates);
     const written = /\nconst LIMIT = (\d+);/.exec(parent);

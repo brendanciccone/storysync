@@ -2,13 +2,15 @@
 // every call must keep.
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callCode, callConstants, templateLiteral } from "../checksum.js";
 import { CALL_CONSTANTS, loadTemplate } from "../figma-code.js";
 import { MAX_CALL_CHARS, USE_FIGMA_CODE_LIMIT } from "../figma-spike.js";
 import type { TemplateName } from "../figma-code.js";
+import { codeFor } from "./figma-build-harness.js";
+import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
 
 /**
  * Most characters each minified template may take (section 8.2 sets the
@@ -67,6 +69,22 @@ test("templates: the build's budget leaves a call room for its data, packed and 
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - guard >= 24_500, "a packed call keeps 24,500 for DATA");
   assert.ok(USE_FIGMA_CODE_LIMIT - BUDGETS.build - guard >= 4 * 7_454, "a variant alone has four times the room the largest took");
   assert.ok(BUDGETS.readback + guard + 1_000 < MAX_CALL_CHARS, "a read call is its template, the guard and a short header");
+});
+
+test("templates: a readable build call, after figma code --no-minify, keeps a packed call's room for a variant: its comment lines blank, each line the file's", async () => {
+  // The build's comments, a third of it, took a card's call to 49,915
+  // characters, and then past use_figma's 50,000, which left it unbuilt.
+  const source = readFileSync(fileURLToPath(new URL("../../../templates/build.js", import.meta.url)), "utf8").trim().split("\n");
+  const readable = loadTemplate("build", false).split("\n");
+  assert.equal(readable.length, source.length);
+  assert.equal(readable[0], source[0]);
+  readable.forEach((line, i) => assert.equal(line, i > 0 && /^\s*\/\//.test(source[i]) ? "" : source[i], `line ${i + 1}`));
+  const guard = callCode([["DATA", 0]], "").length - callConstants([["DATA", 0]]).length;
+  assert.ok(templateLiteral(readable.join("\n")).length + guard + 7_454 <= MAX_CALL_CHARS, "a readable call has the room the largest variant took, under --max-chars");
+  for (const name of treeFixtureNames()) {
+    const coded = await codeFor(loadTreeFixture(name), { minify: false });
+    assert.deepEqual(coded.warnings.filter((w) => /use_figma call takes|over --max-chars/.test(w)), [], name);
+  }
 });
 
 test("templates: a call carries its template as a string whose value is the template exactly, which TSUM covers and the call runs", async () => {
