@@ -191,11 +191,11 @@ export interface TreeDelta {                                 // against Componen
  * alignment names.
  *
  * `axis` is null where the parent lays its children out in no single line, a
- * wrapping flex, a grid of several columns, inline content, a table cell,
- * children that overlap: there only the direct offsets apply, and `main` and
- * `cross` are empty. `content` is the parent's content box, less border and
- * padding, in its children's coordinates; `inflow` the keys of the children
- * in flow, in flow order.
+ * wrapping flex that wrapped, a grid of several columns, inline content, a
+ * table cell, children that overlap: there only the direct offsets apply,
+ * and `main` and `cross` are empty. `content` is the parent's content box,
+ * less border and padding, in its children's coordinates; `inflow` the keys
+ * of the children in flow, in flow order.
  */
 export interface Flow {
   axis: "x" | "y" | null;
@@ -776,7 +776,9 @@ export function flowOf(parent: TreeNode, children: TreeNode[], snap?: Pick<Flow,
 
   let axis: Flow["axis"] = null;
   if (flex) {
-    if (!L?.wrap) axis = vertical ? "y" : "x";
+    // A wrapping flex whose children all sit on one line (Breadcrumb's
+    // list, Item) lays them out as one that doesn't wrap, as the build does.
+    if (!L?.wrap || oneLine(inflow, vertical)) axis = vertical ? "y" : "x";
   } else if (L && stacked && (BLOCK_FLOW.has(display) || (grid && (L.tracks?.[0] ?? 1) <= 1))) {
     axis = "y";
   }
@@ -843,6 +845,17 @@ export function flowOf(parent: TreeNode, children: TreeNode[], snap?: Pick<Flow,
     );
   }
   return flow;
+}
+
+/**
+ * Whether boxes sit on one line along a row, or a column (`vertical`): some
+ * band across it meets every box with a size across it. A wrapped line
+ * starts at or past where the line before it ends.
+ */
+function oneLine(children: TreeNode[], vertical: boolean): boolean {
+  const [c, size] = vertical ? [0, 2] : [1, 3];
+  const sized = children.filter((child) => child.box[size] > 0);
+  return Math.max(...sized.map((child) => child.box[c])) < Math.min(...sized.map((child) => child.box[c] + child.box[size]));
 }
 
 /**
