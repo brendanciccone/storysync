@@ -925,9 +925,10 @@ test("buildTree: a pseudo-element's classes are its host's before: or after: one
   const avatar = el("span", [0, 0, 32, 32], { display: "flex" }, [
     { k: "p", which: "before", cs: { "background-color": "rgb(229, 229, 229)" }, content: "", box: [0, 0, 32, 1], how: "flow" },
     { k: "p", which: "after", cs: BORDERED, content: "", box: [0, 0, 32, 32], how: "abs" },
-  ], { cls: ["after:border-border", "before:bg-border", "dark:after:bg-input/30", "rounded-full", "[&_a]:hover:text-foreground"] });
+  ], { cls: ["after:border-border", "after:mix-blend-darken", "before:bg-border", "dark:after:bg-input/30", "dark:after:mix-blend-lighten", "rounded-full", "[&_a]:hover:text-foreground"] });
   const nodes = byKey(buildTree(tree(avatar)).nodes);
-  assert.deepEqual(nodes.get("::after")!.cls, ["border-border", "dark:bg-input/30"]);
+  // Its blend classes too, the dark theme's for figma code to name.
+  assert.deepEqual(nodes.get("::after")!.cls, ["border-border", "dark:bg-input/30", "dark:mix-blend-lighten", "mix-blend-darken"]);
   assert.deepEqual(nodes.get("::before")!.cls, ["bg-border"]);
   // shadcn/ui's alert title colors its links on hover, [&_a]:hover:text-foreground:
   // its own color is the alert's text-card-foreground, which it inherits.

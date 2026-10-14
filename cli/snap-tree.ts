@@ -296,8 +296,12 @@ const DRAWING_TAGS = new Set(["svg", "img", "canvas", "video"]);
 /** Native controls the browser draws itself, unless `appearance: none` hands them to CSS. */
 const NATIVE_INPUTS = new Set(["checkbox", "radio", "range", "color", "file"]);
 
-/** Classes that may say which token a node's paint is: section 6.3's class evidence. */
-const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-z][\w/-]*)$/;
+/**
+ * Classes that may say which token a node's paint is: section 6.3's class
+ * evidence; and its blend mode, whose `dark:` one (Avatar's ring's
+ * `dark:after:mix-blend-lighten`) figma code names, as no variable sets one.
+ */
+const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow|mix)-([a-z][\w/-]*)$/;
 
 /**
  * Class tokens naming what paints a node, for binding its paint to a

@@ -176,6 +176,14 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
     ["transform matrix(0, 1, -1, 0, 0, 0)", "its own box, unturned, as Figma's auto layout would place it by its turned box"],
     ["overflow clipped on x only", "clipping both axes"],
   ]);
+  // Avatar's ring: darken in Light, lighten in Dark, which no variable can switch.
+  const c3 = ctx();
+  assert.equal(nodeStyle(frame({ k: "::after", bm: "darken", cls: ["border-border", "dark:mix-blend-lighten", "mix-blend-darken"] }), c3).b, "DARKEN");
+  assert.deepEqual(c3.notBuilt, [{ key: "::after", what: "blend mode lighten in Dark", as: "darken in both modes, as no variable sets a blend mode" }]);
+  assert.deepEqual(ctx().notBuilt, []);
+  const c4 = ctx();
+  nodeStyle(frame({ bm: "darken", cls: ["dark:mix-blend-darken"] }), c4);
+  assert.deepEqual(c4.notBuilt, []);
 });
 
 test("nodeStyle: a translucent paint of an opaque token binds to the token's alpha variable, naming the token too, and the plan lists each", () => {

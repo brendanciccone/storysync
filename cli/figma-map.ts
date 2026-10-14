@@ -663,6 +663,11 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     if (BLENDS[node.bm]) style.b = BLENDS[node.bm];
     else ctx.notBuilt.push({ key: node.k, what: `blend mode ${node.bm}` });
   }
+  // The dark theme's own blend, Avatar's ring's `dark:after:mix-blend-lighten`
+  // over `after:mix-blend-darken`: no variable sets a blend mode (README,
+  // What Figma can't do), so the measured one is built in both modes.
+  const darkBlend = (ctx.scheme ?? "light") === "light" ? (node.cls ?? []).map((c) => /^dark:mix-blend-([a-z-]+)$/.exec(c)?.[1]).find(Boolean) : undefined;
+  if (darkBlend && darkBlend !== (node.bm ?? "normal")) ctx.notBuilt.push({ key: node.k, what: `blend mode ${darkBlend} in Dark`, as: `${node.bm ?? "normal"} in both modes, as no variable sets a blend mode` });
   if (node.cp) ctx.notBuilt.push({ key: node.k, what: `clip-path ${node.cp}` });
   if (node.ol) ctx.notBuilt.push({ key: node.k, what: `outline ${node.ol[0]}px ${node.ol[1]} ${node.ol[2] ?? "transparent"}` });
   // A turn the build can make is built (builtTurn), as Figma's rotation,
