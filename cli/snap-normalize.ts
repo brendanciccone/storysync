@@ -648,6 +648,12 @@ export interface PortalNode {
   rendered: boolean;
   /** Whether it is an open overlay's content: OVERLAY_SELECTOR matches it, and no element around it. */
   overlay?: boolean;
+  /**
+   * Whether it is or holds a select's or combobox's parts, a `combobox` or
+   * a `listbox`, as a combobox's popover holds its search input and its
+   * options: what opened it is then the component's field (see isPicker).
+   */
+  picks?: boolean;
 }
 
 /**
@@ -787,6 +793,20 @@ export type MeasuredChoice =
 
 /** How deep snap looks past wrappers that draw nothing, as it always has. */
 const MAX_WRAPPER_DEPTH = 4;
+
+/**
+ * Whether a component is a select or combobox by its slots, `Combobox` or
+ * `SelectFilter`: its trigger is its field however it is marked, as a
+ * combobox built on a popover's trigger (`aria-haspopup="dialog"`) is.
+ */
+export function isPickerComponent(slots: readonly string[]): boolean {
+  return slots.some((slot) => /(?:^|-)(?:select|combobox|combo-box|autocomplete|listbox)(?:$|-)/.test(slot));
+}
+
+/** Whether `node`, or anything in it, is a combobox or a listbox: PortalNode's `picks`, for content rendered inline. */
+function holdsPicks(node: StoryNode): boolean {
+  return node.role === "combobox" || node.role === "listbox" || node.children.some(holdsPicks);
+}
 
 /** Whether a component is a toast, by its slots: shadcn/ui's Sonner, whose component is `Toaster`. */
 export function isToastComponent(slots: readonly string[]): boolean {
@@ -1085,20 +1105,22 @@ export function chooseMeasuredElement(
     return index < 0 ? null : { kind: "portal", index, element: describeElement(portals[index]), notes: [] };
   };
   // A select's or combobox's field, open: what it opened is measured with
-  // it, as the two render, where a dialog's or menu's content is alone.
-  const field = (): OpenField | undefined => {
-    const found = container ? findFirst(container, [], (n) => isField(n) && isOpen(n)) : null;
-    return found ? { path: found.path, element: describeElement(found.node) } : undefined;
+  // it, as the two render, where a dialog's or menu's content is alone. A
+  // field is one by its marks (isField), or a trigger where the component
+  // is a select or combobox by name, or what it opened holds one's parts,
+  // as a combobox built on a popover's trigger.
+  const named = isPickerComponent(slots);
+  const isPicker = (node: StoryNode, picks = false) => isField(node) || (isTrigger(node) && (named || picks));
+  const withField = <T extends MeasuredChoice>(choice: T, picks: boolean, at?: { path: number[]; node: StoryNode }): T => {
+    const found = at ?? (container ? findFirst(container, [], (n) => isOpen(n) && isPicker(n, picks)) : null);
+    return found ? { ...choice, field: { path: found.path, element: describeElement(found.node) } } : choice;
   };
-  const withField = <T extends MeasuredChoice>(choice: T): T => {
-    const open = field();
-    return open ? { ...choice, field: open } : choice;
-  };
+  const picksAt = (choice: MeasuredChoice) => choice.kind === "portal" && portals[choice.index].picks === true;
 
   const portaled =
     portal((candidate) => candidate.slot != null && slots.includes(candidate.slot)) ??
     portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
-  if (portaled) return withField(portaled);
+  if (portaled) return withField(portaled, picksAt(portaled));
 
   // A toast raised, where the story renders its toaster, as Sonner's does.
   const toast = container && isToastComponent(slots) ? findFirst(container, [], (node) => node.toast === true) : null;
@@ -1122,18 +1144,19 @@ export function chooseMeasuredElement(
   }
 
   const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
+  const at = { path, node };
   const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
-  if (opened) return isField(node) ? withField(opened) : opened;
+  if (opened) return isPicker(node, picksAt(opened)) ? withField(opened, true, at) : opened;
   // Or rendered inline, beside the trigger, as Headless UI's menu is.
   const inline = isOpen(node) && container ? findControlled(container, [], controls) : null;
   if (inline) {
     const content: MeasuredChoice = { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
-    return isField(node) ? withField(content) : content;
+    return isPicker(node, holdsPicks(inline.node)) ? withField(content, true, at) : content;
   }
   // An open trigger whose aria-controls names nothing, as a tooltip's or a
   // hover card's: what it opened is the overlay showing.
   const shownBy = isOpen(node) && (isTrigger(node) || isField(node)) ? overlay() : null;
-  if (shownBy) return isField(node) ? withField(shownBy) : shownBy;
+  if (shownBy) return isPicker(node, picksAt(shownBy)) ? withField(shownBy, true, at) : shownBy;
 
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];
@@ -1149,15 +1172,17 @@ export function chooseMeasuredElement(
     const toast = { at: opener.path, opener: describeElement(opener.node) };
     return { kind: "tree", path, element, notes, trigger: { field: false, interactions: ["click"], toast } };
   }
-  if (isClosedTrigger(node)) {
+  // A select's or combobox's trigger by the component's name, closed: its field, as isField's.
+  const namedField = named && !isField(node) && isTrigger(node);
+  if (isClosedTrigger(node) && !namedField) {
     // Opened by something other than its trigger, as a story's `open` arg does.
     const content = overlay();
     if (content) return content;
     notes.push({ kind: "closed-trigger", element });
     return { kind: "tree", path, element, notes, trigger: { field: false, interactions: openInteractions(node, slots) } };
   }
-  if (isField(node) && !isOpen(node)) {
-    return { kind: "tree", path, element, notes, trigger: { field: true, interactions: openInteractions(node, slots) } };
+  if ((isField(node) || namedField) && !isOpen(node)) {
+    return { kind: "tree", path, element, notes, trigger: { field: true, interactions: isField(node) ? openInteractions(node, slots) : ["click"] } };
   }
   {
     const children = drawnChildren(node).length;

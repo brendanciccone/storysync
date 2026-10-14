@@ -1285,3 +1285,20 @@ test("chooseMeasuredElement: a select's open field comes with the content it ope
   const content = chooseMeasuredElement(root(dialog), [portal({ role: "dialog", id: "d", overlay: true })], ["dialog"]);
   assert.equal(content.kind === "portal" && content.field, undefined);
 });
+
+test("chooseMeasuredElement: a combobox on a popover's trigger is a field, by its name or by the parts its content holds", () => {
+  // A Combobox whose trigger is a plain popover trigger, its content a dialog holding a cmdk input and list.
+  const open = node("button", { hasPopup: "dialog", expanded: "true", controls: "pc", state: "open", styles: FILLED });
+  const slots = componentSlots("Combobox", "components/Combobox");
+  const content = [portal({ role: "dialog", id: "pc", overlay: true, picks: true })];
+  assert.deepEqual(chooseMeasuredElement(root(open), content, slots), { kind: "portal", index: 0, element: 'div[role="dialog"]', notes: [], field: { path: [0], element: "button" } });
+  // By its content alone, whatever the component's name.
+  const byContent = chooseMeasuredElement(root(open), content, ["filter-menu"]);
+  assert.deepEqual(byContent.kind === "portal" && byContent.field, { path: [0], element: "button" });
+  // A popover's content that holds none is measured alone.
+  const popover = chooseMeasuredElement(root(open), [portal({ role: "dialog", id: "pc", overlay: true })], componentSlots("Popover", "components/Popover"));
+  assert.equal(popover.kind === "portal" && popover.field, undefined);
+  // Closed, a combobox by its name is its field: measured as it is where it doesn't open, with no closed-trigger note.
+  const closed = node("button", { hasPopup: "dialog", expanded: "false", controls: "pc", state: "closed", styles: FILLED });
+  assert.deepEqual(chooseMeasuredElement(root(closed), [], slots), { kind: "tree", path: [0], element: "button", notes: [], trigger: { field: true, interactions: ["click"] } });
+});

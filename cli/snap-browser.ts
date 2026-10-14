@@ -1293,6 +1293,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       rendered: el.getClientRects().length > 0,
       // The content, not something in it matching too: Radix's tooltip holds a hidden copy of its text as role=tooltip.
       overlay: el.matches(overlay) && !el.parentElement?.closest(overlay),
+      ...(el.matches('[role="combobox"], [role="listbox"]') || el.querySelector('[role="combobox"], [role="listbox"]') ? { picks: true } : {}),
     })), OVERLAY_SELECTOR);
     const choice = chooseMeasuredElement(tree, portals, slots);
     if (choice.kind === "none") return { error: choice.error };
