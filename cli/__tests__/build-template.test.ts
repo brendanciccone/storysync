@@ -1617,7 +1617,7 @@ test("build: a variant copied from one with auto layout and strokes included, bu
   }
 });
 
-test("build: where Figma's whole-pixel hugging labels would push a layer, they are fixed at the browser's sizes, so nothing wraps (Item) or runs past its frame (Breadcrumb) and no frame is wider; elsewhere they hug", async () => {
+test("build: where Figma's whole-pixel hugging labels would push a layer, they are fixed at the browser's sizes, so nothing wraps (Item) or runs past its frame (Breadcrumb) and no frame is wider, unless one would wrap so; elsewhere they hug", async () => {
   type Text = { width: number; height: number; x: number; textAutoResize: string };
   // Item: "Action" is 43.13 measured and 44 hugging in Figma, which
   // narrows the description's column by 0.87, its own width, short of one
@@ -1653,6 +1653,21 @@ test("build: where Figma's whole-pixel hugging labels would push a layer, they a
   const measured = variant.nodes[0].box[2];
   assert.ok([page.x + page.width, list.width, root.width].every((w) => Math.abs(w - measured) < 0.01), `${page.x + page.width}, ${list.width}, ${root.width}: ${measured}`);
   assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)), []);
+  // Where Figma's font sets them wider than the browser did, each would
+  // wrap at its browser width: they hug, one line each, and the nav grows
+  // by what they lack, so nothing runs past the list.
+  const wide = new Map(variant.nodes.filter((n) => n.tx).map((n) => [n.tx!.c, n.box[2] + 0.1]));
+  const base = figmaFonts();
+  const wider = await buildAll(crumbs, { measure: { advance: (chars, font) => wide.get(chars) ?? base.advance(chars, font) } });
+  const wideRoot = variantsBySlug(wider.mock).get(variant.slug)!;
+  const wideList = wider.mock.handle(keyed(wideRoot, "breadcrumb-list")!.id) as { width: number };
+  let end = 0;
+  for (const k of ["breadcrumb-list/breadcrumb-link", "breadcrumb-list/breadcrumb-link:2", "breadcrumb-list/breadcrumb-page"]) {
+    const text = wider.mock.handle(keyed(wideRoot, k)!.id) as Text;
+    assert.deepEqual([text.textAutoResize, text.height], ["WIDTH_AND_HEIGHT", Math.ceil(variant.nodes.find((n) => n.k === k)!.box[3])], k);
+    end = Math.max(end, text.x + text.width);
+  }
+  assert.ok(end <= wideList.width + 0.01, `${end}: ${wideList.width}`);
   // A button whose label rounds up and pushes nothing hugs it, as a designer's would.
   const button = loadTreeFixture("example-button");
   const plain = await buildAll(button);

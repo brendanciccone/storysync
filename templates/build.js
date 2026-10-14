@@ -550,8 +550,9 @@ const balance = (n, t, w) => {
 // sibling until it wraps (Item's description beside "Action", 43.13 set
 // 44). Where that rounding pushes a layer so, each rounded text is fixed
 // at the size the browser drew it, which Figma keeps (probe 9a), and the
-// variant is as measured, no frame wider; elsewhere they hug, as a
-// designer's labels do, and verify takes Figma's whole pixels.
+// variant is as measured, no frame wider, unless Figma's font sets one
+// wider than the browser did; elsewhere they hug, as a designer's labels
+// do, and verify takes Figma's whole pixels.
 const slack = (nodes, recs) => {
   const round = [];
   let most = 0.05;
@@ -569,7 +570,29 @@ const slack = (nodes, recs) => {
     const past = (end, w) => Math.max(0, end + p.paddingRight - w);
     const d = p.layoutMode === 'HORIZONTAL' && n.layoutGrow ? r[5] - n.width : past(n.x + n.width, p.width) - past(r[3] + r[5], recs[r[1]][5]);
     if (d > 0.01 && d < most) {
-      for (const j of round) nodes[j].resize(recs[j][5], recs[j][6]);
+      for (const j of round) {
+        const [t, r] = [nodes[j], recs[j]];
+        const z = S[r[7]].t;
+        t.resize(r[5], r[6]);
+        // Fixed, it must still be one line. Where Figma's font sets it
+        // wider than the browser did, it would wrap (probe 9a: Geist wraps
+        // "Select a fruit" at 84.5): it hugs, and the frame that fixes its
+        // width grows by what it lacks.
+        t.textAutoResize = 'HEIGHT';
+        if (t.height <= 1.5 * (z.l || 1.27 * z.z)) {
+          t.textAutoResize = 'NONE';
+          t.resize(r[5], r[6]);
+          continue;
+        }
+        t.textAutoResize = 'WIDTH_AND_HEIGHT';
+        let q = r[1];
+        while (q && nodes[q].layoutSizingHorizontal !== 'FIXED') q = recs[q][1];
+        const f = nodes[q];
+        const v = f.layoutSizingVertical;
+        if (f.layoutSizingHorizontal !== 'FIXED') continue;
+        f.resize(f.width + t.width - r[5], f.height);
+        if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
+      }
       return;
     }
   }
