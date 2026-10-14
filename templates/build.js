@@ -767,20 +767,41 @@ const recordsOf = (base, delta) => {
 const idOf = (n) => get(n, 'id');
 const results = [];
 const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-// Moves down, below `n`, each set or component a push built that lies on
-// it, whether `n` grew onto it or an earlier push left it there; where one
-// starts above `n`, `n` moves below it instead. What moves pushes on in
-// turn. A designer's layer stays, counted in `overlaps`.
-const push = (n, moved) => {
-  for (const m of n.parent.children) {
-    if (m === n || !/^COMPONENT/.test(m.type) || !idOf(m) || !hit(m, n)) continue;
-    const [a, b] = m.y < n.y ? [n, m] : [m, n];
-    a.y = b.y + b.height + 100;
-    moved.push(a.id);
-    push(a, moved);
-    if (a === n) return;
+// Once the call's sets are built, moves the sets and components a push
+// built off one another, each at most once and only one that lies on
+// another, taken top first: a set built here moves below each that starts
+// above it and lies on it, and a set one moved, or grew, onto moves below
+// what it lies on, as far as clears it and any it lands on that starts
+// above it or has moved already. So none moves twice, and one that lies on
+// nothing stays. Each move is named once, in the `moved` of the set whose
+// build set it off: the one that grew or moved onto it, or the set itself
+// where it lay on one that starts above it. A designer's layer stays,
+// counted in `overlaps`.
+const settle = (built) => {
+  for (const parent of new Set(built.map(([n]) => n.parent))) {
+    const sets = parent.children.filter((m) => /^COMPONENT/.test(m.type) && idOf(m));
+    const done = new Map();
+    const due = new Map(built.filter(([n]) => n.parent === parent));
+    while (due.size) {
+      const [n, out] = [...due].reduce((a, b) => (b[0].y < a[0].y ? b : a));
+      due.delete(n);
+      let y = n.y;
+      let by = out;
+      for (let on, first = true; (on = sets.filter((m) => m !== n && !due.has(m) && (done.has(m) || m.y < y) && hit(m, { x: n.x, y, width: n.width, height: n.height }))).length; first = false) {
+        const onto = first && on.find((m) => done.has(m));
+        if (onto) by = done.get(onto);
+        y = Math.max(...on.map((m) => m.y + m.height)) + 100;
+      }
+      if (y !== n.y) {
+        n.y = y;
+        (by.moved = by.moved || []).push(n.id);
+      }
+      done.set(n, by);
+      for (const m of sets) if (!done.has(m) && !due.has(m) && hit(m, n)) due.set(m, by);
+    }
   }
 };
+const built = [];
 // Each set is checked before it is changed. One the user must answer for
 // is left as it is, its result saying why in `refused`, and the call goes
 // on to the others.
@@ -1098,13 +1119,12 @@ for (const set of DATA.sets) {
     }
     Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
   }
-  // No two sets a push built overlap; `overlaps` counts what else it lies
-  // on once laid out.
-  const moved = [];
-  push(node, moved);
-  if (moved.length) out.moved = moved;
-  out.overlaps = node.parent.children.filter((n) => n !== node && /^COMPONENT/.test(n.type) && hit(n, node)).length;
+  built.push([node, out]);
 }
+// No two sets a push built overlap; `overlaps` counts what else each lies
+// on once laid out.
+settle(built);
+for (const [node, out] of built) out.overlaps = node.parent.children.filter((n) => n !== node && /^COMPONENT/.test(n.type) && hit(n, node)).length;
 
 const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
 // use_figma returns at most 20,480 bytes, and refuses a call that would

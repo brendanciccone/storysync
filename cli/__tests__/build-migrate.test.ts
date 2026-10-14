@@ -236,9 +236,49 @@ test("build: a set an earlier push left on another is moved off it, below it, or
     await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(toggle.id)}); s.x = ${b.x + 10}; s.y = ${b.y + dy};`);
     const [then] = await push(mock, coded);
     assert.deepEqual(sets(then).map((s) => s.overlaps), [0, 0], `${dy}`);
+    // Named once, by the set it moved below, not as moving itself.
+    assert.deepEqual(sets(then).map((s) => s.moved), dy > 0 ? [[toggle.id], undefined] : [undefined, [button.id]], `${dy}`);
     const [top, below] = (dy > 0 ? [button, toggle] : [toggle, button]).map((s) => mock.handle(s.id) as { y: number; height: number });
     assert.equal(below.y, top.y + top.height + 100, `${dy}`);
   }
+});
+
+test("build: each set a push built moves once a call, below what it lies on, top first, and is named once in moved; one that lies on nothing stays", async () => {
+  // Questionnaire's call: the set it grew onto lay on a second, and both on
+  // a third, so each move pushed the next and the sets moved again and
+  // again, 26:2 five times, far below where they had to.
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const coded = await codeFor(loadTreeFixture("example-button"));
+  const [first] = await push(mock, coded);
+  const button = sets(first)[0];
+  const b = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+  // Sets an earlier push built, in the order Figma lists them: one further
+  // down first, then one just under Button's top, both on Button, a third
+  // on the second's way down, and one beside Button that lies on nothing.
+  const placed = [["lower", 60, 40], ["upper", 10, 30], ["next", b.height + 110, 30], ["beside", 0, 30]] as const;
+  const ids = (await mock.run(`const out = {};
+    for (const [name, dy, h] of ${JSON.stringify(placed)}) {
+      const c = figma.createComponent();
+      c.name = name; c.resize(${b.width}, h);
+      c.x = name === "beside" ? ${b.x + b.width + 400} : ${b.x}; c.y = ${b.y} + dy;
+      c.setSharedPluginData("storysync", "id", "stand-in-" + name);
+      (await figma.getNodeByIdAsync(${JSON.stringify(button.id)})).parent.appendChild(c);
+      out[name] = c.id;
+    }
+    return out;`)).value as Record<string, string>;
+  const box = (id: string) => mock.handle(id) as { y: number; height: number };
+  const beside = box(ids.beside).y;
+  const [then] = await push(mock, coded);
+  const [built] = sets(then);
+  assert.deepEqual(built.moved, [ids.upper, ids.lower, ids.next]);
+  assert.equal(built.overlaps, 0);
+  // Each just below the one above it, none further.
+  const [upper, lower, next] = [ids.upper, ids.lower, ids.next].map(box);
+  assert.deepEqual([upper.y, lower.y, next.y], [b.y + b.height + 100, upper.y + upper.height + 100, lower.y + lower.height + 100]);
+  assert.equal(box(ids.beside).y, beside);
+  // Sent again, nothing lies on anything: nothing moves.
+  const [again] = await push(mock, coded);
+  assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 0]);
 });
 
 test("build and read: the first call of each kind stores its template in the file, the rest run it from there, refused where the file holds another", async () => {
