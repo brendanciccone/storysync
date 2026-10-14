@@ -1480,7 +1480,7 @@ test("unsaidWarnings: a warning whose caveat the measurements don't bear out is 
   const identical = describeIdenticalVariants([
     { slug: "a", status: "ok", combination: {}, delta: {}, error: null }, { slug: "b", status: "ok", combination: {}, delta: {}, error: null },
   ] as never, [], [])!;
-  const shared = "2 components share the key \"Forms/Button\", which identifies a component in the readback and during verification — their variants will collide and only one will be scored. Give them distinct Storybook titles.";
+  const shared = "2 components share the key \"Forms/Button\", which identifies a component in the readback and during verification, so their variants will collide and only one will be scored. Give them distinct Storybook titles.";
   const truncated = "the element tree of every variant holds more than snap keeps (600 elements, 24 levels deep): up to 900 elements, so everything from `list/item` on was left out, and verify lists it as not measured.";
   component.warnings = [identical, shared, truncated];
   // This snap's variants measured differently, so no identical-variants

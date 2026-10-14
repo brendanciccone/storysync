@@ -4,7 +4,7 @@ Thanks for your interest in Storysync. This guide covers the basics for working 
 
 ## Local development setup
 
-Storysync uses [pnpm](https://pnpm.io/) as its package manager. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored.
+Storysync uses [pnpm](https://pnpm.io/) as its package manager: version 10.33.0 or later, as `packageManager` in `package.json` pins it (Corepack picks it up), on Node 18 or later. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored. `engines` in `package.json` names only Node, since it is published and checked against every user's install.
 
 ```bash
 pnpm install
@@ -14,7 +14,7 @@ pnpm test
 
 ### Supply-chain protection
 
-This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time — defense against npm supply-chain attacks like Shai-Hulud.
+This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time: defense against npm supply-chain attacks like Shai-Hulud.
 
 Install it once with the command in [its README's Installation section](https://github.com/AikidoSec/safe-chain#installation). It downloads the install script from a pinned release and checks its SHA-256 before running it. The version and checksum change with every release, so copy the command from there. Then restart your terminal, and `pnpm safe-chain-verify` should print `OK: Safe-chain works!`.
 
@@ -22,17 +22,18 @@ No tokens or config required. Free and open source.
 
 ## Scripts
 
-- `pnpm build` — compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
-- `pnpm dev` — incremental compile in watch mode
-- `pnpm lint` — type-check without emitting
-- `pnpm test` — build and run the node test runner suite
-- `pnpm acceptance` — end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm storybook`). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
+- `pnpm build`: compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
+- `pnpm dev`: incremental compile in watch mode
+- `pnpm lint`: type-check without emitting
+- `pnpm test`: build and run the node test runner suite
+- `pnpm acceptance`: end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm install && pnpm storybook`; the example has its own lockfile and is not a workspace package). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
 
 ## Submitting changes
 
 - Keep commits focused and descriptive.
 - Run `pnpm lint` and `pnpm test` before opening a pull request.
 - Follow the existing code style (TypeScript, ESM, no semi-bikeshedding).
+- Keep `skills/codex.md` byte-identical to `skills/claude-code.md` from `## Tokens` down. `skills/cursor.mdc` follows the same steps, but gives the root-only build and readback and the audit's reads in prose, without the plugin code the other two carry, and says so: a change to those templates is a change to its prose.
 
 ## Releasing
 

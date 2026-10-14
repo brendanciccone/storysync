@@ -8,7 +8,7 @@ import { runSetup } from "../setup.js";
 import { extractTokens } from "../tokens.js";
 import { variablesFromTokens } from "../figma-tokens.js";
 import type { Client } from "../setup.js";
-import { COMPARABLE_PROPERTIES, READBACK_FIELDS, READBACK_LATER_FIELDS, readbackChecksum, checkReadback } from "../verify.js";
+import { COMPARABLE_PROPERTIES, READBACK_FIELDS, READBACK_LATER_FIELDS, READBACK_SCORED_IF_PRESENT, readbackChecksum, checkReadback } from "../verify.js";
 import type { ReadbackFile } from "../verify.js";
 
 function tempProject(): string {
@@ -605,7 +605,7 @@ test("every push instruction sets itemSpacing from the gap along the layout's di
   }
 });
 
-test("every push instruction builds an inset shadow as an inner shadow, and says verify doesn't read shadows back", () => {
+test("every push instruction builds an inset shadow as an inner shadow, and reads shadows back for verify", () => {
   // snap records inset, but the table built every layer as a DROP_SHADOW, so
   // an input's ring-1 ring-inset border, and shadow-inner, landed outside the
   // element, and nothing scored it.
@@ -624,7 +624,8 @@ test("every push instruction builds an inset shadow as an inner shadow, and says
       const row = /`boxShadow\[\]` (?:\||→)([^|\n]*)/.exec(text)?.[1] ?? "";
       assert.match(row, /`INNER_SHADOW` where `inset` is true[^\n]*else `DROP_SHADOW`/, `${path} builds every shadow layer as a drop shadow`);
       assert.match(row, /`offset` from `offsetX`\/`offsetY`, `radius` from `blur`, and `spread`/, `${path} never says how a layer's lengths map`);
-      assert.match(row, /`verify` (?:does not|doesn't) read effects back/, `${path} lets a shadow pass for scored`);
+      // Read back now, so verify compares them: no longer a gap to warn of.
+      assert.match(row, /`verify` compares layer by layer/, `${path} lets a shadow pass unscored`);
     }
   } finally {
     rmSync(project, { recursive: true, force: true });
@@ -691,7 +692,7 @@ test("every push instruction builds a border's style as a dash pattern and reads
     }
     const cursor = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
     assert.match(cursor, /`borderUniform` → stroke[^\n]*`style` as the stroke's `dashPattern`, for a width `w`: none for `solid`, `\[3w, 3w\]` for `dashed`, `\[w, w\]` for `dotted`/, "the Cursor rule builds every border as a solid stroke");
-    assert.match(cursor, /^ *- `borderUniform` — [^\n]*`style` is the border style the stroke's `dashPattern` was built from/m, "the Cursor rule's readback writes every border's style as solid");
+    assert.match(cursor, /^ *- `borderUniform`: [^\n]*`style` is the border style the stroke's `dashPattern` was built from/m, "the Cursor rule's readback writes every border's style as solid");
     assert.doesNotMatch(cursor, /style: "solid"/, "the Cursor rule's readback writes every border's style as solid");
   } finally {
     rmSync(project, { recursive: true, force: true });
@@ -1377,7 +1378,7 @@ test("verify requires exactly the fields the Claude template returns on every va
     assert.ok(fields.length > 10, `read ${fields.length} fields from the template`);
     // Less the fields added since, which verify can't require of a readback
     // an earlier template read.
-    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS, ...READBACK_LATER_FIELDS].sort(), "verify's required fields are not the ones the template returns");
+    assert.deepEqual(fields.map((f) => f.key).sort(), [...READBACK_FIELDS, ...READBACK_LATER_FIELDS, ...READBACK_SCORED_IF_PRESENT].sort(), "verify's required fields are not the ones the template returns");
     // None of them is left out where Figma has nothing to report: a field
     // that can be undefined drops out of what the call returns.
     for (const { key, value } of fields) {
@@ -1754,5 +1755,36 @@ test("every skill and the push command send a build again only for drift a resen
     assert.doesNotMatch(text, /If `verify` reports drift, send that component's build calls again once|Don't fix drift by hand: send that component's build calls once more/, `${file} still resends for any drift`);
     assert.match(text, /send a build again only for drift a resend can change|don't send a build again for drift it made itself/, file);
     for (const kind of [/font stand-in/, /shapes/, /truncation/, /a build response that failed or came back cut short|its build response failed or came back cut short/]) assert.match(text, kind, file);
+  }
+});
+
+test("the root-only readback reads a variant's shadows back, so verify compares them", async () => {
+  // The root-only table builds one effect per box-shadow layer, and its
+  // readback returned none, so a shadow built wrong verified clean.
+  const project = tempProject();
+  try {
+    setupOutput(project, false, "claude");
+    setupOutput(project, false, "codex");
+    const node = {
+      name: "raised", fills: [], strokes: [], cornerRadius: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0,
+      layoutMode: "NONE", itemSpacing: 0, opacity: 1, width: 100, height: 40, findOne: () => null,
+      effects: [
+        { type: "DROP_SHADOW", visible: true, offset: { x: 0, y: 4 }, radius: 12, spread: 0, color: { r: 0, g: 0, b: 0, a: 0.1 } },
+        { type: "INNER_SHADOW", visible: true, offset: { x: 0, y: 0 }, radius: 0, spread: 1, color: { r: 0, g: 0, b: 0, a: 1 } },
+        { type: "DROP_SHADOW", visible: false, offset: { x: 0, y: 1 }, radius: 2, spread: 0, color: { r: 0, g: 0, b: 0, a: 1 } },
+        { type: "LAYER_BLUR", visible: true, radius: 4 },
+      ],
+    };
+    for (const path of [join(".claude", "skills", "storysync", "SKILL.md"), join(".agents", "skills", "storysync", "SKILL.md")]) {
+      const text = readFileSync(join(project, path), "utf8");
+      assert.doesNotMatch(text, /`verify` does not read effects back/, path);
+      const { readback } = await runReadback(text, path, [node]);
+      assert.deepEqual(readback.raised.boxShadow, [
+        { offsetX: 0, offsetY: 4, blur: 12, spread: 0, color: "#0000001a", inset: false },
+        { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#000000", inset: true },
+      ], path);
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
   }
 });

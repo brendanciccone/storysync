@@ -168,7 +168,7 @@ export async function resolveAndLaunch(opts: { headless?: boolean } = {}): Promi
       "  - install Google Chrome or Microsoft Edge\n" +
       `  - download a browser: ${browserInstallCommand()}\n` +
       "  - point storysync at an existing binary: STORYSYNC_BROWSER_PATH=/path/to/chrome\n" +
-      "\nNote: use the full `playwright` package to download browsers — storysync\n" +
+      "\nNote: use the full `playwright` package to download browsers. storysync\n" +
       "depends on playwright-core, which cannot download them itself.",
   );
 }
@@ -208,6 +208,13 @@ export interface CaptureResult {
    * never becomes visible, would only time out again.
    */
   retryable: boolean;
+  /**
+   * False where the story never rendered: the page didn't load (Storybook
+   * unreachable), or Storybook hadn't finished rendering the story when
+   * the wait ended. A failure of the run, not of the story, which figma
+   * code builds no placeholder for. Absent otherwise.
+   */
+  rendered?: false;
   raw: RawComputedStyles | null;
   textRaw: RawComputedStyles | null;
   boundingBox: { x: number; y: number; width: number; height: number } | null;
@@ -371,7 +378,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     let renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
 
-    const appeared = await waitForStory(page, opts.selector, slots, opts.timeoutMs, opts.story?.id ?? new URL(url).searchParams.get("id") ?? undefined);
+    const { appeared, rendered } = await waitForStory(page, opts.selector, slots, opts.timeoutMs, opts.story?.id ?? new URL(url).searchParams.get("id") ?? undefined);
     // Storybook paints a story's error after the page has loaded. The wait
     // ends on it, or times out on a story that threw before rendering
     // anything; either way an error shown now is why nothing is there.
@@ -383,7 +390,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       const error = opts.selector
         ? `no element matched ${opts.selector}`
         : `nothing that draws rendered under ${ROOT_CONTAINERS.join(" or ")}`;
-      return { status: "element_not_found", error, ...empty };
+      return { status: "element_not_found", error, ...empty, ...(rendered === false ? { rendered: false as const } : {}) };
     }
 
     // Before anything is measured: a value Storybook didn't give the story
@@ -531,7 +538,12 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // a refused connection into a timeout. Its TimeoutError names itself, and
     // this file imports only playwright's types, so the class isn't to hand.
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
-    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
+    // One before the page loaded that isn't a timeout is a refused
+    // connection, a reset, a lookup that failed: Storybook wasn't there.
+    return {
+      status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded,
+      ...(!loaded ? { rendered: false as const } : {}),
+    };
   } finally {
     await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
     // Closed again, whatever came of measuring it.
@@ -1137,10 +1149,12 @@ export const RENDERED_GRACE_MS = 1000;
  * more rather than the whole of --timeout: coder's ConfirmDialog spent 10
  * seconds on each of 23 such variants.
  */
-async function waitForStory(page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number, storyId?: string): Promise<boolean> {
+async function waitForStory(
+  page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number, storyId?: string,
+): Promise<{ appeared: boolean; rendered: boolean | null }> {
   const wanted = selector ?? storyReadySelector(slots);
   const appeared = page.waitForSelector(wanted, { state: "attached", timeout: timeoutMs }).then(() => true, () => false);
-  if (!storyId) return appeared;
+  if (!storyId) return { appeared: await appeared, rendered: null };
   let done = false;
   const rendered = (async (): Promise<"rendered" | "waited"> => {
     const deadline = Date.now() + timeoutMs;
@@ -1155,12 +1169,19 @@ async function waitForStory(page: Page, selector: string | undefined, slots: rea
   })();
   const first = await Promise.race([appeared, rendered]);
   done = true;
-  if (typeof first === "boolean") return first;
+  if (first === true) return { appeared: true, rendered: true };
+  // The wait for the element ended first: whether Storybook rendered the
+  // story says whether the story drew nothing or never got to draw.
+  if (first === false) return { appeared: false, rendered: await page.evaluate(storyRenderedInPage, storyId).catch(() => null) };
   // Rendered and given its grace: whatever draws has drawn by now.
-  return first === "rendered" ? await page.$(wanted).then((found) => {
-    void found?.dispose();
-    return found != null;
-  }, () => false) : appeared;
+  if (first === "rendered") {
+    const found = await page.$(wanted).then((handle) => {
+      void handle?.dispose();
+      return handle != null;
+    }, () => false);
+    return { appeared: found, rendered: true };
+  }
+  return { appeared: await appeared, rendered: false };
 }
 
 /** Runs in the page: whether Storybook has finished rendering `storyId`, as its preview's render says. */
@@ -2060,7 +2081,7 @@ export async function checkStoryArgs(
 
   const after = await read();
   if ("error" in after) return { checked: true, rejected, unapplied: rejected, error: after.error, ...known };
-  const unapplied = stillRejected(story.args, rejected, after);
+  const unapplied = stillRejected(story.args, rejected, after, story.properties);
   if (unapplied.length) {
     return { checked: true, rejected, unapplied, error: "the story still wasn't given them after Storybook's preview took them", ...known };
   }

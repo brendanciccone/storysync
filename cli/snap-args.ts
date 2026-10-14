@@ -193,6 +193,17 @@ export function conditionHolds(
 }
 
 /**
+ * Whether the component draws `value` with its prop left unset, as far as
+ * its property says: the value standing for it unset, or a boolean's false
+ * where the docs default it to false. A default only assumed says nothing.
+ */
+function drawnUnset(property: FigmaVariantProperty | undefined, value: string): boolean {
+  if (!property) return false;
+  if (property.unset !== undefined) return property.unset === value;
+  return property.type === "BOOLEAN" && value === "false" && property.defaultValue === "false" && !property.defaultAssumed;
+}
+
+/**
  * The requested values the story wasn't given, each with every reason that
  * explains it. `requested` is snap's combination; `properties` give each
  * prop's type, so a boolean is compared as one; `notInUrl` names the args
@@ -220,6 +231,10 @@ export function findRejectedArgs(
     // applied, as size is for variant=link.
     const hidden = !!argType?.if && conditionHolds(argType.if, mapped, snapshot.globals) === false;
     if (!hidden && Object.hasOwn(snapshot.rendered, name) && argMatches(snapshot.rendered[name], value)) continue;
+    // Not given at all, so the component draws the value it takes for the
+    // prop left unset: where that is the value asked for, as coder's
+    // Button's `disabled` false, nothing was refused that would change it.
+    if (!hidden && !Object.hasOwn(snapshot.rendered, name) && !Object.hasOwn(snapshot.stored, name) && drawnUnset(byName.get(name), value)) continue;
     const rejection: ArgRejection = { name, value, reasons: [] };
     if (notInUrl.includes(name)) {
       // Never sent, so nothing the URL would have done to it applies.
@@ -296,10 +311,14 @@ export function stillRejected(
   requested: Record<string, string>,
   rejected: readonly ArgRejection[],
   after: StoryArgsSnapshot,
+  properties: readonly FigmaVariantProperty[] = [],
 ): ArgRejection[] {
+  const byName = new Map(properties.map((p) => [p.name, p]));
   const remaining: ArgRejection[] = [];
   for (const [name, value] of Object.entries(requested)) {
     if (Object.hasOwn(after.rendered, name) && argMatches(after.rendered[name], value)) continue;
+    // Still not given, as findRejectedArgs let pass: drawn as asked unset.
+    if (!Object.hasOwn(after.rendered, name) && !Object.hasOwn(after.stored, name) && drawnUnset(byName.get(name), value)) continue;
     remaining.push(rejected.find((r) => r.name === name) ?? { name, value, reasons: ["not-applied"] });
   }
   return remaining;
@@ -382,12 +401,16 @@ const quoteList = (values: readonly unknown[]) => values.map((v) => (typeof v ==
  * that it rejected for one reason, in `file` when it is known; null for a
  * reason no story change fixes.
  */
-function storyFix(name: string, reason: ArgRejectionReason, values: string[], group: ArgRejection, file: string): string | null {
+function storyFix(name: string, reason: ArgRejectionReason, values: string[], group: ArgRejection, file: string, boolean: boolean): string | null {
   switch (reason) {
     case "not-in-options":
       return `add ${quoteList(values)} to argTypes.${name}.options${file}`;
     case "not-in-argtypes":
-      return `declare ${name} in the story's argTypes, with options ${quoteList(values)}${file}`;
+      // Storybook's URL gives a boolean as `!true`, which options of the
+      // strings 'true' and 'false' would refuse in turn.
+      return boolean
+        ? `declare ${name} in the story's argTypes as a boolean, \`${name}: { control: "boolean" }\`${file}`
+        : `declare ${name} in the story's argTypes, with options ${quoteList(values)}${file}`;
     case "hidden-by-if":
       return `remove \`if: ${JSON.stringify(group.condition)}\` from argTypes.${name}${file}`;
     case "not-applied":
@@ -426,9 +449,10 @@ function reasonText(reason: ArgRejectionReason, group: ArgRejection): string {
 export function describeArgRejections(
   label: string,
   variants: readonly VariantArgs[],
-  options: { storyFile?: string | null; id?: string } = {},
+  options: { storyFile?: string | null; id?: string; properties?: readonly FigmaVariantProperty[] } = {},
 ): string[] {
   const file = options.storyFile ? ` in ${options.storyFile}` : "";
+  const booleans = new Set((options.properties ?? []).filter((p) => p.type === "BOOLEAN").map((p) => p.name));
   const fixable = (reason: ArgRejectionReason) => !NO_STORY_FIX.has(reason);
   const describe = (picked: readonly VariantArgs[], reasons: (reason: ArgRejectionReason) => boolean) => {
     // By arg and reason, in the order first met: name -> reason -> values.
@@ -449,7 +473,7 @@ export function describeArgRejections(
     for (const [name, byReason] of groups) {
       for (const [reason, { values, first }] of byReason) {
         causes.push(`\`${name}\` ${values.join(", ")}: ${reasonText(reason, first)}`);
-        const fix = storyFix(name, reason, values, first, file);
+        const fix = storyFix(name, reason, values, first, file, booleans.has(name));
         if (fix) fixes.push(fix);
       }
     }

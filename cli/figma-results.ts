@@ -304,7 +304,12 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   for (const alpha of plan.alphas ?? []) {
     if (!alpha.components?.length || alpha.components.some((c) => builtBy.has(c))) continue;
     const seqs = [...new Set(alpha.components.flatMap((c) => failed.get(c) ?? []))].sort((a, b) => a - b).map((n) => String(n).padStart(2, "0"));
-    unusedAlphas.push(`${alpha.variable}${alpha.collection ? ` (${alpha.collection})` : ""}: made for ${alpha.components.join(", ")}, whose build ${seqs.length === 1 ? "call" : "calls"} ${seqs.join(", ")} saved no build result`);
+    const name = `${alpha.variable}${alpha.collection ? ` (${alpha.collection})` : ""}: made for ${alpha.components.join(", ")}`;
+    // A component no call builds, as one whose every variant was too big
+    // for a call, has no call to name.
+    unusedAlphas.push(seqs.length
+      ? `${name}, whose build ${seqs.length === 1 ? "call" : "calls"} ${seqs.join(", ")} saved no build result`
+      : `${name}, which no build call builds, so nothing binds it`);
   }
   for (const call of plan.calls) {
     if (call.kind === "build" && existsSync(join(base, call.result))) {

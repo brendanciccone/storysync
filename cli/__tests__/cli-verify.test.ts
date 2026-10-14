@@ -104,7 +104,7 @@ test("verify CLI: a matching readback passes --strict and says what it matched",
 test("verify CLI: a readback with nothing comparable fails --strict as incomplete and claims no match", () => {
   const r = verify(snap(), readback({ source: "measured" }), "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, width, height, which the readback template always returns, so the template was cut down — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, width, height, which the readback template always returns, so the template was cut down; nothing in it was scored/);
   assert.match(r.out, /1 with an unverified readback/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
@@ -196,7 +196,7 @@ test("verify CLI: a readback entry edited after Figma returned it fails --strict
   const r = verify(snap(), file, "--strict");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /1 with an unverified readback/);
-  assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it; nothing in it was scored/);
   assert.match(r.out, /Read these variants back again[^\n]*exactly as returned/);
   assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
@@ -293,7 +293,7 @@ test("verify CLI: a component's entries copied onto another, nodeId and all, fai
   components["Forms/Link"] = JSON.parse(JSON.stringify(components["Forms/Button"]));
   const r = verify(snap(), file, "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Forms\/Button a readback entry has a nodeId its component shares with Forms\/Link, though every component is read back from a set of its own, so one component's entries were copied onto another — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry has a nodeId its component shares with Forms\/Link, though every component is read back from a set of its own, so one component's entries were copied onto another; nothing in it was scored/);
   assert.match(r.out, /Forms\/Link a readback entry has a nodeId its component shares with Forms\/Button/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
@@ -306,7 +306,7 @@ test("verify CLI: a readback read before the snap fails --strict as stale, and o
   const earlier = new Date(measured - 3_600_000).toISOString();
   const stale = verifyMeasuredAt(measuredAt, snap(), readback(MATCHING, { readAt: earlier }), "--strict");
   assert.equal(stale.status, 1, stale.out);
-  assert.match(stale.out, new RegExp(`readback entry is stale: Figma read it at ${earlier}, before the snap was measured at ${measuredAt}, so it is from an earlier run — nothing in it was scored`));
+  assert.match(stale.out, new RegExp(`readback entry is stale: Figma read it at ${earlier}, before the snap was measured at ${measuredAt}, so it is from an earlier run; nothing in it was scored`));
   assert.match(stale.out, /Read these variants back again, after the snap,/);
   assert.doesNotMatch(stale.out, /Figma matches/);
 
@@ -417,7 +417,7 @@ test("verify CLI: variants Storybook wouldn't render are named beside the score 
     "  ! The score compares Figma with what snap measured, and snap warned about that for this component:",
     "      Forms/Button: Storybook wouldn't render variant=link, so snap didn't measure 1 variant and nothing here scored it; snap's warning names the story change that lets it",
   ]);
-  assert.match(r.out, /Forms\/Button b \[unmeasured — written to Figma but never scored\]/);
+  assert.match(r.out, /Forms\/Button b \[unmeasured: written to Figma but never scored\]/);
   assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
 });
 
@@ -584,8 +584,8 @@ test("verify CLI: a variant in Figma's set no read covered is named under proven
   const strict = verify(resnap, readback, "--strict");
   assert.equal(strict.status, 0, strict.out);
   assert.match(strict.out, /Provenance: 2 in Figma's sets that no read covered/);
-  assert.match(strict.out, /ui\/base\/Switch size=xl \[not built by storysync — in Figma's set but never scored\]/);
-  assert.match(strict.out, /ui\/base\/Switch: 1 variant carries a slug no read covered \[built by an earlier push for a variant snap no longer measures — never scored\]/);
+  assert.match(strict.out, /ui\/base\/Switch size=xl \[not built by storysync: in Figma's set but never scored\]/);
+  assert.match(strict.out, /ui\/base\/Switch: 1 variant carries a slug no read covered \[built by an earlier push for a variant snap no longer measures, never scored\]/);
   assert.match(strict.out, /Figma matches the expected styles/, "not all of it measured, so not \"measured\"");
   assert.equal(verify(resnap, readback, "--strict-measured").status, 1);
 });

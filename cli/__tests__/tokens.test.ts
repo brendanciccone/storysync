@@ -2253,3 +2253,87 @@ test("radius: a DEFAULT that repeats a step in every mode is left out; one that 
   // Spacing's DEFAULT is a step of its own.
   assert.deepEqual(names(withoutRepeatedDefault([{ category: "spacing", tokens: [{ name: "DEFAULT", value: "4px", px: 4 }, { name: "1", value: "4px", px: 4 }] }])), ["DEFAULT", "1"]);
 });
+
+/**
+ * A project whose tailwindcss is a stand-in for Tailwind 3's loadConfig
+ * and resolveConfig, merging presets and extend as Tailwind does, over a
+ * default theme of one color and one radius.
+ */
+function projectWithTailwind(config: string, files: Record<string, string> = {}): string {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-tw-load-"));
+  const write = (path: string, text: string) => {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  };
+  write("package.json", JSON.stringify({ name: "app", private: true }));
+  write("tailwind.config.js", config);
+  write("node_modules/tailwindcss/package.json", JSON.stringify({ name: "tailwindcss", version: "3.4.0" }));
+  write("node_modules/tailwindcss/loadConfig.js", "module.exports = (path) => require(path);\n");
+  write("node_modules/tailwindcss/resolveConfig.js", `
+const defaults = { colors: { black: "#000000" }, borderRadius: { lg: "0.5rem" } };
+module.exports = (config) => {
+  const theme = JSON.parse(JSON.stringify(defaults));
+  for (const layer of [...(config.presets || []), config]) {
+    const own = layer.theme || {};
+    for (const [key, value] of Object.entries(own)) if (key !== "extend") theme[key] = value;
+    for (const [key, value] of Object.entries(own.extend || {})) theme[key] = { ...(theme[key] || {}), ...value };
+  }
+  return { theme };
+};
+`);
+  for (const [path, text] of Object.entries(files)) write(path, text);
+  return dir;
+}
+
+test("Tailwind: a config text can't read whole is loaded as Tailwind does, and its resolved theme read, less the defaults", () => {
+  // A package's preset and a function's config were named in a warning,
+  // and their tokens were missing, though Tailwind runs the config anyway.
+  const dir = projectWithTailwind(
+    `const withBrand = (config) => ({ ...config, presets: [require("@acme/preset")] });
+module.exports = withBrand({ content: [], theme: { extend: { colors: { accent: "#abcdef" }, borderRadius: { pill: "999px" } } } });
+`,
+    { "node_modules/@acme/preset/index.js": `module.exports = { theme: { extend: { colors: { brand: { DEFAULT: "#123456", fg: "#fefefe" } } } } };\n` },
+  );
+  try {
+    const result = extractTokens(dir, "tailwind");
+    const names = result.collections.flatMap((c) => c.tokens.map((t) => `${c.category}:${t.name}=${t.value}`)).sort();
+    assert.deepEqual(names, ["colors:accent=#abcdef", "colors:brand/DEFAULT=#123456", "colors:brand/fg=#fefefe", "radius:pill=999px"]);
+    assert.match(result.warnings[0], /^Loaded .*tailwind\.config\.js as Tailwind does, by running it, since reading it as text left some of it unread/);
+    assert.ok(!result.warnings.some((w) => /can't read statically/.test(w)), result.warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tailwind: a config text reads whole is never run", () => {
+  const dir = projectWithTailwind(`module.exports = { content: [], theme: { extend: { colors: { accent: "#abcdef" } } } };\n`);
+  try {
+    // A loadConfig that would throw if called.
+    writeFileSync(join(dir, "node_modules/tailwindcss/loadConfig.js"), "module.exports = () => { throw new Error('ran'); };\n");
+    const result = extractTokens(dir, "tailwind");
+    assert.deepEqual(result.collections.flatMap((c) => c.tokens.map((t) => t.name)), ["accent"]);
+    assert.ok(!result.warnings.some((w) => /Loaded|as Tailwind does/.test(w)), result.warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tailwind: without the project's tailwindcss, or where its config throws, the text's warning stays, with why it couldn't be loaded", () => {
+  const config = `const withBrand = (c) => c;\nmodule.exports = withBrand({ content: [], theme: { extend: { colors: { accent: "#abcdef" } } } });\n`;
+  const dir = mkdtempSync(join(tmpdir(), "storysync-tw-noload-"));
+  try {
+    writeFileSync(join(dir, "tailwind.config.js"), config);
+    const result = extractTokens(dir, "tailwind");
+    assert.ok(result.warnings.some((w) => /passes its config through withBrand\(\)/.test(w)));
+    assert.ok(result.warnings.some((w) => /^Could not load .*tailwind\.config\.js as Tailwind does either: the project has no tailwindcss/.test(w)), result.warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const broken = projectWithTailwind(config.replace("module.exports", "throw new Error(\"no env\");\nmodule.exports"));
+  try {
+    const result = extractTokens(broken, "tailwind");
+    assert.ok(result.warnings.some((w) => /^Could not load .* as Tailwind does either: Error: no env/.test(w)), result.warnings.join("\n"));
+  } finally {
+    rmSync(broken, { recursive: true, force: true });
+  }
+});

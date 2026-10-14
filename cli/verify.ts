@@ -971,6 +971,14 @@ export const READBACK_FIELDS = [
 export const READBACK_LATER_FIELDS = ["textLayout", "bound", "unbound"] as const;
 
 /**
+ * Fields the root-only template returns that verify scores where an entry
+ * has them and requires of none: `boxShadow`, each shadow as snap writes
+ * a box-shadow layer, which a readback read before the template returned
+ * it lacks, and is still scored without.
+ */
+export const READBACK_SCORED_IF_PRESENT = ["boxShadow"] as const;
+
+/**
  * The fields the element-tree template (templates/readback.js) returns on
  * an entry beside READBACK_FIELDS, `boxShadow` among them, or on a later
  * part of a variant read in parts, which carries no root fields.
@@ -1535,7 +1543,6 @@ export function verify(
   };
 }
 
-/** Whether an entry was read by the element-tree template, which no earlier template's has a field of. */
 /**
  * Why snap couldn't measure a variant, for the line verify lists it on: its
  * status and error, and whether the component's warnings name a story
@@ -1557,6 +1564,7 @@ function oneLine(text: string, max = 100): string {
   return `${cut.slice(0, cut.lastIndexOf(" ") > max / 2 ? cut.lastIndexOf(" ") : max).replace(/[\s,;:.]+$/, "")}…`;
 }
 
+/** Whether an entry was read by the element-tree template, which no earlier template's has a field of. */
 function isTreeEntry(entry: unknown): entry is ReadbackStyles {
   return entry != null && typeof entry === "object" && TREE_MARKS.some((key) => (entry as Record<string, unknown>)[key] !== undefined);
 }
@@ -1939,7 +1947,7 @@ export function readSnapAge(
   // Clamping a future date to "0s ago" would report a skewed clock as
   // maximally fresh, which is the wrong way to be wrong.
   if (measured > now + MAX_CLOCK_SKEW_MS) {
-    return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}) — check the clock` };
+    return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}): check the clock` };
   }
 
   // Only times that are times: a component with none is held to measuredAt.
@@ -1955,7 +1963,7 @@ export function readSnapAge(
     const theirs = only.map((key) => times[key] ?? meta.measuredAt as string);
     at = theirs.reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min));
     if (Date.parse(at) > now + MAX_CLOCK_SKEW_MS) {
-      return { known: false, reason: `a component's measuredAt is in the future (${at}) — check the clock` };
+      return { known: false, reason: `a component's measuredAt is in the future (${at}): check the clock` };
     }
   }
   const ageMs = Math.max(0, now - Date.parse(at));

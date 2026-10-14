@@ -199,12 +199,15 @@ Writes every `use_figma` call a push makes, as files your AI client sends to Fig
 
 ```text
 storysync figma code [options]
-  --snap <path>          Snap output, with element trees (default: ".storysync/snaps/styles.json")
+  --snap <path>          Snap output, with element trees: its styles.json, or the directory that
+                         holds it (default: ".storysync/snaps/styles.json")
   --tokens <path>        `storysync tokens --json` output, for binding paints and radii to variables;
                          without it nothing is bound (default: ".storysync/tokens.json")
   --components <names>   Comma-separated component names, titles or IDs to build (default: every
                          component in the snap); a name that matches nothing is an error
   --skip <names>         Comma-separated component names, titles or IDs to leave out
+  --replace-measured     Build "Not measured" placeholders over variants Figma has measured from an
+                         earlier push, where the story now fails; only once the user has said so
   --out <dir>            Where plan.json, calls/ and results/ go; an earlier plan Figma answered a
                          read of moves to earlier/ there with its calls and results, and any other's
                          are removed (default: ".storysync/figma")
@@ -500,7 +503,9 @@ Use the version the error prints. Other Playwright versions install a browser th
 - Where a component clips its background inside a fully transparent border, as shadcn/ui Button's `border-transparent bg-clip-padding` does, the frame is built at the border box with its corner radius bound to its token. The fill runs 1px under the clear stroke: `figma code` warns about it and `verify` lists it under coverage.
 - A translucent, dashed or partly transparent border over a padding-box background is still built `OUTSIDE` at the padding box, at the inner radius. That radius is left unbound, with a warning.
 - Icons are imported from their SVG at their measured size, drawn inside their padding as the browser draws them (`[&>svg]:p-0.5`). An icon whose shapes were recolored or changed in Figma is imported again, under a new node id, since the build sets an icon's shapes only by importing them.
-- A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source, every variant of a component snap measured none of. `verify` lists each, with its status and error, and names each component with variants not measured.
+- A variant that failed in its story (a render error, an element not found though the story rendered, args Storybook refused) is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source, every variant of a component snap measured none of. `verify` lists each, with its status and error, and names each component with variants not measured.
+- A variant the run failed, not the story (a timeout, or a story that never rendered because Storybook was down or busy, which snap records as `rendered: false`), is not built at all, so Figma keeps what it has for it. `figma code` says which, and to measure them again with `--components <id> --merge`.
+- A placeholder never replaces a variant Figma has measured from an earlier push without the user's say. `figma code` finds those in the readback `verify --plan` assembled and in the read results under `--out`, leaves them as they are, and warns; `--replace-measured` builds the placeholders over them.
 - What Figma can't draw is left out and named in `figma code`'s warnings, never approximated silently, and `verify` lists it under coverage. What it draws another way is named as `built as`: borders with a different color on each side as one color, and scaling as the element's own box.
 - A turn is built as the element's own box, unturned, in an auto layout's flow, which Figma lays out by its turned box, unless it is 180 degrees, or 90 on a square, where that box is its own. So is a turn of a layer with children, or inside a turned or scaled layer. Any other turn of a childless layer, such as a tooltip's arrow or a chevron turned 180, is built turned and scored.
 
@@ -695,13 +700,13 @@ A `var()` that doesn't resolve stays as written, with a warning starting `Unreso
 
 ### Tailwind configs
 
-Storysync reads a Tailwind config as text and never runs it.
+Storysync reads a Tailwind config as text first, which runs none of it:
 
 - A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, or in an object the config file declares, is read the same way, one level deep. They merge as in Tailwind: a key set in `theme` itself replaces a preset's, one in `theme.extend` adds to it, and the config's own tokens win over a preset's of the same name, as a later preset's do over an earlier one's.
 - A config that re-exports another relative file, or spreads one in at the top of the object it exports, as `{ ...require("./base"), content }` does, is read through it. A `theme` key after the spread replaces the spread's theme, as in JavaScript.
-- Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is skipped with a warning starting `Skipped dynamic value:`, since its value is known only when the config runs.
+- Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is known only when the config runs, so the config is loaded as below; where it can't be, the value is skipped with a warning starting `Skipped dynamic value:`.
 
-What it can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, or anything spread in at the top of `theme` or `theme.extend`, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
+Where the text leaves something unread (a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, anything spread in at the top of `theme` or `theme.extend` such as `...buildTheme(tokens)`, or a value that interpolates), Storysync loads the config as Tailwind does, by running it with the project's own `tailwindcss` (3.3 or later, whose `loadConfig` takes TypeScript and ESM configs too) in a separate Node process, as the project's build runs it. Its tokens are then the theme Tailwind resolves, presets and functions included, less each value Tailwind's default theme has the same, and the first warning says the config was loaded this way. A config the text reads whole is never run. Where the project has no such `tailwindcss`, or the config throws, the text's warnings stay, naming what is missing, with a warning that says why it couldn't be loaded. A config with no theme Storysync reads says so too. The CSS variables a theme points at can also be read with `--source css`.
 
 ### Tailwind v4 `@theme`
 
@@ -841,7 +846,7 @@ Commit both files. Use the Storysync version the Action runs, which is the `vers
 
 ### Storybook
 
-- **"Storybook has no MCP endpoint" (HTTP 404).** Run `npx storysync init`, then restart Storybook.
+- **"There's no MCP endpoint there" (HTTP 404).** Storybook answered, but not at `/mcp`: `@storybook/addon-mcp` isn't installed and registered. Run `npx storysync init`, then restart Storybook. If it is installed, check that `--storybook` is your Storybook's URL.
 - **A request timed out.** A busy or shared Storybook is slow rather than down. Run the command again with `--request-timeout 900000`, or `--connect-timeout 180000` for connecting.
 - **A long snap stopped part-way.** An agent's shell stops a command after a few minutes, and snap stopped part-way writes nothing. The skills run it in the background with `STORYSYNC_PROGRESS=1` and check its exit code.
 - **Stories time out.** A busy Storybook times out stories that render. Measure those components again with `--components <IDs> --merge` and a longer `--timeout`, such as 30000.

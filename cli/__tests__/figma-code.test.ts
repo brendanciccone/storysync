@@ -801,3 +801,79 @@ test("figma code: prints the push's estimate, in text and in --json, from the ca
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("figma code: a variant the run failed is never built, and one Figma has measured gets a placeholder only with --replace-measured", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  const snap = copy(loadTreeFixture("example-button"));
+  const coded = await codeFor(snap, { templates: {} });
+  const mock = mockFor([snap]);
+  await sendAll(coded, mock);
+  // verify --plan assembles the readback beside the plan's directory.
+  loadPlanResults(join(coded.out, "plan.json"));
+  const slugs = snap.components[0].variants.map((v) => v.slug);
+  const srcOf = (slug: string) => mock.nodes("COMPONENT").filter((n) => n.data["storysync.slug"] === slug).map((n) => n.data["storysync.src"]);
+  assert.deepEqual(srcOf(slugs[1]), ["measured"]);
+
+  // The next snap: one variant fails in its story; the others because the
+  // run did, a timeout, Storybook down, a story that never rendered.
+  const failed = copy(snap);
+  const fail = (i: number, change: object) => {
+    const v = failed.components[0].variants[i] as unknown as Record<string, unknown>;
+    for (const field of ["delta", "treeDelta", "boundingBox", "element"]) delete v[field];
+    Object.assign(v, change);
+  };
+  fail(1, { status: "render_error", error: "TypeError: Cannot read properties of undefined (reading 'map')" });
+  fail(2, { status: "timeout", error: "page.goto: Timeout 15000ms exceeded." });
+  fail(3, { status: "render_error", error: "page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:6006/iframe.html" });
+  fail(4, { status: "element_not_found", error: "nothing that draws rendered under #storybook-root", rendered: false });
+  writeFileSync(coded.snapPath, JSON.stringify(failed));
+  const again = await runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: {} });
+  const run = again.warnings.find((w) => /snap timed out or couldn't reach Storybook for 3 variants/.test(w)) ?? "";
+  assert.match(run, new RegExp(`\\(${slugs[2]}, ${slugs[3]}, ${slugs[4]}\\), which are not built, so Figma keeps what it has for them`));
+  const kept = again.warnings.find((w) => w.includes(slugs[1])) ?? "";
+  assert.match(kept, /1 variant failed in the story .*which Figma has measured from an earlier push, so it is left as it is, not replaced by "Not measured" placeholders: ask the user/);
+  assert.ok(!again.warnings.some((w) => /"Not measured" placeholder, since/.test(w)), again.warnings.join("\n"));
+  const code = (call: PlanCall) => readFileSync(join(coded.out, call.file), "utf8");
+  for (const slug of slugs.slice(1, 5)) assert.ok(!again.plan.calls.some((c) => c.kind === "build" && code(c).includes(`"${slug}"`)), `${slug} is not in a build call`);
+  await sendAll({ ...coded, plan: again.plan }, mock);
+  for (const slug of slugs.slice(1, 5)) assert.deepEqual(srcOf(slug), ["measured"], `${slug} is as it was`);
+
+  // Once the user says so, the story's failure replaces it; the run's never do.
+  const replaced = await runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: {}, replaceMeasured: true });
+  assert.ok(replaced.warnings.includes('Forms/Button: 1 variant built as a "Not measured" placeholder, since snap couldn\'t measure it'), replaced.warnings.join("\n"));
+  await sendAll({ ...coded, plan: replaced.plan }, mock);
+  assert.deepEqual(srcOf(slugs[1]), ["unmeasured"]);
+  for (const slug of slugs.slice(2, 5)) assert.deepEqual(srcOf(slug), ["measured"]);
+
+  // Every variant failed by the run: not built at all, and said why.
+  const down = copy(failed);
+  for (const v of down.components[0].variants as unknown as Record<string, unknown>[]) Object.assign(v, { status: "timeout", error: "Timeout" });
+  (down.components[0] as unknown as { base: unknown }).base = null;
+  writeFileSync(coded.snapPath, JSON.stringify(down));
+  await assert.rejects(runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: {} }), /^Error: No component to build: Forms\/Button: not built: snap timed out or couldn't reach Storybook for 12 variants .*Figma keeps what it has for them/);
+});
+
+test("figma code: --snap takes the directory snap wrote, and says to run snap where there is none", async () => {
+  const snap = copy(loadTreeFixture("example-button"));
+  const coded = await codeFor(snap, { templates: {} });
+  const fromDir = await runFigmaCode({ snap: dirname(coded.snapPath), out: join(coded.dir, "dir-out"), templates: { readback: STUB_READBACK } });
+  assert.equal(fromDir.plan.snap.digest, coded.plan.snap.digest);
+  const empty = mkdtempSync(join(tmpdir(), "storysync-no-snap-"));
+  await assert.rejects(
+    runFigmaCode({ snap: join(empty, ".storysync", "snaps", "styles.json"), out: join(empty, "out") }),
+    (err: Error) => /^No snap at .*styles\.json: run `storysync snap` first, or pass --snap/.test(err.message) && !/ENOENT/.test(err.message),
+  );
+  await assert.rejects(runFigmaCode({ snap: empty, out: join(empty, "out") }), /No snap at .*styles\.json/);
+});
+
+test("verify --plan: an alpha variable made for a component no build call builds says so, naming no call", () => {
+  // Every variant of a component too big for one call: it has no build call.
+  const dir = mkdtempSync(join(tmpdir(), "storysync-unused-alpha-"));
+  const plan: FigmaPlan = {
+    version: 1, storysyncVersion: "0.4.0", snap: { path: "styles.json", measuredAt: "", digest: "" },
+    calls: [{ seq: 1, kind: "variables", page: "", components: [], file: "calls/01-variables.js", result: "results/01.json", chars: 0, description: "" } as PlanCall],
+    alphas: [{ variable: "foreground 10%", token: "foreground", alpha: 0.1, components: ["ui/base/Table"], collection: "Colors" }],
+  };
+  writeFileSync(join(dir, "plan.json"), JSON.stringify(plan));
+  const { unusedAlphas } = loadPlanResults(join(dir, "plan.json"));
+  assert.deepEqual(unusedAlphas, ["foreground 10% (Colors): made for ui/base/Table, which no build call builds, so nothing binds it"]);
+});

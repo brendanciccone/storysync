@@ -810,13 +810,13 @@ test("describeIdenticalVariants: blames the story only where the markup didn't c
 
   // The same markup on every variant: nothing the args set reached the page.
   const frozen = describeIdenticalVariants(variants, OTP_PROPS, ["a", "a", "a"])!;
-  assert.match(frozen, /^all 3 rendered variants measured identically and rendered the same markup — the story may not pass args through to the component/);
+  assert.match(frozen, /^all 3 rendered variants measured identically and rendered the same markup. The story may not pass args through to the component/);
   assert.equal(parseBehaviorOnlyWarning(frozen), null);
 
   // A markup not read, or one that changed while it was measured: either.
   for (const markups of [["a", null, "b"], ["a", "b"]]) {
     const either = describeIdenticalVariants(variants, OTP_PROPS, markups)!;
-    assert.match(either, /the story may not pass args through[\s\S]* Or `textAlign`, `pushPasswordManagerStrategy` change only behavior, which snap doesn't measure: if so, leave them out of every component with `--exclude-props textAlign,pushPasswordManagerStrategy`\.$/);
+    assert.match(either, /The story may not pass args through[\s\S]* Or `textAlign`, `pushPasswordManagerStrategy` change only behavior, which snap doesn't measure: if so, leave them out of every component with `--exclude-props textAlign,pushPasswordManagerStrategy`\.$/);
     assert.equal(parseBehaviorOnlyWarning(either), null);
   }
 
@@ -930,7 +930,7 @@ test("parseSnapWarning: names each warning snap writes as it writes it, so verif
   const unchecked = describeUncheckedArgs("ui/base/Badge", ["a"], 2)!;
   const truncated = describeTruncatedTrees([{ slug: "a", truncated: { nodes: 900, at: "list/item" } }], 1)!;
   const font = detectFontSubstitution(componentWithFonts(false))!;
-  const shared = `2 components share the key "Forms/Button", which identifies a component in the readback and during verification — their variants will collide and only one will be scored. Give them distinct Storybook titles.`;
+  const shared = `2 components share the key "Forms/Button", which identifies a component in the readback and during verification, so their variants will collide and only one will be scored. Give them distinct Storybook titles.`;
   assert.deepEqual(
     [trigger, wrapper, identical, values, pair, describeNoOpProperties(["asChild", "modal"])!, preview, rejected, unchecked, truncated, font, shared].map(parseSnapWarning),
     [
@@ -2227,7 +2227,7 @@ test("runSnap: where nothing a prop's values set reaches the page, it is left ou
     assert.deepEqual(component.variants.map((v) => v.slug), ["default"]);
     assert.deepEqual(component.excludedProps, [{ name: "size", reason: "no-op", markup: "same" }]);
     const warning = component.warnings.find((w) => /measured identically/.test(w));
-    assert.match(warning ?? "", /^all 2 rendered variants measured identically and rendered the same markup — the story may not pass args through/);
+    assert.match(warning ?? "", /^all 2 rendered variants measured identically and rendered the same markup. The story may not pass args through/);
     assert.match(warning ?? "", /snap left out `size`, so it is one variant: if the story drops it, pass it through and measure it again; if it changes only behavior, this is as it should be\.$/);
     assert.equal(result.summary.componentsWithWarnings, 1);
   } finally {
