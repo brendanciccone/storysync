@@ -400,7 +400,12 @@ export function readEvidence(entry: string): { dark: boolean; utility: string; a
 // (palette.ts), written into the call that makes the variable. A fill only
 // the dark theme paints, an input's `bg-transparent dark:bg-input/30`, is
 // its token at 0 in Light, `input 0% dark 30%`. A name has no period, and
-// no token's name holds a space or a `%`, so each part reads back.
+// no token's name holds a space or a `%`, so each part reads back. The
+// color Dark takes is written as a class names it, `foreground dark
+// muted-foreground` for muted/foreground: Figma groups a variable at each
+// `/` of its name, so a slash there would put it in a group of its own,
+// `foreground dark muted`. Its own token's slashes stay, which keep it
+// beside that token, `surface/primary dark content-primary`.
 
 /** An alpha variable's name: its token's, a space, the alpha in percent, and the dark theme's where it differs. */
 export const ALPHA_VARIABLE = /^(.+?) (\d{1,3}(?:,\d)?)%(?: dark (\d{1,3}(?:,\d)?)%)?$/;
@@ -424,13 +429,14 @@ const percentOf = (a: number): string => {
  * 20%`. Each percent is the shortest, whole or to a tenth, that reads back
  * as the same byte, so each byte has one name and the name gives the byte.
  * With `darkToken`, another token or palette color the dark theme paints,
- * the per-mode variable of the two, each percent left out at 100%:
- * `background dark input 30%`, `slate-50 dark slate-900`.
+ * the per-mode variable of the two, each percent left out at 100%, the
+ * dark one by its class name: `background dark input 30%`, `slate-50 dark
+ * slate-900`, `foreground 60% dark muted-foreground`.
  */
 export function alphaVariableName(token: string, alpha: number, dark?: number, darkToken?: string): string {
   if (darkToken !== undefined && darkToken !== token) {
     const at = (a: number) => (alphaByte(a) === 255 ? "" : ` ${percentOf(a)}%`);
-    return `${token}${at(alpha)} dark ${darkToken}${at(dark ?? 1)}`;
+    return `${token}${at(alpha)} dark ${tokenClassName(darkToken)}${at(dark ?? 1)}`;
   }
   const darkPart = dark === undefined || alphaByte(dark) === alphaByte(alpha) ? "" : ` dark ${percentOf(dark)}%`;
   return `${token} ${percentOf(alpha)}%${darkPart}`;
@@ -446,9 +452,21 @@ function alphaOfPercent(percent: number): number {
 }
 
 /**
+ * The color among `colors` a per-mode variable's name writes as a class
+ * names it (alphaVariableName): one of that name, else the first whose
+ * class name it is, `muted/foreground` for `muted-foreground`; else the
+ * name itself, a palette color's.
+ */
+export function colorOfClass(name: string, colors: Iterable<string>): string {
+  const all = [...colors];
+  return all.includes(name) ? name : all.find((c) => tokenClassName(c) === name) ?? name;
+}
+
+/**
  * The token and alphas (0-1, as the bytes give them) an alpha variable's
  * name stands for, `dark` where the dark theme's differs, and `darkToken`
- * where the dark theme paints another color, or null for another name.
+ * where the dark theme paints another color, by its class name (colorOfClass
+ * gives its token), or null for another name.
  */
 export function parseAlphaVariable(name: string): { token: string; alpha: number; dark?: number; darkToken?: string } | null {
   const parts = name.split(" ");

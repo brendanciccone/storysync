@@ -170,6 +170,13 @@ test("diffTokens: a per-mode variable figma code made, of two code tokens or Tai
   assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["gone dark input 30%", "missing_from_code"], ["brand dark accent", "missing_from_code"]]);
 });
 
+test("diffTokens: a per-mode variable whose Dark color is a slashed token, written by its class name, is not missing from code", () => {
+  const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "foreground", value: "#0a0a0a" }, { name: "muted/foreground", value: "#737373" }] }];
+  const color = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Colors", resolvedType: "COLOR", mode: "Light" });
+  const diffs = diffTokens(code, [color("foreground", "#0a0a0a"), color("muted/foreground", "#737373"), color("foreground 60% dark muted-foreground", "#0a0a0a99"), color("foreground dark muted-background", "#0a0a0a")]);
+  assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["foreground dark muted-background", "missing_from_code"]]);
+});
+
 test("diffTokens: matching color in different formats", () => {
   const code: TokenCollection[] = [
     { category: "colors", tokens: [{ name: "primary/500", value: "rgb(59, 130, 246)" }] },

@@ -557,3 +557,17 @@ test("alphaCalls: a palette pair's variable, of no token, is made in the colors'
   const calls = alphaCalls(TOKENS as unknown as TokenExtractionResult, [PER_MODE[2]], []);
   assert.deepEqual(calls.map((c) => [c.collection, c.alpha, c.data.vars, (c.data.ref as unknown[][]).map((r) => r[0])]), [["Colors", ["slate-50 dark slate-900"], [], ["slate-50", "slate-900"]]]);
 });
+
+test("figma tokens: a per-mode variable writes a slashed Dark color by its class name, so Figma doesn't group it at the slash, and reads it back", async () => {
+  const mock = new MockFigma();
+  const pair: PlanAlpha = { variable: "background dark chart-1", token: "background", alpha: 1, darkToken: "chart/1", dark: 1 };
+  const [colors] = await pushTokens(mock, TOKENS, {}, [pair]);
+  assert.deepEqual([colors.alpha, colors.stale], [["background dark chart-1"], []]);
+  const values = (name: string) => mock.collections()[0].variables.find((v) => v.name === name)!.values;
+  assert.deepEqual(values("background dark chart-1"), { Light: "#ffffff", Dark: "#8ec5ff" });
+  // Kept up to date with no plan, and made from an --alpha name alone.
+  const plain = await pushTokens(mock, TOKENS);
+  assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
+  const named = await pushTokens(new MockFigma(), TOKENS, { alpha: ["border 10% dark chart-1"] });
+  assert.deepEqual(named[0].alpha, ["border 10% dark chart-1"]);
+});

@@ -7,7 +7,7 @@ import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents, titleLeaf } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { colorToHex } from "./color.js";
-import { parseAlphaVariable } from "./figma-bind.js";
+import { colorOfClass, parseAlphaVariable } from "./figma-bind.js";
 
 // --- Token diff ---
 
@@ -224,11 +224,13 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
   // missing from code while its token is in it. Nor is a per-mode one,
   // `background dark input 30%` or `slate-50 dark slate-900`, while each
   // color it is made from is a code token or a Tailwind palette color.
+  // Its Dark color is written as a class names it, `muted-foreground`.
   const isColor = (name: string) => codeMap.has(`colors/${name}`) || TAILWIND_PALETTE_NAME.test(name);
+  const codeColors = [...codeMap.keys()].filter((k) => k.startsWith("colors/")).map((k) => k.slice("colors/".length));
   for (const [key, fv] of [...figmaMap]) {
     const alpha = key.startsWith("colors/") ? parseAlphaVariable(fv.name) : null;
     if (!alpha) continue;
-    const colors = [alpha.token, ...(alpha.darkToken ? [alpha.darkToken] : [])];
+    const colors = [alpha.token, ...(alpha.darkToken ? [colorOfClass(alpha.darkToken, codeColors)] : [])];
     if (colors.every(isColor) && (alpha.darkToken !== undefined || codeMap.has(`colors/${alpha.token}`))) figmaMap.delete(key);
   }
 

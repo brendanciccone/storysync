@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ALPHA_VARIABLE, Binder, alphaVariableName, parseAlphaVariable, readEvidence } from "../figma-bind.js";
+import { ALPHA_VARIABLE, Binder, alphaVariableName, colorOfClass, parseAlphaVariable, readEvidence } from "../figma-bind.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 
 
@@ -329,4 +329,15 @@ test("readEvidence and darkPaint: a dark: class with a state snap couldn't tell 
   assert.equal(binder.darkAlpha("destructive", "fill", ["dark:bg-destructive/20", "dark:hover:bg-destructive/30"]), undefined);
   // Another role's says nothing of this one.
   assert.deepEqual(binder.darkPaint("fill", ["dark:bg-input/30", "dark:hover:text-foreground"]), { name: "input", alpha: 0.3 });
+});
+
+test("alphaVariableName: a per-mode variable writes its Dark color by its class name, and colorOfClass reads it back", () => {
+  assert.equal(alphaVariableName("foreground", 0.6, 1, "muted/foreground"), "foreground 60% dark muted-foreground");
+  assert.equal(alphaVariableName("surface/primary", 1, 1, "content/primary"), "surface/primary dark content-primary");
+  assert.deepEqual(parseAlphaVariable("foreground 60% dark muted-foreground"), { token: "foreground", alpha: 153 / 255, darkToken: "muted-foreground" });
+  const colors = ["muted", "muted/foreground", "primary/DEFAULT", "input"];
+  assert.equal(colorOfClass("muted-foreground", colors), "muted/foreground");
+  assert.equal(colorOfClass("primary", colors), "primary/DEFAULT");
+  assert.equal(colorOfClass("input", colors), "input");
+  assert.equal(colorOfClass("slate-900", colors), "slate-900");
 });

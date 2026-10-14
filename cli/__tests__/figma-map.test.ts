@@ -436,10 +436,10 @@ test("nodeStyle: a dark: class with a state decides Dark where snap found it app
   assert.deepEqual(text("#0a0a0a", ["dark:text-foreground", "text-foreground"]), [["#0a0a0a", 1, "foreground"]]);
   assert.deepEqual(text("#0a0a0a", ["dark:data-active:text-foreground", "dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 1, "foreground"]]);
   // An inactive one, text-foreground/60 dark:text-muted-foreground: Dark is muted's.
-  assert.deepEqual(text("#0a0a0a99", ["dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 0.6, "foreground 60% dark muted/foreground", "foreground"]]);
+  assert.deepEqual(text("#0a0a0a99", ["dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 0.6, "foreground 60% dark muted-foreground", "foreground"]]);
   // Checkbox checked: dark:data-checked:bg-primary over dark:bg-input/30.
   const fill = (cls: string[]) => nodeStyle(frame({ k: "b", bg: "#171717", cls }), c).f;
   assert.deepEqual(fill(["bg-primary", "dark:bg-primary"]), [["#171717", 1, "primary"]]);
   assert.deepEqual(fill(["bg-primary", "dark:bg-input/30", "dark:data-checked:bg-primary"]), [["#171717", 1, "primary"]]);
-  assert.deepEqual([...c.alphas!.keys()], ["foreground 60% dark muted/foreground"]);
+  assert.deepEqual([...c.alphas!.keys()], ["foreground 60% dark muted-foreground"]);
 });

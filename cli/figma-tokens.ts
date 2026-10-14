@@ -27,7 +27,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { callCode, fnv1a32Bytes } from "./checksum.js";
-import { alphaVariableName, parseAlphaVariable } from "./figma-bind.js";
+import { alphaVariableName, colorOfClass, parseAlphaVariable } from "./figma-bind.js";
 import { assertCompiles, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
 import type { FigmaCodeOptions } from "./figma-code.js";
 import { lengthToPx, tokenColorToHex, withoutRepeatedDefault } from "./tokens.js";
@@ -365,8 +365,10 @@ function alphasToMake(planPath: string | undefined, names: string[], collections
     collection.alphas = [...(collection.alphas ?? []), name];
   };
   let projectPalette: Palette | null = null;
+  const tokenColors = collections.flatMap((c) => c.variables.filter((v) => v.type === "COLOR").map((v) => v.name));
   for (const name of names) {
-    const parsed = parseAlphaVariable(name);
+    const read = parseAlphaVariable(name);
+    const parsed = read?.darkToken ? { ...read, darkToken: colorOfClass(read.darkToken, tokenColors) } : read;
     const colors = parsed ? [parsed.token, parsed.darkToken].filter((c): c is string => c !== undefined) : [];
     const collection = parsed && collectionOf(collections, colors);
     const unknown = colors.filter((c) => !isColorToken(collections, c) && !(projectPalette ??= paletteOf()).has(c));

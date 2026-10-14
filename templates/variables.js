@@ -84,8 +84,17 @@ for (const v of await figma.variables.getLocalVariablesAsync()) {
 
 // An alpha variable's token, alphas, Light's and Dark's, and the color
 // Dark takes, from its name (cli/figma-bind.ts, parseAlphaVariable), or null:
-// `token NN%`, `token NN% dark NN%`, `token[ NN%] dark color[ NN%]`.
+// `token NN%`, `token NN% dark NN%`, `token[ NN%] dark color[ NN%]`. The
+// color Dark takes is written as a class names it, `muted-foreground` for
+// muted/foreground (cli/tokens.ts, tokenClassName): a color of that name,
+// else the first whose class name it is, else a palette color's.
 const PCT = /^(\d{1,3}(?:,\d)?)%$/;
+const className = (n) => n.toLowerCase().replace(/\/default$/, '').replace(/\//g, '-');
+const BY_CLASS = Object.create(null);
+for (const v of (DATA.all || []).concat(DATA.vars, DATA.ref || [])) {
+  if (v[1] === 'COLOR' && !(className(v[0]) in BY_CLASS)) BY_CLASS[className(v[0])] = v[0];
+}
+for (const v of (DATA.all || []).concat(DATA.vars, DATA.ref || [])) if (v[1] === 'COLOR') BY_CLASS[v[0]] = v[0];
 const alphaOf = (name) => {
   const p = name.split(' ');
   const k = (s) => (PCT.test(s || '') ? Number(s.slice(0, -1).replace(',', '.')) : null);
@@ -96,7 +105,8 @@ const alphaOf = (name) => {
   if (i === p.length) return i === 2 && light <= 100 ? [p[0], byte(light), byte(light), p[0]] : null;
   if (p[i++] !== 'dark' || i === p.length) return null;
   if (k(p[i]) !== null) return p.length === 4 && i === 3 && light <= 100 && k(p[3]) <= 100 ? [p[0], byte(light), byte(k(p[3])), p[0]] : null;
-  const color = p[i++];
+  const color = BY_CLASS[p[i]] || p[i];
+  i++;
   const dark = i < p.length ? k(p[i++]) : 100;
   return color !== 'dark' && color !== p[0] && dark !== null && i === p.length && light <= 100 && dark <= 100 ? [p[0], byte(light), byte(dark), color] : null;
 };
