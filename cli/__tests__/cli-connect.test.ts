@@ -497,7 +497,9 @@ test("snap CLI: a signal once the run has written everything doesn't say it stop
   }
 });
 
-test("snap CLI --screenshots: a signal while the browser closes leaves the last run's screenshots and styles.json", { timeout: 60_000, skip: process.platform === "win32" }, async (t) => {
+// Its preload loads playwright-core itself, which exits on Node 18 before
+// snap can say it needs Node 20, so the test can only run on 20 or newer.
+test("snap CLI --screenshots: a signal while the browser closes leaves the last run's screenshots and styles.json", { timeout: 60_000, skip: process.platform === "win32" || Number(process.versions.node.split(".")[0]) < 20 }, async (t) => {
   // The screenshots were moved in before the browser closed, so SIGTERM
   // while it closed replaced them beside the last run's styles.json, and
   // the notice said they were left as they were.
