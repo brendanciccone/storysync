@@ -14,7 +14,7 @@ import {
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
   contentOverflow, describeOverflow, describeVariantStories,
-  detectBehaviorProps, TIMEOUT_RETRY_FACTOR,
+  detectBehaviorProps, TIMEOUT_RETRY_FACTOR, describeStoryErrors,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
@@ -2880,4 +2880,14 @@ test("runSnap: a story that renders dark whatever snap sets is recorded as dark,
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("describeStoryErrors: a story that calls an implicit action while it renders gets its fix, and other errors none", () => {
+  const error = "We detected that you use an implicit action arg while rendering of your story. (implicit action: onLayoutChanged)";
+  const failed = [{ status: "render_error" as const, error }, { status: "render_error" as const, error }];
+  const warning = describeStoryErrors("ui/radix/ResizablePanelGroup", "ui-radix-resizablepanelgroup--default", failed);
+  assert.match(warning ?? "", /^ui\/radix\/ResizablePanelGroup: every variant failed to render with Storybook's own error, not snap's: ui-radix-resizablepanelgroup--default calls its `onLayoutChanged` arg while it renders/);
+  assert.match(warning ?? "", /`args: \{ onLayoutChanged: fn\(\) \}` with `fn` from `storybook\/test`/);
+  assert.match(describeStoryErrors("X", "x--default", [...failed, { status: "ok", error: null }]) ?? "", /^X: 2 of 3 variants failed/);
+  assert.equal(describeStoryErrors("X", "x--default", [{ status: "render_error", error: "boom" }]), null);
 });

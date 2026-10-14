@@ -981,6 +981,26 @@ export function describeOpenedOverlays(component: Pick<SnapComponent, "variants"
   return `measured open: snap ${list} to open it, and measured ${element}`;
 }
 
+/**
+ * The warning for variants that failed with an error that is the story's
+ * own, which it throws in Storybook without snap too, with its fix: an
+ * implicit action the story calls while it renders, which Storybook 9 and
+ * later refuse (storybookErrorInPage names the args). Null where none did.
+ */
+export function describeStoryErrors(label: string, storyId: string | null, variants: readonly Pick<SnapVariant, "status" | "error">[]): string | null {
+  const implicit = variants.filter((v) => v.status === "render_error" && /implicit action arg/i.test(v.error ?? ""));
+  if (!implicit.length) return null;
+  const args = [...new Set(implicit.flatMap((v) => /\(implicit action: ([^)]*)\)/.exec(v.error ?? "")?.[1].split(/,\s*/) ?? []))];
+  const which = implicit.length === variants.length ? "every variant" : `${implicit.length} of ${variants.length} variants`;
+  const named = args.length ? `its ${args.map((a) => `\`${a}\``).join(", ")} ${args.length === 1 ? "arg" : "args"}` : "an on* arg";
+  const spy = args.length ? args.map((a) => `${a}: fn()`).join(", ") : "onChange: fn()";
+  return (
+    `${label}: ${which} failed to render with Storybook's own error, not snap's: ${storyId ?? "the story"} calls ${named} while it ` +
+    `renders, an implicit action the preview's argTypesRegex makes, which Storybook refuses, so it fails in Storybook too. ` +
+    `Give the story an explicit spy, \`args: { ${spy} }\` with \`fn\` from \`storybook/test\`, then measure it again with --components and --merge.`
+  );
+}
+
 /** Warning for properties detectNoOpProperties found. */
 export function describeNoOpProperties(names: string[]): string | null {
   if (!names.length) return null;
@@ -2141,6 +2161,8 @@ async function snapComponent(
     for (const { slug, element, reason } of unopened) notes.push({ slug, note: { kind: "closed-trigger", element, reason } });
   }
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
+  const storyError = describeStoryErrors(entry.title ?? entry.name, storyId, shell.variants);
+  if (storyError) shell.warnings.push(storyError);
   const climbedWarning = describeClimbed(climbed, measured);
   if (climbedWarning) shell.warnings.push(climbedWarning);
   const label = entry.title ?? entry.name;

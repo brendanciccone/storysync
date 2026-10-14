@@ -1413,3 +1413,19 @@ test("overlaySettledInPage: waits out the animations that end, not one that repe
     delete scope.requestAnimationFrame;
   }
 });
+
+test("storybookErrorInPage: an implicit action error names the args Storybook wants a spy for, from its stack", () => {
+  // As shadcn's ResizablePanelGroup story shows it in plain Storybook, without snap.
+  const scope = globalThis as Record<string, unknown>;
+  const saved = scope.document;
+  const nodes: Record<string, { textContent: string }> = {
+    "#error-message, .sb-errordisplay_code, #error-stack": { textContent: "We detected that you use an implicit action arg while rendering of your story.  " },
+    "#error-stack": { textContent: "Please provide an explicit spy to your args like this:\n  import { fn } from 'storybook/test';\n  ... \n  args: {\n   onLayoutChanged: fn()\n  }\n" },
+  };
+  scope.document = { body: { classList: { contains: (c: string) => c === "sb-show-errordisplay" }, innerText: "" }, querySelector: (selector: string) => nodes[selector] ?? null };
+  try {
+    assert.equal(storybookErrorInPage(), "We detected that you use an implicit action arg while rendering of your story. (implicit action: onLayoutChanged)");
+  } finally {
+    scope.document = saved;
+  }
+});

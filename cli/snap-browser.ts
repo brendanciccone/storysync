@@ -884,8 +884,16 @@ export function storybookErrorInPage(): string | null {
     document.body.classList.contains("sb-show-preparingstory-error");
   if (!shown) return null;
   const node = document.querySelector("#error-message, .sb-errordisplay_code, #error-stack");
-  const text = (node?.textContent ?? document.body.innerText ?? "").trim();
-  return text.slice(0, 300) || "Storybook reported a render error";
+  const text = (node?.textContent ?? document.body.innerText ?? "").trim().slice(0, 300);
+  // Storybook 9 and later refuse an implicit action called while the story
+  // renders, and name the arg it wants a spy for only in the stack: kept, as
+  // describeStoryErrors gives the story's fix with it.
+  if (/implicit action arg/i.test(text)) {
+    const stack = document.querySelector("#error-stack")?.textContent ?? "";
+    const args = [...new Set(Array.from(stack.matchAll(/^\s*([A-Za-z_$][\w$]*): fn\(\)/gm), (m) => m[1]))];
+    if (args.length) return `${text.replace(/\s+$/, "")} (implicit action: ${args.join(", ")})`;
+  }
+  return text || "Storybook reported a render error";
 }
 
 async function readStorybookError(page: Page): Promise<string | null> {
