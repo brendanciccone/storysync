@@ -2284,10 +2284,11 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     const box = svg.getBoundingClientRect();
     const hidden = "defs, clipPath, mask, symbol, pattern, marker";
     // The transform the browser draws `el` with, where its CSS gives it one
-    // its attribute doesn't say, as `matrix()`: coder's spinner turns each
-    // of its eight bars with a style's rotate about the icon's center. Its
+    // its attribute doesn't say, as `matrix()`: a spinner may turn each of
+    // its bars with a style's rotate about the icon's center. Its
     // `translate`, `rotate`, `scale` and `transform`, about its origin, which
-    // is resolved against its transform box. Null where it is the attribute's.
+    // is resolved against its transform box, as a percentage in `translate`
+    // is. Null where it is the attribute's, or can't be resolved.
     type M = [number, number, number, number, number, number];
     const mul = (m: M, n: M): M => [
       m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
@@ -2306,7 +2307,24 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       const origin = [ox + (bbox?.x ?? 0), oy + (bbox?.y ?? 0)];
       m = mul(m, [1, 0, 0, 1, origin[0], origin[1]]);
       if (move !== "none") {
-        const [tx = 0, ty = 0] = move.split(/\s+/).map(px);
+        // A percentage is of the transform box: the shape's own for
+        // fill-box, else the nearest viewport's, its viewBox where it has one.
+        const reference = (): { width: number; height: number } | null => {
+          if (bbox) return bbox;
+          const viewport = el.parentElement?.closest("svg");
+          const view = (viewport?.getAttribute("viewBox") ?? "").trim().split(/[\s,]+/).map(Number);
+          if (view.length === 4 && view[2] > 0 && view[3] > 0) return { width: view[2], height: view[3] };
+          const r = viewport?.getBoundingClientRect();
+          return r ? { width: r.width, height: r.height } : null;
+        };
+        const length = (v: string, size: "width" | "height") => {
+          if (!v.endsWith("%")) return px(v);
+          const box = reference();
+          return box ? (parseFloat(v) / 100) * box[size] : NaN;
+        };
+        const [x = "0", y = "0"] = move.split(/\s+/);
+        const [tx, ty] = [length(x, "width"), length(y, "height")];
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
         m = mul(m, [1, 0, 0, 1, tx, ty]);
       }
       if (turn !== "none") {
@@ -2333,8 +2351,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       return `matrix(${m.map((v) => String(Math.round(v * 1e4) / 1e4 || 0)).join(" ")})`;
     };
     // Paint a `<text>` or `<use>` kept as written draws in, where its CSS
-    // gives it what its attributes don't say: shadcn's chart ticks are
-    // `fill="#666"` drawn in `fill-muted-foreground`. Written on a copy:
+    // gives it what its attributes don't say, as a `fill-*` class on a
+    // chart's `fill="#666"` tick does where its rule applies. Written on a copy:
     // fill and stroke as computed (a `url()` paint left as written), where
     // the element sets one or it differs from the element around it, which
     // the copy keeps only for the root; opacity and transform where they

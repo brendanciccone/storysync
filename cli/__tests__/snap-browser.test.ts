@@ -883,7 +883,7 @@ test("captureTreeInPage: an SVG as structure and computed paint, its painted sha
 });
 
 test("captureTreeInPage: an SVG shape's CSS transform about its origin, which its attributes don't say, as a matrix", () => {
-  // coder's spinner: eight bars at one place, each turned by a style's rotate about the icon's center.
+  // A spinner: eight bars at one place, each turned by a style's rotate about the icon's center.
   const bar = (deg: number): FakeElementSpec => {
     const r = (deg * Math.PI) / 180;
     const [c, s] = [Math.cos(r), Math.sin(r)];
@@ -898,8 +898,15 @@ test("captureTreeInPage: an SVG shape's CSS transform about its origin, which it
   assert.match(markup, /<rect x="10\.9" y="2" width="2" height="5\.5" rx="1" transform="matrix\(0 1 -1 0 24 0\)"\/>/);
 });
 
+test("captureTreeInPage: a percentage in an SVG shape's CSS translate is of its viewport's viewBox, not pixels", () => {
+  const shape = (translate: string): FakeElementSpec => ({ tag: "rect", svg: true, attrs: { width: "2", height: "2" }, rect: [0, 0, 2, 2], style: { translate } });
+  const svg: FakeElementSpec = { tag: "svg", svg: true, attrs: { viewBox: "0 0 24 12" }, rect: [0, 0, 48, 24], kids: [shape("50% 0px"), shape("1px 25%")] };
+  const icon = readTree({ tag: "div", rect: [0, 0, 48, 24], kids: [svg] }).root.kids[0] as RawTreeElement;
+  assert.deepEqual(icon.svg!.kids!.map((k) => k.attrs.transform), ["matrix(1 0 0 1 12 0)", "matrix(1 0 0 1 1 3)"]);
+});
+
 test("captureTreeInPage: a <text> kept as written draws in its CSS paint, which serializeSvg writes as hex", () => {
-  // shadcn's chart tick: fill="#666" as written, drawn in fill-muted-foreground.
+  // A chart tick: fill="#666" as written, drawn in a fill-muted-foreground rule that applies.
   const tick: FakeElementSpec = {
     tag: "text", svg: true, attrs: { x: "4", y: "10", fill: "#666", class: "fill-muted-foreground" }, rect: [0, 0, 20, 10],
     style: { fill: "oklch(0.556 0 0)", stroke: "none" },
