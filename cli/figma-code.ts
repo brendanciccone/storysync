@@ -948,7 +948,6 @@ export function parseCallResult(text: string): Record<string, unknown> | null {
   return visit(text, 0);
 }
 
-/** Reads plan.json. */
 /**
  * A digest of one component's record in a snap: what verify --plan
  * compares to tell whether a later snap measured it again, as a later
@@ -980,6 +979,7 @@ export function planSnapChanged(plan: FigmaPlan, bytes: Uint8Array): boolean {
   });
 }
 
+/** Reads plan.json. */
 export function readPlan(path: string): FigmaPlan {
   const plan = JSON.parse(readFileSync(path, "utf8")) as FigmaPlan;
   if (plan?.version !== 1 || !Array.isArray(plan.calls)) throw new Error(`${path} is not a plan figma code wrote`);
