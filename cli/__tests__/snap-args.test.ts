@@ -366,6 +366,14 @@ test("findRejectedArgs: a value the component draws with its prop unset is not o
   // A default only assumed, from the stories' args, says nothing of what it draws.
   assert.deepEqual(findRejectedArgs({ disabled: "false", variant: "default" }, CODER_BUTTON, CODER_PROPS).map((r) => `${r.name}=${r.value}`), ["variant=default"]);
   assert.deepEqual(findRejectedArgs({ disabled: "true" }, CODER_BUTTON, CODER_PROPS), [{ name: "disabled", value: "true", reasons: ["not-in-argtypes"] }]);
+  // Once the preview has set variant, disabled false is still drawn as asked:
+  // not a value Storybook refused through the preview either (live, 8 of
+  // coder's Button variants failed as arg_rejected without this).
+  const requested = { disabled: "false", variant: "outline" };
+  const rejected = findRejectedArgs(requested, CODER_BUTTON, CODER_PROPS);
+  const after = { ...CODER_BUTTON, stored: { ...CODER_BUTTON.stored, variant: "outline" }, rendered: { ...CODER_BUTTON.rendered, variant: "outline" } };
+  assert.deepEqual(stillRejected(requested, rejected, after, CODER_PROPS), []);
+  assert.deepEqual(stillRejected({ disabled: "true" }, [], after, CODER_PROPS).map((r) => r.name), ["disabled"]);
 });
 
 test("describeArgRejections: a boolean the story's argTypes don't declare is declared as a boolean, not with options", () => {

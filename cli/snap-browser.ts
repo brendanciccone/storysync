@@ -2081,7 +2081,7 @@ export async function checkStoryArgs(
 
   const after = await read();
   if ("error" in after) return { checked: true, rejected, unapplied: rejected, error: after.error, ...known };
-  const unapplied = stillRejected(story.args, rejected, after);
+  const unapplied = stillRejected(story.args, rejected, after, story.properties);
   if (unapplied.length) {
     return { checked: true, rejected, unapplied, error: "the story still wasn't given them after Storybook's preview took them", ...known };
   }

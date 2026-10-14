@@ -311,10 +311,14 @@ export function stillRejected(
   requested: Record<string, string>,
   rejected: readonly ArgRejection[],
   after: StoryArgsSnapshot,
+  properties: readonly FigmaVariantProperty[] = [],
 ): ArgRejection[] {
+  const byName = new Map(properties.map((p) => [p.name, p]));
   const remaining: ArgRejection[] = [];
   for (const [name, value] of Object.entries(requested)) {
     if (Object.hasOwn(after.rendered, name) && argMatches(after.rendered[name], value)) continue;
+    // Still not given, as findRejectedArgs let pass: drawn as asked unset.
+    if (!Object.hasOwn(after.rendered, name) && !Object.hasOwn(after.stored, name) && drawnUnset(byName.get(name), value)) continue;
     remaining.push(rejected.find((r) => r.name === name) ?? { name, value, reasons: ["not-applied"] });
   }
   return remaining;
