@@ -765,7 +765,7 @@ test("bindings: a dialog's ring binds to foreground 10%, which keeps its 10% in 
   // that carries the alpha, which kept it through every switch.
   const dialog = loadTreeFixture("dialog");
   const coded = await codeFor(dialog, {}, SHADCN_TOKENS);
-  assert.deepEqual(coded.plan.alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102 }]);
+  assert.deepEqual(coded.plan.alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102, components: ["ui/base/Dialog"], collection: "Colors" }]);
   for (const alphas of [true, false]) {
     const mock = mockFor([dialog]);
     const vars = addColors(mock, alphas);
@@ -1571,4 +1571,65 @@ test("boxDrift: a layer may move by what packs it, the siblings between it and w
   const end = [{ ...nodes[0], L: { d: "flex", dir: "row", jc: "flex-end" } }, ...nodes.slice(1)] as TreeNode[];
   assert.deepEqual(boxDrift(mock, built([-1, 0, 40, 20], [39, 0, 41, 20]), end, facts), []);
   assert.deepEqual(boxDrift(mock, built([0, 0, 41, 20], [42, 0, 40, 20]), end, facts), ["b/t: snap 40,0,40,20, Figma 42,0,40,20", "b: snap 40,0,40,20, Figma 42,0,40,20"]);
+});
+
+test("bindings: a component snap measured dark binds by the tokens' dark values, and the label call puts its set in Dark, where they show as measured", async () => {
+  // coder's Storybook renders dark: its dialog's #ffffff is background's
+  // dark value here, and its light one #0a0a0a.
+  const dialog = copy(loadTreeFixture("dialog"));
+  (dialog.components[0] as { scheme?: string }).scheme = "dark";
+  const tokens = { collections: [{ category: "colors", tokens: [
+    { name: "background", value: "#0a0a0a", hex: "#0a0a0a", dark: { value: "#ffffff", hex: "#ffffff" } },
+    { name: "foreground", value: "#ffffff", hex: "#ffffff", dark: { value: "#0a0a0a", hex: "#0a0a0a" } },
+  ] }] };
+  const coded = await codeFor(dialog, {}, tokens);
+  assert.ok(coded.warnings.some((w) => /^ui\/base\/Dialog: snap measured it in the dark theme, so its paints bind by the tokens' dark values/.test(w)), coded.warnings.join("\n"));
+  assert.match(coded.plan.calls.find((c) => c.kind === "label")!.description, /put those it measured in the dark theme in each collection's Dark mode/);
+  const mock = mockFor([dialog]);
+  mock.addVariable("background", "COLOR", { Light: "#0a0a0a", Dark: "#ffffff" }, "Colors");
+  mock.addVariable("foreground", "COLOR", { Light: "#ffffff", Dark: "#0a0a0a" }, "Colors");
+  await runPlan(mock, coded, ["variables", "build"]);
+  const variant = variantsBySlug(mock).get("default")!;
+  const fill = () => (mock.handle(variant.id) as { fills: { color: { r: number } }[] }).fills.map((f) => Math.round(f.color.r * 255));
+  // Bound to background, in the Light mode the page starts in: its light value.
+  assert.deepEqual(fill(), [0x0a]);
+  const [label] = await runPlan(mock, coded, ["label"]);
+  assert.deepEqual(fill(), [0xff], "in Dark, as measured");
+  const setId = (label.value as { darkened: string[] }).darkened[0];
+  assert.ok(setId);
+  // A mode a designer chose is theirs: sent again, nothing changes.
+  await switchMode(mock, setId, "Light");
+  const [again] = await runPlan(mock, coded, ["label"]);
+  assert.equal((again.value as { darkened?: string[] }).darkened, undefined);
+  assert.deepEqual(fill(), [0x0a]);
+});
+
+test("bindings: a set the label call put in Dark comes back off it once a push measures it light, unless a designer chose a mode since", async () => {
+  const dark = copy(loadTreeFixture("dialog"));
+  (dark.components[0] as { scheme?: string }).scheme = "dark";
+  const tokens = { collections: [{ category: "colors", tokens: [
+    { name: "background", value: "#0a0a0a", hex: "#0a0a0a", dark: { value: "#ffffff", hex: "#ffffff" } },
+    { name: "foreground", value: "#ffffff", hex: "#ffffff", dark: { value: "#0a0a0a", hex: "#0a0a0a" } },
+  ] }] };
+  const darkCode = await codeFor(dark, {}, tokens);
+  const lightCode = await codeFor(copy(loadTreeFixture("dialog")), {}, tokens);
+  const mock = mockFor([dark]);
+  mock.addVariable("background", "COLOR", { Light: "#0a0a0a", Dark: "#ffffff" }, "Colors");
+  mock.addVariable("foreground", "COLOR", { Light: "#ffffff", Dark: "#0a0a0a" }, "Colors");
+  await runPlan(mock, darkCode, ["variables", "build"]);
+  const [label] = await runPlan(mock, darkCode, ["label"]);
+  const setId = (label.value as { darkened: string[] }).darkened[0];
+  const modes = () => (mock.handle(setId) as { explicitVariableModes: Record<string, string> }).explicitVariableModes;
+  assert.equal(Object.keys(modes()).length, 1);
+  // Measured light now: the Dark mode storysync set comes off, once.
+  const [light] = await runPlan(mock, lightCode, ["label"]);
+  assert.deepEqual([(light.value as { lightened?: string[] }).lightened, modes()], [[setId], {}]);
+  const [again] = await runPlan(mock, lightCode, ["label"]);
+  assert.equal((again.value as { lightened?: string[] }).lightened, undefined);
+  // A mode a designer chose after storysync's Dark stays theirs.
+  await runPlan(mock, darkCode, ["label"]);
+  await switchMode(mock, setId, "Light");
+  const chosen = modes();
+  const [kept] = await runPlan(mock, lightCode, ["label"]);
+  assert.deepEqual([(kept.value as { lightened?: string[] }).lightened, modes()], [undefined, chosen]);
 });

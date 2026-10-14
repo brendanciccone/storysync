@@ -263,10 +263,18 @@ export interface FigmaPlan {
 
 /**
  * A token's color at an alpha, 0-1 as `#rrggbbaa` gives it, and at `dark` in
- * the dark theme where that differs: the variable named `variable`.
+ * the dark theme where that differs: the variable named `variable`. With
+ * `darkToken`, the dark theme paints that color instead, at `dark` (1 when
+ * absent): `background dark input 30%`. `token` and `darkToken` may be
+ * palette colors no token names, `slate-50`, whose values `palette` gives.
+ * `components` are those whose paints bind it, so a variable made for a
+ * build that then failed is found unused (figma-results.ts).
  */
 export interface PlanAlpha {
   variable: string; token: string; alpha: number; dark?: number;
+  darkToken?: string; palette?: Record<string, string>; components?: string[];
+  /** The variable collection the plan's `variables` call makes it in. */
+  collection?: string;
 }
 
 /** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it, in the layers `keys`. */

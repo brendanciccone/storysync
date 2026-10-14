@@ -7,7 +7,7 @@ import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents, titleLeaf } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { colorToHex } from "./color.js";
-import { parseAlphaVariable } from "./figma-bind.js";
+import { colorOfClass, parseAlphaVariable } from "./figma-bind.js";
 
 // --- Token diff ---
 
@@ -161,6 +161,9 @@ function normalizeForCompare(category: string, value: string): string {
 
 // --- Token diffing ---
 
+/** A Tailwind palette color's class name, which a per-mode variable may be made from though no token has it. */
+const TAILWIND_PALETTE_NAME = /^(?:[a-z]+-\d{2,3}|black|white|transparent)$/;
+
 /** Whether a Figma mode is a dark theme's, by its name: `Dark`, `Dark mode`, `dark`. */
 const isDarkMode = (mode: string) => /dark/i.test(mode);
 
@@ -218,10 +221,17 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
   // An alpha variable, `destructive 10%`, is a code color token at an
   // alpha, which `figma tokens` makes beside it for the paints a push binds
   // translucent (figma-bind.ts) and keeps up to date with it: it isn't
-  // missing from code while its token is in it.
+  // missing from code while its token is in it. Nor is a per-mode one,
+  // `background dark input 30%` or `slate-50 dark slate-900`, while each
+  // color it is made from is a code token or a Tailwind palette color.
+  // Its Dark color is written as a class names it, `muted-foreground`.
+  const isColor = (name: string) => codeMap.has(`colors/${name}`) || TAILWIND_PALETTE_NAME.test(name);
+  const codeColors = [...codeMap.keys()].filter((k) => k.startsWith("colors/")).map((k) => k.slice("colors/".length));
   for (const [key, fv] of [...figmaMap]) {
     const alpha = key.startsWith("colors/") ? parseAlphaVariable(fv.name) : null;
-    if (alpha && codeMap.has(`colors/${alpha.token}`)) figmaMap.delete(key);
+    if (!alpha) continue;
+    const colors = [alpha.token, ...(alpha.darkToken ? [colorOfClass(alpha.darkToken, codeColors)] : [])];
+    if (colors.every(isColor) && (alpha.darkToken !== undefined || codeMap.has(`colors/${alpha.token}`))) figmaMap.delete(key);
   }
 
   const same = (category: string, code: Side, figmaValue: string) =>

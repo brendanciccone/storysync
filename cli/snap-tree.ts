@@ -89,6 +89,13 @@ export interface RawTreeElement {
    * such as `text-body`, is left out.
    */
   cls?: string[];
+  /**
+   * Each of its `dark:` classes with a state, as written
+   * (`dark:data-active:text-foreground`), and whether that state applies
+   * to it as measured, where the page could tell from its style sheets:
+   * classEvidence's.
+   */
+  states?: Record<string, boolean>;
   /** The first `lucide-*` class of an `<svg>`. */
   lucide?: string;
   box: RawBox;
@@ -294,13 +301,37 @@ const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-
  * Every one is kept: at most 8 dropped the `dark:border-input` that names
  * an outline button's border in Dark mode, so the base styles' color bound
  * in its place.
+ *
+ * A `dark:` class with a state (`dark:data-active:text-foreground`) is the
+ * dark theme's paint wherever its state applies, as Tailwind puts it after
+ * the plain `dark:` one. Where the page found its state applies (`states`,
+ * by the class's rule: Tabs' active trigger has `data-state="active"`,
+ * which shadcn/ui's `data-active` variant means), it is written `dark:` alone,
+ * in place of the plain ones of its property (`dark:text-muted-foreground`);
+ * where it found it doesn't, it says nothing of the dark theme; where it
+ * couldn't tell (no rule it could read), it stays as written
+ * (`dark:in-hover:bg-x`), which tells figma code that Dark may paint the
+ * property otherwise. Each still gives its utility as a state's class does.
  */
-export function classEvidence(tokens: readonly string[]): string[] {
-  return [...new Set(utilitiesOf(tokens).filter((u) => EVIDENCE.test(u.name)).map(evidenceName))].sort();
+export function classEvidence(tokens: readonly string[], states?: Readonly<Record<string, boolean>>): string[] {
+  return evidenceNames(utilitiesOf(tokens, states).filter((u) => EVIDENCE.test(u.name)));
 }
 
-/** A utility as `cls` writes it: `dark:` before one only the dark theme applies, with its opacity. */
-const evidenceName = (u: { name: string; dark: boolean; alpha: string }): string => (u.dark ? `dark:${u.name}${u.alpha}` : u.name);
+/** A class token as its utility: `over` for a `dark:` class whose state applies, `state` its variants where the page couldn't tell. */
+interface Utility { name: string; prefixed: boolean; dark: boolean; alpha: string; over?: true; state?: string }
+
+/** A utility as `cls` writes it: `dark:` before one only the dark theme applies, with its opacity, and the state it may apply in. */
+const evidenceName = (u: Utility): string => (u.dark ? `dark:${u.state ? `${u.state}:` : ""}${u.name}${u.alpha}` : u.name);
+
+/** The property a utility paints, for a `dark:` class whose state applies to stand in for the plain ones: `color`, `bg`. */
+const propertyOf = (name: string): string => utilitySetsColor(name) ?? name.slice(0, name.indexOf("-"));
+
+/** Utilities as `cls` writes them, sorted, a plain `dark:` one left out where one whose state applies paints its property. */
+function evidenceNames(utilities: readonly Utility[]): string[] {
+  const over = new Set(utilities.filter((u) => u.over).map((u) => propertyOf(u.name)));
+  const kept = utilities.filter((u) => !(u.dark && !u.over && !u.state && over.has(propertyOf(u.name))));
+  return [...new Set(kept.map(evidenceName))].sort();
+}
 
 /**
  * Each class token as its utility, its variant prefixes and any `/NN` or
@@ -308,8 +339,8 @@ const evidenceName = (u: { name: string; dark: boolean; alpha: string }): string
  * `alpha`, whether a variant prefix applies it only sometimes, and whether
  * that prefix is `dark:` alone, the dark theme's.
  */
-function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean; dark: boolean; alpha: string }[] {
-  const found: { name: string; prefixed: boolean; dark: boolean; alpha: string }[] = [];
+function utilitiesOf(tokens: readonly string[], states?: Readonly<Record<string, boolean>>): Utility[] {
+  const found: Utility[] = [];
   for (const token of tokens) {
     // The utility is what follows the last `:` outside brackets.
     let depth = 0;
@@ -320,11 +351,87 @@ function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boole
       else if (ch === "]" || ch === ")") depth--;
       else if (ch === ":" && depth === 0) cut = i;
     }
+    // One for another box than the element's: a child's, a descendant's or
+    // a pseudo-element's, never its own paint.
+    const variants = variantsOf(token.slice(0, cut + 1));
+    if (variants.some(targetsOther)) continue;
     const whole = token.slice(cut + 1).replace(/^!|!$/g, "");
     const utility = whole.replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
-    found.push({ name: utility, prefixed: cut >= 0, dark: token.slice(0, cut + 1).replace(/^!/, "") === "dark:", alpha: whole.slice(utility.length) });
+    const alpha = whole.slice(utility.length);
+    const others = variants.filter((v) => v !== "dark");
+    found.push({ name: utility, prefixed: cut >= 0, dark: variants.length === 1 && !others.length, alpha });
+    if (!others.length || others.length === variants.length) continue;
+    // A `dark:` class with a state: the dark theme's where it applies.
+    const on = states?.[token];
+    if (on === false) continue;
+    found.push(on ? { name: utility, prefixed: true, dark: true, alpha, over: true } : { name: utility, prefixed: true, dark: true, alpha, state: others.join(":") });
   }
   return found;
+}
+
+/** A class token's variant prefix, `dark:hover:`, as its variants, `dark` and `hover`: split at each `:` outside brackets. */
+function variantsOf(prefix: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < prefix.length; i++) {
+    const ch = prefix[i];
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (ch === ":" && depth === 0) {
+      out.push(prefix.slice(from, i).replace(/^!/, ""));
+      from = i + 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a variant applies its class to another box than the element's:
+ * `*:` and `**:`, its children and descendants; an arbitrary variant whose
+ * selector goes on past its `&`, as shadcn/ui's alert title's
+ * `[&_a]:hover:text-foreground` colors its links, not the title;
+ * `before:` and `after:`, its pseudo-elements, whose own classes they are
+ * (pseudoClasses). `[.dark_&]` and `has-[>svg]` still style the element.
+ */
+function targetsOther(variant: string): boolean {
+  if (variant === "*" || variant === "**" || variant === "before" || variant === "after") return true;
+  const m = /^\[(.*)\]$/.exec(variant);
+  const amp = m ? m[1].indexOf("&") : -1;
+  if (amp < 0) return false;
+  let depth = 0;
+  for (const ch of m![1].slice(amp + 1)) {
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (depth === 0 && /[_ >+~]/.test(ch)) return true;
+  }
+  return false;
+}
+
+/**
+ * The classes of a `::before` or `::after` (`which`): its host's that its
+ * `before:` or `after:` variant applies, without it, so Avatar's
+ * `after:border-border` is its ring's `border-border`, and
+ * `dark:after:bg-x/20` its `dark:bg-x/20`.
+ */
+export function pseudoClasses(host: readonly string[], which: "before" | "after"): string[] {
+  const out: string[] = [];
+  for (const token of host) {
+    let depth = 0;
+    let cut = -1;
+    for (let i = 0; i < token.length; i++) {
+      const ch = token[i];
+      if (ch === "[" || ch === "(") depth++;
+      else if (ch === "]" || ch === ")") depth--;
+      else if (ch === ":" && depth === 0) cut = i;
+    }
+    const variants = variantsOf(token.slice(0, cut + 1));
+    if (!variants.includes(which)) continue;
+    const rest = variants.filter((v) => v !== which);
+    if (rest.some(targetsOther)) continue;
+    out.push([...rest, token.slice(cut + 1)].join(":"));
+  }
+  return out;
 }
 
 /**
@@ -938,12 +1045,13 @@ interface Ctx {
  * found sets no color (`text-body`) is no longer in `cls` to stop the walk.
  */
 function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; set: boolean } {
-  const colors = (cls: string[] | undefined) => utilitiesOf(cls ?? []).filter((u) => u.name.startsWith("text-") && utilitySetsColor(u.name) === "color");
-  const chain: (string[] | undefined)[] = [];
-  for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(...[at.el, ...at.wrappers].map((el) => el?.cls));
+  type Classed = { cls?: string[]; states?: Record<string, boolean> } | undefined;
+  const colors = (el: Classed) => utilitiesOf(el?.cls ?? [], el?.states).filter((u) => u.name.startsWith("text-") && utilitySetsColor(u.name) === "color");
+  const chain: Classed[] = [];
+  for (let at: Item | undefined = item.kind === "el" ? item : item.parent; at; at = at.parent) chain.push(at.el, ...at.wrappers);
   for (const prefixed of [false, true]) {
-    for (const cls of [...chain, ...outer]) {
-      const all = colors(cls);
+    for (const el of [...chain, ...outer.map((cls) => ({ cls }))]) {
+      const all = colors(el);
       const found = all.filter((u) => u.prefixed === prefixed);
       if (!found.length) continue;
       // With the color it sets always, the one it sets in the dark theme
@@ -951,7 +1059,7 @@ function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; 
       const named = [...found, ...(prefixed ? [] : all.filter((u) => u.dark))].filter((u) => EVIDENCE.test(u.name));
       // A state's arbitrary color, which may be the one measured, names
       // nothing either: no base style stands in for it.
-      return { cls: [...new Set(named.map(evidenceName))].sort(), set: !prefixed || found.some((u) => !EVIDENCE.test(u.name)) };
+      return { cls: evidenceNames(named), set: !prefixed || found.some((u) => !EVIDENCE.test(u.name)) };
     }
   }
   return { cls: [], set: false };
@@ -1005,6 +1113,11 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     if (transform) node.tf = transform;
     applyPaint(node, p.cs, p.box, css);
     applyEffects(node, css, false);
+    // Its classes are its host's `after:` ones (or `before:`), which name
+    // its tokens: Avatar's ring is `after:border-border`.
+    const hostStates = Object.entries(item.parent?.el?.states ?? {}).flatMap(([token, on]) => pseudoClasses([token], p.which).map((t): [string, boolean] => [t, on]));
+    const cls = classEvidence(pseudoClasses(item.parent?.el?.cls ?? [], p.which), Object.fromEntries(hostStates));
+    if (cls.length) node.cls = cls;
     if (node.t === "T") {
       node.tx = textFacts(p.text ?? {}, css, content, null, item.box, ctx.fonts);
       node.tx.ink = [0, 0, item.box[2], item.box[3]];
@@ -1109,7 +1222,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
   // text or icon's color where nothing up the DOM sets one, a border's
   // where no class of its own does (`border` alone, as a card's).
   if (item.paints || kind === "T" || kind === "V") {
-    let cls = classEvidence(el.cls ?? []);
+    let cls = classEvidence(el.cls ?? [], el.states);
     const set = setByClass(el.cls ?? []);
     const nocls: NoClassPaint[] = [];
     if ((kind === "T" || kind === "V") && !set.always.has("color")) {

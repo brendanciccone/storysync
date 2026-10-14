@@ -390,3 +390,56 @@ test("splitHex: #rrggbbaa as #rrggbb and an alpha to three places", () => {
   assert.deepEqual(splitHex("#DF22254D"), ["#df2225", 0.302]);
   assert.deepEqual(splitHex("#171717"), ["#171717", 1]);
 });
+
+test("nodeStyle: where a dark: class paints another color, the paint binds to a per-mode variable of the two, a palette color's with its value", () => {
+  const palette = new Map([["slate-50", "#f8fafc"], ["slate-900", "#0f172b"]]);
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS, palette)), alphas, darkAlpha: true, component: "ui/base/Button" };
+  // shadcn/ui's outline Button: bg-background dark:bg-input/30, bound to background before.
+  assert.deepEqual(nodeStyle(frame({ k: "", bg: "#ffffff", cls: ["bg-background", "border-border", "dark:bg-input/30", "dark:border-input"] }), c).f, [["#ffffff", 1, "background dark input 30%", "background"]]);
+  // An input's bg-transparent dark:bg-input/30: clear in Light, input at 30% in Dark.
+  assert.deepEqual(nodeStyle(frame({ k: "input", cls: ["border-input", "dark:bg-input/30"] }), c).f, [["#e5e5e5", 0, "input 0% dark 30%", "input"]]);
+  // AspectRatio's bg-slate-50 dark:bg-slate-900: no token, so no fallback token either.
+  assert.deepEqual(nodeStyle(frame({ k: "ratio", bg: "#f8fafc", cls: ["bg-slate-50", "dark:bg-slate-900"] }), c).f, [["#f8fafc", 1, "slate-50 dark slate-900"]]);
+  assert.deepEqual([...alphas.values()], [
+    { variable: "background dark input 30%", token: "background", alpha: 1, darkToken: "input", dark: 0.302, components: ["ui/base/Button"] },
+    { variable: "input 0% dark 30%", token: "input", alpha: 0, dark: 0.302, components: ["ui/base/Button"] },
+    { variable: "slate-50 dark slate-900", token: "slate-50", alpha: 1, darkToken: "slate-900", dark: 1, palette: { "slate-50": "#f8fafc", "slate-900": "#0f172b" }, components: ["ui/base/Button"] },
+  ]);
+  // bg-white is #ffffff, which three tokens share and no class names: its pair binds all the same.
+  const white = new Binder(SHADCN_TOKENS, new Map([...palette, ["white", "#ffffff"]]));
+  const w: MapContext = { ...ctx(white), alphas: new Map(), darkAlpha: true };
+  assert.deepEqual(nodeStyle(frame({ k: "", bg: "#ffffff", cls: ["bg-white", "dark:bg-slate-900"] }), w).f, [["#ffffff", 1, "white dark slate-900"]]);
+  assert.deepEqual(w.unbound, []);
+  // A palette color without a dark: pair stays as measured, and a tree that cut a dark: class's opacity off makes none.
+  assert.deepEqual(nodeStyle(frame({ k: "", bg: "#f8fafc", cls: ["bg-slate-50"] }), c).f, ["#f8fafc"]);
+  const old: MapContext = { ...ctx(new Binder(SHADCN_TOKENS, palette)), alphas: new Map() };
+  assert.deepEqual(nodeStyle(frame({ k: "", bg: "#ffffff", cls: ["bg-background", "dark:bg-input"] }), old).f, [["#ffffff", 1, "background"]]);
+  assert.deepEqual(nodeStyle(frame({ k: "input", cls: ["dark:bg-input"] }), old).f, []);
+});
+
+test("nodeStyle: measured dark, a paint binds by the tokens' dark values, at its alpha in both modes", () => {
+  const binder = new Binder({ collections: [{ category: "colors" as const, tokens: [
+    { name: "content/primary", value: "#09090b", hex: "#09090b", dark: { value: "#ffffff", hex: "#ffffff" } },
+    { name: "surface/primary", value: "#ffffff", hex: "#ffffff", dark: { value: "#09090b", hex: "#09090b" } },
+  ] }] });
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(binder), alphas, darkAlpha: true, scheme: "dark" };
+  assert.deepEqual(nodeStyle(frame({ k: "", bg: "#09090b80", cls: ["bg-surface-primary/50"] }), c).f, [["#09090b", 0.502, "surface/primary 50%", "surface/primary"]]);
+  assert.deepEqual([...alphas.keys()], ["surface/primary 50%"]);
+});
+
+test("nodeStyle: a dark: class with a state decides Dark where snap found it applies, and makes no per-mode variable where snap couldn't tell", () => {
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas: new Map(), darkAlpha: true };
+  const text = (col: string, cls: string[]) => nodeStyle(frame({ k: "t", t: "T", el: "p", cls, tx: { c: "Account", col, f: "Inter", wt: 500, sz: 14, lh: 20, n: 1, ink: [0, 0, 60, 20] } as TreeNode["tx"] }), c).f;
+  // Tabs' active trigger: dark:data-active:text-foreground over dark:text-muted-foreground.
+  assert.deepEqual(text("#0a0a0a", ["dark:text-foreground", "text-foreground"]), [["#0a0a0a", 1, "foreground"]]);
+  assert.deepEqual(text("#0a0a0a", ["dark:data-active:text-foreground", "dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 1, "foreground"]]);
+  // An inactive one, text-foreground/60 dark:text-muted-foreground: Dark is muted's.
+  assert.deepEqual(text("#0a0a0a99", ["dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 0.6, "foreground 60% dark muted-foreground", "foreground"]]);
+  // Checkbox checked: dark:data-checked:bg-primary over dark:bg-input/30.
+  const fill = (cls: string[]) => nodeStyle(frame({ k: "b", bg: "#171717", cls }), c).f;
+  assert.deepEqual(fill(["bg-primary", "dark:bg-primary"]), [["#171717", 1, "primary"]]);
+  assert.deepEqual(fill(["bg-primary", "dark:bg-input/30", "dark:data-checked:bg-primary"]), [["#171717", 1, "primary"]]);
+  assert.deepEqual([...c.alphas!.keys()], ["foreground 60% dark muted-foreground"]);
+});

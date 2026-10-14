@@ -38,9 +38,11 @@ import type { TemplateName } from "../figma-code.js";
  *   LIMIT, not by its code.
  * - A variables call is its template, the guard and 40 variables at most,
  *   with the alpha variables of their colors (figma-bind.ts), under 10,000.
- *   Its budget was raised by 500 for those alpha variables.
+ *   Its budget was raised by 500 for those alpha variables, and by 1,000
+ *   more for per-mode ones made from two colors, a palette's among them,
+ *   and the removal of one nothing binds: far under 10,000 still.
  */
-const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000, variables: 3_500 } as const;
+const BUDGETS = { build: 18_000, images: 2_000, label: 3_000, readback: 9_000, variables: 4_500 } as const;
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 

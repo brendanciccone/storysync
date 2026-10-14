@@ -2016,6 +2016,137 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
   const evidenceIn = (classes: string[]): string[] =>
     classes.filter((t) => t && evidence.test(t) && !(/^!?text-/.test(t) && unprefixed(t) && !setsTextColor(t)));
 
+  // Whether each `dark:` class with a state (`dark:data-active:text-foreground`)
+  // applies to an element as measured, but for the dark theme, where the
+  // page can tell: Tailwind puts it after the plain `dark:` one, so it is
+  // what the dark theme paints wherever its state applies. Read from the
+  // page's own style sheets, which say what a variant means, a project's
+  // own included (shadcn/ui's `data-active` is `[data-state="active"]` too):
+  // the class's selector, less what a plain `dark:` class's adds, matched
+  // against the element, its at-rules tried (`@media (hover: hover)`).
+  // Undefined where the sheets don't say: no rule, nested CSS, a container
+  // query.
+  type Part = { sel: string; at: string[] | null };
+  let sheetParts: Part[] | null = null;
+  const partsOfSheets = (): Part[] => {
+    if (sheetParts) return sheetParts;
+    const parts: Part[] = [];
+    const split = (list: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let i = 0; i < list.length; i++) {
+        const ch = list[i];
+        if (ch === "\\") i++;
+        else if (ch === "(" || ch === "[") depth++;
+        else if (ch === ")" || ch === "]") depth--;
+        else if (ch === "," && depth === 0) {
+          out.push(list.slice(from, i).trim());
+          from = i + 1;
+        }
+      }
+      out.push(list.slice(from).trim());
+      return out;
+    };
+    // `at` is each media query or supports condition around the rule; null under one no browser call answers.
+    type Rule = CSSRule & { selectorText?: string; cssRules?: CSSRuleList; media?: MediaList; conditionText?: string; containerName?: string; name?: string };
+    // A rule nested in it narrows what it styles; an at-rule there only its
+    // value, as Tailwind's `@supports (color: color-mix(...))` for `/30`.
+    const nestsRule = (r: Rule): boolean => Array.from(r.cssRules ?? []).some((c) => (c as Rule).selectorText !== undefined || nestsRule(c as Rule));
+    const visit = (rules: CSSRuleList, at: string[] | null) => {
+      for (const rule of Array.from(rules)) {
+        const r = rule as Rule;
+        if (r.selectorText !== undefined) {
+          for (const sel of split(r.selectorText)) parts.push({ sel, at: nestsRule(r) ? null : at });
+        } else if (r.cssRules) {
+          const inner = !at ? null
+            : r.media ? [...at, `@media ${r.media.mediaText}`]
+            : typeof r.conditionText === "string" && r.containerName === undefined ? [...at, `@supports ${r.conditionText}`]
+            : typeof r.name === "string" && r.conditionText === undefined ? at
+            : null;
+          visit(r.cssRules, inner);
+        }
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets ?? [])) {
+      try {
+        visit(sheet.cssRules, []);
+      } catch {
+        // Another origin's sheet: unread.
+      }
+    }
+    return (sheetParts = parts);
+  };
+  const esc = (token: string) => `.${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(token) : token}`;
+  // A rule's selector part for a class, and what follows the class.
+  const rulesByToken = new Map<string, Part[]>();
+  const ruleFor = (token: string): Part[] => {
+    const e = esc(token);
+    if (!rulesByToken.has(token)) rulesByToken.set(token, partsOfSheets().filter((p) => p.sel.startsWith(e) && !/^[\w\\-]/.test(p.sel.slice(e.length))));
+    return rulesByToken.get(token)!;
+  };
+  // What a plain `dark:` class's rule adds to its class: `:is(.dark *)`, or a media query.
+  let darkPart: Part | null | undefined;
+  const darkOf = (): Part | null => {
+    if (darkPart !== undefined) return darkPart;
+    darkPart = null;
+    for (const p of partsOfSheets()) {
+      const m = /^\.dark\\:((?:\\.|[\w-])+)/.exec(p.sel);
+      if (!m || m[1].includes("\\:") || !p.at) continue;
+      darkPart = { sel: p.sel.slice(m[0].length), at: p.at };
+      break;
+    }
+    return darkPart;
+  };
+  const darkStateOn = (at: Element, token: string): boolean | undefined => {
+    const dark = darkOf();
+    if (!dark) return undefined;
+    const rules = ruleFor(token);
+    for (const p of rules) {
+      if (!p.at) return undefined;
+      // Its selector and at-rules, less the dark variant's.
+      const rest = p.sel.slice(esc(token).length);
+      if (dark.sel && !rest.includes(dark.sel)) return undefined;
+      const sel = `*${rest.replace(dark.sel, "")}`.replace(/::?(?:before|after)\b/g, "");
+      const at2 = [...p.at];
+      for (const a of dark.at!) {
+        const i = at2.indexOf(a);
+        if (i < 0) return undefined;
+        at2.splice(i, 1);
+      }
+      let applies: boolean;
+      try {
+        applies = at.matches(sel) && at2.every((a) => (a.startsWith("@media ") ? matchMedia(a.slice(7)).matches : CSS.supports(a.slice(10))));
+      } catch {
+        return undefined;
+      }
+      if (applies) return true;
+    }
+    return rules.length ? false : undefined;
+  };
+  // Each of an element's `dark:` classes with a state, and whether that state applies to it, where the page can tell.
+  const statesOf = (at: Element, classes: string[]): Record<string, boolean> | undefined => {
+    const out: Record<string, boolean> = {};
+    for (const token of classes) {
+      const variants: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let i = 0; i < token.length; i++) {
+        const ch = token[i];
+        if (ch === "[" || ch === "(") depth++;
+        else if (ch === "]" || ch === ")") depth--;
+        else if (ch === ":" && depth === 0) {
+          variants.push(token.slice(from, i).replace(/^!/, ""));
+          from = i + 1;
+        }
+      }
+      if (!variants.includes("dark") || variants.every((v) => v === "dark" || v === "before" || v === "after")) continue;
+      const on = darkStateOn(at, token);
+      if (on !== undefined) out[token] = on;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+
   // Radii only layout can resolve, calc() of a percentage, sized on a probe
   // the element's size, as readComputedStyles sizes the root's.
   const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
@@ -2290,6 +2421,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     const classes = (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
     const cls = evidenceIn(classes);
     if (cls.length) node.cls = cls;
+    const states = statesOf(el, cls);
+    if (states) node.states = states;
     // Its own size, where something turns or scales it: snap-tree.ts
     // centers that where it drew. A `rotate` or `scale` set on its own,
     // as Tailwind 4 sets them, doesn't show in `transform`.

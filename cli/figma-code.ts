@@ -21,7 +21,10 @@ import { callCode, canonicalJson, fnv1a32, fnv1a32Bytes } from "./checksum.js";
 import type { CallWriter } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
+import type { Scheme } from "./figma-bind.js";
 import { planLayout } from "./figma-layout.js";
+import { tailwindPalette } from "./palette.js";
+import type { Palette } from "./palette.js";
 import type { LayoutChild, LayoutPlan } from "./figma-layout.js";
 import { figmaSize, nodeStyle, outsideInsets, textSizesItself } from "./figma-map.js";
 import type { BoundByDefault, FigmaStyle, MapContext, NotBuilt, Unbound } from "./figma-map.js";
@@ -61,6 +64,10 @@ export interface FigmaCodeOptions {
   templates?: Partial<Record<TemplateName, string>>;
   /** The spike's answers in place of SPIKE's, so tests can build either way. */
   spike?: Partial<Spike>;
+  /** The project, whose Tailwind gives the palette a palette pair's variable takes its values from; the working directory when absent. */
+  project?: string;
+  /** The palette itself, in place of the project's (palette.ts). */
+  palette?: Palette;
 }
 
 export type TemplateName = "build" | "images" | "label" | "readback" | "variables";
@@ -172,6 +179,8 @@ interface CompiledComponent {
   note: string;
   /** What its base styles bound, for the plan. */
   bindings: PlanBinding[];
+  /** Whether snap measured it in the dark theme, so the label call puts its set in Dark. */
+  dark?: true;
 }
 
 const round2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
@@ -233,7 +242,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
     const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, parentCls: parent?.cls, spike, around };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, scheme: schemeOf(component), component: componentKey(component), parentCls: parent?.cls, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
@@ -403,6 +412,16 @@ export function predictRead(nodes: TreeNode[], slug: string): number {
 
 // --- Components -------------------------------------------------------------
 
+/**
+ * The color scheme snap measured a component in, its `scheme`: dark where
+ * the preview rendered the dark theme, whose paints then match the tokens'
+ * dark values; light where it says so or, from a snap before it did, says
+ * nothing.
+ */
+export function schemeOf(component: SnapComponent): Scheme {
+  return (component as SnapComponent & { scheme?: unknown }).scheme === "dark" ? "dark" : "light";
+}
+
 /** The Figma page a component goes on: its Storybook category, as the 0.4.0 push placed it. */
 export function pageOf(component: SnapComponent): string {
   return component.category || "Components";
@@ -489,10 +508,17 @@ function compileComponent(component: SnapComponentWithTree, binder: Binder, warn
     if (!was.keys.includes(b.key)) was.keys = [...was.keys, b.key].sort();
     bindings.set(id, was);
   }
+  // Measured dark, its paints matched the tokens' dark values, and the
+  // label call puts its set in Dark, where they show as measured.
+  const dark = schemeOf(component) === "dark";
+  if (dark && !binder.empty) {
+    warnings.push(`${key}: snap measured it in the dark theme, so its paints bind by the tokens' dark values, and the label call puts its set in each collection's Dark mode, where they show as measured; a translucent paint keeps its dark alpha in Light too. Snap it in the light theme to bind by light values`);
+  }
   return {
     key, id: component.id ?? key, title: component.title, name: setNameOf(component), page: pageOf(component),
     props: component.variantProperties, variants, note: labelLine(component),
     bindings: [...bindings.keys()].sort().map((k) => bindings.get(k)!),
+    ...(dark ? { dark: true as const } : {}),
   };
 }
 
@@ -688,7 +714,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const metaPath = join(dirname(opts.snap), "meta.json");
   const measuredAt = existsSync(metaPath) ? String((JSON.parse(readFileSync(metaPath, "utf8")) as { measuredAt?: string }).measuredAt ?? "") : "";
   const tokens = readTokens(opts.tokens, warnings);
-  const binder = new Binder(tokens);
+  const binder = new Binder(tokens, opts.palette ?? tailwindPalette(opts.project ?? process.cwd()));
 
   const all = (snap.components ?? []) as SnapComponentWithTree[];
   const entries = all.map((c): ComponentEntry => ({ id: c.id ?? componentKey(c), name: c.name, title: c.title }));
@@ -745,6 +771,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // opacity, which a mode switch resets to 1, and says so in `fallbacks`.
   const alphas = [...bound.values()].sort((a, b) => (a.variable < b.variable ? -1 : a.variable > b.variable ? 1 : 0));
   for (const { collection, data, alpha } of tokens && alphas.length ? alphaCalls(tokens, alphas, warnings) : []) {
+    for (const a of alphas) if (alpha.includes(a.variable)) a.collection = collection;
     add(
       { kind: "variables", page: "", components: [], collection, description: `Create or update the alpha variables ${alpha.join(", ")} in the ${collection} variable collection, each a token's color at an alpha in every mode, for the translucent paints the builds bind` },
       (seq) => `${header(seq, "variables", "")}${callCode([["DATA", data]], templates.variables)}`,
@@ -816,9 +843,9 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   }
 
   // Label: every set built, with a line for those snap measured from something else.
-  const label = { pages: builtPages, sets: built.map((c) => [c.id, c.note]) };
+  const label = { pages: builtPages, sets: built.map((c) => (c.dark ? [c.id, c.note, 1] : [c.id, c.note])) };
   add(
-    { kind: "label", page: "", components: built.map((c) => c.key), description: "Label the sets snap measured from something other than the component or from more than one story, and remove Figma's empty default page" },
+    { kind: "label", page: "", components: built.map((c) => c.key), description: `Label the sets snap measured from something other than the component or from more than one story, ${built.some((c) => c.dark) ? "put those it measured in the dark theme in each collection's Dark mode, " : ""}and remove Figma's empty default page` },
     (seq) => `${header(seq, "label", "")}${callCode([["DATA", label]], templates.label)}`,
   );
 

@@ -513,3 +513,61 @@ test("skills: every skill, the push command and the reference send the plan's va
     }
   }
 });
+
+// shadcn/ui's outline button, `bg-background dark:bg-input/30`, here with
+// border for input; AspectRatio's `bg-slate-50 dark:bg-slate-900`, palette
+// colors no token names; an input's `bg-transparent dark:bg-input/30`.
+const PER_MODE: PlanAlpha[] = [
+  { variable: "background dark border 30%", token: "background", alpha: 1, darkToken: "border", dark: 0.302 },
+  { variable: "border 0% dark 30%", token: "border", alpha: 0, dark: 0.302 },
+  { variable: "slate-50 dark slate-900", token: "slate-50", alpha: 1, darkToken: "slate-900", palette: { "slate-50": "#f8fafc", "slate-900": "#0f172b" } },
+];
+
+test("figma tokens: a per-mode variable holds the light class's color in Light and the dark: class's in Dark, a palette color's too, and a push sent again changes nothing", async () => {
+  const mock = new MockFigma();
+  const planned = planFor(TOKENS, {}, PER_MODE);
+  // The palette colors' values ride along in `ref`, never made themselves.
+  assert.deepEqual(JSON.parse(/const DATA = (\{.*?\});/s.exec(planned.code(1))![1]).ref, [["slate-50", "COLOR", ["ALL_FILLS", "STROKE_COLOR", "EFFECT_COLOR"], "#f8fafc"], ["slate-900", "COLOR", ["ALL_FILLS", "STROKE_COLOR", "EFFECT_COLOR"], "#0f172b"]]);
+  const [colors] = await push(mock, planned);
+  assert.deepEqual(colors.alpha, ["background dark border 30%", "border 0% dark 30%", "slate-50 dark slate-900"]);
+  assert.deepEqual(colors.stale, []);
+  const values = (name: string) => mock.collections()[0].variables.find((v) => v.name === name)!.values;
+  // Dark: border's dark #ffffff1a at 30% more, as Tailwind's color-mix paints input/30.
+  assert.deepEqual(values("background dark border 30%"), { Light: "#ffffff", Dark: "#ffffff08" });
+  assert.deepEqual(values("border 0% dark 30%"), { Light: "#e5e5e500", Dark: "#ffffff08" });
+  assert.deepEqual(values("slate-50 dark slate-900"), { Light: "#f8fafc", Dark: "#0f172b" });
+  assert.equal(mock.collections()[0].variables.some((v) => v.name === "slate-50" || v.name === "slate-900"), false);
+  const again = await push(mock, planned);
+  assert.deepEqual(changes(again[0]), NOTHING);
+  // A tokens push with no plan keeps them, of its tokens and the palette, and lists none stale.
+  const plain = await pushTokens(mock, TOKENS);
+  assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
+});
+
+test("figma tokens: an alpha variable nothing binds is removed once the user confirms it, and not made again", async () => {
+  const mock = new MockFigma();
+  await pushTokens(mock, TOKENS, {}, [{ variable: "background 10%", token: "background", alpha: 0.102 }]);
+  assert.ok(mock.collections()[0].variables.some((v) => v.name === "background 10%"));
+  const [colors] = await pushTokens(mock, TOKENS, { remove: ["Colors/background 10%"] }, [{ variable: "background 10%", token: "background", alpha: 0.102 }]);
+  assert.deepEqual([colors.removed, colors.alpha], [["Colors/background 10%"], []]);
+  assert.equal(mock.collections()[0].variables.some((v) => v.name === "background 10%"), false);
+});
+
+test("alphaCalls: a palette pair's variable, of no token, is made in the colors' collection from its palette values", () => {
+  const calls = alphaCalls(TOKENS as unknown as TokenExtractionResult, [PER_MODE[2]], []);
+  assert.deepEqual(calls.map((c) => [c.collection, c.alpha, c.data.vars, (c.data.ref as unknown[][]).map((r) => r[0])]), [["Colors", ["slate-50 dark slate-900"], [], ["slate-50", "slate-900"]]]);
+});
+
+test("figma tokens: a per-mode variable writes a slashed Dark color by its class name, so Figma doesn't group it at the slash, and reads it back", async () => {
+  const mock = new MockFigma();
+  const pair: PlanAlpha = { variable: "background dark chart-1", token: "background", alpha: 1, darkToken: "chart/1", dark: 1 };
+  const [colors] = await pushTokens(mock, TOKENS, {}, [pair]);
+  assert.deepEqual([colors.alpha, colors.stale], [["background dark chart-1"], []]);
+  const values = (name: string) => mock.collections()[0].variables.find((v) => v.name === name)!.values;
+  assert.deepEqual(values("background dark chart-1"), { Light: "#ffffff", Dark: "#8ec5ff" });
+  // Kept up to date with no plan, and made from an --alpha name alone.
+  const plain = await pushTokens(mock, TOKENS);
+  assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
+  const named = await pushTokens(new MockFigma(), TOKENS, { alpha: ["border 10% dark chart-1"] });
+  assert.deepEqual(named[0].alpha, ["border 10% dark chart-1"]);
+});

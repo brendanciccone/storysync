@@ -78,8 +78,36 @@ export interface BindDecision {
   from?: string;
 }
 
+/**
+ * The color scheme snap measured a component in (its `scheme`): its paints
+ * are that theme's, so they match the tokens' values in it. Absent is light,
+ * as snap measured before it said.
+ */
+export type Scheme = "light" | "dark";
+
+/**
+ * What a `dark:` class paints a role in: a color token, or a color of
+ * Tailwind's palette that no token names (`dark:bg-slate-900`), by its
+ * class name, with its `#rrggbb(aa)`; and its alpha, 1 where the class has
+ * no `/NN`.
+ */
+export interface DarkPaint {
+  name: string;
+  alpha: number;
+  /** A palette color's value; absent for a token's. */
+  hex?: string;
+}
+
 export class Binder {
   private readonly colors = new Map<string, string[]>();
+  /** The tokens by their dark value, each the light one where it has none, as the browser keeps it: what a component measured dark matches. */
+  private readonly darkColors = new Map<string, string[]>();
+  private readonly darkOpaque = new Set<string>();
+  /** Each color token by the name a class gives it, `card-foreground` for card/foreground, and its light value. */
+  private readonly tokenByClass = new Map<string, string>();
+  private readonly lightHex = new Map<string, string>();
+  /** Tailwind's palette, by class name (`slate-900`), as the project's own Tailwind declares it (palette.ts). */
+  private readonly palette: ReadonlyMap<string, string>;
   private readonly radii: { name: string; px: number }[] = [];
   private readonly defaults = new Map<BaseDefault["property"], BaseDefault>();
   /** Each color token whose light value is opaque, which a translucent paint of its color binds through an alpha variable. */
@@ -88,7 +116,8 @@ export class Binder {
   private readonly colorNames = new Set<string>();
   private readonly sizeClasses = new Set<string>();
 
-  constructor(tokens?: Pick<TokenExtractionResult, "collections" | "defaults"> | null) {
+  constructor(tokens?: Pick<TokenExtractionResult, "collections" | "defaults"> | null, palette?: ReadonlyMap<string, string>) {
+    this.palette = palette ?? new Map();
     for (const d of tokens?.defaults ?? []) this.defaults.set(d.property, d);
     for (const collection of tokens?.collections ?? []) {
       for (const token of collection.tokens) {
@@ -107,12 +136,23 @@ export class Binder {
           // An opaque token is keyed by #rrggbb, so a translucent paint of its
           // color (`border-destructive/30`) finds it; a translucent token only
           // by its whole value, since binding takes the variable's alpha.
-          const hex = token.hex.toLowerCase();
-          const key = hex.length === 9 && !hex.endsWith("ff") ? hex : hex.slice(0, 7);
-          const names = this.colors.get(key) ?? [];
-          if (!names.includes(token.name)) names.push(token.name);
-          this.colors.set(key, names);
+          const keyOf = (value: string) => {
+            const hex = value.toLowerCase();
+            return hex.length === 9 && !hex.endsWith("ff") ? hex : hex.slice(0, 7);
+          };
+          const put = (index: Map<string, string[]>, key: string) => {
+            const names = index.get(key) ?? [];
+            if (!names.includes(token.name)) names.push(token.name);
+            index.set(key, names);
+          };
+          const key = keyOf(token.hex);
+          put(this.colors, key);
           if (key.length === 7) this.opaqueColors.add(token.name);
+          const darkKey = keyOf(token.dark?.hex ?? token.hex);
+          put(this.darkColors, darkKey);
+          if (darkKey.length === 7) this.darkOpaque.add(token.name);
+          if (!this.tokenByClass.has(tokenClassName(token.name))) this.tokenByClass.set(tokenClassName(token.name), token.name);
+          this.lightHex.set(token.name, token.hex.toLowerCase());
         }
         if (collection.category === "radius" && typeof token.px === "number") this.radii.push({ name: token.name, px: token.px });
       }
@@ -127,12 +167,16 @@ export class Binder {
   /**
    * The token a paint of `hex` (`#rrggbb` or `#rrggbbaa`) binds to, in
    * `role`, given the node's classes and the properties snap found no class
-   * sets (`nocls`).
+   * sets (`nocls`), among the tokens of that value in the `scheme` it was
+   * measured in: a component snap measured dark matches the tokens' dark
+   * values, so coder's dark `#ffffff` text is `content/primary`, whose dark
+   * value it is, not `surface/primary`, whose light value it happens to be.
    */
-  color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[]): BindDecision {
+  color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[], scheme: Scheme = "light"): BindDecision {
     const value = hex.toLowerCase();
-    const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
-    const decision = decide(candidates, PREFIXES[role], cls, !NAMED_ONLY.has(role));
+    const index = scheme === "dark" ? this.darkColors : this.colors;
+    const candidates = [...new Set([...(index.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? index.get(value) ?? [] : [])])].sort();
+    const decision = decide(candidates, PREFIXES[role], cls, !NAMED_ONLY.has(role), scheme);
     if (decision.variable || decision.named.length) return { variable: decision.variable, candidates, ...(decision.variable ? {} : { ambiguous: true as const, named: decision.named }) };
     // No class names any of them: the base style for the property, where
     // snap found no class sets it, and none of the classes it lists sets it
@@ -166,8 +210,70 @@ export class Binder {
    * its alpha variable holds (alphaVariableName). A translucent token's own
    * variable holds its alpha already.
    */
-  opaque(name: string): boolean {
-    return this.opaqueColors.has(name);
+  opaque(name: string, scheme: Scheme = "light"): boolean {
+    return (scheme === "dark" ? this.darkOpaque : this.opaqueColors).has(name);
+  }
+
+  /** Whether `name` is a color token's, rather than a palette color's. */
+  isToken(name: string): boolean {
+    return this.lightHex.has(name);
+  }
+
+  /** A color token's light value, `#rrggbb(aa)`, or a palette color's, by its name; undefined for neither. */
+  hexOf(name: string): string | undefined {
+    return this.lightHex.get(name) ?? this.palette.get(name);
+  }
+
+  /**
+   * What the dark theme paints `role` in, where one `dark:` class says
+   * (`dark:bg-input/30`, `dark:bg-slate-900`, `dark:bg-transparent`): a
+   * token or a palette color, at the class's alpha; undefined where none
+   * does, or two say different things. Its alpha is the class's only
+   * where the tree keeps a `dark:` class's opacity (ComponentTree's
+   * `darkAlpha`): the caller asks only then.
+   */
+  darkPaint(role: PaintRole, cls: readonly string[] | undefined): DarkPaint | undefined {
+    const found = new Map<string, DarkPaint>();
+    for (const entry of cls ?? []) {
+      const { dark, utility, alpha, state } = readEvidence(entry);
+      if (!dark) continue;
+      const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
+      if (!prefix) continue;
+      const rest = utility.slice(prefix.length + 1).toLowerCase();
+      const paint = this.colorNamed(rest) ?? this.colorNamed(rest.replace(SIDE, ""));
+      // One with a state snap couldn't tell applies: Dark may be either.
+      if (paint && state) return undefined;
+      if (paint) found.set(`${paint.name} ${alpha ?? 1}`, { ...paint, alpha: alpha ?? 1 });
+    }
+    return found.size === 1 ? [...found.values()][0] : undefined;
+  }
+
+  /**
+   * The light theme's palette color among `cls` for `role` whose value is
+   * `rgb`: a `bg-slate-50` measured `#f8fafc`, which no token names, by its
+   * class name.
+   */
+  lightPalette(rgb: string, role: PaintRole, cls: readonly string[] | undefined): string | undefined {
+    const names = new Set<string>();
+    for (const entry of cls ?? []) {
+      const { dark, utility } = readEvidence(entry);
+      if (dark) continue;
+      const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
+      if (!prefix) continue;
+      const rest = utility.slice(prefix.length + 1).toLowerCase();
+      for (const name of [rest, rest.replace(SIDE, "")]) {
+        if (!this.tokenByClass.has(name) && this.palette.get(name)?.slice(0, 7) === rgb.toLowerCase().slice(0, 7)) names.add(name);
+      }
+    }
+    return names.size === 1 ? [...names][0] : undefined;
+  }
+
+  /** A token (by its name) or a palette color (with its value) a class names, after its prefix; tokens first, as Tailwind's theme puts them over its palette. */
+  private colorNamed(name: string): Omit<DarkPaint, "alpha"> | undefined {
+    const token = this.tokenByClass.get(name);
+    if (token) return { name: token };
+    const hex = this.palette.get(name);
+    return hex ? { name, hex } : undefined;
   }
 
   /**
@@ -180,11 +286,12 @@ export class Binder {
   darkAlpha(token: string, role: PaintRole, cls: readonly string[] | undefined): number | undefined {
     const found = new Set<number>();
     for (const entry of cls ?? []) {
-      const { dark, utility, alpha } = readEvidence(entry);
+      const { dark, utility, alpha, state } = readEvidence(entry);
       if (!dark) continue;
       const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
       if (!prefix) continue;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
+      if (state && (this.colorNamed(rest) ?? this.colorNamed(rest.replace(SIDE, "")))) return undefined;
       if (tokenClassName(token) === rest || tokenClassName(token) === rest.replace(SIDE, "")) found.add(alpha ?? 1);
     }
     return found.size === 1 ? [...found][0] : undefined;
@@ -204,15 +311,17 @@ export class Binder {
  * value two classes name isn't then handed to a default. Where they name several, the one a `dark:` class
  * names, alone: it has the light value measured, and is the token the dark
  * theme paints, so its variable is right in both modes, as an outline
- * button's `border-border dark:border-input` border is `input`.
+ * button's `border-border dark:border-input` border is `input`. Measured
+ * in the dark theme (`scheme`), the one a `dark:` class names first, as it
+ * is what the paint shows.
  */
-function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined, byValue = true): { variable: string | null; named: string[] } {
+function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined, byValue = true, scheme: Scheme = "light"): { variable: string | null; named: string[] } {
   if (byValue && candidates.length <= 1) return { variable: candidates[0] ?? null, named: [] };
   const named = new Set<string>();
   const dark = new Set<string>();
   for (const entry of cls ?? []) {
-    const { dark: isDark, utility: c } = readEvidence(entry);
-    const prefix = prefixes.find((p) => c.startsWith(`${p}-`));
+    const { dark: isDark, utility: c, state } = readEvidence(entry);
+    const prefix = state ? undefined : prefixes.find((p) => c.startsWith(`${p}-`));
     if (!prefix) continue;
     const rest = c.slice(prefix.length + 1).toLowerCase();
     for (const name of [rest, rest.replace(SIDE, "")]) {
@@ -221,7 +330,9 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
       if (token && isDark) dark.add(token);
     }
   }
-  const variable = named.size === 1 ? [...named][0] : dark.size === 1 ? [...dark][0] : null;
+  // Measured dark, a `dark:` class is the one the paint shows, over the
+  // light theme's class it overrides.
+  const variable = scheme === "dark" && dark.size === 1 ? [...dark][0] : named.size === 1 ? [...named][0] : dark.size === 1 ? [...dark][0] : null;
   return { variable, named: [...named].sort() };
 }
 
@@ -230,14 +341,29 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
  * applies it, and the opacity a `dark:` one keeps: `dark:bg-destructive/20`
  * is `bg-destructive`, dark, at 0.2; `/[.25]` and `/[25%]` are 0.25. snap
  * keeps no other entry's opacity, which the paint's measured alpha holds.
+ * A `dark:` one with a state snap couldn't tell applies (snap-tree.ts's
+ * classEvidence), `dark:group-hover:bg-accent`, has it as `state`: the
+ * dark theme may paint its property so, or not.
  */
-export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number } {
+export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number; state?: string } {
   const dark = entry.startsWith("dark:");
   const rest = dark ? entry.slice(5) : entry;
   const m = /^(.+?)\/(?:(\d+(?:\.\d+)?)|\[(\d*\.?\d+)(%?)\])$/.exec(rest);
-  if (!m) return { dark, utility: rest };
-  const alpha = m[2] !== undefined ? Number(m[2]) / 100 : Number(m[3]) / (m[4] ? 100 : 1);
-  return { dark, utility: m[1], ...(Number.isFinite(alpha) && alpha >= 0 && alpha <= 1 ? { alpha } : {}) };
+  const alpha = !m ? NaN : m[2] !== undefined ? Number(m[2]) / 100 : Number(m[3]) / (m[4] ? 100 : 1);
+  let utility = m ? m[1] : rest;
+  let state: string | undefined;
+  let depth = 0;
+  for (let i = utility.length - 1; dark && i >= 0; i--) {
+    const ch = utility[i];
+    if (ch === "]" || ch === ")") depth++;
+    else if (ch === "[" || ch === "(") depth--;
+    else if (ch === ":" && depth === 0) {
+      state = utility.slice(0, i);
+      utility = utility.slice(i + 1);
+      break;
+    }
+  }
+  return { dark, utility, ...(Number.isFinite(alpha) && alpha >= 0 && alpha <= 1 ? { alpha } : {}), ...(state ? { state } : {}) };
 }
 
 // --- Alpha variables ------------------------------------------------------------
@@ -267,26 +393,56 @@ export function readEvidence(entry: string): { dark: boolean; utility: string; a
 // made beside `destructive` and `destructive 10%` and saw keep 10% in Light
 // and 20% in Dark through every switch.
 
+// A paint whose dark theme is another color altogether, as shadcn/ui's
+// outline button's `bg-background dark:bg-input/30` is, or a palette pair,
+// AspectRatio's `bg-slate-50 dark:bg-slate-900`, binds to a variable of the
+// same kind that holds each mode's own: its Light value the light class's
+// color at its alpha, its Dark value the `dark:` class's, named for both,
+// `background dark input 30%` and `slate-50 dark slate-900`. A palette
+// color is no token, so its value comes from the project's Tailwind
+// (palette.ts), written into the call that makes the variable. A fill only
+// the dark theme paints, an input's `bg-transparent dark:bg-input/30`, is
+// its token at 0 in Light, `input 0% dark 30%`. A name has no period, and
+// no token's name holds a space or a `%`, so each part reads back. The
+// color Dark takes is written as a class names it, `foreground dark
+// muted-foreground` for muted/foreground: Figma groups a variable at each
+// `/` of its name, so a slash there would put it in a group of its own,
+// `foreground dark muted`. Its own token's slashes stay, which keep it
+// beside that token, `surface/primary dark content-primary`.
+
 /** An alpha variable's name: its token's, a space, the alpha in percent, and the dark theme's where it differs. */
 export const ALPHA_VARIABLE = /^(.+?) (\d{1,3}(?:,\d)?)%(?: dark (\d{1,3}(?:,\d)?)%)?$/;
 
+/** A percent as an alpha variable's name writes it. */
+const PERCENT = /^(\d{1,3}(?:,\d)?)%$/;
+
 /** An alpha 0-1 as the byte `#rrggbbaa` writes, which is what snap measures. */
 export const alphaByte = (alpha: number): number => Math.max(0, Math.min(255, Math.round(alpha * 255)));
+
+/** An alpha as the shortest percent, whole or to a tenth, that reads back as the same byte. */
+const percentOf = (a: number): string => {
+  const byte = alphaByte(a);
+  const whole = Math.round((byte * 100) / 255);
+  return alphaOfPercent(whole) === byte ? String(whole) : (Math.round((byte * 1000) / 255) / 10).toFixed(1).replace(".", ",");
+};
 
 /**
  * The alpha variable of `token` at `alpha` (0-1), and at `dark` in the dark
  * theme where that is another byte: `destructive 10%`, `destructive 10% dark
  * 20%`. Each percent is the shortest, whole or to a tenth, that reads back
  * as the same byte, so each byte has one name and the name gives the byte.
+ * With `darkToken`, another token or palette color the dark theme paints,
+ * the per-mode variable of the two, each percent left out at 100%, the
+ * dark one by its class name: `background dark input 30%`, `slate-50 dark
+ * slate-900`, `foreground 60% dark muted-foreground`.
  */
-export function alphaVariableName(token: string, alpha: number, dark?: number): string {
-  const percent = (a: number) => {
-    const byte = alphaByte(a);
-    const whole = Math.round((byte * 100) / 255);
-    return alphaOfPercent(whole) === byte ? String(whole) : (Math.round((byte * 1000) / 255) / 10).toFixed(1).replace(".", ",");
-  };
-  const darkPart = dark === undefined || alphaByte(dark) === alphaByte(alpha) ? "" : ` dark ${percent(dark)}%`;
-  return `${token} ${percent(alpha)}%${darkPart}`;
+export function alphaVariableName(token: string, alpha: number, dark?: number, darkToken?: string): string {
+  if (darkToken !== undefined && darkToken !== token) {
+    const at = (a: number) => (alphaByte(a) === 255 ? "" : ` ${percentOf(a)}%`);
+    return `${token}${at(alpha)} dark ${tokenClassName(darkToken)}${at(dark ?? 1)}`;
+  }
+  const darkPart = dark === undefined || alphaByte(dark) === alphaByte(alpha) ? "" : ` dark ${percentOf(dark)}%`;
+  return `${token} ${percentOf(alpha)}%${darkPart}`;
 }
 
 /**
@@ -299,14 +455,45 @@ function alphaOfPercent(percent: number): number {
 }
 
 /**
- * The token and alphas (0-1, as the bytes give them) an alpha variable's
- * name stands for, `dark` where the dark theme's differs, or null for
- * another name.
+ * The color among `colors` a per-mode variable's name writes as a class
+ * names it (alphaVariableName): one of that name, else the first whose
+ * class name it is, `muted/foreground` for `muted-foreground`; else the
+ * name itself, a palette color's.
  */
-export function parseAlphaVariable(name: string): { token: string; alpha: number; dark?: number } | null {
-  const m = ALPHA_VARIABLE.exec(name);
-  if (!m) return null;
-  const [light, dark] = [m[2], m[3]].map((p) => (p === undefined ? undefined : Number(p.replace(",", "."))));
-  if (light! > 100 || (dark ?? 0) > 100) return null;
-  return { token: m[1], alpha: alphaOfPercent(light!) / 255, ...(dark !== undefined ? { dark: alphaOfPercent(dark) / 255 } : {}) };
+export function colorOfClass(name: string, colors: Iterable<string>): string {
+  const all = [...colors];
+  return all.includes(name) ? name : all.find((c) => tokenClassName(c) === name) ?? name;
+}
+
+/**
+ * The token and alphas (0-1, as the bytes give them) an alpha variable's
+ * name stands for, `dark` where the dark theme's differs, and `darkToken`
+ * where the dark theme paints another color, by its class name (colorOfClass
+ * gives its token), or null for another name.
+ */
+export function parseAlphaVariable(name: string): { token: string; alpha: number; dark?: number; darkToken?: string } | null {
+  const parts = name.split(" ");
+  const pct = (p: string | undefined) => {
+    const m = p === undefined ? null : PERCENT.exec(p);
+    const n = m ? Number(m[1].replace(",", ".")) : NaN;
+    return n <= 100 ? alphaOfPercent(n) / 255 : null;
+  };
+  const isPct = (p: string | undefined) => p !== undefined && PERCENT.test(p);
+  if (!parts[0] || isPct(parts[0]) || parts[0] === "dark") return null;
+  const token = parts[0];
+  let i = 1;
+  const alpha = isPct(parts[i]) ? pct(parts[i++]) : 1;
+  if (alpha === null) return null;
+  if (i === parts.length) return i === 2 ? { token, alpha } : null;
+  if (parts[i++] !== "dark" || i === parts.length) return null;
+  if (isPct(parts[i])) {
+    // The same token at another alpha: both percents written.
+    const dark = pct(parts[i]);
+    return dark !== null && i === parts.length - 1 && parts.length === 4 ? { token, alpha, dark } : null;
+  }
+  const darkToken = parts[i++];
+  if (darkToken === "dark" || darkToken === token) return null;
+  const dark = i < parts.length ? pct(parts[i++]) : 1;
+  if (dark === null || i !== parts.length) return null;
+  return { token, alpha, darkToken, ...(dark !== 1 ? { dark } : {}) };
 }

@@ -751,11 +751,12 @@ test("buildTree: past the root, a text takes the text color class of the element
 test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off but a dark: one's, every one", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x", "bg-muted/[.5]"]),
-    ["bg-muted", "bg-primary", "dark:bg-input/30", "rounded-md", "text-primary-foreground", "text-x"],
+    // `[&_svg]:text-x` colors the svg inside, not the element: no evidence of its own.
+    ["bg-muted", "bg-primary", "dark:bg-input/30", "rounded-md", "text-primary-foreground"],
   );
   // shadcn/ui's destructive Button: the dark theme paints destructive at
   // 20%, which snap, measuring the light theme, sees only in the class.
-  assert.deepEqual(classEvidence(["bg-destructive/10", "hover:bg-destructive/20", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive", "dark:hover:bg-destructive/30"]),
+  assert.deepEqual(classEvidence(["bg-destructive/10", "hover:bg-destructive/20", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive", "dark:hover:bg-destructive/30"], { "dark:hover:bg-destructive/30": false }),
     ["bg-destructive", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive"]);
   // An outline button's: past 8, the dark:border-input that names its border in Dark mode is kept.
   const outline = ["focus-visible:border-ring", "focus-visible:ring-ring/50", "aria-invalid:ring-destructive/20", "aria-invalid:border-destructive",
@@ -765,8 +766,9 @@ test("classEvidence: the utilities that name a paint's token, variant prefixes a
 });
 
 test("classEvidence and buildTree: a dark: prefix alone stays, naming the token the dark theme paints", () => {
-  // dark: alone is the dark theme's color; with a state after it, a state's.
-  assert.deepEqual(classEvidence(["border-border", "dark:border-input", "dark:hover:bg-input/50", "hover:dark:bg-muted", "!dark:text-x"]),
+  // dark: alone is the dark theme's color; with a state the page found
+  // doesn't apply, not hovered, a state's.
+  assert.deepEqual(classEvidence(["border-border", "dark:border-input", "dark:hover:bg-input/50", "hover:dark:bg-muted", "!dark:text-x"], { "dark:hover:bg-input/50": false, "hover:dark:bg-muted": false }),
     ["bg-input", "bg-muted", "border-border", "dark:border-input", "dark:text-x"]);
   // A text takes the dark theme's color with the one it inherits.
   const p = el("p", [0, 0, 200, 20], {}, [run("Muted", [[0, 1.5, 40, 17]])], { text: TEXT });
@@ -872,4 +874,53 @@ test("buildTree: under a wrapper, a child's flex facts are the wrapper's, which 
   assert.equal(node.abs, undefined);
   const floating = el("div", [8, 8, 24, 24], { position: "absolute" }, [el("span", [8, 8, 24, 24], { ...BORDER, position: "relative" })]);
   assert.equal(buildTree(tree(el("div", [0, 0, 40, 40], {}, [floating]))).nodes[1].abs, 1);
+});
+
+test("buildTree: a pseudo-element's classes are its host's before: or after: ones, and no class for another box is the element's own", () => {
+  const BORDERED = { ...BORDER, "border-top-style": "solid", "border-right-style": "solid", "border-bottom-style": "solid", "border-left-style": "solid" };
+  const text = (cls: string[] = []) => el("div", [0, 0, 200, 20], {}, [run("Title", [[0, 1.5, 40, 17]])], { text: TEXT, cls, slot: "alert-title" });
+  // Avatar: its ring is the root's ::after, after:border-border; Marker's
+  // lines its ::before and ::after, before:bg-border and after:bg-border.
+  const avatar = el("span", [0, 0, 32, 32], { display: "flex" }, [
+    { k: "p", which: "before", cs: { "background-color": "rgb(229, 229, 229)" }, content: "", box: [0, 0, 32, 1], how: "flow" },
+    { k: "p", which: "after", cs: BORDERED, content: "", box: [0, 0, 32, 32], how: "abs" },
+  ], { cls: ["after:border-border", "before:bg-border", "dark:after:bg-input/30", "rounded-full", "[&_a]:hover:text-foreground"] });
+  const nodes = byKey(buildTree(tree(avatar)).nodes);
+  assert.deepEqual(nodes.get("::after")!.cls, ["border-border", "dark:bg-input/30"]);
+  assert.deepEqual(nodes.get("::before")!.cls, ["bg-border"]);
+  // shadcn/ui's alert title colors its links on hover, [&_a]:hover:text-foreground:
+  // its own color is the alert's text-card-foreground, which it inherits.
+  const alert = el("div", [0, 0, 200, 40], { display: "flex", "background-color": "rgb(255, 255, 255)" }, [text(["[&_a]:hover:text-foreground"])], { cls: ["bg-card", "text-card-foreground", "*:[svg]:text-current"] });
+  const title = byKey(buildTree(tree(alert)).nodes).get("alert-title")!;
+  assert.deepEqual([title.cls, title.nocls], [["text-card-foreground"], undefined]);
+  assert.deepEqual(classEvidence(["[&>svg]:text-x", "*:bg-x", "**:bg-y", "[.dark_&]:bg-z", "has-[>svg]:bg-w", "[&:hover]:bg-v"]), ["bg-v", "bg-w", "bg-z"]);
+});
+
+test("classEvidence: a dark: class with a state is the dark theme's where the page found its state applies, and says nothing where it doesn't", () => {
+  // shadcn/ui's Tabs trigger.
+  const tabs = ["text-foreground/60", "dark:text-muted-foreground", "data-active:text-foreground", "dark:data-active:text-foreground", "dark:hover:bg-x"];
+  // Active: Tailwind puts dark:data-active: after dark:, so it is what Dark paints.
+  const states = (active: boolean) => ({ "dark:data-active:text-foreground": active, "dark:hover:bg-x": false });
+  assert.deepEqual(classEvidence(tabs, states(true)), ["bg-x", "dark:text-foreground", "text-foreground"]);
+  assert.deepEqual(classEvidence(tabs, states(false)), ["bg-x", "dark:text-muted-foreground", "text-foreground"]);
+  // A state the page couldn't tell stays as written, for figma code to leave Dark as the token's.
+  assert.deepEqual(classEvidence(tabs), ["bg-x", "dark:data-active:text-foreground", "dark:hover:bg-x", "dark:text-muted-foreground", "text-foreground"]);
+  // Another property's plain dark: class stays.
+  assert.deepEqual(classEvidence(["bg-background", "dark:bg-input/30", "dark:data-checked:bg-primary", "dark:border-input"], { "dark:data-checked:bg-primary": true }), ["bg-background", "bg-primary", "dark:bg-primary", "dark:border-input"]);
+});
+
+test("buildTree: a text's inherited dark: class with a state reads its holder's states", () => {
+  const label = el("span", [10, 5, 50, 20], {}, [run("Account", [[10, 6.5, 50, 17]])], { text: TEXT });
+  const trigger = el("button", [0, 0, 80, 30], { display: "flex" }, [label], { cls: ["text-foreground/60", "dark:text-muted-foreground", "dark:data-active:text-foreground"], states: { "dark:data-active:text-foreground": true } });
+  const nodes = buildTree(tree(trigger)).nodes;
+  assert.deepEqual(nodes.find((n) => n.t === "T")!.cls, ["dark:text-foreground", "text-foreground"]);
+  // A pseudo-element's, by its host's: dark:data-open:after:bg-x is its dark:data-open:bg-x.
+  const ring = (on?: boolean) => {
+    const host = el("span", [0, 0, 32, 32], { display: "flex" }, [{ k: "p", which: "after", cs: { "background-color": "rgb(229, 229, 229)" }, content: "", box: [0, 0, 32, 32], how: "abs" }],
+      { cls: ["after:bg-border", "dark:after:bg-input", "dark:data-open:after:bg-ring"], ...(on === undefined ? {} : { states: { "dark:data-open:after:bg-ring": on } }) });
+    return byKey(buildTree(tree(host)).nodes).get("::after")!.cls;
+  };
+  assert.deepEqual(ring(true), ["bg-border", "bg-ring", "dark:bg-ring"]);
+  assert.deepEqual(ring(false), ["bg-border", "bg-ring", "dark:bg-input"]);
+  assert.deepEqual(ring(), ["bg-border", "bg-ring", "dark:bg-input", "dark:data-open:bg-ring"]);
 });

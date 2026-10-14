@@ -6,7 +6,7 @@
 // DATA's, SUM, before it runs T (cli/checksum.ts, callCode):
 //   DATA = { collection, modes, part: [i, n], vars: [[name, type, scopes,
 //            light, dark?], ...], all?: [[name, type], ...], remove?: [name],
-//            alpha?: [name] }
+//            alpha?: [name], ref?: [[name, type, scopes, light, dark?]] }
 // `modes` is ['Default'], or ['Light', 'Dark'] where a token of the
 // collection has a dark value; a var's dark is its light value where it
 // has none, as the browser keeps a variable the dark theme doesn't set. A
@@ -26,7 +26,13 @@
 // alpha, or at the dark theme's own in Dark, `destructive 10% dark 20%`:
 // those `alpha` names, which the plan's paints bind, and every one an
 // earlier push made, kept up to date with its token. One whose token is
-// gone is stale.
+// gone is stale. One whose dark theme paints another color holds that
+// color's Dark value instead, `background dark input 30%`; either color
+// may be a palette one no token names, `slate-50 dark slate-900`. `ref`
+// gives the values of the colors they are made from that `vars` doesn't
+// hold, which the call reads and never writes. One the user confirmed
+// removing in `remove`, as nothing binds it, is removed though its token
+// is there.
 
 const NAME = DATA.collection;
 const entry = (name) => NAME + '/' + name;
@@ -76,15 +82,36 @@ for (const v of await figma.variables.getLocalVariablesAsync()) {
   total++;
 }
 
-// An alpha variable's token and alphas, Light's and Dark's, from its name,
-// or null.
-const ALPHA = /^(.+?) (\d{1,3}(?:,\d)?)%(?: dark (\d{1,3}(?:,\d)?)%)?$/;
+// An alpha variable's token, alphas, Light's and Dark's, and the color
+// Dark takes, from its name (cli/figma-bind.ts, parseAlphaVariable), or null:
+// `token NN%`, `token NN% dark NN%`, `token[ NN%] dark color[ NN%]`. The
+// color Dark takes is written as a class names it, `muted-foreground` for
+// muted/foreground (cli/tokens.ts, tokenClassName): a color of that name,
+// else the first whose class name it is, else a palette color's.
+const PCT = /^(\d{1,3}(?:,\d)?)%$/;
+const className = (n) => n.toLowerCase().replace(/\/default$/, '').replace(/\//g, '-');
+const BY_CLASS = Object.create(null);
+for (const v of (DATA.all || []).concat(DATA.vars, DATA.ref || [])) {
+  if (v[1] === 'COLOR' && !(className(v[0]) in BY_CLASS)) BY_CLASS[className(v[0])] = v[0];
+}
+for (const v of (DATA.all || []).concat(DATA.vars, DATA.ref || [])) if (v[1] === 'COLOR') BY_CLASS[v[0]] = v[0];
 const alphaOf = (name) => {
-  const m = ALPHA.exec(name);
-  if (!m) return null;
-  const [k, kDark] = [m[2], m[3] || m[2]].map((p) => Number(p.replace(',', '.')));
-  return k <= 100 && kDark <= 100 ? [m[1], Math.round((k / 100) * 255) / 255, Math.round((kDark / 100) * 255) / 255] : null;
+  const p = name.split(' ');
+  const k = (s) => (PCT.test(s || '') ? Number(s.slice(0, -1).replace(',', '.')) : null);
+  const byte = (n) => Math.round((n / 100) * 255) / 255;
+  if (!p[0] || k(p[0]) !== null || p[0] === 'dark') return null;
+  let i = 1;
+  const light = k(p[i]) === null ? 100 : k(p[i++]);
+  if (i === p.length) return i === 2 && light <= 100 ? [p[0], byte(light), byte(light), p[0]] : null;
+  if (p[i++] !== 'dark' || i === p.length) return null;
+  if (k(p[i]) !== null) return p.length === 4 && i === 3 && light <= 100 && k(p[3]) <= 100 ? [p[0], byte(light), byte(k(p[3])), p[0]] : null;
+  const color = BY_CLASS[p[i]] || p[i];
+  i++;
+  const dark = i < p.length ? k(p[i++]) : 100;
+  return color !== 'dark' && color !== p[0] && dark !== null && i === p.length && light <= 100 && dark <= 100 ? [p[0], byte(light), byte(dark), color] : null;
 };
+// A palette color's name, as Tailwind's classes give it: no token's.
+const PALETTE = /^(?:[a-z]+-\d{2,3}|black|white|transparent)$/;
 
 const stale = [];
 const conflicts = [];
@@ -96,7 +123,17 @@ if (DATA.all) {
   for (const name of Object.keys(byName).sort()) {
     const list = byName[name];
     const alpha = alphaOf(name);
-    const type = TYPE[name] || (alpha && TYPE[alpha[0]] === 'COLOR' ? 'COLOR' : undefined);
+    const color = (c) => TYPE[c] === 'COLOR' || (!TYPE[c] && PALETTE.test(c));
+    const type = TYPE[name] || (alpha && color(alpha[0]) && color(alpha[3]) && (TYPE[alpha[0]] || TYPE[alpha[3]]) ? 'COLOR' : undefined)
+      || (alpha && PALETTE.test(alpha[0]) && PALETTE.test(alpha[3]) && !TYPE[alpha[0]] && !TYPE[alpha[3]] ? 'COLOR' : undefined);
+    // An alpha variable the user confirmed removing, as nothing binds it.
+    if (alpha && !TYPE[name] && confirmed.has(name)) {
+      for (const v of list) v.remove();
+      removed.push(entry(name));
+      total -= list.length;
+      delete byName[name];
+      continue;
+    }
     // The ones no token has, or that can't be the token's variable: a
     // variable's type never changes, and the build binds by name alone.
     const right = type ? list.filter((v) => v.resolvedType === type) : [];
@@ -131,14 +168,22 @@ const same = (type, had, want) => {
 const sameScopes = (a, b) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
 
 // This part's alpha variables, as vars: the plan's, and those the
-// collection holds, of a color token of this part.
+// collection holds, of a color token of this part, each color they are
+// made from in this part or `ref`. None removed above is made again.
 const TOKEN = {};
-for (const v of DATA.vars) if (v[1] === 'COLOR') TOKEN[v[0]] = v;
+for (const v of DATA.vars.concat(DATA.ref || [])) if (v[1] === 'COLOR') TOKEN[v[0]] = v;
+const OWN = {};
+for (const v of DATA.vars) OWN[v[0]] = true;
 const at = (s, k) => s.slice(0, 7) + Math.round(hex(s)[3] * k * 255).toString(16).padStart(2, '0');
-const alphas = [...new Set((DATA.alpha || []).concat(Object.keys(byName)))].sort().filter((name) => alphaOf(name) && TOKEN[alphaOf(name)[0]]).map((name) => {
-  const [token, k, kDark] = alphaOf(name);
-  const [, , scopes, lightValue, darkValue] = TOKEN[token];
-  return [name, 'COLOR', scopes, at(lightValue, k), at(darkValue === undefined ? lightValue : darkValue, kDark)];
+const gone = new Set(removed.map((r) => r.slice(NAME.length + 1)));
+const alphas = [...new Set((DATA.alpha || []).concat(Object.keys(byName)))].sort().filter((name) => {
+  const a = alphaOf(name);
+  return a && !gone.has(name) && TOKEN[a[0]] && TOKEN[a[3]] && ((DATA.alpha || []).includes(name) || OWN[a[0]] || (OWN[a[3]] && PALETTE.test(a[0])));
+}).map((name) => {
+  const [token, k, kDark, darkToken] = alphaOf(name);
+  const [, , scopes, lightValue] = TOKEN[token];
+  const [, , , darkLight, darkValue] = TOKEN[darkToken];
+  return [name, 'COLOR', scopes, at(lightValue, k), at(darkValue === undefined ? darkLight : darkValue, kDark)];
 });
 
 const created = [];
