@@ -737,6 +737,23 @@ test("selectDiffComponents: no names leaves both sides whole", () => {
   assert.equal(figmaReported, FIGMA);
 });
 
+test("selectDiffComponents: an entry whose stories name no component is paired, not compared, so a set an earlier push made for it isn't reported", () => {
+  const entries: ComponentEntry[] = [
+    { id: "ui-button", name: "Button", title: "ui/Button", category: "ui" },
+    { id: "design-colors", name: "Colors", title: "design/Colors", category: "design", docsOnly: true },
+  ];
+  const button: FigmaComponentInfo = { name: "Button", page: "ui", type: "COMPONENT_SET", storybookId: "ui-button", variantProperties: [], variantCount: 1 };
+  // One pushed with its Storybook ID, or a 0.3.0 push's, with none.
+  for (const colors of [{ storybookId: "design-colors" }, {}]) {
+    const figma: FigmaComponentInfo[] = [button, { name: "Colors", page: "design", type: "COMPONENT_SET", variantProperties: [], variantCount: 1, ...colors }];
+    for (const names of [undefined, ["Button"]]) {
+      const { entries: chosen, others } = selectDiffComponents(entries, figma, names);
+      assert.deepEqual([chosen.map((e) => e.id), others.map((e) => e.id)], [["ui-button"], ["design-colors"]], String(names));
+      assert.deepEqual(diffSelection(names ?? [], entries, figma).map((d) => [d.name, d.status]), [["Button", "match"]], `${String(names)} ${JSON.stringify(colors)}`);
+    }
+  }
+});
+
 /** A set with no variant properties, as diffSelection's code components have none. */
 function bareOnPage(page: string, name: string): FigmaComponentInfo {
   return { name, page, variantProperties: [], variantCount: 1 };

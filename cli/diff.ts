@@ -359,7 +359,9 @@ export interface DiffSelection {
 }
 
 /**
- * Narrows a component diff to the names given with `--components`.
+ * Narrows a component diff to the names given with `--components`, or with
+ * none, leaves out only the entries whose stories name no component, as on
+ * shadcn's design/* token pages, as `others`.
  *
  * Storybook components are selected exactly as snap and map select them. A
  * name found only in Figma is not a typo, though: it asks whether that
@@ -381,8 +383,11 @@ export function selectDiffComponents(
   names: readonly string[] | undefined,
 ): DiffSelection {
   const selected = selectComponents(entries, names, figmaComponents.flatMap(figmaNames));
-  if (!componentNames(names).length) return { entries: selected, others: [], figmaReported: figmaComponents };
   const chosen = new Set(selected);
+  // An entry whose stories name no component, left out unless named, is
+  // paired all the same: a set an earlier push made for it is not "not in
+  // code".
+  if (!componentNames(names).length) return { entries: selected, others: entries.filter((e) => !chosen.has(e)), figmaReported: figmaComponents };
   return {
     entries: selected,
     others: entries.filter((e) => !chosen.has(e)),

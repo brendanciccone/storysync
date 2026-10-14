@@ -1587,13 +1587,15 @@ program
           let others: ComponentEntry[] = [];
           let figmaReported = figmaComponents;
           try {
-            // Entries whose stories name no component aren't diffed.
-            entries = selectComponents(await storybook.listComponents(), undefined);
+            entries = await storybook.listComponents();
           } catch (err) {
             storybookReadFailed = true;
             mapSpinner?.fail("Failed to list Storybook components");
             console.error(chalk.red(String(err)));
           }
+          // Entries whose stories name no component aren't diffed, but are
+          // paired as `others`, so a set pushed for one isn't "not in code".
+          if (!opts.components && !storybookReadFailed) ({ entries, others, figmaReported } = selectDiffComponents(entries, figmaComponents, undefined));
           if (opts.components) {
             const names = (opts.components as string).split(",");
             if (storybookReadFailed) {

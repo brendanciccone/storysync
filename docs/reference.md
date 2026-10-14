@@ -759,7 +759,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 `--keep-props` keeps one, and `--exclude-props` leaves out others, on `map`, `inspect`, `snap` and `diff`, matched ignoring case. snap passes an excluded prop to no story, so each story's own args set it, and records the list as `excludeProps` in `styles.json`, which the audit reads. Pass the same list to every snap of a push: a run without it drops the record, and a `--merge` without it refuses to run.
 
-**Docs-only pages are skipped.** MDX docs pages, and entries whose stories name no component, such as shadcn's `design/*` token pages, never become components.
+**Docs-only pages are skipped.** MDX docs pages, and entries whose stories name no component, such as shadcn's `design/*` token pages, never become components. `diff` doesn't compare them, and doesn't report a set an earlier push made for one as missing from code.
 
 ## GitHub Action
 
