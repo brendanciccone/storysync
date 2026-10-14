@@ -4,7 +4,7 @@ Thanks for your interest in Storysync. This guide covers the basics for working 
 
 ## Local development setup
 
-Storysync uses [pnpm](https://pnpm.io/) as its package manager. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored.
+Storysync uses [pnpm](https://pnpm.io/) as its package manager: version 10.33.0 or later, as `packageManager` in `package.json` pins it (Corepack picks it up), on Node 18 or later. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored. `engines` in `package.json` names only Node, since it is published and checked against every user's install.
 
 ```bash
 pnpm install
