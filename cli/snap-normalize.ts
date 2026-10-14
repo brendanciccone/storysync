@@ -1294,10 +1294,12 @@ export function encodeStoryArgs(
  * `URLSearchParams`, which percent-encodes spaces as `+` — verified to
  * round-trip through Storybook's arg parser.
  */
-export function buildStoryUrl(baseUrl: string, storyId: string, argsParam: string | null): string {
+export function buildStoryUrl(baseUrl: string, storyId: string, argsParam: string | null, globalsParam?: string | null): string {
   const base = baseUrl.replace(/\/+$/, "");
   const query = new URLSearchParams({ id: storyId, viewMode: "story" });
   if (argsParam) query.set("args", argsParam);
+  // Storybook's globals, in the same form: `theme:light`, as snap sets for the light scheme (snap-scheme.ts).
+  if (globalsParam) query.set("globals", globalsParam);
   return `${base}/iframe.html?${query.toString()}`;
 }
 

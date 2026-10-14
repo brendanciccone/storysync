@@ -19,6 +19,8 @@ import {
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
+import { colorSchemeInPage, themeGlobalsInPage } from "../snap-scheme.js";
+import type { SchemeReading, ThemeGlobals } from "../snap-scheme.js";
 import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
 import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, storiesOwnInPage, thumbnailInPage } from "../snap-browser.js";
 import type { RawTreeCapture } from "../snap-tree.js";
@@ -1704,17 +1706,23 @@ function treeBrowser(opts: {
   storiesReadFails?: number;
   /** Stories whose every load times out. */
   timesOut?: (storyId: string) => boolean;
+  /** The color scheme the story renders in, given its URL's `globals`; unread by default. */
+  scheme?: (globals: string | null) => SchemeReading;
+  /** Storybook's globals, as themeGlobalsInPage reads them. */
+  themeGlobals?: ThemeGlobals;
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
   let readFails = opts.storiesReadFails ?? 0;
   let storyId = opts.storyId;
+  let globals: string | null = null;
   let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId, csf: opts.csf });
   let described = false;
   const given = () => fake.preview.storyStoreValue.getStoryContext().args;
   const target = {
     evaluate: async (fn: unknown) => {
       if (fn === captureTreeInPage) return opts.capture(given(), storyId);
+      if (fn === colorSchemeInPage) return opts.scheme?.(globals) ?? null;
       if (described) return null;
       described = true;
       return { tag: "span", slot: "switch", role: null };
@@ -1734,6 +1742,7 @@ function treeBrowser(opts: {
       }
       described = false;
       storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
+      globals = new URL(url).searchParams.get("globals");
       fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {}, csf: opts.csf });
       return null;
     },
@@ -1742,6 +1751,7 @@ function treeBrowser(opts: {
     $: async () => target,
     evaluate: async (fn: unknown, arg?: unknown) => {
       if (fn === storiesOwnInPage && readFails-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+      if (fn === themeGlobalsInPage) return opts.themeGlobals ?? null;
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage || fn === storiesOwnInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
@@ -2817,6 +2827,53 @@ test("runSnap: a component's later variants open its overlay the way an earlier 
     const variants = result.components[0].variants;
     assert.deepEqual(variants.map((v) => v.opened?.via), ["hover", "hover"]);
     assert.deepEqual(done.filter((d) => d === "click" || d === "hover"), ["click", "hover", "hover"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a story Storybook renders dark is measured again with the globals that render it light, and those go in every URL after", async () => {
+  const dir = tempDir();
+  try {
+    const urls: string[] = [];
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } },
+      // As coder's preview: addon-themes' theme global, empty, which its decorator reads as dark.
+      scheme: (globals) => {
+        urls.push(globals ?? "");
+        return globals === "theme:light" ? { scheme: "light", by: "html.light" } : { scheme: "dark", by: "html.dark" };
+      },
+      themeGlobals: { globals: { theme: "", viewport: "" }, allowed: ["theme", "viewport"], options: {} },
+    });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [component] = result.components;
+    assert.equal(component.scheme, "light");
+    assert.deepEqual(component.globals, { theme: "light" });
+    // The first load rendered dark; every load after it asked for light.
+    assert.equal(urls[0], "");
+    assert.ok(urls.slice(1).every((g) => g === "theme:light"), urls.join(","));
+    assert.equal(component.warnings.some((w) => /dark color scheme/.test(w)), false);
+    assert.ok(progress.some((m) => /snap sets globals=theme:light/.test(m)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a story that renders dark whatever snap sets is recorded as dark, with a warning", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture,
+      scheme: () => ({ scheme: "dark", by: "html.dark" }),
+      themeGlobals: { globals: { theme: "dark" }, allowed: ["theme"], options: {} },
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const [component] = result.components;
+    assert.equal(component.scheme, "dark");
+    assert.equal(component.globals, undefined);
+    const warning = component.warnings.find((w) => /dark color scheme/.test(w));
+    assert.match(warning ?? "", /^ui\/base\/Switch was measured in its dark color scheme \(html\.dark\), as Storybook rendered it dark, and still did with globals=theme:light/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

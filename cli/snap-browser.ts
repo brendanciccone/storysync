@@ -32,6 +32,8 @@ import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
 import type { TreeNode } from "./tree-types.js";
 import { STAND_IN_PREFIX, standInFaces, standInStack } from "./fonts.js";
 import type { StandIn } from "./fonts.js";
+import { colorSchemeInPage, themeGlobalsInPage } from "./snap-scheme.js";
+import type { SchemeReading, ThemeGlobals } from "./snap-scheme.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -183,6 +185,8 @@ export async function createContext(browser: Browser): Promise<BrowserContext> {
     // Sharper PNGs for human comparison; does not affect computed styles.
     deviceScaleFactor: 2,
     reducedMotion: "reduce",
+    // A stylesheet that follows the system renders light: the scheme tokens are matched by (snap-scheme.ts).
+    colorScheme: "light",
   });
 }
 
@@ -266,6 +270,10 @@ export interface CaptureResult {
    * but snap.ts notes it as a closed trigger where other variants opened.
    */
   unopened?: { element: string; reason: string };
+  /** The color scheme the measured element rendered in (snap-scheme.ts), where the page said. */
+  scheme?: SchemeReading;
+  /** Storybook's globals, read where it rendered dark, from which snap asks for light (lightGlobals). */
+  themeGlobals?: ThemeGlobals;
 }
 
 export interface CaptureOptions {
@@ -447,6 +455,9 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const fonts = { root: await probeFontStack(target), text: holder ? await probeFontStack(holder) : null };
     const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
     const boundingBox = await target.boundingBox();
+    // Which scheme its colors are: a Storybook may render its dark theme by default.
+    const scheme = await target.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
+    const themeGlobals = scheme?.scheme === "dark" ? (await page.evaluate(themeGlobalsInPage).catch(() => null)) ?? undefined : undefined;
 
     // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {
@@ -482,6 +493,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       ...(standIns.length ? { standIns } : {}),
       ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
       ...(portal ? { portal } : {}), ...(opened ? { opened } : {}), ...(unopened ? { unopened } : {}),
+      ...(scheme ? { scheme } : {}), ...(themeGlobals ? { themeGlobals } : {}),
     };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in

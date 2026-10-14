@@ -123,6 +123,7 @@ class FakeElement extends FakeNode {
   get textContent(): string { return this.childNodes.map((n) => (n instanceof FakeText ? n.textContent : (n as FakeElement).textContent)).join(""); }
   set textContent(text: string) { this.childNodes = [new FakeText(text, [])]; }
   getAttribute(name: string): string | null { return name in this.attrs ? this.attrs[name] : null; }
+  get classList(): string[] { return (this.attrs.class ?? "").split(/\s+/).filter(Boolean); }
   get id(): string { return this.attrs.id ?? ""; }
   setAttribute(name: string, value: string): void { this.attrs[name] = value; }
   removeAttribute(name: string): void { delete this.attrs[name]; }
