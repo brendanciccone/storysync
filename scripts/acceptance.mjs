@@ -2115,10 +2115,11 @@ async function assertNullsScored(snapDir, { template = loadSkillReadback(), bin 
   assert((v.json.readbackIssues ?? []).length === 0, `a variant with null fields was flagged: ${describeIssues(v.json.readbackIssues)}`);
   const scored = v.json.variants.map((x) => `${x.slug} ${x.status} ${x.matched}/${x.matched + x.mismatched}` +
     (x.differences.length ? ` ${x.differences.map((d) => d.property).join("+")}` : "")).join(", ");
-  const want = "textless verified 12/12, flat verified 10/10, " +
-    "unlabeled drifted 8/12 color+fontSize+fontWeight+fontFamily, ungapped drifted 11/12 gap";
+  // boxShadow among them since the template reads shadows back: none, as snap measured none.
+  const want = "textless verified 13/13, flat verified 11/11, " +
+    "unlabeled drifted 9/13 color+fontSize+fontWeight+fontFamily, ungapped drifted 12/13 gap";
   assert(scored === want, `scored ${scored}, not ${want}`);
-  return `no text and no text measured 12/12, no auto layout on a block element 10/10; ` +
+  return `no text and no text measured 13/13, no auto layout on a block element 11/11; ` +
     `a label lost in Figma drifts on its four text fields, an auto layout lost on its gap`;
 }
 
