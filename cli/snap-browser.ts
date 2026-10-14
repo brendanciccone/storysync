@@ -369,7 +369,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     let renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
 
-    const appeared = await waitForStory(page, opts.selector, slots, opts.timeoutMs);
+    const appeared = await waitForStory(page, opts.selector, slots, opts.timeoutMs, opts.story?.id ?? new URL(url).searchParams.get("id") ?? undefined);
     // Storybook paints a story's error after the page has loaded. The wait
     // ends on it, or times out on a story that threw before rendering
     // anything; either way an error shown now is why nothing is there.
@@ -1046,13 +1046,51 @@ export function storyReadySelector(slots: readonly string[]): string {
   ].join(", ");
 }
 
-async function waitForStory(page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number): Promise<boolean> {
-  try {
-    await page.waitForSelector(selector ?? storyReadySelector(slots), { state: "attached", timeout: timeoutMs });
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * How long snap still waits for a story to draw once Storybook says it has
+ * rendered it: for an effect, or a portal, that draws a moment after.
+ */
+export const RENDERED_GRACE_MS = 1000;
+
+/**
+ * Waits, at most `timeoutMs`, for what storyReadySelector (or `selector`)
+ * matches. A story Storybook has finished rendering that draws nothing, as
+ * a dialog held closed with no trigger does, is given RENDERED_GRACE_MS
+ * more rather than the whole of --timeout: coder's ConfirmDialog spent 10
+ * seconds on each of 23 such variants.
+ */
+async function waitForStory(page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number, storyId?: string): Promise<boolean> {
+  const wanted = selector ?? storyReadySelector(slots);
+  const appeared = page.waitForSelector(wanted, { state: "attached", timeout: timeoutMs }).then(() => true, () => false);
+  if (!storyId) return appeared;
+  let done = false;
+  const rendered = (async (): Promise<"rendered" | "waited"> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!done && Date.now() < deadline) {
+      if (await page.evaluate(storyRenderedInPage, storyId).catch(() => false) === true) {
+        await sleep(Math.min(RENDERED_GRACE_MS, Math.max(0, deadline - Date.now())));
+        return "rendered";
+      }
+      await sleep(100);
+    }
+    return "waited";
+  })();
+  const first = await Promise.race([appeared, rendered]);
+  done = true;
+  if (typeof first === "boolean") return first;
+  // Rendered and given its grace: whatever draws has drawn by now.
+  return first === "rendered" ? await page.$(wanted).then((found) => {
+    void found?.dispose();
+    return found != null;
+  }, () => false) : appeared;
+}
+
+/** Runs in the page: whether Storybook has finished rendering `storyId`, as its preview's render says. */
+export function storyRenderedInPage(storyId: string): boolean {
+  const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+  const phase = preview?.storyRenders?.find((r) => r?.id === storyId)?.phase;
+  // Storybook 8 and later end a render at "finished"; 7 at "completed", or "played" after a play function.
+  return phase === "finished" || phase === "completed" || phase === "played";
 }
 
 /** Image requests in flight on a page, from now until stop(). */

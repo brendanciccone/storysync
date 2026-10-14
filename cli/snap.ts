@@ -1628,6 +1628,9 @@ interface ThemeState {
   why?: string;
 }
 
+/** How much longer than --timeout a variant that timed out is given to load once more. */
+export const TIMEOUT_RETRY_FACTOR = 3;
+
 /** A variant's tree as captured, until the component's base is known and its assets are written. */
 interface VariantTree {
   variant: SnapVariant;
@@ -1871,13 +1874,14 @@ async function snapComponent(
           tree: opts.rootOnly ? "count" : "tree",
         });
       };
-      // Once more on a timeout loading the story: a busy Storybook times out
-      // stories that render a moment later, and a variant left unmeasured
-      // gets built from source instead. Not on one after it loaded, which
-      // would only take as long again.
+      // Once more on a timeout loading the story, given TIMEOUT_RETRY_FACTOR
+      // times as long: a busy Storybook times out stories that render a
+      // moment later, a slow one at --timeout again, and a variant left
+      // unmeasured is built as a placeholder. Not on one after it loaded,
+      // which would only take as long again.
       const captureOnce = async (): Promise<CaptureResult> => {
         const first = await capture();
-        const got = first.status === "timeout" && first.retryable ? await capture() : first;
+        const got = first.status === "timeout" && first.retryable ? await capture(opts.timeoutMs * TIMEOUT_RETRY_FACTOR) : first;
         return lightScheme(got);
       };
       // A story Storybook rendered dark, measured again with the globals that

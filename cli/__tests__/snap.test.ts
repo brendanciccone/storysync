@@ -14,7 +14,7 @@ import {
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
   contentOverflow, describeOverflow, describeVariantStories,
-  detectBehaviorProps,
+  detectBehaviorProps, TIMEOUT_RETRY_FACTOR,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
@@ -1049,6 +1049,7 @@ test("runSnap: a story that times out is tried once more before it is recorded",
   const dir = tempDir();
   try {
     let navigations = 0;
+    const waits: number[] = [];
     const timeout = Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
     const result = await runSnap(options(dir), {
       storybook: {
@@ -1059,7 +1060,7 @@ test("runSnap: a story that times out is tried once more before it is recorded",
         via: "stub",
         browser: {
           newContext: async () => ({
-            newPage: async () => ({ on: () => {}, off: () => {}, goto: async () => { navigations++; throw timeout; } }),
+            newPage: async () => ({ on: () => {}, off: () => {}, goto: async (_url: string, o: { timeout: number }) => { navigations++; waits.push(o.timeout); throw timeout; } }),
             close: async () => {},
           }),
           close: async () => {},
@@ -1067,6 +1068,8 @@ test("runSnap: a story that times out is tried once more before it is recorded",
       }) as never,
     });
     assert.equal(navigations, 2);
+    // The second time with longer to load: a slow story times out at --timeout again.
+    assert.deepEqual(waits, [1000, 1000 * TIMEOUT_RETRY_FACTOR]);
     assert.equal(result.components[0].variants[0].status, "timeout");
   } finally {
     rmSync(dir, { recursive: true, force: true });

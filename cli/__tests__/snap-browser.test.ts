@@ -12,7 +12,7 @@ import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
   captureTree, captureTreeInPage, drawingElementInPage, readStoryTreeInPage, thumbnailInPage, textFontStacksInPage, standInFontsInPage, standInsLoadedInPage, standInsMeasured,
-  storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage,
+  storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage, storyRenderedInPage, RENDERED_GRACE_MS,
 } from "../snap-browser.js";
 import type { OpenMemory } from "../snap-browser.js";
 import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
@@ -166,6 +166,23 @@ test("captureStory: a story that never renders costs one --timeout, not one per 
   assert.deepEqual(waits.map((w) => w.timeout), [OPTS.timeoutMs]);
   const selected = await captureStory(storyPage({ appears: false }).page, "http://localhost:6006/iframe.html?id=x--default", { ...OPTS, selector: ".card" });
   assert.equal(selected.error, "no element matched .card");
+});
+
+test("captureStory: a story Storybook has rendered that draws nothing waits RENDERED_GRACE_MS, not the whole --timeout", async () => {
+  // coder's ConfirmDialog held closed renders nothing, and each of 23 such variants waited 10 seconds.
+  const page = {
+    ...LISTENS,
+    goto: async () => null,
+    $: async () => null,
+    evaluate: async (fn: unknown, arg?: unknown) => (fn === storyRenderedInPage ? arg === "x--default" : null),
+    waitForSelector: (_selector: string, options?: { timeout?: number }) =>
+      new Promise((_resolve, reject) => setTimeout(() => reject(new TimeoutError("page.waitForSelector: Timeout")), options?.timeout)),
+  };
+  const started = Date.now();
+  const result = await captureStory(page as unknown as Page, "http://localhost:6006/iframe.html?id=x--default", { ...OPTS, timeoutMs: 8000 });
+  assert.equal(result.status, "element_not_found");
+  const took = Date.now() - started;
+  assert.ok(took >= RENDERED_GRACE_MS && took < 4000, `took ${took}ms`);
 });
 
 test("storyReadySelector: waits for an element that can draw, the component's slots, or an error, in one selector", () => {
