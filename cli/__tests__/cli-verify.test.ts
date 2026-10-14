@@ -573,7 +573,7 @@ test("verify CLI: placeholders for variants snap couldn't measure fail --strict-
   assert.equal(verify(fixture, readback, "--strict-measured").status, 1);
 });
 
-test("verify CLI: a variant in Figma's set no read covered is named under provenance, and fails --strict-measured, not --strict", async () => {
+test("verify CLI: a variant in Figma's set no read covered is named under provenance, and one an earlier push built fails --strict, as extra", async () => {
   const figma = newFigma();
   const fixture = loadTreeFixture("switch");
   const built = await buildFixture(figma, fixture);
@@ -582,11 +582,11 @@ test("verify CLI: a variant in Figma's set no read covered is named under proven
   resnap.components[0].variants = resnap.components[0].variants.filter((v) => v.slug === "size-default");
   const readback = assemble(await readBack(figma, [[built.component, 0, 0, 0]]));
   const strict = verify(resnap, readback, "--strict");
-  assert.equal(strict.status, 0, strict.out);
+  assert.equal(strict.status, 1, strict.out);
+  assert.match(strict.out, /\+ 1 extra variant in Figma's sets that snap no longer measures/);
   assert.match(strict.out, /Provenance: 2 in Figma's sets that no read covered/);
   assert.match(strict.out, /ui\/base\/Switch size=xl \[not built by storysync: in Figma's set but never scored\]/);
   assert.match(strict.out, /ui\/base\/Switch: 1 variant carries a slug no read covered \[built by an earlier push for a variant snap no longer measures, never scored\]/);
-  assert.match(strict.out, /Figma matches the expected styles/, "not all of it measured, so not \"measured\"");
   assert.equal(verify(resnap, readback, "--strict-measured").status, 1);
 });
 

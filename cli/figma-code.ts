@@ -14,11 +14,11 @@
 // the response each is predicted to return. plan.json lists them, with where
 // each response goes, and is what upload, next and verify read.
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callCode, canonicalJson, fnv1a32, fnv1a32Bytes } from "./checksum.js";
-import type { CallWriter } from "./checksum.js";
+import { callCode, canonicalJson, fnv1a32, fnv1a32Bytes, templateKey } from "./checksum.js";
+import type { CallWriter, TemplateCarry } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
 import type { Scheme } from "./figma-bind.js";
@@ -77,6 +77,23 @@ export interface FigmaCodeOptions {
   replaceMeasured?: boolean;
   /** The readback verify assembled, for what Figma has measured; figma-readback.json beside `out` when absent. */
   readback?: string;
+  /**
+   * Components, named as `components` takes them, whose plain component an
+   * earlier push built the user said to make the first variant of their
+   * set, in place, where they now have variant properties: `--convert`.
+   */
+  convert?: string[];
+  /**
+   * Remove, from each set built, the variants an earlier push built that no
+   * variant property names now, once the user said to: `--remove-extra`.
+   */
+  removeExtra?: boolean;
+  /**
+   * Every build and read call carries its template, as before 0.4.0's last
+   * fix pass, rather than the first of each kind storing it in the Figma
+   * file for the rest (checksum.ts, TemplateCarry): `--inline-templates`.
+   */
+  inlineTemplates?: boolean;
 }
 
 export type TemplateName = "build" | "images" | "label" | "readback" | "variables";
@@ -123,6 +140,17 @@ export function assertCompiles(code: string, file: string, kind: TemplateName, t
 
 /** What figma code packs each read call's slices to, predicted (figma-results.ts READ_LIMIT says why). */
 export const DEFAULT_READ_LIMIT = 17_000;
+
+/**
+ * Throws where a call figma code, figma next or figma tokens writes is
+ * longer than use_figma takes: Figma refuses such a call whole, so it is
+ * a plan no one can send, which every writer packs its calls to avoid.
+ */
+export function assertWithinLimit(code: string, file: string): void {
+  if (code.length > USE_FIGMA_CODE_LIMIT) {
+    throw new Error(`${file} is ${code.length} characters, more than use_figma takes (${USE_FIGMA_CODE_LIMIT}): a storysync bug, since every call is packed under it`);
+  }
+}
 
 /** The readback template's own limit sits this far above what each call is predicted to return. */
 const READ_GUARD_MARGIN = 1_000;
@@ -194,6 +222,10 @@ interface CompiledComponent {
   bindings: PlanBinding[];
   /** Whether snap measured it in the dark theme, so the label call puts its set in Dark. */
   dark?: true;
+  /** The value snap pins each prop it left out to, as an overlay's `open`: the variant of a dropped property the build keeps. */
+  pin?: Record<string, string>;
+  /** The default the last push's build gave each property dropped since and not pinned, so the build keeps its variant at that value. */
+  od?: Record<string, string>;
 }
 
 const round2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
@@ -657,9 +689,11 @@ function compileComponent(
   if (dark && !binder.empty) {
     warnings.push(`${key}: snap measured it in the dark theme, so its paints bind by the tokens' dark values, and the label call puts its set in each collection's Dark mode, where they show as measured; a translucent paint keeps its dark alpha in Light too. Snap it in the light theme to bind by light values`);
   }
+  const pin = Object.fromEntries((component.excludedProps ?? []).filter((e) => e.value !== undefined).map((e) => [e.name, e.value!]));
   return {
     key, id: component.id ?? key, title: component.title, name: setNameOf(component), page: pageOf(component),
     props: component.variantProperties, variants, note: labelLine(component),
+    ...(Object.keys(pin).length ? { pin } : {}),
     bindings: [...bindings.keys()].sort().map((k) => bindings.get(k)!),
     ...(dark ? { dark: true as const } : {}),
   };
@@ -687,6 +721,20 @@ class Table {
 interface Part {
   component: CompiledComponent;
   variants: CompiledVariant[];
+  /**
+   * One part (`p`) of a variant too big for one call, alone in its part:
+   * its records, from the variant's record `o`, the hash of each part (`h`
+   * this one's, `e` those before it) and the calls of those before.
+   */
+  chunk?: { records: Record_[]; p: [number, number]; o: number; h: string; e: string[]; calls?: string };
+  /** Whether this part holds the component's last variant, whole or its last part: the set's last part. */
+  end?: boolean;
+}
+
+/** What a build call's set says beyond its variants: the user's answers, and the values snap pinned. */
+interface SetFlags {
+  convert: Set<string>;
+  removeExtra: boolean;
 }
 
 type Interned = [number, number, string, number, number, number, number, number];
@@ -722,16 +770,24 @@ function header(seq: number, kind: string, page: string): string {
  * variants are sent as changes to its first variant's records, so a variant
  * alone in a call carries its own records only.
  */
-function buildCode(seq: number, page: string, parts: Part[], template: string): string {
+function buildCode(seq: number, page: string, parts: Part[], template: string, flags: SetFlags, carry?: TemplateCarry): string {
   const table = new Table();
-  const sets = parts.map(({ component, variants }) => {
-    const base = intern(variants[0].records, table);
-    return {
+  const sets = parts.map(({ component, variants, chunk, end }) => {
+    const base = chunk ? [] : intern(variants[0].records, table);
+    const set: Record<string, unknown> = {
       id: component.id, title: component.title ?? "", name: component.name, props: component.props, base,
-      v: variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, deltaOf(base, intern(v.records, table))]),
+      v: chunk
+        ? variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, { r: intern(chunk.records, table), p: chunk.p, o: chunk.o, h: chunk.h, e: chunk.e, ...(chunk.calls ? { c: chunk.calls } : {}) }])
+        : variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, deltaOf(base, intern(v.records, table))]),
     };
+    if (flags.convert.has(component.key) && component.props.length) set.cv = 1;
+    if (component.pin) set.pin = component.pin;
+    if (component.od) set.od = component.od;
+    if (end) set.end = 1;
+    if (end && flags.removeExtra) set.rm = 1;
+    return set;
   });
-  return `${header(seq, "build", page)}${callCode([["DATA", { page, S: table.values, sets }]], template)}`;
+  return `${header(seq, "build", page)}${callCode([["DATA", { page, S: table.values, sets }]], template, "figma code", carry)}`;
 }
 
 const pad = (seq: number) => String(seq).padStart(2, "0");
@@ -742,8 +798,9 @@ export function pageSlug(page: string): string {
 }
 
 function describeParts(parts: Part[]): string {
-  return parts.map(({ component, variants }) => {
+  return parts.map(({ component, variants, chunk }) => {
     const all = component.variants.length;
+    if (chunk) return `${component.name} (variant ${component.variants.indexOf(variants[0]) + 1} of ${all}, part ${chunk.p[0]} of ${chunk.p[1]})`;
     if (variants.length === all) return `${component.name} (${all} variant${all === 1 ? "" : "s"})`;
     const first = component.variants.indexOf(variants[0]) + 1;
     const last = component.variants.indexOf(variants[variants.length - 1]) + 1;
@@ -755,9 +812,9 @@ function describeParts(parts: Part[]): string {
 /** A readback call's slices, as plan.json lists them: [storysync id, first i, last i]. */
 type Slice = [string, number, number];
 
-function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string, writer: CallWriter = "figma code"): string {
+function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string, writer: CallWriter = "figma code", carry?: TemplateCarry): string {
   const full = slices.map((s): ReadSlice => (s.length === 4 ? s : [...s, 0]));
-  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit, writer)}`;
+  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit, writer, carry)}`;
 }
 
 // --- figma code -------------------------------------------------------------
@@ -836,6 +893,41 @@ function keepEarlierPlan(out: string): string | null {
   writeFileSync(join(dir, "plan.json"), `${JSON.stringify(moved, null, 2)}\n`);
   rmSync(planPath);
   return join(dir, "plan.json");
+}
+
+/** A variant property as a build call's DATA gives it. */
+type Prop = SnapComponent["variantProperties"][number];
+
+/**
+ * The variant properties the last build Figma answered of each set built it
+ * with, none where it built one plain component, by storysync id: from the plan
+ * under `out` and those kept under `out/earlier/`, the newest first, each
+ * from its build calls' DATA, the latest first, where a result was saved
+ * and didn't refuse the set.
+ */
+export function builtShapes(out: string): Map<string, Prop[]> {
+  const dir = resolve(out);
+  const earlier = join(dir, EARLIER_PLANS_DIR);
+  const kept = existsSync(earlier) ? readdirSync(earlier).map((d) => join(earlier, d)).filter((d) => existsSync(join(d, "plan.json"))) : [];
+  kept.sort((a, b) => statSync(join(b, "plan.json")).mtimeMs - statSync(join(a, "plan.json")).mtimeMs);
+  const shapes = new Map<string, Prop[]>();
+  for (const at of [...(existsSync(join(dir, "plan.json")) ? [dir] : []), ...kept]) {
+    try {
+      const plan = JSON.parse(readFileSync(join(at, "plan.json"), "utf8")) as FigmaPlan;
+      for (const call of [...plan.calls].reverse()) {
+        if (call.kind !== "build" || !existsSync(join(at, call.result)) || !existsSync(join(at, call.file))) continue;
+        const result = parseCallResult(readFileSync(join(at, call.result), "utf8"));
+        const refused = new Set(((result?.sets ?? []) as { component?: string; refused?: string }[]).filter((r) => r.refused).map((r) => r.component));
+        const data = /\nconst DATA = (.*);\n/.exec(readFileSync(join(at, call.file), "utf8"));
+        for (const set of data ? (JSON.parse(data[1]) as { sets: { id: string; props: Prop[] }[] }).sets : []) {
+          if (!shapes.has(set.id) && !refused.has(set.id)) shapes.set(set.id, set.props);
+        }
+      }
+    } catch {
+      // Not a plan, or calls, this storysync wrote: nothing to go by.
+    }
+  }
+  return shapes;
 }
 
 /**
@@ -919,6 +1011,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     const file = `calls/${pad(seq)}-${call.kind}${named ? `-${pageSlug(named)}` : ""}.js`;
     const kind = call.kind === "read" ? "readback" : call.kind;
     assertCompiles(text, file, kind, templates[kind]);
+    assertWithinLimit(text, file);
     calls.push({
       seq, kind: call.kind, page: call.page, components: call.components,
       ...(call.collection ? { collection: call.collection } : {}),
@@ -947,8 +1040,36 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     );
   }
 
+  // What the last push built each set with: the default of each property
+  // dropped since and not pinned, so the build keeps that variant.
+  const shapes = builtShapes(opts.out);
+  for (const c of components) {
+    const od = Object.fromEntries((shapes.get(c.id) ?? []).filter((p) => !c.props.some((q) => q.name === p.name) && !(p.name in (c.pin ?? {}))).map((p) => [p.name, p.defaultValue]));
+    if (Object.keys(od).length) c.od = od;
+  }
+
   // Builds: by page, each component's variants in snap order, packed. A
-  // variant too big for one call on its own is left out, and the rest built.
+  // variant too big for one call, by its characters or its nodes, is sent
+  // in parts, each call as many of its records as fit: each part's call
+  // builds its records, in the order snap gave them, so each one's parent
+  // is built before it, and keeps them on the page for the parts after it;
+  // the last part's call removes what snap no longer measures and lays
+  // the variant out whole.
+  const keys = new Map(entries.map((e, i) => [e, componentKey(all[i])]));
+  const convert = new Set(opts.convert?.length ? selectComponents(entries, opts.convert, [], "--convert").map((e) => keys.get(e)!) : []);
+  const flags: SetFlags = { convert, removeExtra: Boolean(opts.removeExtra) };
+  const isEnd = (p: Part) => p.variants[p.variants.length - 1] === p.component.variants[p.component.variants.length - 1] && (!p.chunk || p.chunk.p[0] === p.chunk.p[1]);
+  // The first build call, and the first read, carries its template and
+  // stores it in the file; the rest of their kind run what it stored.
+  const first: Partial<Record<"build" | "read", number>> = {};
+  const carry = (kind: "build" | "read", seq: number): TemplateCarry | undefined => {
+    if (opts.inlineTemplates) return undefined;
+    const from = first[kind];
+    const name = kind === "read" ? "readback" : kind;
+    return from === undefined || seq <= from ? { kind: name, store: true } : { kind: name, from: pad(from) };
+  };
+  const code = (seq: number, page: string, parts: Part[], storing?: boolean) =>
+    buildCode(seq, page, parts.map((p) => ({ ...p, end: isEnd(p) })), templates.build, flags, storing === false ? { kind: "build", from: "00" } : carry("build", seq));
   const tooBig = new Set<CompiledVariant>();
   for (const page of pages) {
     let parts: Part[] = [];
@@ -956,14 +1077,14 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       if (!parts.length) return;
       const done = parts;
       parts = [];
-      const nodes = done.reduce((t, p) => t + p.variants.reduce((u, v) => u + v.records.length, 0), 0);
+      const nodes = done.reduce((t, p) => t + (p.chunk ? p.chunk.records.length : p.variants.reduce((u, v) => u + v.records.length, 0)), 0);
       add(
         { kind: "build", page, components: [...new Set(done.map((p) => p.component.key))], description: `Create or update ${describeParts(done)} on page "${page}"`, nodes },
-        (seq) => buildCode(seq, page, done, templates.build),
+        (seq) => code(seq, page, done),
       );
       const call = calls[calls.length - 1];
-      if (call.chars > maxChars) warnings.push(`call ${pad(call.seq)} holds one variant of ${call.chars} characters, over --max-chars ${maxChars}`);
-      if (nodes > maxNodes) warnings.push(`call ${pad(call.seq)} holds one variant of ${nodes} nodes, over --max-nodes ${maxNodes}`);
+      first.build ??= call.seq;
+      if (!done[0].chunk && nodes > maxNodes) warnings.push(`call ${pad(call.seq)} holds one variant of ${nodes} nodes, over --max-nodes ${maxNodes}`);
     };
     for (const component of components.filter((c) => c.page === page)) {
       for (const variant of component.variants) {
@@ -973,24 +1094,65 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
         else next.push({ component, variants: [variant] });
         const nodes = next.reduce((t, p) => t + p.variants.reduce((u, v) => u + v.records.length, 0), 0);
         const images = new Set(next.flatMap((p) => p.variants.flatMap((v) => v.images))).size;
-        if (nodes <= maxNodes && images <= MAX_UPLOADS_PER_CALL && buildCode(calls.length + 1, page, next, templates.build).length <= maxChars) {
+        if (nodes <= maxNodes && images <= MAX_UPLOADS_PER_CALL && code(calls.length + 1, page, next).length <= maxChars) {
           parts = next;
           continue;
         }
-        // It starts a call of its own: over --max-chars or --max-nodes is
-        // warned, and over what use_figma takes at all is left out.
+        // It starts a call of its own.
+        flush();
         const alone: Part[] = [{ component, variants: [variant] }];
-        const chars = buildCode(calls.length + 1, page, alone, templates.build).length;
-        if (chars > USE_FIGMA_CODE_LIMIT) {
-          tooBig.add(variant);
-          warnings.push(
-            `${component.key} ${variant.slug}: not built: its ${variant.records.length} nodes need ${chars} characters of code, ` +
-            `more than one use_figma call takes (${USE_FIGMA_CODE_LIMIT}), and a variant is never split across calls`,
-          );
+        if (variant.records.length <= maxNodes && code(calls.length + 1, page, alone).length <= maxChars) {
+          parts = alone;
           continue;
         }
-        flush();
-        parts = alone;
+        // In parts, each as many of its records as fit beside the template,
+        // and at most --max-nodes: a node too big for --max-chars alone is a
+        // part of its own, warned, and one too big for any call leaves its
+        // variant out, said.
+        const { records } = variant;
+        const chunks: Record_[][] = [];
+        const offsets: number[] = [];
+        for (let a = 0; a < records.length;) {
+          // Only the first call of the plan's builds carries the template.
+          const seq = calls.length + 1 + chunks.length;
+          const storing = opts.inlineTemplates || (first.build === undefined && !chunks.length) ? undefined : false;
+          const before = chunks.map(() => "ffffffff");
+          const size = (b: number) => code(seq, page, [{ component, variants: [variant], chunk: { records: records.slice(a, b), p: [99, 99], o: a, h: "ffffffff", e: before, ...(before.length ? { calls: before.map(() => "99").join(", ") } : {}) } }], storing).length + 100;
+          const fits = (b: number) => b - a <= maxNodes && size(b) <= maxChars;
+          offsets.push(a);
+          if (!fits(a + 1)) {
+            const chars = size(a + 1);
+            if (chars > USE_FIGMA_CODE_LIMIT) {
+              tooBig.add(variant);
+              warnings.push(`${component.key} ${variant.slug}: not built: its node ${records[a][0] || "(root)"} alone needs ${chars} characters of code, more than one use_figma call takes (${USE_FIGMA_CODE_LIMIT})`);
+              break;
+            }
+            warnings.push(`${component.key} ${variant.slug}: its node ${records[a][0] || "(root)"} alone needs ${chars} characters of code, over --max-chars ${maxChars}, so it is a call of its own`);
+            chunks.push([records[a]]);
+            a++;
+            continue;
+          }
+          let [lo, hi] = [a + 1, records.length];
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (fits(mid)) lo = mid;
+            else hi = mid - 1;
+          }
+          chunks.push(records.slice(a, lo));
+          a = lo;
+        }
+        if (tooBig.has(variant)) continue;
+        // Each part's hash, over its records and where they start, which
+        // each later part checks against what the earlier ones kept, so a
+        // part another split of the variant kept is never built on.
+        const hashes = chunks.map((chunk, k) => fnv1a32(canonicalJson([offsets[k], chunk])));
+        const seqs: string[] = [];
+        chunks.forEach((chunk, k) => {
+          const p: [number, number] = [k + 1, chunks.length];
+          parts = [{ component, variants: [variant], chunk: { records: chunk, p, o: offsets[k], h: hashes[k], e: hashes.slice(0, k), ...(k ? { calls: seqs.join(", ") } : {}) } }];
+          seqs.push(pad(calls.length + 1));
+          flush();
+        });
       }
     }
     flush();
@@ -998,8 +1160,18 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // What is left to fill, label and read back: the variants built.
   for (const component of components) component.variants = component.variants.filter((v) => !tooBig.has(v));
   const built = components.filter((c) => c.variants.length);
-  if (!built.length) throw new Error("No component to build: every variant is too big for one use_figma call");
+  if (!built.length) throw new Error("No component to build: every variant has a node too big for one use_figma call");
   const builtPages = pages.filter((page) => built.some((c) => c.page === page));
+  // An earlier push of a component as one plain component, where it now
+  // has variant properties, is the user's to convert: the build refuses
+  // its part until figma code is run again with --convert.
+  for (const c of built) {
+    const before = shapes.get(c.id);
+    if (before && !before.length && c.props.length && !convert.has(c.key)) {
+      warnings.push(`${c.key}: an earlier push built it as one plain component, and it now has variant properties (${c.props.map((p) => p.name).join(", ")}): ask the user whether to make that component the first variant of its set, in place, which keeps its instances, then run figma code again with --convert ${c.key}; without it, its build part is refused and the rest built`);
+    }
+    if (before?.length && !c.props.length) warnings.push(`${c.key}: an earlier push built it as a set, and it now has no variant properties: its build part is refused and the rest built, so ask the user whether to skip it`);
+  }
 
   // Images: one call per page whose sets show one.
   for (const page of builtPages) {
@@ -1011,12 +1183,34 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     );
   }
 
-  // Label: every set built, with a line for those snap measured from something else.
-  const label = { pages: builtPages, sets: built.map((c) => (c.dark ? [c.id, c.note, 1] : [c.id, c.note])) };
-  add(
-    { kind: "label", page: "", components: built.map((c) => c.key), description: `Label the sets snap measured from something other than the component or from more than one story, ${built.some((c) => c.dark) ? "put those it measured in the dark theme in each collection's Dark mode, " : ""}and remove Figma's empty default page` },
-    (seq) => `${header(seq, "label", "")}${callCode([["DATA", label]], templates.label)}`,
-  );
+  // Label: every set built, with a line for those snap measured from
+  // something else, packed into calls under --max-chars as the builds are,
+  // since a line naming each variant's story grows with the library. Each
+  // call carries the pages its sets are on; the last alone removes Page 1,
+  // once every set is on its page.
+  const labelCode = (seq: number, sets: CompiledComponent[], last: boolean) => {
+    const data = {
+      pages: builtPages.filter((page) => sets.some((c) => c.page === page)),
+      sets: sets.map((c) => (c.dark ? [c.id, c.note, 1] : [c.id, c.note])),
+      ...(last ? { last: 1 } : {}),
+    };
+    return `${header(seq, "label", "")}${callCode([["DATA", data]], templates.label)}`;
+  };
+  const labels: CompiledComponent[][] = [];
+  for (const c of built) {
+    const last = labels[labels.length - 1];
+    if (last && labelCode(calls.length + labels.length, [...last, c], true).length <= maxChars) last.push(c);
+    else labels.push([c]);
+  }
+  labels.forEach((sets, i) => {
+    const last = i === labels.length - 1;
+    const dark = sets.some((c) => c.dark) ? "put those it measured in the dark theme in each collection's Dark mode, " : "";
+    const what = `Label the sets snap measured from something other than the component or from more than one story${labels.length > 1 ? ` (${sets.map((c) => c.name).join(", ")})` : ""}`;
+    add(
+      { kind: "label", page: "", components: sets.map((c) => c.key), description: last ? `${what}, ${dark}and remove Figma's empty default page` : `${what}${dark ? `, and ${dark.slice(0, -2)}` : ""}` },
+      (seq) => labelCode(seq, sets, last),
+    );
+  });
 
   // Reads: by page, slices of each set's variants packed by predicted size.
   for (const page of builtPages) {
@@ -1033,8 +1227,9 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       names = [];
       add(
         { kind: "read", page, components: done.keys, description: `Read back ${done.names.join(", ")} on page "${page}"`, slices: done.slices, predicted: done.predicted },
-        (seq) => readCode(seq, page, done.slices, readLimit + READ_GUARD_MARGIN, templates.readback),
+        (seq) => readCode(seq, page, done.slices, readLimit + READ_GUARD_MARGIN, templates.readback, "figma code", carry("read", seq)),
       );
+      first.read ??= calls[calls.length - 1].seq;
     };
     for (const component of built.filter((c) => c.page === page)) {
       for (const variant of component.variants) {
@@ -1050,6 +1245,16 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       }
     }
     flush();
+  }
+  // The last read, once it has read all it was for, removes what the
+  // plan's calls stored in the file (checksum.ts, CLEAR).
+  const lastRead = calls.filter((c) => c.kind === "read").pop();
+  const stored = lastRead && carry("read", lastRead.seq);
+  if (lastRead && stored) {
+    lastRead.code = readCode(lastRead.seq, lastRead.page, lastRead.slices!, readLimit + READ_GUARD_MARGIN, templates.readback, "figma code", { ...stored, clear: true });
+    assertCompiles(lastRead.code, lastRead.file, "readback", templates.readback);
+    assertWithinLimit(lastRead.code, lastRead.file);
+    lastRead.chars = lastRead.code.length;
   }
 
   const out = resolve(opts.out);
@@ -1312,14 +1517,27 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     }
     // The template and the limit the call it continues was written with: the
     // readable template, which keeps its first line, after `figma code --no-minify`.
-    const parent = existsSync(join(dir, call.file)) ? readFileSync(join(dir, call.file), "utf8") : "";
-    const template = loadTemplate("readback", opts.minify ?? !parent.includes("// storysync readback, template"), opts.templates);
+    // The plan's first read carries it, and stored it in the file, where
+    // the plan's reads run it from: so does a continuation.
+    const text = (c?: PlanCall) => (c && existsSync(join(dir, c.file)) ? readFileSync(join(dir, c.file), "utf8") : "");
+    const parent = text(call);
+    const firstRead = plan.calls.find((c) => c.kind === "read");
+    const carrier = text(firstRead);
+    const template = loadTemplate("readback", opts.minify ?? !(carrier || parent).includes("// storysync readback, template"), opts.templates);
+    // Stored by the first read, unless another storysync wrote that call:
+    // one whose template isn't this install's is carried whole instead,
+    // so a continuation after an upgrade still runs.
+    const stored = carrier.includes(`figma.root.setSharedPluginData("storysync",${JSON.stringify(templateKey("readback"))},T);`)
+      && carrier.includes(`const TSUM = ${JSON.stringify(fnv1a32(template))};`);
     const written = /\nconst LIMIT = (\d+);/.exec(parent);
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
-    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next").replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
+    const lastRead = plan.calls.filter((c) => c.kind === "read").pop();
+    const carry = stored ? { kind: "readback", from: pad(firstRead!.seq), ...(lastRead?.seq === call.seq ? { clear: true as const } : {}) } : undefined;
+    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next", carry).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file, "readback", template);
+    assertWithinLimit(code, file);
     writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };
   }

@@ -634,7 +634,7 @@ program
   .option("--roots-only", "Score each variant by its outer element alone, as 0.3.0 did, for comparison with an element-tree score")
   .option("--min-fidelity <pct>", "Exit with code 1 when the score is below this percentage: element fidelity where snap measured element trees, else the share of properties; a run that scored nothing fails it too")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole or was read before a build of its components was sent again, a variant was built from an earlier measurement than a snap other than the plan's, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
+  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer, or a variant in a set, is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole or was read before a build of its components was sent again, a variant was built from an earlier measurement than a snap other than the plan's, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
   .option("--allow-designer-layers", "With --strict, pass the layers a designer added inside variants, which verify still lists")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on anything not measured: variants inferred from source or with no recorded provenance, placeholders for variants snap couldn't measure, variants measured without snap checking Storybook gave them their values, and variants in Figma that snap never measured or no read covered")
@@ -1035,6 +1035,9 @@ figma
   .option("--max-nodes <n>", "Most layers one build call creates or restyles; lower it, to 200 say, after `Script exceeded time limit`", String(SPIKE.maxNodes))
   .option("--read-limit <n>", "Most characters a read call is predicted to return (use_figma returns at most 20kb)", String(DEFAULT_READ_LIMIT))
   .option("--no-minify", "Send the templates' readable sources, comment lines blanked, instead of their minified build, for debugging")
+  .option("--convert <names>", "Comma-separated components an earlier push built as one plain component that now have variant properties: the user said to make that component the first variant of the set, in place, which keeps its instances")
+  .option("--remove-extra", "Remove from each set built the variants an earlier push built that no variant property names now, once the user said to; without it they stay, counted as extra")
+  .option("--inline-templates", "Carry the template in every build and read call, rather than the first of each kind storing it in the Figma file for the rest")
   .option("--json", "Output JSON instead of formatted text")
   .action(async (opts) => {
     const json = !!opts.json;
@@ -1053,6 +1056,9 @@ figma
         readLimit,
         minify: opts.minify !== false,
         replaceMeasured: !!opts.replaceMeasured,
+        convert: opts.convert ? (opts.convert as string).split(",") : undefined,
+        removeExtra: !!opts.removeExtra,
+        inlineTemplates: !!opts.inlineTemplates,
       });
       // What the push costs the agent, in tokens: the skills show it and ask before sending.
       const estimate = estimatePush(plan);

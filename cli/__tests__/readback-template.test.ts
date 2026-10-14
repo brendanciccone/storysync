@@ -11,7 +11,7 @@ import { withConstant } from "./figma-build-harness.js";
 import { READ_LIMIT, parseReadResult, readbackCall, readbackHeader } from "../figma-results.js";
 import type { ReadSlice } from "../figma-results.js";
 import { RECORD } from "../tree-types.js";
-import { readbackChecksum, verify } from "../verify.js";
+import { formatElementReport, readbackChecksum, treeStrictFailures, verify } from "../verify.js";
 import { readbackChars } from "../verify-tree.js";
 
 /** The template with its comments and indentation stripped: an upper bound on what a minifier leaves. */
@@ -464,6 +464,13 @@ test("template: two variants of one index with other slugs are both read, in slu
   const scored = verify(resnap, assemble([result]), 0.5);
   assert.deepEqual(scored.variants.map((v) => [v.slug, v.status]), [["size-sm", "verified"]]);
   assert.deepEqual(scored.unmeasuredInFigma, [{ component: "ui/base/Switch", slug: "size-default" }]);
+  // Counted as extra in the report's headline, which is then not clean,
+  // in the JSON summary, and by --strict.
+  assert.equal(scored.summary.elements!.extraVariants, 1);
+  assert.deepEqual(treeStrictFailures(scored), ["1 variant in Figma's sets snap no longer measures"]);
+  const report = formatElementReport(scored).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(report, /missing 0 · drifted 0 · extra 1 · /);
+  assert.match(report, /\+ 1 extra variant in Figma's sets that snap no longer measures \(ui\/base\/Switch size-default\): `storysync figma code --remove-extra` removes those a push built, once the user says to/);
 });
 
 test("template: a variant a re-snap dropped, past the indexes read, is counted as in Figma and unread", async () => {
@@ -480,6 +487,7 @@ test("template: a variant a re-snap dropped, past the indexes read, is counted a
   assert.deepEqual(result.unreadInFigma, [{ component: "ui/base/Switch", unbuilt: [], uncovered: 1 }]);
   assert.equal(result.summary.unread, 1);
   assert.equal(result.elementFidelity, 1, "scored on what was read");
+  assert.match(formatElementReport(result).join("\n").replace(/\x1b\[[0-9;]*m/g, ""), /extra 1 · .*\n.*\+ 1 extra variant in Figma's sets that snap no longer measures \(ui\/base\/Switch: 1 variant no read covered\)/);
   // While a planned read has no result, its variants are unread for that reason, said already.
   assert.deepEqual(verify(resnap, readback, 0.5, { notRead: [3] }).unreadInFigma, []);
 });

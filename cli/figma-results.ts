@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { callCode, callConstants } from "./checksum.js";
-import type { CallWriter } from "./checksum.js";
+import type { CallWriter, TemplateCarry } from "./checksum.js";
 import { findToolValue } from "./figma.js";
 import type { FigmaPlan } from "./tree-types.js";
 import { READBACK_SCHEMA_VERSION } from "./verify.js";
@@ -96,8 +96,8 @@ const readbackConstants = (page: string, slices: ReadSlice[], limit: number) =>
  * as it is, run as checksum.ts's callCode runs it, refusing a change as one
  * to the file `writer` wrote: `figma next` writes a continuation.
  */
-export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT, writer: CallWriter = "figma code"): string {
-  return callCode(readbackConstants(page, slices, limit), template, writer);
+export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT, writer: CallWriter = "figma code", carry?: TemplateCarry): string {
+  return callCode(readbackConstants(page, slices, limit), template, writer, carry);
 }
 
 /**

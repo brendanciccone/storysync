@@ -151,15 +151,55 @@ export function templateLiteral(template: string): string {
  * values, is checked first, so a changed TPL is a call to send again, not
  * a template to doubt.
  */
-export function callCode(constants: readonly (readonly [name: string, value: unknown])[], template: string, writer: CallWriter = "figma code"): string {
+export function callCode(constants: readonly (readonly [name: string, value: unknown])[], template: string, writer: CallWriter = "figma code", carry?: TemplateCarry): string {
   const names = constants.map(([name]) => name);
+  const key = carry && JSON.stringify(templateKey(carry.kind));
+  const load = carry && "from" in carry;
   return [
     `${callConstants(constants)}const TSUM = ${JSON.stringify(fnv1a32(template))};`,
-    `const T = ${templateLiteral(template)};`,
+    load ? `const T = figma.root.getSharedPluginData("storysync",${key});` : `const T = ${templateLiteral(template)};`,
     `const fnv=x=>{let h=2166136261;for(let i=0;i<x.length;i++)h=Math.imul(h^x.charCodeAt(i),16777619)>>>0;return h.toString(16).padStart(8,"0")};`,
     `if(fnv(JSON.stringify([${names.join(",")}]))!==SUM)throw new Error(${JSON.stringify(refusal("data", "SUM", writer))});`,
-    `if(fnv(T)!==TSUM)throw new Error(${JSON.stringify(refusal("template", "TSUM", writer))});`,
-    `return await new(async()=>{}).constructor(${["figma", ...names, "TC"].map((n) => JSON.stringify(n)).join(",")},T)(figma,${names.join(",")},1);`,
+    `if(fnv(T)!==TSUM)throw new Error(${JSON.stringify(load ? missingTemplate(carry.kind, carry.from) : refusal("template", "TSUM", writer))});`,
+    ...(carry && !load ? [`figma.root.setSharedPluginData("storysync",${key},T);`] : []),
+    `${carry?.clear ? "const R=" : "return "}await new(async()=>{}).constructor(${["figma", ...names, "TC"].map((n) => JSON.stringify(n)).join(",")},T)(figma,${names.join(",")},1);`,
+    ...(carry?.clear ? [CLEAR, "return R;"] : []),
     "",
   ].join("\n");
+}
+
+/**
+ * How a call carries its template, where not in itself alone: in itself,
+ * and stored on the Figma file for the later calls of its kind (`store`),
+ * as the first build and the first read of a plan do; or as what call
+ * `from` stored there (`from`), which the call loads and checks against
+ * its TSUM before it runs it. A build call then carries its data and a
+ * guard of some 900 characters, not the template's 20,000 (probe 9a: the
+ * document's shared plugin data keeps them from call to call, and the
+ * AsyncFunction constructor runs what it holds).
+ */
+export type TemplateCarry = ({ kind: string; store: true } | { kind: string; from: string }) & { clear?: true };
+
+/**
+ * What the plan's last read runs once it has read all it was for (its
+ * result has no `more`), with `clear`: it removes the templates the plan's
+ * first calls stored, and any part of a variant a page still keeps, which
+ * only a push left unfinished leaves, so a push leaves nothing of its own
+ * in the file's shared plugin data but the keys on its sets and layers.
+ */
+const CLEAR = `if(!(typeof R=="string"?JSON.parse(R):R).more){for(const k of["build","readback"])figma.root.setSharedPluginData("storysync","template "+k,"");for(const p of figma.root.children)for(const k of p.getSharedPluginDataKeys("storysync"))if(k.startsWith("part "))p.setSharedPluginData("storysync",k,"")}`;
+
+/** The document's shared plugin data key, namespace `storysync`, a template of `kind` is stored under. */
+export function templateKey(kind: string): string {
+  return `template ${kind}`;
+}
+
+/**
+ * What a call that loads its template throws, before it changes or reads
+ * anything, when the file holds no template of its kind, or another than
+ * the one it was written for: the call that stores it was not sent first,
+ * or another storysync's push has stored its own since.
+ */
+export function missingTemplate(kind: string, from: string): string {
+  return `This call runs the ${kind} template that call ${from} stores in the Figma file, which doesn't hold it now. Nothing was changed. Send call ${from} again, then this call.`;
 }
