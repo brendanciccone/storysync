@@ -31,17 +31,16 @@ There are three workflows: **push** (code to Figma), **verify** (score what land
 | **The CLI** | Extract tokens, map components, measure rendered styles, write a push's Figma calls, score a push, or diff Figma against code. |
 | **GitHub Action** | Catch token and component drift in CI. |
 
-Why a skill file? Writing to Figma needs Figma's `use_figma` tool, which works only inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor and Codex. So the CLI does the extracting, the measuring and the writing of every component call, and the skill tells your AI client to send those calls and run the commands around them. The skill writes the token variables itself, from `tokens --json`. Storysync needs no Anthropic API key and makes no LLM calls of its own.
+Why a skill file? Writing to Figma needs Figma's `use_figma` tool, which works only inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor and Codex. So the CLI does the extracting and the measuring and writes every Figma call, for tokens and components alike, and the skill tells your AI client to send those calls and run the commands around them. Storysync needs no Anthropic API key and makes no LLM calls of its own.
 
 ## Before you start
 
 **For components:**
 
-- Storybook 10.1 or later with a Vite-based framework: `@storybook/react-vite`, `@storybook/nextjs-vite` or `@storybook/sveltekit`. Storybook 9 supports token extraction only.
+- Storybook 10.1 or later with a Vite-based framework: `@storybook/react-vite`, `@storybook/nextjs-vite` or `@storybook/sveltekit`.
 - `@storybook/addon-mcp`, which serves MCP at `/mcp`. `storysync init` sets it up.
 - The Storybook dev server (`storybook dev`), not a static build.
-- Node.js 18 or later, or 20 or later for `snap`.
-- A Chromium-based browser, for `snap` only.
+- Node.js 20 or later and a Chromium-based browser, for `snap`.
 
 **For writing to Figma:**
 
@@ -49,7 +48,7 @@ Why a skill file? Writing to Figma needs Figma's `use_figma` tool, which works o
 - A supported MCP client, which signs you in to Figma.
 - Figma limits MCP tool calls by plan and seat. See [Figma's rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/).
 
-**For tokens:** nothing else. Token extraction reads only local files, so it needs no Storybook, MCP connection or sign-in.
+**For tokens:** Node.js 18 or later, and nothing else. Token extraction reads only local files, so it needs no Storybook, MCP connection or sign-in.
 
 ## Install
 
@@ -141,9 +140,9 @@ A push isn't lightweight. Your AI client sends every Figma call through its own 
 | 30 | 3.1M tokens |
 | 60 | 6.1M tokens, split across sessions |
 
-These numbers are calibrated from live pushes. Push 4, for example, built 5 components with 100 variants and 872 elements in 22 calls, for about 570k agent tokens.
+These numbers are calibrated from live pushes. One of them built 5 components with 100 variants and 872 elements in 22 calls, for about 570k agent tokens.
 
-**The estimate for your push.** `storysync figma code` prints an estimate for the calls it just wrote: how many calls, the characters the agent must send and read back, and a token range. The low end puts each character the calls carry at about 0.8 tokens, plus 100k for the push and 10k per component; the high end allows for a repair round and questions. The skills show you this estimate and ask before sending anything. `--json` puts it in `estimate`.
+**The estimate for your push.** `storysync figma code` prints an estimate for the calls it just wrote: how many calls, the characters the agent must send and read back, and a token range. The low end puts each character the calls carry at about 0.8 tokens, plus 100k for the push and 10k per component; the high end allows for a repair round and questions. `--json` puts it in `estimate`.
 
 To spend less, push fewer components at a time with `--components`, in separate sessions.
 
@@ -174,7 +173,7 @@ The comparison is numeric, not visual, so it's deterministic and free. See [How 
 2. Have the agent send the push's read calls again, and run `verify --plan`. It should report exactly that element, by its key and node id, and nothing else.
 3. Edit one value in a saved response under `.storysync/figma/results/` and run `verify --plan` again. That entry, and only that one, should fail its checksum.
 
-Don't test it by moving a layer that sits in auto layout. To move, it has to leave the flow, so the layers after it move up and the frame around it shrinks, and `verify` reports those too, as Figma now has them. The acceptance suite runs both tests against the example project, and the test suite runs each edit on five shadcn components, then sends the build calls again and checks that everything verifies.
+Don't test it by moving a layer that sits in auto layout. To move, it has to leave the flow, so the layers after it move up and the frame around it shrinks, and `verify` reports those too, as Figma now has them. Storysync's own tests run both checks on the example project, and each edit on five shadcn/ui components, then send the build calls again and check that everything verifies.
 
 ## Find drift
 
@@ -209,7 +208,7 @@ These are true limits of Figma's platform. Each comes with what Storysync does a
 - **Clipping on one axis.** A Figma frame clips its content on both axes or neither ([`clipsContent: boolean`](https://developers.figma.com/docs/plugins/api/FrameNode/)). An element that clips one axis is built clipping both, and `figma code` names it.
 - **A blend mode that changes with the mode.** No variable can set a blend mode: [`VariableBindableNodeField`](https://developers.figma.com/docs/plugins/api/VariableBindableNodeField/) lists none, a paint's only bindable field is its `color`, and binding one fails with `Unknown field: 'blendMode'`. No one blend draws both themes of Avatar's ring either: Light's `mix-blend-darken` never lightens, and Dark's `dark:after:mix-blend-lighten` ring only lightens. So the ring is built with the light theme's blend and shows in Light only, and `figma code` names each layer whose blend changes in Dark.
 - **A readback that proves where it came from.** The agent sends every line of code that runs in Figma, so no secret can be kept from it, and `use_figma` signs nothing. The readback checksum is a 32-bit FNV-1a over each entry, computed by the readback template that ships with Storysync. It catches a response edited, cut down or copied on the way, and a shortcut such as writing the readback from snap's values. It can't catch forgery, a readback reused after a fix round, or a template that echoes what it sent instead of reading the nodes. The [score test](#check-the-result) covers that: change an element in Figma by hand, read it back, and `verify` should report exactly that element.
-- **Fractional sizes for text that sizes itself.** Figma sets a text that hugs its content or grows to its lines to whole pixels: a label the browser drew 39.05 by 19.25 is 40 by 20, while a text sized by hand keeps 39.05 by 19.25 (probe 9a). Labels still hug, as a designer's do, and `verify` takes the rounding. Where it would push a row past its frame or wrap a sibling, the build sizes those labels as the browser drew them.
+- **Fractional sizes for text that sizes itself.** Figma sets a text that hugs its content or grows to its lines to whole pixels: a label the browser drew 39.05 by 19.25 is 40 by 20, while a text sized by hand keeps 39.05 by 19.25. Labels still hug, as a designer's do, and `verify` takes the rounding. Where it would push a row past its frame or wrap a sibling, the build sizes those labels as the browser drew them.
 - **One call's size.** `use_figma` takes at most 50,000 characters of code a call and returns at most 20kb ([write to canvas](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas)), and it can't create images. `figma code` packs calls under these limits: the first build and read store their template in the file for the rest, a variant too big for one call is sent in parts, reads continue with `figma next`, and pictures go through `upload_assets`.
 
 ## Reference
