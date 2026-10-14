@@ -1,5 +1,5 @@
 {
- "about": "The live text probe's three use_figma responses, unchanged: Figma file UPmguLPQ7w1ESdOZsq6vlw, page \"storysync probe 2\", 2026-10-09. The calls are spikes/figma-text-probe-1.js, -2.js and -3.js; each response is as use_figma returned it.",
+ "about": "The live text probe's three use_figma responses, unchanged: Figma file UPmguLPQ7w1ESdOZsq6vlw, page \"storysync probe 2\", 2026-10-09. The calls are cli/__tests__/fixtures/probes/figma-text-probe-1.js, -2.js and -3.js; each response is as use_figma returned it.",
  "call1": {
   "page": "39:2",
   "fonts": {
