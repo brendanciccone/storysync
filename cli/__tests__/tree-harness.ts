@@ -30,6 +30,17 @@ export const READBACK_TEMPLATE = readFileSync(`${ROOT}templates/readback.js`, "u
 /** The page the harness builds on. */
 export const PAGE = "Components";
 
+const UNSAFE_IN_CODE: Record<string, string> = { "<": "\\u003C", ">": "\\u003E", "/": "\\u002F", "\u2028": "\\u2028", "\u2029": "\\u2029" };
+
+/**
+ * A value as a literal in code the mock runs: JSON.stringify's, with <, >,
+ * / and the line separators escaped too, as JSON leaves them bare and in
+ * code they can close a script tag or end a line.
+ */
+export function codeLiteral(value: unknown): string {
+  return JSON.stringify(value).replace(/[<>/\u2028\u2029]/g, (c) => UNSAFE_IN_CODE[c]);
+}
+
 /** Every fixture's text, for a mock that measures text as the browser drew it. */
 export function fixtureMeasure(): NonNullable<MockFigmaOptions["measure"]> {
   const trees = treeFixtureNames().flatMap((name) => {
@@ -409,12 +420,12 @@ export async function buildFixture(figma: MockFigma, fixture: TreeFixture, optio
     }
     const data = { slug: variant.slug, i: String(i), src: variant.status === "ok" ? "measured" : "unmeasured", tpl: "2", ...(digest ? { d: digest } : {}) };
     const code = `${BUILDER}
-      const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)}) || (() => { const p = figma.createPage(); p.name = ${JSON.stringify(PAGE)}; return p; })();
+      const page = figma.root.children.find((p) => p.name === ${codeLiteral(PAGE)}) || (() => { const p = figma.createPage(); p.name = ${codeLiteral(PAGE)}; return p; })();
       await figma.setCurrentPageAsync(page);
-      const root = await make(${JSON.stringify(spec)}, page);
-      root.name = ${JSON.stringify(name)};
+      const root = await make(${codeLiteral(spec)}, page);
+      root.name = ${codeLiteral(name)};
       root.x = ${i * 600};
-      for (const [k, v] of Object.entries(${JSON.stringify(data)})) root.setSharedPluginData('storysync', k, v);
+      for (const [k, v] of Object.entries(${codeLiteral(data)})) root.setSharedPluginData('storysync', k, v);
       return { id: root.id, layers: ids, uploads };`;
     const out = await run(figma, code) as { id: string; layers: Record<string, string>; uploads: [string, string][] };
     for (const [nodeId, asset] of out.uploads) {
@@ -424,13 +435,13 @@ export async function buildFixture(figma: MockFigma, fixture: TreeFixture, optio
   }
   const plain = component.variantProperties.length === 0;
   const id = await run(figma, `
-    const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)});
+    const page = figma.root.children.find((p) => p.name === ${codeLiteral(PAGE)});
     await figma.setCurrentPageAsync(page);
-    const parts = await Promise.all(${JSON.stringify(built.map((b) => b.id))}.map((id) => figma.getNodeByIdAsync(id)));
+    const parts = await Promise.all(${codeLiteral(built.map((b) => b.id))}.map((id) => figma.getNodeByIdAsync(id)));
     const owner = ${plain} ? parts[0] : figma.combineAsVariants(parts, page);
-    if (!${plain}) owner.name = ${JSON.stringify(component.name)};
-    owner.setSharedPluginData('storysync', 'id', ${JSON.stringify(storysyncId(component))});
-    owner.setSharedPluginData('storysync', 'title', ${JSON.stringify(component.title ?? "")});
+    if (!${plain}) owner.name = ${codeLiteral(component.name)};
+    owner.setSharedPluginData('storysync', 'id', ${codeLiteral(storysyncId(component))});
+    owner.setSharedPluginData('storysync', 'title', ${codeLiteral(component.title ?? "")});
     return owner.id;`) as string;
   return { id, component: storysyncId(component), variants: built };
 }

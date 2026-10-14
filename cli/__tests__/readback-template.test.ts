@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FONTS, loadTreeFixture } from "./mock-figma.js";
-import { PAGE, READBACK_TEMPLATE, assemble, buildFixture, newFigma, readBack } from "./tree-harness.js";
+import { PAGE, READBACK_TEMPLATE, assemble, buildFixture, codeLiteral, newFigma, readBack } from "./tree-harness.js";
 import { callSum, templateLiteral } from "../checksum.js";
 import { withConstant } from "./figma-build-harness.js";
 import { READ_LIMIT, parseReadResult, readbackCall, readbackHeader } from "../figma-results.js";
@@ -201,7 +201,7 @@ test("template: reads each field as the header says, in the browser's terms", as
     t.textAutoResize = 'HEIGHT'; t.textTruncation = 'ENDING'; t.maxLines = 2;
     t.setSharedPluginData('storysync', 'k', 't');
     const long = figma.createText(); root.appendChild(long);
-    long.characters = ${JSON.stringify("x".repeat(301))};
+    long.characters = ${codeLiteral("x".repeat(301))};
     long.setSharedPluginData('storysync', 'k', 'long');
     const v = figma.createNodeFromSvg('<svg width="10" height="10"><rect x="1" y="2" width="4" height="5" fill="#0000ff" stroke="#00ff00" stroke-width="1.5"/></svg>');
     root.appendChild(v);
@@ -335,7 +335,7 @@ test("template: counts what it returns in bytes, as use_figma does, so text outs
       c.name = 'n=' + i;
       c.resize(100, 20);
       const t = figma.createText(); c.appendChild(t);
-      t.characters = ${JSON.stringify(label)};
+      t.characters = ${codeLiteral(label)};
       t.setSharedPluginData('storysync', 'k', 't');
       for (const [k, v] of [['slug', 'n-' + i], ['i', String(i)], ['src', 'measured']]) c.setSharedPluginData('storysync', k, v);
       variants.push(c);
@@ -415,7 +415,7 @@ test("template: finds a set only by its storysync id, and refuses none or two", 
   await assert.rejects(readBack(figma, [["ui-base-nothing", 0, 1, 0]]), /Found 0 sets with storysync id ui-base-nothing/);
   await assert.rejects(readBack(figma, [[built.component, 0, 1, 0]], { page: "Nowhere" }), /No page named "Nowhere"/);
   // A copy of the set keeps its plugin data, so two carry the id.
-  await figma.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(built.id)}); const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)}); await figma.setCurrentPageAsync(page); s.clone();`);
+  await figma.run(`const s = await figma.getNodeByIdAsync(${codeLiteral(built.id)}); const page = figma.root.children.find((p) => p.name === ${codeLiteral(PAGE)}); await figma.setCurrentPageAsync(page); s.clone();`);
   await assert.rejects(readBack(figma, [[built.component, 0, 1, 0]]), /Found 2 sets with storysync id ui-base-switch/);
 });
 
@@ -424,10 +424,10 @@ test("template: refuses a variant duplicated in Figma, and lists the variants it
   const fixture = loadTreeFixture("card");
   const built = await buildFixture(figma, fixture);
   // A designer's own variant, with no slug, and one of the built removed.
-  await figma.run(`const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)}); await figma.setCurrentPageAsync(page);
-    const set = await figma.getNodeByIdAsync(${JSON.stringify(built.id)});
+  await figma.run(`const page = figma.root.children.find((p) => p.name === ${codeLiteral(PAGE)}); await figma.setCurrentPageAsync(page);
+    const set = await figma.getNodeByIdAsync(${codeLiteral(built.id)});
     const c = figma.createComponent(); c.name = 'size=xl'; set.appendChild(c);
-    (await figma.getNodeByIdAsync(${JSON.stringify(built.variants[1].id)})).remove();`);
+    (await figma.getNodeByIdAsync(${codeLiteral(built.variants[1].id)})).remove();`);
   const [result] = await readBack(figma, [[built.component, 0, 1, 0]]);
   assert.deepEqual([result.sets[0].unbuilt, result.sets[0].absent, result.sets[0].total, Object.keys(result.sets[0].entries)], [["size=xl"], [1], 2, ["size-default"]]);
   const missing = verify(fixture, assemble([result]), 0.5);
@@ -436,14 +436,14 @@ test("template: refuses a variant duplicated in Figma, and lists the variants it
   assert.deepEqual(missing.unreadInFigma, [{ component: "ui/base/Card", unbuilt: ["size=xl"], uncovered: 0 }]);
   assert.equal(missing.summary.unread, 1);
 
-  await figma.run(`const page = figma.root.children.find((p) => p.name === ${JSON.stringify(PAGE)}); await figma.setCurrentPageAsync(page);
-    const v = await figma.getNodeByIdAsync(${JSON.stringify(built.variants[0].id)}); const copy = v.clone(); (await figma.getNodeByIdAsync(${JSON.stringify(built.id)})).appendChild(copy);`);
+  await figma.run(`const page = figma.root.children.find((p) => p.name === ${codeLiteral(PAGE)}); await figma.setCurrentPageAsync(page);
+    const v = await figma.getNodeByIdAsync(${codeLiteral(built.variants[0].id)}); const copy = v.clone(); (await figma.getNodeByIdAsync(${codeLiteral(built.id)})).appendChild(copy);`);
   await assert.rejects(readBack(figma, [[built.component, 0, 1, 0]]), /carry the slug size-default: one was duplicated/);
 });
 
 /** Gives the variant `id` the index `i`, as the build gives a variant whose index a re-snap changed. */
 async function setIndex(figma: ReturnType<typeof newFigma>, id: string, i: number): Promise<void> {
-  const run = await figma.run(`(await figma.getNodeByIdAsync(${JSON.stringify(id)})).setSharedPluginData('storysync', 'i', '${i}');`);
+  const run = await figma.run(`(await figma.getNodeByIdAsync(${codeLiteral(id)})).setSharedPluginData('storysync', 'i', '${i}');`);
   assert.ok(run.ok, run.text);
 }
 
@@ -455,7 +455,7 @@ test("template: two variants of one index with other slugs are both read, in slu
   const built = await buildFixture(figma, fixture);
   await setIndex(figma, built.variants[1].id, 0);
   // First in the set, which doesn't change the order they are read in.
-  const moved = await figma.run(`(await figma.getNodeByIdAsync(${JSON.stringify(built.id)})).insertChild(0, await figma.getNodeByIdAsync(${JSON.stringify(built.variants[1].id)}));`);
+  const moved = await figma.run(`(await figma.getNodeByIdAsync(${codeLiteral(built.id)})).insertChild(0, await figma.getNodeByIdAsync(${codeLiteral(built.variants[1].id)}));`);
   assert.ok(moved.ok, moved.text);
   const [result] = await readBack(figma, [[built.component, 0, 0, 0]]);
   assert.deepEqual(Object.keys(result.sets[0].entries), ["size-default", "size-sm"]);
