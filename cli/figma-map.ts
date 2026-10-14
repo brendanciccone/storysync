@@ -419,7 +419,9 @@ function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
     const effect: FigmaEffect = [inset ? "I" : "D", x, y, blur, spread, rgb, alpha];
     const decision = ctx.binder.color(color, "effect", node.cls);
     if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx, "effect", node.cls));
-    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
+    // Only classes naming two of them leave it ambiguous: a shadow no class
+    // names, as Tailwind's black shadow scale, binds to none by design.
+    else if (decision.ambiguous) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
     out.push(effect);
   }
   for (const [fact, kind, name] of [[node.fl, "L", "filter"], [node.bf, "B", "backdrop-filter"]] as const) {

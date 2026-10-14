@@ -200,7 +200,7 @@ test("nodeStyle: a translucent paint of an opaque token binds to the token's alp
   ]);
 });
 
-test("nodeStyle: a shadow's color binds where its ring-* class names the token, a translucent one to its alpha variable; one no class names is listed", () => {
+test("nodeStyle: a shadow's color binds where its ring-* class names the token, a translucent one to its alpha variable; one no class names is left so unsaid, and one two name is listed", () => {
   // The fifth live push's Dialog: ring-1 ring-foreground/10. Bound to
   // foreground, a switch to Dark made it opaque (probe 7b); bound to
   // foreground 10%, it keeps its 10% (probe 7c).
@@ -212,9 +212,19 @@ test("nodeStyle: a shadow's color binds where its ring-* class names the token, 
   ]);
   assert.deepEqual([...alphas.keys()], ["foreground 10%"]);
   assert.deepEqual(c.unbound.filter((u) => u.property === "effect"), []);
+  // No class names its token: unbound by design, as Tailwind's black shadow
+  // scale is, and not listed, though tokens share its value.
   const c2 = ctx(new Binder(SHADCN_TOKENS));
   assert.deepEqual(nodeStyle(ring(["bg-background"]), c2).e![0], ["D", 0, 0, 0, 1, "#0a0a0a", 0.102]);
-  assert.deepEqual(c2.unbound, [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"] }]);
+  assert.deepEqual(c2.unbound, []);
+  const black = new Binder({ collections: [{ category: "colors", tokens: [{ name: "black", value: "", hex: "#000000" }, { name: "foreground", value: "", hex: "#000000" }] }] });
+  const c3 = ctx(black);
+  assert.deepEqual(nodeStyle(frame({ k: "", sh: [[0, 4, 6, -1, "#0000001a"], [0, 2, 4, -2, "#0000001a"]], cls: ["shadow-md"] }), c3).e, [["D", 0, 4, 6, -1, "#000000", 0.102], ["D", 0, 2, 4, -2, "#000000", 0.102]]);
+  assert.deepEqual(c3.unbound, []);
+  // Two classes naming two of its tokens leave it ambiguous: listed.
+  const c4 = ctx(new Binder(SHADCN_TOKENS));
+  nodeStyle(ring(["ring-foreground", "shadow-card-foreground"]), c4);
+  assert.deepEqual(c4.unbound.filter((u) => u.property === "effect"), [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"] }]);
 });
 
 test("nodeStyle: where a dark: class paints the token at another alpha, the paint binds to the alpha variable that holds each theme's, from a tree that keeps it", () => {

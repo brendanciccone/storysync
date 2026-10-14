@@ -70,6 +70,8 @@ export interface BindDecision {
   variable: string | null;
   /** Every token with the value, sorted: what an unbound value is listed with. */
   candidates: string[];
+  /** True where the classes name two of them and the value is left unbound for it, rather than for none being named. */
+  ambiguous?: true;
   /** Where a base style picked the token, not a class: the rule, as `defaults` gives it. */
   from?: string;
 }
@@ -129,7 +131,7 @@ export class Binder {
     const value = hex.toLowerCase();
     const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
     const decision = decide(candidates, PREFIXES[role], cls, !NAMED_ONLY.has(role));
-    if (decision.variable || decision.named) return { variable: decision.variable, candidates };
+    if (decision.variable || decision.named) return { variable: decision.variable, candidates, ...(decision.variable ? {} : { ambiguous: true as const }) };
     // No class names any of them: the base style for the property, where
     // snap found no class sets it, and none of the classes it lists sets it
     // in some state to a color no token names.
