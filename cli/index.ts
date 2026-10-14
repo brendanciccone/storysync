@@ -709,7 +709,9 @@ program
       }
       const readback = assembled ? assembled.readback : loadJsonFile<ReadbackFile>(opts.readback as string, "Figma readback");
       // The snap's time first: an entry Figma read before it is stale.
-      const snapAge = readSnapAge(snapPath, maxAgeMs);
+      // With --plan, as old as the plan's components: the snap may hold
+      // other pushes' too, measured longer ago.
+      const snapAge = readSnapAge(snapPath, maxAgeMs, Date.now(), assembled?.components);
       const skip = opts.skip ? (opts.skip as string).split(",") : undefined;
       const result = verify(snap, readback, tolerance, {
         ...(snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {}),

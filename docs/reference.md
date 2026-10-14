@@ -235,7 +235,7 @@ An alpha variable is a color token at an alpha, beside the token: `destructive 1
 
 ### `storysync verify`
 
-Scores what was written to Figma against what `snap` measured. During a push, the agent sends the read calls `figma code` wrote and saves each response, and `verify --plan` reads those responses, assembles them into `.storysync/figma-readback.json` for committing and CI, and compares that with the snap. See [How verify scores](#how-verify-scores). `verify --plan` scores only the components the plan built, so the components a snap keeps from other pushes aren't missing from Figma, and says the snap changed since the plan only where it measured one of those components again: the plan records a digest of each.
+Scores what was written to Figma against what `snap` measured. During a push, the agent sends the read calls `figma code` wrote and saves each response, and `verify --plan` reads those responses, assembles them into `.storysync/figma-readback.json` for committing and CI, and compares that with the snap. See [How verify scores](#how-verify-scores). `verify --plan` scores only the components the plan built, so the components a snap keeps from other pushes aren't missing from Figma, and says the snap changed since the plan only where it measured one of those components again: the plan records a digest of each. The snap's age, which `--max-age` and `--strict-age` hold it to, is that of the oldest of those components too, not of the oldest component the snap keeps.
 
 ```text
 Options:

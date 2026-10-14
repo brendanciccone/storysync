@@ -363,6 +363,26 @@ test("readSnapAge: marks a snap past the limit stale", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("readSnapAge: scoring some components of a merged snap, it is as old as the oldest of those", () => {
+  // A push of B into a snap that keeps A from a push hours before.
+  const dir = snapDir({
+    measuredAt: "2026-03-04T06:00:00.000Z",
+    componentsMeasuredAt: { "Forms/A": "2026-03-04T06:00:00.000Z", "Forms/B": "2026-03-04T11:50:00.000Z", "Forms/C": "2026-03-04T11:00:00.000Z" },
+  });
+  try {
+    const path = join(dir, "styles.json");
+    const whole = readSnapAge(path, 2 * 3_600_000, NOW);
+    assert.equal(whole.known && whole.stale, true);
+    const plan = readSnapAge(path, 2 * 3_600_000, NOW, ["Forms/B", "Forms/C"]);
+    assert.equal(plan.known && plan.measuredAt, "2026-03-04T11:00:00.000Z");
+    assert.equal(plan.known && plan.ageMs, 3_600_000);
+    assert.equal(plan.known && plan.stale, false);
+    // One with no time of its own is held to the snap's.
+    const untimed = readSnapAge(path, 2 * 3_600_000, NOW, ["Forms/B", "Forms/D"]);
+    assert.equal(untimed.known && untimed.stale, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // meta.json is the file a consuming project is most likely to gitignore, so an
 // absent sidecar must read as "unknown", never as "fresh".
 test("readSnapAge: a missing sidecar is unknown, not fresh", () => {

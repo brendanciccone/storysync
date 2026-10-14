@@ -984,7 +984,7 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       assert.match(text, /`measuredAt` is after you started it/, `${path} doesn't check the snap is this run's`);
       // --merge keeps measuredAt at the oldest component's time, so a merge
       // that worked failed a check of measuredAt alone.
-      assert.match(text, /after a `--merge`, which keeps `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is/, `${path} fails every merge on its measuredAt`);
+      assert.match(text, /after a `--merge` or a `--components` run that merged, which keep `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is/, `${path} fails every merge on its measuredAt`);
       assert.match(text, /read (?:the measurements|what it recorded) from `\.storysync\/snaps\/styles\.json` on disk/i, `${path} reads snap's one-line stdout`);
       assert.match(text, /adding `--components <their IDs> --merge` and a longer `--timeout`/, `${path} re-measures timeouts without --merge`);
       // --components alone now keeps the rest of the snap; --no-merge drops it.

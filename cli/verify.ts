@@ -1854,6 +1854,7 @@ export function readSnapAge(
   snapPath: string,
   maxAgeMs: number | null,
   now: number = Date.now(),
+  only?: readonly string[],
 ): SnapAgeInfo {
   const metaPath = join(dirname(snapPath), SNAP_META_FILENAME);
 
@@ -1885,15 +1886,26 @@ export function readSnapAge(
     return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}) — check the clock` };
   }
 
-  const ageMs = Math.max(0, now - measured);
   // Only times that are times: a component with none is held to measuredAt.
   const times = typeof meta.componentsMeasuredAt === "object" && meta.componentsMeasuredAt !== null
     ? Object.fromEntries(Object.entries(meta.componentsMeasuredAt as Record<string, unknown>)
       .filter((pair): pair is [string, string] => typeof pair[1] === "string" && Number.isFinite(Date.parse(pair[1]))))
     : null;
+  // Scoring `only` some components (verify --plan), the snap is as old as
+  // the oldest of those: a merged snap's measuredAt is its oldest
+  // component's, which may be another push's, scored by nobody here.
+  let at = meta.measuredAt;
+  if (only?.length && times) {
+    const theirs = only.map((key) => times[key] ?? meta.measuredAt as string);
+    at = theirs.reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min));
+    if (Date.parse(at) > now + MAX_CLOCK_SKEW_MS) {
+      return { known: false, reason: `a component's measuredAt is in the future (${at}) — check the clock` };
+    }
+  }
+  const ageMs = Math.max(0, now - Date.parse(at));
   return {
     known: true,
-    measuredAt: meta.measuredAt,
+    measuredAt: at,
     ageMs,
     storybookUrl: typeof meta.storybookUrl === "string" ? meta.storybookUrl : undefined,
     stale: maxAgeMs != null && ageMs > maxAgeMs,
