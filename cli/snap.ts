@@ -1696,13 +1696,21 @@ function writeSnap(
 /**
  * The Storybook globals snap sets in every story's URL for the light
  * scheme, once one rendered dark and setting them rendered it light; null
- * where setting them didn't, with why. Undefined until a story renders dark.
- * One for the run: a project's theme is its preview's, not a story's.
+ * once snap concluded none do, with why: the preview has no theme global
+ * to set, or DARK_STORIES_TRIED stories still rendered dark with them.
+ * Undefined until then. One for the run, as a project's theme is its
+ * preview's; but a story that sets its own theme still renders dark with
+ * them, so one story isn't taken for the project (`stillDark`).
  */
 interface ThemeState {
   globals?: Record<string, string> | null;
   why?: string;
+  /** The stories measured again with the light globals that still rendered dark, before any rendered light with them. */
+  stillDark?: Set<string>;
 }
+
+/** How many stories rendering dark with the light globals snap concludes they don't work for the run. */
+export const DARK_STORIES_TRIED = 3;
 
 /** How much longer than --timeout a variant that timed out is given to load once more. */
 export const TIMEOUT_RETRY_FACTOR = 3;
@@ -1826,8 +1834,18 @@ async function snapComponent(
   const images = new Map<string, CapturedImage>();
   const treeNotes = new Set<string>();
   const climbed: { slug: string; element: string; from: string }[] = [];
-  // The color scheme each measured variant rendered in, where the page said.
-  const schemes: { slug: string; scheme: "light" | "dark"; by?: string }[] = [];
+  // The color scheme each measured variant rendered in, where the page said;
+  // for one measured dark, why it wasn't measured light (lightScheme).
+  const schemes: { slug: string; scheme: "light" | "dark"; by?: string; why?: string }[] = [];
+  const darkWhy = new WeakMap<CaptureResult, string>();
+  // Whether a load given TIMEOUT_RETRY_FACTOR times --timeout timed out too:
+  // then the component's later loads are tried once more at --timeout.
+  let longTimedOut = false;
+  // Whether a variant was measured dark because measuring it with the light
+  // globals failed, and whether a later one then rendered light with them:
+  // the component is then measured again, every variant with them.
+  let lightUnsure = false;
+  let lightNow = false;
   // The stories snap measured a variant from as well, by slug, where the
   // component's story drew it past its box (siblingStories).
   const refitTried = new Map<string, SiblingTries>();
@@ -1860,6 +1878,7 @@ async function snapComponent(
     treeNotes.clear();
     climbed.length = 0;
     schemes.length = 0;
+    lightUnsure = false;
     refitTried.clear();
     standIns.clear();
     stage.drop(entry);
@@ -1936,9 +1955,9 @@ async function snapComponent(
       const choose = (): StoryChoice => (owns ? chooseStory(combination, owns, definition.variantProperties, storyId) : { storyId });
       let choice = choose();
 
-      const capture = (timeoutMs = opts.timeoutMs): Promise<CaptureResult> => {
+      const capture = (timeoutMs: number, globals: Record<string, string> | null | undefined): Promise<CaptureResult> => {
         checkpoint();
-        return captureStory(page, buildStoryUrl(opts.storybookUrl, choice.storyId, param, theme.globals ? globalsParam(theme.globals) : null), {
+        return captureStory(page, buildStoryUrl(opts.storybookUrl, choice.storyId, param, globals ? globalsParam(globals) : null), {
           timeoutMs,
           selector: opts.selector,
           screenshot: opts.screenshots,
@@ -1950,39 +1969,73 @@ async function snapComponent(
           tree: opts.rootOnly ? "count" : "tree",
         });
       };
-      // Once more on a timeout loading the story, given TIMEOUT_RETRY_FACTOR
-      // times as long: a busy Storybook times out stories that render a
-      // moment later, a slow one at --timeout again, and a variant left
-      // unmeasured is built as a placeholder. Not on one after it loaded,
-      // which would only take as long again.
-      const captureOnce = async (): Promise<CaptureResult> => {
-        const first = await capture();
-        const got = first.status === "timeout" && first.retryable ? await capture(opts.timeoutMs * TIMEOUT_RETRY_FACTOR) : first;
-        return lightScheme(got);
+      // Once more on a timeout loading the story: a busy Storybook times out
+      // stories that render a moment later, and a variant left unmeasured is
+      // built as a placeholder. Given TIMEOUT_RETRY_FACTOR times as long, as
+      // a slow story times out at --timeout again, until such a load times
+      // out too; the component's later loads then get --timeout again, so a
+      // Storybook that stays slow costs twice --timeout a variant, not four
+      // times. Not on one after it loaded, which would only take as long again.
+      const loadOnce = async (globals = theme.globals): Promise<CaptureResult> => {
+        const first = await capture(opts.timeoutMs, globals);
+        if (first.status !== "timeout" || !first.retryable) return first;
+        const long = !longTimedOut;
+        const again = await capture(long ? opts.timeoutMs * TIMEOUT_RETRY_FACTOR : opts.timeoutMs, globals);
+        if (long && again.status === "timeout") longTimedOut = true;
+        return again;
       };
+      const captureOnce = async (): Promise<CaptureResult> => lightScheme(await loadOnce());
       // A story Storybook rendered dark, measured again with the globals that
-      // render it light, the first time one does (lightGlobals); those are
-      // then in every story's URL for the rest of the run. Where they don't
-      // render it light, it stays as measured, and the component says so.
+      // render it light (lightGlobals); the first time those do, they go in
+      // every story's URL for the rest of the run. Where they don't, it stays
+      // as measured, with why (darkWhy): a re-measure that failed says
+      // nothing of the globals, so the next dark story tries them again, and
+      // one that still rendered dark may be a story that sets its own theme,
+      // so snap gives up on them only after DARK_STORIES_TRIED such stories.
       const lightScheme = async (got: CaptureResult): Promise<CaptureResult> => {
-        if (got.status !== "ok" || got.scheme?.scheme !== "dark" || theme.globals !== undefined) return got;
+        if (got.status !== "ok" || got.scheme?.scheme !== "dark") return got;
+        const said = (why: string) => {
+          darkWhy.set(got, why);
+          return got;
+        };
+        if (theme.globals) return said(`Storybook rendered it dark with globals=${globalsParam(theme.globals)} in its URL too, as its story or a decorator sets its own theme`);
+        if (theme.globals === null) return said(theme.why ?? "Storybook rendered it dark");
         const light = got.themeGlobals ? lightGlobals(got.themeGlobals) : null;
         if (!light) {
           theme.globals = null;
           theme.why = "Storybook rendered it dark and its preview has no theme global snap could set to light";
-          return got;
+          return said(theme.why);
         }
-        theme.globals = light;
-        const again = await capture();
+        const stillDark = `Storybook rendered it dark, and still did with globals=${globalsParam(light)} in the story's URL`;
+        if (theme.stillDark?.has(choice.storyId)) return said(stillDark);
+        const again = await loadOnce(light);
         if (again.status === "ok" && again.scheme?.scheme !== "dark") {
+          theme.globals = light;
+          lightNow = true;
           progress(`  Storybook rendered ${entry.title ?? entry.name} dark (${got.scheme.by ?? "dark"}); snap sets globals=${globalsParam(light)} in each story's URL to measure the light scheme`);
           return again;
         }
-        theme.globals = null;
-        theme.why = `Storybook rendered it dark, and still did with globals=${globalsParam(light)} in the story's URL`;
-        return got;
+        if (again.status !== "ok") {
+          lightUnsure = true;
+          return said(`snap couldn't measure it again with globals=${globalsParam(light)} in the story's URL (${again.status.replace(/_/g, " ")})`);
+        }
+        (theme.stillDark ??= new Set()).add(choice.storyId);
+        if (theme.stillDark.size >= DARK_STORIES_TRIED) {
+          theme.globals = null;
+          theme.why = `Storybook rendered ${DARK_STORIES_TRIED} stories dark, and still did with globals=${globalsParam(light)} in their URLs`;
+        }
+        return said(stillDark);
       };
       let captured = await captureOnce();
+      if (lightNow) {
+        lightNow = false;
+        if (lightUnsure) {
+          progress(`  ${entry.title ?? entry.name}: measuring its variants again in the light scheme`);
+          startOver();
+          index = -1;
+          continue;
+        }
+      }
       // The stories' own args, from the preview of the first story that
       // loaded; and this variant measured again where one of them is for it.
       // A read that fails is tried again with the next variants that load,
@@ -2133,7 +2186,7 @@ async function snapComponent(
       for (const note of captured.notes) notes.push({ slug, note });
       if (captured.unopened) unopened.push({ slug, ...captured.unopened });
       if (captured.climbedFrom) climbed.push({ slug, element: captured.element ?? "", from: captured.climbedFrom });
-      if (captured.scheme) schemes.push({ slug, ...captured.scheme });
+      if (captured.scheme) schemes.push({ slug, ...captured.scheme, ...(darkWhy.has(captured) ? { why: darkWhy.get(captured) } : {}) });
       for (const pair of captured.standIns ?? []) standIns.add(JSON.stringify(pair));
       markups.push(captured.markup ?? null);
       markupBySlug.set(slug, captured.markup ?? null);
@@ -2198,7 +2251,7 @@ async function snapComponent(
     if (theme.globals) shell.globals = theme.globals;
     const dark = schemes.filter((s) => s.scheme === "dark");
     if (dark.length) {
-      shell.warnings.push(describeDarkScheme(dark[0].by, theme.why ?? "Storybook rendered it dark with the globals snap set", { dark: dark.length, measured: schemes.length }));
+      shell.warnings.push(describeDarkScheme(dark[0].by, dark[0].why ?? theme.why ?? "Storybook rendered it dark", { dark: dark.length, measured: schemes.length }));
     }
   }
   if (standIns.size) shell.fontStandIns = [...standIns].sort().map((pair) => JSON.parse(pair) as [string, string]);

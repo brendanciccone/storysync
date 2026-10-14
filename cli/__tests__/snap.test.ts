@@ -1710,7 +1710,9 @@ function treeBrowser(opts: {
   /** Stories whose every load times out. */
   timesOut?: (storyId: string) => boolean;
   /** The color scheme the story renders in, given its URL's `globals`; unread by default. */
-  scheme?: (globals: string | null) => SchemeReading;
+  scheme?: (globals: string | null, storyId: string) => SchemeReading;
+  /** The loads, counted from 1, that time out. */
+  loadsTimeOut?: number[];
   /** Storybook's globals, as themeGlobalsInPage reads them. */
   themeGlobals?: ThemeGlobals;
 }) {
@@ -1719,13 +1721,15 @@ function treeBrowser(opts: {
   let readFails = opts.storiesReadFails ?? 0;
   let storyId = opts.storyId;
   let globals: string | null = null;
+  // Each load: its URL's `globals`, and how long it was given.
+  const loads: { globals: string | null; timeout?: number }[] = [];
   let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId, csf: opts.csf });
   let described = false;
   const given = () => fake.preview.storyStoreValue.getStoryContext().args;
   const target = {
     evaluate: async (fn: unknown) => {
       if (fn === captureTreeInPage) return opts.capture(given(), storyId);
-      if (fn === colorSchemeInPage) return opts.scheme?.(globals) ?? null;
+      if (fn === colorSchemeInPage) return opts.scheme?.(globals, storyId) ?? null;
       if (described) return null;
       described = true;
       return { tag: "span", slot: "switch", role: null };
@@ -1739,8 +1743,9 @@ function treeBrowser(opts: {
   };
   const page = {
     on: () => {}, off: () => {},
-    goto: async (url: string) => {
-      if (timeouts-- > 0 || opts.timesOut?.(new URL(url).searchParams.get("id") ?? "")) {
+    goto: async (url: string, o?: { timeout?: number }) => {
+      loads.push({ globals: new URL(url).searchParams.get("globals"), timeout: o?.timeout });
+      if (timeouts-- > 0 || opts.timesOut?.(new URL(url).searchParams.get("id") ?? "") || opts.loadsTimeOut?.includes(loads.length)) {
         throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
       }
       described = false;
@@ -1771,7 +1776,7 @@ function treeBrowser(opts: {
     via: "stub",
     browser: { version: () => opts.version ?? "154.0.0.0", newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
   }) as never;
-  return { launch, drawn };
+  return { launch, drawn, loads };
 }
 
 const SWITCH_SIZE = { name: "size", type: { name: "union", raw: '"default" | "sm"' }, defaultValue: "default" };
@@ -2877,6 +2882,61 @@ test("runSnap: a story that renders dark whatever snap sets is recorded as dark,
     assert.equal(component.globals, undefined);
     const warning = component.warnings.find((w) => /dark color scheme/.test(w));
     assert.match(warning ?? "", /^It was measured in its dark color scheme \(html\.dark\), as Storybook rendered it dark, and still did with globals=theme:light/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a light re-measure that fails leaves the globals to the next dark variant, and the component is measured again once they work", async () => {
+  const dir = tempDir();
+  try {
+    const { launch, loads } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } },
+      scheme: (globals) => (globals === "theme:light" ? { scheme: "light", by: "html.light" } : { scheme: "dark", by: "html.dark" }),
+      themeGlobals: { globals: { theme: "" }, allowed: ["theme"], options: {} },
+      // The first variant's re-measure with the light globals, and its retry, time out.
+      loadsTimeOut: [2, 3],
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    assert.equal(component.scheme, "light");
+    assert.deepEqual(component.globals, { theme: "light" });
+    assert.equal(component.warnings.some((w) => /dark color scheme/.test(w)), false);
+    // The second variant tried them again; then both were measured with them.
+    assert.deepEqual(loads.map((l) => l.globals ?? ""), ["", "theme:light", "theme:light", "", "theme:light", "theme:light", "theme:light"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: one story that sets its own dark theme doesn't keep the light globals from the stories after it", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf: BUTTON_CSF,
+      // Default renders dark whatever the globals; Icon follows them.
+      scheme: (globals, storyId) => (globals === "theme:light" && storyId.endsWith("--icon") ? { scheme: "light", by: "html.light" } : { scheme: "dark", by: "html.dark" }),
+      themeGlobals: { globals: { theme: "" }, allowed: ["theme"], options: {} },
+    });
+    const result = await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(), launch });
+    const [button] = result.components;
+    assert.deepEqual(button.globals, { theme: "light" });
+    const icon = button.variants.find((v) => v.storyId === "ui-base-button--icon");
+    assert.equal(icon?.status, "ok");
+    const warning = button.warnings.find((w) => /dark color scheme/.test(w));
+    assert.match(warning ?? "", /\(1 of 2 measured variants\), as Storybook rendered it dark, and still did with globals=theme:light in the story's URL/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a load given longer that times out too gives the component's later loads --timeout again", async () => {
+  const dir = tempDir();
+  try {
+    const { launch, loads } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } }, timesOut: () => true });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    assert.deepEqual(result.components[0].variants.map((v) => v.status), ["timeout", "timeout"]);
+    assert.deepEqual(loads.map((l) => l.timeout), [1000, 1000 * TIMEOUT_RETRY_FACTOR, 1000, 1000]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
