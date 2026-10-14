@@ -1068,6 +1068,11 @@ for (const set of DATA.sets) {
     // at the pinned or old default value of each property dropped, else
     // where the user has the extras removed (`rm`, figma code
     // --remove-extra), which removes one only once none is left on it.
+    // `rm` is the key of the file whose build counted them, or 1 where no
+    // answer named one: sent to another file, none is removed, and
+    // `notRemoved` names the file that counted them.
+    const rm = set.rm === 1 || (set.rm && set.rm === figma.fileKey);
+    if (set.rm && !rm && stale.length) out.notRemoved = set.rm;
     let swapped = 0;
     for (const n of stale) {
       put(n, 'i', '');
@@ -1076,14 +1081,14 @@ for (const set of DATA.sets) {
       let left = 0;
       for (const i of await n.getInstancesAsync()) {
         try {
-          if (!to || !(set.rm || same(old))) throw 0;
+          if (!to || !(rm || same(old))) throw 0;
           i.swapComponent(to.node);
           swapped++;
         } catch (e) {
           left++;
         }
       }
-      if (set.rm && !left) {
+      if (rm && !left) {
         await loadFonts(textsIn(n));
         n.remove();
         removed++;

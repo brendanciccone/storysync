@@ -741,6 +741,8 @@ interface SetFlags {
   convert: Set<string>;
   /** Whether this component's set removes its extra variants (`rm`). */
   removeExtra: (component: { id: string; key: string }) => boolean;
+  /** The key of the Figma file whose build counted the extras, which `rm` holds, so a build in another file removes none. */
+  extrasFile?: string;
 }
 
 type Interned = [number, number, string, number, number, number, number, number];
@@ -790,7 +792,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string, f
     if (component.pin) set.pin = component.pin;
     if (component.od) set.od = component.od;
     if (end) set.end = 1;
-    if (end && flags.removeExtra(component)) set.rm = 1;
+    if (end && flags.removeExtra(component)) set.rm = flags.extrasFile ?? 1;
     return set;
   });
   return `${header(seq, "build", page)}${callCode([["DATA", { page, S: table.values, sets }]], template, "figma code", carry)}`;
@@ -942,9 +944,10 @@ export function builtShapes(out: string): Map<string, Prop[]> {
  * those kept under `out/earlier/`, the newest first, each from its build
  * calls' results, the latest first, where it didn't refuse the set. Only
  * answers from the file the newest came from count (`file`, its key), so
- * a plan another file answered says nothing of this one's sets.
+ * a plan another file answered says nothing of this one's sets; that key
+ * is `file`, for the builds to check they run in that file.
  */
-export function builtExtras(out: string): Map<string, number> {
+export function builtExtras(out: string): { counts: Map<string, number>; file?: string } {
   const dir = resolve(out);
   const earlier = join(dir, EARLIER_PLANS_DIR);
   const kept = existsSync(earlier) ? readdirSync(earlier).map((d) => join(earlier, d)).filter((d) => existsSync(join(d, "plan.json"))) : [];
@@ -968,7 +971,7 @@ export function builtExtras(out: string): Map<string, number> {
       // Not a plan, or results, this storysync wrote: nothing to go by.
     }
   }
-  return extras;
+  return { counts: extras, ...(typeof file === "string" ? { file } : {}) };
 }
 
 /**
@@ -1103,10 +1106,10 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // keeps its call as it was, byte for byte, and one no saved answer
   // counted, as after a fresh clone or a teammate's push, is left alone,
   // never removed from on a guess.
-  const extras = opts.removeExtra ? builtExtras(opts.out) : new Map<string, number>();
+  const { counts: extras, file } = opts.removeExtra ? builtExtras(opts.out) : { counts: new Map<string, number>(), file: undefined };
   const named = Array.isArray(opts.removeExtra) ? new Set(selectComponents(entries, opts.removeExtra, [], "--remove-extra").map((e) => keys.get(e)!)) : null;
   const asked = (c: { key: string }) => Boolean(opts.removeExtra) && (!named || named.has(c.key));
-  const flags: SetFlags = { convert, removeExtra: (c) => asked(c) && (extras.get(c.id) ?? 0) > 0 };
+  const flags: SetFlags = { convert, removeExtra: (c) => asked(c) && (extras.get(c.id) ?? 0) > 0, extrasFile: file };
   const unknown = components.filter((c) => asked(c) && !extras.has(c.id)).map((c) => c.title ?? c.name);
   if (unknown.length) {
     warnings.push(`--remove-extra left ${unknown.join(", ")} as ${unknown.length === 1 ? "it is" : "they are"}: no saved build response says how many extra variants ${unknown.length === 1 ? "it has" : "they have"}. Send this plan, then run figma code --remove-extra again to remove those its builds count in \`extra\``);

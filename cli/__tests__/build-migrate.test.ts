@@ -232,6 +232,26 @@ test("figma code --remove-extra: an answer from another Figma file says nothing 
   assert.ok(c.warnings.some((w) => w.startsWith("--remove-extra left Forms/Button as it is")), c.warnings.join("\n"));
 });
 
+test("build: extras counted in one Figma file are removed only there; sent to another, the build removes none and names the file that counted them", async () => {
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  const mock = mockFor([full]);
+  mock.fileKey = "fileF";
+  const first = await codeFor(full);
+  await push(mock, first);
+  assert.deepEqual((await push(mock, await codeIn(after, first.out))).flatMap(sets).map((s) => s.extra), [6]);
+  const remove = await codeIn(after, first.out, { removeExtra: true });
+  assert.ok(remove.plan.calls.some((c) => remove.code(c).includes('"rm":"fileF"')));
+  // The plan sent to file T: nothing removed, and said.
+  mock.fileKey = "fileT";
+  const [elsewhere] = (await runPlan(mock, remove, ["build"])).flatMap(sets) as (SetResult & { notRemoved?: string })[];
+  assert.deepEqual([elsewhere.removed, elsewhere.extra, elsewhere.notRemoved], [undefined, 6, "fileF"]);
+  // Sent to F, the file that counted them, they go.
+  mock.fileKey = "fileF";
+  const [there] = (await runPlan(mock, remove, ["build"])).flatMap(sets) as (SetResult & { notRemoved?: string })[];
+  assert.deepEqual([there.removed, there.extra, there.notRemoved], [6, 0, undefined]);
+});
+
 test("build: a plain component an earlier push built, now with variant properties, is refused until the user says to convert it, then made its set's first variant in place", async () => {
   // Questionnaire gained `shortcuts`: one variant, then two.
   const full = loadTreeFixture("switch");
