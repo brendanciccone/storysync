@@ -88,9 +88,11 @@ export interface FigmaCodeOptions {
    * variant property names now, once the user said to: `--remove-extra`.
    * Only a set whose last build Figma answered counted some in `extra` is
    * told to, so the calls of the others stay as they were; one no saved
-   * answer counted is left alone, and named in a warning.
+   * answer counted is left alone, and named in a warning. Names, as
+   * `--convert` takes them, limit it to those components' sets: those the
+   * user said yes for.
    */
-  removeExtra?: boolean;
+  removeExtra?: boolean | string[];
   /**
    * Every build and read call carries its template, as before 0.4.0's last
    * fix pass, rather than the first of each kind storing it in the Figma
@@ -737,8 +739,8 @@ interface Part {
 /** What a build call's set says beyond its variants: the user's answers, and the values snap pinned. */
 interface SetFlags {
   convert: Set<string>;
-  /** Whether the set of this storysync id removes its extra variants (`rm`). */
-  removeExtra: (id: string) => boolean;
+  /** Whether this component's set removes its extra variants (`rm`). */
+  removeExtra: (component: { id: string; key: string }) => boolean;
 }
 
 type Interned = [number, number, string, number, number, number, number, number];
@@ -788,7 +790,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string, f
     if (component.pin) set.pin = component.pin;
     if (component.od) set.od = component.od;
     if (end) set.end = 1;
-    if (end && flags.removeExtra(component.id)) set.rm = 1;
+    if (end && flags.removeExtra(component)) set.rm = 1;
     return set;
   });
   return `${header(seq, "build", page)}${callCode([["DATA", { page, S: table.values, sets }]], template, "figma code", carry)}`;
@@ -1096,8 +1098,10 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // counted, as after a fresh clone or a teammate's push, is left alone,
   // never removed from on a guess.
   const extras = opts.removeExtra ? builtExtras(opts.out) : new Map<string, number>();
-  const flags: SetFlags = { convert, removeExtra: (id) => Boolean(opts.removeExtra) && (extras.get(id) ?? 0) > 0 };
-  const unknown = opts.removeExtra ? components.filter((c) => !extras.has(c.id)).map((c) => c.title ?? c.name) : [];
+  const named = Array.isArray(opts.removeExtra) ? new Set(selectComponents(entries, opts.removeExtra, [], "--remove-extra").map((e) => keys.get(e)!)) : null;
+  const asked = (c: { key: string }) => Boolean(opts.removeExtra) && (!named || named.has(c.key));
+  const flags: SetFlags = { convert, removeExtra: (c) => asked(c) && (extras.get(c.id) ?? 0) > 0 };
+  const unknown = components.filter((c) => asked(c) && !extras.has(c.id)).map((c) => c.title ?? c.name);
   if (unknown.length) {
     warnings.push(`--remove-extra left ${unknown.join(", ")} as ${unknown.length === 1 ? "it is" : "they are"}: no saved build response says how many extra variants ${unknown.length === 1 ? "it has" : "they have"}. Send this plan, then run figma code --remove-extra again to remove those its builds count in \`extra\``);
   }

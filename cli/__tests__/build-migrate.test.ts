@@ -190,6 +190,25 @@ test("figma code --remove-extra: a set no saved build response counted extra var
   assert.ok(coded.warnings.some((w) => /^--remove-extra left Forms\/Button as it is: no saved build response says how many extra variants it has\. Send this plan, then run figma code --remove-extra again/.test(w)), coded.warnings.join("\n"));
 });
 
+test("figma code --remove-extra <names>: only the components named remove their extra variants, as the user said yes to theirs alone", async () => {
+  // "Remove ConfirmDialog's, keep Tabs'": here Button's, and Twin's kept.
+  const full = loadTreeFixture("example-button");
+  const twin = Object.assign(copy(full.components[0]), { name: "Twin", title: "Toggles/Twin", category: "Toggles", storyId: "toggles-twin--default" });
+  const both = (button: TreeFixture, other: TreeFixture["components"][number]) => ({ ...button, components: [...button.components, other] });
+  const after = withoutProp(full, "disabled", "false");
+  const twinAfter = withoutProp({ ...full, components: [twin] }, "disabled", "false").components[0];
+  const mock = mockFor([full]);
+  const a = await codeFor(both(full, twin));
+  await push(mock, a);
+  const b = await codeIn(both(after, twinAfter), a.out);
+  assert.deepEqual((await push(mock, b)).flatMap(sets).map((s) => [s.name, s.extra]), [["Button", 6], ["Twin", 6]]);
+  const c = await codeIn(both(after, twinAfter), a.out, { removeExtra: ["Button"] });
+  const removed = (await push(mock, c)).flatMap(sets);
+  assert.deepEqual(removed.map((s) => [s.name, s.removed, s.extra]), [["Button", 6, 0], ["Twin", undefined, 6]]);
+  // A name that matches nothing is an error, as for --convert.
+  await assert.rejects(codeIn(both(after, twinAfter), a.out, { removeExtra: ["Tabs"] }), /--remove-extra/);
+});
+
 test("build: a plain component an earlier push built, now with variant properties, is refused until the user says to convert it, then made its set's first variant in place", async () => {
   // Questionnaire gained `shortcuts`: one variant, then two.
   const full = loadTreeFixture("switch");
