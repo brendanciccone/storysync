@@ -1358,6 +1358,7 @@ export function readStoryTreeInPage(
       label: el.getAttribute("aria-label") ?? el.getAttribute("aria-labelledby"),
       position: cs.position,
       ...(el.hasAttribute("data-sonner-toast") ? { toast: true } : {}),
+      ...(el.hasAttribute("data-sonner-toaster") ? { toaster: true } : {}),
       rendered: el.getClientRects().length > 0,
       text: Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim() !== ""),
       styles,

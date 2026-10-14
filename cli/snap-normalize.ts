@@ -617,6 +617,8 @@ export interface StoryNode {
   position: string;
   /** Whether it is a toast, as Sonner marks one with `data-sonner-toast`; absent where it isn't, or wasn't read. */
   toast?: boolean;
+  /** Whether it is Sonner's list of toasts, `data-sonner-toaster`; absent where it isn't, or wasn't read. */
+  toaster?: boolean;
   /** Whether it has a layout box: false for `display: none` and `display: contents`. */
   rendered: boolean;
   /**
@@ -808,9 +810,39 @@ function holdsPicks(node: StoryNode): boolean {
   return node.role === "combobox" || node.role === "listbox" || node.children.some(holdsPicks);
 }
 
+/**
+ * Whether `node` is a toaster, where a toast is raised: Sonner's list, or
+ * the `section` it renders, labeled "Notifications", while no toast is up.
+ */
+function isToaster(node: StoryNode): boolean {
+  return node.toaster === true || (node.tag === "section" && /^Notifications\b/.test(node.label ?? ""));
+}
+
+/**
+ * The first button in `node`, in document order, that raises a toast: one
+ * outside any toast, toaster, status or alert, and outside the component's
+ * own element, so a toast's own close or action button is never taken.
+ */
+function findToastOpener(node: StoryNode, path: number[], slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (!child.rendered) continue;
+    if (child.tag === "button" || child.role === "button") return { path: [...path, index], node: child };
+    const role = (child.role ?? "").toLowerCase();
+    if (child.toast || isToaster(child) || ["status", "alert", "alertdialog", "log"].includes(role) || (child.slot != null && slots.includes(child.slot))) continue;
+    const found = findToastOpener(child, [...path, index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
 /** Whether a component is a toast, by its slots: shadcn/ui's Sonner, whose component is `Toaster`. */
 export function isToastComponent(slots: readonly string[]): boolean {
   return slots.some((slot) => /(?:^|-)(?:sonner|toasts?|toaster)(?:$|-)/.test(slot));
+}
+
+/** Whether anything under `node`, with a box or not, is what `wanted` takes. */
+function holdsAny(node: StoryNode, wanted: (node: StoryNode) => boolean): boolean {
+  return node.children.some((child) => wanted(child) || holdsAny(child, wanted));
 }
 
 /** The first element at or under `node`, in document order, with a box that `wanted` takes. */
@@ -1160,15 +1192,17 @@ export function chooseMeasuredElement(
 
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];
-  // A toast's story, with no toast up: the story's button that raises one.
-  const opener = container && isToastComponent(slots)
-    ? findFirst(container, [], (n) => n.tag === "button" || n.role === "button")
-    : null;
-  if (opener) {
+  // A toast's story, with no toast up, as Sonner's: an empty toaster, or a
+  // layout wrapper, holding the button that raises one. A toast the story
+  // draws itself is measured as it is, its own buttons left alone.
+  const wrapper = (() => {
     const children = drawnChildren(node).length;
-    if (children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots)) {
-      notes.push({ kind: "layout-wrapper", element, children });
-    }
+    return children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots) ? children : 0;
+  })();
+  const raises = container && isToastComponent(slots) && (wrapper || holdsAny(container, isToaster));
+  const opener = raises && container ? findToastOpener(container, [], slots) : null;
+  if (opener) {
+    if (wrapper) notes.push({ kind: "layout-wrapper", element, children: wrapper });
     const toast = { at: opener.path, opener: describeElement(opener.node) };
     return { kind: "tree", path, element, notes, trigger: { field: false, interactions: ["click"], toast } };
   }

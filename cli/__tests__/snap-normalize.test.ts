@@ -1302,3 +1302,12 @@ test("chooseMeasuredElement: a combobox on a popover's trigger is a field, by it
   const closed = node("button", { hasPopup: "dialog", expanded: "false", controls: "pc", state: "closed", styles: FILLED });
   assert.deepEqual(chooseMeasuredElement(root(closed), [], slots), { kind: "tree", path: [0], element: "button", notes: [], trigger: { field: true, interactions: ["click"] } });
 });
+
+test("chooseMeasuredElement: a toast the story draws itself is measured as it is, its own buttons never clicked", () => {
+  const slots = componentSlots("Toast", "ui/Toast");
+  const toast = () => node("div", { role: "status" }, [node("p", { styles: FILLED }), node("button", { styles: FILLED })]);
+  assert.deepEqual(chooseMeasuredElement(root(toast()), [], slots), { kind: "tree", path: [0], element: 'div[role="status"]', notes: [] });
+  // Two in a wrapper, with no toaster: the wrapper, as any story's, and no opener.
+  const both = chooseMeasuredElement(root(node("div", {}, [toast(), toast()])), [], slots);
+  assert.deepEqual(both, { kind: "tree", path: [0], element: "div", notes: [{ kind: "layout-wrapper", element: "div", children: 2 }] });
+});
