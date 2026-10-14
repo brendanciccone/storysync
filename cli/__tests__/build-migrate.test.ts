@@ -258,7 +258,7 @@ test("build and read: the first call of each kind stores its template in the fil
   assert.equal(alone.text, `Error: ${missingTemplate("build", "01")}`);
   assert.equal(JSON.stringify(mock.pages()), pages);
   // In order, the second runs what the first stored: the very template.
-  await runPlan(mock, coded);
+  await runPlan(mock, coded, ["build"]);
   assert.equal(mock.node("0:0")!.data[`storysync.${templateKey("build")}`], template);
   // Another storysync's push stores its own: refused again, until the first is sent again.
   await mock.run(`figma.root.setSharedPluginData("storysync", ${JSON.stringify(templateKey("build"))}, "return 1;");`);
@@ -268,6 +268,12 @@ test("build and read: the first call of each kind stores its template in the fil
   // So do the reads: the first carries the readback template, the rest load it.
   const reads = coded.plan.calls.filter((c) => c.kind === "read").map((c) => coded.code(c));
   assert.ok(reads.slice(1).every((r) => r.includes('const T = figma.root.getSharedPluginData("storysync","template readback");')));
+  // The last, once it has read all it was for, removes what the plan
+  // stored, and any part a push left unfinished keeps on a page.
+  await mock.run(`figma.root.children.find((p) => p.name === "Forms").setSharedPluginData("storysync", "part forms-button x 1", "{}");`);
+  await runPlan(mock, coded, ["read"]);
+  const left = mock.pages().flatMap((p: NodeView) => Object.keys(p.data)).concat(Object.keys(mock.node("0:0")!.data)).filter((k) => /^storysync\.(template|part) /.test(k));
+  assert.deepEqual(left, []);
 });
 
 test("build: a variant too big for one call is sent in parts, each built by its own call and kept on the page until the last lays the variant out, which says what to send where a part is missing", async () => {

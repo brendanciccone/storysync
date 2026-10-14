@@ -1123,6 +1123,16 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     }
     flush();
   }
+  // The last read, once it has read all it was for, removes what the
+  // plan's calls stored in the file (checksum.ts, CLEAR).
+  const lastRead = calls.filter((c) => c.kind === "read").pop();
+  const stored = lastRead && carry("read", lastRead.seq);
+  if (lastRead && stored) {
+    lastRead.code = readCode(lastRead.seq, lastRead.page, lastRead.slices!, readLimit + READ_GUARD_MARGIN, templates.readback, "figma code", { ...stored, clear: true });
+    assertCompiles(lastRead.code, lastRead.file, "readback", templates.readback);
+    assertWithinLimit(lastRead.code, lastRead.file);
+    lastRead.chars = lastRead.code.length;
+  }
 
   const out = resolve(opts.out);
   const earlier = keepEarlierPlan(out);
@@ -1378,12 +1388,17 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const firstRead = plan.calls.find((c) => c.kind === "read");
     const carrier = text(firstRead);
     const template = loadTemplate("readback", opts.minify ?? !(carrier || parent).includes("// storysync readback, template"), opts.templates);
-    const stored = carrier.includes(`figma.root.setSharedPluginData("storysync",${JSON.stringify(templateKey("readback"))},T);`);
+    // Stored by the first read, unless another storysync wrote that call:
+    // one whose template isn't this install's is carried whole instead,
+    // so a continuation after an upgrade still runs.
+    const stored = carrier.includes(`figma.root.setSharedPluginData("storysync",${JSON.stringify(templateKey("readback"))},T);`)
+      && carrier.includes(`const TSUM = ${JSON.stringify(fnv1a32(template))};`);
     const written = /\nconst LIMIT = (\d+);/.exec(parent);
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
-    const carry = stored ? { kind: "readback", from: pad(firstRead!.seq) } : undefined;
+    const lastRead = plan.calls.filter((c) => c.kind === "read").pop();
+    const carry = stored ? { kind: "readback", from: pad(firstRead!.seq), ...(lastRead?.seq === call.seq ? { clear: true as const } : {}) } : undefined;
     const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next", carry).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file, "readback", template);
     assertWithinLimit(code, file);

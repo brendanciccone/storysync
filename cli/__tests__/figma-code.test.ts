@@ -202,6 +202,18 @@ test("figma next: a continuation is written from the template its call was, read
   }
 });
 
+test("figma next: a continuation after storysync was upgraded carries the template it runs, since the one the first read stored isn't this install's", async () => {
+  // The plan written by another install: its readback template is not this one.
+  const older = `${loadTemplate("readback")}\n// an older storysync's`;
+  const coded = await codeFor(loadTreeFixture("card"), { templates: { readback: older } });
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq });
+  const continued = readFileSync(next!.file, "utf8");
+  assert.doesNotMatch(continued, /getSharedPluginData\("storysync","template readback"\)/);
+  assert.ok(continued.includes(loadTemplate("readback").slice(0, 200)));
+});
+
 /** A call's constants, in order, each line's value parsed, SUM's as written. */
 function constantsOf(code: string): { names: string[]; values: unknown[]; sum: unknown } {
   // The constants, as JSON, a line each; T, the template, is a string of code.

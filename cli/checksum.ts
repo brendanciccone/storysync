@@ -162,7 +162,8 @@ export function callCode(constants: readonly (readonly [name: string, value: unk
     `if(fnv(JSON.stringify([${names.join(",")}]))!==SUM)throw new Error(${JSON.stringify(refusal("data", "SUM", writer))});`,
     `if(fnv(T)!==TSUM)throw new Error(${JSON.stringify(load ? missingTemplate(carry.kind, carry.from) : refusal("template", "TSUM", writer))});`,
     ...(carry && !load ? [`figma.root.setSharedPluginData("storysync",${key},T);`] : []),
-    `return await new(async()=>{}).constructor(${["figma", ...names, "TC"].map((n) => JSON.stringify(n)).join(",")},T)(figma,${names.join(",")},1);`,
+    `${carry?.clear ? "const R=" : "return "}await new(async()=>{}).constructor(${["figma", ...names, "TC"].map((n) => JSON.stringify(n)).join(",")},T)(figma,${names.join(",")},1);`,
+    ...(carry?.clear ? [CLEAR, "return R;"] : []),
     "",
   ].join("\n");
 }
@@ -177,7 +178,16 @@ export function callCode(constants: readonly (readonly [name: string, value: unk
  * document's shared plugin data keeps them from call to call, and the
  * AsyncFunction constructor runs what it holds).
  */
-export type TemplateCarry = { kind: string; store: true } | { kind: string; from: string };
+export type TemplateCarry = ({ kind: string; store: true } | { kind: string; from: string }) & { clear?: true };
+
+/**
+ * What the plan's last read runs once it has read all it was for (its
+ * result has no `more`), with `clear`: it removes the templates the plan's
+ * first calls stored, and any part of a variant a page still keeps, which
+ * only a push left unfinished leaves, so a push leaves nothing of its own
+ * in the file's shared plugin data but the keys on its sets and layers.
+ */
+const CLEAR = `if(!(typeof R=="string"?JSON.parse(R):R).more){for(const k of["build","readback"])figma.root.setSharedPluginData("storysync","template "+k,"");for(const p of figma.root.children)for(const k of p.getSharedPluginDataKeys("storysync"))if(k.startsWith("part "))p.setSharedPluginData("storysync",k,"")}`;
 
 /** The document's shared plugin data key, namespace `storysync`, a template of `kind` is stored under. */
 export function templateKey(kind: string): string {
