@@ -769,8 +769,9 @@ const results = [];
 const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 // Once the call's sets are built, moves the sets and components a push
 // built off one another, each at most once and only one that lies on
-// another, taken top first: a set built here moves below each that starts
-// above it and lies on it, and a set one moved, or grew, onto
+// another, taken top first, and of two built here at one height the one
+// that grew first, so it stays: a set built here moves below each that
+// starts above it and lies on it, and a set one moved, or grew, onto
 // moves below what it lies on, as far as clears it and any it lands on
 // that starts above it or has moved already, and any layer of a
 // designer's it would land on, which never moves. So none moves twice,
@@ -786,7 +787,8 @@ const settle = (built) => {
     const all = parent.children;
     const sets = all.filter(ours);
     const done = new Map();
-    const due = new Map(built.filter(([n]) => n.parent === parent));
+    // The sets that grew first, so of two at one height they are taken first.
+    const due = new Map(built.filter(([n]) => n.parent === parent).sort((a, b) => b[2] - a[2]));
     while (due.size) {
       const [n, out] = [...due].reduce((a, b) => (b[0].y < a[0].y ? b : a));
       due.delete(n);
@@ -902,6 +904,8 @@ for (const set of DATA.sets) {
   }
   const existing = new Map(names.map((name) => [name, !node ? null : want === 'COMPONENT' ? node : node.children.find((c) => c.name === name) || null]));
   const fresh = !node;
+  // Its size before this build, for settle: of two at one height, the one that grew stays.
+  const size = node && node.width + node.height;
   const below = page.children.reduce((y, n) => Math.max(y, n.y + n.height + 100), 0);
   const created = [];
   const absoluteContainers = [];
@@ -1128,7 +1132,7 @@ for (const set of DATA.sets) {
     }
     Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
   }
-  built.push([node, out]);
+  built.push([node, out, node.width + node.height > size + 0.5]);
 }
 // No two sets a push built overlap; `overlaps` counts what else each lies
 // on once laid out, any layer of its page or section, and what else a set

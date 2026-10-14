@@ -335,6 +335,28 @@ test("build: a set settle moves goes clear of a designer's layers too, which nev
   assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 1]);
 });
 
+test("build: of two sets built at one height that lie on each other, the one that grew stays and the other moves", async () => {
+  const button = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
+  const other = copy(loadTreeFixture("switch").components[0]);
+  other.category = "Forms";
+  button.components.push(other);
+  const mock = mockFor([loadTreeFixture("example-button"), loadTreeFixture("switch")]);
+  const [first] = await push(mock, await codeFor(button));
+  const [grows, toggle] = sets(first);
+  // Switch beside Button at its height, in Button's way once it gains `disabled`.
+  const b = mock.handle(grows.id) as { x: number; y: number; width: number };
+  await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(toggle.id)}); s.x = ${b.x + b.width + 40}; s.y = ${b.y};`);
+  const after = loadTreeFixture("example-button");
+  after.components.push(other);
+  // Switch comes first in the call, which decided it before.
+  after.components.reverse();
+  const then = (await push(mock, await codeFor(after))).flatMap(sets);
+  const g = mock.handle(grows.id) as { y: number; height: number };
+  assert.equal(g.y, b.y, "Button, which grew, stays");
+  assert.equal((mock.handle(toggle.id) as { y: number }).y, g.y + g.height + 100);
+  assert.deepEqual(then.find((s) => s.name === "Button")!.moved, [toggle.id]);
+});
+
 test("build: settle over random layouts moves each set at most once, never up, onto nothing, and never a designer's layer", async () => {
   let seed = 7;
   const rand = (n: number) => {
