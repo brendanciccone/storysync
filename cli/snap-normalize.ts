@@ -615,6 +615,8 @@ export interface StoryNode {
   label: string | null;
   /** The computed `position`. */
   position: string;
+  /** Whether it is a toast, as Sonner marks one with `data-sonner-toast`; absent where it isn't, or wasn't read. */
+  toast?: boolean;
   /** Whether it has a layout box: false for `display: none` and `display: contents`. */
   rendered: boolean;
   /**
@@ -665,7 +667,8 @@ export const OVERLAY_SELECTOR =
  * openOverlay); a snap from before it opened overlays has none.
  */
 export type MeasurementNote =
-  | { kind: "layout-wrapper"; element: string; children: number }
+  /** `toast`: for a toast's story, why snap couldn't raise one to measure (see chooseMeasuredElement). */
+  | { kind: "layout-wrapper"; element: string; children: number; toast?: string }
   | { kind: "closed-trigger"; element: string; reason?: string };
 
 /** How snap opens an overlay through its trigger, as a user would: see openInteractions. */
@@ -757,6 +760,12 @@ export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
 export interface OpenableTrigger {
   field: boolean;
   interactions: OpenInteraction[];
+  /**
+   * For a toast's story: the element measured is the story's own, and
+   * this, the button at `at` under the story's container, `opener` as
+   * describeElement names it, raises the toast, which is measured instead.
+   */
+  toast?: { at: number[]; opener: string };
 }
 
 export type MeasuredChoice =
@@ -772,6 +781,21 @@ export type MeasuredChoice =
 
 /** How deep snap looks past wrappers that draw nothing, as it always has. */
 const MAX_WRAPPER_DEPTH = 4;
+
+/** Whether a component is a toast, by its slots: shadcn/ui's Sonner, whose component is `Toaster`. */
+export function isToastComponent(slots: readonly string[]): boolean {
+  return slots.some((slot) => /(?:^|-)(?:sonner|toasts?|toaster)(?:$|-)/.test(slot));
+}
+
+/** The first element at or under `node`, in document order, with a box that `wanted` takes. */
+function findFirst(node: StoryNode, path: number[], wanted: (node: StoryNode) => boolean): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (child.rendered && wanted(child)) return { path: [...path, index], node: child };
+    const found = findFirst(child, [...path, index], wanted);
+    if (found) return found;
+  }
+  return null;
+}
 
 /**
  * The `data-slot` values a component's own root would carry: its name and its
@@ -1059,6 +1083,10 @@ export function chooseMeasuredElement(
     portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
   if (portaled) return portaled;
 
+  // A toast raised, where the story renders its toaster, as Sonner's does.
+  const toast = container && isToastComponent(slots) ? findFirst(container, [], (node) => node.toast === true) : null;
+  if (toast) return { kind: "tree", path: toast.path, element: describeElement(toast.node), notes: [], content: true };
+
   const overlay = () => portal((candidate) => candidate.overlay === true);
   const shown = container?.children.some(subtreeDraws) ?? false;
   const open = shown ? null : overlay();
@@ -1089,6 +1117,18 @@ export function chooseMeasuredElement(
 
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];
+  // A toast's story, with no toast up: the story's button that raises one.
+  const opener = container && isToastComponent(slots)
+    ? findFirst(container, [], (n) => n.tag === "button" || n.role === "button")
+    : null;
+  if (opener) {
+    const children = drawnChildren(node).length;
+    if (children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots)) {
+      notes.push({ kind: "layout-wrapper", element, children });
+    }
+    const toast = { at: opener.path, opener: describeElement(opener.node) };
+    return { kind: "tree", path, element, notes, trigger: { field: false, interactions: ["click"], toast } };
+  }
   if (isClosedTrigger(node)) {
     // Opened by something other than its trigger, as a story's `open` arg does.
     const content = overlay();

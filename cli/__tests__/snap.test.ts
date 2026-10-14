@@ -2916,3 +2916,11 @@ test("snapMessages: what the text output says, i, ! and ✗ lines and each varia
     { level: "failed", component: "Popover", text: "other [render_error] boom" },
   ]);
 });
+
+test("describeMeasurementNotes: a toast's story snap couldn't raise one from says why, after the layout wrapper's warning", () => {
+  const note = { kind: "layout-wrapper" as const, element: "div", children: 3, toast: "snap clicked button to raise a toast, and clicking it opened nothing within 3000ms" };
+  const [warning] = describeMeasurementNotes("Toaster", [{ slug: "default", note }], 1, "ui/radix/Sonner");
+  assert.match(warning, /^snap measured div, which holds 3 elements and draws nothing itself/);
+  assert.match(warning, / It is a toast's story: snap clicked button to raise a toast, and clicking it opened nothing within 3000ms, so no toast was measured\.$/);
+  assert.deepEqual(parseMeasurementWarning(warning), { kind: "layout-wrapper", element: "div", children: 3 });
+});

@@ -21,7 +21,7 @@ import {
   applyDelta,
   componentSlots,
   contentSlots,
-  chooseMeasuredElement,
+  chooseMeasuredElement, isToastComponent,
   describeOpenFailure,
   isClosedTrigger,
   openInteractions,
@@ -1249,4 +1249,25 @@ test("normalizeStyles: a text's layout is written only where there is one, so ol
   assert.equal("layout" in plain.text!, false);
   const cut = normalizeStyles(PRIMARY_SM, BOX, text, null, undefined, { width: 102, lines: 1, overflowsX: true, overflowsY: false, textOverflow: "ellipsis", lineClamp: null });
   assert.deepEqual(cut.text!.layout, { width: 102, lines: 1, truncation: "ellipsis" });
+});
+
+test("chooseMeasuredElement: a toast's story has its button raise a toast, and a toast up is what is measured", () => {
+  // shadcn's Sonner story: a "Show Toast" button and the toaster, which draws nothing until a toast is up.
+  const button = node("button", { styles: FILLED });
+  const toaster = node("section", { label: "Notifications alt+T" });
+  const wrapper = node("div", { styles: { display: "flex" } }, [button, node("p", { styles: FILLED }), toaster]);
+  const slots = componentSlots("Toaster", "ui/radix/Sonner");
+  assert.equal(isToastComponent(slots), true);
+  const closed = chooseMeasuredElement(root(wrapper), [], slots);
+  assert.equal(closed.kind, "tree");
+  if (closed.kind !== "tree") return;
+  assert.deepEqual(closed.path, [0]);
+  assert.deepEqual(closed.trigger, { field: false, interactions: ["click"], toast: { at: [0, 0], opener: "button" } });
+  assert.deepEqual(closed.notes, [{ kind: "layout-wrapper", element: "div", children: 3 }]);
+  // Raised: the toast, inside the toaster in the story's root.
+  const toast = node("li", { toast: true, styles: FILLED });
+  const raised = chooseMeasuredElement(root(node("div", { styles: { display: "flex" } }, [button, node("section", {}, [node("ol", {}, [toast])])])), [], slots);
+  assert.deepEqual(raised, { kind: "tree", path: [0, 1, 0, 0], element: "li", notes: [], content: true });
+  // Any other component's button is no toast's opener.
+  assert.equal(chooseMeasuredElement(root(wrapper), [], ["card"]).kind === "tree" && (chooseMeasuredElement(root(wrapper), [], ["card"]) as { trigger?: unknown }).trigger, undefined);
 });

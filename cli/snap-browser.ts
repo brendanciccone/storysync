@@ -417,6 +417,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
           memory: opts.openMemory,
           timeoutMs: opts.timeoutMs, waitMs: opts.openWaitMs ?? OPEN_WAIT_MS, images, standIns: opts.standIns !== false,
         });
+      await closed.opener?.dispose().catch(() => { /* gone with a remount */ });
       if ("located" in opening) {
         await closed.target.dispose().catch(() => { /* gone with a remount */ });
         located = opening.located;
@@ -433,9 +434,18 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
         const reason = "reason" in opening ? opening.reason : "";
         if (closed.trigger.field && opts.openOverlays !== false) unopened = { element: closed.element, reason };
         located.notes = located.notes.map((note) => (note.kind === "closed-trigger" ? { ...note, reason } : note));
-        // One an attempt left open, which a remount didn't close, keeps
-        // the note of the trigger as it was found, closed.
-        if (!closed.trigger.field && !located.notes.some((note) => note.kind === "closed-trigger")) {
+        const toast = closed.trigger.toast;
+        if (toast) {
+          // Measured as before, the story's wrapper, saying why no toast;
+          // or its button, where that is all the story draws.
+          const why = `snap clicked ${toast.opener} to raise a toast, and ${reason || "didn't"}`;
+          const wrapper = located.notes.some((note) => note.kind === "layout-wrapper");
+          located.notes = wrapper
+            ? located.notes.map((note) => (note.kind === "layout-wrapper" ? { ...note, toast: why } : note))
+            : [...located.notes, { kind: "closed-trigger", element: toast.opener, reason }];
+        } else if (!closed.trigger.field && !located.notes.some((note) => note.kind === "closed-trigger")) {
+          // One an attempt left open, which a remount didn't close, keeps
+          // the note of the trigger as it was found, closed.
           located.notes = [...located.notes, { kind: "closed-trigger", element: closed.element, reason }];
         }
       }
@@ -592,7 +602,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrigger }, ctx: OpenContext): Promise<Opening> {
   // The same wait for every way and every variant, so a note that says it is the same for each.
   const waitMs = Math.min(ctx.waitMs, ctx.timeoutMs);
-  const trigger = closed.element;
+  const trigger = closed.trigger.toast?.opener ?? closed.element;
   const attempts: OpenAttempt[] = [];
   // Why it is still open, where a way left it so and a remount didn't close it.
   let stuck = "";
@@ -654,7 +664,7 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
       continue;
     }
     try {
-      await interact(located.target, how, waitMs);
+      await interact(located.opener ?? located.target, how, waitMs);
     } catch (err) {
       attempts.push({ via: how, outcome: "failed", error: firstLine(err) });
       await dismiss(page);
@@ -662,6 +672,7 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
       continue;
     } finally {
       await located.target.dispose().catch(() => { /* gone with a remount */ });
+      await located.opener?.dispose().catch(() => { /* gone with a remount */ });
     }
     const shown = await waitForOverlay(page, ctx.slots, waitMs);
     const open = "located" in shown ? await opened(shown.located, { via: how, trigger }) : null;
@@ -1182,6 +1193,8 @@ interface Located {
   trigger?: OpenableTrigger;
   /** What an open trigger controls, rendered inline in the story's root. */
   content?: true;
+  /** For a toast's story, the button that raises the toast (OpenableTrigger's `toast`). */
+  opener?: ElementHandle<Element>;
 }
 
 /**
@@ -1231,6 +1244,10 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       await handle.dispose();
       return { error: `element vanished after load: ${choice.element}` };
     }
+    const at = choice.kind === "tree" ? choice.trigger?.toast?.at : undefined;
+    const opener = at && container
+      ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), at)).asElement() ?? undefined
+      : undefined;
     return {
       target,
       element: choice.element,
@@ -1239,6 +1256,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       ...(choice.kind === "portal" ? { portal: true as const } : {}),
       ...(choice.kind === "tree" && choice.trigger ? { trigger: choice.trigger } : {}),
       ...(choice.kind === "tree" && choice.content ? { content: true as const } : {}),
+      ...(opener ? { opener: opener as ElementHandle<Element> } : {}),
     };
   } finally {
     await portalsHandle.dispose();
@@ -1273,6 +1291,7 @@ export function readStoryTreeInPage(
       orientation: el.getAttribute("data-orientation") ?? el.getAttribute("aria-orientation"),
       label: el.getAttribute("aria-label") ?? el.getAttribute("aria-labelledby"),
       position: cs.position,
+      ...(el.hasAttribute("data-sonner-toast") ? { toast: true } : {}),
       rendered: el.getClientRects().length > 0,
       text: Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim() !== ""),
       styles,

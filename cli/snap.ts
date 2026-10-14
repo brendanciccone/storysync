@@ -1109,7 +1109,8 @@ export function describeMeasurementNotes(
       `border or shadow), so it may be the story's layout wrapper rather than ${name}${which}. If it is, give ` +
       `${name}'s root element data-slot="${slot}", render ${name} on its own in the story snap renders, or ` +
       `measure it by itself into this snap with --components, --selector and --merge (without --merge, styles.json ` +
-      `would hold ${name} alone). If ${name} is itself a layout container, this is expected.`
+      `would hold ${name} alone). If ${name} is itself a layout container, this is expected.` +
+      (note.toast ? ` It is a toast's story: ${note.toast.replace(/[.\s]+$/, "")}, so no toast was measured.` : "")
     );
   });
 }
