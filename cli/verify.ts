@@ -313,6 +313,12 @@ export interface VariantVerdict {
   nodes?: NodeVerdict[];
   /** The variant's name in Figma, as the readback sealed it. */
   name?: string;
+  /**
+   * For `not_measured`: why snap couldn't measure it, its status and error,
+   * and whether snap's warning for the component names a story change that
+   * would let it (only an `arg_rejected` variant's can).
+   */
+  unmeasured?: { status: string; error: string | null; storyChange: boolean };
   /** Layers in the variant nothing keyed, a designer's: listed, not scored. */
   designerLayers?: [name: string, type: string, id: string][];
   /**
@@ -1229,6 +1235,7 @@ export function verify(
           verdicts.push({
             component, slug, status: "not_measured", source: sourceOf(figma), matched: 0, mismatched: 0, differences: [],
             ...(typeof figma!.name === "string" ? { name: figma!.name } : {}),
+            unmeasured: unmeasuredOf(snapComponent, variant),
           });
         }
         continue;
@@ -1329,6 +1336,23 @@ export function verify(
     }
   }
 
+  // A component snap measured no variant of, every one failed: figma code
+  // builds each as a placeholder, listed as the placeholders above are.
+  for (const snapComponent of snap.components ?? []) {
+    if (snapComponent.base || snapComponent.error) continue;
+    const component = componentKey(snapComponent);
+    for (const variant of snapComponent.variants ?? []) {
+      const figma = readbackComponents[component]?.variants?.[variant.slug];
+      if (variant.status === "ok" || !isTreeEntry(figma)) continue;
+      notMeasuredSlugs.add(JSON.stringify([component, variant.slug]));
+      verdicts.push({
+        component, slug: variant.slug, status: "not_measured", source: sourceOf(figma), matched: 0, mismatched: 0, differences: [],
+        ...(typeof figma!.name === "string" ? { name: figma!.name } : {}),
+        unmeasured: unmeasuredOf(snapComponent, variant),
+      });
+    }
+  }
+
   // The mirror of missing_from_figma: something Figma has that we never
   // measured, and therefore never scored. Not a later part of a variant
   // read in parts, nor a placeholder listed as not measured.
@@ -1394,9 +1418,19 @@ export function verify(
   // from source and label them inferred, which provenance already fails
   // under --strict-measured. `snap --strict` is the gate for measurement
   // failures.
+  // Each component by name, so one whose every variant failed, which has
+  // nothing scored, isn't hidden in a count.
   if (snap.summary?.failed) {
+    const failedBy: string[] = [];
+    for (const component of snap.components ?? []) {
+      const failed = (component.variants ?? []).filter((v) => v.status !== "ok").length;
+      if (!failed) continue;
+      const all = failed === component.variants.length;
+      failedBy.push(`${componentKey(component)} (${all ? (failed === 1 ? "its one variant" : `all ${failed}`) : failed})`);
+    }
+    const named = failedBy.length > 3 ? `${failedBy.slice(0, 3).join(", ")} and ${failedBy.length - 3} more` : failedBy.join(", ");
     snapWarnings.push(
-      `${snap.summary.failed} variant(s) could not be measured; any built from source are listed under provenance`,
+      `${snap.summary.failed} variant(s) could not be measured${named ? `, of ${named}` : ""}; any built from source are listed under provenance`,
     );
   }
 
@@ -1470,6 +1504,27 @@ export function verify(
 }
 
 /** Whether an entry was read by the element-tree template, which no earlier template's has a field of. */
+/**
+ * Why snap couldn't measure a variant, for the line verify lists it on: its
+ * status and error, and whether the component's warnings name a story
+ * change for it. snap's arg_rejected warning does where one would help ("To
+ * measure it, ..."); a render_error, element_not_found or timeout has no
+ * such warning, and its error is all snap says.
+ */
+function unmeasuredOf(component: SnapComponent, variant: SnapVariant): NonNullable<VariantVerdict["unmeasured"]> {
+  const storyChange = variant.status === "arg_rejected"
+    && (component.warnings ?? []).some((w) => w.includes("(status arg_rejected)") && /To measure (?:it|them), /.test(w));
+  return { status: variant.status, error: variant.error ?? null, storyChange };
+}
+
+/** An error as one line of at most `max` characters, cut at a word with an ellipsis. */
+function oneLine(text: string, max = 100): string {
+  const line = text.split("\n")[0].trim();
+  if (line.length <= max) return line;
+  const cut = line.slice(0, max);
+  return `${cut.slice(0, cut.lastIndexOf(" ") > max / 2 ? cut.lastIndexOf(" ") : max).replace(/[\s,;:.]+$/, "")}…`;
+}
+
 function isTreeEntry(entry: unknown): entry is ReadbackStyles {
   return entry != null && typeof entry === "object" && TREE_MARKS.some((key) => (entry as Record<string, unknown>)[key] !== undefined);
 }
@@ -1973,8 +2028,11 @@ export function formatElementReport(result: VerifyResult, beside: readonly strin
     .map((v) => `  ! ${v.component} ${v.slug}: read back without its tree, so only its root was compared; read it again with the calls \`storysync figma code\` writes`), chalk.red);
   capped(result.variants.flatMap((v) => (v.designerLayers ?? [])
     .map(([name, type, id]) => `  ? ${v.component} ${v.name || v.slug}: a layer nothing keyed, "${name}" (${type}, node ${id}): a designer's, not scored`)), chalk.yellow);
-  capped(result.variants.filter((v) => v.status === "not_measured")
-    .map((v) => `  ? ${v.component} ${v.name || v.slug}: not measured, so Figma holds a placeholder for it; snap's warning names the story change it needs`), chalk.yellow);
+  capped(result.variants.filter((v) => v.status === "not_measured").map((v) => {
+    const why = v.unmeasured ? ` (${v.unmeasured.status}${v.unmeasured.error ? `: ${oneLine(v.unmeasured.error)}` : ""})` : "";
+    const fix = v.unmeasured?.storyChange ? "; snap's warning names the story change it needs" : "";
+    return `  ? ${v.component} ${v.name || v.slug}: not measured${why}, so Figma holds a placeholder for it${fix}`;
+  }), chalk.yellow);
   for (const seq of result.notRead ?? []) lines.push(chalk.red(`  ! planned read call ${seq} wasn't read whole, so the variants it didn't read weren't scored`));
   return lines;
 }

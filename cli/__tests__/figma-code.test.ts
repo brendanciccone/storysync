@@ -13,7 +13,7 @@ import { describeMeasurementNotes } from "../snap.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
 import type { FigmaPlan, NoClassPaint, PlanCall, TreeDelta, TreeNode } from "../tree-types.js";
-import { verify } from "../verify.js";
+import { formatElementReport, verify } from "../verify.js";
 import { SHADCN_TOKENS, STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
 import { FONTS, loadTreeFixture, svgShapeBoxes, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
@@ -510,6 +510,50 @@ test("figma code: a text in fontsource's Geist Variable is set in Figma's Geist,
   const family = result.variants.flatMap((v) => (v.nodes ?? []).flatMap((n) => n.differences.filter((d) => d.property === "family")));
   assert.deepEqual(family, []);
   assert.ok(result.summary.elements!.verified > 0);
+});
+
+/** A component snap measured no variant of, as the shadcn ResizablePanelGroup: every variant failed, so no base and no tree. */
+function allFailed(snap: TreeFixture): TreeFixture {
+  const error = "We detected that you use an implicit action arg while rendering of your story.";
+  (snap.components as unknown[]).push({
+    id: "ui-radix-resizablepanelgroup", name: "ResizablePanelGroup", title: "ui/radix/ResizablePanelGroup", category: "ui/radix", error: null,
+    variantProperties: [{ name: "orientation", type: "VARIANT", values: ["horizontal", "vertical"], defaultValue: "horizontal" }],
+    base: null, tree: null, warnings: [],
+    variants: [
+      { combination: { orientation: "horizontal" }, slug: "orientation-horizontal", status: "render_error", error },
+      { combination: { orientation: "vertical" }, slug: "orientation-vertical", status: "element_not_found", error: "no element matched the story's root" },
+    ],
+  });
+  const summary = (snap as { summary: { failed: number; variants: number } }).summary;
+  summary.failed += 2;
+  summary.variants += 2;
+  return snap;
+}
+
+test("figma code: a component snap measured no variant of is built as placeholders, and verify counts and names them, each with why", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  const snap = allFailed(copy(loadTreeFixture("example-button")));
+  const coded = await codeFor(snap, { templates: {} });
+  assert.ok(coded.warnings.includes('ui/radix/ResizablePanelGroup: all 2 variants built as a "Not measured" placeholder, since snap couldn\'t measure them'), coded.warnings.join("\n"));
+  assert.ok(!coded.warnings.some((w) => w.includes("not built")));
+  await sendAll(coded, mockFor([snap]));
+  const { readback, notRead } = loadPlanResults(join(coded.out, "plan.json"));
+  const result = verify(JSON.parse(readFileSync(coded.snapPath, "utf8")), readback, 0.5, { notRead });
+  assert.equal(result.summary.notMeasured, 2);
+  assert.deepEqual(result.unmeasuredInFigma, [], "the placeholders are not variants snap never measured");
+  assert.match(result.snapWarnings![0], /^2 variant\(s\) could not be measured, of ui\/radix\/ResizablePanelGroup \(all 2\); /);
+  const lines = formatElementReport(result).join("\n");
+  assert.match(lines, /not measured 2/);
+  assert.match(lines, /\? ui\/radix\/ResizablePanelGroup orientation=horizontal: not measured \(render_error: We detected that you use an implicit action arg while rendering of your story\.\), so Figma holds a placeholder for it\n/);
+  assert.match(lines, /orientation=vertical: not measured \(element_not_found: no element matched the story's root\), so Figma holds a placeholder for it/);
+  assert.doesNotMatch(lines, /story change/, "snap named no story change for these");
+  // An arg_rejected variant whose warning names a story change says so.
+  const changed = JSON.parse(readFileSync(coded.snapPath, "utf8")) as TreeFixture;
+  const group = changed.components.find((c) => c.name === "ResizablePanelGroup")! as unknown as { variants: { status: string; error: string }[]; warnings: string[] };
+  Object.assign(group.variants[1], { status: "arg_rejected", error: "Storybook kept orientation at horizontal" });
+  group.warnings = ["Storybook wouldn't render 1 of ResizablePanelGroup's variants with the values asked for, and snap couldn't set them through its preview either, so it was not measured (status arg_rejected): vertical isn't among orientation's options. To measure it, add vertical to orientation's options, then measure the component again with --components ui-radix-resizablepanelgroup --merge."];
+  const again = formatElementReport(verify(changed, readback, 0.5, { notRead })).join("\n");
+  assert.match(again, /orientation=vertical: not measured \(arg_rejected: Storybook kept orientation at horizontal\), so Figma holds a placeholder for it; snap's warning names the story change it needs/);
+  assert.match(again, /orientation=horizontal: not measured \(render_error: [^\n]*placeholder for it\n/);
 });
 
 test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {

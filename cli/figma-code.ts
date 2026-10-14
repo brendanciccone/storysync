@@ -356,12 +356,14 @@ function unmeasuredReason(variant: SnapVariantWithTree): string {
 
 /**
  * A variant snap couldn't measure, built as what it is (D18): a dashed frame
- * at the base variant's size saying why, never a guess at its looks.
+ * at the base variant's size saying why, never a guess at its looks. Where
+ * snap measured no variant of the component, so there is no base, the frame
+ * is as wide as its line at 11px and as tall as the line and its inset.
  */
 function compilePlaceholder(component: SnapComponentWithTree, variant: SnapVariantWithTree, index: number): CompiledVariant {
-  const base = component.base!.styles;
-  const [w, h] = [round2(Math.max(0.01, base.width)), round2(Math.max(0.01, base.height))];
   const text = `Not measured: ${unmeasuredReason(variant)}`;
+  const base = component.base?.styles ?? { width: Math.ceil(text.length * 6.5) + 8, height: 21 };
+  const [w, h] = [round2(Math.max(0.01, base.width)), round2(Math.max(0.01, base.height))];
   const records: Record_[] = [
     ["", -1, "F", 0, 0, w, h, { f: [], s: { w: 1, p: "#a1a1a1", d: [3, 3] }, r: 0, c: 1 }],
     ["#unmeasured", 0, "T", 4, 4, round2(Math.max(1, w - 8)), 13, { f: ["#737373"], t: { c: text, f: "Inter", w: 400, z: 11, l: 0, ar: "H" } }],
@@ -440,16 +442,19 @@ function labelLine(component: SnapComponent): string {
 
 function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike, alphas: Map<string, PlanAlpha>): CompiledComponent | null {
   const key = componentKey(component);
-  if (component.error || !component.base) {
+  // A component snap couldn't measure at all has no variants to build. One
+  // whose every variant failed has them all as placeholders.
+  if (component.error || (!component.base && !component.variants?.length)) {
     warnings.push(`${key}: not built: ${component.error ?? "snap measured no variant of it"}`);
     return null;
   }
   const findings: Findings = { notBuilt: [], unbound: [], byDefault: [], absolute: new Map(), alphas };
-  const variants = component.variants.map((variant, i) => (variant.status === "ok"
+  const variants = component.variants.map((variant, i) => (variant.status === "ok" && component.base
     ? compileVariant(component, variant as SnapVariantWithTree, i, binder, findings, spike)
     : compilePlaceholder(component, variant as SnapVariantWithTree, i)));
   const placeholders = variants.filter((v) => !v.src).length;
-  if (placeholders) warnings.push(`${key}: ${placeholders} variant${placeholders === 1 ? "" : "s"} built as a "Not measured" placeholder, since snap couldn't measure ${placeholders === 1 ? "it" : "them"}`);
+  const counted = placeholders === variants.length && placeholders > 1 ? `all ${placeholders} variants` : `${placeholders} variant${placeholders === 1 ? "" : "s"}`;
+  if (placeholders) warnings.push(`${key}: ${counted} built as a "Not measured" placeholder, since snap couldn't measure ${placeholders === 1 ? "it" : "them"}`);
   for (const [where, { slugs }] of findings.absolute) {
     warnings.push(`${key} › ${where}, so it is built without auto layout (${slugs.length === variants.length ? "every variant" : `${slugs.length} of ${variants.length} variants`})`);
   }
