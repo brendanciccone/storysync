@@ -90,9 +90,10 @@ export interface RawTreeElement {
    */
   cls?: string[];
   /**
-   * The state variants of its `dark:` classes the page could tell
-   * (`data-active` of `dark:data-active:text-foreground`), and whether
-   * each applies to it as measured: classEvidence's.
+   * Each of its `dark:` classes with a state, as written
+   * (`dark:data-active:text-foreground`), and whether that state applies
+   * to it as measured, where the page could tell from its style sheets:
+   * classEvidence's.
    */
   states?: Record<string, boolean>;
   /** The first `lucide-*` class of an `<svg>`. */
@@ -304,11 +305,12 @@ const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-
  * A `dark:` class with a state (`dark:data-active:text-foreground`) is the
  * dark theme's paint wherever its state applies, as Tailwind puts it after
  * the plain `dark:` one. Where the page found its state applies (`states`,
- * as Tabs' active trigger has `data-active`), it is written `dark:` alone,
+ * by the class's rule: Tabs' active trigger has `data-state="active"`,
+ * which shadcn/ui's `data-active` variant means), it is written `dark:` alone,
  * in place of the plain ones of its property (`dark:text-muted-foreground`);
  * where it found it doesn't, it says nothing of the dark theme; where it
- * couldn't tell (`group-hover`, a breakpoint), it stays as written
- * (`dark:md:bg-x`), which tells figma code that Dark may paint the
+ * couldn't tell (no rule it could read), it stays as written
+ * (`dark:in-hover:bg-x`), which tells figma code that Dark may paint the
  * property otherwise. Each still gives its utility as a state's class does.
  */
 export function classEvidence(tokens: readonly string[], states?: Readonly<Record<string, boolean>>): string[] {
@@ -360,9 +362,9 @@ function utilitiesOf(tokens: readonly string[], states?: Readonly<Record<string,
     found.push({ name: utility, prefixed: cut >= 0, dark: variants.length === 1 && !others.length, alpha });
     if (!others.length || others.length === variants.length) continue;
     // A `dark:` class with a state: the dark theme's where it applies.
-    const on = others.map((v) => states?.[v]);
-    if (on.includes(false)) continue;
-    found.push(on.every((o) => o === true) ? { name: utility, prefixed: true, dark: true, alpha, over: true } : { name: utility, prefixed: true, dark: true, alpha, state: others.join(":") });
+    const on = states?.[token];
+    if (on === false) continue;
+    found.push(on ? { name: utility, prefixed: true, dark: true, alpha, over: true } : { name: utility, prefixed: true, dark: true, alpha, state: others.join(":") });
   }
   return found;
 }
@@ -1113,7 +1115,8 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     applyEffects(node, css, false);
     // Its classes are its host's `after:` ones (or `before:`), which name
     // its tokens: Avatar's ring is `after:border-border`.
-    const cls = classEvidence(pseudoClasses(item.parent?.el?.cls ?? [], p.which), item.parent?.el?.states);
+    const hostStates = Object.entries(item.parent?.el?.states ?? {}).flatMap(([token, on]) => pseudoClasses([token], p.which).map((t): [string, boolean] => [t, on]));
+    const cls = classEvidence(pseudoClasses(item.parent?.el?.cls ?? [], p.which), Object.fromEntries(hostStates));
     if (cls.length) node.cls = cls;
     if (node.t === "T") {
       node.tx = textFacts(p.text ?? {}, css, content, null, item.box, ctx.fonts);

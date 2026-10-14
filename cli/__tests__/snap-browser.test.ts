@@ -1397,18 +1397,51 @@ test("overlaySettledInPage: waits out the animations that end, not one that repe
   }
 });
 
-test("captureTreeInPage: says which states of an element's dark: classes apply to it, where it can tell", () => {
-  const cls = [
-    "bg-muted", "dark:bg-input/30", "dark:data-active:bg-background", "dark:aria-checked:bg-x", "dark:data-[orientation=vertical]:bg-y",
-    "dark:group-data-[state=open]:bg-z", "dark:not-data-active:bg-u", "dark:md:bg-w", "data-[side=top]:bg-v",
-  ].join(" ");
-  const raw = readTree({
-    tag: "div", rect: [0, 0, 200, 40], attrs: { class: "group", "data-state": "open" },
-    kids: [{ tag: "button", rect: [0, 0, 80, 30], attrs: { class: cls, "data-active": "", "aria-checked": "false", "data-orientation": "horizontal" } }],
-  });
-  // A breakpoint (md) it can't tell, and a class without dark: it doesn't ask.
-  assert.deepEqual((raw.root.kids[0] as RawTreeElement).states, {
-    "data-active": true, "aria-checked": false, "data-[orientation=vertical]": false, "group-data-[state=open]": true, "not-data-active": false,
-  });
-  assert.equal(raw.root.states, undefined);
+test("captureTreeInPage: says which of an element's dark: classes with a state apply to it, by the page's own style sheets", () => {
+  // shadcn/ui's Tabs: its data-active variant is [data-state="active"] or [data-active], which only the sheets say.
+  const cls = "dark:text-muted-foreground dark:data-active:text-foreground dark:hover:text-foreground dark:in-focus:bg-x dark:data-active:bg-input/30";
+  const rule = (selectorText: string) => ({ selectorText, style: {} });
+  const sheets = [{ cssRules: [{ name: "utilities", cssRules: [
+    rule(".dark\\:text-muted-foreground:is(.dark *)"),
+    rule('.dark\\:data-active\\:text-foreground:is(.dark *):where([data-state="active"]), .dark\\:data-active\\:text-foreground:is(.dark *):where([data-active]:not([data-active="false"]))'),
+    { media: { mediaText: "(hover: hover)" }, conditionText: "(hover: hover)", cssRules: [rule(".dark\\:hover\\:text-foreground:is(.dark *):hover")] },
+    // Tailwind's /30 nests an @supports for color-mix, which changes only the value.
+    { ...rule('.dark\\:data-active\\:bg-input\\/30:is(.dark *):where([data-state="active"])'), cssRules: [{ conditionText: "(color: color-mix(in lab, red, red))", cssRules: [] }] },
+  ] }] }];
+  const answers: Record<string, (attrs: Record<string, string>) => boolean> = {
+    '*:where([data-state="active"])': (a) => a["data-state"] === "active",
+    '*:where([data-active]:not([data-active="false"]))': (a) => "data-active" in a && a["data-active"] !== "false",
+    "*:hover": () => false,
+  };
+  const scope = globalThis as Record<string, unknown>;
+  const saved = { CSS: scope.CSS, matchMedia: scope.matchMedia };
+  scope.CSS = { escape: (t: string) => t.replace(/[:[\]=/.()!]/g, "\\$&"), supports: () => true };
+  scope.matchMedia = () => ({ matches: true });
+  let proto: Record<string, unknown> | undefined;
+  try {
+    const raw = inFakePage({
+      tag: "div", rect: [0, 0, 200, 40],
+      kids: [
+        { tag: "button", rect: [0, 0, 80, 30], attrs: { class: cls, "data-state": "active" } },
+        { tag: "button", rect: [80, 0, 80, 30], attrs: { class: cls, "data-state": "inactive" } },
+      ],
+    }, (el) => {
+      (document as unknown as { styleSheets: unknown }).styleSheets = sheets;
+      proto = (scope.HTMLElement as { prototype: Record<string, unknown> }).prototype;
+      proto.matches = function (this: { attrs: Record<string, string> }, sel: string) {
+        if (!answers[sel]) throw new Error(`unexpected selector ${sel}`);
+        return answers[sel](this.attrs);
+      };
+      return captureTreeInPage(el, TREE_ARGS);
+    });
+    // No rule says what in-focus means here: left out, for figma code to treat as either.
+    assert.deepEqual(raw.root.kids.map((k) => (k as RawTreeElement).states), [
+      { "dark:data-active:text-foreground": true, "dark:hover:text-foreground": false, "dark:data-active:bg-input/30": true },
+      { "dark:data-active:text-foreground": false, "dark:hover:text-foreground": false, "dark:data-active:bg-input/30": false },
+    ]);
+    assert.equal(raw.root.states, undefined);
+  } finally {
+    Object.assign(scope, saved);
+    if (proto) delete proto.matches;
+  }
 });
