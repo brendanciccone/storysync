@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES, baseDefaults, withoutRepeatedDefault } from "../tokens.js";
 import type { TokenBaseline, TokenExtractionResult } from "../tokens.js";
+import { variablesFromTokens } from "../figma-tokens.js";
 
 function makeProject(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "storysync-test-"));
@@ -1227,7 +1228,11 @@ test("Tailwind: :root's variables are read from a selector list such as `:root, 
         { name: "scrim", value: "hsla(220 20% 12% / 60%)", hex: hex("hsla(220 20% 12% / 60%)") },
       ]],
       ["radius", [{ name: "lg", value: "0.625rem", px: 10 }, { name: "md", value: "calc(0.625rem - 3px)", px: 7 }]],
-      ["typography", [{ name: "tiny", value: "0.6875rem", px: 11 }, { name: "body", value: "0.9375rem", px: 15 }]],
+      // Each size's tuple gives its line height and weight, as `--text-*--line-height` and the like would.
+      ["typography", [
+        { name: "tiny", value: "0.6875rem", px: 11 }, { name: "body", value: "0.9375rem", px: 15 },
+        { name: "font/weight/body", value: "450" }, { name: "leading/tiny", value: "1rem", px: 16 }, { name: "leading/body", value: "1.4rem", px: 22.4 },
+      ]],
     ]);
     assert.ok(!result.warnings.some((w) => w.startsWith("Unresolved:")), result.warnings.join("\n"));
 
@@ -1473,7 +1478,7 @@ export default {
     assert.deepEqual(asJson(result.collections.map((c) => [c.category, c.tokens])), [
       ["colors", [{ name: "brand", value: "#0f62fe", hex: "#0f62fe" }]],
       ["radius", [{ name: "lg", value: "0.75rem", px: 12 }, { name: "md", value: "calc(0.75rem - 2px)", px: 10 }]],
-      ["typography", [{ name: "lead", value: "1.125rem", px: 18 }]],
+      ["typography", [{ name: "lead", value: "1.125rem", px: 18 }, { name: "leading/lead", value: "1.6" }]],
     ]);
     for (const warning of [
       "Skipped dynamic value: colors tint = `${\"#0f62fe\"}33`",
@@ -1814,7 +1819,7 @@ test("Tailwind: a config with no theme storysync reads says so, and a theme expo
   const empty = makeProject({ "tailwind.config.js": `module.exports = { content: [], plugins: [require("some-palette-plugin")] };` });
   try {
     assert.ok(extractTokens(empty).warnings.includes(
-      `Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${join(empty, "tailwind.config.js")}. Tailwind's default theme isn't read, nor what a plugin adds`,
+      `Read no colors, spacing, borderRadius, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing or boxShadow from the theme of ${join(empty, "tailwind.config.js")}. Tailwind's default theme isn't read, nor what a plugin adds`,
     ));
   } finally { cleanup(empty); }
 
@@ -2254,6 +2259,61 @@ test("radius: a DEFAULT that repeats a step in every mode is left out; one that 
   assert.deepEqual(names(withoutRepeatedDefault([{ category: "spacing", tokens: [{ name: "DEFAULT", value: "4px", px: 4 }, { name: "1", value: "4px", px: 4 }] }])), ["DEFAULT", "1"]);
 });
 
+test("Tailwind: a config's font families, weights, line heights and letter spacing are read as a CSS theme's, and push as Figma's family", () => {
+  // coder's config: its fontFamily was skipped, with no warning, so the push
+  // made no font family variable, and each size's line height and weight
+  // went with it.
+  const dir = makeProject({
+    "tailwind.config.js": `module.exports = {
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: \`"Geist Variable", system-ui, sans-serif\`,
+        mono: ["Geist Mono Variable", "monospace"],
+        display: [['"Cal Sans"', "sans-serif"], { fontFeatureSettings: '"ss01"' }],
+      },
+      fontSize: {
+        "2xs": ["0.625rem", "0.875rem"],
+        xs: ["0.75rem", { lineHeight: "1rem", fontWeight: "500", letterSpacing: "0.01em" }],
+        base: "1rem",
+      },
+      fontWeight: { semi: 550 },
+      lineHeight: { snug: "1.375" },
+      letterSpacing: { tight: "-0.025em" },
+    },
+  },
+};`,
+  });
+  try {
+    const result = extractTokens(dir, "tailwind");
+    assert.deepEqual(asJson(result.collections.find((c) => c.category === "typography")!.tokens), [
+      { name: "2xs", value: "0.625rem", px: 10 },
+      { name: "xs", value: "0.75rem", px: 12 },
+      { name: "base", value: "1rem", px: 16 },
+      { name: "font/sans", value: '"Geist Variable", system-ui, sans-serif' },
+      { name: "font/mono", value: "Geist Mono Variable, monospace" },
+      { name: "font/display", value: '"Cal Sans", sans-serif' },
+      { name: "font/weight/semi", value: "550" },
+      { name: "font/weight/xs", value: "500" },
+      { name: "leading/snug", value: "1.375" },
+      { name: "leading/2xs", value: "0.875rem", px: 14 },
+      { name: "leading/xs", value: "1rem", px: 16 },
+      { name: "tracking/tight", value: "-0.025em" },
+      { name: "tracking/xs", value: "0.01em" },
+    ]);
+    assert.ok(!result.warnings.some((w) => /Skipped|Read no/.test(w)), result.warnings.join("\n"));
+    // Pushed, a family is the one Figma has, not the stack, and each size's line height and weight a number.
+    const typography = variablesFromTokens(result).collections.find((c) => c.category === "typography")!;
+    const pushed = Object.fromEntries(typography.variables.map((v) => [v.name, [v.type, v.scopes.join(), v.light]]));
+    assert.deepEqual(pushed["font/sans"], ["STRING", "FONT_FAMILY", "Geist"]);
+    assert.deepEqual(pushed["font/mono"], ["STRING", "FONT_FAMILY", "Geist Mono"]);
+    assert.deepEqual(pushed["font/display"], ["STRING", "FONT_FAMILY", "Cal Sans"]);
+    assert.deepEqual(pushed["font/weight/xs"], ["FLOAT", "FONT_WEIGHT", 500]);
+    assert.deepEqual(pushed["leading/xs"], ["FLOAT", "LINE_HEIGHT", 16]);
+    assert.deepEqual(pushed.xs, ["FLOAT", "FONT_SIZE", 12]);
+  } finally { cleanup(dir); }
+});
+
 /**
  * A project whose tailwindcss is a stand-in for Tailwind 3's loadConfig
  * and resolveConfig, merging presets and extend as Tailwind does, over a
@@ -2270,7 +2330,10 @@ function projectWithTailwind(config: string, files: Record<string, string> = {})
   write("node_modules/tailwindcss/package.json", JSON.stringify({ name: "tailwindcss", version: "3.4.0" }));
   write("node_modules/tailwindcss/loadConfig.js", "module.exports = (path) => require(path);\n");
   write("node_modules/tailwindcss/resolveConfig.js", `
-const defaults = { colors: { black: "#000000" }, borderRadius: { lg: "0.5rem" } };
+const defaults = {
+  colors: { black: "#000000" }, borderRadius: { lg: "0.5rem" },
+  fontFamily: { sans: ["ui-sans-serif", "system-ui", "sans-serif"] }, fontWeight: { medium: "500" }, lineHeight: { tight: "1.25" }, letterSpacing: { wide: "0.025em" },
+};
 module.exports = (config) => {
   const theme = JSON.parse(JSON.stringify(defaults));
   for (const layer of [...(config.presets || []), config]) {
@@ -2300,6 +2363,37 @@ module.exports = withBrand({ content: [], theme: { extend: { colors: { accent: "
     assert.deepEqual(names, ["colors:accent=#abcdef", "colors:brand/DEFAULT=#123456", "colors:brand/fg=#fefefe", "radius:pill=999px"]);
     assert.match(result.warnings[0], /^Loaded .*tailwind\.config\.js as Tailwind does, by running it, since reading it as text left some of it unread/);
     assert.ok(!result.warnings.some((w) => /can't read statically/.test(w)), result.warnings.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tailwind: a config loaded as Tailwind does gives its font families, weights, line heights and letter spacing, less the defaults", () => {
+  const dir = projectWithTailwind(`const fonts = require("./fonts");
+module.exports = { content: [], theme: { extend: {
+  fontFamily: { sans: ["Geist Variable", ...fonts.fallback], mono: '"Geist Mono Variable", monospace' },
+  fontSize: { xs: ["0.75rem", { lineHeight: "1rem", fontWeight: "500" }] },
+  fontWeight: { medium: "500", semi: "550" },
+  lineHeight: { tight: "1.25", roomy: "1.75" },
+  letterSpacing: { wide: "0.025em", snug: "-0.01em" },
+} } };
+`, { "fonts.js": `module.exports = { fallback: ["system-ui", "sans-serif"] };\n` });
+  try {
+    const result = extractTokens(dir, "tailwind");
+    assert.match(result.warnings[0], /^Loaded .*tailwind\.config\.js as Tailwind does/);
+    const names = result.collections.flatMap((c) => c.tokens.map((t) => `${c.category}:${t.name}=${t.value}`)).sort();
+    assert.deepEqual(names, [
+      "typography:font/mono=\"Geist Mono Variable\", monospace",
+      "typography:font/sans=Geist Variable, system-ui, sans-serif",
+      "typography:font/weight/semi=550",
+      "typography:font/weight/xs=500",
+      "typography:leading/roomy=1.75",
+      "typography:leading/xs=1rem",
+      "typography:tracking/snug=-0.01em",
+      "typography:xs=0.75rem",
+    ]);
+    const families = variablesFromTokens(result).collections.flatMap((c) => c.variables).filter((v) => v.type === "STRING");
+    assert.deepEqual(families.map((v) => [v.name, v.light]), [["font/sans", "Geist"], ["font/mono", "Geist Mono"]]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -646,7 +646,7 @@ Storysync detects the token source automatically:
 
 | Source | What it reads |
 |---|---|
-| **Tailwind** | `tailwind.config.ts`, `.js`, `.mjs`, `.cjs`, `.mts` or `.cts` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontSize`, `boxShadow`, and a preset's in a relative file), or Tailwind v4 `@theme` blocks when there's no config |
+| **Tailwind** | `tailwind.config.ts`, `.js`, `.mjs`, `.cjs`, `.mts` or `.cts` (`theme.extend.colors`, `spacing`, `borderRadius`, `fontFamily`, `fontSize` with each size's line height, weight and letter spacing, `fontWeight`, `lineHeight`, `letterSpacing`, `boxShadow`, and a preset's in a relative file), or Tailwind v4 `@theme` blocks when there's no config |
 | **CSS custom properties** | `:root { --color-*; --spacing-*; --radius-*; --font-*; --shadow-* }` in `.css` files, including a selector list such as `:root, .light { }`. A bare `--radius`, `--spacing` or `--shadow` is `DEFAULT`, but a radius `DEFAULT` another radius step repeats, as shadcn/ui's `--radius-lg: var(--radius)` does, is left out. |
 | **Theme files** | `tokens.ts`, `theme.ts` and similar: exported objects with `colors`, `spacing` and so on |
 
@@ -661,7 +661,7 @@ Detection takes the first of these a project has:
 
 The last two come last so a project keeps the source its baseline was written from. Pass `--source tailwind`, `css` or `theme` to choose one.
 
-Categories are **colors**, **spacing**, **typography**, **radius** and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read.
+Categories are **colors**, **spacing**, **typography**, **radius** and **shadows**. Tokens are listed in the order their source declares them, and commented-out tokens are skipped. A Tailwind config's typography is named as a v4 theme's (below): each `fontFamily` is `font/sans`, each `fontWeight` `font/weight/medium`, each `lineHeight` `leading/tight` and each `letterSpacing` `tracking/wide`, while a `fontSize` keeps its own name, `sm`, and the line height, weight and letter spacing its tuple gives are `leading/sm`, `font/weight/sm` and `tracking/sm`. The push sets a family in the font Figma has for it, the first real family of the stack: `Geist` for `"Geist Variable", system-ui, sans-serif`. Stylesheets in `storybook-static`, `out`, `coverage`, `dist`, `build`, `.next` and `node_modules` are built or installed files, and aren't read.
 
 ### Values
 

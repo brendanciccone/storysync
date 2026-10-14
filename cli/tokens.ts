@@ -669,7 +669,7 @@ function extractFromTailwind(configPath: string, projectRoot?: string, darkFiles
   }
   if (!collections.length && whole) {
     const plugins = /\bplugins\s*:\s*\[\s*[^\]\s]/.test(content) ? ", nor what a plugin adds" : "";
-    warnings.push(`Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${configPath}. Tailwind's default theme isn't read${plugins}`);
+    warnings.push(`Read no colors, spacing, borderRadius, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing or boxShadow from the theme of ${configPath}. Tailwind's default theme isn't read${plugins}`);
   }
 
   // Resolve any `var(--name)` refs in token values against the project's :root CSS vars.
@@ -829,9 +829,11 @@ function themeCollections(themeBlocks: ThemeBlocks, warnings: string[]): TokenCo
 
 const CATEGORY_ORDER: TokenCategory[] = ["colors", "spacing", "radius", "typography", "shadows"];
 
-/** The theme key each category is read from. */
+/** The theme keys each category is read from. */
 const CATEGORY_KEYS: [TokenCategory, string][] = [
-  ["colors", "colors"], ["spacing", "spacing"], ["radius", "borderRadius"], ["typography", "fontSize"], ["shadows", "boxShadow"],
+  ["colors", "colors"], ["spacing", "spacing"], ["radius", "borderRadius"],
+  ["typography", "fontSize"], ["typography", "fontFamily"], ["typography", "fontWeight"], ["typography", "lineHeight"], ["typography", "letterSpacing"],
+  ["shadows", "boxShadow"],
 ];
 
 /**
@@ -1534,32 +1536,103 @@ function extractTailwindFlat(blocks: ThemeBlocks, key: string, warnings: string[
   return tokens;
 }
 
-function extractTailwindTypography(blocks: ThemeBlocks, warnings: string[]): TokenValue[] {
-  const tokens: TokenValue[] = [];
-  for (const block of [blocks.extend, blocks.root]) {
-    if (!block) continue;
-    const propBlock = findPropertyBlock(block, "fontSize");
-    if (!propBlock) continue;
-
-    // fontSize can be { sm: '0.875rem' } or { sm: ['0.875rem', { lineHeight: '1.25rem' }] }
-    const pairs = extractKeyValuePairs(propBlock);
-    for (const [name, value] of pairs) {
-      // A size in a template literal, alone or first in its array.
-      const literal = /^\[?\s*(`[^`]*`)/.exec(value);
-      if (literal) {
-        const size = templateString(literal[1]);
-        if (size === null) warnings.push(`Skipped dynamic value: fontSize ${name} = ${literal[1]}`);
-        else tokens.push({ name, value: size });
-        continue;
-      }
-      // Handle array values - take just the size
-      const sizeMatch = value.match(/^\[?\s*['"]?([^'"[\],]+)/);
-      const resolved = sizeMatch ? sizeMatch[1].trim() : value;
-      tokens.push({ name, value: resolved });
+/**
+ * A JS string literal's text, '...', "..." or `...` without `${}`, or a
+ * bare number, as a weight's `500`; null for anything the config works
+ * out when it runs, as a name it imports.
+ */
+function literalValue(src: string): string | null {
+  const s = src.trim();
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)[a-z%]*$/i.test(s)) return s;
+  const q = s[0];
+  if (s.length < 2 || !(q === "'" || q === '"' || q === "`") || s[s.length - 1] !== q) return null;
+  if (q === "`") return templateString(s);
+  if (q === '"') {
+    try {
+      return (JSON.parse(s) as string).trim();
+    } catch {
+      // Not JSON: unescaped below, as a single-quoted string is.
     }
-    if (tokens.length) break;
   }
-  return tokens;
+  return s.slice(1, -1).replace(/\\(.)/g, "$1").trim();
+}
+
+/**
+ * A config's fontFamily value as the stack Tailwind writes in CSS: a
+ * string as it is, an array's families joined with `, `, and a tuple's,
+ * `[stack, { fontFeatureSettings }]`, its stack. Null where the config
+ * works it out when it runs.
+ */
+function fontStack(value: string): string | null {
+  const v = value.trim();
+  if (!v.startsWith("[")) return literalValue(v);
+  const items = splitTopLevel(v.slice(1, -1), ",").map((item) => item.trim()).filter(Boolean);
+  if (items.length === 2 && items[1].startsWith("{")) return fontStack(items[0]);
+  const families = items.map(literalValue);
+  return families.every((f): f is string => f !== null && f !== "") ? families.join(", ") : null;
+}
+
+/**
+ * The typography of a Tailwind config's theme, named as Tailwind v4's
+ * theme variables are (THEME_NAMESPACES), so a JS config's tokens push as
+ * a CSS theme's do: each fontFamily a stack, `font/sans`, which the push
+ * sets in Figma's family for it; each fontWeight `font/weight/medium`,
+ * lineHeight `leading/tight` and letterSpacing `tracking/wide`; and each
+ * fontSize by its own name, `sm`, as storysync always named it. A size's
+ * tuple, `sm: ["0.875rem", { lineHeight: "1.25rem", fontWeight: "500" }]`
+ * or `["0.625rem", "0.875rem"]`, gives `leading/sm`, `font/weight/sm` and
+ * `tracking/sm`, unless the theme's own key names one so. Each key is
+ * read from `theme.extend`, or from `theme` where extend has none.
+ */
+function extractTailwindTypography(blocks: ThemeBlocks, warnings: string[]): TokenValue[] {
+  const pairsOf = (key: string): [string, string][] => {
+    for (const block of [blocks.extend, blocks.root]) {
+      const prop = block ? findPropertyBlock(block, key) : null;
+      const pairs = prop ? extractKeyValuePairs(prop) : [];
+      if (pairs.length) return pairs;
+    }
+    return [];
+  };
+  const skipped = (key: string, name: string, value: string) => warnings.push(`Skipped dynamic value: ${key} ${name} = ${value.trim()}`);
+  const families: TokenValue[] = [];
+  for (const [name, value] of pairsOf("fontFamily")) {
+    const stack = fontStack(value);
+    if (stack) families.push({ name: `font/${name}`, value: stack });
+    else skipped("fontFamily", name, value);
+  }
+  const sizes: TokenValue[] = [];
+  const paired: Record<string, TokenValue[]> = { fontWeight: [], lineHeight: [], letterSpacing: [] };
+  for (const [name, value] of pairsOf("fontSize")) {
+    const v = value.trim();
+    const items = v.startsWith("[") ? splitTopLevel(v.slice(1, -1), ",").map((item) => item.trim()).filter(Boolean) : [v];
+    const size = items[0] === undefined ? null : literalValue(items[0]);
+    if (size === null) {
+      skipped("fontSize", name, value);
+      continue;
+    }
+    sizes.push({ name, value: size });
+    const second = items[1];
+    if (!second) continue;
+    // Its line height alone, or an object of line height, weight and letter spacing.
+    const options: [string, string][] = second.startsWith("{") ? extractKeyValuePairs(second.slice(1, -1)) : [["lineHeight", second]];
+    for (const [key, option] of options) {
+      if (!paired[key]) continue;
+      const read = literalValue(option);
+      if (read === null) skipped(`fontSize ${name}`, key, option);
+      else paired[key].push({ name, value: read });
+    }
+  }
+  const named = (key: string, prefix: string): TokenValue[] => {
+    const own: TokenValue[] = [];
+    for (const [name, value] of pairsOf(key)) {
+      const read = literalValue(value);
+      if (read === null) skipped(key, name, value);
+      else own.push({ name: `${prefix}/${name}`, value: read });
+    }
+    const names = new Set(own.map((t) => t.name));
+    return [...own, ...paired[key].map((t) => ({ name: `${prefix}/${t.name}`, value: t.value })).filter((t) => !names.has(t.name))];
+  };
+  return [...sizes, ...families, ...named("fontWeight", "font/weight"), ...named("lineHeight", "leading"), ...named("letterSpacing", "tracking")];
 }
 
 function findPropertyBlock(block: string, key: string): string | null {
@@ -1661,7 +1734,9 @@ function extractKeyValuePairs(block: string): [string, string][] {
       while (i < block.length) {
         const ch = block[i];
         if (inQuote) {
-          if (ch === inQuote) inQuote = null;
+          // An escaped quote, as `"\"Geist Variable\", system-ui"` from a resolved theme, closes nothing.
+          if (ch === "\\") i++;
+          else if (ch === inQuote) inQuote = null;
         } else if (ch === "'" || ch === '"' || ch === "`") {
           inQuote = ch;
         } else if (ch === "(") {
