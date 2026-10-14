@@ -639,7 +639,7 @@ test("integrity: parts that say the wrong count, total or first node are parts_m
 });
 
 test("integrity: a record of the wrong length is incomplete", async () => {
-  const cut = READBACK_TEMPLATE.replace("n.opacity, n.blendMode, n.clipsContent ? 1 : 0, ...tail.slice(1)];", "n.opacity, n.blendMode, ...tail.slice(1)];");
+  const cut = READBACK_TEMPLATE.replace("n.opacity, n.blendMode, n.clipsContent && !/c/.test(rc) ? 1 : 0, ...tail.slice(1)];", "n.opacity, n.blendMode, ...tail.slice(1)];");
   assert.notEqual(cut, READBACK_TEMPLATE);
   const figma = newFigma();
   const fixture = loadTreeFixture("switch");

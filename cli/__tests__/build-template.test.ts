@@ -12,6 +12,7 @@ import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAss
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildTree } from "../snap-tree.js";
+import { readBack } from "./tree-harness.js";
 import type { RawTreeCapture, RawTreeItem } from "../snap-tree.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
@@ -966,6 +967,8 @@ test("spike item 1: icons import at their measured size, as Figma scales their s
 test("spike item 2: a shadow's spread Figma refuses on a frame that doesn't clip is left out, and said", async () => {
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#0a0a0a1a", inset: false }];
+  // A thumb whose shadow draws past the root, which figma code then can't clip for the spread (spreadDrawn).
+  fixture.components[0].tree.base.find((n) => n.k !== "")!.sh = [[0, 0, 8, 0, "#0000001a"]];
   const { mock, results } = await buildAll(fixture, { shadowSpread: "refuse" });
   // Once for the root, in both variants.
   assert.equal(results[0].fallbacks.length, 1);
@@ -1594,4 +1597,34 @@ test("build: a variant copied from one with auto layout and strokes included, bu
   for (const variant of fixtureVariants(fixture)) {
     assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
   }
+});
+
+test("build: a ring on a frame without a fill clips the frame and gives it a fill that draws nothing, so Figma draws it; the readback reads the frame as measured", async () => {
+  // coder's ConfirmDialog Cancel button: a 1px border, no background, and
+  // a focus ring (box-shadow 0 0 0 2px #61a6fa), which Figma drew nowhere:
+  // it draws a spread only on a frame that clips and has a fill (probe 8a).
+  const tree = (labelX: number): TreeNode[] => [
+    { k: "", t: "F", el: "div", box: [0, 0, 120, 60], L: { d: "block" } },
+    { k: "button", t: "F", el: "button", box: [20, 10, 80, 40], bd: { w: 1, s: "solid", c: "#27272a" }, r: 6, sh: [[0, 0, 0, 2, "#61a6fa"]], L: { d: "block" } },
+    { k: "button/#text", t: "T", el: "#text", box: [labelX, 10, 50, 20], tx: { c: "Cancel", f: "Inter", sz: 14, wt: 500, col: "#fafafa", lh: 20, n: 1, ink: [0, 1.5, 50, 17] } },
+  ];
+  const ring = synthetic("Ring", tree(15), { width: 120, height: 60, display: "block" });
+  const { mock, runs } = await buildAll(ring);
+  const root = variantsBySlug(mock).get("default")!;
+  const button = mock.handle(keyed(root, "button")!.id) as { clipsContent: boolean; fills: { type: string; blendMode: string; color: object }[]; effects: { spread: number }[] };
+  assert.equal(button.clipsContent, true);
+  assert.deepEqual(button.fills.map((p) => [p.type, p.blendMode, p.color]), [["SOLID", "MULTIPLY", { r: 1, g: 1, b: 1 }]]);
+  assert.equal(button.effects[0].spread, 2);
+  assert.equal(keyed(root, "button")!.data["storysync.rc"], "cf");
+  const [read] = await readBack(mock, [[ring.components[0].id!, 0, 1, 0]], { page: result(runs[0]).page });
+  const find = (v: unknown): unknown[] | undefined => (Array.isArray(v) ? (v[0] === "button" && v[1] === "F" ? v : v.map(find).find(Boolean))
+    : v && typeof v === "object" ? Object.values(v).map(find).find(Boolean) : undefined);
+  const record = find(read)!;
+  // Its fills, and its clip, as the browser drew it: none.
+  assert.deepEqual([record[6], record[12]], [[], 0]);
+  // A label past the button: clipping it would cut it, so no clip, and said.
+  const spill = synthetic("Spill", tree(60), { width: 120, height: 60, display: "block" });
+  const spilled = await buildAll(spill);
+  assert.equal((spilled.mock.handle(keyed(variantsBySlug(spilled.mock).get("default")!, "button")!.id) as { clipsContent: boolean }).clipsContent, false);
+  assert.ok(spilled.coded.warnings.some((w) => /spread on a frame whose content draws past it/.test(w)), spilled.coded.warnings.join("\n"));
 });

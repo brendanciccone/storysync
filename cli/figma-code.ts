@@ -36,7 +36,7 @@ import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { alphaCalls } from "./figma-tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
-import { expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
+import { absoluteBoxes, expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
 import type { Box, ComponentTree, FigmaPlan, PlanAlpha, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
@@ -237,6 +237,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
+  spreadDrawn(full, styleOf, findings.notBuilt);
 
   const plans = new Map<string, LayoutPlan>();
   for (const node of full) {
@@ -268,6 +269,44 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
     }
   }
   return { full, digest, byKey, kids, frameBox, styleOf, plans };
+}
+
+/**
+ * Figma draws a shadow's spread, a ring's whole width, only on a frame that
+ * clips its content and has a visible fill (its Plugin API; probe 8a saw a
+ * ring on a frame without either draw nothing): the build clips a frame
+ * whose shadow spreads, where its content draws inside it, so clipping cuts
+ * nothing the browser drew, and gives one without a fill a white fill
+ * multiplied, which leaves what is behind it as it was and lets the ring
+ * draw (probe 8a, call 2). `rc` says which it added, `c` the clip and `f`
+ * the fill, and the readback reads the frame without them. Where content
+ * draws past the frame, the shadow is built without its spread, and said.
+ */
+function spreadDrawn(nodes: TreeNode[], styleOf: Map<string, FigmaStyle>, notBuilt: NotBuilt[]): void {
+  const abs = absoluteBoxes(nodes);
+  for (const node of nodes) {
+    const style = styleOf.get(node.k)!;
+    if (node.t !== "F" || !style.e?.some((e) => e.length > 2 && e[4] !== 0)) continue;
+    let rc = "";
+    if (!style.c) {
+      const [t, r, b, l] = outsideInsets(node);
+      const [x, y, w, h] = abs.get(node.k)!;
+      const inside = nodes.every((n) => {
+        if (n.vis === 0 || !(node.k === "" ? n.k !== "" : n.k.startsWith(`${node.k}/`))) return true;
+        const reach = Math.max(0, ...(n.sh ?? []).filter((s) => !s[5]).map(([sx, sy, blur, spread]) => Math.max(Math.abs(sx), Math.abs(sy)) + blur + Math.max(0, spread)), n.ol ? n.ol[0] + n.ol[3] : 0);
+        const [nx, ny, nw, nh] = abs.get(n.k)!;
+        return nx - reach >= x + l - 0.5 && ny - reach >= y + t - 0.5 && nx + nw + reach <= x + w - r + 0.5 && ny + nh + reach <= y + h - b + 0.5;
+      });
+      if (!inside) {
+        notBuilt.push({ key: node.k, what: "a shadow's spread on a frame whose content draws past it", as: "the shadow without its spread, which Figma draws only on a frame that clips" });
+        continue;
+      }
+      style.c = 1;
+      rc += "c";
+    }
+    if (!style.f?.length) rc += "f";
+    if (rc) style.rc = rc;
+  }
 }
 
 /**

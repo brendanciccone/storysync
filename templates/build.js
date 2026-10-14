@@ -342,7 +342,10 @@ const style = async (n, rec, parent, root) => {
       // No longer an image: the images call must not fill it.
       if (get(n, 'img')) put(n, 'img', '');
       await setPaints(n, 'fills', st.f || [], 'fill');
+      // A fill that draws nothing, for a ring (`rc`, figma-code spreadDrawn).
+      if (/f/.test(st.rc || '')) n.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, blendMode: 'MULTIPLY' }];
     }
+    if (st.rc || get(n, 'rc')) put(n, 'rc', st.rc || '');
     const s = st.s;
     if (s) {
       await setPaints(n, 'strokes', [s.p], 'stroke');

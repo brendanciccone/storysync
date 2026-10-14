@@ -103,6 +103,8 @@ export interface FigmaStyle {
   a?: 1;
   /** Figma's rotation, counterclockwise in degrees: the node's turn (tree-types builtTurn), the other way round. */
   rt?: number;
+  /** What the build adds only so Figma draws a shadow's spread: `c` the clip, `f` a white fill multiplied (figma-code, spreadDrawn). */
+  rc?: string;
 }
 
 /** Something a fact asked for that the build does not draw, by node key, and what it draws instead, if anything. */
