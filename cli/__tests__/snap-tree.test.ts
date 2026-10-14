@@ -806,6 +806,13 @@ test("buildTree: the custom properties behind a box's or a text's color go in it
   assert.deepEqual(nodes.get("div")!.cls, ["var:text-normal-text", "var:text-popover-foreground"]);
 });
 
+test("buildTree: a rule's literal color and the dark theme's go in a text's cls by their hex, and one no color reads is left out", () => {
+  // Sonner's description: #3f3f3f, and hsl(0, 0%, 91%) under its dark theme.
+  const description = el("div", [16, 36, 200, 20], {}, [run("Sunday, December 03", [[16, 37.5, 140, 17]])], { text: TEXT, vars: ["dark:text-[hsl(0,_0%,_91%)]", "text-[#3f3f3f]", "bg-[no-color]"] });
+  const nodes = byKey(buildTree(tree(el("li", [0, 0, 360, 60], { display: "flex" }, [description]))).nodes);
+  assert.deepEqual(nodes.get("div")!.cls, ["var:dark:text-[#e8e8e8]", "var:text-[#3f3f3f]"]);
+});
+
 test("buildTree: nocls says what no class colors: a text with no color class up the DOM, a border none of its own colors", () => {
   const BORDERED = { ...BORDER, "border-top-style": "solid", "border-right-style": "solid", "border-bottom-style": "solid", "border-left-style": "solid" };
   const text = (cls: string[] = [], css: Record<string, string> = {}) => el("p", [0, 0, 200, 20], css, [run("Text", [[0, 1.5, 40, 17]])], { text: TEXT, cls });

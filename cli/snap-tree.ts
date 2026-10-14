@@ -28,6 +28,7 @@ import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
 import { ROOT_FIELDS, TREE_LIMITS, utilitySetsColor } from "./tree-types.js";
 import { canonicalJson } from "./checksum.js";
+import { colorToHex } from "./color.js";
 import type { Box, NoClassPaint, Shadow, Sides, TextFacts, TreeLayout, TreeNode, TreeSelf } from "./tree-types.js";
 
 // --- What the page reads ------------------------------------------------------
@@ -1055,11 +1056,20 @@ interface Ctx {
  * found sets no color (`text-body`) is no longer in `cls` to stop the walk.
  */
 /**
- * An element's custom-property evidence as `cls` writes it, `var:bg-popover`
- * (figma-bind.ts, readEvidence), those of a prefix alone where given.
+ * An element's custom-property and rule evidence as `cls` writes it,
+ * `var:bg-popover` (figma-bind.ts, readEvidence), those of a prefix alone
+ * where given, the dark theme's (`dark:`) too. A rule's literal color,
+ * `text-[hsl(0,_0%,_91%)]`, is written by its hex, `text-[#e8e8e8]`, and
+ * left out where it is no color this reads.
  */
 function varEvidence(vars: readonly string[] | undefined, prefix = ""): string[] {
-  return (vars ?? []).filter((v) => v.startsWith(prefix)).map((v) => `var:${v}`);
+  return (vars ?? []).flatMap((v) => {
+    const m = /^(dark:)?([a-z]+-)\[(.*)\]$/.exec(v);
+    if (!(m ? m[2] : v.replace(/^dark:/, "")).startsWith(prefix)) return [];
+    if (!m) return [`var:${v}`];
+    const hex = colorToHex(m[3].replace(/_/g, " "));
+    return hex ? [`var:${m[1] ?? ""}${m[2]}[${hex}]`] : [];
+  });
 }
 
 function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; set: boolean } {
