@@ -622,7 +622,7 @@ test("images: an upload fills the node; its hash is the bytes' SHA-1 and its byt
   assert.deepEqual(imageSize(Uint8Array.from(png)), { width: 2, height: 3 });
 });
 
-test("variables: a paint bound afresh takes the variable's alpha as its opacity; rebound, it keeps its own", async () => {
+test("variables: a paint bound afresh takes the variable's color and alpha; rebound, it keeps the color and opacity it is given, as probe 7c's call 3 saw", async () => {
   const figma = new MockFigma();
   const { id } = figma.addVariable("destructive", "COLOR", "#df22254d");
   const radius = figma.addVariable("radius/lg", "FLOAT", 10);
@@ -639,7 +639,7 @@ test("variables: a paint bound afresh takes the variable's alpha as its opacity;
       fresh: Math.round(fresh * 1000) / 1000, again, color: f.fills[0].color.r > 0.87,
       radius: f.topLeftRadius, bound: f.boundVariables.topLeftRadius.id, names: locals.map((l) => l.name),
     };`);
-  assert.deepEqual(result, { fresh: 0.302, again: 1, color: true, radius: 10, bound: radius.id, names: ["destructive"] });
+  assert.deepEqual(result, { fresh: 0.302, again: 1, color: false, radius: 10, bound: radius.id, names: ["destructive"] });
 });
 
 test("variables: a ring bound at its own alpha keeps it in the mode it was bound in, and takes its variable's at a mode switch, as probe 7b saw", async () => {
@@ -826,6 +826,27 @@ test("variables: a fill, stroke and ring bound to a variable that carries their 
       for (const [when, read] of Object.entries(reads)) assert.deepEqual(seen(read), seen(probe[call].nodes[node][when]), `${call} ${node} ${when}`);
     }
   }
+});
+
+test("variables: bound again in a frame set to Dark, a paint keeps what it is given unless cleared first, and one moved into another mode is resolved there, as probe 7c's calls 3 and 4 saw", async () => {
+  // The probe's own scripts, run in the mock as they ran in Figma, but for
+  // the SVG export, which the mock has none of.
+  type Calls = { call3: Record<string, unknown> & { nodes: Record<string, Record<string, unknown>> }; call4: { nodes: Record<string, Record<string, unknown>> } };
+  const probe = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-7c-rebind.json`, "utf8")) as Calls;
+  const figma = new MockFigma();
+  for (const [name, light, dark] of [["destructive", "#df2225", "#ff6467"], ["destructive 10%", "#df22251a", "#ff64671a"], ["destructive 30%", "#df22254d", "#ff64674d"], ["border", "#e5e5e5", "#ffffff1a"]]) {
+    figma.addVariable(name, "COLOR", { Light: light, Dark: dark }, "Colors");
+  }
+  await ok(figma, "const p = figma.createPage(); p.name = 'storysync probe 7c';");
+  const script = (name: string) => readFileSync(`${ROOT}spikes/${name}`, "utf8").replace(/await svg\(\w+\)/g, "null");
+  const call3 = await ok(figma, script("figma-probe-7c-rebind.js")) as Calls["call3"];
+  const call4 = await ok(figma, script("figma-probe-7c-rebind-again.js")) as Calls["call4"];
+  const names = (n: Record<string, unknown>) => ({ ...n, made: { ...(n.made as object), id: undefined, created: undefined } });
+  assert.deepEqual(names(call3.names as Record<string, unknown>), names(probe.call3.names as Record<string, unknown>));
+  assert.deepEqual(call3.resolved, probe.call3.resolved);
+  const reads = (nodes: Record<string, Record<string, unknown>>) => Object.fromEntries(Object.entries(nodes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([when]) => !/Svg$/.test(when)))]));
+  assert.deepEqual(reads(call3.nodes), reads(probe.call3.nodes));
+  assert.deepEqual(reads(call4.nodes), reads(probe.call4.nodes));
 });
 
 // --- The 0.4.0 skill templates, unchanged -----------------------------------------------
