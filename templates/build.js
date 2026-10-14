@@ -129,20 +129,20 @@ const rgba = (hex) => Object.assign(rgb(hex), { a: hex.length > 7 ? parseInt(hex
 // alpha as its opacity, a shadow its variable's alpha (probe 7b). So a
 // translucent paint of an opaque token names the token's alpha variable,
 // `destructive 10%`, which carries the alpha in each mode, and the token
-// too (cli/figma-map.ts). Where the file has no such variable, as before
-// `storysync figma tokens` has read the plan, a paint binds the token at
-// its own opacity, as builds before this did, which a mode switch resets
-// to 1, and a shadow is left unbound, at its own alpha: each said in
-// `fallbacks`.
+// too (cli/figma-map.ts). Where the file has no such variable, as a plan
+// sent without its first call, a paint binds the token at its own
+// opacity, as builds before this did, which a mode switch resets to 1, and
+// a shadow is left unbound, at its own alpha: each said in `fallbacks`.
 const colorVariable = async (name, token, property, shadow) => {
   if (!token) return name ? variable('COLOR', name, property) : null;
   const list = VARS['COLOR' + name] || [];
   if (list.length === 1) return list[0];
-  fallback((list.length ? list.length + ' variables named ' : 'no variable ') + name, (shadow ? 'shadow left unbound' : 'bound to ' + token + ' at its opacity') + ': run storysync figma tokens');
+  fallback((list.length ? list.length + ' alpha variables named ' : 'no alpha variable ') + name, shadow ? 'shadow unbound' : 'bound to ' + token + ' at its opacity');
   return shadow ? null : variable('COLOR', token, property);
 };
-// The paints bound to a variable that carries their opacity, which isn't put back.
-const carried = new Set();
+// The paints bound to a token in place of their missing alpha variable,
+// whose opacity is put back.
+const fellBack = new Set();
 // A paint from a style's: '#rrggbb', [hex, opacity, variable?, token?], or a gradient.
 const paint = async (p, property) => {
   if (p.g) {
@@ -153,22 +153,28 @@ const paint = async (p, property) => {
   const v = await colorVariable(name, token, property);
   if (!v) return out;
   const bound = figma.variables.setBoundVariableForPaint(out, 'color', v);
-  if (token && v.name === name) carried.add(bound);
+  if (token && v.name !== name) fellBack.add(bound);
   return bound;
 };
-// Sets fills or strokes. Figma gives a paint freshly bound to a variable the
-// variable's alpha as its opacity: assigning them once more, bound as they
-// now are, puts each paint's own opacity back, but for one whose alpha
-// variable holds it, which keeps it at a mode switch.
+// Sets fills or strokes. A paint bound to the variable it was bound to
+// before keeps the color and opacity it is assigned, the light theme's as
+// measured, where its node is in Dark mode too; one freshly bound takes its
+// variable's color and alpha in the mode its node is in (probe 7c, call
+// 3). So the paints are cleared first, and each binds afresh: Figma gives
+// each the value a mode switch would. Only a paint bound to a token in
+// place of its missing alpha variable is assigned once more, bound as it
+// now is, with its own opacity put back, which it keeps.
 const setPaints = async (n, key, list, property) => {
   const paints = [];
   for (const p of list) paints.push(await paint(p, property));
+  if (paints.some((p) => p.boundVariables)) n[key] = [];
   n[key] = paints;
-  if (paints.some((p) => p.boundVariables && !carried.has(p))) n[key] = n[key].map((p, i) => (carried.has(paints[i]) ? p : Object.assign({}, p, { opacity: paints[i].opacity })));
+  if (paints.some((p) => fellBack.has(p))) n[key] = n[key].map((p, i) => (fellBack.has(paints[i]) ? Object.assign({}, p, { opacity: paints[i].opacity }) : p));
 };
 // An effect from a style's: a blur, or a shadow, its color bound where it
 // names a variable (e[7]), the alpha variable of the token e[8] where it
-// is translucent, from which a freshly bound shadow takes its alpha.
+// is translucent, from which a freshly bound shadow takes its color and
+// alpha, as a paint does.
 const effect = async (e) => {
   if (e.length === 2) return { type: e[0] === 'L' ? 'LAYER_BLUR' : 'BACKGROUND_BLUR', radius: e[1], visible: true };
   const out = Object.assign({ type: e[0] === 'I' ? 'INNER_SHADOW' : 'DROP_SHADOW', color: Object.assign(rgb(e[5]), { a: e[6] }), offset: { x: e[1], y: e[2] }, radius: e[3], spread: e[4], visible: true, blendMode: 'NORMAL' }, e[0] === 'D' ? { showShadowBehindNode: false } : {});
@@ -279,6 +285,9 @@ const style = async (n, rec, parent, root) => {
   n.blendMode = st.b || (isFrame(n) && kind !== 'T' ? 'PASS_THROUGH' : 'NORMAL');
   const fx = [];
   for (const e of st.e || []) fx.push(await effect(e));
+  // Cleared first, as paints are, so each bound shadow takes its
+  // variable's value in the mode the node is in.
+  if (fx.some((f) => f.boundVariables)) n.effects = [];
   try {
     n.effects = fx;
   } catch (e) {
@@ -676,6 +685,11 @@ for (const [s, set] of DATA.sets.entries()) {
       } else if (!variant) {
         variant = figma.createComponent();
         variant.fills = [];
+        // Built in its set, in the mode a designer left the set in: moved
+        // there once built, it would be resolved again in that mode, and a
+        // paint bound in place of a missing alpha variable lose its opacity
+        // (probe 7c, call 4).
+        if (node && want === 'COMPONENT_SET') node.appendChild(variant);
         created.push(variant);
       } else if (!get(variant, 'tpl')) {
         // Built by 0.4.0: its label and icon frames are replaced by keyed layers.
