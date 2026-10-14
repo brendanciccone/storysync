@@ -1010,7 +1010,9 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       // (the Cursor rule, which has no template, by assigning it twice).
       assert.match(text, /`text-primary-foreground` (?:is|as) `primary\/foreground`/, `${path} names a variable tokens never creates`);
       assert.doesNotMatch(text, /is `primary-foreground`/, `${path} names a variable tokens never creates`);
-      assert.match(text, /opacity modifier[^\n]*bind it to (?:its variable, )?`destructive`,? with the paint's opacity at its alpha/, `${path} loses a translucent paint's alpha, or leaves it unbound`);
+      // Bound to destructive at its opacity, a mode switch makes it opaque
+      // (probe 7b): it binds to its alpha variable, made with --alpha.
+      assert.match(text, /opacity modifier[^\n]*bind it to `destructive 30%`, (?:the alpha variable|its alpha variable)[^\n]*figma tokens --alpha "destructive 30%"/, `${path} loses a translucent paint's alpha, or leaves it unbound`);
       assert.doesNotMatch(text, /leave that paint unbound|reads back opaque/, `${path} still leaves an opacity-modified class unbound`);
     }
   } finally {

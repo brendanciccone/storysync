@@ -490,15 +490,26 @@ test("skills: every skill and the push command send the calls figma tokens write
   }
 });
 
-test("skills: every skill, the push command and the reference run figma tokens again after figma code for its alpha variables, and say a bound translucent paint keeps its alpha only through one", () => {
+test("skills: every skill, the push command and the reference send the plan's variables call first for its alpha variables, name the dark theme's own, make a root-only push's with --alpha, and say a bound paint takes its variable's Dark color and alpha", () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
   for (const file of ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md", "docs/reference.md"]) {
     const text = readFileSync(join(root, file), "utf8");
     assert.match(text, /destructive 10%/, file);
+    assert.match(text, /destructive 10% dark 20%/, file);
     assert.match(text, /figma tokens wrote/, file);
+    assert.match(text, /figma next wrote/, file);
+    assert.match(text, /`variables` call/, file);
+    // No second run of figma tokens for a plan's alpha variables: the plan's first call makes them.
+    assert.doesNotMatch(text, /run `npx storysync figma tokens` again|So run it again after `figma code`|Before a plan exists it says so/, file);
     // The claims probe 7c disproved: a bound variable simply taking its Dark value, and shadows left unbound.
-    assert.doesNotMatch(text, /takes its `?Dark`? value wherever a designer switches a frame to the Dark mode\. /, file);
+    assert.doesNotMatch(text, /A (?:bound )?variable (?:bound this way )?takes its `?Dark`? value wherever/, file);
     assert.doesNotMatch(text, /Shadows stay unbound|Shadow colors stay unbound/, file);
-    if (file !== "docs/reference.md") assert.match(text, /Translucent paints bind to N alpha variables/, file);
+    assert.match(text, /color and (?:its )?alpha|its color, and its alpha/, file);
+    if (file !== "commands/storysync-push.md") assert.match(text, /--alpha/, file);
+    if (file !== "docs/reference.md") {
+      assert.match(text, /Translucent paints bind to N alpha variables/, file);
+      assert.match(text, /Bound without their alpha variable/, file);
+      assert.match(text, /no alpha variable/, file);
+    }
   }
 });

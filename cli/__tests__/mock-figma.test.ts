@@ -877,6 +877,45 @@ function withConstants(code: string, values: Record<string, unknown>): string {
 }
 const table = (name: string, open: string, close: string) => new RegExp(`const ${name} = \\${open}[\\s\\S]*?\\n\\s*\\${close};`);
 
+test("templates: the root-only build's setPaints binds each paint afresh, so a set left in Dark shows Dark's color and alpha, keeps an alpha variable's alpha, and puts back the opacity only of one bound to a token", async () => {
+  const build = skillBlocks().find((b) => b.code.includes("const setPaints = "))!.code;
+  const setPaints = /\n\s*const lightAlpha = [\s\S]*?\n\s*const setPaints = [\s\S]*?\n\s*\};/.exec(build);
+  assert.ok(setPaints, "the root-only template defines lightAlpha and setPaints");
+  const figma = new MockFigma();
+  figma.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#ffffff1a" }, "Colors");
+  figma.addVariable("destructive", "COLOR", { Light: "#df2225", Dark: "#ff6467" }, "Colors");
+  figma.addVariable("destructive 10% dark 20%", "COLOR", { Light: "#df22251a", Dark: "#ff646733" }, "Colors");
+  const got = await ok(figma, `${setPaints![0]}
+    const vars = Object.fromEntries((await figma.variables.getLocalVariablesAsync()).map((v) => [v.name, v]));
+    const col = await figma.variables.getVariableCollectionByIdAsync(vars.border.variableCollectionId);
+    const [light, dark] = col.modes;
+    const set = figma.createFrame();
+    const n = figma.createFrame();
+    set.appendChild(n);
+    const red = { r: 223 / 255, g: 34 / 255, b: 37 / 255 };
+    const style = () => {
+      setPaints(n, 'fills', [{ type: 'SOLID', color: red, opacity: 26 / 255, variable: vars['destructive 10% dark 20%'] }, { type: 'SOLID', color: red, opacity: 77 / 255, variable: vars.destructive }]);
+      setPaints(n, 'strokes', [{ type: 'SOLID', color: { r: 229 / 255, g: 229 / 255, b: 229 / 255 }, opacity: 1, variable: vars.border }]);
+      setPaints(n, 'effects', [{ type: 'DROP_SHADOW', color: { ...red, a: 26 / 255 }, offset: { x: 0, y: 0 }, radius: 0, spread: 1, visible: true, blendMode: 'NORMAL', variable: vars['destructive 10% dark 20%'] }]);
+    };
+    const read = () => [...n.fills, ...n.strokes].map((p) => [Math.round(p.color.r * 255), Math.round(p.opacity * 255), Boolean(p.boundVariables && p.boundVariables.color)])
+      .concat(n.effects.map((e) => [Math.round(e.color.r * 255), Math.round(e.color.a * 255), Boolean(e.boundVariables && e.boundVariables.color)]));
+    style();
+    const built = read();
+    set.setExplicitVariableModeForCollection(col, dark.modeId);
+    const switched = read();
+    style();
+    const again = read();
+    set.setExplicitVariableModeForCollection(col, light.modeId);
+    return { built, switched, again, back: read() };`) as Record<string, [number, number, boolean][]>;
+  assert.deepEqual(got.built, [[0xdf, 0x1a, true], [0xdf, 0x4d, true], [0xe5, 0xff, true], [0xdf, 0x1a, true]]);
+  // A designer's switch to Dark: the alpha variable holds Dark's 20%, border its 10%; the token at 30% turns opaque.
+  assert.deepEqual(got.switched, [[0xff, 0x33, true], [0xff, 0xff, true], [0xff, 0x1a, true], [0xff, 0x33, true]]);
+  // Pushed again into the set in Dark: Dark's values as the switch gave them, the token's paint at its own opacity.
+  assert.deepEqual(got.again, [[0xff, 0x33, true], [0xff, 0x4d, true], [0xff, 0x1a, true], [0xff, 0x33, true]]);
+  assert.deepEqual(got.back, [[0xdf, 0x1a, true], [0xdf, 0xff, true], [0xe5, 0xff, true], [0xdf, 0x1a, true]]);
+});
+
 /**
  * An agent's applyStyles for the example Button, as the skill's step 3 table
  * maps measured values: auto layout from display and padding, fills and
