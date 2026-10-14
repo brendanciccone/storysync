@@ -1440,7 +1440,7 @@ test("every push instruction labels a set without escaping its description again
       `${path} doesn't remove Page 1 only while Figma's own`);
   }
   for (const [path, text] of installedPushTexts()) {
-    assert.match(text, /whether the label call removed Figma's default page `Page 1` or why it kept it/, `${path}'s summary doesn't say what became of Page 1`);
+    assert.match(text, /whether the (?:last )?label call removed Figma's default page `Page 1` or why it kept it/, `${path}'s summary doesn't say what became of Page 1`);
   }
 });
 
