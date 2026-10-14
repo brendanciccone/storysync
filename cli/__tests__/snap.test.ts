@@ -1338,6 +1338,7 @@ async function snapAt(dir: string, story: string, at: string, overrides: Partial
 }
 
 const readJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test("runSnap --merge: measures only the components named and keeps the rest of the snap, with each one's time", async () => {
   // Re-run for some components alone, snap wrote a styles.json of those
@@ -1403,7 +1404,7 @@ test("runSnap --merge: refuses a snap it can't add to honestly, before measuring
 
     const styles = readJson(join(dir, "styles.json"));
     writeFileSync(join(dir, "styles.json"), JSON.stringify({ ...styles, storysyncVersion: "0.3.0" }));
-    await refuse(new RegExp(`storysync 0\\.3\\.0 measured them, not ${VERSION.replace(/\./g, "\\.")}`));
+    await refuse(new RegExp(`storysync 0\\.3\\.0 measured them, not ${escapeRe(VERSION)}`));
     writeFileSync(join(dir, "styles.json"), JSON.stringify(styles));
 
     rmSync(join(dir, "meta.json"));
@@ -1881,7 +1882,7 @@ test("runSnap --root-only: styles.json as before trees, each variant saying how 
     assert.equal(component.capture, undefined);
     assert.equal(component.tree, undefined);
     assert.deepEqual(component.variants.map((v) => [v.innerElements, v.treeDelta]), [[22, undefined], [22, undefined]]);
-    // Without trees, written as JSON.stringify writes it, as 0.4.0 did.
+    // Without trees, written as JSON.stringify writes it, as 0.3.0 did.
     assert.equal(readFileSync(join(dir, "styles.json"), "utf8"), `${JSON.stringify(result, null, 2)}\n`);
   } finally {
     rmSync(dir, { recursive: true, force: true });

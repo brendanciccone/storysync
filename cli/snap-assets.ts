@@ -461,9 +461,36 @@ export function sniffImageType(bytes: Uint8Array): string | null {
   if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
   if (starts(0x00, 0x00, 0x01, 0x00)) return "image/x-icon";
   const head = Buffer.from(bytes.subarray(0, 256)).toString("utf8").trimStart();
-  if (/^(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(head)) return "image/svg+xml";
+  if (isSvgMarkup(head)) return "image/svg+xml";
   if (bytes.length > 12 && Buffer.from(bytes.subarray(4, 12)).toString("latin1") === "ftypavif") return "image/avif";
   return null;
+}
+
+/**
+ * Whether markup opens as SVG: an optional XML declaration, then any
+ * comments, then an `<svg` tag, with whitespace between. A comment runs to
+ * any later `-->`, as a lazy regex reads it when it must, so this tries each
+ * one. Walked with indexOf, as a regex with a repeated comment group
+ * backtracks exponentially on many unclosed `<!--`.
+ */
+function isSvgMarkup(head: string): boolean {
+  const space = (at: number) => {
+    while (at < head.length && /\s/.test(head[at])) at++;
+    return at;
+  };
+  const svgAt = (at: number) => /^<svg[\s>]/i.test(head.slice(at, at + 5));
+  let at = 0;
+  if (/^<\?xml/i.test(head)) {
+    const close = head.indexOf(">", 5);
+    if (close < 0) return false;
+    at = space(close + 1);
+  }
+  if (svgAt(at)) return true;
+  if (!head.startsWith("<!--", at)) return false;
+  for (let end = head.indexOf("-->", at + 4); end >= 0; end = head.indexOf("-->", end + 1)) {
+    if (svgAt(space(end + 3))) return true;
+  }
+  return false;
 }
 
 /** A PNG's pixel size from its header, or null for anything else. */

@@ -1606,7 +1606,7 @@ test("verify: bindings are reported beside the score and fail nothing, and a rea
 const PUSH2 = fileURLToPath(new URL("../../../cli/__tests__/fixtures/push2/", import.meta.url));
 const push2 = (file: string) => JSON.parse(readFileSync(`${PUSH2}${file}`, "utf8"));
 
-test("push2 replay: a root-only snap and readback score as 0.4.0 did, 99.9%, plus a root-only caveat per component", () => {
+test("push2 replay: a root-only snap and readback score as 0.3.0 did, 99.9%, plus a root-only caveat per component", () => {
   const snap = push2("styles.json") as SnapResult;
   const meta = push2("meta.json") as { measuredAt: string };
   const result = verify(snap, push2("figma-readback.json") as ReadbackFile, 0.5, { measuredAt: meta.measuredAt });
@@ -1640,7 +1640,7 @@ test("root-only: the caveat counts the inner elements snap --root-only found, an
   assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), []);
 });
 
-test("roots-only: a tree snap scored by its roots alone scores as 0.4.0 would, and says how much it left out", async () => {
+test("roots-only: a tree snap scored by its roots alone scores as 0.3.0 would, and says how much it left out", async () => {
   const { fixture, readback } = await buildAndRead("card");
   const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
   assert.equal(roots.elementFidelity, undefined);

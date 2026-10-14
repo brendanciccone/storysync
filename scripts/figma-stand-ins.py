@@ -204,7 +204,7 @@ def rename(font, family, style):
 
 def probe_data():
     probe = json.load(open(PROBE, encoding="utf-8"))
-    src = open(os.path.join(ROOT, "spikes", "figma-width-probe-2.js"), encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "cli", "__tests__", "fixtures", "probes", "figma-width-probe-2.js"), encoding="utf-8").read()
     start = src.index("const KERNED = unhex('") + len("const KERNED = unhex('")
     kerned = bytes.fromhex(src[start:src.index("'", start)]).decode("latin-1")
     pairs = [kerned[i:i + 2] for i in range(0, len(kerned), 2)]

@@ -4,6 +4,11 @@ Section numbers refer to `design/ELEMENT-TREE-SPEC.md`. Packages A, B, C and D
 build against what `cli/tree-types.ts` does, so each departure is listed here
 rather than left for them to find.
 
+These are development notes, kept because the code cites them by number. The
+spec they refer to isn't in this repo. Here "0.4.0" means the build before
+element trees, which scored each variant's outer element alone, as 0.3.0 did.
+Element trees first shipped in 0.4.1; 0.4.0 was never published.
+
 ## Contract (`cli/tree-types.ts`)
 
 1. **Exports beyond section 7.1.**
@@ -148,7 +153,7 @@ gives the same output on every run.
       mutantCli takes the file to mutate, and the canonicalJson mutant
       rewrites `checksum.js`.
 22. **The spike is bigger than section 14 says** ("one call of about 4k").
-    `spikes/figma-probe.js` is about 15k characters:
+    `fixtures/probes/figma-probe.js` is about 15k characters:
     - It runs as two calls plus upload_assets; for the second call, its header
       names the one line to change.
     - It adds item 11 (sizing), a defaults check, and clone placement for a
@@ -996,9 +1001,10 @@ elements drifted, all of them Sidebar's and Attachment's.
 
 Three use_figma calls in that file, on a page of their own, "storysync probe
 2", which the first creates and marks and the others check: the calls are
-`spikes/figma-text-probe-1.js`, `-2.js` and `-3.js`, sent as written, and
-their responses `fixtures/figma-text-probe.json`, unchanged. A test in
-`mock-figma.test.ts` runs the three calls in the mock and holds it to them.
+`fixtures/probes/figma-text-probe-1.js`, `-2.js` and `-3.js`, sent as
+written, and their responses `fixtures/figma-text-probe.json`, unchanged.
+A test in `mock-figma.test.ts` runs the three calls in the mock and holds
+it to them.
 
 T1. **Any write of textAutoResize turns truncation off and clears
     maxLines**, HEIGHT over HEIGHT included. resize() on a hugging text
@@ -1357,7 +1363,8 @@ S1. **Figma rounds each advance and kerning value to a 1024th of an em**,
     as HarfBuzz does with the font scaled to 1024 units an em, a variable
     font's deltas rounded on their own: 1845 advances and 7632 kerning pairs
     of Inter at its nine weights come out so in the fourth push's text probe
-    (`spikes/figma-width-probe-1.js` to `-4.js`, its responses
+    (four calls, the first two `fixtures/probes/figma-width-probe-1.js` and
+    `-2.js`, the others recorded from a live probe; its responses
     `fixtures/figma-text-probe-3.json`, unchanged). Chrome sets the
     package's Inter unrounded, so "sales-dashboard.pdf" (Medium 14) was
     139.375 wide in Chrome and needs 139.39843 in Figma: snap measured the
@@ -1889,8 +1896,8 @@ O16. **The `tooltip` and `select` fixtures** are the ui-base-tooltip and
 The fifth push verified at 100%, but by eye its Button radius was bound to
 nothing, its Tooltip arrow was a flat tab, and the template checksum never
 ran. Notes F6-1 on. The sixth probe (2026-10-13, a private test Figma file,
-page "storysync probe 6", `fixtures/figma-tsum-probe.json`,
-`spikes/figma-tsum-probe-*.js`) settled what Figma does.
+page "storysync probe 6", recorded in `fixtures/figma-tsum-probe.json`)
+settled what Figma does.
 
 F6-1. **The template is carried as a string, checked, then run** (BV2,
    `callCode` in `cli/checksum.ts`). Both build results of push 5 had
@@ -1996,7 +2003,7 @@ F6-7. **A turned icon's shapes are scored** (10.2, F6-3). verify left them
    turned frame turns what it holds.
 F6-8. **A turn in the flow is built where the turned box is the node's
    own** (F6-3). The seventh probe (2026-10-13, same file and page,
-   `fixtures/figma-probe-7.json`, `spikes/figma-probe-7-*.js`) laid out
+   recorded in `fixtures/figma-probe-7.json`) laid out
    layers turned in auto layout as the build sets them, rotation then
    sizing: turned 180 degrees in a row, a column and a hugging row, filling
    its row, resized after turning, and a hugging text, and a 16 square

@@ -840,7 +840,7 @@ test("variables: bound again in a frame set to Dark, a paint keeps what it is gi
     figma.addVariable(name, "COLOR", { Light: light, Dark: dark }, "Colors");
   }
   await ok(figma, "const p = figma.createPage(); p.name = 'storysync probe 7c';");
-  const script = (name: string) => readFileSync(`${ROOT}spikes/${name}`, "utf8").replace(/await svg\(\w+\)/g, "null");
+  const script = (name: string) => readFileSync(`${ROOT}cli/__tests__/fixtures/probes/${name}`, "utf8").replace(/await svg\(\w+\)/g, "null");
   const call3 = await ok(figma, script("figma-probe-7c-rebind.js")) as Calls["call3"];
   const call4 = await ok(figma, script("figma-probe-7c-rebind-again.js")) as Calls["call4"];
   const names = (n: Record<string, unknown>) => ({ ...n, made: { ...(n.made as object), id: undefined, created: undefined } });
@@ -1068,7 +1068,7 @@ test("templates: the 0.4.0 skill's build and readback run unchanged, and verify 
 
 // --- The spike probe ------------------------------------------------------------
 
-const PROBE = readFileSync(`${ROOT}spikes/figma-probe.js`, "utf8");
+const PROBE = readFileSync(`${ROOT}cli/__tests__/fixtures/probes/figma-probe.js`, "utf8");
 /** The probe's second call: the one line its header says to change. */
 const PROBE_IMAGE = PROBE.replace(/^const MODE = 'probe';$/m, "const MODE = 'image';");
 
@@ -1157,7 +1157,7 @@ test("spike: the probe runs as one call, only on its own page, and the mock answ
 // --- The live text probe ----------------------------------------------------------
 
 /** The text probe's three calls, as sent to use_figma on 2026-10-09. */
-const TEXT_PROBE = [1, 2, 3].map((i) => readFileSync(`${ROOT}spikes/figma-text-probe-${i}.js`, "utf8"));
+const TEXT_PROBE = [1, 2, 3].map((i) => readFileSync(`${ROOT}cli/__tests__/fixtures/probes/figma-text-probe-${i}.js`, "utf8"));
 
 type Widths = [chars: string, family: string, style: string, size: number, width: number, height: number, ...rest: unknown[]][];
 /** What Figma answered each call, kept unchanged. */
@@ -1216,7 +1216,7 @@ test("text probe: the mock sets each string as wide and tall as Figma did, and k
 // --- The fourth push's text probe ------------------------------------------------
 
 /** Its first call, as sent to use_figma on 2026-10-09: each string's width on a fresh text, and the Attachment title. */
-const WIDTH_PROBE = readFileSync(`${ROOT}spikes/figma-width-probe-1.js`, "utf8");
+const WIDTH_PROBE = readFileSync(`${ROOT}cli/__tests__/fixtures/probes/figma-width-probe-1.js`, "utf8");
 type WidthRow = [chars: string, weight: number, size: number, hug: number, big: number, fits: number, ink: unknown, ends: [boolean, boolean]];
 /** What Figma answered, kept unchanged. */
 const TEXT_LIVE_3 = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-text-probe-3.json`, "utf8")) as {
@@ -1290,7 +1290,7 @@ test("figmaFonts: the mock sets each string of the fourth push's probe as wide a
 test("probe 8a: a frame turned NONE refuses what Figma refuses there, strokesIncludedInLayout among them, and keeps what it read before", async () => {
   // Call 1's part A, replayed: its script up to the rings, run as it ran live.
   const live = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-8a.json`, "utf8")).call1.none as Record<string, unknown>;
-  const spike = readFileSync(`${ROOT}spikes/figma-probe-8a-1.js`, "utf8");
+  const spike = readFileSync(`${ROOT}cli/__tests__/fixtures/probes/figma-probe-8a-1.js`, "utf8");
   const partA = `${spike.slice(0, spike.indexOf("// B. Rings"))}return out.none;`;
   const got = await ok(new MockFigma(), partA) as Record<string, unknown>;
   assert.deepEqual(got, live);

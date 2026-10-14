@@ -642,7 +642,15 @@ interface SvgElement { tag: string; attrs: Record<string, string>; children: Svg
 function parseXml(markup: string): SvgElement {
   const root: SvgElement = { tag: "#root", attrs: {}, children: [] };
   const stack = [root];
-  const body = markup.replace(/<!--[\s\S]*?-->/g, "").replace(/<\?[\s\S]*?\?>/g, "");
+  // Comments come out until none are left, as removing one can join the
+  // text around it into another: `<!<!-- a -->-- b -->`.
+  let body = markup;
+  let previous: string;
+  do {
+    previous = body;
+    body = body.replace(/<!--[\s\S]*?-->/g, "");
+  } while (body !== previous);
+  body = body.replace(/<\?[\s\S]*?\?>/g, "");
   for (const [, close, tag, rawAttrs, selfClose] of body.matchAll(/<(\/?)([a-zA-Z][\w:.-]*)((?:\s+[^\s=>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*(\/?)>/g)) {
     if (close) {
       if (stack.length > 1) stack.pop();

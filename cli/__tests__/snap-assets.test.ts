@@ -156,6 +156,19 @@ test("sniffImageType, pngSize and decodeDataUrl: what bytes are, and what a data
   assert.equal(Buffer.from(decodeDataUrl("data:text/plain,50%25 off %zz é")!.bytes).toString(), "50% off %zz é");
 });
 
+test("sniffImageType: SVG after an XML declaration and comments, and comments that never reach <svg> answered at once", () => {
+  const sniff = (text: string) => sniffImageType(Buffer.from(text));
+  assert.equal(sniff('<?xml version="1.0"?>\n<!-- Generator: x -->\n<!-- y --><svg xmlns="http://www.w3.org/2000/svg">'), "image/svg+xml");
+  assert.equal(sniff("<!-- a --> b --> <SVG\n>"), "image/svg+xml");
+  assert.equal(sniff("<!-- a --> b <svg>"), null);
+  assert.equal(sniff('<?xml version="1.0"<svg>'), null);
+  // A regex with a repeated comment group backtracked exponentially on these.
+  const started = performance.now();
+  assert.equal(sniff("<!--".repeat(64)), null);
+  assert.equal(sniff(`<!--${"--><!--".repeat(36)}`), null);
+  assert.ok(performance.now() - started < 1000);
+});
+
 test("serializeSvg: an icon drawn inside padding, as coder's [&>svg]:p-0.5, reaches its viewBox past the drawing by the padding, to draw so at its border box", () => {
   const plus: RawSvgNode = { tag: "svg", attrs: { viewBox: "0 0 24 24" }, kids: [shape("path", { d: "M5 12h14" }), shape("path", { d: "M12 5v14" })] };
   // 24 units into the 20px inside 2px of padding: 1.2 units a pixel, 2.4 of them before the drawing.

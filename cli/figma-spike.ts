@@ -1,12 +1,13 @@
 // What `storysync figma code` takes of Figma from the design's spike.
 //
-// The spike (spikes/figma-probe.js, section 14) measured, in a live file on
-// 2026-10-08, the behaviors no documentation settles; its raw results are
-// cli/__tests__/fixtures/figma-spike.json, and the mock Figma the tests run
-// on answers its probe the same. Each constant the build depends on is here
-// with what the spike saw and where it acts. Each keeps its other answer
-// reachable, through runFigmaCode's `spike`, so the tests still build a
-// fallback against a mock that gives the other answer.
+// The spike (cli/__tests__/fixtures/probes/figma-probe.js, section 14)
+// measured, in a live file on 2026-10-08, the behaviors no documentation
+// settles; its raw results are cli/__tests__/fixtures/figma-spike.json, and
+// the mock Figma the tests run on answers its probe the same. Each constant
+// the build depends on is here with what the spike saw and where it acts.
+// Each keeps its other answer reachable, through runFigmaCode's `spike`, so
+// the tests still build a fallback against a mock that gives the other
+// answer.
 //
 // The template branches that react to Figma at run time rather than to a
 // constant are marked `SPIKE(n)` in templates/build.js, with n the spike

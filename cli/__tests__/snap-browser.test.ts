@@ -1660,7 +1660,7 @@ test("captureTreeInPage: says which of an element's dark: classes with a state a
   };
   const scope = globalThis as Record<string, unknown>;
   const saved = { CSS: scope.CSS, matchMedia: scope.matchMedia };
-  scope.CSS = { escape: (t: string) => t.replace(/[:[\]=/.()!]/g, "\\$&"), supports: () => true };
+  scope.CSS = { escape: (t: string) => t.replace(/[:[\]=/.()!\\]/g, "\\$&"), supports: () => true };
   scope.matchMedia = () => ({ matches: true });
   let proto: Record<string, unknown> | undefined;
   try {
