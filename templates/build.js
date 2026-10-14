@@ -542,24 +542,25 @@ const slack = (nodes, recs) => {
   let most = 0.05;
   for (let i = 1; i < recs.length; i++) {
     const d = nodes[i].width - recs[i][5];
-    if ((S[recs[i][7]].t || {}).ar === 'W' && nodes[i].textAutoResize === 'WIDTH_AND_HEIGHT' && d > 0 && d < 1) most += d;
+    if (nodes[i].type === 'TEXT' && nodes[i].textAutoResize === 'WIDTH_AND_HEIGHT' && d > 0 && d < 1) most += d;
   }
-  const grow = new Map();
+  const grow = {};
   for (let i = 1; i < recs.length && most > 0.06; i++) {
     const [n, r] = [nodes[i], recs[i]];
     const p = nodes[r[1]];
-    if (S[r[7]].v === 0 || n.rotation || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
-    const over = (x, w, pw) => Math.max(0, p.paddingLeft - x) + Math.max(0, x + w + p.paddingRight - pw);
-    const d = p.layoutMode === 'HORIZONTAL' && n.layoutGrow ? r[5] - n.width : over(n.x, n.width, p.width) - over(r[3], r[5], recs[r[1]][5]);
+    if (!n.visible || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
+    // A filling child narrower, or one further past its frame's end.
+    const past = (end, w) => Math.max(0, end + p.paddingRight - w);
+    const d = p.layoutMode === 'HORIZONTAL' && n.layoutGrow ? r[5] - n.width : past(n.x + n.width, p.width) - past(r[3] + r[5], recs[r[1]][5]);
     let j = r[1];
     while (j && nodes[j].layoutSizingHorizontal === 'FILL') j = recs[j][1];
-    if (d > 0.01 && d < most) grow.set(j, Math.max(grow.get(j) || 0, d));
+    if (d > 0.01 && d < most) grow[j] = Math.max(grow[j] || 0, d);
   }
-  for (const [j, d] of grow) {
+  for (const j in grow) {
     const f = nodes[j];
     const v = f.layoutSizingVertical;
     if (f.layoutSizingHorizontal !== 'FIXED') continue;
-    f.resize(f.width + d, f.height);
+    f.resize(f.width + grow[j], f.height);
     if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
   }
 };
@@ -577,21 +578,15 @@ const keepLines = (nodes, recs) => {
   for (let i = 1; i < recs.length; i++) {
     const st = S[recs[i][7]];
     const t = st.t;
-    if (!t || (!t.o && t.v !== 'C')) continue;
+    // An input's value is one line whatever its box; a textarea's wraps.
+    if (!t || (!t.o && t.v !== 'C') || t.v === 'T') continue;
     const n = nodes[i];
     if (!wraps(n, t)) continue;
     at[2] = S[recs[i][0]];
-    // An input's value: one line, as the browser draws it, cut at its box.
-    // A textarea's wraps there too.
-    if (t.v) {
-      if (t.v === 'C') {
-        [n.textTruncation, n.maxLines] = ['ENDING', 1];
-        fallback('cut short', 'Figma sets it wider');
-      }
-      continue;
-    }
-    const fills = (st.z || [])[0] === 'L';
-    if (fills && !t.tr) continue;
+    const fills = (st.z || [])[0] === 'L' || t.v;
+    // A value is cut at its box, as the browser clips it.
+    if (t.v) n.textTruncation = 'ENDING';
+    else if (fills && !t.tr) continue;
     if (!fills) {
       n.textAutoResize = 'WIDTH_AND_HEIGHT';
       if (t.tr) setLines(n, t, n.width, n.height);
