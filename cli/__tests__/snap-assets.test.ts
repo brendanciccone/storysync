@@ -155,3 +155,15 @@ test("sniffImageType, pngSize and decodeDataUrl: what bytes are, and what a data
   assert.equal(Buffer.from(inline.bytes).toString(), "<svg width='100%' fill='#f00'/>");
   assert.equal(Buffer.from(decodeDataUrl("data:text/plain,50%25 off %zz é")!.bytes).toString(), "50% off %zz é");
 });
+
+test("serializeSvg: an icon drawn inside padding, as coder's [&>svg]:p-0.5, reaches its viewBox past the drawing by the padding, to draw so at its border box", () => {
+  const plus: RawSvgNode = { tag: "svg", attrs: { viewBox: "0 0 24 24" }, kids: [shape("path", { d: "M5 12h14" }), shape("path", { d: "M12 5v14" })] };
+  // 24 units into the 20px inside 2px of padding: 1.2 units a pixel, 2.4 of them before the drawing.
+  assert.match(serializeSvg(plus, [12, 8, 24, 24], [2, 2, 2, 2]).markup, /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg" width="24" height="24" viewBox="-2.4 -2.4 28.8 28.8"/);
+  assert.match(serializeSvg(plus, [12, 8, 24, 24]).markup, / viewBox="0 0 24 24"/);
+  // A wide content box centers a square viewBox; `none` stretches it to each side's own scale.
+  assert.match(serializeSvg(plus, [0, 0, 44, 24], [2, 2, 2, 2]).markup, / viewBox="-14.4 -2.4 52.8 28.8"/);
+  assert.match(serializeSvg({ ...plus, attrs: { viewBox: "0 0 24 24", preserveAspectRatio: "none" } }, [0, 0, 44, 24], [2, 2, 2, 2]).markup, / viewBox="-1.2 -2.4 26.4 28.8" preserveAspectRatio="none"/);
+  // Without a viewBox a unit is a pixel, from the content box's corner.
+  assert.match(serializeSvg({ ...plus, attrs: {} }, [0, 0, 24, 24], [1, 0, 0, 3]).markup, / viewBox="-3 -1 24 24"/);
+});

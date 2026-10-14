@@ -873,3 +873,12 @@ test("buildTree: under a wrapper, a child's flex facts are the wrapper's, which 
   const floating = el("div", [8, 8, 24, 24], { position: "absolute" }, [el("span", [8, 8, 24, 24], { ...BORDER, position: "relative" })]);
   assert.equal(buildTree(tree(el("div", [0, 0, 40, 40], {}, [floating]))).nodes[1].abs, 1);
 });
+
+test("buildTree: an icon's markup draws inside its padding at its border box, as coder's [&>svg]:p-0.5 draws its plus", () => {
+  const plus = { tag: "svg", attrs: { viewBox: "0 0 24 24" }, kids: [{ tag: "path", attrs: { d: "M5 12h14" }, paint: {} }] };
+  const padded = el("svg", [12, 8, 24, 24], { "padding-top": "2px", "padding-right": "2px", "padding-bottom": "2px", "padding-left": "2px" }, [], { svg: plus, shapes: [[6.17, 12, 11.67, 0]] });
+  const button = el("button", [0, 0, 48, 40], { display: "flex" }, [padded]);
+  const built = buildTree(tree(button));
+  const node = byKey(built.nodes).get("svg")!;
+  assert.match(built.svg[node.svg!], / viewBox="-2.4 -2.4 28.8 28.8"/);
+});

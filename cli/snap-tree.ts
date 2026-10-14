@@ -1056,7 +1056,9 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
 
   if (el.tag === "svg") {
     const tooBig = el.svgElements !== undefined || !el.svg;
-    const built = tooBig ? null : serializeSvg(el.svg!, box);
+    // Drawn inside its padding and border, as the browser draws it there.
+    const inset = SIDES.map((side) => sideWidth(css, side) + px(css(`padding-${side}`))) as [number, number, number, number];
+    const built = tooBig ? null : serializeSvg(el.svg!, box, inset);
     if (built && built.markup.length <= ctx.maxSvgChars) {
       const id = svgAssetId(built.markup);
       ctx.svg[id] = built.markup;
