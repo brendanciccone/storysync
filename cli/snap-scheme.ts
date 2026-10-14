@@ -121,9 +121,10 @@ export function themeGlobalsInPage(): ThemeGlobals | null {
       if (values.length) options[name] = values;
     }
     // addon-themes' `theme`, empty, is the default its decorator was given,
-    // which it sends on the channel with its themes, the toolbar's values.
+    // which it sends on the channel as `storybook/themes/REGISTER_THEMES`,
+    // with its themes, the toolbar's values.
     // Written out, as this runs in the page, where nothing around it is.
-    const registered = (page.__STORYBOOK_ADDONS_CHANNEL__?.last?.("storybook/addon-themes/REGISTER_THEMES") as unknown[] | undefined)?.[0] as { defaultTheme?: unknown; themes?: unknown } | undefined;
+    const registered = (page.__STORYBOOK_ADDONS_CHANNEL__?.last?.("storybook/themes/REGISTER_THEMES") as unknown[] | undefined)?.[0] as { defaultTheme?: unknown; themes?: unknown } | undefined;
     const defaulted: string[] = [];
     if (registered && typeof registered.defaultTheme === "string" && registered.defaultTheme && !values.theme) {
       globals.theme = registered.defaultTheme;

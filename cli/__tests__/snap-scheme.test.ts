@@ -65,7 +65,7 @@ test("themeGlobalsInPage: addon-themes' empty theme global is its default, and t
       },
     },
     __STORYBOOK_ADDONS_CHANNEL__: {
-      last: (event: string) => (event === "storybook/addon-themes/REGISTER_THEMES" ? [{ defaultTheme: "dark", themes: ["light", "dark"] }] : undefined),
+      last: (event: string) => (event === "storybook/themes/REGISTER_THEMES" ? [{ defaultTheme: "dark", themes: ["light", "dark"] }] : undefined),
     },
   };
   try {
