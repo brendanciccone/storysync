@@ -1002,10 +1002,26 @@ test("verify --plan: writes the readback where --readback says, and scores the s
     const other = join(p.dir, "other.json");
     writeFileSync(other, readFileSync(p.snapPath, "utf8").replace(/\n$/, "\n\n"));
     copyFileSync(join(p.dir, "snaps", "meta.json"), join(p.dir, "meta.json"));
-    const changed = await cli(["verify", "--plan", p.planPath, "--snap", other]);
+    // Its measurements are the plan's, so what Figma has was built from them: the score stands.
+    const changed = await cli(["verify", "--plan", p.planPath, "--snap", other, "--strict"]);
     assert.equal(changed.status, 0, `${changed.stdout}${changed.stderr}`);
-    assert.match(changed.stdout, /has changed since `storysync figma code` made this plan from it/);
+    assert.match(changed.stdout, /i --snap \S*other\.json isn't the snap `storysync figma code` made this plan from, \S*styles\.json, but every variant scored was built from what this snap measures, so the score stands/);
     assert.equal((jsonOf(await cli(["verify", "--plan", p.planPath, "--snap", other, "--json"])).plan as { snapChanged?: boolean }).snapChanged, true);
+    // One that measured Switch otherwise: Figma's Switch was built from the
+    // plan's snap, which the plan's calls would build again. It fails
+    // --strict, though nothing it scores differs, and says what to run.
+    const remeasured = JSON.parse(readFileSync(p.snapPath, "utf8")) as { components: { tree: { base: { el: string }[] } }[] };
+    remeasured.components[0].tree.base[0].el += ".remeasured";
+    writeFileSync(other, JSON.stringify(remeasured));
+    const reached = await cli(["verify", "--plan", p.planPath, "--snap", other, "--strict"]);
+    assert.equal(reached.status, 1, `${reached.stdout}${reached.stderr}`);
+    assert.match(reached.stdout, /! --snap \S*other\.json isn't the snap `storysync figma code` made this plan from, \S*styles\.json, and Figma says ui\/base\/Switch was built from an earlier measurement than this snap's, which this plan's calls would build again: run `storysync figma code` with this snap, send its calls, and run verify again; or, to score this plan as it was made, pass --snap \S*styles\.json\./);
+    assert.doesNotMatch(reached.stdout, /Figma matches/);
+    // The plan's own snap taken again: no other snap to offer.
+    copyFileSync(other, p.snapPath);
+    const retaken = await cli(["verify", "--plan", p.planPath, "--strict"]);
+    assert.equal(retaken.status, 1, `${retaken.stdout}${retaken.stderr}`);
+    assert.match(retaken.stdout, /! \S*styles\.json has changed since `storysync figma code` made this plan from it, and Figma says ui\/base\/Switch was built from an earlier measurement than this snap's, which this plan's calls would build again: run `storysync figma code` with this snap, send its calls, and run verify again\./);
   } finally {
     cleanup(p);
   }

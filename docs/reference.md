@@ -258,8 +258,10 @@ Options:
                          nothing comparable or was read back without its element tree, a readback
                          entry is not what Figma returned, is incomplete or was read before the snap,
                          a text's layout snap measured wasn't read back, a planned read call wasn't
-                         read whole, a layer a designer added is inside a variant, or the snap recorded
-                         a component failure or lacks a component the readback has
+                         read whole or was read before a build of its components was sent again, a
+                         variant was built from an earlier measurement than a snap other than the
+                         plan's, a layer a designer added is inside a variant, or the snap recorded a
+                         component failure or lacks a component the readback has
   --allow-designer-layers
                          With --strict, pass the layers a designer added inside variants, which verify
                          still lists
@@ -429,7 +431,7 @@ snap warns when all of a component's variants measure the same, or all of one pr
 
 snap records the family the browser drew with. A named font that failed to load is recorded as asked, with `fontAvailable: false` and a warning. Another platform's font listed after a system keyword, like `SFMono-Regular`, gets no warning.
 
-Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI. So it sets that text in a stand-in: Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it:
+Figma names a family fontsource names `<Family> Variable` without the suffix, so the build sets `Geist Variable` in Figma's `Geist`, and `verify` takes the one for the other. Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI. So it sets that text in a stand-in: Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it:
 
 - Figma rounds each letter's width a little, so Storysync's copies of Inter, Roboto Mono and Noto Serif are rounded the same way. A label sets as wide in the browser as in Figma, to within a fraction of a pixel.
 - Its Inter has Inter's arrows, check marks and other symbols, so "Next →" isn't measured in another font.
@@ -480,7 +482,7 @@ Use the version the error prints. Other Playwright versions install a browser th
 - Where a component clips its background inside a fully transparent border, as shadcn/ui Button's `border-transparent bg-clip-padding` does, the frame is built at the border box with its corner radius bound to its token. The fill runs 1px under the clear stroke: `figma code` warns about it and `verify` lists it under coverage.
 - A translucent, dashed or partly transparent border over a padding-box background is still built `OUTSIDE` at the padding box, at the inner radius. That radius is left unbound, with a warning.
 - Icons are imported from their SVG at their measured size. An icon whose shapes were recolored or changed in Figma is imported again, under a new node id, since the build sets an icon's shapes only by importing them.
-- A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source.
+- A variant snap couldn't measure is built as a placeholder, a dashed frame labeled `Not measured: <status>`, never styled from the component's source, every variant of a component snap measured none of. `verify` lists each, with its status and error, and names each component with variants not measured.
 - What Figma can't draw is left out and named in `figma code`'s warnings, never approximated silently, and `verify` lists it under coverage. What it draws another way is named as `built as`: borders with a different color on each side as one color, and scaling as the element's own box.
 - A turn is built as the element's own box, unturned, in an auto layout's flow, which Figma lays out by its turned box, unless it is 180 degrees, or 90 on a square, where that box is its own. So is a turn of a layer with children, or inside a turned or scaled layer. Any other turn of a childless layer, such as a tooltip's arrow or a chevron turned 180, is built turned and scored.
 
@@ -580,7 +582,7 @@ Entries that fail aren't scored and fail `--strict`. Without `--strict` the run 
 Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
 ```
 
-With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
+With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. So is a read call whose response was saved before a build call of its components was sent again: it read Figma before that build, so it fails `--strict` until it is sent again. A snap other than the one the plan was made from, taken again or passed as `--snap`, is named too, with what it reached: the components Figma says were built from an earlier measurement than it, which the plan's calls would build again, so `figma code` has to run again with it, and which fail `--strict`; or, where there are none, that every variant scored was built from what it measures, so the score stands.
 
 The checksum isn't a signature. See [What Figma can't do](https://github.com/brendanciccone/storysync/blob/main/README.md#what-figma-cant-do).
 

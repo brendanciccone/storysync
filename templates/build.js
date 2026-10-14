@@ -58,11 +58,12 @@ if (!page) {
 }
 await figma.setCurrentPageAsync(page);
 
-// A text style's font: the measured family, else its stand-in, the style's `a`
-// (Roboto Mono for a mono family, Noto Serif for a serif: cli/fonts.ts, which
-// snap measures with too), else Inter; at the measured weight, else the
-// next toward Regular, in either spelling; italic where the family has it.
-// It never throws, and FONTS, returned, names each stand-in.
+// A text style's font: the measured family, by Figma's name for it first,
+// the style's `g` (Geist for fontsource's Geist Variable), else its stand-in,
+// the style's `a` (Roboto Mono for a mono family, Noto Serif for a serif:
+// cli/fonts.ts, which snap measures with too), else Inter; at the measured
+// weight, else the next toward Regular, in either spelling; italic where the
+// family has it. It never throws, and FONTS, returned, names each stand-in.
 const STYLES = ['Thin', 'Extra Light', 'Light', 'Regular', 'Medium', 'Semi Bold', 'Bold', 'Extra Bold', 'Black'];
 const FONTS = {};
 const fonts = {};
@@ -72,13 +73,13 @@ const loadFont = (t) => {
   return (fonts[id] = fonts[id] || (async () => {
     const i = Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1));
     const d = Math.sign(3 - i);
-    for (const f of new Set([family, t.a || 'Inter', 'Inter'])) {
+    for (const f of new Set([t.g || family, family, t.a || 'Inter', 'Inter'])) {
       for (const j of new Set([i, i + d, i + 2 * d, 3].filter((j) => (j - 3) * d <= 0))) {
         for (const s of new Set([STYLES[j], STYLES[j].replace(' ', '')])) {
           for (const style of italic ? [j === 3 ? 'Italic' : s + ' Italic', s] : [s]) {
             try {
               await figma.loadFontAsync({ family: f, style });
-              if (f !== family || j !== i || (italic && !/Italic/.test(style))) FONTS[family + ' ' + weight + (italic ? ' italic' : '')] = f + ' ' + style;
+              if ((f !== family && f !== t.g) || j !== i || (italic && !/Italic/.test(style))) FONTS[family + ' ' + weight + (italic ? ' italic' : '')] = f + ' ' + style;
               return { family: f, style };
             } catch (e) {}
           }

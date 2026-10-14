@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,9 +13,9 @@ import { describeMeasurementNotes } from "../snap.js";
 import { componentKey } from "../storybook.js";
 import { expandTree } from "../tree-types.js";
 import type { FigmaPlan, NoClassPaint, PlanCall, TreeDelta, TreeNode } from "../tree-types.js";
-import { verify } from "../verify.js";
+import { formatElementReport, verify } from "../verify.js";
 import { SHADCN_TOKENS, STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
-import { loadTreeFixture, svgShapeBoxes, treeFixtureNames, withNoClass } from "./mock-figma.js";
+import { FONTS, loadTreeFixture, svgShapeBoxes, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -331,6 +331,17 @@ test("figma code: the label call says which variants a story of their own measur
   assert.match(line("ui-base-switch"), /^measured from its closed trigger, button\[data-slot=dialog-trigger\], not the open Switch; measured .* from ui-base-switch--checked, the rest from /);
 });
 
+test("figma code: a color two of an element's classes name, which tie, is said to be left unbound for that, not for no class naming one", async () => {
+  // shadcn's Alert title: text-card-foreground, inherited from the root, and its own text-foreground, both #0a0a0a.
+  const snap = copy(loadTreeFixture("dialog"));
+  const title = snap.components[0].tree.base.find((n) => n.k === "dialog-header/dialog-title")! as { cls: string[] | null };
+  title.cls = ["text-card-foreground", "text-foreground"];
+  const coded = await codeFor(snap, {}, SHADCN_TOKENS);
+  assert.ok(coded.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and its classes name two of them, card/foreground and foreground, so it binds to neither rather than to a guess"), coded.warnings.join("\n"));
+  // The close button's label, which no class colors, is still said as such.
+  assert.ok(coded.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and no class names one"));
+});
+
 test("figma code: --components and --skip pick what to build, matched as snap and verify match them", async () => {
   const coded = await codeFor(allFixtures(), { components: ["ui-base-card", "switch", "Forms/Button"], skip: ["Button"] });
   assert.deepEqual([...new Set(coded.plan.calls.flatMap((c) => c.components))], ["ui/base/Card", "ui/base/Switch"]);
@@ -467,6 +478,116 @@ test("figma code: an icon that keeps a <g>, which Figma imports as a GROUP, is b
   // Every element verified, the icon's shapes and paints found through the group.
   assert.deepEqual(result.variants[0].nodes ?? [], []);
   assert.deepEqual([result.elementFidelity, result.summary.elements?.verified, result.summary.elements?.measured], [1, 2, 2]);
+});
+
+/** Builds and reads every call of a plan in `mock`, saving each response where the plan says, as an agent does. */
+async function sendAll(coded: Awaited<ReturnType<typeof codeFor>>, mock: ReturnType<typeof mockFor>, kinds?: PlanCall["kind"][]): Promise<unknown[]> {
+  const values: unknown[] = [];
+  mkdirSync(join(coded.out, "results"), { recursive: true });
+  for (const call of coded.plan.calls) {
+    if (kinds && !kinds.includes(call.kind)) continue;
+    const run = await mock.run(coded.code(call));
+    assert.ok(run.ok, `${call.file}: ${run.text}`);
+    writeFileSync(join(coded.out, call.result), run.text);
+    values.push(run.value);
+  }
+  return values;
+}
+
+test("figma code: a text in fontsource's Geist Variable is set in Figma's Geist, no stand-in, and verify takes it for the family measured", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  // Probe 8e: Figma has Geist, and refuses Geist Variable.
+  const probe = JSON.parse(readFileSync(fileURLToPath(new URL("../../../cli/__tests__/fixtures/figma-probe-8e-fonts.json", import.meta.url)), "utf8")) as { geist: Record<string, string[]> };
+  const snap = copy(loadTreeFixture("example-button"));
+  let renamed = 0;
+  const rename = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(rename);
+    else if (value && typeof value === "object") {
+      const tx = (value as { tx?: { f?: string } }).tx;
+      if (tx?.f === "Inter") {
+        tx.f = "Geist Variable";
+        renamed++;
+      }
+      Object.values(value).forEach(rename);
+    }
+  };
+  rename(snap);
+  assert.ok(renamed > 0);
+  const coded = await codeFor(snap, { templates: {} });
+  const mock = mockFor([snap], { fonts: { ...FONTS, ...probe.geist } });
+  const values = await sendAll(coded, mock) as { kind: string; fonts?: Record<string, string> }[];
+  for (const value of values.filter((v) => v.kind === "build")) assert.deepEqual(value.fonts, {}, "Geist is no stand-in");
+  const { readback, notRead } = loadPlanResults(join(coded.out, "plan.json"));
+  const result = verify(JSON.parse(readFileSync(coded.snapPath, "utf8")), readback, 0.5, { notRead });
+  const family = result.variants.flatMap((v) => (v.nodes ?? []).flatMap((n) => n.differences.filter((d) => d.property === "family")));
+  assert.deepEqual(family, []);
+  assert.ok(result.summary.elements!.verified > 0);
+});
+
+/** A component snap measured no variant of, as the shadcn ResizablePanelGroup: every variant failed, so no base and no tree. */
+function allFailed(snap: TreeFixture): TreeFixture {
+  const error = "We detected that you use an implicit action arg while rendering of your story.";
+  (snap.components as unknown[]).push({
+    id: "ui-radix-resizablepanelgroup", name: "ResizablePanelGroup", title: "ui/radix/ResizablePanelGroup", category: "ui/radix", error: null,
+    variantProperties: [{ name: "orientation", type: "VARIANT", values: ["horizontal", "vertical"], defaultValue: "horizontal" }],
+    base: null, tree: null, warnings: [],
+    variants: [
+      { combination: { orientation: "horizontal" }, slug: "orientation-horizontal", status: "render_error", error },
+      { combination: { orientation: "vertical" }, slug: "orientation-vertical", status: "element_not_found", error: "no element matched the story's root" },
+    ],
+  });
+  const summary = (snap as { summary: { failed: number; variants: number } }).summary;
+  summary.failed += 2;
+  summary.variants += 2;
+  return snap;
+}
+
+test("figma code: a component snap measured no variant of is built as placeholders, and verify counts and names them, each with why", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  const snap = allFailed(copy(loadTreeFixture("example-button")));
+  const coded = await codeFor(snap, { templates: {} });
+  assert.ok(coded.warnings.includes('ui/radix/ResizablePanelGroup: all 2 variants built as a "Not measured" placeholder, since snap couldn\'t measure them'), coded.warnings.join("\n"));
+  assert.ok(!coded.warnings.some((w) => w.includes("not built")));
+  await sendAll(coded, mockFor([snap]));
+  const { readback, notRead } = loadPlanResults(join(coded.out, "plan.json"));
+  const result = verify(JSON.parse(readFileSync(coded.snapPath, "utf8")), readback, 0.5, { notRead });
+  assert.equal(result.summary.notMeasured, 2);
+  assert.deepEqual(result.unmeasuredInFigma, [], "the placeholders are not variants snap never measured");
+  assert.match(result.snapWarnings![0], /^2 variant\(s\) could not be measured, of ui\/radix\/ResizablePanelGroup \(all 2\); /);
+  const lines = formatElementReport(result).join("\n");
+  assert.match(lines, /not measured 2/);
+  assert.match(lines, /\? ui\/radix\/ResizablePanelGroup orientation=horizontal: not measured \(render_error: We detected that you use an implicit action arg while rendering of your story\.\), so Figma holds a placeholder for it\n/);
+  assert.match(lines, /orientation=vertical: not measured \(element_not_found: no element matched the story's root\), so Figma holds a placeholder for it/);
+  assert.doesNotMatch(lines, /story change/, "snap named no story change for these");
+  // An arg_rejected variant whose warning names a story change says so.
+  const changed = JSON.parse(readFileSync(coded.snapPath, "utf8")) as TreeFixture;
+  const group = changed.components.find((c) => c.name === "ResizablePanelGroup")! as unknown as { variants: { status: string; error: string }[]; warnings: string[] };
+  Object.assign(group.variants[1], { status: "arg_rejected", error: "Storybook kept orientation at horizontal" });
+  group.warnings = ["Storybook wouldn't render 1 of ResizablePanelGroup's variants with the values asked for, and snap couldn't set them through its preview either, so it was not measured (status arg_rejected): vertical isn't among orientation's options. To measure it, add vertical to orientation's options, then measure the component again with --components ui-radix-resizablepanelgroup --merge."];
+  const again = formatElementReport(verify(changed, readback, 0.5, { notRead })).join("\n");
+  assert.match(again, /orientation=vertical: not measured \(arg_rejected: Storybook kept orientation at horizontal\), so Figma holds a placeholder for it; snap's warning names the story change it needs/);
+  assert.match(again, /orientation=horizontal: not measured \(render_error: [^\n]*placeholder for it\n/);
+});
+
+test("verify --plan: reads saved before a build of their components was sent again are said to score Figma before it", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  const snap = copy(loadTreeFixture("example-button"));
+  const coded = await codeFor(snap, { templates: {} });
+  await sendAll(coded, mockFor([snap]));
+  const at = (call: PlanCall) => join(coded.out, call.result);
+  const build = coded.plan.calls.find((c) => c.kind === "build")!;
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  // Saved in order, within a second, as a copy of the folder leaves them: no problem.
+  const now = Date.now() / 1000;
+  utimesSync(at(build), now, now + 1);
+  utimesSync(at(read), now, now);
+  assert.deepEqual(loadPlanResults(join(coded.out, "plan.json")).problems, []);
+  // The build sent again a minute after the read was saved.
+  utimesSync(at(build), now, now + 60);
+  const { problems } = loadPlanResults(join(coded.out, "plan.json"));
+  assert.deepEqual(problems, [
+    `call ${read.seq}: ${read.result} read Forms/Button before build call ${build.seq} was sent again (its result was saved after it), so what it scores is Figma before that build, not now: send read call ${read.seq} again and save its response`,
+  ]);
+  // Read again after it: nothing to say.
+  utimesSync(at(read), now, now + 120);
+  assert.deepEqual(loadPlanResults(join(coded.out, "plan.json")).problems, []);
 });
 
 test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {

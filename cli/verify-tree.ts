@@ -15,6 +15,7 @@
 // mistake the build and verify shared would otherwise build wrong and still
 // pass.
 
+import { sameFamily } from "./fonts.js";
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
 import { RECORD, RECORD_BY_TPL, borderBuiltInside, borderPaintsNothing, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
@@ -544,7 +545,7 @@ export function scoreTree(input: TreeInput): TreeScore {
       const got = rec.box[i];
       let limit: number;
       if (n.t === "T" && n.tx) {
-        const standIn = axis === "w" && (n.tx.fk === 1 || (typeof family === "string" && family.toLowerCase() !== n.tx.f.toLowerCase()));
+        const standIn = axis === "w" && (n.tx.fk === 1 || (typeof family === "string" && !sameFamily(n.tx.f, family)));
         limit = axis === "h" && n.tx.lh === "normal"
           ? Math.max(NORMAL_LINE_HEIGHT.min, NORMAL_LINE_HEIGHT.ratio * Math.max(want, got))
           : sizeTolerance(tolerance, want, got, standIn ? STAND_IN_WIDTH_RATIO : SIZE_TOLERANCE_RATIO);
@@ -674,7 +675,7 @@ function scoreText(n: TreeNode, rec: Rec, field: Field, check: Check, unscorable
   const chars = readbackChars(tx.c);
   check("chars", field("chars") === chars, chars, field("chars"));
   if (tx.fk === 1 || isFontKeyword(tx.f)) unscorable("family", `${tx.f} is a CSS keyword, the platform's font, which no Figma font is named`);
-  else check("family", lower(tx.f) === lower(field("family")), tx.f, field("family"));
+  else check("family", sameFamily(tx.f, field("family")), tx.f, field("family"));
   check("weight", field("weight") === tx.wt, tx.wt, field("weight"));
   check("italic", field("italic") === (tx.it ? 1 : 0), tx.it ? 1 : 0, field("italic"));
   check("size", near(field("size"), tx.sz, FONT_SIZE_TOLERANCE), tx.sz, field("size"));

@@ -14,7 +14,7 @@
 import { alphaByte, alphaVariableName } from "./figma-bind.js";
 import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
-import { standInFor } from "./fonts.js";
+import { figmaFamily, standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
 import { borderBuiltInside, borderPaintsNothing, builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, PlanAlpha, Sides, TreeNode, TurnContext } from "./tree-types.js";
@@ -53,6 +53,8 @@ export interface FigmaText {
   f: string;
   /** The stand-in loadFont tries where Figma lacks `f` (fonts.ts), when it isn't Inter, the template's last resort. */
   a?: string;
+  /** Figma's name for `f`, where it differs, which loadFont tries first: `Geist` for fontsource's `Geist Variable` (fonts.ts figmaFamily). */
+  g?: string;
   w: number;
   i?: 1;
   z: number;
@@ -121,6 +123,8 @@ export interface Unbound {
   property: string;
   value: string;
   candidates: string[];
+  /** The candidates the element's classes name, where they name several, which tie. */
+  named?: string[];
   why?: string;
 }
 
@@ -182,7 +186,7 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
   const [rgb, alpha] = splitHex(hex);
   const decision = ctx.binder.color(hex, role, cls, nocls);
   if (!decision.variable && decision.candidates.length > 1) {
-    ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
+    ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
   }
   if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
   if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx, role, cls)];
@@ -395,7 +399,7 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
         });
       }
     } else if (decision.variable) out.rv = decision.variable;
-    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "radius", value: String(value), candidates: decision.candidates });
+    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "radius", value: String(value), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
   }
   return out;
 }
@@ -421,7 +425,7 @@ function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
     if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx, "effect", node.cls));
     // Only classes naming two of them leave it ambiguous: a shadow no class
     // names, as Tailwind's black shadow scale, binds to none by design.
-    else if (decision.ambiguous) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
+    else if (decision.ambiguous) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
     out.push(effect);
   }
   for (const [fact, kind, name] of [[node.fl, "L", "filter"], [node.bf, "B", "backdrop-filter"]] as const) {
@@ -474,6 +478,8 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   // for a snap that drew the keyword's own face, what Figma sets it in.
   const alt = standInFor(tx.fs ?? tx.f);
   if (alt !== "Inter" && alt !== tx.f) out.a = alt;
+  const named = figmaFamily(tx.f);
+  if (named !== tx.f) out.g = named;
   // A label Figma's font sets wider than the browser's would wrap in its
   // measured width, or show an ellipsis the browser didn't: the build checks
   // each such one once laid out (templates/build.js, keepLines).
@@ -604,7 +610,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
           const [variable, token] = boundTo(decision.variable, alpha, ctx, "vector", node.cls);
           if (token) binds[`${hex}@${alpha}`] = variable;
         }
-      } else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
+      } else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
     }
     if (Object.keys(binds).length) style.vb = binds;
     return style;

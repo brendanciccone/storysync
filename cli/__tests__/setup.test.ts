@@ -1741,3 +1741,16 @@ test("every push instruction shows figma code's estimate and asks before sending
     rmSync(project, { recursive: true, force: true });
   }
 });
+
+test("every skill and the push command send a build again only for drift a resend can change, never for a font stand-in or a mapping limit", () => {
+  // Coder's push: every drift was a font stand-in or an icon's shapes, and
+  // the rule as it was sent both builds and all six reads again, about 120k
+  // characters, for the same score.
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  for (const file of ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"]) {
+    const text = readFileSync(join(root, file), "utf8");
+    assert.doesNotMatch(text, /If `verify` reports drift, send that component's build calls again once|Don't fix drift by hand: send that component's build calls once more/, `${file} still resends for any drift`);
+    assert.match(text, /send a build again only for drift a resend can change|don't send a build again for drift it made itself/, file);
+    for (const kind of [/font stand-in/, /shapes/, /truncation/, /a build response that failed or came back cut short|its build response failed or came back cut short/]) assert.match(text, kind, file);
+  }
+});

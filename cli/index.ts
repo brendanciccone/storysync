@@ -16,7 +16,7 @@ import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents
 import { describeFontStandIns, describeOpenedOverlays, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
-import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
+import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity, describeSnapChange } from "./verify.js";
 import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
@@ -654,7 +654,7 @@ program
   .option("--roots-only", "Score each variant by its outer element alone, as 0.3.0 did, for comparison with an element-tree score")
   .option("--min-fidelity <pct>", "Exit with code 1 when the score is below this percentage: element fidelity where snap measured element trees, else the share of properties; a run that scored nothing fails it too")
   .option("--json", "Output JSON instead of formatted text")
-  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
+  .option("--strict", "Exit with code 1 if any variant or element drifted or is missing from Figma, a keyed layer is in Figma that snap no longer measures, a variant reported nothing comparable or was read back without its element tree, a readback entry is not what Figma returned, is incomplete or was read before the snap, a text's layout snap measured wasn't read back, a planned read call wasn't read whole or was read before a build of its components was sent again, a variant was built from an earlier measurement than a snap other than the plan's, a layer a designer added is inside a variant, or the snap recorded a component failure or lacks a component the readback has")
   .option("--allow-designer-layers", "With --strict, pass the layers a designer added inside variants, which verify still lists")
   .option("--strict-age", "Implies --strict, and also fails when the snap is older than --max-age")
   .option("--strict-measured", "Implies --strict, and also fails on anything not measured: variants inferred from source or with no recorded provenance, placeholders for variants snap couldn't measure, variants measured without snap checking Storybook gave them their values, and variants in Figma that snap never measured or no read covered")
@@ -681,7 +681,7 @@ program
       // and otherwise beside the plan's directory, so a plan made with
       // `figma code --out` elsewhere doesn't overwrite the push's readback.
       // The snap is the one the plan was made from, unless --snap says.
-      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; alphaFallbacks: string[]; snapChanged: boolean; planPath: string } | null = null;
+      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; alphaFallbacks: string[]; snapChanged: boolean; snapGiven: boolean; planSnap: { path: string; measuredAt?: string }; planSnapIntact: boolean; planPath: string } | null = null;
       if (opts.plan) {
         const planPath = opts.plan as string;
         const given = (name: string) => command.getOptionValueSource(name) === "cli";
@@ -693,7 +693,10 @@ program
         const snapChanged = existsSync(snapPath) && fnv1a32Bytes(readFileSync(snapPath)) !== plan.snap.digest;
         // What the calls not read whole were to read: their variants are not read, not missing.
         const notReadSlices = plan.calls.filter((c) => c.kind === "read" && loaded.notRead.includes(c.seq)).flatMap((c) => c.slices ?? []);
-        assembled = { ...loaded, notReadSlices, snapChanged, planPath };
+        const planSnapPath = resolve(dirname(planPath), plan.snap.path);
+        const planSnapIntact = existsSync(planSnapPath) && fnv1a32Bytes(readFileSync(planSnapPath)) === plan.snap.digest;
+        const planSnap = { path: planSnapPath, ...(plan.snap.measuredAt ? { measuredAt: plan.snap.measuredAt } : {}) };
+        assembled = { ...loaded, notReadSlices, snapChanged, snapGiven: given("snap"), planSnap, planSnapIntact, planPath };
       }
       const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
       // A readback or meta.json passed as --snap, or a failed `snap --json`
@@ -718,12 +721,18 @@ program
       result.snapAge = snapAge;
       // What --plan found assembling the readback, beside the score: a read
       // with no result, a set two sets claim, an entry read twice.
+      // A snap other than the plan's: the components Figma says were built
+      // from another measurement than it are what the change reached, and
+      // what the calls built and read describes the earlier snap there.
+      const builtFromOther = assembled?.snapChanged
+        ? result.caveats.filter((c) => c.kind === "built-from-other-measurement").map((c) => c.component)
+        : [];
       const plan = assembled && {
         path: assembled.planPath,
         readback: assembled.written,
         problems: assembled.problems,
         ...(assembled.alphaFallbacks.length ? { alphaFallbacks: assembled.alphaFallbacks } : {}),
-        ...(assembled.snapChanged ? { snapChanged: true } : {}),
+        ...(assembled.snapChanged ? { snapChanged: true, snapGiven: assembled.snapGiven, builtFromOther } : {}),
       };
       const headline = headlineFidelity(result);
       const belowMinimum = minFidelity !== null && (headline === null || headline < minFidelity / 100 - 1e-9);
@@ -814,7 +823,11 @@ program
             console.log(chalk.dim("      Send each read call in plan.json and save its response unchanged to its result path, running `storysync figma next` for a result with `more`, then run verify again."));
           }
           if (plan.snapChanged) {
-            console.log(`  ${chalk.yellow("!")} ${shownPath(snapPath)} has changed since \`storysync figma code\` made this plan from it, so the calls built and read what the earlier snap measured: run figma code again and send its calls.`);
+            const planSnap = assembled!.planSnap;
+            for (const line of describeSnapChange(shownPath(snapPath), { ...planSnap, path: shownPath(planSnap.path) }, {
+              ...(snapAge.known ? { measuredAt: snapAge.measuredAt } : {}),
+              given: plan.snapGiven!, planSnapIntact: assembled!.planSnapIntact, builtFromOther: plan.builtFromOther!, notInSnap: result.componentsNotInSnap,
+            })) console.log(line);
           }
           // Not in the score, which no readback of a binding can show: each
           // turns opaque, or its shadow stays unbound, at a mode switch.
@@ -865,6 +878,7 @@ program
           && result.componentsNotInSnap.length === 0
           && readbackIssues.length === 0
           && (plan?.problems.length ?? 0) === 0
+          && (plan?.builtFromOther?.length ?? 0) === 0
           && treeStrictFailures(result, { allowDesignerLayers: true }).length === 0
           && result.summary.propertiesCompared > 0;
         // Not of a component with something measured left uncompared.
@@ -979,6 +993,7 @@ program
         || result.uncompared.length > 0
         || (plan?.problems.length ?? 0) > 0
         || (plan?.alphaFallbacks?.length ?? 0) > 0
+        || (plan?.builtFromOther?.length ?? 0) > 0
         || treeStrictFailures(result, { allowDesignerLayers: !!opts.allowDesignerLayers }).length > 0;
       // Unrecorded counts as not-measured, for the same reason an unknown age
       // counts as stale: the absent state must not read as the good one. So
