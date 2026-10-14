@@ -6,7 +6,7 @@
 // results out on disk.
 
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./version.js";
@@ -59,9 +59,14 @@ export interface SnapOptions {
   /**
    * Measure only the components `components` names and merge them into the
    * styles.json already in `outDir`, replacing those and keeping the rest
-   * (`--merge`). Without it, a run writes only what it measured.
+   * (`--merge`). `"auto"`, as `--components` alone is, merges the same
+   * way where `outDir` holds a snap, refusing one it can't add to as
+   * `--merge` does, and writes only what it measured where it holds none,
+   * so a push of some components keeps the record of every other
+   * component an earlier push measured. Without it (`--no-merge`), a run
+   * writes only what it measured.
    */
-  merge?: boolean;
+  merge?: boolean | "auto";
   /**
    * Measure each variant's root element alone, as 0.4.0 did, without its
    * element tree (`--root-only`): styles.json is then what 0.4.0 wrote,
@@ -228,6 +233,12 @@ export interface SnapComponent {
    */
   argsNotInDocs?: string[];
   /**
+   * Each of the component's stories' own args that is a string, number,
+   * boolean or null, by story ID, where snap read them: map, inspect and
+   * diff take the props only they name from here (props.ts, storyArgProps).
+   */
+  storyArgs?: Record<string, Record<string, string | number | boolean | null>>;
+  /**
    * Each prop that would be a variant property and was left out, and why
    * (props.ts): `--exclude-props`, the story's argTypes marking it as
    * behavior, every value measuring the same (`no-op`), or a value opening
@@ -283,6 +294,13 @@ export interface SnapResult {
     /** Components with more combinations than the ceiling, measured as a subset. */
     componentsCapped: number;
   };
+  /**
+   * The components a merge (`--merge`, or `--components` with a snap to add
+   * to) dropped from the earlier snap because Storybook no longer lists
+   * them, by key. Returned by runSnap, and in `snap --json`, but not
+   * written to styles.json: it is what this run did, not what was measured.
+   */
+  removedComponents?: string[];
 }
 
 /** Whether `snap --strict` fails on `result`. */
@@ -510,6 +528,31 @@ export function parseBehaviorOnlyWarning(warning: string): string[] | null {
 }
 
 /**
+ * `combination` less each value that stands for its prop left unset
+ * (FigmaVariantProperty's `unset`): the story is given no arg for it, so
+ * the component draws its own default.
+ */
+export function withoutUnset(combination: Record<string, string>, properties: readonly FigmaVariantProperty[]): Record<string, string> {
+  const unset = new Map(properties.filter((p) => p.unset !== undefined).map((p) => [p.name, p.unset]));
+  if (!unset.size) return combination;
+  return Object.fromEntries(Object.entries(combination).filter(([name, value]) => unset.get(name) !== value));
+}
+
+/** The stories' own args snap records (`storyArgs`): each story's strings, numbers, booleans and nulls. */
+export function recordedStoryArgs(stories: readonly StoryOwn[]): Record<string, Record<string, string | number | boolean | null>> {
+  const out: Record<string, Record<string, string | number | boolean | null>> = {};
+  for (const story of stories) {
+    const args: Record<string, string | number | boolean | null> = {};
+    for (const name of Object.keys(story.args).sort()) {
+      const value = story.args[name];
+      if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") args[name] = value;
+    }
+    out[story.id] = args;
+  }
+  return out;
+}
+
+/**
  * Variant properties whose values all measured the same wherever the other
  * properties held still: an axis that changes nothing snap records, such as
  * Radix's `asChild`, or a prop the story drops on its way to the component.
@@ -553,9 +596,19 @@ export function detectNoOpProperties(properties: FigmaVariantProperty[], variant
  *   defaults measured a closed trigger and no prop opens it, nothing else
  *   is judged: a prop that styles the content, as Sheet's `side` does,
  *   measures the same on the trigger.
+ *   Where the defaults rendered nothing at all (`element_not_found`), a
+ *   boolean one of whose values renders it, as coder's ConfirmDialog's
+ *   `open=true`, whose story sets it while its docs default it to false:
+ *   a controlled state whose other value shows nothing.
  * - `no-op`: one every value of which measured the same
- *   (detectNoOpProperties), with whether the markup changed with it, so
- *   the args reached the component (`markups`, by slug), or didn't.
+ *   (detectNoOpProperties), root and element tree alike, with whether the
+ *   markup changed with it, so the args reached the component (`markups`,
+ *   by slug), or didn't. A story whose own args set one of its values
+ *   doesn't keep it: each variant was measured from the story its values
+ *   pick (chooseStory), so ToggleGroup's `disabled=true`, which dims its
+ *   items, measured differently there, while Accordion's `multiple`,
+ *   which its stories set both ways, measured the same and draws nothing
+ *   new.
  *
  * Props `keep` names are never judged, and only variants Storybook
  * confirmed it gave their values are evidence.
@@ -573,7 +626,15 @@ export function detectBehaviorProps(
   const defaults = (combination: Record<string, string>, except?: string) =>
     properties.every((p) => p.name === except || combination[p.name] === p.defaultValue);
   const base = measured.find((v) => defaults(v.combination));
-  if (!base) return [];
+  if (!base) {
+    const empty = variants.some((v) => v.status === "element_not_found" && v.argsChecked !== false && defaults(v.combination));
+    if (!empty || !options.pin) return [];
+    for (const property of judged.filter((p) => p.type === "BOOLEAN")) {
+      const shown = measured.find((v) => defaults(v.combination, property.name) && v.combination[property.name] !== property.defaultValue);
+      if (shown) return [{ name: property.name, reason: "opens", value: shown.combination[property.name] }];
+    }
+    return [];
+  }
 
   if (options.closed.has(base.slug)) {
     if (!options.pin) return [];
@@ -1287,10 +1348,16 @@ interface MergeBase {
  * describe the same thing.
  * Read before anything is measured, so a long run doesn't end on it.
  */
-export function readMergeBase(opts: SnapOptions): MergeBase {
+export function readMergeBase(opts: SnapOptions): MergeBase | null {
   const stylesPath = join(opts.outDir, SNAP_STYLES_FILENAME);
   const metaPath = join(opts.outDir, SNAP_META_FILENAME);
-  const rerun = "Run snap without --merge to measure every component again.";
+  // --components alone merges where there is a snap to merge into, and
+  // says how to write its components alone where it can't.
+  const auto = opts.merge === "auto";
+  if (auto && !existsSync(stylesPath)) return null;
+  const flag = auto ? "--components" : "--merge";
+  const without = auto ? "pass --no-merge to write only the components --components names" : "run snap without --merge";
+  const rerun = auto ? "Pass --no-merge to write only the components --components names, or run snap without --components to measure every component again." : "Run snap without --merge to measure every component again.";
   const read = (path: string, lead: string, after: string): unknown => {
     try {
       return JSON.parse(readFileSync(path, "utf8"));
@@ -1299,20 +1366,20 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
       throw new Error(`${lead}, but ${path} ${why}${after}. ${rerun}`);
     }
   };
-  const result = read(stylesPath, `--merge adds to the snap in ${opts.outDir}`, "") as SnapResult;
+  const result = read(stylesPath, `${flag} adds to the snap in ${opts.outDir}`, "") as SnapResult;
   if (!Array.isArray(result?.components)) {
-    throw new Error(`--merge adds to the snap in ${opts.outDir}, but ${stylesPath} has no "components" list, so snap didn't write it. ${rerun}`);
+    throw new Error(`${flag} adds to the snap in ${opts.outDir}, but ${stylesPath} has no "components" list, so snap didn't write it. ${rerun}`);
   }
   const unknownAge = ", so how old they are is unknown";
-  const meta = read(metaPath, `--merge keeps the components ${stylesPath} holds`, unknownAge) as SnapMeta;
+  const meta = read(metaPath, `${flag} keeps the components ${stylesPath} holds`, unknownAge) as SnapMeta;
   if (typeof meta?.measuredAt !== "string" || !Number.isFinite(Date.parse(meta.measuredAt))) {
-    throw new Error(`--merge keeps the components ${stylesPath} holds, but ${metaPath} has no measuredAt${unknownAge}. ${rerun}`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, but ${metaPath} has no measuredAt${unknownAge}. ${rerun}`);
   }
   if (result.version !== SNAP_SCHEMA_VERSION || result.storysyncVersion !== VERSION) {
-    throw new Error(`--merge keeps the components ${stylesPath} holds, but storysync ${result.storysyncVersion ?? "(unknown)"} measured them, not ${VERSION}. ${rerun}`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, but storysync ${result.storysyncVersion ?? "(unknown)"} measured them, not ${VERSION}. ${rerun}`);
   }
   if (result.variantSelection !== opts.variants) {
-    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with --variants ${result.variantSelection}: pass the same, or run snap without --merge.`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, which were measured with --variants ${result.variantSelection}: pass the same, or ${without}.`);
   }
   // The kept components were measured without these props, and styles.json
   // records this run's list alone, which the audit reads: another list would
@@ -1320,11 +1387,11 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
   const excluded = (names: readonly string[] | undefined) => [...new Set((names ?? []).map((n) => n.toLowerCase()))].sort().join(",");
   if (excluded(result.excludeProps) !== excluded(opts.excludeProps)) {
     const was = result.excludeProps?.length ? `--exclude-props ${result.excludeProps.join(",")}` : "no --exclude-props";
-    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or run snap without --merge.`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or ${without}.`);
   }
   if (excluded(result.keepProps) !== excluded(opts.keepProps)) {
     const was = result.keepProps?.length ? `--keep-props ${result.keepProps.join(",")}` : "no --keep-props";
-    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or run snap without --merge.`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, which were measured with ${was}: pass the same, or ${without}.`);
   }
   // A tree snap's components carry their elements, a root-only one's don't:
   // mixed, a push would build some components whole and some as their outer
@@ -1333,11 +1400,11 @@ export function readMergeBase(opts: SnapOptions): MergeBase {
   if (trees !== !opts.rootOnly || (trees && result.treeVersion !== TREE_VERSION)) {
     const was = trees ? "with their element trees" : "root only (--root-only, or by a storysync that measured no trees)";
     const pass = trees ? "pass no --root-only" : "pass --root-only";
-    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured ${was}: ${pass}, or run snap without --merge.`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, which were measured ${was}: ${pass}, or ${without}.`);
   }
   const url = (u: string) => String(u).replace(/\/+$/, "");
   if (url(result.storybookUrl) !== url(opts.storybookUrl)) {
-    throw new Error(`--merge keeps the components ${stylesPath} holds, which were measured from ${result.storybookUrl}, not ${opts.storybookUrl}: pass the same --storybook, or run snap without --merge.`);
+    throw new Error(`${flag} keeps the components ${stylesPath} holds, which were measured from ${result.storybookUrl}, not ${opts.storybookUrl}: pass the same --storybook, or ${without}.`);
   }
   return { result, meta };
 }
@@ -1394,7 +1461,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
   // still stamp a fresh `measuredAt` over an empty snap.
   const listed = await deps.storybook.listComponents();
   const entries = selectComponents(listed, opts.components);
-  const earlier = opts.merge ? readMergeBase(opts) : null;
+  const earlier = opts.merge === true || (opts.merge === "auto" && opts.components?.length) ? readMergeBase(opts) : null;
   const stories = resolveStoryOverrides(entries, opts.stories, listed);
   // A component measured again into a snap keeps the story it was measured
   // from where --stories names none, so a re-measure of a push that chose
@@ -1519,10 +1586,19 @@ function writeSnap(
   // only for one recorded without an ID.
   const ids = new Set(measured.map((c) => c.id));
   const keys = new Set(measured.map((c) => componentKey(c)));
-  const kept = (earlier?.result.components ?? []).filter((c) => (c.id != null ? !ids.has(c.id) : !keys.has(componentKey(c))));
+  const others = (earlier?.result.components ?? []).filter((c) => (c.id != null ? !ids.has(c.id) : !keys.has(componentKey(c))));
+  // Not one Storybook no longer lists: its code is gone, and kept it would
+  // stay in the summary, a full figma code build and verify for good.
+  // Matched the same way; all are kept where the listing came back empty.
+  const listedIds = new Set(listed.map((e) => e.id));
+  const listedKeys = new Set(listed.map((e) => componentKey(e)));
+  const removed = listed.length ? others.filter((c) => (c.id != null ? !listedIds.has(c.id) : !listedKeys.has(componentKey(c)))) : [];
+  const kept = others.filter((c) => !removed.includes(c));
   const components = [...measured, ...kept];
+  const removedKeys = removed.map((c) => componentKey(c)).sort();
   if (earlier) {
-    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap`);
+    const dropped = removedKeys.length ? `, and dropped ${removedKeys.join(", ")}, which Storybook no longer lists` : "";
+    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap${dropped}`);
   }
 
   // Deterministic ordering so repeated runs produce identical output.
@@ -1599,7 +1675,7 @@ function writeSnap(
 
   writeStylesJson(opts.outDir, result);
   writeMetaJson(opts.outDir, result, oldest, times, browserVersion, { noChannelArgs: opts.channelArgs === false, noOpenOverlays: opts.openOverlays === false });
-  return result;
+  return removedKeys.length ? { ...result, removedComponents: removedKeys } : result;
 }
 
 /** A variant's tree as captured, until the component's base is known and its assets are written. */
@@ -1757,7 +1833,7 @@ async function snapComponent(
   };
   // The variant properties again, from what is now known, and the plan with them.
   const replan = () => {
-    source = resolveProps(component, { ...flags, argTypes: seenArgTypes, measured: found });
+    source = resolveProps(component, { ...flags, argTypes: seenArgTypes, measured: found, ...(owns ? { stories: { own: owns, storyId } } : {}) });
     definition = mapComponent(source.component, maxCombinations);
     shell.variantProperties = definition.variantProperties;
     ({ plan: combinations, judgeAt } = planOf());
@@ -1772,6 +1848,11 @@ async function snapComponent(
   const judge = (): boolean => {
     judgments++;
     const closed = new Set(notes.filter((n) => n.note.kind === "closed-trigger").map((n) => n.slug));
+    // Each tree against the base's, as assembleTree gives them once every
+    // variant is in: a prop that changes only what is inside, as
+    // ToggleGroup's `disabled` dims its items, changes nothing at the root.
+    const [first, ...rest] = trees;
+    for (const tree of first ? rest : []) tree.variant.treeDelta = diffTree(first.nodes, tree.nodes);
     const more = detectBehaviorProps(definition.variantProperties, shell.variants, {
       closed, markups: markupBySlug, keep: flags.keep, pin: pinned.length === 0,
     });
@@ -1817,8 +1898,9 @@ async function snapComponent(
       if (index >= combinations.length) break;
       const combination = combinations[index];
       deps.onVariantStart?.(index + 1, combinations.length);
-      // What the story is given: the combination, and any prop pinned open.
-      const asked = { ...combination, ...Object.fromEntries(pinned.map((p) => [p.property.name, p.value])) };
+      // What the story is given: the combination, less a value that stands
+      // for a prop left unset, and any prop pinned open.
+      const asked = { ...withoutUnset(combination, definition.variantProperties), ...Object.fromEntries(pinned.map((p) => [p.property.name, p.value])) };
       const properties = [...definition.variantProperties, ...pinned.map((p) => p.property)];
       // A value the URL can't carry is left out of it and set through
       // Storybook's preview once the story loads, as one it refused is.
@@ -1866,6 +1948,18 @@ async function snapComponent(
           owns = read.stories;
           ownsError = undefined;
           const stories = read.stories;
+          shell.storyArgs = recordedStoryArgs(stories);
+          // Props only the stories' args name (props.ts), as coder's
+          // Button's cva `variant` and `size`, are variant properties too:
+          // the plan starts again with them.
+          const before = JSON.stringify(definition.variantProperties);
+          replan();
+          if (JSON.stringify(definition.variantProperties) !== before) {
+            progress(`  ${entry.title ?? entry.name}: its stories' args add ${source.fromStories.join(", ")}; ${combinations.length} ${combinations.length === 1 ? "variant" : "variants"} planned`);
+            startOver();
+            index = -1;
+            continue;
+          }
           // A variant measured before, from the component's story, that
           // drew past its box and has a story for another of its values to
           // try (siblingStories) would change too.

@@ -1113,6 +1113,12 @@ function unverifiedVerdict(component: string, slug: string, figma: unknown): Var
 export interface VerifyOptions extends ReadbackCheckOptions {
   /** Components to leave out of the score: see withoutComponents. */
   skip?: readonly string[];
+  /**
+   * The only components to score, by componentKey: a plan's (`verify
+   * --plan`), as a snap that kept other pushes' components holds more
+   * than it built. Absent, every component the snap holds.
+   */
+  only?: readonly string[];
   /** Score every variant by its root alone, as before trees, for comparison (`--roots-only`). */
   rootsOnly?: boolean;
   /** Planned read calls not read whole, from loadPlanResults: reported, and a --strict failure. */
@@ -1176,13 +1182,39 @@ export function withoutComponents(
   };
 }
 
+/**
+ * `snap` with only the components `keys` names, by componentKey, and its
+ * summary counting those: the components a plan built, of a snap that kept
+ * the components of other pushes too, which aren't missing from Figma for
+ * not being in this plan's readback.
+ */
+export function onlyComponents(snap: SnapResult, keys: readonly string[]): SnapResult {
+  const wanted = new Set(keys);
+  const components = (snap.components ?? []).filter((c) => wanted.has(componentKey(c)));
+  if (components.length === (snap.components ?? []).length) return snap;
+  const variants = components.flatMap((c) => c.variants ?? []);
+  const summary = snap.summary && {
+    ...snap.summary,
+    components: components.length,
+    variants: variants.length,
+    rendered: variants.filter((v) => v.status === "ok").length,
+    failed: variants.filter((v) => v.status !== "ok").length,
+    componentsFailed: components.filter((c) => c.error != null).length,
+    componentsWithWarnings: components.filter((c) => (c.warnings ?? []).length > 0).length,
+    componentsCapped: components.filter((c) => c.cap != null).length,
+  };
+  return { ...snap, components, summary };
+}
+
 export function verify(
   snapIn: SnapResult,
   readbackIn: ReadbackFile,
   tolerance: number,
   options: VerifyOptions = {},
 ): VerifyResult {
-  const { snap, readback, skipped } = withoutComponents(snapIn, readbackIn, options.skip);
+  const left = withoutComponents(snapIn, readbackIn, options.skip);
+  const { readback, skipped } = left;
+  const snap = options.only ? onlyComponents(left.snap, options.only) : left.snap;
   const spike = options.spike ?? SPIKE;
   const measuredByComponent = expandSnap(snap);
   const verdicts: VariantVerdict[] = [];
@@ -1878,6 +1910,7 @@ export function readSnapAge(
   snapPath: string,
   maxAgeMs: number | null,
   now: number = Date.now(),
+  only?: readonly string[],
 ): SnapAgeInfo {
   const metaPath = join(dirname(snapPath), SNAP_META_FILENAME);
 
@@ -1909,15 +1942,26 @@ export function readSnapAge(
     return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}) — check the clock` };
   }
 
-  const ageMs = Math.max(0, now - measured);
   // Only times that are times: a component with none is held to measuredAt.
   const times = typeof meta.componentsMeasuredAt === "object" && meta.componentsMeasuredAt !== null
     ? Object.fromEntries(Object.entries(meta.componentsMeasuredAt as Record<string, unknown>)
       .filter((pair): pair is [string, string] => typeof pair[1] === "string" && Number.isFinite(Date.parse(pair[1]))))
     : null;
+  // Scoring `only` some components (verify --plan), the snap is as old as
+  // the oldest of those: a merged snap's measuredAt is its oldest
+  // component's, which may be another push's, scored by nobody here.
+  let at = meta.measuredAt;
+  if (only?.length && times) {
+    const theirs = only.map((key) => times[key] ?? meta.measuredAt as string);
+    at = theirs.reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min));
+    if (Date.parse(at) > now + MAX_CLOCK_SKEW_MS) {
+      return { known: false, reason: `a component's measuredAt is in the future (${at}) — check the clock` };
+    }
+  }
+  const ageMs = Math.max(0, now - Date.parse(at));
   return {
     known: true,
-    measuredAt: meta.measuredAt,
+    measuredAt: at,
     ageMs,
     storybookUrl: typeof meta.storybookUrl === "string" ? meta.storybookUrl : undefined,
     stale: maxAgeMs != null && ageMs > maxAgeMs,

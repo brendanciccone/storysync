@@ -251,7 +251,9 @@ export const RECORD_BY_TPL: Readonly<Record<number, { readonly F: number; readon
  */
 export interface FigmaPlan {
   version: 1; storysyncVersion: string;
-  snap: { path: string; measuredAt: string; digest: string };  // digest: fnv over styles.json bytes
+  // digest: fnv over styles.json bytes; components: each built component's
+  // componentDigest by componentKey, absent from a plan written before plans recorded them
+  snap: { path: string; measuredAt: string; digest: string; components?: Record<string, string> };
   calls: PlanCall[];
   /** Each value bound by the project's base styles, where no class names its token, with the rule (section 8.9). */
   bindings?: PlanBinding[];

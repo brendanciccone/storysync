@@ -165,3 +165,61 @@ test("describeUnseenArgTypes: says which argTypes a command without a browser co
   assert.match(describeUnseenArgTypes(null, ["a", "b"], 2)!, /^Without a browser, storysync can't see the stories' argTypes: there is no snap to read them from\. .*Run snap first, or point --snap at its directory\.$/);
   assert.match(describeUnseenArgTypes(".storysync/snaps/styles.json", ["a"], 4)!, /can't see the argTypes of 1 of 4 components \(a\): \.storysync\/snaps\/styles\.json doesn't have those\./);
 });
+
+// coder's Button: its cva VariantProps aren't in Storybook's docs, and its
+// story declares no argTypes for them, but its stories set them.
+const CODER_BUTTON: StorybookComponent = {
+  name: "Button",
+  props: [{ name: "asChild", type: { name: "boolean" } }],
+  stories: [],
+};
+const CODER_STORIES = [
+  { id: "button--default", args: {} },
+  { id: "button--default-disabled", args: { disabled: true } },
+  { id: "button--default-small", args: { size: "sm" } },
+  { id: "button--outline", args: { variant: "outline" } },
+  { id: "button--destructive", args: { variant: "destructive", children: "Delete" } },
+  { id: "button--icon-default", args: { variant: "default", size: "icon", children: { $type: "object" } } },
+  { id: "button--with-label", args: { title: "Mail", placeholder: "email", onClick: { $type: "function" }, open: true } },
+];
+
+test("resolveProps: props only the stories' own args set are variant properties, the unset default standing for the component's own", () => {
+  const source = resolveProps(CODER_BUTTON, { stories: { own: CODER_STORIES, storyId: "button--default" } });
+  assert.deepEqual(source.fromStories, ["disabled", "size", "variant"]);
+  assert.deepEqual(mapComponent(source.component).variantProperties, [
+    { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+    // No story names the component's default size, so `default` stands for it unset.
+    { name: "size", type: "VARIANT", values: ["default", "sm", "icon"], defaultValue: "default", unset: "default" },
+    // A story names `default`, the default only by its name.
+    { name: "variant", type: "VARIANT", values: ["default", "outline", "destructive"], defaultValue: "default", defaultAssumed: true },
+  ]);
+  // The component's story gives the default where it sets one; the argTypes' initial value where it doesn't.
+  const outline = resolveProps(CODER_BUTTON, { stories: { own: CODER_STORIES, storyId: "button--outline" } });
+  assert.deepEqual(mapComponent(outline.component).variantProperties.find((p) => p.name === "variant"),
+    { name: "variant", type: "VARIANT", values: ["outline", "destructive", "default"], defaultValue: "outline" });
+  const initial = resolveProps(CODER_BUTTON, { argTypes: { size: { type: "string", control: "text", initial: "sm" } }, stories: { own: CODER_STORIES, storyId: "button--default" } });
+  assert.deepEqual(mapComponent(initial.component).variantProperties.find((p) => p.name === "size"),
+    { name: "size", type: "VARIANT", values: ["sm", "icon"], defaultValue: "sm" });
+  // What the docs or the argTypes list as a choice, they give; --exclude-props leaves one out as ever.
+  const documented = resolveProps({ ...CODER_BUTTON, props: [...CODER_BUTTON.props, { name: "size", type: { name: "union", raw: '"lg" | "sm"' }, defaultValue: "lg" }] }, {
+    stories: { own: CODER_STORIES, storyId: "button--default" }, exclude: ["disabled"],
+  });
+  assert.deepEqual(documented.fromStories, ["disabled", "variant"]);
+  assert.deepEqual(documented.excluded, [{ name: "disabled", reason: "excluded" }]);
+  assert.deepEqual(mapComponent(documented.component).variantProperties.find((p) => p.name === "size")?.values, ["lg", "sm"]);
+});
+
+test("snapPropSource: map, inspect and diff take the props the stories' args set from the snap's storyArgs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-props-"));
+  try {
+    const storyArgs = Object.fromEntries(CODER_STORIES.map((s) => [s.id, Object.fromEntries(Object.entries(s.args).filter(([, v]) => typeof v !== "object"))]));
+    writeFileSync(join(dir, "styles.json"), JSON.stringify({ components: [{ id: "components-button", storyId: "button--default", storyArgs }] }));
+    const snap = readSnapProps(dir);
+    const source = snapPropSource(CODER_BUTTON, "components-button", snap, {});
+    assert.deepEqual(mapComponent(source.component).variantProperties.map((p) => [p.name, p.defaultValue]), [["disabled", "false"], ["size", "default"], ["variant", "default"]]);
+    // Without the record, the docs' alone: none.
+    assert.deepEqual(mapComponent(snapPropSource(CODER_BUTTON, "other", snap, {}).component).variantProperties, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

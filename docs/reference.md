@@ -167,7 +167,10 @@ Options:
                          once more
   --selector <css>       Measure the element this matches instead of choosing one
   --merge                With --components, measure only those and merge them into the styles.json
-                         in --out, keeping the rest
+                         in --out, keeping the rest, and refuse when there is none; --components
+                         alone merges the same way where --out holds a snap
+  --no-merge             With --components, write only the components it names to --out, dropping
+                         the rest of the snap there
   --root-only            Measure each variant's outer element alone, without its element tree, as
                          0.3.0 did: for a push through the skill's root-only templates
   --no-channel-args      Don't set the values Storybook won't take from the story's URL through its
@@ -201,8 +204,9 @@ storysync figma code [options]
   --components <names>   Comma-separated component names, titles or IDs to build (default: every
                          component in the snap); a name that matches nothing is an error
   --skip <names>         Comma-separated component names, titles or IDs to leave out
-  --out <dir>            Where plan.json, calls/ and results/ go; an earlier plan's calls and results
-                         there are removed (default: ".storysync/figma")
+  --out <dir>            Where plan.json, calls/ and results/ go; an earlier plan Figma answered a
+                         read of moves to earlier/ there with its calls and results, and any other's
+                         are removed (default: ".storysync/figma")
   --max-chars <n>        Most characters of code in one build call (default: 45000)
   --max-nodes <n>        Most layers one build call creates or restyles (default: 400)
   --read-limit <n>       Most characters a read call is predicted to return (default: 17000)
@@ -218,6 +222,8 @@ storysync figma tokens [--tokens <path>] [--plan <path>] [--alpha <name>]... [--
 
 `figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: a `variables` call that makes the alpha variables its translucent paints bind to, where they bind any; the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. `plan.json` lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
 
+An earlier plan in `<out>` that Figma answered a read call of, the last push's, is moved with its calls and results to `<out>/earlier/<digest>/`, and its path printed (`earlier` in `--json`): the snap keeps that push's components, so `verify --plan <out>/earlier/<digest>/plan.json` still scores it. Any other plan's calls and results are removed, so a response saved for one can't be read as the new plan's.
+
 It prints each call, its warnings, the alpha variables its translucent paints bind to, which its first call makes (see [Variable binding](#variable-binding)), and the push's [estimate](https://github.com/brendanciccone/storysync/blob/main/README.md#what-a-push-costs):
 
 ```text
@@ -232,7 +238,7 @@ An alpha variable is a color token at an alpha, beside the token: `destructive 1
 
 ### `storysync verify`
 
-Scores what was written to Figma against what `snap` measured. During a push, the agent sends the read calls `figma code` wrote and saves each response, and `verify --plan` reads those responses, assembles them into `.storysync/figma-readback.json` for committing and CI, and compares that with the snap. See [How verify scores](#how-verify-scores).
+Scores what was written to Figma against what `snap` measured. During a push, the agent sends the read calls `figma code` wrote and saves each response, and `verify --plan` reads those responses, assembles them into `.storysync/figma-readback.json` for committing and CI, and compares that with the snap. See [How verify scores](#how-verify-scores). `verify --plan` scores only the components the plan built, so the components a snap keeps from other pushes aren't missing from Figma, and says the snap changed since the plan only where it measured one of those components again: the plan records a digest of each. The snap's age, which `--max-age` and `--strict-age` hold it to, is that of the oldest of those components too, not of the oldest component the snap keeps.
 
 ```text
 Options:
@@ -425,7 +431,7 @@ snap warns when all of a component's variants measure the same, or all of one pr
 - **Shadows** without the empty `0 0 #0000` layers Tailwind adds, so each recorded layer is a real Figma effect.
 - **Text** with its `textTransform`, `letterSpacing`, and any opacity above it folded into its color. Where the browser wrapped the text or cut it off, `text.layout` records the width it was laid out in, the lines it drew, and whether it ends in an ellipsis.
 - **Images** once loaded. snap waits up to 5 seconds for images still loading, such as an avatar's photo.
-- **argTypes**: each story's argTypes as `argTypes`, with each arg's type, control, options, `if`, table marks and the story's own value, and the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`. It records each prop it left out, and why, as `excludedProps`.
+- **argTypes**: each story's argTypes as `argTypes`, with each arg's type, control, options, `if`, table marks and the story's own value, and the choices a story declares that Storybook's docs don't, such as Button's `disabled`, as `argsNotInDocs`, and the stories' own args as `storyArgs`. It records each prop it left out, and why, as `excludedProps`.
 
 ### Fonts
 
@@ -444,7 +450,7 @@ A font your project loads itself, such as Geist or Inter, is measured as it is. 
 
 ### Running snap
 
-**Measuring some components again.** `--components` alone writes a `styles.json` of just those components. To measure a few again, such as ones that timed out, and keep the rest, add `--merge`. It replaces those components in the `styles.json` already in `--out` and keeps every other one as it was measured. It measures a component again from the story the snap measured it from, with its `!` where it had one, unless `--stories` names another. It refuses, before measuring anything, a snap it can't add to: none there, one with no `meta.json`, or one taken by another Storysync version, with other `--variants`, `--exclude-props` or `--keep-props`, or from another Storybook. `meta.json` then records when each component was measured, in `componentsMeasuredAt`, and its `measuredAt` is the oldest of them, so `verify` judges the snap by its oldest part.
+**Measuring some components again.** `--components` replaces those components in the `styles.json` already in `--out` and keeps the rest, so a push of some components keeps the record of every component an earlier push measured, which `map`, `diff` and `verify --plan` read. A kept component Storybook no longer lists is dropped, since its code is gone: snap names it in its progress, and in `removedComponents` with `--json`. Where `--out` holds no snap it writes those alone, and `--no-merge` writes them alone over one. `--merge` does the same, but refuses where there is no snap to add to. A merge measures a component again from the story the snap measured it from, with its `!` where it had one, unless `--stories` names another. It refuses, before measuring anything, a snap it can't add to: one with no `meta.json`, or one taken by another Storysync version, with other `--variants`, `--exclude-props` or `--keep-props`, or from another Storybook. `meta.json` then records when each component was measured, in `componentsMeasuredAt`, and its `measuredAt` is the oldest of them, so `verify` judges the snap by its oldest part.
 
 **Timeouts and failures.** Only a story that timed out while loading is tried again. A story that throws after it loads is reported as `render_error`. A story that never renders costs one `--timeout`, and the error says nothing that draws rendered under `#storybook-root` or `#root`. A screenshot waits no longer than `--timeout`, and with `--screenshots` an element with no width or height is measured without a screenshot.
 
@@ -545,7 +551,7 @@ Under the score, `verify` lists as coverage what it couldn't score, never as a m
 
 **Designer layers.** A layer inside a variant that carries no key, one a designer added, isn't scored. `verify` lists it by name, type and node id, and it fails `--strict` unless you pass `--allow-designer-layers`.
 
-**Leaving components out.** A component you chose not to push, such as a Dialog snap measured closed, is still in the snap, so `verify` would count each of its variants as missing from Figma. Pass it to `--skip` by name, title or ID. It's left out of the score, and of `--strict`, and the line under the score names it. A name that matches nothing is an error. A component in the readback that the snap doesn't have at all fails `--strict`: that's what a snap run again with `--components` and without `--merge` leaves out.
+**Leaving components out.** A component you chose not to push, such as a Dialog snap measured closed, is still in the snap, so `verify` would count each of its variants as missing from Figma. Pass it to `--skip` by name, title or ID. It's left out of the score, and of `--strict`, and the line under the score names it. A name that matches nothing is an error. A component in the readback that the snap doesn't have at all fails `--strict`: that's what a snap run again with `--components` and `--no-merge` leaves out.
 
 ### What the score can't show
 
@@ -716,6 +722,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 | `boolean` | Boolean variant property |
 | `enum` / `union` of string literals (a `null` or `undefined` member is ignored) | Variant property with matching values |
 | A prop whose story's argTypes give `options` | Variant property with those values |
+| A prop neither the docs nor the argTypes list that the stories' own args set | Variant property with the values they give |
 | `string` (free text) | Skipped |
 | `number` (free value) | Skipped |
 | `function` / `callback` | Skipped |
@@ -724,15 +731,15 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 | `as` / `asChild` / `render` (they change the element, not its look) | Skipped |
 | `aria-*` / `data-*` attributes | Skipped |
 
-**Where props come from.** Props come from the Props section of the component's Storybook docs, and from the story's `argTypes`, which snap reads in the browser and records in `styles.json`. A choice only the argTypes declare, like Button's `disabled` or Sheet's `side`, becomes a variant property too, its default the story's own arg. `map`, `inspect` and `diff` read the argTypes from that snap (`--snap <dir>`, or `--no-snap`), and say when they can't see them. A union in a markdown props table (`"a" \| "b"`) is read whole, and a type is split only at its top-level `|`, so a function type or a template literal type isn't taken for a union.
+**Where props come from.** Props come from the Props section of the component's Storybook docs, and from the story's `argTypes`, which snap reads in the browser and records in `styles.json`. A choice only the argTypes declare, like Button's `disabled` or Sheet's `side`, becomes a variant property too, its default the story's own arg. So does a prop neither lists that the stories' own args set, like coder's Button's `variant` and `size`, which come from cva's VariantProps: its values are those the stories give, a boolean or a short lowercase word each, never content such as a `title` or `placeholder`, and its default is the value the component's story gives it, else its argTypes' own. Where no story names the component's default, the value `default` stands for the prop left unset: the property records it as `unset`, and snap measures it by giving the story no value for it. snap records the stories' args as `storyArgs`. `map`, `inspect` and `diff` read the argTypes from that snap (`--snap <dir>`, or `--no-snap`), and say when they can't see them. A union in a markdown props table (`"a" \| "b"`) is read whole, and a type is split only at its top-level `|`, so a function type or a template literal type isn't taken for a union.
 
 **Defaults.** A union prop's values start with its default, and a boolean is laid out with its default first, so Figma's default variant is the code's. Where the docs give no usable default, `map` assumes one: a value named `default` if there is one (cva's convention), else the first value, or `false` for a boolean. It marks the property `defaultAssumed: true`, and the skills name those properties in the push summary.
 
 **Props that only change behavior are left out on their own.** Each is recorded in `styles.json` with why, so `map`, `diff` and the Action leave out the same:
 
-- one every value of which snap measured the same, such as cmdk's `loop` or input-otp's `textAlign`;
+- one every value of which snap measured the same, the outer element and every element inside it alike, such as cmdk's `loop` or input-otp's `textAlign`, even where the stories' own args set it both ways, as Accordion's stories set `multiple`. A value that draws something inside, as ToggleGroup's `disabled` dims its items, measured differently, so it is kept;
 - one the argTypes mark with `control: false`, a hidden table row, or an event;
-- an `open` that opens what a closed trigger hides, which snap then sets on every variant, so Drawer is measured open.
+- an `open` that opens what a closed trigger hides, which snap then sets on every variant, so Drawer is measured open, and a boolean whose default renders nothing at all (`element_not_found`) and whose other value renders the component, as a ConfirmDialog whose docs default `open` to false while its story sets it true.
 
 `--keep-props` keeps one, and `--exclude-props` leaves out others, on `map`, `inspect`, `snap` and `diff`, matched ignoring case. snap passes an excluded prop to no story, so each story's own args set it, and records the list as `excludeProps` in `styles.json`, which the audit reads. Pass the same list to every snap of a push: a run without it drops the record, and a `--merge` without it refuses to run.
 

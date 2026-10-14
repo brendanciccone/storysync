@@ -14,7 +14,7 @@ import {
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
   contentOverflow, describeOverflow, describeVariantStories,
-  detectBehaviorProps,
+  detectBehaviorProps, withoutUnset,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
@@ -2817,6 +2817,138 @@ test("runSnap: a component's later variants open its overlay the way an earlier 
     const variants = result.components[0].variants;
     assert.deepEqual(variants.map((v) => v.opened?.via), ["hover", "hover"]);
     assert.deepEqual(done.filter((d) => d === "click" || d === "hover"), ["click", "hover", "hover"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("detectBehaviorProps: where the defaults render nothing, a boolean whose other value renders it is pinned to that value", () => {
+  // coder's ConfirmDialog: its story sets open: true, its docs default open to false.
+  const props: FigmaVariantProperty[] = [
+    { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+    { name: "hideCancel", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+  ];
+  const v = (open: string, hideCancel: string, status: SnapVariant["status"]): SnapVariant =>
+    ({ combination: { open, hideCancel }, slug: `${open}-${hideCancel}`, status, error: null, delta: {} }) as SnapVariant;
+  const variants = [v("false", "false", "element_not_found"), v("true", "false", "ok"), v("false", "true", "element_not_found")];
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed: new Set(), markups: new Map(), pin: true }), [{ name: "open", reason: "opens", value: "true" }]);
+  // Once a prop is pinned, or where the defaults failed another way, nothing is.
+  assert.deepEqual(detectBehaviorProps(props, variants, { closed: new Set(), markups: new Map(), pin: false }), []);
+  const failed = variants.map((x) => (x.status === "element_not_found" ? { ...x, status: "timeout" as const } : x));
+  assert.deepEqual(detectBehaviorProps(props, failed, { closed: new Set(), markups: new Map(), pin: true }), []);
+});
+
+test("runSnap: a prop its stories set both ways is left out where every value measured and marked up the same", async () => {
+  // shadcn's Accordion: `multiple` changes how it opens, not what it draws,
+  // and its stories set it true and false.
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: () => rawCapture("switch"), markup: () => "markup",
+      csf: { "ui-base-switch--default": { args: { multiple: false } }, "ui-base-switch--disabled": { args: { multiple: true } } },
+    });
+    const multiple = { name: "multiple", type: { name: "boolean" }, defaultValue: false };
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs([multiple]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.excludedProps, [{ name: "multiple", reason: "no-op", markup: "same" }]);
+    assert.deepEqual(component.variantProperties, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a prop that changes only what is inside the root is not left out as changing nothing", async () => {
+  // shadcn's ToggleGroup: `disabled` dims its items, not the group.
+  const dir = tempDir();
+  try {
+    const dimmed = () => {
+      const capture = structuredClone(rawCapture("switch"));
+      (capture.root.kids[0] as { cs: Record<string, string> }).cs.opacity = "0.5";
+      return capture;
+    };
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: (args) => (args.disabled === true ? dimmed() : rawCapture("switch")),
+      argTypes: { disabled: { type: { name: "boolean" } } }, markup: (args) => `markup-${String(args.disabled)}`,
+    });
+    const disabled = { name: "disabled", type: { name: "boolean" }, defaultValue: false };
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs([disabled]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.variantProperties.map((p) => p.name), ["disabled"]);
+    assert.equal(component.excludedProps, undefined);
+    assert.deepEqual(component.variants.find((x) => x.combination.disabled === "true")?.treeDelta?.set?.["switch-thumb"], { op: 0.5 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: props only the stories' args set are measured, the unset default by leaving the arg out, and the stories' args recorded", async () => {
+  const dir = tempDir();
+  try {
+    const given: Record<string, unknown>[] = [];
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default",
+      capture: (args) => {
+        given.push({ ...args });
+        return rawCapture(args.size === "sm" ? "switch-sm" : "switch");
+      },
+      csf: { "ui-base-switch--default": { args: {} }, "ui-base-switch--disabled": { args: { size: "sm", label: "Small" } } },
+    });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs([]), launch, onProgress: (m) => progress.push(m) });
+    const [component] = result.components;
+    assert.deepEqual(component.variantProperties, [{ name: "size", type: "VARIANT", values: ["default", "sm"], defaultValue: "default", unset: "default" }]);
+    assert.deepEqual(component.variants.map((x) => [x.slug, x.status]), [["size-default", "ok"], ["size-sm", "ok"]]);
+    assert.ok(progress.some((m) => /its stories' args add size; 2 variants planned/.test(m)), progress.join("\n"));
+    // The unset default was measured with no size at all.
+    assert.ok(given.length > 0 && given.every((args) => args.size === undefined || args.size === "sm"), JSON.stringify(given));
+    assert.deepEqual(component.storyArgs, { "ui-base-switch--default": {}, "ui-base-switch--disabled": { label: "Small", size: "sm" } });
+    assert.deepEqual(withoutUnset({ size: "default", tone: "a" }, component.variantProperties), { tone: "a" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap with --components alone: drops a kept component Storybook no longer lists, and says so", async () => {
+  const dir = tempDir();
+  try {
+    await snapAt(dir, "first", "2026-10-01T10:00:00.000Z");
+    const listed = mergeStorybook("second");
+    const gone = { ...listed, listComponents: async () => (await listed.listComponents()).filter((e) => e.id !== "forms-c") };
+    const progress: string[] = [];
+    const merged = await runSnap(options(dir, { components: ["forms-b"], merge: "auto" }), {
+      storybook: gone as never, launch: async () => ({ via: "stub", browser: stubBrowser() }) as never,
+      now: () => Date.parse("2026-10-01T11:00:00.000Z"), onProgress: (m) => progress.push(m),
+    });
+    assert.deepEqual(merged.components.map((c) => c.title), ["Forms/A", "Forms/B"]);
+    assert.deepEqual(merged.removedComponents, ["Forms/C"]);
+    assert.equal(merged.summary.components, 2);
+    const styles = readJson(join(dir, "styles.json"));
+    assert.deepEqual(styles.components.map((c: { title: string }) => c.title), ["Forms/A", "Forms/B"]);
+    assert.equal(styles.removedComponents, undefined);
+    assert.deepEqual(readJson(join(dir, "meta.json")).componentsMeasuredAt, { "Forms/A": "2026-10-01T10:00:00.000Z", "Forms/B": "2026-10-01T11:00:00.000Z" });
+    assert.ok(progress.some((m) => /kept 1 from the earlier snap, and dropped Forms\/C, which Storybook no longer lists/.test(m)), progress.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap with --components alone: merges into the snap in --out where there is one, and writes the components alone where there is none", async () => {
+  const dir = tempDir();
+  try {
+    const first = await snapAt(dir, "first", "2026-10-01T10:00:00.000Z", { components: ["forms-a"], merge: "auto" });
+    assert.deepEqual(first.components.map((c) => c.title), ["Forms/A"]);
+    const second = await snapAt(dir, "second", "2026-10-01T11:00:00.000Z", { components: ["forms-b"], merge: "auto" });
+    assert.deepEqual(second.components.map((c) => [c.title, c.storyId]), [["Forms/A", "forms-a--first"], ["Forms/B", "forms-b--second"]]);
+    assert.deepEqual(readJson(join(dir, "meta.json")).componentsMeasuredAt, { "Forms/A": "2026-10-01T10:00:00.000Z", "Forms/B": "2026-10-01T11:00:00.000Z" });
+    // One it can't add to is refused, saying how to write the components alone.
+    await assert.rejects(
+      () => runSnap(options(dir, { components: ["forms-c"], merge: "auto", variants: "all" }), { storybook: mergeStorybook("x") as never, launch: launchShouldNotHappen }),
+      /--components keeps the components .*styles\.json holds, which were measured with --variants representative: pass the same, or pass --no-merge to write only the components --components names\./,
+    );
+    // --no-merge writes them alone.
+    const alone = await snapAt(dir, "third", "2026-10-01T12:00:00.000Z", { components: ["forms-c"], merge: false });
+    assert.deepEqual(alone.components.map((c) => c.title), ["Forms/C"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

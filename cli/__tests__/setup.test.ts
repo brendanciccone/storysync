@@ -984,10 +984,12 @@ test("every push instruction re-measures with --merge, runs snap in the backgrou
       assert.match(text, /`measuredAt` is after you started it/, `${path} doesn't check the snap is this run's`);
       // --merge keeps measuredAt at the oldest component's time, so a merge
       // that worked failed a check of measuredAt alone.
-      assert.match(text, /after a `--merge`, which keeps `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is/, `${path} fails every merge on its measuredAt`);
+      assert.match(text, /after a `--merge` or a `--components` run that merged, which keep `measuredAt` at the oldest component's time on purpose, its `componentsMeasuredAt` time for each component you named is/, `${path} fails every merge on its measuredAt`);
       assert.match(text, /read (?:the measurements|what it recorded) from `\.storysync\/snaps\/styles\.json` on disk/i, `${path} reads snap's one-line stdout`);
       assert.match(text, /adding `--components <their IDs> --merge` and a longer `--timeout`/, `${path} re-measures timeouts without --merge`);
-      assert.match(text, /Never re-measure some components with `--components` alone/, `${path} doesn't warn against --components alone`);
+      // --components alone now keeps the rest of the snap; --no-merge drops it.
+      assert.match(text, /`--components` alone merges the same way where there is a snap to add to/, `${path} doesn't say --components alone keeps the rest`);
+      assert.match(text, /never pass `--no-merge` to measure some again, which drops every other component's record/, `${path} doesn't warn against --no-merge`);
       assert.doesNotMatch(text, /re-run `?snap`? for those components with `--components` and a longer/, `${path} still re-runs timeouts with --components alone`);
       assert.match(text, /closed trigger[^\n]*ask the user once/, `${path} builds a closed trigger without asking`);
       assert.match(text, /on a line of each such set's description that starts `storysync:`/, `${path} doesn't label a trigger built as measured in Figma`);
