@@ -2023,14 +2023,24 @@ export function formatElementReport(result: VerifyResult, beside: readonly strin
   const worst = [...byComponent].map(([name, s]) => [name, s.elements ? s.score / s.elements : 1] as const).sort((a, b) => a[1] - b[1])[0];
   if (worst && worst[1] < 1) lines.push(`  worst: ${worst[0]} ${percent(worst[1])} of elements`);
 
+  // Extra too: the variants a push built that snap no longer measures, read
+  // back or not, as those an earlier push built under other properties.
+  const stale = [
+    ...result.unmeasuredInFigma.map((u) => `${u.component} ${u.slug}`),
+    ...(result.unreadInFigma ?? []).filter((u) => u.uncovered).map((u) => `${u.component}: ${u.uncovered} ${u.uncovered === 1 ? "variant" : "variants"} no read covered`),
+  ];
+  const staleCount = result.unmeasuredInFigma.length + (result.unreadInFigma ?? []).reduce((n, u) => n + u.uncovered, 0);
   const counts = [
-    `missing ${e.missing}`, `drifted ${e.drifted}`, `extra ${e.extra}`, `designer layers ${e.designerLayers}`,
+    `missing ${e.missing}`, `drifted ${e.drifted}`, `extra ${e.extra + staleCount}`, `designer layers ${e.designerLayers}`,
     `not measured ${summary.notMeasured ?? 0}`,
     ...(e.notReadBack ? [`not read back ${e.notReadBack}`] : []),
     ...(unread ? [`not read ${unread}`] : []),
   ];
-  const clean = !e.missing && !e.drifted && !e.extra && !e.notReadBack && !unread;
+  const clean = !e.missing && !e.drifted && !e.extra && !staleCount && !e.notReadBack && !unread;
   lines.push(`  ${(clean ? chalk.dim : chalk.red)(counts.join(" · "))}`);
+  if (staleCount) {
+    lines.push(chalk.red(`  + ${staleCount} extra ${staleCount === 1 ? "variant" : "variants"} in Figma's sets that snap no longer measures (${stale.slice(0, 3).join("; ")}${stale.length > 3 ? `, and ${stale.length - 3} more` : ""}): \`storysync figma code --remove-extra\` removes those a push built, once the user says to`));
+  }
 
   // Coverage always, 100% too: the skill has the agent report it, and a
   // line that only appeared below 100% read as missing.
