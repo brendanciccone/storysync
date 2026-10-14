@@ -17,12 +17,11 @@ import { describeFontStandIns, describeOpenedOverlays, describeVariantStories, r
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
-import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
+import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, planSnapChanged, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
 import { DEFAULT_MAX_VARIABLES, runFigmaTokens } from "./figma-tokens.js";
 import { loadPlanResults } from "./figma-results.js";
-import { fnv1a32Bytes } from "./checksum.js";
 import type { ReadbackFile, ReadbackIssue, ScoreCaveat, SnapAgeInfo } from "./verify.js";
 import type { SnapResult } from "./snap.js";
 import { runInit } from "./init.js";
@@ -472,7 +471,8 @@ program
   .option("--screenshots", "Also save a PNG per variant (off by default)")
   .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
-  .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
+  .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest, and refuse when there is none; --components alone merges the same way where --out holds a snap")
+  .option("--no-merge", "With --components, write only the components it names to --out, dropping the rest of the snap there")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.3.0 did: for a push through the skill's root-only templates")
   .option("--no-channel-args", "Don't set the values Storybook won't take from the story's URL through its preview: leave those variants unmeasured, as arg_rejected (args_unsupported for a value no URL can carry)")
   .option("--no-open-overlays", "Measure an overlay's closed trigger as the story renders it, rather than opening the overlay (by its open or defaultOpen arg, or by clicking, hovering over, focusing or right-clicking the trigger) and measuring its content")
@@ -559,7 +559,8 @@ program
           maxCombinations,
           excludeProps: flags.exclude,
           keepProps: flags.keep,
-          merge: !!opts.merge,
+          // --components alone keeps the rest of the snap where there is one.
+          merge: opts.merge === undefined ? (opts.components ? "auto" : false) : !!opts.merge,
           rootOnly: !!opts.rootOnly,
           channelArgs: opts.channelArgs !== false,
           openOverlays: opts.openOverlays !== false,
@@ -681,7 +682,7 @@ program
       // and otherwise beside the plan's directory, so a plan made with
       // `figma code --out` elsewhere doesn't overwrite the push's readback.
       // The snap is the one the plan was made from, unless --snap says.
-      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; alphaFallbacks: string[]; snapChanged: boolean; planPath: string } | null = null;
+      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; alphaFallbacks: string[]; snapChanged: boolean; planPath: string; components: string[] } | null = null;
       if (opts.plan) {
         const planPath = opts.plan as string;
         const given = (name: string) => command.getOptionValueSource(name) === "cli";
@@ -690,10 +691,12 @@ program
         if (!given("snap")) snapPath = resolve(dirname(planPath), plan.snap.path);
         // A snap taken again since the plan: the calls built and read what
         // the older one measured, so what it has since added wasn't read.
-        const snapChanged = existsSync(snapPath) && fnv1a32Bytes(readFileSync(snapPath)) !== plan.snap.digest;
+        // Where the plan records each component's digest, only those count:
+        // a later push's snap of other components keeps them as they were.
+        const snapChanged = existsSync(snapPath) && planSnapChanged(plan, readFileSync(snapPath));
         // What the calls not read whole were to read: their variants are not read, not missing.
         const notReadSlices = plan.calls.filter((c) => c.kind === "read" && loaded.notRead.includes(c.seq)).flatMap((c) => c.slices ?? []);
-        assembled = { ...loaded, notReadSlices, snapChanged, planPath };
+        assembled = { ...loaded, notReadSlices, snapChanged, planPath, components: [...new Set(plan.calls.flatMap((c) => c.components))] };
       }
       const snap = loadJsonFile<SnapResult>(snapPath, "snap output");
       // A readback or meta.json passed as --snap, or a failed `snap --json`
@@ -712,7 +715,8 @@ program
         ...(snapAge.known ? { measuredAt: snapAge.measuredAt, componentsMeasuredAt: snapAge.componentsMeasuredAt } : {}),
         skip,
         ...(opts.rootsOnly ? { rootsOnly: true } : {}),
-        ...(assembled ? { notRead: assembled.notRead, notReadSlices: assembled.notReadSlices } : {}),
+        // Only the plan's components: the snap may hold other pushes' too.
+        ...(assembled ? { notRead: assembled.notRead, notReadSlices: assembled.notReadSlices, ...(assembled.components.length ? { only: assembled.components } : {}) } : {}),
         allowDesignerLayers: !!opts.allowDesignerLayers,
       });
       result.snapAge = snapAge;
@@ -1446,7 +1450,8 @@ program
           console.log(`  ${chalk.dim("✗")} ${prop.name} (${prop.type.name}) -> left out: ${exclusionReason(exclusion)}`);
           continue;
         }
-        const from = source.added.includes(prop.name) ? chalk.dim(" (from the story's argTypes)") : "";
+        const from = source.added.includes(prop.name) ? chalk.dim(" (from the story's argTypes)")
+          : source.fromStories.includes(prop.name) ? chalk.dim(` (from the stories' args${prop.unset ? `; ${prop.unset} is the prop left unset` : ""})`) : "";
         // Says why a prop was left out, and when a default is a guess, so
         // a missing variant can be traced to its rule rather than to "skipped".
         const { property: v, reason, defaultAssumed } = explainProp(prop);

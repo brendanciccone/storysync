@@ -998,10 +998,22 @@ test("verify --plan: writes the readback where --readback says, and scores the s
     const again = await cli(["verify", "--snap", p.snapPath, "--readback", where, "--strict", "--json"]);
     assert.equal(again.status, 0, `${again.stdout}${again.stderr}`);
     assert.equal(jsonOf(again).elementFidelity, 1);
-    // A --snap that isn't the plan's is the one scored, and said to differ.
-    const other = join(p.dir, "other.json");
-    writeFileSync(other, readFileSync(p.snapPath, "utf8").replace(/\n$/, "\n\n"));
+    // A later snap of another component keeps this one's record as it was:
+    // the plan still verifies, scoring only what it built, not the other
+    // component as missing from Figma.
+    const snap = JSON.parse(readFileSync(p.snapPath, "utf8")) as { components: { id?: string; title?: string; name: string }[] };
+    const [built] = snap.components;
+    const kept = join(p.dir, "kept.json");
+    writeFileSync(kept, JSON.stringify({ ...snap, components: [...snap.components, { ...built, id: "ui-base-later", title: "ui/base/Later", name: "Later" }] }));
     copyFileSync(join(p.dir, "snaps", "meta.json"), join(p.dir, "meta.json"));
+    const later = await cli(["verify", "--plan", p.planPath, "--snap", kept, "--strict", "--json"]);
+    assert.equal(later.status, 0, `${later.stdout}${later.stderr}`);
+    assert.equal((jsonOf(later).plan as { snapChanged?: boolean }).snapChanged, undefined);
+    assert.equal(jsonOf(later).elementFidelity, 1);
+    // A --snap that isn't the plan's is the one scored, and said to differ
+    // where it measured a component the plan built again.
+    const other = join(p.dir, "other.json");
+    writeFileSync(other, JSON.stringify({ ...snap, components: [{ ...built, argsNotInDocs: ["measured again"] }] }));
     const changed = await cli(["verify", "--plan", p.planPath, "--snap", other]);
     assert.equal(changed.status, 0, `${changed.stdout}${changed.stderr}`);
     assert.match(changed.stdout, /has changed since `storysync figma code` made this plan from it/);

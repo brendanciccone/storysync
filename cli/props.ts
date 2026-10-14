@@ -5,10 +5,13 @@
 // only Storybook's preview holds, add to them: values the docs' types don't
 // list (supplementOptions), props the docs don't list at all (shadcn/ui
 // Button's `disabled`, Sheet's `side`), and marks of props that only change
-// behavior (`control: false`, a hidden table row, an event). snap reads the
-// argTypes in the browser and records them in styles.json, with each prop it
-// left out and why, so the commands that don't start a browser read them
-// from there.
+// behavior (`control: false`, a hidden table row, an event). Where neither
+// lists a prop, the stories' own args can: coder's Button takes `variant`
+// and `size` from cva's VariantProps, which docgen doesn't list, and its
+// stories set them (Outline, DefaultSmall). snap reads the argTypes and the
+// stories' args in the browser and records them in styles.json, with each
+// prop it left out and why, so the commands that don't start a browser read
+// them from there.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +19,7 @@ import { mapProp, supplementOptions } from "./mapper.js";
 import type { StorybookComponent, StorybookProp } from "./mapper.js";
 import { argsNotInDocs } from "./snap-args.js";
 import type { StoryArgType } from "./snap-args.js";
+import type { StoryOwn } from "./snap-stories.js";
 
 /** Why a prop that would be a variant property is left out. */
 export type ExclusionReason =
@@ -57,6 +61,11 @@ export interface PropSourceOptions {
   keep?: readonly string[];
   /** What snap left out from what it measured (`no-op`, `opens`), as styles.json records it. */
   measured?: readonly PropExclusion[];
+  /**
+   * The component's stories' own args, and the story it is measured from,
+   * whose args give a default: absent when they weren't read.
+   */
+  stories?: { own: readonly StoryOwn[]; storyId?: string | null };
 }
 
 export interface PropSource {
@@ -66,6 +75,8 @@ export interface PropSource {
   excluded: PropExclusion[];
   /** Props the story's argTypes declare that the docs don't list, added. */
   added: string[];
+  /** Props only the stories' own args name, added (storyArgProps). */
+  fromStories: string[];
   /** Every prop, the docs' and the added, before any was left out. */
   all: StorybookProp[];
   /** Whether the story's argTypes were seen. */
@@ -104,6 +115,77 @@ export function argTypeProp(name: string, argType: StoryArgType): StorybookProp 
   };
 }
 
+/** Args a story's own args set that name content or behavior, never a look of the component's. */
+const NOT_A_LOOK = new Set([
+  "open", "defaultOpen", "placeholder", "title", "label", "alt", "href", "src", "value", "defaultValue", "name", "id",
+  "description", "text", "content", "htmlFor", "autoComplete", "role", "tabIndex", "type", "form", "target", "rel",
+]);
+
+/** A value a story's args can give a variant property: a short lowercase word, as cva's `outline` or `icon-lg`. */
+const STORY_VALUE = /^[a-z0-9][A-Za-z0-9_-]{0,31}$/;
+
+/** The value that stands for a prop left unset, where no story names the component's default. */
+export const UNSET_VALUE = "default";
+
+/**
+ * Props the stories' own args set that `known` doesn't name, as the docs
+ * would list them: coder's Button's `variant` and `size`, which come from
+ * cva's VariantProps, so docgen lists neither, and no argType declares
+ * them. A prop is one where every story that sets it gives a boolean, or
+ * every one a short lowercase word (`outline`, `sm`): never content, a
+ * handler, or an overlay's open state. Its values are those the stories
+ * give, its default the value the component's story (`storyId`) gives it,
+ * else `initial` (the story's argTypes), else, for a boolean, false. A
+ * word no story gives as the default is the component's own, which none
+ * names: `default` then stands for the prop left unset (`unset`), which
+ * snap measures by leaving the arg out, unless a story names `default`,
+ * which is then the default, a guess.
+ */
+export function storyArgProps(
+  stories: readonly StoryOwn[],
+  known: (name: string) => boolean,
+  storyId?: string | null,
+  initial: (name: string) => unknown = () => undefined,
+): StorybookProp[] {
+  const found = new Map<string, { words: string[]; bools: boolean[]; other: boolean }>();
+  for (const story of stories) {
+    for (const [name, value] of Object.entries(story.args)) {
+      if (known(name) || NOT_A_LOOK.has(name) || /^on[A-Z]/.test(name) || /^(aria|data)-/.test(name)) continue;
+      if (value === null || value === undefined) continue;
+      const entry = found.get(name) ?? { words: [], bools: [], other: false };
+      found.set(name, entry);
+      if (typeof value === "boolean") {
+        if (!entry.bools.includes(value)) entry.bools.push(value);
+      } else if (typeof value === "string" && STORY_VALUE.test(value)) {
+        if (!entry.words.includes(value)) entry.words.push(value);
+      } else entry.other = true;
+    }
+  }
+  const own = stories.find((s) => s.id === storyId)?.args ?? {};
+  const props: StorybookProp[] = [];
+  for (const [name, { words, bools, other }] of found) {
+    if (other || (words.length && bools.length)) continue;
+    const given = Object.hasOwn(own, name) ? own[name] : initial(name);
+    // Only a prop some story gives another value than its default: one
+    // every story leaves at it shows no other look.
+    if (bools.length) {
+      if (bools.some((b) => b !== (given === true))) props.push({ name, type: { name: "boolean" }, defaultValue: given === true ? "true" : "false" });
+      continue;
+    }
+    const value = typeof given === "string" && STORY_VALUE.test(given) ? given : null;
+    if (value !== null) {
+      if (!words.some((w) => w !== value)) continue;
+      props.push({ name, type: { name: "enum" }, control: { options: [value, ...words.filter((w) => w !== value)] }, defaultValue: value });
+    } else if (words.includes(UNSET_VALUE)) {
+      // A guess, which mapProp marks defaultAssumed.
+      if (words.length > 1) props.push({ name, type: { name: "enum" }, control: { options: words } });
+    } else {
+      props.push({ name, type: { name: "enum" }, control: { options: [UNSET_VALUE, ...words] }, defaultValue: UNSET_VALUE, unset: UNSET_VALUE });
+    }
+  }
+  return props;
+}
+
 /** Why the story's argTypes mark a prop as one that changes no look, or null. */
 export function argTypeExclusion(argType: StoryArgType | undefined): ExclusionReason | null {
   if (!argType) return null;
@@ -136,6 +218,16 @@ export function resolveProps(component: StorybookComponent, options: PropSourceO
     }
     if (extra.length) base = { ...base, props: [...base.props, ...extra] };
   }
+  const fromStories: string[] = [];
+  if (options.stories?.own.length) {
+    const listed = new Set(base.props.map((p) => p.name));
+    const extra = storyArgProps(options.stories.own, (name) => listed.has(name), options.stories.storyId, (name) => argTypes?.[name]?.initial)
+      .filter((prop) => mapProp(prop));
+    if (extra.length) {
+      base = { ...base, props: [...base.props, ...extra] };
+      fromStories.push(...extra.map((p) => p.name));
+    }
+  }
 
   const exclude = new Set((options.exclude ?? []).map((n) => n.toLowerCase()));
   const keep = new Set((options.keep ?? []).map((n) => n.toLowerCase()));
@@ -160,7 +252,7 @@ export function resolveProps(component: StorybookComponent, options: PropSourceO
     }
     return true;
   });
-  return { component: props.length === base.props.length ? base : { ...base, props }, excluded, added, all: base.props, argTypes: !!argTypes };
+  return { component: props.length === base.props.length ? base : { ...base, props }, excluded, added, fromStories, all: base.props, argTypes: !!argTypes };
 }
 
 /** `name1, name2` as a sentence names them, each in backticks. */
@@ -216,7 +308,17 @@ export interface SnapProps {
   path: string;
   /** The `--exclude-props` the snap was taken with, which leave those props out of every component. */
   excludeProps: string[];
-  byId: Map<string, { argTypes?: Record<string, StoryArgType>; excludedProps?: PropExclusion[] }>;
+  byId: Map<string, SnapPropRecord>;
+}
+
+/** What a snap recorded of one component's props. */
+export interface SnapPropRecord {
+  argTypes?: Record<string, StoryArgType>;
+  excludedProps?: PropExclusion[];
+  /** The story it was measured from. */
+  storyId?: string;
+  /** Its stories' own args, by story ID, as snap records them (`storyArgs`). */
+  storyArgs?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -237,12 +339,14 @@ export function readSnapProps(dir: string): SnapProps | null {
   const components = (data as { components?: unknown })?.components;
   if (!Array.isArray(components)) return null;
   const excludeProps = (data as { excludeProps?: unknown }).excludeProps;
-  const byId = new Map<string, { argTypes?: Record<string, StoryArgType>; excludedProps?: PropExclusion[] }>();
-  for (const c of components as { id?: unknown; argTypes?: unknown; excludedProps?: unknown }[]) {
+  const byId = new Map<string, SnapPropRecord>();
+  for (const c of components as { id?: unknown; argTypes?: unknown; excludedProps?: unknown; storyId?: unknown; storyArgs?: unknown }[]) {
     if (typeof c?.id !== "string") continue;
     byId.set(c.id, {
       ...(c.argTypes && typeof c.argTypes === "object" ? { argTypes: c.argTypes as Record<string, StoryArgType> } : {}),
       ...(Array.isArray(c.excludedProps) ? { excludedProps: c.excludedProps as PropExclusion[] } : {}),
+      ...(typeof c.storyId === "string" ? { storyId: c.storyId } : {}),
+      ...(c.storyArgs && typeof c.storyArgs === "object" && !Array.isArray(c.storyArgs) ? { storyArgs: c.storyArgs as Record<string, Record<string, unknown>> } : {}),
     });
   }
   return { path, byId, excludeProps: Array.isArray(excludeProps) ? excludeProps.filter((n): n is string => typeof n === "string") : [] };
@@ -263,7 +367,8 @@ export function snapPropSource(
   // before each component recorded what it left out.
   const kept = new Set((flags.keep ?? []).map((n) => n.toLowerCase()));
   const exclude = [...(flags.exclude ?? []), ...(snap?.excludeProps ?? []).filter((n) => !kept.has(n.toLowerCase()))];
-  return resolveProps(component, { argTypes: recorded?.argTypes, measured: recorded?.excludedProps, exclude, keep: flags.keep });
+  const stories = recorded?.storyArgs && { own: Object.entries(recorded.storyArgs).map(([id, args]) => ({ id, args })), storyId: recorded.storyId };
+  return resolveProps(component, { argTypes: recorded?.argTypes, measured: recorded?.excludedProps, exclude, keep: flags.keep, ...(stories ? { stories } : {}) });
 }
 
 /** What a command without a browser says when it can't see some components' argTypes. */

@@ -17,7 +17,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callCode, canonicalJson, fnv1a32Bytes } from "./checksum.js";
+import { callCode, canonicalJson, fnv1a32, fnv1a32Bytes } from "./checksum.js";
 import type { CallWriter } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
@@ -802,7 +802,12 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   for (const call of calls) writeFileSync(join(out, call.file), call.code);
   const plan: FigmaPlan = {
     version: 1, storysyncVersion: VERSION,
-    snap: { path: relative(out, resolve(opts.snap)).split("\\").join("/"), measuredAt, digest: fnv1a32Bytes(bytes) },
+    snap: {
+      path: relative(out, resolve(opts.snap)).split("\\").join("/"), measuredAt, digest: fnv1a32Bytes(bytes),
+      // Each built component's record, which a later snap of other
+      // components keeps as it is, so the plan can be verified after it.
+      components: Object.fromEntries(built.map((c) => [c.key, componentDigest(all.find((a) => componentKey(a) === c.key)!)])),
+    },
     calls: calls.map(({ code: _code, ...call }) => call),
   };
   const bindings = built.flatMap((c) => c.bindings);
@@ -944,6 +949,37 @@ export function parseCallResult(text: string): Record<string, unknown> | null {
 }
 
 /** Reads plan.json. */
+/**
+ * A digest of one component's record in a snap: what verify --plan
+ * compares to tell whether a later snap measured it again, as a later
+ * push's snap of other components leaves it as it was.
+ */
+export function componentDigest(component: SnapComponent): string {
+  return fnv1a32(canonicalJson(component));
+}
+
+/**
+ * Whether the snap a plan was made from, `bytes` as it is now, has
+ * changed for the plan: a component it built measured again or gone,
+ * where the plan records their digests, else the file at all.
+ */
+export function planSnapChanged(plan: FigmaPlan, bytes: Uint8Array): boolean {
+  if (fnv1a32Bytes(bytes) === plan.snap.digest) return false;
+  const recorded = plan.snap.components;
+  if (!recorded || !Object.keys(recorded).length) return true;
+  let snap: SnapResult;
+  try {
+    snap = JSON.parse(Buffer.from(bytes).toString("utf8")) as SnapResult;
+  } catch {
+    return true;
+  }
+  const byKey = new Map((snap?.components ?? []).map((c) => [componentKey(c), c]));
+  return Object.entries(recorded).some(([key, digest]) => {
+    const component = byKey.get(key);
+    return !component || componentDigest(component) !== digest;
+  });
+}
+
 export function readPlan(path: string): FigmaPlan {
   const plan = JSON.parse(readFileSync(path, "utf8")) as FigmaPlan;
   if (plan?.version !== 1 || !Array.isArray(plan.calls)) throw new Error(`${path} is not a plan figma code wrote`);

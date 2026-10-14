@@ -7,6 +7,12 @@ export interface StorybookProp {
   defaultValue?: unknown;
   required?: boolean;
   control?: ArgTypeControl;
+  /**
+   * The value that stands for the prop left unset, for a prop only the
+   * stories' args name (props.ts) whose default none of them gives: snap
+   * measures it by leaving the arg out, so the component draws its own.
+   */
+  unset?: string;
 }
 
 export interface PropType {
@@ -31,6 +37,12 @@ export interface FigmaVariantProperty {
    * written before it existed still matches wherever the docs give one.
    */
   defaultAssumed?: true;
+  /**
+   * The value that stands for the prop left unset (StorybookProp's
+   * `unset`): snap gives the story no arg for it. Absent for every other
+   * property.
+   */
+  unset?: string;
 }
 
 // Details about a truncated variant expansion. Present only when `wasCapped`.
@@ -330,7 +342,8 @@ export function mapProp(prop: StorybookProp): FigmaVariantProperty | null {
     // TypeScript's, not the author's: shadcn's Button reads `"link" |
     // "default" | ...` though its cva declares default first. A BOOLEAN keeps
     // `true, false`, for baselines written so; the skill lays it out default first.
-    return { name: prop.name, type: "VARIANT", values: [defaultValue, ...vals.filter((v) => v !== defaultValue)], defaultValue, ...(assumed ? { defaultAssumed: true } : {}) };
+    const unset = prop.unset !== undefined && vals.includes(prop.unset) ? { unset: prop.unset } : {};
+    return { name: prop.name, type: "VARIANT", values: [defaultValue, ...vals.filter((v) => v !== defaultValue)], defaultValue, ...(assumed ? { defaultAssumed: true } : {}), ...unset };
   }
 
   return null;
