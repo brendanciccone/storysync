@@ -622,7 +622,7 @@ test("images: an upload fills the node; its hash is the bytes' SHA-1 and its byt
   assert.deepEqual(imageSize(Uint8Array.from(png)), { width: 2, height: 3 });
 });
 
-test("variables: a paint bound afresh takes the variable's alpha as its opacity; rebound, it keeps its own", async () => {
+test("variables: a paint bound afresh takes the variable's color and alpha; rebound, it keeps the color and opacity it is given, as probe 7c's call 3 saw", async () => {
   const figma = new MockFigma();
   const { id } = figma.addVariable("destructive", "COLOR", "#df22254d");
   const radius = figma.addVariable("radius/lg", "FLOAT", 10);
@@ -639,7 +639,7 @@ test("variables: a paint bound afresh takes the variable's alpha as its opacity;
       fresh: Math.round(fresh * 1000) / 1000, again, color: f.fills[0].color.r > 0.87,
       radius: f.topLeftRadius, bound: f.boundVariables.topLeftRadius.id, names: locals.map((l) => l.name),
     };`);
-  assert.deepEqual(result, { fresh: 0.302, again: 1, color: true, radius: 10, bound: radius.id, names: ["destructive"] });
+  assert.deepEqual(result, { fresh: 0.302, again: 1, color: false, radius: 10, bound: radius.id, names: ["destructive"] });
 });
 
 test("variables: a ring bound at its own alpha keeps it in the mode it was bound in, and takes its variable's at a mode switch, as probe 7b saw", async () => {
@@ -717,6 +717,138 @@ test("variables: a ring bound at its own alpha keeps it in the mode it was bound
   }
 });
 
+test("variables: a fill, stroke and ring bound to a variable that carries their alpha keep it through every mode switch, and a period is no name, as probe 7c saw", async () => {
+  // Probe 7c's call 1: P, P2, S, E and W, bound in the default mode, then
+  // switched to Dark, Light, Dark and cleared, and call 2's reads of P, S,
+  // E and W once more. I is an instance, which the mock has none of; the
+  // SVG export, which said each was drawn so, the mock has none of either.
+  type Read = { mode: string; fills: { color: (number | null)[]; opacity: number }[]; strokes: { color: (number | null)[]; opacity: number }[]; effects: { color: number[] }[] };
+  const seen = (r: Read) => ({ mode: r.mode, fills: r.fills.map((p) => [p.color, p.opacity]), strokes: r.strokes.map((p) => [p.color, p.opacity]), effects: r.effects.map((e) => e.color) });
+  const probe = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-7c.json`, "utf8")) as {
+    call1: { names: Record<string, { ok: boolean; error?: string; values?: Record<string, number[]> }>; nodes: Record<string, Record<string, Read>> };
+    call2: { names: Record<string, { ok: boolean; error?: string; values?: Record<string, number[]> }>; nodes: Record<string, Record<string, Read>> };
+  };
+  const figma = new MockFigma();
+  figma.addVariable("destructive", "COLOR", { Light: "#df2225", Dark: "#ff6467" }, "Colors");
+  figma.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors");
+  const got = await ok(figma, `
+    const colors = await figma.variables.getLocalVariablesAsync('COLOR');
+    const one = (name) => colors.find((v) => v.name === name);
+    const col = await figma.variables.getVariableCollectionByIdAsync(one('destructive').variableCollectionId);
+    const [light, dark] = col.modes;
+    const r3 = (n) => Math.round(n * 1000) / 1000;
+    const c4 = (c) => c && [r3(c.r), r3(c.g), r3(c.b), c.a === undefined ? null : r3(c.a)];
+    const names = {};
+    const alpha = (token, k, name) => {
+      try {
+        const v = figma.variables.createVariable(name, col, 'COLOR');
+        for (const m of [light, dark]) {
+          const b = one(token).valuesByMode[m.modeId];
+          v.setValueForMode(m.modeId, { r: b.r, g: b.g, b: b.b, a: k });
+        }
+        names[name] = { ok: true, values: { Light: c4(v.valuesByMode[light.modeId]), Dark: c4(v.valuesByMode[dark.modeId]) } };
+        return v;
+      } catch (e) {
+        names[name] = { ok: false, error: e.message };
+        return null;
+      }
+    };
+    const A10 = 26 / 255;
+    const d10 = alpha('destructive', A10, 'destructive 10%');
+    const d30 = alpha('destructive', 77 / 255, 'destructive 30%');
+    const f10 = alpha('foreground', A10, 'foreground 10%');
+    for (const name of ['destructive/10', 'probe 12.5%', 'probe 12,5%', 'probe 12_5%']) alpha(name === 'destructive/10' ? 'destructive' : 'foreground', A10, name);
+    const red = { r: 223 / 255, g: 34 / 255, b: 37 / 255 };
+    const box = (parent) => {
+      const f = figma.createFrame();
+      parent.appendChild(f);
+      f.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+      return f;
+    };
+    const fill = (n, putBack) => {
+      n.fills = [figma.variables.setBoundVariableForPaint({ type: 'SOLID', color: red, opacity: putBack ? A10 : 1 }, 'color', d10)];
+      if (putBack) n.fills = n.fills.map((p) => Object.assign({}, p, { opacity: A10 }));
+    };
+    const stroke = (n) => {
+      n.strokes = [figma.variables.setBoundVariableForPaint({ type: 'SOLID', color: red, opacity: 1 }, 'color', d30)];
+      n.strokeAlign = 'OUTSIDE';
+    };
+    const ring = (n) => {
+      n.effects = [figma.variables.setBoundVariableForEffect({ type: 'DROP_SHADOW', color: { r: 10 / 255, g: 10 / 255, b: 10 / 255, a: 1 }, offset: { x: 0, y: 0 }, radius: 0, spread: 1, visible: true, blendMode: 'NORMAL', showShadowBehindNode: false }, 'color', f10)];
+    };
+    const read = (n) => ({
+      mode: col.modes.find((m) => m.modeId === n.resolvedVariableModes[col.id]).name,
+      fills: n.fills.filter((p) => p.boundVariables && p.boundVariables.color).map((p) => ({ color: c4(p.color), opacity: r3(p.opacity) })),
+      strokes: n.strokes.map((p) => ({ color: c4(p.color), opacity: r3(p.opacity) })),
+      effects: n.effects.map((e) => ({ color: c4(e.color) })),
+    });
+    const switches = (n, at, whens) => {
+      const out = { [whens[0]]: read(n) };
+      for (const [when, m] of [['dark', dark], ['light', light], ['dark2', dark]].slice(0, whens.length - 1)) {
+        at.setExplicitVariableModeForCollection(col, m.modeId);
+        out[when] = read(n);
+      }
+      return out;
+    };
+    const page = figma.currentPage;
+    const p = box(page);
+    fill(p, false);
+    const p2 = box(page);
+    fill(p2, true);
+    const s = box(page);
+    s.fills = [];
+    stroke(s);
+    const e = box(page);
+    ring(e);
+    const w = box(page);
+    w.fills = [];
+    const wc = box(w);
+    fill(wc, false);
+    stroke(wc);
+    ring(wc);
+    const at = { P: [p, p], P2: [p2, p2], S: [s, s], E: [e, e], W: [wc, w] };
+    const call1 = {};
+    for (const [key, [n, around]] of Object.entries(at)) {
+      call1[key] = switches(n, around, ['built', 'dark', 'light', 'dark2']);
+      around.clearExplicitVariableModeForCollection(col);
+      call1[key].cleared = read(n);
+    }
+    const call2 = {};
+    for (const key of ['P', 'S', 'E', 'W']) call2[key] = switches(at[key][0], at[key][1], ['kept', 'dark', 'light']);
+    return { names, call1, call2 };`) as { names: Record<string, { ok: boolean; error?: string; values?: Record<string, number[]> }>; call1: Record<string, Record<string, Read>>; call2: Record<string, Record<string, Read>> };
+  for (const [name, want] of Object.entries({ ...probe.call1.names, ...probe.call2.names })) {
+    assert.equal(got.names[name].ok, want.ok, name);
+    if (want.error) assert.equal(got.names[name].error, want.error, name);
+    if (want.values) assert.deepEqual(got.names[name].values, want.values, name);
+  }
+  for (const call of ["call1", "call2"] as const) {
+    for (const [node, reads] of Object.entries(got[call])) {
+      for (const [when, read] of Object.entries(reads)) assert.deepEqual(seen(read), seen(probe[call].nodes[node][when]), `${call} ${node} ${when}`);
+    }
+  }
+});
+
+test("variables: bound again in a frame set to Dark, a paint keeps what it is given unless cleared first, and one moved into another mode is resolved there, as probe 7c's calls 3 and 4 saw", async () => {
+  // The probe's own scripts, run in the mock as they ran in Figma, but for
+  // the SVG export, which the mock has none of.
+  type Calls = { call3: Record<string, unknown> & { nodes: Record<string, Record<string, unknown>> }; call4: { nodes: Record<string, Record<string, unknown>> } };
+  const probe = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-7c-rebind.json`, "utf8")) as Calls;
+  const figma = new MockFigma();
+  for (const [name, light, dark] of [["destructive", "#df2225", "#ff6467"], ["destructive 10%", "#df22251a", "#ff64671a"], ["destructive 30%", "#df22254d", "#ff64674d"], ["border", "#e5e5e5", "#ffffff1a"]]) {
+    figma.addVariable(name, "COLOR", { Light: light, Dark: dark }, "Colors");
+  }
+  await ok(figma, "const p = figma.createPage(); p.name = 'storysync probe 7c';");
+  const script = (name: string) => readFileSync(`${ROOT}spikes/${name}`, "utf8").replace(/await svg\(\w+\)/g, "null");
+  const call3 = await ok(figma, script("figma-probe-7c-rebind.js")) as Calls["call3"];
+  const call4 = await ok(figma, script("figma-probe-7c-rebind-again.js")) as Calls["call4"];
+  const names = (n: Record<string, unknown>) => ({ ...n, made: { ...(n.made as object), id: undefined, created: undefined } });
+  assert.deepEqual(names(call3.names as Record<string, unknown>), names(probe.call3.names as Record<string, unknown>));
+  assert.deepEqual(call3.resolved, probe.call3.resolved);
+  const reads = (nodes: Record<string, Record<string, unknown>>) => Object.fromEntries(Object.entries(nodes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([when]) => !/Svg$/.test(when)))]));
+  assert.deepEqual(reads(call3.nodes), reads(probe.call3.nodes));
+  assert.deepEqual(reads(call4.nodes), reads(probe.call4.nodes));
+});
+
 // --- The 0.4.0 skill templates, unchanged -----------------------------------------------
 
 const SKILL = readFileSync(`${ROOT}skills/claude-code.md`, "utf8");
@@ -744,6 +876,45 @@ function withConstants(code: string, values: Record<string, unknown>): string {
   return out;
 }
 const table = (name: string, open: string, close: string) => new RegExp(`const ${name} = \\${open}[\\s\\S]*?\\n\\s*\\${close};`);
+
+test("templates: the root-only build's setPaints binds each paint afresh, so a set left in Dark shows Dark's color and alpha, keeps an alpha variable's alpha, and puts back the opacity only of one bound to a token", async () => {
+  const build = skillBlocks().find((b) => b.code.includes("const setPaints = "))!.code;
+  const setPaints = /\n\s*const lightAlpha = [\s\S]*?\n\s*const setPaints = [\s\S]*?\n\s*\};/.exec(build);
+  assert.ok(setPaints, "the root-only template defines lightAlpha and setPaints");
+  const figma = new MockFigma();
+  figma.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#ffffff1a" }, "Colors");
+  figma.addVariable("destructive", "COLOR", { Light: "#df2225", Dark: "#ff6467" }, "Colors");
+  figma.addVariable("destructive 10% dark 20%", "COLOR", { Light: "#df22251a", Dark: "#ff646733" }, "Colors");
+  const got = await ok(figma, `${setPaints![0]}
+    const vars = Object.fromEntries((await figma.variables.getLocalVariablesAsync()).map((v) => [v.name, v]));
+    const col = await figma.variables.getVariableCollectionByIdAsync(vars.border.variableCollectionId);
+    const [light, dark] = col.modes;
+    const set = figma.createFrame();
+    const n = figma.createFrame();
+    set.appendChild(n);
+    const red = { r: 223 / 255, g: 34 / 255, b: 37 / 255 };
+    const style = () => {
+      setPaints(n, 'fills', [{ type: 'SOLID', color: red, opacity: 26 / 255, variable: vars['destructive 10% dark 20%'] }, { type: 'SOLID', color: red, opacity: 77 / 255, variable: vars.destructive }]);
+      setPaints(n, 'strokes', [{ type: 'SOLID', color: { r: 229 / 255, g: 229 / 255, b: 229 / 255 }, opacity: 1, variable: vars.border }]);
+      setPaints(n, 'effects', [{ type: 'DROP_SHADOW', color: { ...red, a: 26 / 255 }, offset: { x: 0, y: 0 }, radius: 0, spread: 1, visible: true, blendMode: 'NORMAL', variable: vars['destructive 10% dark 20%'] }]);
+    };
+    const read = () => [...n.fills, ...n.strokes].map((p) => [Math.round(p.color.r * 255), Math.round(p.opacity * 255), Boolean(p.boundVariables && p.boundVariables.color)])
+      .concat(n.effects.map((e) => [Math.round(e.color.r * 255), Math.round(e.color.a * 255), Boolean(e.boundVariables && e.boundVariables.color)]));
+    style();
+    const built = read();
+    set.setExplicitVariableModeForCollection(col, dark.modeId);
+    const switched = read();
+    style();
+    const again = read();
+    set.setExplicitVariableModeForCollection(col, light.modeId);
+    return { built, switched, again, back: read() };`) as Record<string, [number, number, boolean][]>;
+  assert.deepEqual(got.built, [[0xdf, 0x1a, true], [0xdf, 0x4d, true], [0xe5, 0xff, true], [0xdf, 0x1a, true]]);
+  // A designer's switch to Dark: the alpha variable holds Dark's 20%, border its 10%; the token at 30% turns opaque.
+  assert.deepEqual(got.switched, [[0xff, 0x33, true], [0xff, 0xff, true], [0xff, 0x1a, true], [0xff, 0x33, true]]);
+  // Pushed again into the set in Dark: Dark's values as the switch gave them, the token's paint at its own opacity.
+  assert.deepEqual(got.again, [[0xff, 0x33, true], [0xff, 0x4d, true], [0xff, 0x1a, true], [0xff, 0x33, true]]);
+  assert.deepEqual(got.back, [[0xdf, 0x1a, true], [0xdf, 0xff, true], [0xe5, 0xff, true], [0xdf, 0x1a, true]]);
+});
 
 /**
  * An agent's applyStyles for the example Button, as the skill's step 3 table

@@ -153,6 +153,12 @@ export interface ComponentTree {
   base: TreeNode[];                                          // base variant, preorder, siblings in paint order
   assets: { svg: Record<string, string>; img: Record<string, ImageAsset> };
   truncated?: { nodes: number; at: string };
+  /**
+   * 1 where `cls` keeps a `dark:` class's opacity, `dark:bg-destructive/20`,
+   * so a `dark:` class without one paints at 1. A tree snapped before cut
+   * it off, and its `dark:` classes say no alpha.
+   */
+  darkAlpha?: 1;
 }
 
 /**
@@ -249,6 +255,16 @@ export interface FigmaPlan {
   calls: PlanCall[];
   /** Each value bound by the project's base styles, where no class names its token, with the rule (section 8.9). */
   bindings?: PlanBinding[];
+  /** The alpha variables the build binds translucent paints to, by name, which the plan's `variables` call makes, and `figma tokens` keeps up to date. */
+  alphas?: PlanAlpha[];
+}
+
+/**
+ * A token's color at an alpha, 0-1 as `#rrggbbaa` gives it, and at `dark` in
+ * the dark theme where that differs: the variable named `variable`.
+ */
+export interface PlanAlpha {
+  variable: string; token: string; alpha: number; dark?: number;
 }
 
 /** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it, in the layers `keys`. */
@@ -260,8 +276,9 @@ export interface PlanBinding {
 
 /** One planned call. Paths are relative to the plan's directory. */
 export interface PlanCall {
-  seq: number; kind: "build" | "images" | "label" | "read";
-  page: string; components: string[];        // componentKey list
+  seq: number; kind: "variables" | "build" | "images" | "label" | "read";
+  page: string; components: string[];        // componentKey list; none for variables
+  collection?: string;                       // variables: the collection its alpha variables go in
   file: string; result: string;              // relative to plan dir
   description: string; chars: number;
   nodes?: number;                            // build: nodes created or restyled at most

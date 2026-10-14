@@ -18,6 +18,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, wr
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callCode, canonicalJson, fnv1a32Bytes } from "./checksum.js";
+import type { CallWriter } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
 import { planLayout } from "./figma-layout.js";
@@ -33,9 +34,10 @@ import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
 import { applyDelta } from "./snap-normalize.js";
 import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
+import { alphaCalls } from "./figma-tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
 import { expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
-import type { Box, ComponentTree, FigmaPlan, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
+import type { Box, ComponentTree, FigmaPlan, PlanAlpha, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
 export interface FigmaCodeOptions {
@@ -186,6 +188,8 @@ interface Findings {
   unbound: Unbound[];
   byDefault: BoundByDefault[];
   absolute: Map<string, { why: string; slugs: string[] }>;
+  /** The alpha variables bound, by name, across the plan. */
+  alphas?: Map<string, PlanAlpha>;
 }
 
 /**
@@ -229,7 +233,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
     const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, parentCls: parent?.cls, spike, around };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, parentCls: parent?.cls, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
@@ -434,13 +438,13 @@ function labelLine(component: SnapComponent): string {
   return parts.join("; ");
 }
 
-function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike): CompiledComponent | null {
+function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike, alphas: Map<string, PlanAlpha>): CompiledComponent | null {
   const key = componentKey(component);
   if (component.error || !component.base) {
     warnings.push(`${key}: not built: ${component.error ?? "snap measured no variant of it"}`);
     return null;
   }
-  const findings: Findings = { notBuilt: [], unbound: [], byDefault: [], absolute: new Map() };
+  const findings: Findings = { notBuilt: [], unbound: [], byDefault: [], absolute: new Map(), alphas };
   const variants = component.variants.map((variant, i) => (variant.status === "ok"
     ? compileVariant(component, variant as SnapVariantWithTree, i, binder, findings, spike)
     : compilePlaceholder(component, variant as SnapVariantWithTree, i)));
@@ -564,9 +568,9 @@ function describeParts(parts: Part[]): string {
 /** A readback call's slices, as plan.json lists them: [storysync id, first i, last i]. */
 type Slice = [string, number, number];
 
-function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string): string {
+function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string, writer: CallWriter = "figma code"): string {
   const full = slices.map((s): ReadSlice => (s.length === 4 ? s : [...s, 0]));
-  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit)}`;
+  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit, writer)}`;
 }
 
 // --- figma code -------------------------------------------------------------
@@ -586,7 +590,7 @@ function readTokens(path: string | undefined, warnings: string[]): TokenExtracti
  * responses saved for them (`07.json`, `07b.json`, `03.upload.json`).
  */
 const PLAN_FILES: Record<"calls" | "results", RegExp> = {
-  calls: /^\d{2,}[b-z]?-(?:build|images|label|read)(?:-[a-z0-9-]+)?\.js$/,
+  calls: /^\d{2,}[b-z]?-(?:variables|build|images|label|read)(?:-[a-z0-9-]+)?\.js$/,
   results: /^\d{2,}[b-z]?(?:\.upload)?\.json$/,
 };
 
@@ -610,7 +614,7 @@ function clearPlanFiles(out: string): void {
  * earlier plan's calls and results under `out` (clearPlanFiles). Two runs
  * over the same inputs write the same bytes.
  */
-export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: FigmaPlan; planPath: string; warnings: string[]; bindings: PlanBinding[] }> {
+export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: FigmaPlan; planPath: string; warnings: string[]; bindings: PlanBinding[]; alphas: PlanAlpha[] }> {
   const maxChars = opts.maxChars ?? MAX_CALL_CHARS;
   const spike: Spike = { ...SPIKE, ...opts.spike };
   const maxNodes = opts.maxNodes ?? spike.maxNodes;
@@ -622,7 +626,8 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const snap = JSON.parse(bytes.toString("utf8")) as SnapResult & { components: SnapComponentWithTree[] };
   const metaPath = join(dirname(opts.snap), "meta.json");
   const measuredAt = existsSync(metaPath) ? String((JSON.parse(readFileSync(metaPath, "utf8")) as { measuredAt?: string }).measuredAt ?? "") : "";
-  const binder = new Binder(readTokens(opts.tokens, warnings));
+  const tokens = readTokens(opts.tokens, warnings);
+  const binder = new Binder(tokens);
 
   const all = (snap.components ?? []) as SnapComponentWithTree[];
   const entries = all.map((c): ComponentEntry => ({ id: c.id ?? componentKey(c), name: c.name, title: c.title }));
@@ -636,7 +641,8 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       "figma code builds from trees: take the snap again without --root-only, or build it with the skill's root-only templates.",
     );
   }
-  const components = picked.map((c) => compileComponent(c, binder, warnings, spike)).filter((c): c is CompiledComponent => c !== null);
+  const bound = new Map<string, PlanAlpha>();
+  const components = picked.map((c) => compileComponent(c, binder, warnings, spike, bound)).filter((c): c is CompiledComponent => c !== null);
   if (!components.length) throw new Error("No component to build: snap measured none of those named, or each failed");
 
   const pages: string[] = [];
@@ -646,17 +652,20 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     images: loadTemplate("images", minify, opts.templates),
     label: loadTemplate("label", minify, opts.templates),
     readback: loadTemplate("readback", minify, opts.templates),
+    variables: loadTemplate("variables", minify, opts.templates),
   };
 
   const calls: (PlanCall & { code: string })[] = [];
   const add = (call: Omit<PlanCall, "seq" | "file" | "result" | "chars">, code: (seq: number) => string) => {
     const seq = calls.length + 1;
     const text = code(seq);
-    const file = `calls/${pad(seq)}-${call.kind}${call.page ? `-${pageSlug(call.page)}` : ""}.js`;
+    const named = call.page || call.collection;
+    const file = `calls/${pad(seq)}-${call.kind}${named ? `-${pageSlug(named)}` : ""}.js`;
     const kind = call.kind === "read" ? "readback" : call.kind;
     assertCompiles(text, file, kind, templates[kind]);
     calls.push({
       seq, kind: call.kind, page: call.page, components: call.components,
+      ...(call.collection ? { collection: call.collection } : {}),
       file, result: `results/${pad(seq)}.json`,
       description: call.description, chars: text.length,
       ...(call.nodes !== undefined ? { nodes: call.nodes } : {}),
@@ -665,6 +674,21 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       code: text,
     });
   };
+
+  // First the alpha variables the translucent paints bind to, each a
+  // token's color at an alpha in every mode, which Figma keeps at a mode
+  // switch (figma-bind.ts): a call per color collection, before the builds
+  // that bind them, so the plan sent in order needs nothing else first.
+  // It finds and updates what `figma tokens` made already, and changes
+  // nothing then. A build that finds none binds the token at the paint's
+  // opacity, which a mode switch resets to 1, and says so in `fallbacks`.
+  const alphas = [...bound.values()].sort((a, b) => (a.variable < b.variable ? -1 : a.variable > b.variable ? 1 : 0));
+  for (const { collection, data, alpha } of tokens && alphas.length ? alphaCalls(tokens, alphas, warnings) : []) {
+    add(
+      { kind: "variables", page: "", components: [], collection, description: `Create or update the alpha variables ${alpha.join(", ")} in the ${collection} variable collection, each a token's color at an alpha in every mode, for the translucent paints the builds bind` },
+      (seq) => `${header(seq, "variables", "")}${callCode([["DATA", data]], templates.variables)}`,
+    );
+  }
 
   // Builds: by page, each component's variants in snap order, packed. A
   // variant too big for one call on its own is left out, and the rest built.
@@ -783,9 +807,12 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   };
   const bindings = built.flatMap((c) => c.bindings);
   if (bindings.length) plan.bindings = bindings;
+  // Each alpha variable a translucent paint binds to, which the first
+  // calls make, and `figma tokens` keeps up to date with its token.
+  if (alphas.length) plan.alphas = alphas;
   const planPath = join(out, "plan.json");
   writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
-  return { plan, planPath, warnings, bindings };
+  return { plan, planPath, warnings, bindings, alphas };
 }
 
 // --- Estimate ---------------------------------------------------------------
@@ -984,7 +1011,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
-    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
+    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next").replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file, "readback", template);
     writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };

@@ -654,6 +654,36 @@ test("bindings: a Button's radius binds wherever its border is built INSIDE at t
   ]);
 });
 
+test("bindings: a variant copied from one whose radius is bound has its corners unbound where its own radius binds none, so a mode switch keeps its radius", async () => {
+  // The Button's destructive variants with border-destructive/30: built
+  // OUTSIDE at the padding box, radius 7, which no token holds. Each starts
+  // as a copy of the default variant, whose radius 8 is bound to md, and
+  // kept that binding, which a switch of the set's mode resolved to 8.
+  const button = copy(loadTreeFixture("button-icon"));
+  button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
+  const side = { width: 1, style: "solid", color: "#df22254d" };
+  for (const v of button.components[0].variants) {
+    if (v.slug.startsWith("variant-destructive") && v.delta) Object.assign(v.delta, { border: { top: side, right: side, bottom: side, left: side }, borderUniform: side });
+  }
+  const coded = await codeFor(button, {}, SHADCN_TOKENS);
+  const mock = mockFor([button]);
+  const md = mock.addVariable("md", "FLOAT", { Light: 8, Dark: 8 }, "Radius").id;
+  await runPlan(mock, coded, ["build"]);
+  const built = variantsBySlug(mock);
+  const corners = (slug: string) => {
+    const root = mock.handle(built.get(slug)!.id) as Record<string, unknown>;
+    return [root.cornerRadius, (root.boundVariables as Record<string, { id: string }>).topLeftRadius?.id];
+  };
+  assert.deepEqual(corners("variant-default--size-default"), [8, md]);
+  assert.deepEqual(corners("variant-destructive--size-default"), [7, undefined]);
+  const set = (mock.handle(built.get("variant-destructive--size-default")!.id) as { parent: { id: string } }).parent.id;
+  const run = await mock.run(`const [md] = await figma.variables.getLocalVariablesAsync('FLOAT');
+    const col = await figma.variables.getVariableCollectionByIdAsync(md.variableCollectionId);
+    (await figma.getNodeByIdAsync('${set}')).setExplicitVariableModeForCollection(col, col.modes[1].modeId);`);
+  assert.ok(run.ok, run.text);
+  assert.deepEqual(corners("variant-destructive--size-default"), [7, undefined], "in Dark");
+});
+
 test("bindings: a variable with Light and Dark modes binds by its name, as one of one mode does, its paint showing Light", async () => {
   // The push makes a Dark mode for the dark theme's values. The build finds
   // a variable by name, so the modes change nothing it does: the paint is
@@ -706,26 +736,180 @@ test("bindings: what no class colors binds to the base styles' token, so Dark mo
   assert.equal((root.strokes as { boundVariables?: { color: { id: string } } }[])[0].boundVariables?.color.id, border);
 });
 
-test("bindings: a dialog's ring stays unbound at its own 10% alpha, which a switch to Dark keeps, where a bound ring turns opaque", async () => {
+/** Sets the mode of the frame `id` for the Colors collection: Light or Dark, or none, the default. */
+async function switchMode(mock: MockFigma, id: string, mode: "Light" | "Dark" | null): Promise<void> {
+  const run = await mock.run(`const [fg] = (await figma.variables.getLocalVariablesAsync('COLOR')).filter((v) => v.name === 'foreground');
+    const col = await figma.variables.getVariableCollectionByIdAsync(fg.variableCollectionId);
+    const n = await figma.getNodeByIdAsync('${id}');
+    ${mode ? `n.setExplicitVariableModeForCollection(col, col.modes.find((m) => m.name === '${mode}').modeId);` : "n.clearExplicitVariableModeForCollection(col);"}`);
+  assert.ok(run.ok, run.text);
+}
+
+/** Colors as push 5b's shadcn/ui tokens have them, light and dark, and their alpha variables as `figma tokens` makes them. */
+function addColors(mock: MockFigma, alphas: boolean): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const [name, light, dark] of [["foreground", "#0a0a0a", "#fafafa"], ["destructive", "#df2225", "#ff6467"]]) {
+    vars[name] = mock.addVariable(name, "COLOR", { Light: light, Dark: dark }, "Colors").id;
+    for (const [percent, aa] of alphas ? [["10", "1a"], ["30", "4d"], ["80", "cc"]] : []) {
+      vars[`${name} ${percent}%`] = mock.addVariable(`${name} ${percent}%`, "COLOR", { Light: light + aa, Dark: dark + aa }, "Colors").id;
+    }
+  }
+  return vars;
+}
+
+test("bindings: a dialog's ring binds to foreground 10%, which keeps its 10% in Dark and back in Light; without it, the ring stays unbound at its own alpha, said", async () => {
   // The fifth live push's Dialog: ring-1 ring-foreground/10, a spread-only
   // shadow. Probe 7b bound it to foreground at 10%, which Figma kept only
   // until the frame's mode changed: then it drew foreground opaque, in
-  // Dark and back in Light, as a stroke at the paint's opacity did too.
-  // Unbound, it draws #0a0a0a at 10% in every mode.
+  // Dark and back in Light. Probe 7c bound it to foreground 10%, a variable
+  // that carries the alpha, which kept it through every switch.
   const dialog = loadTreeFixture("dialog");
   const coded = await codeFor(dialog, {}, SHADCN_TOKENS);
-  const mock = mockFor([dialog]);
-  mock.addVariable("foreground", "COLOR", { Light: "#0a0a0a", Dark: "#fafafa" }, "Colors");
-  await runPlan(mock, coded, ["build"]);
-  const variant = variantsBySlug(mock).get("default")!;
-  const ring = () => (mock.handle(variant.id) as { effects: { type: string; spread: number; color: { r: number; a: number }; boundVariables?: { color?: { id: string } } }[] }).effects
-    .map((e) => [e.type, e.spread, Math.round(e.color.r * 255), Math.round(e.color.a * 255), e.boundVariables?.color?.id]);
-  assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, undefined]]);
-  const run = await mock.run(`const [fg] = (await figma.variables.getLocalVariablesAsync('COLOR')).filter((v) => v.name === 'foreground');
-    const col = await figma.variables.getVariableCollectionByIdAsync(fg.variableCollectionId);
-    (await figma.getNodeByIdAsync('${variant.id}')).parent.setExplicitVariableModeForCollection(col, col.modes[1].modeId);`);
-  assert.ok(run.ok, run.text);
-  assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, undefined]], "in Dark");
+  assert.deepEqual(coded.plan.alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102 }]);
+  for (const alphas of [true, false]) {
+    const mock = mockFor([dialog]);
+    const vars = addColors(mock, alphas);
+    const [build] = await runPlan(mock, coded, ["build"]);
+    const variant = variantsBySlug(mock).get("default")!;
+    const ring = () => (mock.handle(variant.id) as { effects: { type: string; spread: number; color: { r: number; a: number }; boundVariables?: { color?: { id: string } } }[] }).effects
+      .map((e) => [e.type, e.spread, Math.round(e.color.r * 255), Math.round(e.color.a * 255), e.boundVariables?.color?.id]);
+    const bound = alphas ? vars["foreground 10%"] : undefined;
+    assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, bound]]);
+    assert.deepEqual(result(build).fallbacks, alphas ? [] : [["ui/base/Dialog", "", "no alpha variable foreground 10%: shadow unbound", 1]]);
+    await switchMode(mock, variant.id, "Dark");
+    assert.deepEqual(ring(), [["DROP_SHADOW", 1, alphas ? 0xfa : 0x0a, 0x1a, bound]], "in Dark");
+    await switchMode(mock, variant.id, "Light");
+    assert.deepEqual(ring(), [["DROP_SHADOW", 1, 0x0a, 0x1a, bound]], "back in Light");
+  }
+});
+
+test("bindings: each translucent paint binds to its token's alpha variable, which keeps its alpha in Dark and back; without one, the token at its opacity, which the switch resets, said", async () => {
+  // shadcn/ui's Attachment in its error state: border-destructive/30, a
+  // bg-destructive/10 media frame and a text-destructive/80 description;
+  // and the Button's bg-destructive/10. Bound to destructive at those
+  // opacities, a switch to Dark made each opaque (probe 7b).
+  const attachment = loadTreeFixture("attachment");
+  const button = loadTreeFixture("button-icon");
+  const coded = await codeFor({ ...attachment, components: [...attachment.components, ...button.components] }, {}, SHADCN_TOKENS);
+  assert.deepEqual(coded.plan.alphas!.map((a) => a.variable), ["destructive 10%", "destructive 30%", "destructive 80%"]);
+  for (const alphas of [true, false]) {
+    const mock = mockFor([attachment, button]);
+    const vars = addColors(mock, alphas);
+    const builds = await runPlan(mock, coded, ["build"]);
+    const built = [...variantsBySlug(mock, "ui-base-attachment")].filter(([slug]) => /state-error/.test(slug)).concat([...variantsBySlug(mock, "ui-base-button")].filter(([slug]) => /variant-destructive/.test(slug)));
+    assert.equal(built.length, 5);
+    // Every translucent paint of these variants, as built: where it is, then its color's red, its opacity's byte, and its variable.
+    type Paint = { type: string; color: { r: number }; opacity: number; boundVariables?: { color?: { id: string } } };
+    const paints = (id: string, key: "fills" | "strokes") => ((mock.handle(id) as Record<string, unknown>)[key] ?? []) as Paint[];
+    const nodesOf = (v: NodeView): NodeView[] => [v, ...(v.children ?? []).flatMap(nodesOf)];
+    const spots = built.flatMap(([slug, v]) => nodesOf(v).flatMap((n) => (["fills", "strokes"] as const).flatMap((key) => paints(n.id, key)
+      .map((p, i) => ({ p, i })).filter(({ p }) => p.type === "SOLID" && p.boundVariables?.color && p.opacity < 0.99)
+      .map(({ i }) => ({ id: n.id, key, i, where: `${slug} ${n.name} ${key}` })))));
+    const read = () => spots.map((s) => {
+      const p = paints(s.id, s.key)[s.i];
+      return [s.where, Math.round(p.color.r * 255), Math.round(p.opacity * 255), p.boundVariables?.color?.id];
+    });
+    const light = read();
+    // The media frame, the description and the border in 2 variants, the Button's fill in 3.
+    assert.equal(light.length, 9, JSON.stringify(light));
+    assert.ok(light.every((p) => p[1] === 0xdf));
+    assert.deepEqual([...new Set(light.map((p) => p[2] as number))].sort((a, b) => a - b), [0x1a, 0x4d, 0xcc]);
+    assert.deepEqual(new Set(light.map((p) => p[3])), alphas ? new Set([vars["destructive 10%"], vars["destructive 30%"], vars["destructive 80%"]]) : new Set([vars.destructive]));
+    const fallbacks = builds.flatMap((b) => result(b).fallbacks).map((f) => f[2]);
+    assert.deepEqual([...new Set(fallbacks)].sort(), alphas ? [] : ["destructive 10%", "destructive 30%", "destructive 80%"].map((n) => `no alpha variable ${n}: bound to destructive at its opacity`));
+    // A designer switches each set to Dark, then back to Light.
+    const sets = [...new Set(built.map(([, v]) => ((mock.handle(v.id) as { parent: { id: string } }).parent.id)))];
+    for (const id of sets) await switchMode(mock, id, "Dark");
+    const dark = read();
+    if (alphas) assert.deepEqual(dark, light.map((p) => [p[0], 0xff, p[2], p[3]]), "in Dark");
+    else assert.deepEqual(dark.map((p) => p[2]), light.map(() => 0xff), "each turned opaque in Dark");
+    for (const id of sets) await switchMode(mock, id, "Light");
+    if (alphas) assert.deepEqual(read(), light, "back in Light");
+  }
+});
+
+test("bindings: built again into sets a designer left in Dark, every bound paint and shadow takes its variable's Dark value, as a switch would, a variant made there too, and back in Light each is Light's", async () => {
+  // Figma keeps the color and opacity a paint bound to the same variable
+  // again is given, the light theme's as measured, in Dark too; one bound
+  // afresh takes the variable's value in the node's mode (probe 7c, call 3).
+  // Attachment's border is * { border-border }, white at 10% in Dark; its
+  // error state and the Button's destructive variants are translucent
+  // destructive, the Dialog's ring foreground at 10%.
+  const tokens = { ...SHADCN_TOKENS, defaults: [{ property: "border-color", token: "border", from: "app/globals.css, @layer base: * { @apply border-border }" }] };
+  const attachment = withNoClass(loadTreeFixture("attachment"), { "": ["border-color"] });
+  const dialog = loadTreeFixture("dialog");
+  // The Button's first variant, here bg-destructive/10, which a build makes
+  // afresh where its set lacks it, not as a copy of another variant.
+  const button = copy(loadTreeFixture("button-icon"));
+  button.components[0].base!.styles.backgroundColor = "#df22251a";
+  button.components[0].tree.base[0].cls = ["bg-destructive"];
+  const fixtures = [attachment, dialog, button];
+  const coded = await codeFor({ ...attachment, components: fixtures.flatMap((f) => f.components) }, {}, tokens);
+  for (const alphas of [true, false]) {
+    const mock = mockFor(fixtures);
+    addColors(mock, alphas);
+    mock.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#ffffff1a" }, "Colors");
+    await runPlan(mock, coded, ["build"]);
+    const ids = (await mock.run("return Object.fromEntries((await figma.variables.getLocalVariablesAsync()).map((v) => [v.id, v.name]));")).value as Record<string, string>;
+    // Every bound paint and shadow, by variant, layer and place: its red, alpha and variable.
+    type Bound = { boundVariables?: { color?: { id: string } } };
+    const read = () => {
+      const out: Record<string, [number, number, string]> = {};
+      for (const [slug, variant] of variantsBySlug(mock)) {
+        const walk = (n: NodeView) => {
+          const h = mock.handle(n.id) as Record<string, unknown>;
+          const at = `${slug}/${n.data["storysync.k"] ?? ""}`;
+          for (const key of ["fills", "strokes"] as const) {
+            ((h[key] ?? []) as ({ type: string; color?: { r: number }; opacity: number } & Bound)[]).forEach((p, i) => {
+              if (p.boundVariables?.color) out[`${at} ${key} ${i}`] = [Math.round(p.color!.r * 255), Math.round(p.opacity * 255), ids[p.boundVariables.color.id]];
+            });
+          }
+          ((h.effects ?? []) as ({ color?: { r: number; a: number } } & Bound)[]).forEach((e, i) => {
+            if (e.boundVariables?.color) out[`${at} effects ${i}`] = [Math.round(e.color!.r * 255), Math.round(e.color!.a * 255), ids[e.boundVariables.color.id]];
+          });
+          for (const c of n.children ?? []) walk(c);
+        };
+        walk(variant);
+      }
+      return out;
+    };
+    const light = read();
+    assert.ok(Object.values(light).some(([, , v]) => v === "border"), "the border is bound");
+    // Each set, and the Dialog, a plain component, itself: not the page around them.
+    const sets = [...new Set([...variantsBySlug(mock)].map(([, v]) => {
+      const parent = (mock.handle(v.id) as { parent: { id: string; type: string } }).parent;
+      return parent.type === "COMPONENT_SET" ? parent.id : v.id;
+    }))];
+    for (const id of sets) await switchMode(mock, id, "Dark");
+    const dark = read();
+    // A designer's switch: border takes its Dark alpha, 10%; with alpha variables, each keeps its alpha in Dark's color.
+    for (const [where, [r, a, v]] of Object.entries(dark)) {
+      if (v === "border") assert.deepEqual([r, a], [0xff, 0x1a], where);
+      if (alphas && /%$/.test(v)) assert.equal(a, light[where][1], where);
+    }
+    // Variants gone, as a snap adds them: made again, in their set's Dark,
+    // the Attachment's as a copy of another, the Button's first afresh.
+    const gone = ["size-default--orientation-horizontal--state-error", "variant-default--size-default"];
+    for (const [component, slug] of [["ui-base-attachment", gone[0]], ["ui-base-button", gone[1]]]) {
+      const removed = await mock.run(`(await figma.getNodeByIdAsync('${variantsBySlug(mock, component).get(slug)!.id}')).remove();`);
+      assert.ok(removed.ok, removed.text);
+    }
+    const builds = await runPlan(mock, coded, ["build"]);
+    const again = read();
+    if (alphas) assert.deepEqual(again, dark, "built again in Dark, as a switch to Dark left them");
+    else {
+      // Without alpha variables, a paint bound to destructive at its opacity
+      // keeps the opacity measured, in Dark's color; every other paint is as a switch left it.
+      for (const [where, [r, a, v]] of Object.entries(again)) {
+        if (v === "destructive" && light[where][1] < 0xff) assert.deepEqual([r, a], [0xff, light[where][1]], where);
+        else assert.deepEqual([r, a, v], dark[where], where);
+      }
+      assert.ok(builds.some((b) => result(b).fallbacks.some((f) => /^no alpha variable destructive 10%/.test(f[2]))));
+    }
+    for (const slug of gone) assert.ok(Object.keys(again).some((k) => k.startsWith(`${slug}/`)), `${slug}, made again, is read`);
+    for (const id of sets) await switchMode(mock, id, "Light");
+    if (alphas) assert.deepEqual(read(), light, "back in Light");
+  }
 });
 
 test("label: a set measured from its closed trigger says so on one line, written once, its description unescaped", async () => {

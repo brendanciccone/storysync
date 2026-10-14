@@ -288,7 +288,9 @@ const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-
  * variable: each token's variant prefixes (`hover:`, `data-[state=on]:`)
  * and any `/NN` opacity cut off, arbitrary values (`bg-[#fff]`) left out,
  * sorted. A `dark:` prefix alone stays (`dark:border-input`): it names the
- * token the dark theme paints, which a variable's Dark mode must be.
+ * token the dark theme paints, which a variable's Dark mode must be, and so
+ * does its opacity (`dark:bg-destructive/20`), which snap can't measure in
+ * the light theme it renders, and the variable's Dark alpha must be.
  * Every one is kept: at most 8 dropped the `dark:border-input` that names
  * an outline button's border in Dark mode, so the base styles' color bound
  * in its place.
@@ -297,17 +299,17 @@ export function classEvidence(tokens: readonly string[]): string[] {
   return [...new Set(utilitiesOf(tokens).filter((u) => EVIDENCE.test(u.name)).map(evidenceName))].sort();
 }
 
-/** A utility as `cls` writes it: `dark:` before one only the dark theme applies. */
-const evidenceName = (u: { name: string; dark: boolean }): string => (u.dark ? `dark:${u.name}` : u.name);
+/** A utility as `cls` writes it: `dark:` before one only the dark theme applies, with its opacity. */
+const evidenceName = (u: { name: string; dark: boolean; alpha: string }): string => (u.dark ? `dark:${u.name}${u.alpha}` : u.name);
 
 /**
  * Each class token as its utility, its variant prefixes and any `/NN` or
- * `/[.5]` opacity cut off (an arbitrary value's own `/` stays), whether a
- * variant prefix applies it only sometimes, and whether that prefix is
- * `dark:` alone, the dark theme's.
+ * `/[.5]` opacity cut off (an arbitrary value's own `/` stays) into
+ * `alpha`, whether a variant prefix applies it only sometimes, and whether
+ * that prefix is `dark:` alone, the dark theme's.
  */
-function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean; dark: boolean }[] {
-  const found: { name: string; prefixed: boolean; dark: boolean }[] = [];
+function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boolean; dark: boolean; alpha: string }[] {
+  const found: { name: string; prefixed: boolean; dark: boolean; alpha: string }[] = [];
   for (const token of tokens) {
     // The utility is what follows the last `:` outside brackets.
     let depth = 0;
@@ -318,8 +320,9 @@ function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boole
       else if (ch === "]" || ch === ")") depth--;
       else if (ch === ":" && depth === 0) cut = i;
     }
-    const utility = token.slice(cut + 1).replace(/^!|!$/g, "").replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
-    found.push({ name: utility, prefixed: cut >= 0, dark: token.slice(0, cut + 1).replace(/^!/, "") === "dark:" });
+    const whole = token.slice(cut + 1).replace(/^!|!$/g, "");
+    const utility = whole.replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
+    found.push({ name: utility, prefixed: cut >= 0, dark: token.slice(0, cut + 1).replace(/^!/, "") === "dark:", alpha: whole.slice(utility.length) });
   }
   return found;
 }

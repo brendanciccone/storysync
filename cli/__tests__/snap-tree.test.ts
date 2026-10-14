@@ -748,15 +748,19 @@ test("buildTree: past the root, a text takes the text color class of the element
   assert.equal(byKey(buildTree(tree(root)).nodes).get("h2")!.cls, undefined);
 });
 
-test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off, every one", () => {
+test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off but a dark: one's, every one", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x", "bg-muted/[.5]"]),
-    ["bg-muted", "bg-primary", "dark:bg-input", "rounded-md", "text-primary-foreground", "text-x"],
+    ["bg-muted", "bg-primary", "dark:bg-input/30", "rounded-md", "text-primary-foreground", "text-x"],
   );
+  // shadcn/ui's destructive Button: the dark theme paints destructive at
+  // 20%, which snap, measuring the light theme, sees only in the class.
+  assert.deepEqual(classEvidence(["bg-destructive/10", "hover:bg-destructive/20", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive", "dark:hover:bg-destructive/30"]),
+    ["bg-destructive", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive"]);
   // An outline button's: past 8, the dark:border-input that names its border in Dark mode is kept.
   const outline = ["focus-visible:border-ring", "focus-visible:ring-ring/50", "aria-invalid:ring-destructive/20", "aria-invalid:border-destructive",
     "rounded-md", "border", "bg-background", "shadow-xs", "hover:bg-accent", "hover:text-accent-foreground", "dark:bg-input/30", "dark:border-input", "text-sm"];
-  assert.deepEqual(classEvidence(outline), ["bg-accent", "bg-background", "border-destructive", "border-ring", "dark:bg-input", "dark:border-input",
+  assert.deepEqual(classEvidence(outline), ["bg-accent", "bg-background", "border-destructive", "border-ring", "dark:bg-input/30", "dark:border-input",
     "ring-destructive", "ring-ring", "rounded-md", "shadow-xs", "text-accent-foreground", "text-sm"]);
 });
 

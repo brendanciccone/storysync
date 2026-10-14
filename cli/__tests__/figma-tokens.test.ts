@@ -4,14 +4,15 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { runFigmaTokens, variablesFromTokens } from "../figma-tokens.js";
+import { alphaCalls, runFigmaTokens, variablesFromTokens } from "../figma-tokens.js";
 import type { FigmaTokensOptions, TokensPlan } from "../figma-tokens.js";
 import type { TokenExtractionResult } from "../tokens.js";
+import type { PlanAlpha } from "../tree-types.js";
 import { SHADCN_TOKENS, codeFor, mockFor, runPlan, variantsBySlug } from "./figma-build-harness.js";
 import { MockFigma, loadTreeFixture } from "./mock-figma.js";
 
@@ -20,7 +21,7 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "index.js");
 interface Result {
   kind: string; collection: string; part: [number, number]; createdCollection: boolean;
   modes: string[]; renamedModes: [string, string][]; addedModes: string[]; darkError: string | null;
-  created: string[]; updated: string[]; unchanged: number; skipped: string[]; variables: number;
+  created: string[]; updated: string[]; unchanged: number; skipped: string[]; variables: number; alpha: string[];
   stale?: string[]; conflicts?: [string, string][]; removed?: string[];
 }
 
@@ -58,10 +59,18 @@ interface Planned {
   code(seq: number): string;
 }
 
-/** Writes `tokens` as tokens.json in a new directory and runs figma tokens over it. */
-function planFor(tokens: object, options: Partial<FigmaTokensOptions> = {}): Planned {
+/**
+ * Writes `tokens` as tokens.json in a new directory, and `alphas` as the
+ * alpha variables of a plan figma code wrote, and runs figma tokens over it.
+ */
+function planFor(tokens: object, options: Partial<FigmaTokensOptions> = {}, alphas?: PlanAlpha[]): Planned {
   const dir = mkdtempSync(join(tmpdir(), "storysync-figma-tokens-"));
   writeFileSync(join(dir, "tokens.json"), JSON.stringify(tokens));
+  if (alphas) {
+    mkdirSync(join(dir, "figma"), { recursive: true });
+    writeFileSync(join(dir, "figma", "plan.json"), JSON.stringify({ version: 1, storysyncVersion: "0.4.0", snap: { path: "", measuredAt: "", digest: "" }, calls: [], alphas }));
+    options = { plan: join(dir, "figma", "plan.json"), ...options };
+  }
   const out = join(dir, "figma", "tokens");
   const { plan } = runFigmaTokens({ tokens: join(dir, "tokens.json"), out, ...options });
   return { dir, plan, code: (seq) => readFileSync(join(out, plan.calls.find((c) => c.seq === seq)!.file), "utf8") };
@@ -78,7 +87,7 @@ async function push(mock: MockFigma, planned: Planned): Promise<Result[]> {
   return out;
 }
 
-const pushTokens = (mock: MockFigma, tokens: object, options: Partial<FigmaTokensOptions> = {}) => push(mock, planFor(tokens, options));
+const pushTokens = (mock: MockFigma, tokens: object, options: Partial<FigmaTokensOptions> = {}, alphas?: PlanAlpha[]) => push(mock, planFor(tokens, options, alphas));
 
 /** What a result changed: nothing, on a push sent again. */
 const changes = (r: Result) => ({ created: r.created, updated: r.updated, renamedModes: r.renamedModes, addedModes: r.addedModes, removed: r.removed ?? [] });
@@ -307,6 +316,64 @@ test("figma tokens: --remove names a variable of a collection the plan makes, an
   assert.throws(() => runFigmaTokens({ tokens: join(planned.dir, "missing.json"), out }), /no tokens at .*missing\.json: save them first/);
 });
 
+/** The alpha variables a plan binds, as figma code lists them: background and border at 10% and 50%, and a token the tokens lack. */
+const ALPHAS: PlanAlpha[] = [
+  { variable: "background 10%", token: "background", alpha: 0.102 },
+  { variable: "border 50%", token: "border", alpha: 0.502 },
+  { variable: "ring 10%", token: "ring", alpha: 0.102 },
+];
+
+test("figma tokens: the plan's alpha variables are made beside their tokens, each the token's color at its alpha in Light and Dark, and sent twice change nothing", async () => {
+  const planned = planFor(TOKENS, {}, ALPHAS);
+  assert.deepEqual(planned.plan.plan, { path: "../plan.json", alphas: 2 });
+  assert.equal(planned.plan.calls[0].description, "Create or update the Colors variable collection (3 variables, with 2 alpha variables of their colors), in Light and Dark modes");
+  const mock = new MockFigma();
+  const [colors] = await push(mock, planned);
+  assert.deepEqual([colors.created, colors.alpha, colors.stale], [["background", "border", "chart/1", "background 10%", "border 50%"], ["background 10%", "border 50%"], []]);
+  // border is translucent in Dark, #ffffff1a: at 50%, 5%, as the browser draws border-border/50 there.
+  assert.deepEqual(mock.collections()[0].variables.slice(3), [
+    { name: "background 10%", type: "COLOR", scopes: ["ALL_FILLS", "STROKE_COLOR", "EFFECT_COLOR"], values: { Light: "#ffffff1a", Dark: "#0a0a0a1a" } },
+    { name: "border 50%", type: "COLOR", scopes: ["ALL_FILLS", "STROKE_COLOR", "EFFECT_COLOR"], values: { Light: "#e5e5e580", Dark: "#ffffff0d" } },
+  ]);
+  const writes = mock.variableWrites.length;
+  const [again] = await push(mock, planFor(TOKENS, {}, ALPHAS));
+  assert.deepEqual([changes(again), again.unchanged, mock.variableWrites.length], [NOTHING, 5, writes]);
+});
+
+test("figma tokens: an alpha variable an earlier push made is no stale variable, and follows its token, the plan naming it or not; one whose token is gone is stale", async () => {
+  const mock = new MockFigma();
+  await pushTokens(mock, TOKENS, {}, ALPHAS);
+  const changed = copy(TOKENS);
+  changed.collections[0].tokens[1].hex = "#d4d4d4";
+  // No plan: a tokens-only push, or one before figma code has written one.
+  const [colors] = await pushTokens(mock, changed, { plan: join(tmpdir(), "no-such-plan.json") });
+  assert.deepEqual([colors.stale, colors.updated, colors.alpha], [[], ["border", "border 50%"], ["background 10%", "border 50%"]]);
+  assert.deepEqual(mock.collections()[0].variables.find((v) => v.name === "border 50%")!.values, { Light: "#d4d4d480", Dark: "#ffffff0d" });
+  const gone = copy(TOKENS);
+  gone.collections[0].tokens.shift();
+  const [without] = await pushTokens(mock, gone);
+  assert.deepEqual([without.stale, without.alpha], [["Colors/background", "Colors/background 10%"], ["border 50%"]]);
+});
+
+test("figma tokens: a large collection puts each alpha variable in the call of its token, and a plan's token the tokens lack is said and left out", async () => {
+  const planned = planFor(TOKENS, { maxVariables: 2 }, ALPHAS);
+  assert.deepEqual(planned.plan.calls.filter((c) => c.collection === "Colors").map((c) => [c.part, c.variables, c.alphas]), [[[1, 3], 1, 1], [[2, 3], 1, 1], [[3, 3], 1, undefined]]);
+  const { warnings } = runFigmaTokens({ tokens: join(planned.dir, "tokens.json"), out: join(planned.dir, "again"), plan: join(planned.dir, "figma", "plan.json") });
+  assert.deepEqual(warnings, ["ring 10%: the plan binds it, but no color token is named ring, so it isn't made: run `figma code` again with these tokens"]);
+  const mock = new MockFigma();
+  const results = await push(mock, planned);
+  assert.deepEqual(results.filter((r) => r.collection === "Colors").map((r) => r.alpha), [["background 10%"], ["border 50%"], []]);
+});
+
+test("figma tokens: a call changed on its way says it differs from the file figma tokens wrote, and changes nothing", async () => {
+  const planned = planFor(TOKENS);
+  const mock = new MockFigma();
+  const run = await mock.run(planned.code(1).replace('"#e5e5e5"', '"#e5e5e6"'));
+  assert.equal(run.ok, false);
+  assert.match(run.text, /^Error: This call differs from the file storysync figma tokens wrote: its data fails its checksum, SUM\. Nothing was changed\./);
+  assert.deepEqual(mock.variableWrites, []);
+});
+
 test("figma tokens: the build binds by name to the variables two pushes made, one of each", async () => {
   const button = loadTreeFixture("button-icon");
   button.components[0].tree.base[0].cls = ["bg-primary", "rounded-md", "text-primary-foreground"];
@@ -320,6 +387,79 @@ test("figma tokens: the build binds by name to the variables two pushes made, on
   assert.deepEqual(unbound.filter((u) => /variables have this name/.test(u[3])), []);
   const root = mock.handle(variantsBySlug(mock).get("variant-default--size-default")!.id) as { fills: { boundVariables?: { color?: { id: string } } }[] };
   assert.ok(root.fills[0].boundVariables?.color?.id, "the fill is bound to primary");
+});
+
+test("CLI: figma tokens reads the plan figma code wrote for its alpha variables, by default where figma code writes it", () => {
+  const planned = planFor(TOKENS, {}, ALPHAS);
+  const args = ["figma", "tokens", "--tokens", join(planned.dir, "tokens.json"), "--out", join(planned.dir, "out")];
+  const text = execFileSync(process.execPath, [CLI, ...args, "--plan", join(planned.dir, "figma", "plan.json")], { encoding: "utf8" });
+  assert.match(text, /with the alpha variables translucent paints bind to, each a color token at an alpha in every mode: background 10%, border 50%/);
+  assert.match(text, /! ring 10%: the plan binds it, but no color token is named ring/);
+  const json = JSON.parse(execFileSync(process.execPath, [CLI, ...args, "--plan", join(planned.dir, "figma", "plan.json"), "--json"], { encoding: "utf8" })) as { alphas: string[] };
+  assert.deepEqual(json.alphas, ["background 10%", "border 50%"]);
+  // By default, the plan where figma code writes it: .storysync/figma/plan.json, from the project.
+  const none = execFileSync(process.execPath, [CLI, ...args], { encoding: "utf8", cwd: planned.dir });
+  assert.doesNotMatch(none, /alpha variable/);
+  mkdirSync(join(planned.dir, ".storysync", "figma"), { recursive: true });
+  writeFileSync(join(planned.dir, ".storysync", "figma", "plan.json"), readFileSync(join(planned.dir, "figma", "plan.json")));
+  assert.match(execFileSync(process.execPath, [CLI, ...args], { encoding: "utf8", cwd: planned.dir }), /background 10%, border 50%/);
+});
+
+test("figma tokens: --alpha makes an alpha variable a root-only push binds, by its name, at each theme's alpha where the name gives two; a name of no color token is refused", async () => {
+  // A root-only push binds by hand, so no plan names them: the agent does,
+  // from the classes it binds, as shadcn/ui's bg-destructive/10
+  // dark:bg-destructive/20 and border-border/50.
+  const planned = planFor(TOKENS, { alpha: ["background 10% dark 20%", "border 50%", "border 50,0%"] });
+  assert.deepEqual(planned.plan.alpha, ["background 10% dark 20%", "border 50%", "border 50,0%"]);
+  const mock = new MockFigma();
+  const [colors] = await push(mock, planned);
+  assert.deepEqual(colors.alpha, ["background 10% dark 20%", "border 50%"]);
+  assert.deepEqual(Object.fromEntries(mock.collections()[0].variables.filter((v) => /%/.test(v.name)).map((v) => [v.name, v.values])), {
+    "background 10% dark 20%": { Light: "#ffffff1a", Dark: "#0a0a0a33" },
+    "border 50%": { Light: "#e5e5e580", Dark: "#ffffff0d" },
+  });
+  const [again] = await push(mock, planFor(TOKENS, { alpha: ["background 10% dark 20%", "border 50%"] }));
+  assert.deepEqual([changes(again), again.unchanged], [NOTHING, 5]);
+  for (const name of ["ring 10%", "background", "background 10% dark"]) {
+    assert.throws(() => planFor(TOKENS, { alpha: [name] }), new RegExp(`--alpha ${name}: name an alpha variable as a color token`));
+  }
+  const cli = execFileSync(process.execPath, [CLI, "figma", "tokens", "--tokens", join(planned.dir, "tokens.json"), "--out", join(planned.dir, "cli"), "--alpha", "border 50%", "--alpha", "background 10% dark 20%"], { encoding: "utf8" });
+  assert.match(cli, /each a color token at an alpha in every mode: background 10% dark 20%, border 50%/);
+});
+
+test("figma tokens: a plan that can't be read is said, by its path, and the calls are written without its alpha variables", () => {
+  const planned = planFor(TOKENS);
+  const bad = join(planned.dir, "bad-plan.json");
+  writeFileSync(bad, "{\n");
+  const { plan, warnings } = runFigmaTokens({ tokens: join(planned.dir, "tokens.json"), out: join(planned.dir, "again"), plan: bad });
+  assert.equal(plan.calls.length, 2);
+  assert.equal(plan.plan, undefined);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /bad-plan\.json can't be read \(.*JSON.*\), so no alpha variable is made from it: run `figma code` again, whose plan makes its own/);
+});
+
+test("figma tokens: a plan's dark alpha gives its alpha variable that alpha in Dark", async () => {
+  const mock = new MockFigma();
+  const [colors] = await pushTokens(mock, TOKENS, {}, [{ variable: "background 10% dark 20%", token: "background", alpha: 0.102, dark: 0.2 }]);
+  assert.deepEqual(colors.alpha, ["background 10% dark 20%"]);
+  assert.deepEqual(mock.collections()[0].variables.find((v) => v.name === "background 10% dark 20%")!.values, { Light: "#ffffff1a", Dark: "#0a0a0a33" });
+});
+
+test("alphaCalls: the data of a call per collection that makes only a plan's alpha variables, beside the tokens they are of, listing nothing stale; a token the tokens lack is said", async () => {
+  const notes: string[] = [];
+  const calls = alphaCalls(TOKENS as unknown as TokenExtractionResult, ALPHAS, notes);
+  assert.deepEqual(notes, ["ring 10%: no color token is named ring in the tokens, so it isn't made and its paints bind to none: save the tokens again"]);
+  assert.deepEqual(calls.map((c) => [c.collection, c.alpha, (c.data.vars as unknown[][]).map((v) => v[0]), c.data.all]), [["Colors", ["background 10%", "border 50%"], ["background", "border"], undefined]]);
+  // Sent to a file whose Colors an earlier push filled, it adds the two, and lists nothing stale.
+  const mock = new MockFigma();
+  await pushTokens(mock, TOKENS);
+  const template = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "templates", "variables.js"), "utf8");
+  const run = await mock.run(`const DATA = ${JSON.stringify(calls[0].data)};\n${template}`);
+  assert.ok(run.ok, run.text);
+  const result = run.value as Result;
+  assert.deepEqual([result.created, result.updated, result.unchanged, result.stale, result.alpha], [["background 10%", "border 50%"], [], 2, undefined, ["background 10%", "border 50%"]]);
+  // At most --max-variables a call, each alpha variable in its token's.
+  assert.deepEqual(alphaCalls(TOKENS as unknown as TokenExtractionResult, ALPHAS, [], 2).map((c) => [c.data.part, c.alpha]), [[[1, 2], ["background 10%"]], [[2, 2], ["border 50%"]]]);
 });
 
 test("CLI: figma tokens writes the plan, and says what it left out", () => {
@@ -347,5 +487,29 @@ test("skills: every skill and the push command send the calls figma tokens write
     assert.match(text, /Never remove a variable on your own/, file);
     assert.match(text, /figma tokens --remove/, file);
     assert.doesNotMatch(text, /createVariableCollection|createVariable\(/, `${file} still has the agent create variables itself`);
+  }
+});
+
+test("skills: every skill, the push command and the reference send the plan's variables call first for its alpha variables, name the dark theme's own, make a root-only push's with --alpha, and say a bound paint takes its variable's Dark color and alpha", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  for (const file of ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md", "docs/reference.md"]) {
+    const text = readFileSync(join(root, file), "utf8");
+    assert.match(text, /destructive 10%/, file);
+    assert.match(text, /destructive 10% dark 20%/, file);
+    assert.match(text, /figma tokens wrote/, file);
+    assert.match(text, /figma next wrote/, file);
+    assert.match(text, /`variables` call/, file);
+    // No second run of figma tokens for a plan's alpha variables: the plan's first call makes them.
+    assert.doesNotMatch(text, /run `npx storysync figma tokens` again|So run it again after `figma code`|Before a plan exists it says so/, file);
+    // The claims probe 7c disproved: a bound variable simply taking its Dark value, and shadows left unbound.
+    assert.doesNotMatch(text, /A (?:bound )?variable (?:bound this way )?takes its `?Dark`? value wherever/, file);
+    assert.doesNotMatch(text, /Shadows stay unbound|Shadow colors stay unbound/, file);
+    assert.match(text, /color and (?:its )?alpha|its color, and its alpha/, file);
+    if (file !== "commands/storysync-push.md") assert.match(text, /--alpha/, file);
+    if (file !== "docs/reference.md") {
+      assert.match(text, /Translucent paints bind to N alpha variables/, file);
+      assert.match(text, /Bound without their alpha variable/, file);
+      assert.match(text, /no alpha variable/, file);
+    }
   }
 });

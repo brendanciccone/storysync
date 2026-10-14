@@ -1067,7 +1067,9 @@ function figmaDocument() {
     ignored = on;
   };
   const variable = (name, hex) => {
-    const made = { id: `VariableID:${variables.size + 1}`, name, resolvedType: "COLOR", value: { ...rgb01(hex), a: alpha01(hex) } };
+    const value = { ...rgb01(hex), a: alpha01(hex) };
+    // Figma's Variable gives its value in each mode, by mode id: this one has one.
+    const made = { id: `VariableID:${variables.size + 1}`, name, resolvedType: "COLOR", value, valuesByMode: { "1:0": value } };
     variables.set(made.id, made);
     return made;
   };
@@ -1714,9 +1716,10 @@ function buildScenarios(snapDir) {
     async painted(build) {
       // A live push bound Attachment's error border, #df22254d, to the
       // destructive variable, and it read back #df2225: Figma sets a paint
-      // freshly bound to opacity 1 when it is assigned. setPaints puts each
-      // paint's opacity back, and leaves a shadow unbound where binding gave
-      // it its variable's alpha, keeping one whose variable has its alpha.
+      // freshly bound to opacity 1 when it is assigned. setPaints puts back
+      // the opacity of a paint whose variable's light value doesn't hold its
+      // alpha, and leaves such a shadow unbound, keeping one whose variable
+      // has its alpha bound.
       const { measured } = data();
       const doc = figmaDocument();
       const vars = {
@@ -4125,8 +4128,8 @@ async function main() {
       own: "(n.type === want || n.type === 'COMPONENT_SET' || idOf(n))",
       other: "componentSet && idOf(componentSet) && idOf(componentSet) !== ID ?",
       overlaps: "const overlaps = (node) => node.parent.children.filter(",
-      restore: "      node[key] = node[key].map((p, i) => (!fx ? { ...p, opacity: raw[i].opacity } : !p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]));\n",
-      effect: "!p.color || Math.abs(p.color.a - raw[i].color.a) < 0.002 ? p : raw[i]",
+      restore: "      if (!fx && loose.some(Boolean)) node[key] = node[key].map((p, i) => (loose[i] ? { ...p, opacity: raw[i].opacity } : p));\n",
+      effect: "p.variable && !(fx && loose[i]) ?",
       families: "for (const f of new Set([family, alt, 'Inter'])) {",
       serif: "? 'Noto Serif' :",
       ladder: "[i, i + d, i + 2 * d, 3]",
@@ -4148,7 +4151,7 @@ async function main() {
       "overwrites another component's id on a set of its name": (code) => code.replace(T.other, "false ?"),
       "counts no overlaps": (code) => code.replace(T.overlaps, "const overlaps = (node) => [].filter("),
       "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
-      "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p"),
+      "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p.variable ?"),
       "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),
       "sets a serif face in Inter": (code) => code.replace(T.serif, "? 'Inter' :"),
       "falls to Regular for a weight the family lacks": (code) => code.replace(T.ladder, "[i, 3]"),

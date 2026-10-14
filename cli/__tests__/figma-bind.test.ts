@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Binder } from "../figma-bind.js";
+import { ALPHA_VARIABLE, Binder, alphaVariableName, parseAlphaVariable, readEvidence } from "../figma-bind.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 
 
@@ -180,4 +180,87 @@ test("Binder: a Tailwind config's DEFAULT key is unnamed in a class", () => {
   // shadcn/ui v3's `primary: { DEFAULT: "hsl(var(--primary))" }` is the token primary/DEFAULT, and bg-primary names it.
   const binder = new Binder({ collections: [{ category: "colors", tokens: [{ name: "primary/DEFAULT", value: "", hex: "#18181b" }, { name: "foreground", value: "", hex: "#18181b" }] }] });
   assert.equal(binder.color("#18181b", "fill", ["bg-primary"]).variable, "primary/DEFAULT");
+});
+
+test("Binder: a shadow's color binds only where a ring-* or shadow-* class names its token, never by its value alone", () => {
+  // shadcn/ui's dialog: ring-1 ring-foreground/10, measured #0a0a0a1a.
+  const binder = new Binder(SHADCN_TOKENS);
+  assert.deepEqual(binder.color("#0a0a0a1a", "effect", ["bg-background", "ring-foreground", "rounded-xl"]), {
+    variable: "foreground", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"],
+  });
+  assert.equal(binder.color("#171717", "effect", ["shadow-primary"]).variable, "primary");
+  // A fill's class names no shadow's token, and a value one token has
+  // binds a stroke without a class, but no shadow: Tailwind's shadow scale
+  // draws in a black no token was set from.
+  assert.equal(binder.color("#0a0a0a1a", "effect", ["text-foreground"]).variable, null);
+  assert.deepEqual(binder.color("#a1a1a1", "effect", undefined), { variable: null, candidates: ["ring"] });
+  assert.equal(binder.color("#a1a1a1", "effect", ["ring-ring"]).variable, "ring");
+});
+
+test("Binder: a token is opaque where its light value is, which a translucent paint then takes at an alpha", () => {
+  const binder = new Binder({ collections: [{ category: "colors", tokens: [
+    { name: "destructive", value: "", hex: "#df2225" }, { name: "overlay", value: "", hex: "#0000001a" }, { name: "white", value: "", hex: "#ffffffff" },
+  ] }] });
+  assert.deepEqual(["destructive", "overlay", "white", "missing"].map((t) => binder.opaque(t)), [true, false, true, false]);
+});
+
+test("alpha variables: a token at an alpha is named by its percent, whole where Tailwind's /NN gives it, and the name gives back the byte snap measured", () => {
+  assert.equal(alphaVariableName("destructive", 0x1a / 255), "destructive 10%");
+  assert.equal(alphaVariableName("destructive", 0.302), "destructive 30%");
+  assert.equal(alphaVariableName("card/foreground", 0.5), "card/foreground 50%");
+  assert.equal(alphaVariableName("muted", 0.051), "muted 5%");
+  // Every Tailwind modifier, /0 to /100, has a whole name, from the byte
+  // snap measures it at: the browser's alpha, n / 100, times 255, rounded.
+  for (let n = 0; n <= 100; n++) assert.equal(alphaVariableName("x", Math.round((n / 100) * 255) / 255), `x ${n}%`);
+  // An alpha of no whole percent, /[.125], has a tenth, after a comma: Figma refuses a period in a name (probe 7c).
+  assert.equal(alphaVariableName("ring", 32 / 255), "ring 12,5%");
+  // Each byte has one name, which reads back as that byte, and holds no period.
+  const names = new Set<string>();
+  for (let byte = 0; byte < 256; byte++) {
+    const name = alphaVariableName("destructive", byte / 255);
+    assert.doesNotMatch(name, /\./);
+    assert.match(name, ALPHA_VARIABLE);
+    assert.deepEqual(parseAlphaVariable(name), { token: "destructive", alpha: byte / 255 }, name);
+    names.add(name);
+  }
+  assert.equal(names.size, 256);
+  // No token's name is one: a CSS variable has no space or %.
+  assert.equal(parseAlphaVariable("destructive"), null);
+  assert.equal(parseAlphaVariable("destructive/10"), null);
+  assert.equal(parseAlphaVariable("x 101%"), null);
+});
+
+test("alpha variables: where the dark theme paints the token at another alpha, the name says both, and gives both back", () => {
+  // shadcn/ui's destructive Button: bg-destructive/10 dark:bg-destructive/20.
+  assert.equal(alphaVariableName("destructive", 0x1a / 255, 0.2), "destructive 10% dark 20%");
+  assert.equal(alphaVariableName("destructive", 1, 0.6), "destructive 100% dark 60%");
+  assert.equal(alphaVariableName("ring", 0.5, 32 / 255), "ring 50% dark 12,5%");
+  // The same byte in both is the one alpha's name.
+  assert.equal(alphaVariableName("destructive", 0.102, 0.1), "destructive 10%");
+  for (const name of ["destructive 10% dark 20%", "card/foreground 100% dark 60%", "ring 50% dark 12,5%"]) assert.match(name, ALPHA_VARIABLE);
+  assert.deepEqual(parseAlphaVariable("destructive 10% dark 20%"), { token: "destructive", alpha: 26 / 255, dark: 51 / 255 });
+  assert.deepEqual(parseAlphaVariable("card/foreground 100% dark 60%"), { token: "card/foreground", alpha: 1, dark: 153 / 255 });
+  assert.equal(parseAlphaVariable("destructive 10% dark 120%"), null);
+  assert.equal(parseAlphaVariable("destructive 10% dark"), null);
+});
+
+test("Binder: a dark: class gives the alpha the dark theme paints its token at, where a snap keeps it, in the role its prefix colors", () => {
+  assert.deepEqual(readEvidence("dark:bg-destructive/20"), { dark: true, utility: "bg-destructive", alpha: 0.2 });
+  assert.deepEqual(readEvidence("dark:bg-destructive/[.25]"), { dark: true, utility: "bg-destructive", alpha: 0.25 });
+  assert.deepEqual(readEvidence("dark:border-t-input/[50%]"), { dark: true, utility: "border-t-input", alpha: 0.5 });
+  assert.deepEqual(readEvidence("dark:border-input"), { dark: true, utility: "border-input" });
+  assert.deepEqual(readEvidence("bg-destructive"), { dark: false, utility: "bg-destructive" });
+  const binder = new Binder(SHADCN_TOKENS);
+  const cls = ["bg-destructive", "dark:bg-destructive/20", "dark:border-t-destructive/40", "text-destructive"];
+  assert.equal(binder.darkAlpha("destructive", "fill", cls), 0.2);
+  assert.equal(binder.darkAlpha("destructive", "stroke", cls), 0.4);
+  // No dark: class names it in that role: the light theme's alpha holds.
+  assert.equal(binder.darkAlpha("destructive", "text", cls), undefined);
+  // dark: alone, without an opacity, paints it whole.
+  assert.equal(binder.darkAlpha("input", "stroke", ["border-border", "dark:border-input"]), 1);
+  // Two at different alphas say nothing.
+  assert.equal(binder.darkAlpha("destructive", "fill", ["dark:bg-destructive/20", "dark:bg-destructive/30"]), undefined);
+  // The opacity changes nothing a class picks: an outline button's
+  // dark:border-input/50 still names input among #e5e5e5's tokens.
+  assert.equal(binder.color("#e5e5e5", "stroke", ["border-border", "dark:border-input/50"]).variable, "input");
 });

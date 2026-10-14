@@ -1783,6 +1783,8 @@ test("runSnap: each variant's element tree, the base whole and the rest as delta
     assert.equal(component.capture, "tree");
     assert.deepEqual(component.tree!.base.map((n) => n.k), ["", "switch-thumb"]);
     assert.deepEqual(component.tree!.assets, { svg: {}, img: {} });
+    // Its cls keeps a dark: class's opacity, which figma code reads as the dark theme's alpha.
+    assert.equal(component.tree!.darkAlpha, 1);
     const [base, sm] = component.variants;
     assert.equal(base.treeDelta, undefined);
     assert.deepEqual(sm.treeDelta, { set: { "": { box: [0, 0, 24, 14] }, "switch-thumb": { box: [1, 1, 12, 12], r: 6 } } });

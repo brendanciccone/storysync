@@ -102,9 +102,16 @@ export function callConstants(constants: readonly (readonly [name: string, value
   return `${lines.join("")}const SUM = ${JSON.stringify(callSum(constants.map(([, value]) => value)))};\n`;
 }
 
-/** What a call throws, before it changes or reads anything, when its data or its template fails its checksum. */
-export function refusal(what: "data" | "template", name: "SUM" | "TSUM"): string {
-  return `This call differs from the file storysync figma code wrote: its ${what} fails its checksum, ${name}. Nothing was changed. Send the file again, exactly as it is.`;
+/** The commands that write calls: `figma code` a push's, `figma next` a read's continuation, `figma tokens` the variables'. */
+export type CallWriter = "figma code" | "figma next" | "figma tokens";
+
+/**
+ * What a call throws, before it changes or reads anything, when its data or
+ * its template fails its checksum, naming the command that wrote its file,
+ * which an agent runs again should the file itself have changed.
+ */
+export function refusal(what: "data" | "template", name: "SUM" | "TSUM", writer: CallWriter = "figma code"): string {
+  return `This call differs from the file storysync ${writer} wrote: its ${what} fails its checksum, ${name}. Nothing was changed. Send the file again, exactly as it is.`;
 }
 
 /**
@@ -144,14 +151,14 @@ export function templateLiteral(template: string): string {
  * values, is checked first, so a changed TPL is a call to send again, not
  * a template to doubt.
  */
-export function callCode(constants: readonly (readonly [name: string, value: unknown])[], template: string): string {
+export function callCode(constants: readonly (readonly [name: string, value: unknown])[], template: string, writer: CallWriter = "figma code"): string {
   const names = constants.map(([name]) => name);
   return [
     `${callConstants(constants)}const TSUM = ${JSON.stringify(fnv1a32(template))};`,
     `const T = ${templateLiteral(template)};`,
     `const fnv=x=>{let h=2166136261;for(let i=0;i<x.length;i++)h=Math.imul(h^x.charCodeAt(i),16777619)>>>0;return h.toString(16).padStart(8,"0")};`,
-    `if(fnv(JSON.stringify([${names.join(",")}]))!==SUM)throw new Error(${JSON.stringify(refusal("data", "SUM"))});`,
-    `if(fnv(T)!==TSUM)throw new Error(${JSON.stringify(refusal("template", "TSUM"))});`,
+    `if(fnv(JSON.stringify([${names.join(",")}]))!==SUM)throw new Error(${JSON.stringify(refusal("data", "SUM", writer))});`,
+    `if(fnv(T)!==TSUM)throw new Error(${JSON.stringify(refusal("template", "TSUM", writer))});`,
     `return await new(async()=>{}).constructor(${["figma", ...names, "TC"].map((n) => JSON.stringify(n)).join(",")},T)(figma,${names.join(",")},1);`,
     "",
   ].join("\n");

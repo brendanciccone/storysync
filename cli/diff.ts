@@ -7,6 +7,7 @@ import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents, titleLeaf } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { colorToHex } from "./color.js";
+import { parseAlphaVariable } from "./figma-bind.js";
 
 // --- Token diff ---
 
@@ -214,6 +215,14 @@ export function diffTokens(codeTokens: TokenCollection[], figmaVars: FigmaVariab
   const valuesOf = (fv: FigmaVariable) => JSON.stringify([normalizeForCompare("radius", fv.value), ...Object.values(fv.modes ?? {}).map((v) => normalizeForCompare("radius", v))]);
   const repeat = figmaMap.get("radius/DEFAULT");
   if (repeat && !codeMap.has("radius/DEFAULT") && radii.some((fv) => fv !== repeat && valuesOf(fv) === valuesOf(repeat))) figmaMap.delete("radius/DEFAULT");
+  // An alpha variable, `destructive 10%`, is a code color token at an
+  // alpha, which `figma tokens` makes beside it for the paints a push binds
+  // translucent (figma-bind.ts) and keeps up to date with it: it isn't
+  // missing from code while its token is in it.
+  for (const [key, fv] of [...figmaMap]) {
+    const alpha = key.startsWith("colors/") ? parseAlphaVariable(fv.name) : null;
+    if (alpha && codeMap.has(`colors/${alpha.token}`)) figmaMap.delete(key);
+  }
 
   const same = (category: string, code: Side, figmaValue: string) =>
     (code.workedOut ?? normalizeForCompare(category, code.value)) === normalizeForCompare(category, figmaValue);

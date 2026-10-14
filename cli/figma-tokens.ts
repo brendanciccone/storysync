@@ -15,14 +15,24 @@
 // nothing the second time. It lists the variables of the collection that
 // no token has, and removes them only once the user has confirmed, through
 // `--remove`.
+//
+// It also makes the alpha variables the build binds translucent paints to
+// (figma-bind.ts, alphaVariableName), `destructive 10%` beside
+// `destructive`: those a plan `figma code` wrote binds, and those `--alpha`
+// names, as a root-only push binds them by hand. Each call keeps those an
+// earlier push made up to date with their tokens too. A plan makes its own
+// alpha variables in its first call, written here (alphaCalls), so a push
+// needs no second run of this command.
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { callCode, fnv1a32Bytes } from "./checksum.js";
-import { assertCompiles, loadTemplate, pageSlug } from "./figma-code.js";
+import { alphaVariableName, parseAlphaVariable } from "./figma-bind.js";
+import { assertCompiles, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
 import type { FigmaCodeOptions } from "./figma-code.js";
 import { lengthToPx, tokenColorToHex, withoutRepeatedDefault } from "./tokens.js";
 import type { TokenCategory, TokenExtractionResult, TokenValue } from "./tokens.js";
+import type { PlanAlpha } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
 /** Each category's collection, by the name the skill gives it and diff reads back. */
@@ -50,6 +60,8 @@ export interface PlannedCollection {
   category: TokenCategory;
   modes: ["Default"] | ["Light", "Dark"];
   variables: PlannedVariable[];
+  /** The alpha variables of its colors the plan binds, by name: each its token's color at an alpha, in each mode. */
+  alphas?: string[];
 }
 
 /** A token no variable is made for, and why. */
@@ -143,6 +155,10 @@ export function variablesFromTokens(tokens: TokenExtractionResult): { collection
 export interface FigmaTokensOptions {
   /** `storysync tokens --json` output. */
   tokens: string;
+  /** The plan `figma code` wrote, whose `alphas` name the alpha variables to make; none where it doesn't exist yet. */
+  plan?: string;
+  /** Alpha variables to make besides, by name, `destructive 30%` or `destructive 10% dark 20%`, as a root-only push binds them. */
+  alpha?: string[];
   /** Where plan.json, calls/ and results/ go. */
   out: string;
   /** Variables the user confirmed removing, as `Collection/name`, from a response's `stale` or `conflicts`. */
@@ -159,6 +175,8 @@ export interface TokensPlanCall {
   collection: string;
   part: [number, number];
   variables: number;
+  /** The plan's alpha variables this call makes or updates. */
+  alphas?: number;
   file: string;
   result: string;
   description: string;
@@ -170,6 +188,10 @@ export interface TokensPlan {
   kind: "variables";
   storysyncVersion: string;
   tokens: { path: string; digest: string };
+  /** The plan whose alpha variables these calls make, where one was read. */
+  plan?: { path: string; alphas: number };
+  /** The alpha variables `--alpha` named. */
+  alpha?: string[];
   calls: TokensPlanCall[];
   leftOut: LeftOut[];
   remove?: string[];
@@ -198,6 +220,7 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
   if (!Array.isArray(tokens?.collections)) throw new Error(`${opts.tokens} is not \`storysync tokens --json\` output`);
   const { collections, leftOut, notes } = variablesFromTokens(tokens);
   if (!collections.length) throw new Error(`${opts.tokens} has no token a Figma variable can hold: there is nothing to push`);
+  const read = alphasToMake(opts.plan, opts.alpha ?? [], collections, notes);
 
   // Each confirmed removal, by the collection it is in.
   const removals = new Map<string, string[]>();
@@ -213,10 +236,12 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
   const template = loadTemplate("variables", opts.minify ?? true, opts.templates);
   const calls: (TokensPlanCall & { code: string })[] = [];
   for (const collection of collections) {
-    const parts = Math.ceil(collection.variables.length / max);
+    const chunks = partsOf(collection.variables, read.tokenOf, collection.alphas ?? [], max);
+    const parts = chunks.length;
     const remove = removals.get(collection.name);
+    let first = 0;
     for (let p = 0; p < parts; p++) {
-      const vars = collection.variables.slice(p * max, (p + 1) * max);
+      const { vars, alpha } = chunks[p];
       const seq = calls.length + 1;
       const data = {
         collection: collection.name,
@@ -225,15 +250,21 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
         vars: vars.map((v) => (v.dark === undefined ? [v.name, v.type, v.scopes, v.light] : [v.name, v.type, v.scopes, v.light, v.dark])),
         ...(p === 0 ? { all: collection.variables.map((v) => [v.name, v.type]) } : {}),
         ...(p === 0 && remove ? { remove } : {}),
+        ...(alpha.length ? { alpha } : {}),
       };
       const modes = collection.modes.length > 1 ? "in Light and Dark modes" : "in one mode, Default";
-      const span = parts > 1 ? `, variables ${p * max + 1}-${p * max + vars.length} of ${collection.variables.length}` : ` (${vars.length} variable${vars.length === 1 ? "" : "s"})`;
+      const alphas = alpha.length ? `, with ${alpha.length} alpha variable${alpha.length === 1 ? "" : "s"} of their colors` : "";
+      const span = parts > 1 ? `, variables ${first + 1}-${first + vars.length} of ${collection.variables.length}${alphas}` : ` (${vars.length} variable${vars.length === 1 ? "" : "s"}${alphas})`;
+      first += vars.length;
       const removing = p === 0 && remove ? `, and remove ${remove.map((r) => `${collection.name}/${r}`).join(", ")}, as the user confirmed` : "";
       const description = `Create or update the ${collection.name} variable collection${span}, ${modes}${removing}`;
       const file = `calls/${pad(seq)}-variables-${pageSlug(collection.name)}.js`;
-      const code = `// storysync figma tokens, call ${pad(seq)}: the ${collection.name} variables. Send this file unchanged as use_figma's code.\n${callCode([["DATA", data]], template)}`;
+      const code = `// storysync figma tokens, call ${pad(seq)}: the ${collection.name} variables. Send this file unchanged as use_figma's code.\n${callCode([["DATA", data]], template, "figma tokens")}`;
       assertCompiles(code, file, "variables", template);
-      calls.push({ seq, kind: "variables", collection: collection.name, part: [p + 1, parts], variables: vars.length, file, result: `results/${pad(seq)}.json`, description, chars: code.length, code });
+      calls.push({
+        seq, kind: "variables", collection: collection.name, part: [p + 1, parts], variables: vars.length, ...(alpha.length ? { alphas: alpha.length } : {}),
+        file, result: `results/${pad(seq)}.json`, description, chars: code.length, code,
+      });
     }
   }
 
@@ -249,6 +280,8 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
   const plan: TokensPlan = {
     version: 1, kind: "variables", storysyncVersion: VERSION,
     tokens: { path: relative(out, resolve(opts.tokens)).split("\\").join("/"), digest: fnv1a32Bytes(bytes) },
+    ...(read.fromPlan !== null ? { plan: { path: relative(out, resolve(opts.plan!)).split("\\").join("/"), alphas: read.fromPlan } } : {}),
+    ...(opts.alpha?.length ? { alpha: [...new Set(opts.alpha)].sort() } : {}),
     calls: calls.map(({ code: _code, ...call }) => call),
     leftOut,
     ...(opts.remove?.length ? { remove: [...removals].flatMap(([c, names]) => names.map((n) => `${c}/${n}`)) } : {}),
@@ -256,4 +289,117 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
   const planPath = join(out, "plan.json");
   writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
   return { plan, planPath, collections, warnings: notes };
+}
+
+/**
+ * Each part of a collection's variables, at most `max` with the alpha
+ * variables of its colors, which go in the part of their token.
+ */
+function partsOf(variables: PlannedVariable[], tokenOf: Map<string, string>, alphas: string[], max: number): { vars: PlannedVariable[]; alpha: string[] }[] {
+  const alphasOf = new Map<string, string[]>();
+  for (const name of alphas) alphasOf.set(tokenOf.get(name)!, [...(alphasOf.get(tokenOf.get(name)!) ?? []), name]);
+  const parts: { vars: PlannedVariable[]; alpha: string[] }[] = [];
+  let size = 0;
+  for (const v of variables) {
+    const own = alphasOf.get(v.name) ?? [];
+    if (!parts.length || size + 1 + own.length > max) {
+      parts.push({ vars: [], alpha: [] });
+      size = 0;
+    }
+    parts[parts.length - 1].vars.push(v);
+    parts[parts.length - 1].alpha.push(...own);
+    size += 1 + own.length;
+  }
+  return parts;
+}
+
+/**
+ * Puts each alpha variable to make on the collection of its token: those
+ * the plan at `planPath` binds, where it can be read, and those `names`
+ * gives. One whose token these tokens have no color variable for is noted
+ * and left out, and the build binds that paint as before, and says so; a
+ * name `--alpha` gives that isn't an alpha variable's, or of no color
+ * token, is an error. A plan that can't be read is noted, and none made
+ * from it.
+ */
+function alphasToMake(planPath: string | undefined, names: string[], collections: PlannedCollection[], notes: string[]): { tokenOf: Map<string, string>; fromPlan: number | null } {
+  const tokenOf = new Map<string, string>();
+  const colorOf = (token: string) => collections.find((c) => c.variables.some((v) => v.name === token && v.type === "COLOR"));
+  const put = (name: string, token: string, collection: PlannedCollection) => {
+    if (tokenOf.has(name)) return;
+    tokenOf.set(name, token);
+    collection.alphas = [...(collection.alphas ?? []), name];
+  };
+  for (const name of names) {
+    const parsed = parseAlphaVariable(name);
+    const collection = parsed && colorOf(parsed.token);
+    if (!parsed || !collection) {
+      throw new Error(`--alpha ${name}: name an alpha variable as a color token, a space and its alpha in percent, \`destructive 30%\`, or with the dark theme's after it, \`destructive 10% dark 20%\`, of a color token these tokens have`);
+    }
+    put(alphaVariableName(parsed.token, parsed.alpha, parsed.dark), parsed.token, collection);
+  }
+  let fromPlan: number | null = null;
+  if (planPath && existsSync(planPath)) {
+    let alphas: PlanAlpha[] = [];
+    try {
+      alphas = readPlan(planPath).alphas ?? [];
+      fromPlan = 0;
+    } catch (err) {
+      notes.push(`${planPath} can't be read (${(err as Error).message}), so no alpha variable is made from it: run \`figma code\` again, whose plan makes its own`);
+    }
+    for (const pair of alphas) {
+      const name = alphaVariableName(pair.token, pair.alpha, pair.dark);
+      const collection = colorOf(pair.token);
+      if (!collection) {
+        notes.push(`${name}: the plan binds it, but no color token is named ${pair.token}, so it isn't made: run \`figma code\` again with these tokens`);
+        continue;
+      }
+      if (!tokenOf.has(name)) fromPlan!++;
+      put(name, pair.token, collection);
+    }
+  }
+  for (const collection of collections) collection.alphas?.sort();
+  return { tokenOf, fromPlan };
+}
+
+/**
+ * The `variables` calls' data that make the alpha variables `alphas` name,
+ * and only those, each in the collection of its token, beside the tokens
+ * they are of, which the call needs for their values and keeps up to date
+ * as `figma tokens` would: what a plan's first calls hold (figma-code.ts),
+ * so the builds after them find each one. Nothing is listed stale, and
+ * nothing removed. One whose token no collection has a color variable for
+ * is noted and left out: the build binds that paint as before, and says so.
+ */
+export function alphaCalls(tokens: TokenExtractionResult, alphas: readonly PlanAlpha[], notes: string[], max = DEFAULT_MAX_VARIABLES): { collection: string; data: Record<string, unknown>; alpha: string[] }[] {
+  const { collections } = variablesFromTokens(tokens);
+  const tokenOf = new Map<string, string>();
+  for (const pair of alphas) {
+    const collection = collections.find((c) => c.variables.some((v) => v.name === pair.token && v.type === "COLOR"));
+    if (!collection) {
+      notes.push(`${pair.variable}: no color token is named ${pair.token} in the tokens, so it isn't made and its paints bind to none: save the tokens again`);
+      continue;
+    }
+    if (tokenOf.has(pair.variable)) continue;
+    tokenOf.set(pair.variable, pair.token);
+    collection.alphas = [...(collection.alphas ?? []), pair.variable];
+  }
+  const out: { collection: string; data: Record<string, unknown>; alpha: string[] }[] = [];
+  for (const collection of collections) {
+    if (!collection.alphas?.length) continue;
+    const tokensOf = new Set(collection.alphas.map((name) => tokenOf.get(name)!));
+    const parts = partsOf(collection.variables.filter((v) => tokensOf.has(v.name)), tokenOf, collection.alphas, max);
+    parts.forEach(({ vars, alpha }, p) => out.push({
+      collection: collection.name,
+      data: {
+        collection: collection.name,
+        modes: collection.modes,
+        part: [p + 1, parts.length],
+        vars: vars.map((v) => (v.dark === undefined ? [v.name, v.type, v.scopes, v.light] : [v.name, v.type, v.scopes, v.light, v.dark])),
+        alpha,
+      },
+      alpha,
+    }));
+  }
+  return out;
 }

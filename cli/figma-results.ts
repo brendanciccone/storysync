@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { callCode, callConstants } from "./checksum.js";
+import type { CallWriter } from "./checksum.js";
 import { findToolValue } from "./figma.js";
 import type { FigmaPlan } from "./tree-types.js";
 import { READBACK_SCHEMA_VERSION } from "./verify.js";
@@ -90,9 +91,13 @@ export function readbackHeader(page: string, slices: ReadSlice[], limit = READ_L
 const readbackConstants = (page: string, slices: ReadSlice[], limit: number) =>
   [["PAGE", page], ["SLICES", slices], ["LIMIT", limit], ["TPL", READBACK_TPL]] as const;
 
-/** A read call's code: the header, then the template (readable or minified) as it is, run as checksum.ts's callCode runs it. */
-export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT): string {
-  return callCode(readbackConstants(page, slices, limit), template);
+/**
+ * A read call's code: the header, then the template (readable or minified)
+ * as it is, run as checksum.ts's callCode runs it, refusing a change as one
+ * to the file `writer` wrote: `figma next` writes a continuation.
+ */
+export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT, writer: CallWriter = "figma code"): string {
+  return callCode(readbackConstants(page, slices, limit), template, writer);
 }
 
 /**
@@ -153,16 +158,36 @@ function isReadResult(value: unknown): value is ReadResult {
  * text is its error.
  */
 export function parseReadResult(text: string): ReadResult | null {
-  const found = findToolValue([text], isReadResult);
-  if (found !== undefined) return found as ReadResult;
+  return resultIn(text, isReadResult) as ReadResult | null;
+}
+
+/** The value `is` takes in what the agent saved, read as parseReadResult reads a read result, or null. */
+function resultIn(text: string, is: (value: unknown) => boolean): unknown {
+  const found = findToolValue([text], is);
+  if (found !== undefined) return found;
   try {
     const wrapper = JSON.parse(text) as { content?: { type?: string; text?: string }[] };
     const texts = (wrapper?.content ?? []).filter((c) => c?.type === "text" && typeof c.text === "string").map((c) => c.text!);
-    const inner = findToolValue(texts, isReadResult);
-    return inner === undefined ? null : (inner as ReadResult);
+    const inner = findToolValue(texts, is);
+    return inner === undefined ? null : inner;
   } catch {
     return null;
   }
+}
+
+/** A build call's `fallbacks` entry: [component, key, what, variants]. */
+type Fallback = [component: string, key: string, what: string, variants: number];
+
+/**
+ * The paints and shadows a build bound without their alpha variable, from
+ * its saved response's `fallbacks`: each bound to its token at its opacity,
+ * which Figma resets to 1 at a mode switch, or a shadow left unbound. A
+ * readback can't see a binding, so verify says these beside the score.
+ */
+export function alphaFallbacks(text: string): Fallback[] {
+  const result = resultIn(text, (v) => v != null && typeof v === "object" && (v as { kind?: unknown }).kind === "build") as { fallbacks?: unknown } | null;
+  const list = Array.isArray(result?.fallbacks) ? (result!.fallbacks as unknown[]) : [];
+  return list.filter((f): f is Fallback => Array.isArray(f) && typeof f[2] === "string" && /^(?:no alpha variable |\d+ alpha variables named )/.test(f[2]));
 }
 
 /**
@@ -210,6 +235,12 @@ export interface PlanResults {
   written: string;
   /** Why each of notRead wasn't read, and anything else that couldn't be assembled. */
   problems: string[];
+  /**
+   * Each build call's paints and shadows bound without their alpha variable,
+   * as `call NN: component › key: what (N variants)`: they turn opaque at a
+   * mode switch, which no readback shows.
+   */
+  alphaFallbacks: string[];
 }
 
 /**
@@ -233,7 +264,13 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   const readback: ReadbackFile = { version: READBACK_SCHEMA_VERSION, components: {} };
   const notRead: number[] = [];
   const problems: string[] = [];
+  const fellBack: string[] = [];
   for (const call of plan.calls) {
+    if (call.kind === "build" && existsSync(join(base, call.result))) {
+      for (const [component, key, what, variants] of alphaFallbacks(readFileSync(join(base, call.result), "utf8"))) {
+        fellBack.push(`call ${String(call.seq).padStart(2, "0")}: ${component}${key ? ` › ${key}` : ""}: ${what} (${variants} ${variants === 1 ? "variant" : "variants"})`);
+      }
+    }
     if (call.kind !== "read") continue;
     let result = call.result;
     let previous = result;
@@ -281,5 +318,5 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   const written = out ?? join(base, "..", "figma-readback.json");
   mkdirSync(dirname(written), { recursive: true });
   writeFileSync(written, `${JSON.stringify(sorted, null, 2)}\n`);
-  return { readback: sorted, notRead, written, problems };
+  return { readback: sorted, notRead, written, problems, alphaFallbacks: fellBack };
 }

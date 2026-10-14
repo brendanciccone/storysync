@@ -1454,12 +1454,27 @@ function attach(parent: Node, child: Node, index?: number): void {
   if (parent.type === "COMPONENT_SET" && child.type !== "COMPONENT") throw new Error(`A component set can only contain components, not a ${child.type}`);
   if (parent.type === "PAGE" && child.type === "PAGE") throw new Error("A page can't contain a page");
   const from = child.parent;
+  const was = modesOf(child);
   if (from) from.kids.splice(from.kids.indexOf(child), 1);
   if (from !== parent) dropIfEmptyGroup(from);
   child.parent = parent;
   const at = index === undefined ? parent.kids.length : Math.max(0, Math.min(index, parent.kids.length));
   parent.kids.splice(at, 0, child);
   changed(parent);
+  // Moved into another mode, it is resolved again in that one, as at a
+  // switch: probe 7c's call 3 saw a paint bound on the page take its
+  // variable's Dark value appended to a frame set to Dark, and call 4 one
+  // put back at 10% take the variable's alpha so; moved within its mode,
+  // it keeps what it has.
+  if (modesOf(child) !== was) resolveAgain(child);
+}
+
+/** The mode a node resolves each collection in, by its own or the nearest around it, as one string. */
+function modesOf(n: Node): string {
+  return [...n.doc.collections.keys()].map((c) => {
+    for (let at: Node | null = n; at; at = at.parent) if (at.modes.has(c)) return at.modes.get(c);
+    return 0;
+  }).join();
 }
 
 function loadedChildren(n: Node): Node[] {
@@ -1500,14 +1515,16 @@ function paintsSetter(key: "fills" | "strokes") {
       const next = paint(key, p);
       const id = (next as SolidPaint).boundVariables?.color?.id;
       if (next.type !== "SOLID" || !id) return next;
-      // Figma resolves a bound paint's color from its variable, and a paint
-      // bound afresh takes the variable's alpha as its opacity, as a live
-      // push found it set to 1; one bound as before keeps its opacity.
+      // A paint bound afresh takes its variable's color, and its alpha as
+      // its opacity, in the mode the node is in, as a live push found it
+      // set to 1 and probe 7c's call 3 to Dark's alpha in a frame set to
+      // Dark; one bound to the variable it was bound to before keeps the
+      // color and opacity it is given, the light color in Dark too.
       const variable = n.doc.variables.get(id);
       if (!variable || variable.resolvedType !== "COLOR") invalid(key, `No COLOR variable with id ${id}`);
       const { r, g, b, a } = valueAt(n, variable) as Rgba;
       const was = (before[i] as SolidPaint | undefined)?.boundVariables?.color?.id;
-      return { ...next, color: { r, g, b }, opacity: was === id ? next.opacity : a };
+      return was === id ? next : { ...next, color: { r, g, b }, opacity: a };
     });
     changed(n);
   };
@@ -1639,15 +1656,15 @@ const PROPS: Record<string, Prop> = {
     set: (n, v) => {
       if (!Array.isArray(v)) invalid("effects", "Expected array");
       // A shadow's color resolves from its variable: one bound afresh takes
-      // the variable's alpha, and one bound as before keeps its own (probe 7b).
+      // the variable's color and alpha in the node's mode, and one bound as
+      // before keeps its own (probes 7b and 7c, call 3).
       const before = n.effects;
       const effects = v.map(effect).map((e, i) => {
         const id = e.boundVariables?.color?.id;
         if (!id || !e.color) return e;
         const variable = n.doc.variables.get(id);
         if (!variable || variable.resolvedType !== "COLOR") invalid("effects", `No COLOR variable with id ${id}`);
-        const { r, g, b, a } = valueAt(n, variable) as Rgba;
-        return { ...e, color: { r, g, b, a: before[i]?.boundVariables?.color?.id === id ? e.color.a : a } };
+        return before[i]?.boundVariables?.color?.id === id ? e : { ...e, color: { ...(valueAt(n, variable) as Rgba) } };
       });
       if (n.doc.options.shadowSpread === "refuse" && !(FRAMES.has(n.type) && n.clipsContent) && effects.some((e) => e.spread)) {
         invalid("effects", "spread is only supported on frames that clip their content (mock-figma shadowSpread 'refuse')");
@@ -2040,7 +2057,10 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
       doc.variableWrites.push(`scopes ${v.name}`);
     },
     variableCollectionId: `VariableCollectionId:${v.collection}`,
-    valuesByMode: Object.fromEntries(v.modes.map(([, value], i) => [`1:${i}`, structuredClone(value)])),
+    // Read when asked, as Figma's is: a value set since shows.
+    get valuesByMode() {
+      return Object.fromEntries(v.modes.map(([, value], i) => [`1:${i}`, structuredClone(value)]));
+    },
     setValueForMode: (modeId: unknown, value: unknown) => {
       const i = modeIndex(v.collection, modeId, "setValueForMode");
       if (v.resolvedType === "COLOR" && !(value && typeof value === "object" && "r" in value)) throw new Error("in setValueForMode: a COLOR variable takes an RGB or RGBA value");
@@ -2050,6 +2070,8 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
       if (i === 0) v.value = stored;
       doc.variableWrites.push(`value ${v.name} ${v.modes[i][0]}`);
     },
+    // Its value where a node is, in the mode the node, or one around it, sets (probe 7c, call 3).
+    resolveForConsumer: (consumer: unknown) => ({ value: structuredClone(valueAt(unwrap(consumer), v)), resolvedType: v.resolvedType }),
     // Figma detaches what is bound to it, keeping the value: nothing the mock binds is read after.
     remove: () => {
       if (!doc.variables.delete(v.id)) throw new Error("in remove: the variable was removed already");
@@ -2090,10 +2112,9 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
     if (v) vars[String(field)] = { type: "VARIABLE_ALIAS", id: v.id };
     else delete vars[String(field)];
     record.boundVariables = vars;
-    if (v && v.resolvedType === "COLOR") {
-      const { r, g, b, a } = v.value as Rgba;
-      record.color = "a" in ((item as { color?: object }).color ?? {}) ? { r, g, b, a } : { r, g, b };
-    }
+    // Its color stays as given: probe 7c's call 3 bound a red paint to
+    // `border` and assigned it to a fill bound to `border` already, which
+    // read back red. Assigned freshly bound, it takes the variable's value.
     return record;
   };
   const figma: Record<string, unknown> = {
@@ -2249,6 +2270,8 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
         const id = typeof collection === "string" ? collection : String((collection as { id?: unknown } | null)?.id);
         const key = id.replace(/^VariableCollectionId:/, "");
         if (!doc.collections.has(key)) throw new Error(`in createVariable: no collection ${id}`);
+        // Probe 7c: Figma refuses a name with a period, and takes a space, `%`, `,` and `_`.
+        if (String(name).includes(".")) throw new Error("in createVariable: invalid variable name");
         const resolvedType = oneOf("createVariable", type, ["COLOR", "FLOAT", "STRING", "BOOLEAN"] as const);
         const blank = resolvedType === "COLOR" ? { r: 0, g: 0, b: 0, a: 1 } : resolvedType === "FLOAT" ? 0 : resolvedType === "STRING" ? "" : false;
         const v: Variable = { id: `VariableID:1:${doc.nextVariable++}`, name: String(name), resolvedType, value: blank, collection: key, modes: doc.collections.get(key)!.map((mode) => [mode, structuredClone(blank)]) };

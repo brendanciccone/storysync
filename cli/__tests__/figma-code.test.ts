@@ -159,6 +159,17 @@ test("figma next: a continuation reads with the limit its call was written with"
   assert.match(readFileSync(next!.file, "utf8"), /\nconst LIMIT = 5000;\n/);
 });
 
+test("figma next: a continuation refuses a change as one to the file figma next wrote, as a read call does to the one figma code wrote", async () => {
+  const coded = await codeFor(loadTreeFixture("card"));
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  assert.match(coded.code(read), /This call differs from the file storysync figma code wrote/);
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq });
+  const code = readFileSync(next!.file, "utf8");
+  assert.match(code, /This call differs from the file storysync figma next wrote: its data fails its checksum, SUM/);
+  assert.doesNotMatch(code, /figma code wrote/);
+});
+
 test("figma next: a continuation is written from the template its call was, readable after figma code --no-minify", async () => {
   for (const minify of [true, false]) {
     const coded = await codeFor(loadTreeFixture("card"), { minify, templates: {} });

@@ -2174,6 +2174,8 @@ function assembleTree(trees: VariantTree[], svg: Record<string, string>, img: Re
     base: base.nodes,
     assets: { svg: sorted(svg), img: sorted(img) },
     ...(truncated ? { truncated } : {}),
+    // Its `cls` keeps a `dark:` class's opacity (snap-tree.ts, classEvidence).
+    darkAlpha: 1,
   };
 }
 

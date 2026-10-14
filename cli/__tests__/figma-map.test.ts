@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Binder } from "../figma-bind.js";
-import { figmaSize, linearGradient, nodeStyle, outsideInsets, splitHex, textSizesItself, vectorImport } from "../figma-map.js";
+import { figmaSize, linearGradient, markupPaints, nodeStyle, outsideInsets, splitHex, textSizesItself, vectorImport } from "../figma-map.js";
 import type { MapContext } from "../figma-map.js";
 import type { TreeNode } from "../tree-types.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
@@ -176,6 +176,90 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
     ["transform matrix(0, 1, -1, 0, 0, 0)", "its own box, unturned, as Figma's auto layout would place it by its turned box"],
     ["overflow clipped on x only", "clipping both axes"],
   ]);
+});
+
+test("nodeStyle: a translucent paint of an opaque token binds to the token's alpha variable, naming the token too, and the plan lists each", () => {
+  // shadcn/ui's Attachment in its error state: border-destructive/30, a
+  // bg-destructive/10 media frame, a text-destructive/80 description.
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas };
+  const border = { w: 1, s: "solid", c: "#df22254d" } as unknown as TreeNode["bd"];
+  const style = nodeStyle(frame({ k: "", bg: "#df22251a", bd: border, cls: ["bg-destructive", "border-destructive"] }), c);
+  assert.deepEqual(style.f, [["#df2225", 0.102, "destructive 10%", "destructive"]]);
+  assert.deepEqual(style.s!.p, ["#df2225", 0.302, "destructive 30%", "destructive"]);
+  const text = nodeStyle(frame({ k: "d", t: "T", el: "p", cls: ["text-destructive"], tx: { c: "Upload failed", col: "#df2225cc", f: "Inter", wt: 400, sz: 12, lh: 16, n: 1, ink: [0, 0, 70, 16] } as TreeNode["tx"] }), c);
+  assert.deepEqual(text.f, [["#df2225", 0.8, "destructive 80%", "destructive"]]);
+  // Opaque, it binds the token itself; a translucent token by its whole value holds its own alpha.
+  assert.deepEqual(nodeStyle(frame({ k: "o", bg: "#df2225", cls: ["bg-destructive"] }), c).f, [["#df2225", 1, "destructive"]]);
+  const overlay = new Binder({ collections: [{ category: "colors", tokens: [{ name: "overlay", value: "", hex: "#0000001a" }] }] });
+  assert.deepEqual(nodeStyle(frame({ k: "v", bg: "#0000001a" }), { ...ctx(overlay), alphas }).f, [["#000000", 0.102, "overlay"]]);
+  assert.deepEqual([...alphas.values()], [
+    { variable: "destructive 10%", token: "destructive", alpha: 0.102 },
+    { variable: "destructive 30%", token: "destructive", alpha: 0.302 },
+    { variable: "destructive 80%", token: "destructive", alpha: 0.8 },
+  ]);
+});
+
+test("nodeStyle: a shadow's color binds where its ring-* class names the token, a translucent one to its alpha variable; one no class names is left so unsaid, and one two name is listed", () => {
+  // The fifth live push's Dialog: ring-1 ring-foreground/10. Bound to
+  // foreground, a switch to Dark made it opaque (probe 7b); bound to
+  // foreground 10%, it keeps its 10% (probe 7c).
+  const ring = (cls: string[]) => frame({ k: "", sh: [[0, 0, 0, 1, "#0a0a0a1a"], [0, 1, 2, 0, "#0000000d"]], bg: "#ffffff", r: 14, cls });
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas };
+  assert.deepEqual(nodeStyle(ring(["bg-background", "ring-foreground", "rounded-xl"]), c).e, [
+    ["D", 0, 0, 0, 1, "#0a0a0a", 0.102, "foreground 10%", "foreground"], ["D", 0, 1, 2, 0, "#000000", 0.051],
+  ]);
+  assert.deepEqual([...alphas.keys()], ["foreground 10%"]);
+  assert.deepEqual(c.unbound.filter((u) => u.property === "effect"), []);
+  // No class names its token: unbound by design, as Tailwind's black shadow
+  // scale is, and not listed, though tokens share its value.
+  const c2 = ctx(new Binder(SHADCN_TOKENS));
+  assert.deepEqual(nodeStyle(ring(["bg-background"]), c2).e![0], ["D", 0, 0, 0, 1, "#0a0a0a", 0.102]);
+  assert.deepEqual(c2.unbound, []);
+  const black = new Binder({ collections: [{ category: "colors", tokens: [{ name: "black", value: "", hex: "#000000" }, { name: "foreground", value: "", hex: "#000000" }] }] });
+  const c3 = ctx(black);
+  assert.deepEqual(nodeStyle(frame({ k: "", sh: [[0, 4, 6, -1, "#0000001a"], [0, 2, 4, -2, "#0000001a"]], cls: ["shadow-md"] }), c3).e, [["D", 0, 4, 6, -1, "#000000", 0.102], ["D", 0, 2, 4, -2, "#000000", 0.102]]);
+  assert.deepEqual(c3.unbound, []);
+  // Two classes naming two of its tokens leave it ambiguous: listed.
+  const c4 = ctx(new Binder(SHADCN_TOKENS));
+  nodeStyle(ring(["ring-foreground", "shadow-card-foreground"]), c4);
+  assert.deepEqual(c4.unbound.filter((u) => u.property === "effect"), [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"] }]);
+});
+
+test("nodeStyle: where a dark: class paints the token at another alpha, the paint binds to the alpha variable that holds each theme's, from a tree that keeps it", () => {
+  // shadcn/ui's destructive Button: bg-destructive/10 dark:bg-destructive/20.
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas, darkAlpha: true };
+  const button = (cls: string[], bg = "#df22251a") => frame({ k: "", bg, cls });
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive/20", "text-destructive"]), c).f, [["#df2225", 0.102, "destructive 10% dark 20%", "destructive"]]);
+  // Opaque in the light theme and translucent in the dark: shadcn/ui's
+  // older destructive button, bg-destructive dark:bg-destructive/60.
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive/60"], "#df2225"), c).f, [["#df2225", 1, "destructive 100% dark 60%", "destructive"]]);
+  // dark: without an opacity paints it whole; one at the light theme's alpha changes nothing.
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive"]), c).f, [["#df2225", 0.102, "destructive 10% dark 100%", "destructive"]]);
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive/10"]), c).f, [["#df2225", 0.102, "destructive 10%", "destructive"]]);
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive"], "#df2225"), c).f, [["#df2225", 1, "destructive"]]);
+  assert.deepEqual([...alphas.values()], [
+    { variable: "destructive 10% dark 20%", token: "destructive", alpha: 0.102, dark: 0.2 },
+    { variable: "destructive 100% dark 60%", token: "destructive", alpha: 1, dark: 0.6 },
+    { variable: "destructive 10% dark 100%", token: "destructive", alpha: 0.102, dark: 1 },
+    { variable: "destructive 10%", token: "destructive", alpha: 0.102 },
+  ]);
+  // A tree snapped before cut a dark: class's opacity off, so its dark: says no alpha.
+  const old: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas: new Map() };
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive"]), old).f, [["#df2225", 0.102, "destructive 10%", "destructive"]]);
+});
+
+test("nodeStyle: an icon's translucent paint binds to its token's alpha variable, by its color and opacity as the markup draws them", () => {
+  // text-destructive/50 on a lucide icon: snap writes the alpha as stroke-opacity, on the root where every shape shares it.
+  const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#df2225" stroke-opacity="0.5" stroke-width="2"><path d="M1 1"/><circle cx="1" cy="1" r="1" stroke-opacity="0.1"/><path d="M2 2" stroke="#0a0a0a"/></svg>';
+  assert.deepEqual([...markupPaints(markup)], [["#0a0a0a", [0.5]], ["#df2225", [0.1, 0.5]]]);
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas };
+  const style = nodeStyle(frame({ k: "svg", t: "V", el: "svg.lucide-x", svg: "svg:1", box: [0, 0, 16, 16], cls: ["text-destructive", "text-foreground"] }), c, markup);
+  assert.deepEqual(style.vb, { "#df2225": "destructive", "#df2225@0.1": "destructive 10%", "#df2225@0.5": "destructive 50%", "#0a0a0a": "foreground", "#0a0a0a@0.5": "foreground 50%" });
+  assert.deepEqual([...alphas.keys()].sort(), ["destructive 10%", "destructive 50%", "foreground 50%"]);
 });
 
 test("nodeStyle: a turn in the plane of a childless node, nothing transformed around it, out of the flow or in it where its turned box is its own, is built as Figma's rotation; any other transform is named", () => {
