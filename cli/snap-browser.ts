@@ -2612,10 +2612,12 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       for (const name of seen) out.add(`${dark ? "dark:" : ""}${prefix}-${name.slice(2).replace(/^color-/, "").toLowerCase()}`);
     };
     const byClassOrBase = (won: Won) => !!won.decl && (won.decl.utility || won.decl.base);
-    // What a rule or inline style sets `names` to on `at`, as evidence; false where none sets them.
+    // What a rule or inline style sets `names` to on `at`, as evidence;
+    // false where none sets them, or one hands down the parent's
+    // (Sonner's title, `color: inherit`).
     const settle = (prefix: string, names: string[], at: Element): boolean => {
       const light = winner(at, names, false);
-      if (!light) return false;
+      if (!light || /^(?:inherit|unset)$/i.test(light.value)) return false;
       if (byClassOrBase(light)) return true;
       const lit = literal(light.value);
       if (lit) out.add(`${prefix}-${lit}`);

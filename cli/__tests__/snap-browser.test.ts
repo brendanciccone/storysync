@@ -1554,6 +1554,7 @@ test("captureTreeInPage: counts only the declaration the cascade picks, and pair
     // A text takes the nearest rule's color, a literal one too.
     rule(".c", { color: "var(--fg)" }),
     rule(".c .desc", { color: "#3f3f3f" }),
+    rule(".c .inh", { color: "inherit" }),
     // A nested rule's & is its parent.
     rule(".zz", {}, [rule("&:is(.dark *)", { background: "var(--card)" })]),
     // A utility class's rule, later and as specific, wins: class evidence.
@@ -1575,6 +1576,7 @@ test("captureTreeInPage: counts only the declaration the cascade picks, and pair
     ".a": (el) => has(el, "a"),
     ".c": (el) => has(el, "c"),
     ".c .desc": (el) => has(el, "desc") && up(el, (a) => has(a, "c")),
+    ".c .inh": (el) => has(el, "inh") && up(el, (a) => has(a, "c")),
     ":is(.zz):is(.dark *)": () => false,
     ":is(.zz):is(:is(*) *)": (el) => has(el, "zz"),
     ".e": (el) => has(el, "e"),
@@ -1594,7 +1596,7 @@ test("captureTreeInPage: counts only the declaration the cascade picks, and pair
     const raw = inFakePage(box({}, [
       box({ class: "wrap" }, [box({ class: "b" })]),
       box({ class: "a" }),
-      box({ class: "c" }, [{ tag: "p", rect: [0, 0, 100, 20], attrs: { class: "desc" } }]),
+      box({ class: "c" }, [{ tag: "p", rect: [0, 0, 100, 20], attrs: { class: "desc" } }, { tag: "p", rect: [0, 20, 100, 20], attrs: { class: "inh" } }]),
       box({ class: "zz" }),
       box({ class: "e bg-card" }),
       box({ class: "f", "data-f": "" }),
@@ -1614,6 +1616,8 @@ test("captureTreeInPage: counts only the declaration the cascade picks, and pair
     assert.deepEqual(vars((kids[0].kids as RawTreeElement[])[0]), ["bg-card"]);
     assert.deepEqual(vars(kids[1]), ["bg-popover"]);
     assert.deepEqual(vars((kids[2].kids as RawTreeElement[])[0]), ["text-[#3f3f3f]"]);
+    // `color: inherit` hands the walk on to its parent's rule.
+    assert.deepEqual(vars((kids[2].kids as RawTreeElement[])[1]), ["text-fg"]);
     // The nested rule matches .zz in the dark theme alone, and nothing else.
     assert.equal(vars(kids[3]), undefined);
     assert.equal(vars(kids[7]), undefined);
