@@ -1085,6 +1085,8 @@ const FONTS = {
   Inter: ["Thin", "Extra Light", "Light", "Regular", "Medium", "Semi Bold", "Bold", "Extra Bold", "Black"],
   "Roboto Mono": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold"],
   "Noto Serif": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black"],
+  // Figma has Geist, and no family named "... Variable" (probe 8e).
+  Geist: ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black"],
 };
 
 /**
@@ -1775,6 +1777,7 @@ function buildScenarios(snapDir) {
       const faces = {
         keyword: ["system-ui", 600], mono: ["Menlo", 400], named: ["Inter", 500], monoBold: ["ui-monospace", 600],
         spelled: ["Roboto Mono", 600], heavy: ["Roboto Mono", 800], serif: ["Georgia", 400], heaviest: ["Inter", 950],
+        variable: ["Geist Variable", 600],
       };
       const properties = [{ name: "font", type: "VARIANT", values: Object.keys(faces), defaultValue: "keyword" }];
       const variants = Object.entries(faces).map(([face, [family, weight]]) => ({ name: `font=${face}`, styles: fonted(family, weight) }));
@@ -1790,7 +1793,8 @@ function buildScenarios(snapDir) {
       const names = Object.fromEntries(variants.map((v) => [v.name, v.name]));
       const slice = await loadSkillReadback().read(set, names, Object.fromEntries(variants.map((v) => [v.name, "measured"])));
       const read = Object.values(slice.readback).map((e) => `${e.fontFamily} ${e.fontWeight}`).join(", ");
-      assert(read === "Inter 600, Roboto Mono 400, Inter 500, Roboto Mono 600, Roboto Mono 600, Roboto Mono 700, Noto Serif 400, Inter 900", `read back ${read}`);
+      // fontsource's Geist Variable is Figma's Geist, no stand-in.
+      assert(read === "Inter 600, Roboto Mono 400, Inter 500, Roboto Mono 600, Roboto Mono 600, Roboto Mono 700, Noto Serif 400, Inter 900, Geist 600", `read back ${read}`);
 
       // The agent's own code throws on one variant, after the part made it.
       const throwing = (on) => `if (variant.name === '${on}') throw new Error('applyStyles failed');\n      Object.assign(variant, look(variant.name, styles));`;
@@ -4130,12 +4134,12 @@ async function main() {
       overlaps: "const overlaps = (node) => node.parent.children.filter(",
       restore: "      if (!fx && loose.some(Boolean)) node[key] = node[key].map((p, i) => (loose[i] ? { ...p, opacity: raw[i].opacity } : p));\n",
       effect: "p.variable && !(fx && loose[i]) ?",
-      families: "for (const f of new Set([family, alt, 'Inter'])) {",
+      families: "for (const f of new Set([named, family, alt, 'Inter'])) {",
       serif: "? 'Noto Serif' :",
       ladder: "[i, i + d, i + 2 * d, 3]",
       clamp: "Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1))",
       spelling: "new Set([STYLES[j], STYLES[j].replace(' ', '')])",
-      named: "if (f !== family || j !== i) FONTS[family + ' ' + weight] = f + ' ' + s;",
+      named: "if ((f !== family && f !== named) || j !== i) FONTS[family + ' ' + weight] = f + ' ' + s;",
       cleanup: "      for (const variant of created) variant.remove();\n",
       readPlain: "componentSet.type === 'COMPONENT' ? [componentSet] : componentSet.children",
     };
@@ -4153,6 +4157,7 @@ async function main() {
       "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
       "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p.variable ?"),
       "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),
+      "asks Figma for fontsource's Geist Variable by that name, which Figma has none of": (code) => code.replace(T.families, "for (const f of new Set([family, alt, 'Inter'])) {"),
       "sets a serif face in Inter": (code) => code.replace(T.serif, "? 'Inter' :"),
       "falls to Regular for a weight the family lacks": (code) => code.replace(T.ladder, "[i, 3]"),
       "indexes past Black for a weight over 900": (code) => code.replace(T.clamp, "Math.max(0, Math.round((weight || 400) / 100) - 1)"),
