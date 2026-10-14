@@ -2392,7 +2392,7 @@ async function snapComponent(
   const climbedWarning = describeClimbed(climbed, measured);
   if (climbedWarning) shell.warnings.push(climbedWarning);
   const label = entry.title ?? entry.name;
-  shell.warnings.push(...describeArgRejections(label, shell.variants, { storyFile: shell.storyFile, id: entry.id }));
+  shell.warnings.push(...describeArgRejections(label, shell.variants, { storyFile: shell.storyFile, id: entry.id, properties: definition.variantProperties }));
   const uncheckedWarning = describeUncheckedArgs(label, unchecked, captures, { error: uncheckedError, id: entry.id });
   if (uncheckedWarning) shell.warnings.push(uncheckedWarning);
 

@@ -344,3 +344,42 @@ test("openArg: open, else defaultOpen, where the story's argTypes or the compone
   assert.equal(openArg({ side: { options: ["left", "right"] } }, ["modal"]), null);
   assert.equal(openArg(undefined), null);
 });
+
+/** coder's Button story: no argTypes for its cva props, which docgen doesn't list, and no args for them. */
+const CODER_BUTTON: StoryArgsSnapshot = {
+  fileName: "./src/components/Button/Button.stories.tsx",
+  argTypes: { children: { type: "object", control: "object" } },
+  stored: { children: { $type: "object" } },
+  rendered: { children: { $type: "object" } },
+  globals: {},
+};
+const CODER_PROPS: FigmaVariantProperty[] = [
+  { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+  { name: "size", type: "VARIANT", values: ["default", "sm", "icon"], defaultValue: "default", unset: "default" },
+  { name: "variant", type: "VARIANT", values: ["default", "outline", "subtle"], defaultValue: "default", defaultAssumed: true },
+];
+
+test("findRejectedArgs: a value the component draws with its prop unset is not one Storybook refused", () => {
+  // coder's Button draws disabled false and size default with nothing given:
+  // the URL dropping them changes nothing, so the warning mustn't say it would.
+  assert.deepEqual(findRejectedArgs({ disabled: "false", size: "default" }, CODER_BUTTON, CODER_PROPS), []);
+  // A default only assumed, from the stories' args, says nothing of what it draws.
+  assert.deepEqual(findRejectedArgs({ disabled: "false", variant: "default" }, CODER_BUTTON, CODER_PROPS).map((r) => `${r.name}=${r.value}`), ["variant=default"]);
+  assert.deepEqual(findRejectedArgs({ disabled: "true" }, CODER_BUTTON, CODER_PROPS), [{ name: "disabled", value: "true", reasons: ["not-in-argtypes"] }]);
+});
+
+test("describeArgRejections: a boolean the story's argTypes don't declare is declared as a boolean, not with options", () => {
+  const variants = [
+    { combination: { disabled: "false", variant: "default" }, status: "ok" },
+    { combination: { disabled: "true", variant: "default" }, status: "ok", appliedVia: "preview" as const, rejectedArgs: findRejectedArgs({ disabled: "true" }, CODER_BUTTON, CODER_PROPS) },
+    { combination: { disabled: "false", variant: "outline" }, status: "ok", appliedVia: "preview" as const, rejectedArgs: findRejectedArgs({ disabled: "false", variant: "outline" }, CODER_BUTTON, CODER_PROPS) },
+  ];
+  const [warning, ...rest] = describeArgRejections("components/Button", variants, { storyFile: CODER_BUTTON.fileName, id: "components-button", properties: CODER_PROPS });
+  assert.equal(rest.length, 0);
+  assert.match(warning, /would have rendered those 2 variants without them/);
+  assert.match(warning, /`disabled` true: the story's argTypes don't declare it/);
+  assert.doesNotMatch(warning, /`disabled` (false|true, false)/);
+  assert.match(warning, /declare disabled in the story's argTypes as a boolean, `disabled: \{ control: "boolean" \}` in \.\/src\/components\/Button\/Button\.stories\.tsx/);
+  assert.doesNotMatch(warning, /options 'true'|options 'false'/);
+  assert.match(warning, /declare variant in the story's argTypes, with options 'outline'/);
+});
