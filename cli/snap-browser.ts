@@ -2305,6 +2305,146 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     return Object.keys(out).length ? out : undefined;
   };
 
+  // The custom properties behind a color a style sheet or an inline style
+  // gives by var(), not a class (figma-bind.ts reads them as `var:`
+  // evidence): Sonner's toast is `background: var(--normal-bg)`, and
+  // shadcn/ui's Toaster sets `--normal-bg: var(--popover)` on it inline, so
+  // the toast's fill is `bg-normal-bg` and `bg-popover`, each named as a
+  // class names a token, `--color-popover` as `popover`. A custom property
+  // is followed where it is set: the nearest element up that declares it,
+  // its inline style over its rules. A utility class's rule is class
+  // evidence already, and the base styles' (`*`, `body`) are `defaults`'s,
+  // so neither counts here; a text's color is the nearest element's below
+  // the body that sets one, unless a class sets it there.
+  type Declared = { sel: string; style: CSSStyleDeclaration };
+  const VAR_PAINTS: [string, string[]][] = [
+    ["bg", ["background-color", "background"]],
+    ["border", ["border-color", "border", ...["top", "right", "bottom", "left"].flatMap((side) => [`border-${side}-color`, `border-${side}`])]],
+    ["fill", ["fill"]],
+    ["stroke", ["stroke"]],
+  ];
+  let varIndex: { paints: Declared[]; props: Map<string, Declared[]> } | null = null;
+  const indexVars = () => {
+    if (varIndex) return varIndex;
+    const paints: Declared[] = [];
+    const props = new Map<string, Declared[]>();
+    const splitList = (list: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let i = 0; i < list.length; i++) {
+        const ch = list[i];
+        if (ch === "\\") i++;
+        else if (ch === "(" || ch === "[") depth++;
+        else if (ch === ")" || ch === "]") depth--;
+        else if (ch === "," && depth === 0) {
+          out.push(list.slice(from, i).trim());
+          from = i + 1;
+        }
+      }
+      out.push(list.slice(from).trim());
+      return out;
+    };
+    const utilityClass = /(?:^|[:!])-?(?:bg|text|border|fill|stroke|outline|ring|divide|from|via|to|placeholder|caret|accent|decoration|shadow)-/;
+    const baseSelector = /^(?:\*|html|body|:root|:host|::?(?:before|after|backdrop|placeholder|file-selector-button|marker|selection))$/;
+    const paintProps = VAR_PAINTS.flatMap(([, list]) => list).concat("color");
+    const visit = (rules: CSSRuleList) => {
+      for (const rule of Array.from(rules)) {
+        const r = rule as CSSRule & { selectorText?: string; style?: CSSStyleDeclaration; cssRules?: CSSRuleList };
+        const style = r.style;
+        if (r.selectorText !== undefined && style && typeof style.getPropertyValue === "function" && style.length) {
+          const parts = splitList(r.selectorText);
+          for (let i = 0; i < style.length; i++) {
+            const name = style[i];
+            if (!name.startsWith("--") || name.startsWith("--tw-")) continue;
+            for (const sel of parts) props.set(name, [...(props.get(name) ?? []), { sel, style }]);
+          }
+          if (paintProps.some((name) => style.getPropertyValue(name).includes("var("))) {
+            for (const sel of parts) {
+              const first = /^\.((?:\\.|[\w-])+)/.exec(sel);
+              if (first && utilityClass.test(first[1].replace(/\\(.)/g, "$1"))) continue;
+              if (baseSelector.test(sel)) continue;
+              paints.push({ sel, style });
+            }
+          }
+        }
+        if (r.cssRules) visit(r.cssRules);
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets ?? [])) {
+      try {
+        visit(sheet.cssRules);
+      } catch {
+        // Another origin's sheet: unread.
+      }
+    }
+    return (varIndex = { paints, props });
+  };
+  const matchesSel = (at: Element, sel: string): boolean => {
+    try {
+      return at.matches(sel);
+    } catch {
+      return false;
+    }
+  };
+  const inlineOf = (at: Element, name: string): string => {
+    const style = (at as HTMLElement).style;
+    return style && typeof style.getPropertyValue === "function" ? style.getPropertyValue(name).trim() : "";
+  };
+  // The values of `names` that hold a var(), inline and by the rules that match.
+  const varValues = (at: Element, names: string[], paints: Declared[]): string[] => {
+    const out: string[] = [];
+    for (const name of names) {
+      const inline = inlineOf(at, name);
+      if (inline.includes("var(")) out.push(inline);
+    }
+    for (const d of paints) {
+      if (!matchesSel(at, d.sel)) continue;
+      for (const name of names) {
+        const value = d.style.getPropertyValue(name);
+        if (value.includes("var(")) out.push(value);
+      }
+    }
+    return out;
+  };
+  // Every custom property a value's var()s name, and those they are set to, in turn.
+  const chainOf = (start: Element, value: string, seen: Set<string>): void => {
+    const { props } = indexVars();
+    for (const m of value.matchAll(/var\(\s*(--[\w-]+)/g)) {
+      const name = m[1];
+      if (seen.has(name) || seen.size >= 16) continue;
+      seen.add(name);
+      for (let at: Element | null = start; at; at = at.parentElement) {
+        const inline = inlineOf(at, name);
+        const values = inline ? [inline] : (props.get(name) ?? []).filter((d) => matchesSel(at!, d.sel)).map((d) => d.style.getPropertyValue(name));
+        if (!values.length) continue;
+        for (const v of values) chainOf(at, v, seen);
+        break;
+      }
+    }
+  };
+  const varsOf = (el: Element, classes: string[]): string[] => {
+    const { paints } = indexVars();
+    const out = new Set<string>();
+    const add = (prefix: string, values: string[], at: Element) => {
+      for (const value of values) {
+        const seen = new Set<string>();
+        chainOf(at, value, seen);
+        for (const name of seen) out.add(`${prefix}-${name.slice(2).replace(/^color-/, "").toLowerCase()}`);
+      }
+    };
+    for (const [prefix, names] of VAR_PAINTS) add(prefix, varValues(el, names, paints), el);
+    for (let at: Element | null = el; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
+      const own = at === el ? classes : (at.getAttribute("class") ?? "").split(/\s+/);
+      if (own.some((t) => /^!?text-/.test(t) && unprefixed(t) && setsTextColor(t))) break;
+      const values = varValues(at, ["color"], paints);
+      if (!values.length) continue;
+      add("text", values, at);
+      break;
+    }
+    return [...out].sort();
+  };
+
   // Radii only layout can resolve, calc() of a percentage, sized on a probe
   // the element's size, as readComputedStyles sizes the root's.
   const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
@@ -2686,6 +2826,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     if (cls.length) node.cls = cls;
     const states = statesOf(el, cls);
     if (states) node.states = states;
+    const vars = varsOf(el, classes);
+    if (vars.length) node.vars = vars;
     // Its own size, where something turns or scales it: snap-tree.ts
     // centers that where it drew. A `rotate` or `scale` set on its own,
     // as Tailwind 4 sets them, doesn't show in `transform`.

@@ -1489,6 +1489,57 @@ test("captureTreeInPage: a select's open field and its listbox, in a portal, rea
   assert.equal(raw.around, undefined);
 });
 
+test("captureTreeInPage: follows the custom properties behind a color a rule or an inline style gives, as Sonner's toast takes the Toaster's", () => {
+  // shadcn/ui's Toaster sets `--normal-bg: var(--popover)` inline; Sonner's
+  // sheet paints the toast and its action button with them.
+  const decl = (o: Record<string, string>) => Object.assign(Object.keys(o), { getPropertyValue: (n: string) => o[n] ?? "" });
+  const rule = (selectorText: string, style: Record<string, string>) => ({ selectorText, style: decl(style) });
+  const sheets = [{ cssRules: [
+    rule(":root", { "--popover": "oklch(1 0 0)", "--popover-foreground": "oklch(0.145 0 0)", "--tw-shadow": "0 0 #0000" }),
+    rule("body", { color: "var(--foreground)" }),
+    rule("[data-sonner-toast]", { background: "var(--normal-bg)", border: "1px solid var(--normal-border)", color: "var(--normal-text)" }),
+    rule("[data-sonner-toast] [data-button]", { background: "var(--normal-text)", color: "var(--normal-bg)" }),
+    { name: "utilities", cssRules: [rule(".bg-popover", { "background-color": "var(--color-popover)" }), rule(".hover\\:text-primary:hover", { color: "var(--color-primary)" })] },
+  ] }];
+  const answers: Record<string, (attrs: Record<string, string>) => boolean> = {
+    ":root": () => false,
+    "[data-sonner-toast]": (a) => "data-sonner-toast" in a,
+    "[data-sonner-toast] [data-button]": (a) => "data-button" in a,
+  };
+  const scope = globalThis as Record<string, unknown>;
+  let proto: Record<string, unknown> | undefined;
+  try {
+    const raw = inFakePage({
+      tag: "ol", rect: [0, 0, 360, 60], attrs: { "data-sonner-toaster": "" },
+      kids: [{ tag: "li", rect: [0, 0, 360, 60], attrs: { "data-sonner-toast": "" }, kids: [
+        { tag: "div", rect: [16, 16, 200, 20], attrs: {} },
+        { tag: "button", rect: [280, 16, 60, 24], attrs: { "data-button": "" } },
+        { tag: "p", rect: [16, 36, 200, 20], attrs: { class: "text-muted-foreground" } },
+      ] }],
+    }, (el) => {
+      (document as unknown as { styleSheets: unknown }).styleSheets = sheets;
+      proto = (scope.HTMLElement as { prototype: Record<string, unknown> }).prototype;
+      proto.matches = function (this: { attrs: Record<string, string> }, sel: string) {
+        if (!answers[sel]) throw new Error(`unexpected selector ${sel}`);
+        return answers[sel](this.attrs);
+      };
+      (el as unknown as { style: { setProperty(n: string, v: string): void } }).style.setProperty("--normal-bg", "var(--popover)");
+      (el as unknown as { style: { setProperty(n: string, v: string): void } }).style.setProperty("--normal-text", "var(--popover-foreground)");
+      return captureTreeInPage(el, TREE_ARGS);
+    }, [], undefined, { "text-muted-foreground": "rgb(115, 115, 115)" });
+    const toast = raw.root.kids[0] as RawTreeElement;
+    assert.equal(raw.root.vars, undefined);
+    assert.deepEqual(toast.vars, ["bg-normal-bg", "bg-popover", "border-normal-border", "text-normal-text", "text-popover-foreground"]);
+    const [title, button, own] = toast.kids as RawTreeElement[];
+    // The title inherits the toast's; a class that colors a text stops the walk.
+    assert.deepEqual(title.vars, ["text-normal-text", "text-popover-foreground"]);
+    assert.deepEqual(button.vars, ["bg-normal-text", "bg-popover-foreground", "text-normal-bg", "text-popover"]);
+    assert.equal(own.vars, undefined);
+  } finally {
+    if (proto) delete proto.matches;
+  }
+});
+
 test("captureTreeInPage: says which of an element's dark: classes with a state apply to it, by the page's own style sheets", () => {
   // shadcn/ui's Tabs: its data-active variant is [data-state="active"] or [data-active], which only the sheets say.
   const cls = "dark:text-muted-foreground dark:data-active:text-foreground dark:hover:text-foreground dark:in-focus:bg-x dark:data-active:bg-input/30";

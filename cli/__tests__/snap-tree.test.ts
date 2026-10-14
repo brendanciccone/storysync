@@ -737,8 +737,9 @@ test("buildTree: a text or icon takes the text color class of the nearest elemen
   const card = el("div", [0, 0, 200, 80], { display: "flex" }, [muted, iconWrapper], { cls: ["text-card-foreground"] });
   const nodes = byKey(buildTree(tree(card)).nodes);
   assert.deepEqual(nodes.get("p/#text")!.cls, ["text-muted-foreground"]);
-  // The icon's own wrapper sets its color always; its state class only names a state.
-  assert.deepEqual(nodes.get("svg")!.cls, ["text-destructive"]);
+  // The icon's own wrapper sets its color always, and its state class names
+  // the color in that state, which may be the one measured: the value picks.
+  assert.deepEqual(nodes.get("svg")!.cls, ["text-accent-foreground", "text-destructive"]);
 });
 
 test("buildTree: past the root, a text takes the text color class of the elements around it, those inside nearer", () => {
@@ -785,6 +786,24 @@ test("classEvidence and buildTree: a dark: prefix alone stays, naming the token 
   const lone = el("div", [0, 0, 200, 20], { display: "flex" }, [p], { cls: ["dark:text-muted-foreground"] });
   const alone = byKey(buildTree(tree(lone)).nodes).get("p")!;
   assert.deepEqual([alone.cls, alone.nocls], [["dark:text-muted-foreground"], ["color"]]);
+});
+
+test("buildTree: a text takes the state classes of the element it inherits its color from, as that element's own paints do", () => {
+  // coder's disabled Button, `text-content-invert disabled:text-content-disabled`,
+  // and a highlighted Select option's `data-[highlighted]:text-content-primary`.
+  const label = el("span", [0, 0, 80, 20], {}, [run("Button", [[0, 1.5, 40, 17]])], { text: TEXT });
+  const button = el("button", [0, 0, 80, 20], { display: "flex" }, [label], { cls: ["text-content-invert", "disabled:text-content-disabled", "hover:bg-x"] });
+  const text = byKey(buildTree(tree(button)).nodes).get("span")!;
+  assert.deepEqual([text.cls, text.nocls], [["text-content-disabled", "text-content-invert"], undefined]);
+});
+
+test("buildTree: the custom properties behind a box's or a text's color go in its cls as var: evidence", () => {
+  // Sonner's toast, `background: var(--normal-bg)` and `color: var(--normal-text)`, which the Toaster sets to shadcn/ui's tokens.
+  const title = el("div", [16, 16, 200, 20], {}, [run("Event has been created", [[16, 17.5, 160, 17]])], { text: TEXT, vars: ["text-normal-text", "text-popover-foreground"] });
+  const toast = el("li", [0, 0, 360, 60], { display: "flex", "background-color": "rgb(255, 255, 255)" }, [title], { vars: ["bg-normal-bg", "bg-popover", "text-normal-text", "text-popover-foreground"] });
+  const nodes = byKey(buildTree(tree(toast)).nodes);
+  assert.deepEqual(nodes.get("")!.cls, ["var:bg-normal-bg", "var:bg-popover", "var:text-normal-text", "var:text-popover-foreground"]);
+  assert.deepEqual(nodes.get("div")!.cls, ["var:text-normal-text", "var:text-popover-foreground"]);
 });
 
 test("buildTree: nocls says what no class colors: a text with no color class up the DOM, a border none of its own colors", () => {

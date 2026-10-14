@@ -550,7 +550,7 @@ function compileComponent(component: SnapComponentWithTree, binder: Binder, warn
   const bindings = new Map<string, PlanBinding>();
   for (const b of findings.byDefault) {
     const id = `${b.property} ${b.value}`;
-    const was = bindings.get(id) ?? { component: key, property: b.property, value: b.value, variable: b.variable, from: b.from, keys: [] };
+    const was = bindings.get(id) ?? { component: key, property: b.property, value: b.value, variable: b.variable, from: b.from, ...(b.alike ? { alike: b.alike } : {}), keys: [] };
     if (!was.keys.includes(b.key)) was.keys = [...was.keys, b.key].sort();
     bindings.set(id, was);
   }

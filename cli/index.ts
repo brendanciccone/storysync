@@ -1070,10 +1070,12 @@ figma
         console.log(`  ${String(call.seq).padStart(2, "0")} ${call.kind.padEnd(Math.max(6, ...plan.calls.map((c) => c.kind.length)))} ${call.description} ${chalk.dim(`(${size})`)}`);
       }
       // What no class showed, and the project's base styles did: a text that
-      // inherits body's color, a border that takes `*`'s.
+      // inherits body's color, a border that takes `*`'s; or what tokens
+      // alike in every mode left free to pick.
       for (const b of bindings) {
         const layers = b.keys.map((k) => (k === "" ? "its root" : k)).join(", ");
-        console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from} (${layers})`));
+        const why = b.alike ? `as ${b.alike.slice(0, -1).join(", ")}${b.alike.length > 2 ? "," : ""} and ${b.alike[b.alike.length - 1]} hold it in every mode, so any of them is right in each` : `by the base style ${b.from}`;
+        console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, ${why} (${layers})`));
       }
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
       // A translucent paint binds to its token's alpha variable, which keeps

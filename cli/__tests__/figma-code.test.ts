@@ -413,6 +413,16 @@ test("figma code: a value the base styles bind is recorded in the plan with its 
   }
 });
 
+test("figma code: with a dark theme, a value whose tokens are alike in every mode binds to one, recorded in the plan with them, not warned as unbound", async () => {
+  // shadcn/ui's neutral theme: the four hold #0a0a0a in Light and #fafafa in Dark.
+  const tokens = structuredClone(SHADCN_TOKENS) as { collections: { category: string; tokens: { name: string; hex?: string; dark?: { value: string; hex: string } }[] }[] };
+  for (const t of tokens.collections[0].tokens) if (t.hex === "#0a0a0a") t.dark = { value: "#fafafa", hex: "#fafafa" };
+  const coded = await codeFor(loadTreeFixture("dialog"), {}, tokens);
+  const alike = ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"];
+  assert.deepEqual(coded.plan.bindings?.map((b) => [b.property, b.value, b.variable, b.alike]), [["color", "#0a0a0a", "card/foreground", alike]]);
+  assert.equal(coded.warnings.some((w) => /#0a0a0a left unbound/.test(w)), false);
+});
+
 test("figma code: a new plan clears the last plan's calls and results, and leaves every other file", async () => {
   const coded = await codeFor(allFixtures());
   const old = ["results/05.json", "results/07b.json", "results/03.upload.json", "calls/99-build-old.js", "calls/07b-read-ui-base.js"];
