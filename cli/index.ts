@@ -1025,9 +1025,10 @@ const figma = program
 figma
   .command("code")
   .description("Write plan.json and every use_figma call that builds, fills, labels and reads back the snap's components")
-  .option("--snap <path>", "Path to snap output, with element trees", ".storysync/snaps/styles.json")
+  .option("--snap <path>", "Path to snap output, with element trees: its styles.json, or the directory that holds it", ".storysync/snaps/styles.json")
   .option("--tokens <path>", "`storysync tokens --json` output, for binding paints and radii to variables; without it nothing is bound", ".storysync/tokens.json")
   .option("--components <names>", "Comma-separated component names, titles or IDs to build (default: every component in the snap); a name that matches nothing is an error")
+  .option("--replace-measured", "Build \"Not measured\" placeholders over variants Figma has measured from an earlier push, where the story now fails (without this, they are left as they are, with a warning); only once the user has said so")
   .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out")
   .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan Figma answered a read of moves to earlier/ there with its calls and results, and any other's are removed", ".storysync/figma")
   .option("--max-chars <n>", `Most characters of code in one build call (use_figma takes at most ${USE_FIGMA_CODE_LIMIT})`, String(MAX_CALL_CHARS))
@@ -1051,6 +1052,7 @@ figma
         maxNodes,
         readLimit,
         minify: opts.minify !== false,
+        replaceMeasured: !!opts.replaceMeasured,
       });
       // What the push costs the agent, in tokens: the skills show it and ask before sending.
       const estimate = estimatePush(plan);

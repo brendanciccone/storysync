@@ -28,12 +28,13 @@ import type { Palette } from "./palette.js";
 import type { LayoutChild, LayoutPlan } from "./figma-layout.js";
 import { figmaSize, nodeStyle, outsideInsets, textSizesItself } from "./figma-map.js";
 import type { BoundByDefault, FigmaStyle, MapContext, NotBuilt, Unbound } from "./figma-map.js";
-import { READBACK_TPL, readBefore, readTimes, readbackCall } from "./figma-results.js";
+import { READBACK_TPL, parseReadResult, readBefore, readTimes, readbackCall } from "./figma-results.js";
 import type { ReadSlice } from "./figma-results.js";
 import { MAX_CALL_CHARS, MAX_UPLOADS_PER_CALL, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import type { Spike } from "./figma-spike.js";
 import { describeVariantStories, parseMeasurementWarning } from "./snap.js";
 import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
+import { nameSlugs } from "./snap-args.js";
 import { applyDelta } from "./snap-normalize.js";
 import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
@@ -68,6 +69,14 @@ export interface FigmaCodeOptions {
   project?: string;
   /** The palette itself, in place of the project's (palette.ts). */
   palette?: Palette;
+  /**
+   * Build "Not measured" placeholders over variants Figma has measured
+   * from an earlier push, where the story now fails: only once the user
+   * has said so (`--replace-measured`).
+   */
+  replaceMeasured?: boolean;
+  /** The readback verify assembled, for what Figma has measured; figma-readback.json beside `out` when absent. */
+  readback?: string;
 }
 
 export type TemplateName = "build" | "images" | "label" | "readback" | "variables";
@@ -516,18 +525,106 @@ function tie(named: string[] | undefined): string {
   return `its classes name ${named.length === 2 ? "two" : named.length} of them, ${list}, so it binds to ${named.length === 2 ? "neither" : "none"} rather than to a guess`;
 }
 
-function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike, alphas: Map<string, PlanAlpha>): CompiledComponent | null {
+/**
+ * Whether a variant snap couldn't measure failed in its story, so a
+ * placeholder saying why stands for it: a render error, an element not
+ * found though the story rendered, args Storybook refused. A timeout, or a
+ * story that never rendered, as when Storybook was down or busy, is the
+ * run's failure: built as a placeholder, it would replace a good variant
+ * in Figma with one, so it isn't built and Figma keeps what it has.
+ */
+export function failedInStory(variant: Pick<SnapVariant, "status" | "error" | "rendered">): boolean {
+  if (variant.status === "ok" || variant.status === "timeout" || variant.rendered === false) return false;
+  // A snap from before `rendered` was recorded says a page that never
+  // loaded only in its error: a refused connection, a reset, a lookup.
+  return !(variant.status === "render_error" && /\bnet::ERR_|\bECONNREFUSED\b/.test(variant.error ?? ""));
+}
+
+/**
+ * The variants Figma has measured, by component key, then slug: those a
+ * readback found built from a measurement (`source` measured), in the
+ * readback verify assembled and in every read result saved under `out`,
+ * this plan's and the earlier ones'. Any one saying so is enough: a
+ * placeholder goes over one only once the user has said so.
+ */
+export function measuredInFigma(out: string, readback = join(out, "..", "figma-readback.json")): Map<string, Set<string>> {
+  const found = new Map<string, Set<string>>();
+  const add = (component: string, slug: string, entry: unknown) => {
+    if ((entry as { source?: unknown } | null)?.source !== "measured") return;
+    const slugs = found.get(component) ?? new Set<string>();
+    // A part of a variant read across calls is `slug#<first node>`.
+    slugs.add(slug.replace(/#\d+$/, ""));
+    found.set(component, slugs);
+  };
+  try {
+    const file = JSON.parse(readFileSync(readback, "utf8")) as { components?: Record<string, { variants?: Record<string, unknown> }> };
+    for (const [component, read] of Object.entries(file?.components ?? {})) {
+      for (const [slug, entry] of Object.entries(read?.variants ?? {})) add(component, slug, entry);
+    }
+  } catch {
+    // None yet, or not one verify wrote: the results below may still say.
+  }
+  const earlier = join(out, EARLIER_PLANS_DIR);
+  const dirs = [join(out, "results")];
+  if (existsSync(earlier) && lstatSync(earlier).isDirectory()) {
+    for (const name of readdirSync(earlier).sort()) dirs.push(join(earlier, name, "results"));
+  }
+  for (const dir of dirs) {
+    if (!existsSync(dir) || !lstatSync(dir).isDirectory()) continue;
+    for (const name of readdirSync(dir).sort()) {
+      if (!name.endsWith(".json") || !lstatSync(join(dir, name)).isFile()) continue;
+      const result = parseReadResult(readFileSync(join(dir, name), "utf8"));
+      for (const set of result?.sets ?? []) {
+        for (const [slug, entry] of Object.entries(set.entries ?? {})) add(set.title || set.component, slug, entry);
+      }
+    }
+  }
+  return found;
+}
+
+function compileComponent(
+  component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike, alphas: Map<string, PlanAlpha>,
+  inFigma: ReadonlySet<string> = new Set(), replaceMeasured = false,
+): CompiledComponent | null {
   const key = componentKey(component);
-  // A component snap couldn't measure at all has no variants to build. One
-  // whose every variant failed has them all as placeholders.
+  // A component snap couldn't measure at all has no variants to build.
   if (component.error || (!component.base && !component.variants?.length)) {
     warnings.push(`${key}: not built: ${component.error ?? "snap measured no variant of it"}`);
     return null;
   }
   const findings: Findings = { notBuilt: [], unbound: [], byDefault: [], absolute: new Map(), alphas };
-  const variants = component.variants.map((variant, i) => (variant.status === "ok" && component.base
-    ? compileVariant(component, variant as SnapVariantWithTree, i, binder, findings, spike)
-    : compilePlaceholder(component, variant as SnapVariantWithTree, i)));
+  // A variant that failed in its story is built as a placeholder, unless
+  // Figma has it measured, which only the user may have replaced. One the
+  // run failed (a timeout, Storybook down) isn't built: Figma keeps it.
+  const variants: CompiledVariant[] = [];
+  const ofRun: string[] = [];
+  const kept: string[] = [];
+  component.variants.forEach((variant, i) => {
+    if (variant.status === "ok" && component.base) variants.push(compileVariant(component, variant as SnapVariantWithTree, i, binder, findings, spike));
+    else if (!failedInStory(variant)) ofRun.push(variant.slug);
+    else if (!replaceMeasured && inFigma.has(variant.slug)) kept.push(variant.slug);
+    else variants.push(compilePlaceholder(component, variant as SnapVariantWithTree, i));
+  });
+  const them = (slugs: string[]) => (slugs.length === 1 ? "it" : "them");
+  const count = (slugs: string[]) => (slugs.length === 1 ? "1 variant" : `${slugs.length} variants`);
+  const why: string[] = [];
+  if (ofRun.length) {
+    why.push(
+      `snap timed out or couldn't reach Storybook for ${count(ofRun)} (${nameSlugs(ofRun)}), which ${ofRun.length === 1 ? "is" : "are"} not built, so Figma keeps what it has for ${them(ofRun)}: ` +
+      `measure ${them(ofRun)} again with --components ${component.id ?? key} --merge once Storybook answers`,
+    );
+  }
+  if (kept.length) {
+    why.push(
+      `${count(kept)} failed in the story (${nameSlugs(kept)}), which Figma has measured from an earlier push, so ${kept.length === 1 ? "it is" : "they are"} left as ${kept.length === 1 ? "it is" : "they are"}, ` +
+      `not replaced by "Not measured" placeholders: ask the user, and only on a yes run figma code again with --replace-measured`,
+    );
+  }
+  if (!variants.length) {
+    warnings.push(`${key}: not built: ${why.join("; ")}`);
+    return null;
+  }
+  for (const line of why) warnings.push(`${key}: ${line}`);
   const placeholders = variants.filter((v) => !v.src).length;
   const counted = placeholders === variants.length && placeholders > 1 ? `all ${placeholders} variants` : `${placeholders} variant${placeholders === 1 ? "" : "s"}`;
   if (placeholders) warnings.push(`${key}: ${counted} built as a "Not measured" placeholder, since snap couldn't measure ${placeholders === 1 ? "it" : "them"}`);
@@ -742,6 +839,22 @@ function keepEarlierPlan(out: string): string | null {
 }
 
 /**
+ * The styles.json `--snap` names: the path itself, or the one in a
+ * directory it names, such as `.storysync/snaps`. An error that says what
+ * to do where there is none, not the file system's ENOENT or EISDIR.
+ */
+export function snapFile(path: string): string {
+  const file = existsSync(path) && lstatSync(path).isDirectory() ? join(path, "styles.json") : path;
+  if (!existsSync(file)) {
+    throw new Error(
+      `No snap at ${file}: run \`storysync snap\` first, or pass --snap the styles.json it wrote (or its directory)`,
+    );
+  }
+  if (lstatSync(file).isDirectory()) throw new Error(`${file} is a directory: pass --snap the styles.json snap wrote, or the directory that holds it`);
+  return file;
+}
+
+/**
  * Writes plan.json and every call file for a push of `snap`, first moving
  * an earlier plan Figma answered to `out/earlier/` (keepEarlierPlan) and
  * removing any other's calls and results under `out` (clearPlanFiles).
@@ -755,9 +868,10 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const minify = opts.minify ?? true;
   if (maxChars > USE_FIGMA_CODE_LIMIT) throw new Error(`--max-chars ${maxChars} is more than use_figma takes (${USE_FIGMA_CODE_LIMIT})`);
   const warnings: string[] = [];
-  const bytes = readFileSync(opts.snap);
+  const snapPath = snapFile(opts.snap);
+  const bytes = readFileSync(snapPath);
   const snap = JSON.parse(bytes.toString("utf8")) as SnapResult & { components: SnapComponentWithTree[] };
-  const metaPath = join(dirname(opts.snap), "meta.json");
+  const metaPath = join(dirname(snapPath), "meta.json");
   const measuredAt = existsSync(metaPath) ? String((JSON.parse(readFileSync(metaPath, "utf8")) as { measuredAt?: string }).measuredAt ?? "") : "";
   const tokens = readTokens(opts.tokens, warnings);
   const binder = new Binder(tokens, opts.palette ?? tailwindPalette(opts.project ?? process.cwd()));
@@ -770,13 +884,22 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const rootOnly = picked.filter((c) => !c.error && c.base && !c.tree).map(componentKey);
   if (rootOnly.length) {
     throw new Error(
-      `${opts.snap} has no element tree for ${rootOnly.join(", ")}: it was taken with --root-only, or before trees were measured. ` +
+      `${snapPath} has no element tree for ${rootOnly.join(", ")}: it was taken with --root-only, or before trees were measured. ` +
       "figma code builds from trees: take the snap again without --root-only, or build it with the skill's root-only templates.",
     );
   }
   const bound = new Map<string, PlanAlpha>();
-  const components = picked.map((c) => compileComponent(c, binder, warnings, spike, bound)).filter((c): c is CompiledComponent => c !== null);
-  if (!components.length) throw new Error("No component to build: snap measured none of those named, or each failed");
+  // Before an earlier plan moves: what Figma has measured, which no
+  // placeholder replaces unasked.
+  const inFigma = measuredInFigma(opts.out, opts.readback);
+  const components = picked
+    .map((c) => compileComponent(c, binder, warnings, spike, bound, inFigma.get(componentKey(c)), opts.replaceMeasured))
+    .filter((c): c is CompiledComponent => c !== null);
+  if (!components.length) {
+    // Why each wasn't, which the warnings that would have said it can't.
+    const why = warnings.filter((w) => w.includes(": not built: "));
+    throw new Error(`No component to build: ${why.length ? why.join("; ") : "snap measured none of those named, or each failed"}`);
+  }
 
   const pages: string[] = [];
   for (const c of components) if (!pages.includes(c.page)) pages.push(c.page);
@@ -938,7 +1061,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const plan: FigmaPlan = {
     version: 1, storysyncVersion: VERSION,
     snap: {
-      path: relative(out, resolve(opts.snap)).split("\\").join("/"), measuredAt, digest: fnv1a32Bytes(bytes),
+      path: relative(out, resolve(snapPath)).split("\\").join("/"), measuredAt, digest: fnv1a32Bytes(bytes),
       // Each built component's record, which a later snap of other
       // components keeps as it is, so the plan can be verified after it.
       components: Object.fromEntries(built.map((c) => [c.key, componentDigest(all.find((a) => componentKey(a) === c.key)!)])),

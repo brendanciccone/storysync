@@ -123,6 +123,13 @@ export interface SnapVariant {
   refit?: { from: string; by: number; for: string[] };
   status: SnapVariantStatus;
   error: string | null;
+  /**
+   * False on a failed variant whose story never rendered: Storybook was
+   * unreachable, or hadn't rendered it when the wait ended. Like a
+   * `timeout`, a failure of the run rather than the story, so figma code
+   * builds no "Not measured" placeholder over what Figma has for it.
+   */
+  rendered?: false;
   /** Differences from the component's base styles. Empty for the base itself. */
   delta?: StyleDelta;
   /** PNG path relative to the directory containing styles.json, when screenshots are enabled. */
@@ -2276,7 +2283,10 @@ async function snapComponent(
           });
           continue;
         }
-        shell.variants.push({ combination, slug, ...fromStory, status: captured.status, error: captured.error, ...argsRecord });
+        shell.variants.push({
+          combination, slug, ...fromStory, status: captured.status, error: captured.error,
+          ...(captured.rendered === false ? { rendered: false as const } : {}), ...argsRecord,
+        });
         continue;
       }
 
