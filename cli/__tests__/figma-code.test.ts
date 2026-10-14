@@ -331,6 +331,17 @@ test("figma code: the label call says which variants a story of their own measur
   assert.match(line("ui-base-switch"), /^measured from its closed trigger, button\[data-slot=dialog-trigger\], not the open Switch; measured .* from ui-base-switch--checked, the rest from /);
 });
 
+test("figma code: a color two of an element's classes name, which tie, is said to be left unbound for that, not for no class naming one", async () => {
+  // shadcn's Alert title: text-card-foreground, inherited from the root, and its own text-foreground, both #0a0a0a.
+  const snap = copy(loadTreeFixture("dialog"));
+  const title = snap.components[0].tree.base.find((n) => n.k === "dialog-header/dialog-title")! as { cls: string[] | null };
+  title.cls = ["text-card-foreground", "text-foreground"];
+  const coded = await codeFor(snap, {}, SHADCN_TOKENS);
+  assert.ok(coded.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and its classes name two of them, card/foreground and foreground, so it binds to neither rather than to a guess"), coded.warnings.join("\n"));
+  // The close button's label, which no class colors, is still said as such.
+  assert.ok(coded.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and no class names one"));
+});
+
 test("figma code: --components and --skip pick what to build, matched as snap and verify match them", async () => {
   const coded = await codeFor(allFixtures(), { components: ["ui-base-card", "switch", "Forms/Button"], skip: ["Button"] });
   assert.deepEqual([...new Set(coded.plan.calls.flatMap((c) => c.components))], ["ui/base/Card", "ui/base/Switch"]);

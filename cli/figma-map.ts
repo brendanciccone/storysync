@@ -123,6 +123,8 @@ export interface Unbound {
   property: string;
   value: string;
   candidates: string[];
+  /** The candidates the element's classes name, where they name several, which tie. */
+  named?: string[];
   why?: string;
 }
 
@@ -184,7 +186,7 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
   const [rgb, alpha] = splitHex(hex);
   const decision = ctx.binder.color(hex, role, cls, nocls);
   if (!decision.variable && decision.candidates.length > 1) {
-    ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
+    ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
   }
   if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
   if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx, role, cls)];
@@ -397,7 +399,7 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
         });
       }
     } else if (decision.variable) out.rv = decision.variable;
-    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "radius", value: String(value), candidates: decision.candidates });
+    else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "radius", value: String(value), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
   }
   return out;
 }
@@ -423,7 +425,7 @@ function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
     if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx, "effect", node.cls));
     // Only classes naming two of them leave it ambiguous: a shadow no class
     // names, as Tailwind's black shadow scale, binds to none by design.
-    else if (decision.ambiguous) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
+    else if (decision.ambiguous) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
     out.push(effect);
   }
   for (const [fact, kind, name] of [[node.fl, "L", "filter"], [node.bf, "B", "backdrop-filter"]] as const) {
@@ -608,7 +610,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
           const [variable, token] = boundTo(decision.variable, alpha, ctx, "vector", node.cls);
           if (token) binds[`${hex}@${alpha}`] = variable;
         }
-      } else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
+      } else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
     }
     if (Object.keys(binds).length) style.vb = binds;
     return style;

@@ -72,6 +72,8 @@ export interface BindDecision {
   candidates: string[];
   /** True where the classes name two of them and the value is left unbound for it, rather than for none being named. */
   ambiguous?: true;
+  /** Where `ambiguous`: the candidates the classes name, sorted, which tie, as `text-card-foreground` and `text-foreground` do. */
+  named?: string[];
   /** Where a base style picked the token, not a class: the rule, as `defaults` gives it. */
   from?: string;
 }
@@ -131,7 +133,7 @@ export class Binder {
     const value = hex.toLowerCase();
     const candidates = [...new Set([...(this.colors.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? this.colors.get(value) ?? [] : [])])].sort();
     const decision = decide(candidates, PREFIXES[role], cls, !NAMED_ONLY.has(role));
-    if (decision.variable || decision.named) return { variable: decision.variable, candidates, ...(decision.variable ? {} : { ambiguous: true as const }) };
+    if (decision.variable || decision.named.length) return { variable: decision.variable, candidates, ...(decision.variable ? {} : { ambiguous: true as const, named: decision.named }) };
     // No class names any of them: the base style for the property, where
     // snap found no class sets it, and none of the classes it lists sets it
     // in some state to a color no token names.
@@ -191,20 +193,21 @@ export class Binder {
   /** The radius token a corner radius of `px` binds to, given the node's classes. */
   radius(px: number, cls: readonly string[] | undefined): BindDecision {
     const candidates = [...new Set(this.radii.filter((t) => Math.abs(t.px - px) < 0.01).map((t) => t.name))].sort();
-    return { variable: decide(candidates, PREFIXES.radius, cls).variable, candidates };
+    const decision = decide(candidates, PREFIXES.radius, cls);
+    return { variable: decision.variable, candidates, ...(!decision.variable && decision.named.length > 1 ? { ambiguous: true as const, named: decision.named } : {}) };
   }
 }
 
 /**
  * The one candidate the classes name, or the only candidate where the value
- * alone may bind (`byValue`); `named` says how many the classes named, so a
+ * alone may bind (`byValue`); `named` lists those the classes named, so a
  * value two classes name isn't then handed to a default. Where they name several, the one a `dark:` class
  * names, alone: it has the light value measured, and is the token the dark
  * theme paints, so its variable is right in both modes, as an outline
  * button's `border-border dark:border-input` border is `input`.
  */
-function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined, byValue = true): { variable: string | null; named: number } {
-  if (byValue && candidates.length <= 1) return { variable: candidates[0] ?? null, named: 0 };
+function decide(candidates: string[], prefixes: string[], cls: readonly string[] | undefined, byValue = true): { variable: string | null; named: string[] } {
+  if (byValue && candidates.length <= 1) return { variable: candidates[0] ?? null, named: [] };
   const named = new Set<string>();
   const dark = new Set<string>();
   for (const entry of cls ?? []) {
@@ -219,7 +222,7 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
     }
   }
   const variable = named.size === 1 ? [...named][0] : dark.size === 1 ? [...dark][0] : null;
-  return { variable, named: named.size };
+  return { variable, named: [...named].sort() };
 }
 
 /**

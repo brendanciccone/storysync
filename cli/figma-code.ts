@@ -440,6 +440,17 @@ function labelLine(component: SnapComponent): string {
   return parts.join("; ");
 }
 
+/**
+ * Why a value its classes should settle stays unbound: none of them names
+ * one of its tokens, or several do, as an Alert title's
+ * `text-card-foreground`, inherited, and its own `text-foreground`.
+ */
+function tie(named: string[] | undefined): string {
+  if (!named || named.length < 2) return "no class names one";
+  const list = named.length === 2 ? `${named[0]} and ${named[1]}` : `${named.slice(0, -1).join(", ")}, and ${named[named.length - 1]}`;
+  return `its classes name ${named.length === 2 ? "two" : named.length} of them, ${list}, so it binds to ${named.length === 2 ? "neither" : "none"} rather than to a guess`;
+}
+
 function compileComponent(component: SnapComponentWithTree, binder: Binder, warnings: string[], spike: Spike, alphas: Map<string, PlanAlpha>): CompiledComponent | null {
   const key = componentKey(component);
   // A component snap couldn't measure at all has no variants to build. One
@@ -462,10 +473,12 @@ function compileComponent(component: SnapComponentWithTree, binder: Binder, warn
   const notBuilt = new Set<string>();
   for (const n of findings.notBuilt) notBuilt.add(`${n.key || "(root)"}: ${n.what} ${n.as ? `is built as ${n.as}` : "is not built"}`);
   for (const line of notBuilt) warnings.push(`${key} › ${line}`);
+  // Each value once for each reason: no class naming any of its tokens,
+  // or classes naming several, which tie.
   const unbound = new Map<string, Unbound>();
-  for (const u of findings.unbound) unbound.set(`${u.property} ${u.value}`, u);
-  for (const u of [...unbound.values()].sort((a, b) => `${a.property} ${a.value}`.localeCompare(`${b.property} ${b.value}`))) {
-    warnings.push(`${key}: ${u.property} ${u.value} left unbound: ${u.why ?? `it matches ${u.candidates.join(", ")}, and no class names one`}`);
+  for (const u of findings.unbound) unbound.set(`${u.property} ${u.value} ${u.why ?? u.named?.join(",") ?? ""}`, u);
+  for (const [, u] of [...unbound].sort(([a], [b]) => a.localeCompare(b))) {
+    warnings.push(`${key}: ${u.property} ${u.value} left unbound: ${u.why ?? `it matches ${u.candidates.join(", ")}, and ${tie(u.named)}`}`);
   }
   // Each value a base style bound, once, with the layers it bound in any
   // variant: the evidence for a binding no class shows.

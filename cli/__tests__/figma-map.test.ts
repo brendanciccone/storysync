@@ -221,10 +221,10 @@ test("nodeStyle: a shadow's color binds where its ring-* class names the token, 
   const c3 = ctx(black);
   assert.deepEqual(nodeStyle(frame({ k: "", sh: [[0, 4, 6, -1, "#0000001a"], [0, 2, 4, -2, "#0000001a"]], cls: ["shadow-md"] }), c3).e, [["D", 0, 4, 6, -1, "#000000", 0.102], ["D", 0, 2, 4, -2, "#000000", 0.102]]);
   assert.deepEqual(c3.unbound, []);
-  // Two classes naming two of its tokens leave it ambiguous: listed.
+  // Two classes naming two of its tokens leave it ambiguous: listed, with the two.
   const c4 = ctx(new Binder(SHADCN_TOKENS));
   nodeStyle(ring(["ring-foreground", "shadow-card-foreground"]), c4);
-  assert.deepEqual(c4.unbound.filter((u) => u.property === "effect"), [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"] }]);
+  assert.deepEqual(c4.unbound.filter((u) => u.property === "effect"), [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"], named: ["card/foreground", "foreground"] }]);
 });
 
 test("nodeStyle: where a dark: class paints the token at another alpha, the paint binds to the alpha variable that holds each theme's, from a tree that keeps it", () => {
