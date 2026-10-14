@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callConstants, callSum } from "../checksum.js";
-import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeBinding, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { READ_LIMIT, loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
@@ -411,6 +411,16 @@ test("figma code: a value the base styles bind is recorded in the plan with its 
     assert.equal(before.plan.bindings, undefined);
     assert.ok(before.warnings.includes("ui/base/Dialog: color #0a0a0a left unbound: it matches card/foreground, foreground, popover/foreground, sidebar/foreground, and no class names one"));
   }
+});
+
+test("figma code: with a dark theme, a value whose tokens are alike in every mode binds to one, recorded in the plan with them, not warned as unbound", async () => {
+  // shadcn/ui's neutral theme: the four hold #0a0a0a in Light and #fafafa in Dark.
+  const tokens = structuredClone(SHADCN_TOKENS) as { collections: { category: string; tokens: { name: string; hex?: string; dark?: { value: string; hex: string } }[] }[] };
+  for (const t of tokens.collections[0].tokens) if (t.hex === "#0a0a0a") t.dark = { value: "#fafafa", hex: "#fafafa" };
+  const coded = await codeFor(loadTreeFixture("dialog"), {}, tokens);
+  const alike = ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"];
+  assert.deepEqual(coded.plan.bindings?.map((b) => [b.property, b.value, b.variable, b.alike]), [["color", "#0a0a0a", "card/foreground", alike]]);
+  assert.equal(coded.warnings.some((w) => /#0a0a0a left unbound/.test(w)), false);
 });
 
 test("figma code: a new plan clears the last plan's calls and results, and leaves every other file", async () => {
@@ -876,4 +886,12 @@ test("verify --plan: an alpha variable made for a component no build call builds
   writeFileSync(join(dir, "plan.json"), JSON.stringify(plan));
   const { unusedAlphas } = loadPlanResults(join(dir, "plan.json"));
   assert.deepEqual(unusedAlphas, ["foreground 10% (Colors): made for ui/base/Table, which no build call builds, so nothing binds it"]);
+});
+
+test("describeBinding: says whether classes named the tokens that tie, or none did, and why any of them is right", () => {
+  const alike = ["border/DEFAULT", "input", "surface/tertiary"];
+  const b = { component: "button", property: "stroke", value: "#e4e4e7", variable: "input", from: "", alike, keys: ["", "icon"] };
+  assert.equal(describeBinding({ ...b, named: ["input", "surface/tertiary"] }), "button: stroke #e4e4e7 bound to input, which its classes name with surface/tertiary, as border/DEFAULT, input, and surface/tertiary hold it in every mode, so any of them is right in each (its root, icon)");
+  assert.equal(describeBinding({ ...b, variable: "border/DEFAULT" }), "button: stroke #e4e4e7 bound to border/DEFAULT, which no class names, as border/DEFAULT, input, and surface/tertiary hold it in every mode, so any of them is right in each (its root, icon)");
+  assert.equal(describeBinding({ component: "dialog", property: "color", value: "#0a0a0a", variable: "foreground", from: "body { color: var(--foreground) }", keys: ["t"] }), "dialog: color #0a0a0a bound to foreground, which no class names, by the base style body { color: var(--foreground) } (t)");
 });

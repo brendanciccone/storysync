@@ -1489,6 +1489,149 @@ test("captureTreeInPage: a select's open field and its listbox, in a portal, rea
   assert.equal(raw.around, undefined);
 });
 
+test("captureTreeInPage: follows the custom properties behind a color a rule or an inline style gives, as Sonner's toast takes the Toaster's", () => {
+  // shadcn/ui's Toaster sets `--normal-bg: var(--popover)` inline; Sonner's
+  // sheet paints the toast and its action button with them.
+  const decl = (o: Record<string, string>) => Object.assign(Object.keys(o), { getPropertyValue: (n: string) => o[n] ?? "" });
+  const rule = (selectorText: string, style: Record<string, string>) => ({ selectorText, style: decl(style) });
+  const sheets = [{ cssRules: [
+    rule(":root", { "--popover": "oklch(1 0 0)", "--popover-foreground": "oklch(0.145 0 0)", "--tw-shadow": "0 0 #0000" }),
+    rule("body", { color: "var(--foreground)" }),
+    rule("[data-sonner-toast]", { background: "var(--normal-bg)", border: "1px solid var(--normal-border)", color: "var(--normal-text)" }),
+    rule("[data-sonner-toast] [data-button]", { background: "var(--normal-text)", color: "var(--normal-bg)" }),
+    { name: "utilities", cssRules: [rule(".bg-popover", { "background-color": "var(--color-popover)" }), rule(".hover\\:text-primary:hover", { color: "var(--color-primary)" })] },
+  ] }];
+  const answers: Record<string, (attrs: Record<string, string>) => boolean> = {
+    ":root": () => false,
+    "[data-sonner-toast]": (a) => "data-sonner-toast" in a,
+    "[data-sonner-toast] [data-button]": (a) => "data-button" in a,
+  };
+  const scope = globalThis as Record<string, unknown>;
+  let proto: Record<string, unknown> | undefined;
+  try {
+    const raw = inFakePage({
+      tag: "ol", rect: [0, 0, 360, 60], attrs: { "data-sonner-toaster": "" },
+      kids: [{ tag: "li", rect: [0, 0, 360, 60], attrs: { "data-sonner-toast": "" }, kids: [
+        { tag: "div", rect: [16, 16, 200, 20], attrs: {} },
+        { tag: "button", rect: [280, 16, 60, 24], attrs: { "data-button": "" } },
+        { tag: "p", rect: [16, 36, 200, 20], attrs: { class: "text-muted-foreground" } },
+      ] }],
+    }, (el) => {
+      (document as unknown as { styleSheets: unknown }).styleSheets = sheets;
+      proto = (scope.HTMLElement as { prototype: Record<string, unknown> }).prototype;
+      proto.matches = function (this: { attrs: Record<string, string> }, sel: string) {
+        if (!answers[sel]) throw new Error(`unexpected selector ${sel}`);
+        return answers[sel](this.attrs);
+      };
+      (el as unknown as { style: { setProperty(n: string, v: string): void } }).style.setProperty("--normal-bg", "var(--popover)");
+      (el as unknown as { style: { setProperty(n: string, v: string): void } }).style.setProperty("--normal-text", "var(--popover-foreground)");
+      return captureTreeInPage(el, TREE_ARGS);
+    }, [], undefined, { "text-muted-foreground": "rgb(115, 115, 115)" });
+    const toast = raw.root.kids[0] as RawTreeElement;
+    assert.equal(raw.root.vars, undefined);
+    assert.deepEqual(toast.vars, ["bg-normal-bg", "bg-popover", "border-normal-border", "text-normal-text", "text-popover-foreground"]);
+    const [title, button, own] = toast.kids as RawTreeElement[];
+    // The title inherits the toast's; a class that colors a text stops the walk.
+    assert.deepEqual(title.vars, ["text-normal-text", "text-popover-foreground"]);
+    assert.deepEqual(button.vars, ["bg-normal-text", "bg-popover-foreground", "text-normal-bg", "text-popover"]);
+    assert.equal(own.vars, undefined);
+  } finally {
+    if (proto) delete proto.matches;
+  }
+});
+
+test("captureTreeInPage: counts only the declaration the cascade picks, and pairs a rule's literal color with the dark theme's", () => {
+  const decl = (o: Record<string, string>) => Object.assign(Object.keys(o), { getPropertyValue: (n: string) => o[n] ?? "", getPropertyPriority: () => "" });
+  const rule = (selectorText: string, style: Record<string, string>, cssRules?: unknown[]) => ({ selectorText, style: decl(style), ...(cssRules ? { cssRules } : {}) });
+  const sheets = [{ cssRules: [
+    rule(":root", { "--popover": "#ffffff", "--card": "#ffffff", "--fg": "#0a0a0a" }),
+    // The more specific rule wins whatever the order.
+    rule(".wrap .b", { background: "var(--card)" }),
+    rule(".b", { background: "var(--popover)" }),
+    // A media query that doesn't apply now.
+    rule(".a", { background: "var(--popover)" }),
+    { media: { mediaText: "(min-width: 99999px)" }, cssRules: [rule(".a", { background: "var(--card)" })] },
+    // A text takes the nearest rule's color, a literal one too.
+    rule(".c", { color: "var(--fg)" }),
+    rule(".c .desc", { color: "#3f3f3f" }),
+    rule(".c .inh", { color: "inherit" }),
+    // A nested rule's & is its parent.
+    rule(".zz", {}, [rule("&:is(.dark *)", { background: "var(--card)" })]),
+    // A utility class's rule, later and as specific, wins: class evidence.
+    rule(".e", { background: "var(--popover)" }),
+    { name: "utilities", cssRules: [rule(".f", { background: "var(--card)" })] },
+    rule("[data-f]", { background: "var(--popover)" }),
+    rule(".bg-card", { "background-color": "var(--card)" }),
+    // Sonner's description, and its dark theme's.
+    rule("[data-sonner-toast] [data-description]", { color: "#3f3f3f" }),
+    rule('[data-sonner-toaster][data-sonner-theme="dark"] [data-description]', { color: "hsl(0, 0%, 91%)" }),
+  ] }];
+  type Fake = { attrs: Record<string, string>; parentElement: Fake | null };
+  const has = (el: Fake, c: string) => (el.attrs.class ?? "").split(" ").includes(c);
+  const up = (el: Fake, test: (a: Fake) => boolean) => { for (let a = el.parentElement; a; a = a.parentElement) if (test(a)) return true; return false; };
+  const answers: Record<string, (el: Fake) => boolean> = {
+    ":root": () => false,
+    ".wrap .b": (el) => has(el, "b") && up(el, (a) => has(a, "wrap")),
+    ".b": (el) => has(el, "b"),
+    ".a": (el) => has(el, "a"),
+    ".c": (el) => has(el, "c"),
+    ".c .desc": (el) => has(el, "desc") && up(el, (a) => has(a, "c")),
+    ".c .inh": (el) => has(el, "inh") && up(el, (a) => has(a, "c")),
+    ":is(.zz):is(.dark *)": () => false,
+    ":is(.zz):is(:is(*) *)": (el) => has(el, "zz"),
+    ".e": (el) => has(el, "e"),
+    ".f": (el) => has(el, "f"),
+    "[data-f]": (el) => "data-f" in el.attrs,
+    ".bg-card": (el) => has(el, "bg-card"),
+    "[data-sonner-toast] [data-description]": (el) => "data-description" in el.attrs && up(el, (a) => "data-sonner-toast" in a.attrs),
+    '[data-sonner-toaster][data-sonner-theme="dark"] [data-description]': () => false,
+    '[data-sonner-toaster]:is(*) [data-description]': (el) => "data-description" in el.attrs && up(el, (a) => "data-sonner-toaster" in a.attrs),
+  };
+  const scope = globalThis as Record<string, unknown>;
+  let proto: Record<string, unknown> | undefined;
+  const hadMedia = scope.matchMedia;
+  try {
+    scope.matchMedia = (q: string) => ({ matches: !q.includes("99999") });
+    const box = (attrs: Record<string, string>, kids: FakeElementSpec[] = []): FakeElementSpec => ({ tag: "div", rect: [0, 0, 100, 20], attrs, kids });
+    const raw = inFakePage(box({}, [
+      box({ class: "wrap" }, [box({ class: "b" })]),
+      box({ class: "a" }),
+      box({ class: "c" }, [{ tag: "p", rect: [0, 0, 100, 20], attrs: { class: "desc" } }, { tag: "p", rect: [0, 20, 100, 20], attrs: { class: "inh" } }]),
+      box({ class: "zz" }),
+      box({ class: "e bg-card" }),
+      box({ class: "f", "data-f": "" }),
+      box({ "data-sonner-toaster": "", "data-sonner-theme": "light" }, [box({ "data-sonner-toast": "" }, [box({ "data-description": "" })])]),
+      box({ class: "plain" }),
+    ]), (el) => {
+      (document as unknown as { styleSheets: unknown }).styleSheets = sheets;
+      proto = (scope.HTMLElement as { prototype: Record<string, unknown> }).prototype;
+      proto.matches = function (this: Fake, sel: string) {
+        if (!answers[sel]) throw new Error(`unexpected selector ${sel}`);
+        return answers[sel](this);
+      };
+      return captureTreeInPage(el, TREE_ARGS);
+    });
+    const kids = raw.root.kids as RawTreeElement[];
+    const vars = (k: RawTreeElement) => k.vars;
+    assert.deepEqual(vars((kids[0].kids as RawTreeElement[])[0]), ["bg-card"]);
+    assert.deepEqual(vars(kids[1]), ["bg-popover"]);
+    assert.deepEqual(vars((kids[2].kids as RawTreeElement[])[0]), ["text-[#3f3f3f]"]);
+    // `color: inherit` hands the walk on to its parent's rule.
+    assert.deepEqual(vars((kids[2].kids as RawTreeElement[])[1]), ["text-fg"]);
+    // The nested rule matches .zz in the dark theme alone, and nothing else.
+    assert.equal(vars(kids[3]), undefined);
+    assert.equal(vars(kids[7]), undefined);
+    assert.equal(vars(kids[4]), undefined);
+    // An unlayered rule wins over a layered one, though as specific.
+    assert.deepEqual(vars(kids[5]), ["bg-popover"]);
+    const description = (((kids[6].kids as RawTreeElement[])[0]).kids as RawTreeElement[])[0];
+    assert.deepEqual(vars(description), ["dark:text-[hsl(0,_0%,_91%)]", "text-[#3f3f3f]"]);
+  } finally {
+    if (proto) delete proto.matches;
+    scope.matchMedia = hadMedia;
+  }
+});
+
 test("captureTreeInPage: says which of an element's dark: classes with a state apply to it, by the page's own style sheets", () => {
   // shadcn/ui's Tabs: its data-active variant is [data-state="active"] or [data-active], which only the sheets say.
   const cls = "dark:text-muted-foreground dark:data-active:text-foreground dark:hover:text-foreground dark:in-focus:bg-x dark:data-active:bg-input/30";

@@ -7,6 +7,7 @@ import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents, titleLeaf } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { colorToHex } from "./color.js";
+import { figmaStackFamily, isFontFamilyToken } from "./fonts.js";
 import { colorOfClass, parseAlphaVariable } from "./figma-bind.js";
 
 // --- Token diff ---
@@ -141,6 +142,8 @@ export function canonicalizeCompound(input: string): string {
  */
 function workedOutForCompare(category: string, token: TokenValue): string | undefined {
   if (category === "colors") return token.hex?.toLowerCase();
+  // A font family as the push holds it: the family Figma sets the stack's text in.
+  if (category === "typography" && isFontFamilyToken(token.name)) return figmaStackFamily(token.value).toLowerCase();
   if (category === "spacing" || category === "radius" || category === "typography") {
     return token.px === undefined ? undefined : stripTrailingZero(token.px);
   }
@@ -161,8 +164,12 @@ function normalizeForCompare(category: string, value: string): string {
 
 // --- Token diffing ---
 
-/** A Tailwind palette color's class name, which a per-mode variable may be made from though no token has it. */
-const TAILWIND_PALETTE_NAME = /^(?:[a-z]+-\d{2,3}|black|white|transparent)$/;
+/**
+ * A Tailwind palette color's class name, which a per-mode variable may be
+ * made from though no token has it, or an arbitrary color's, `[#3f3f3f]`,
+ * as a rule's literal colors are paired (Sonner's description).
+ */
+const TAILWIND_PALETTE_NAME = /^(?:[a-z]+-\d{2,3}|black|white|transparent|\[#[0-9a-f]{6}(?:[0-9a-f]{2})?\])$/;
 
 /** Whether a Figma mode is a dark theme's, by its name: `Dark`, `Dark mode`, `dark`. */
 const isDarkMode = (mode: string) => /dark/i.test(mode);
@@ -359,7 +366,9 @@ export interface DiffSelection {
 }
 
 /**
- * Narrows a component diff to the names given with `--components`.
+ * Narrows a component diff to the names given with `--components`, or with
+ * none, leaves out only the entries whose stories name no component, as on
+ * shadcn's design/* token pages, as `others`.
  *
  * Storybook components are selected exactly as snap and map select them. A
  * name found only in Figma is not a typo, though: it asks whether that
@@ -381,8 +390,11 @@ export function selectDiffComponents(
   names: readonly string[] | undefined,
 ): DiffSelection {
   const selected = selectComponents(entries, names, figmaComponents.flatMap(figmaNames));
-  if (!componentNames(names).length) return { entries: selected, others: [], figmaReported: figmaComponents };
   const chosen = new Set(selected);
+  // An entry whose stories name no component, left out unless named, is
+  // paired all the same: a set an earlier push made for it is not "not in
+  // code".
+  if (!componentNames(names).length) return { entries: selected, others: entries.filter((e) => !chosen.has(e)), figmaReported: figmaComponents };
   return {
     entries: selected,
     others: entries.filter((e) => !chosen.has(e)),

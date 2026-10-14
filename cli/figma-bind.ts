@@ -23,6 +23,19 @@
 // it to a color no token names (`text-neutral-950`, `text-[#0a0a0a]`), or
 // sets it on an element the text inherits from, is no such evidence, and a
 // tree from before `nocls` takes no default.
+//
+// A color a style sheet or an inline style gives by a custom property, not
+// a class, is named by the property: Sonner's toast is `background:
+// var(--normal-bg)`, and shadcn/ui's Toaster sets `--normal-bg:
+// var(--popover)` on it. snap follows that chain and writes each property
+// in it as a class would name it, `var:bg-normal-bg` and `var:bg-popover`,
+// which pick among the tokens as a class does (readEvidence).
+//
+// Where nothing picks one, a value of a project with a dark theme still
+// binds when every token of it holds the same value in the other mode too: coder's #e4e4e7 is
+// `border/DEFAULT`, `input` and `surface/tertiary`, all #27272a in Dark, so
+// any of them is right in both modes. It binds to the base style's, where
+// that is one of them, or else the first, and says so (`alike`).
 
 import { tokenClassName, withoutRepeatedDefault } from "./tokens.js";
 import type { BaseDefault, TokenExtractionResult } from "./tokens.js";
@@ -72,10 +85,12 @@ export interface BindDecision {
   candidates: string[];
   /** True where the classes name two of them and the value is left unbound for it, rather than for none being named. */
   ambiguous?: true;
-  /** Where `ambiguous`: the candidates the classes name, sorted, which tie, as `text-card-foreground` and `text-foreground` do. */
+  /** Where `ambiguous`, or `alike`: the candidates the classes name, sorted, which tie, as `text-card-foreground` and `text-foreground` do. */
   named?: string[];
   /** Where a base style picked the token, not a class: the rule, as `defaults` gives it. */
   from?: string;
+  /** Where nothing picked it, but every candidate holds the same value in each mode: the candidates, any of which is right in both. */
+  alike?: string[];
 }
 
 /**
@@ -106,6 +121,10 @@ export class Binder {
   /** Each color token by the name a class gives it, `card-foreground` for card/foreground, and its light value. */
   private readonly tokenByClass = new Map<string, string>();
   private readonly lightHex = new Map<string, string>();
+  /** Each color token's dark value, its light one where it has none. */
+  private readonly darkHex = new Map<string, string>();
+  /** Whether any color token has a dark value: a project of one theme has no mode to be safe in. */
+  private hasDark = false;
   /** Tailwind's palette, by class name (`slate-900`), as the project's own Tailwind declares it (palette.ts). */
   private readonly palette: ReadonlyMap<string, string>;
   private readonly radii: { name: string; px: number }[] = [];
@@ -121,7 +140,7 @@ export class Binder {
     for (const d of tokens?.defaults ?? []) this.defaults.set(d.property, d);
     for (const collection of tokens?.collections ?? []) {
       for (const token of collection.tokens) {
-        if (collection.category === "colors") this.colorNames.add(tokenClassName(token.name));
+        if (collection.category === "colors") for (const name of classNamesOf(token.name)) this.colorNames.add(name);
         // A v4 theme's `--text-body`, or a config's fontSize `body`: `text-body` is a size.
         if (collection.category === "typography" && (token.name.startsWith("text/") || !token.name.includes("/"))) {
           this.sizeClasses.add(`text-${tokenClassName(token.name.replace(/^text\//, ""))}`);
@@ -151,8 +170,10 @@ export class Binder {
           const darkKey = keyOf(token.dark?.hex ?? token.hex);
           put(this.darkColors, darkKey);
           if (darkKey.length === 7) this.darkOpaque.add(token.name);
-          if (!this.tokenByClass.has(tokenClassName(token.name))) this.tokenByClass.set(tokenClassName(token.name), token.name);
+          for (const name of classNamesOf(token.name)) if (!this.tokenByClass.has(name)) this.tokenByClass.set(name, token.name);
           this.lightHex.set(token.name, token.hex.toLowerCase());
+          this.darkHex.set(token.name, (token.dark?.hex ?? token.hex).toLowerCase());
+          if (token.dark?.hex) this.hasDark = true;
         }
         if (collection.category === "radius" && typeof token.px === "number") this.radii.push({ name: token.name, px: token.px });
       }
@@ -172,7 +193,7 @@ export class Binder {
    * values, so coder's dark `#ffffff` text is `content/primary`, whose dark
    * value it is, not `surface/primary`, whose light value it happens to be.
    */
-  color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[], scheme: Scheme = "light"): BindDecision {
+  private byEvidence(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[], scheme: Scheme = "light"): BindDecision {
     const value = hex.toLowerCase();
     const index = scheme === "dark" ? this.darkColors : this.colors;
     const candidates = [...new Set([...(index.get(value.slice(0, 7)) ?? []), ...(value.length === 9 ? index.get(value) ?? [] : [])])].sort();
@@ -183,11 +204,60 @@ export class Binder {
     // in some state to a color no token names.
     const property = DEFAULT_PROPERTY[role];
     const fallback = property && this.defaults.get(property);
-    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.unnamedColor(role, cls)) {
+    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.unnamedColor(role, cls) && !this.setsOtherColor(role, cls)) {
       return { variable: fallback.token, candidates, from: fallback.from };
     }
     return { variable: null, candidates };
   }
+
+  /**
+   * The decision the evidence gives, or, where it leaves a value of several
+   * tokens unbound, one of them where all hold the same value in each mode,
+   * so that any is right in Light and in Dark: of those the classes name
+   * where they tie, else the base style's for the role's property, else
+   * the first whose name fits the role (`content/disabled` for a text,
+   * not `border/secondary`), else the first. A shadow's color binds only
+   * where named, so never so; in a project of one theme, where no mode
+   * tells them apart, a value stays unbound rather than bound to a guess;
+   * and so does one a class or a rule sets to a color no token holds
+   * (setsOtherColor), which keeps its value in Dark while a token's
+   * changes.
+   */
+  color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[], scheme: Scheme = "light"): BindDecision {
+    const decision = this.byEvidence(hex, role, cls, nocls, scheme);
+    const { candidates } = decision;
+    if (decision.variable || candidates.length < 2 || NAMED_ONLY.has(role) || !this.hasDark || this.setsOtherColor(role, cls)) return decision;
+    const same = (index: Map<string, string>) => candidates.every((t) => index.get(t) !== undefined && index.get(t) === index.get(candidates[0]));
+    if (!same(this.lightHex) || !same(this.darkHex)) return decision;
+    const property = DEFAULT_PROPERTY[role];
+    const fallback = property && this.defaults.get(property)?.token;
+    const fits = FITS[role];
+    const variable = decision.named?.[0] ?? (fallback && candidates.includes(fallback) ? fallback : (fits && candidates.find((t) => fits.test(t))) || candidates[0]);
+    return { variable, candidates, alike: candidates, ...(decision.named?.length ? { named: decision.named } : {}) };
+  }
+
+  /**
+   * Whether the classes or the rules say the role's color is one no token
+   * holds, though its value matches tokens: a class that sets it to a
+   * palette or arbitrary color, in any theme or state (`text-neutral-950`,
+   * `bg-zinc-200 dark:bg-zinc-700`, `bg-[#e4e4e7]`), or a rule's color or
+   * custom property behind it (`var:` evidence) that names none of the
+   * tokens the classes could not name either: a chain that ends in a
+   * literal, as Sonner's `--normal-bg: #fff` would. A class of a color
+   * the project lacks (coder's `border-border-primary`) sets none, so it
+   * doesn't count, as the base style's fallback's unnamedColor would.
+   */
+  private setsOtherColor(role: PaintRole, cls: readonly string[] | undefined): boolean {
+    return (cls ?? []).map(readEvidence).some(({ utility, fromVar }) => {
+      const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
+      if (!prefix) return false;
+      if (fromVar) return true;
+      if (prefix === "ring" || (role !== "fill" && !utilitySetsColor(utility))) return false;
+      const rest = utility.slice(prefix.length + 1).toLowerCase();
+      return [rest, rest.replace(SIDE, "")].some((name) => !this.tokenByClass.has(name) && (this.palette.has(name) || ARBITRARY_COLOR.test(name)));
+    });
+  }
+
 
   /**
    * A class among `cls` that sets the role's color to one no token names:
@@ -196,7 +266,7 @@ export class Binder {
    * A project's font size (`text-body`) sets none.
    */
   private unnamedColor(role: PaintRole, cls: readonly string[] | undefined): string | undefined {
-    return (cls ?? []).map((c) => readEvidence(c).utility).find((c) => {
+    return (cls ?? []).map((c) => readEvidence(c)).filter((e) => !e.fromVar).map((e) => e.utility).find((c) => {
       const property = utilitySetsColor(c);
       if (!property || !SETS[role]?.includes(property) || this.sizeClasses.has(c)) return false;
       const name = c.slice(c.indexOf("-") + 1);
@@ -214,14 +284,14 @@ export class Binder {
     return (scheme === "dark" ? this.darkOpaque : this.opaqueColors).has(name);
   }
 
-  /** Whether `name` is a color token's, rather than a palette color's. */
+  /** Whether `name` is a color token's, rather than a palette or arbitrary color's. */
   isToken(name: string): boolean {
     return this.lightHex.has(name);
   }
 
   /** A color token's light value, `#rrggbb(aa)`, or a palette color's, by its name; undefined for neither. */
   hexOf(name: string): string | undefined {
-    return this.lightHex.get(name) ?? this.palette.get(name);
+    return this.lightHex.get(name) ?? this.palette.get(name) ?? literalHex(name);
   }
 
   /**
@@ -262,17 +332,22 @@ export class Binder {
       if (!prefix) continue;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
       for (const name of [rest, rest.replace(SIDE, "")]) {
-        if (!this.tokenByClass.has(name) && this.palette.get(name)?.slice(0, 7) === rgb.toLowerCase().slice(0, 7)) names.add(name);
+        if (!this.tokenByClass.has(name) && (this.palette.get(name) ?? literalHex(name))?.slice(0, 7) === rgb.toLowerCase().slice(0, 7)) names.add(name);
       }
     }
     return names.size === 1 ? [...names][0] : undefined;
   }
 
-  /** A token (by its name) or a palette color (with its value) a class names, after its prefix; tokens first, as Tailwind's theme puts them over its palette. */
+  /**
+   * A token (by its name) or a palette color (with its value) a class
+   * names, after its prefix; tokens first, as Tailwind's theme puts them
+   * over its palette. An arbitrary color, `[#e8e8e8]`, is its own value:
+   * a class's, or a rule's that snap writes so (`var:dark:text-[#e8e8e8]`).
+   */
   private colorNamed(name: string): Omit<DarkPaint, "alpha"> | undefined {
     const token = this.tokenByClass.get(name);
     if (token) return { name: token };
-    const hex = this.palette.get(name);
+    const hex = this.palette.get(name) ?? literalHex(name);
     return hex ? { name, hex } : undefined;
   }
 
@@ -292,7 +367,7 @@ export class Binder {
       if (!prefix) continue;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
       if (state && (this.colorNamed(rest) ?? this.colorNamed(rest.replace(SIDE, "")))) return undefined;
-      if (tokenClassName(token) === rest || tokenClassName(token) === rest.replace(SIDE, "")) found.add(alpha ?? 1);
+      if (classNamesOf(token).some((name) => name === rest || name === rest.replace(SIDE, ""))) found.add(alpha ?? 1);
     }
     return found.size === 1 ? [...found][0] : undefined;
   }
@@ -324,6 +399,39 @@ export class Binder {
 const FULL_RADIUS = /^rounded(?:-(?:[trblse]|tl|tr|br|bl|ss|se|es|ee))?-full$/;
 
 /**
+ * The names a class gives a color token, lowercase: `card-foreground` for
+ * card/foreground, and for border/DEFAULT both `border` and
+ * `border-default`, as a config whose key is `default` names it
+ * (`border-border-default` on coder's).
+ */
+/** An arbitrary color as a class names it, `[#e8e8e8]`: its value, `#rrggbb(aa)`. */
+export function literalHex(name: string): string | undefined {
+  const m = /^\[(#[0-9a-f]{6}(?:[0-9a-f]{2})?)\]$/i.exec(name);
+  return m ? m[1].toLowerCase() : undefined;
+}
+
+/** A class's arbitrary color, `[#e4e4e7]`, `[rgb(…)]` or `[color:…]`, after its prefix. */
+const ARBITRARY_COLOR = /^\[(?:#|(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(|color:)/;
+
+/**
+ * The names that fit a role, for a value its tokens all hold in every
+ * mode and no class picks among (Binder.color): a text's
+ * `content/disabled` or `foreground`, a border's `border/secondary`.
+ */
+const FITS: Partial<Record<PaintRole, RegExp>> = {
+  text: /(?:^|[/-])(?:content|foreground|text|fg)(?:[/-]|$)/i,
+  vector: /(?:^|[/-])(?:content|foreground|text|fg|icon)(?:[/-]|$)/i,
+  stroke: /(?:^|[/-])(?:border|stroke|outline|ring|input|divider)(?:[/-]|$)/i,
+  fill: /(?:^|[/-])(?:background|surface|bg|fill|card|popover)(?:[/-]|$)/i,
+};
+
+function classNamesOf(token: string): string[] {
+  const short = tokenClassName(token);
+  const whole = token.toLowerCase().replace(/\//g, "-");
+  return short === whole ? [short] : [short, whole];
+}
+
+/**
  * The one candidate the classes name, or the only candidate where the value
  * alone may bind (`byValue`); `named` lists those the classes named, so a
  * value two classes name isn't then handed to a default. Where they name several, the one a `dark:` class
@@ -343,7 +451,7 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
     if (!prefix) continue;
     const rest = c.slice(prefix.length + 1).toLowerCase();
     for (const name of [rest, rest.replace(SIDE, "")]) {
-      const token = candidates.find((t) => tokenClassName(t) === name);
+      const token = candidates.find((t) => classNamesOf(t).includes(name));
       if (token) named.add(token);
       if (token && isDark) dark.add(token);
     }
@@ -363,7 +471,10 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
  * classEvidence), `dark:group-hover:bg-accent`, has it as `state`: the
  * dark theme may paint its property so, or not.
  */
-export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number; state?: string } {
+export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number; state?: string; fromVar?: true } {
+  // A custom property in the chain behind the color, as a class names it,
+  // or a rule's color, the dark theme's where `dark:` (snap-browser.ts).
+  if (entry.startsWith("var:")) return { ...readEvidence(entry.slice(4)), fromVar: true };
   const dark = entry.startsWith("dark:");
   const rest = dark ? entry.slice(5) : entry;
   const m = /^(.+?)\/(?:(\d+(?:\.\d+)?)|\[(\d*\.?\d+)(%?)\])$/.exec(rest);

@@ -176,6 +176,14 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
     ["transform matrix(0, 1, -1, 0, 0, 0)", "its own box, unturned, as Figma's auto layout would place it by its turned box"],
     ["overflow clipped on x only", "clipping both axes"],
   ]);
+  // Avatar's ring: darken in Light, lighten in Dark, which no variable can switch.
+  const c3 = ctx();
+  assert.equal(nodeStyle(frame({ k: "::after", bm: "darken", cls: ["border-border", "dark:mix-blend-lighten", "mix-blend-darken"] }), c3).b, "DARKEN");
+  assert.deepEqual(c3.notBuilt, [{ key: "::after", what: "blend mode lighten in Dark", as: "darken in both modes, as no variable sets a blend mode" }]);
+  assert.deepEqual(ctx().notBuilt, []);
+  const c4 = ctx();
+  nodeStyle(frame({ bm: "darken", cls: ["dark:mix-blend-darken"] }), c4);
+  assert.deepEqual(c4.notBuilt, []);
 });
 
 test("nodeStyle: a translucent paint of an opaque token binds to the token's alpha variable, naming the token too, and the plan lists each", () => {
@@ -417,6 +425,22 @@ test("nodeStyle: a rounded-full circle binds no step of the radius scale that eq
   assert.equal(nodeStyle(item(["rounded-t-full", "rounded-b-full"]), ctx(withFull)).rv, "full");
   // A box larger than twice its radius is no pill: its value binds as before.
   assert.equal(nodeStyle({ ...item([]), box: [0, 0, 40, 40] }, ctx(shadcn)).rv, "md");
+});
+
+test("nodeStyle: a color its tokens hold alike in every mode, set by a palette class or a rule's literal, pairs its own colors rather than binding a token", () => {
+  // coder's #e4e4e7 is border/DEFAULT and input, #27272a in Dark: bg-zinc-200 must stay zinc-200.
+  const tokens = { collections: [{ category: "colors" as const, tokens: ([
+    ["border/DEFAULT", "#e4e4e7", "#27272a"], ["input", "#e4e4e7", "#27272a"], ["popover", "#ffffff", "#171717"], ["card", "#ffffff", "#171717"],
+  ] as const).map(([name, hex, dark]) => ({ name, value: hex, hex, dark: { value: dark, hex: dark } })) }] };
+  const binder = new Binder(tokens, new Map([["zinc-200", "#e4e4e7"], ["zinc-700", "#3f3f46"]]));
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(binder), alphas, darkAlpha: true, byDefault: [] };
+  assert.deepEqual(nodeStyle(frame({ k: "a", bg: "#e4e4e7", cls: ["bg-zinc-200", "dark:bg-zinc-700"] }), c).f, [["#e4e4e7", 1, "zinc-200 dark zinc-700"]]);
+  assert.deepEqual(nodeStyle(frame({ k: "b", bg: "#e4e4e7", cls: ["bg-zinc-200"] }), c).f, ["#e4e4e7"]);
+  assert.deepEqual(c.byDefault ?? [], []);
+  // Sonner's description: `color: #3f3f3f`, and hsl(0 0% 91%) under its dark theme, which snap writes as rule evidence.
+  assert.deepEqual(nodeStyle(frame({ k: "d", bg: "#3f3f3f", cls: ["var:bg-[#3f3f3f]", "var:dark:bg-[#e8e8e8]"] }), c).f, [["#3f3f3f", 1, "[#3f3f3f] dark [#e8e8e8]"]]);
+  assert.deepEqual(alphas.get("[#3f3f3f] dark [#e8e8e8]"), { variable: "[#3f3f3f] dark [#e8e8e8]", token: "[#3f3f3f]", alpha: 1, darkToken: "[#e8e8e8]", dark: 1, palette: { "[#3f3f3f]": "#3f3f3f", "[#e8e8e8]": "#e8e8e8" } });
 });
 
 test("nodeStyle: where a dark: class paints another color, the paint binds to a per-mode variable of the two, a palette color's with its value", () => {

@@ -165,7 +165,7 @@ test("diffTokens: a per-mode variable figma code made, of two code tokens or Tai
   const diffs = diffTokens(code, [
     color("background", "#ffffff"), color("input", "#e5e5e5"),
     color("background dark input 30%", "#ffffff"), color("input 0% dark 30%", "#e5e5e500"), color("slate-50 dark slate-900", "#f8fafc"), color("background dark slate-900", "#ffffff"),
-    color("gone dark input 30%", "#ffffff"), color("brand dark accent", "#ffffff"),
+    color("gone dark input 30%", "#ffffff"), color("brand dark accent", "#ffffff"), color("[#3f3f3f] dark [#e8e8e8]", "#3f3f3f"),
   ]);
   assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["gone dark input 30%", "missing_from_code"], ["brand dark accent", "missing_from_code"]]);
 });
@@ -175,6 +175,16 @@ test("diffTokens: a per-mode variable whose Dark color is a slashed token, writt
   const color = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Colors", resolvedType: "COLOR", mode: "Light" });
   const diffs = diffTokens(code, [color("foreground", "#0a0a0a"), color("muted/foreground", "#737373"), color("foreground 60% dark muted-foreground", "#0a0a0a99"), color("foreground dark muted-background", "#0a0a0a")]);
   assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["foreground dark muted-background", "missing_from_code"]]);
+});
+
+test("diffTokens: a font family token matches the variable that holds the family Figma sets its stack's text in, as figma tokens pushes it", () => {
+  const code: TokenCollection[] = [{ category: "typography", tokens: [
+    { name: "font/sans", value: "ui-sans-serif, system-ui, sans-serif" }, { name: "font/heading", value: '"Geist Variable", sans-serif' },
+  ] }];
+  const font = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Typography", resolvedType: "STRING", mode: "Default" });
+  assert.deepEqual(diffTokens(code, [font("font/sans", "Inter"), font("font/heading", "Geist")]).map((e) => [e.name, e.status]), [["font/sans", "match"], ["font/heading", "match"]]);
+  // An earlier push's, holding the stack as written, differs until pushed again.
+  assert.deepEqual(diffTokens(code, [font("font/sans", "ui-sans-serif, system-ui, sans-serif"), font("font/heading", "Inter")]).map((e) => [e.name, e.status]), [["font/sans", "value_mismatch"], ["font/heading", "value_mismatch"]]);
 });
 
 test("diffTokens: matching color in different formats", () => {
@@ -735,6 +745,23 @@ test("selectDiffComponents: no names leaves both sides whole", () => {
   assert.equal(entries, STORYBOOK);
   assert.deepEqual(others, []);
   assert.equal(figmaReported, FIGMA);
+});
+
+test("selectDiffComponents: an entry whose stories name no component is paired, not compared, so a set an earlier push made for it isn't reported", () => {
+  const entries: ComponentEntry[] = [
+    { id: "ui-button", name: "Button", title: "ui/Button", category: "ui" },
+    { id: "design-colors", name: "Colors", title: "design/Colors", category: "design", docsOnly: true },
+  ];
+  const button: FigmaComponentInfo = { name: "Button", page: "ui", type: "COMPONENT_SET", storybookId: "ui-button", variantProperties: [], variantCount: 1 };
+  // One pushed with its Storybook ID, or a 0.3.0 push's, with none.
+  for (const colors of [{ storybookId: "design-colors" }, {}]) {
+    const figma: FigmaComponentInfo[] = [button, { name: "Colors", page: "design", type: "COMPONENT_SET", variantProperties: [], variantCount: 1, ...colors }];
+    for (const names of [undefined, ["Button"]]) {
+      const { entries: chosen, others } = selectDiffComponents(entries, figma, names);
+      assert.deepEqual([chosen.map((e) => e.id), others.map((e) => e.id)], [["ui-button"], ["design-colors"]], String(names));
+      assert.deepEqual(diffSelection(names ?? [], entries, figma).map((d) => [d.name, d.status]), [["Button", "match"]], `${String(names)} ${JSON.stringify(colors)}`);
+    }
+  }
 });
 
 /** A set with no variant properties, as diffSelection's code components have none. */

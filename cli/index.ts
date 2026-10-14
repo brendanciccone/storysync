@@ -17,7 +17,7 @@ import { runSnap, snapFailsStrict, snapMessages } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity, describeSnapChange } from "./verify.js";
-import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, planSnapChanged, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
+import { DEFAULT_READ_LIMIT, describeBinding, describeEstimate, estimatePush, planSnapChanged, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
 import { DEFAULT_MAX_VARIABLES, runFigmaTokens } from "./figma-tokens.js";
@@ -1072,11 +1072,9 @@ figma
         console.log(`  ${String(call.seq).padStart(2, "0")} ${call.kind.padEnd(Math.max(6, ...plan.calls.map((c) => c.kind.length)))} ${call.description} ${chalk.dim(`(${size})`)}`);
       }
       // What no class showed, and the project's base styles did: a text that
-      // inherits body's color, a border that takes `*`'s.
-      for (const b of bindings) {
-        const layers = b.keys.map((k) => (k === "" ? "its root" : k)).join(", ");
-        console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, by the base style ${b.from} (${layers})`));
-      }
+      // inherits body's color, a border that takes `*`'s; or what tokens
+      // alike in every mode left free to pick.
+      for (const b of bindings) console.log(chalk.dim(`  = ${describeBinding(b)}`));
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
       // A translucent paint binds to its token's alpha variable, which keeps
       // its opacity at a mode switch: the plan's first calls make them.
@@ -1589,13 +1587,15 @@ program
           let others: ComponentEntry[] = [];
           let figmaReported = figmaComponents;
           try {
-            // Entries whose stories name no component aren't diffed.
-            entries = selectComponents(await storybook.listComponents(), undefined);
+            entries = await storybook.listComponents();
           } catch (err) {
             storybookReadFailed = true;
             mapSpinner?.fail("Failed to list Storybook components");
             console.error(chalk.red(String(err)));
           }
+          // Entries whose stories name no component aren't diffed, but are
+          // paired as `others`, so a set pushed for one isn't "not in code".
+          if (!opts.components && !storybookReadFailed) ({ entries, others, figmaReported } = selectDiffComponents(entries, figmaComponents, undefined));
           if (opts.components) {
             const names = (opts.components as string).split(",");
             if (storybookReadFailed) {

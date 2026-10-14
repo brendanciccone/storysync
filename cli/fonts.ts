@@ -175,6 +175,25 @@ export function stackFamilies(stack: string): string[] {
 }
 
 /**
+ * The family Figma sets a CSS font-family stack's text in, as the build sets
+ * a text's (cli/figma-map.ts, textOf): the stack's first family by Figma's
+ * name for it, `Geist` for `"Geist Variable", sans-serif`, or the stand-in
+ * for a CSS keyword or a platform face Figma lacks, Inter for Tailwind's
+ * `ui-sans-serif, system-ui, sans-serif`. A FONT_FAMILY variable holds this:
+ * Figma's font picker has no family named after a whole stack.
+ */
+export function figmaStackFamily(stack: string): string {
+  const [first] = stackFamilies(stack);
+  if (!first) return stack.trim();
+  return needsStandIn(first) ? standInFor(first) : figmaFamily(first);
+}
+
+/** Whether a typography token names a font family, `font/sans`, as no `font/size/*` or `font/weight/*` one does. */
+export function isFontFamilyToken(name: string): boolean {
+  return /^font\//.test(name) && !/^font\/(?:size|weight)\//.test(name);
+}
+
+/**
  * The font-family snap draws an element's text with before measuring it,
  * where Figma would set it in a stand-in: the stand-in ahead of the stack as
  * written, so a glyph it lacks still falls back as before. That is a stack

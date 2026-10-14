@@ -28,7 +28,8 @@
 // earlier push made, kept up to date with its token. One whose token is
 // gone is stale. One whose dark theme paints another color holds that
 // color's Dark value instead, `background dark input 30%`; either color
-// may be a palette one no token names, `slate-50 dark slate-900`. `ref`
+// may be a palette one no token names, `slate-50 dark slate-900`, or an
+// arbitrary one, `[#3f3f3f] dark [#e8e8e8]`. `ref`
 // gives the values of the colors they are made from that `vars` doesn't
 // hold, which the call reads and never writes. One the user confirmed
 // removing in `remove`, as nothing binds it, is removed though its token
@@ -60,8 +61,11 @@ if (modes.length === 1 && first.name !== FIRST) {
   collection.renameMode(first.modeId, FIRST);
 }
 const light = first.modeId;
-// Dark: the collection's own, or added where the tokens have one. A Dark
-// mode the tokens no longer fill takes each light value, as the browser does.
+// Dark: the collection's own, or added where the tokens have one. Written
+// only where the tokens carry it: a Dark mode they don't fill keeps every
+// value it has, a designer's own included, and a variable made new takes
+// its light value there, as the browser keeps a variable no theme sets.
+const WRITE_DARK = DATA.modes.length > 1;
 const darkMode = modeNamed('Dark');
 let dark = darkMode && darkMode.modeId !== light ? darkMode.modeId : null;
 if (!dark && DATA.modes.length > 1) {
@@ -110,8 +114,9 @@ const alphaOf = (name) => {
   const dark = i < p.length ? k(p[i++]) : 100;
   return color !== 'dark' && color !== p[0] && dark !== null && i === p.length && light <= 100 && dark <= 100 ? [p[0], byte(light), byte(dark), color] : null;
 };
-// A palette color's name, as Tailwind's classes give it: no token's.
-const PALETTE = /^(?:[a-z]+-\d{2,3}|black|white|transparent)$/;
+// A palette color's name, as Tailwind's classes give it, or an arbitrary
+// color's, `[#3f3f3f]`: no token's.
+const PALETTE = /^(?:[a-z]+-\d{2,3}|black|white|transparent|\[#[0-9a-f]{6}(?:[0-9a-f]{2})?\])$/;
 
 const stale = [];
 const conflicts = [];
@@ -208,7 +213,7 @@ for (const [name, type, scopes, lightValue, darkValue] of DATA.vars.concat(alpha
     changed = true;
   }
   const values = [[light, lightValue]];
-  if (dark) values.push([dark, darkValue === undefined ? lightValue : darkValue]);
+  if (dark && (WRITE_DARK || !had)) values.push([dark, darkValue === undefined ? lightValue : darkValue]);
   const was = v.valuesByMode || {};
   for (const [mode, value] of values) {
     if (had && same(type, was[mode], value)) continue;

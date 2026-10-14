@@ -27,7 +27,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { callCode, fnv1a32Bytes } from "./checksum.js";
-import { alphaVariableName, colorOfClass, parseAlphaVariable } from "./figma-bind.js";
+import { alphaVariableName, colorOfClass, literalHex, parseAlphaVariable } from "./figma-bind.js";
 import { assertCompiles, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
 import type { FigmaCodeOptions } from "./figma-code.js";
 import { lengthToPx, tokenColorToHex, withoutRepeatedDefault } from "./tokens.js";
@@ -36,6 +36,7 @@ import type { PlanAlpha } from "./tree-types.js";
 import { tailwindPalette } from "./palette.js";
 import type { Palette } from "./palette.js";
 import { VERSION } from "./version.js";
+import { figmaStackFamily, isFontFamilyToken } from "./fonts.js";
 
 /** Each category's collection, by the name the skill gives it and diff reads back. */
 export const COLLECTION_NAMES: Record<TokenCategory, string> = {
@@ -47,7 +48,7 @@ export const DEFAULT_MAX_VARIABLES = 40;
 
 export type VariableType = "COLOR" | "FLOAT" | "STRING";
 
-/** A token as the variable it becomes: a color as `#rrggbb(aa)`, a FLOAT in px or as its number, a STRING as written. */
+/** A token as the variable it becomes: a color as `#rrggbb(aa)`, a FLOAT in px or as its number, a font family as the family Figma sets its text in. */
 export interface PlannedVariable {
   name: string;
   type: VariableType;
@@ -77,7 +78,7 @@ function typographyKind(name: string): { type: VariableType; scopes: string[]; n
   if (/^font\/weight\//.test(name)) return { type: "FLOAT", scopes: ["FONT_WEIGHT"], number: true };
   if (/^(?:leading|line\/height|lh)\//.test(name)) return { type: "FLOAT", scopes: ["LINE_HEIGHT"], number: true };
   if (/^tracking\//.test(name)) return { type: "FLOAT", scopes: ["LETTER_SPACING"] };
-  if (/^font\//.test(name) && !/^font\/size\//.test(name)) return { type: "STRING", scopes: ["FONT_FAMILY"] };
+  if (isFontFamilyToken(name)) return { type: "STRING", scopes: ["FONT_FAMILY"] };
   // text/*, font/size/*, fs/*, and a Tailwind config's fontSize, which has no namespace.
   return { type: "FLOAT", scopes: ["FONT_SIZE"] };
 }
@@ -89,7 +90,9 @@ function valueOf(category: TokenCategory, token: { value: string; hex?: string; 
     return hex && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/.test(hex) ? hex : { why: `${token.value} is no color storysync can convert to sRGB` };
   }
   if (kind.type === "STRING") {
-    return /\bvar\(/.test(token.value) ? { why: `${token.value} holds a var() storysync couldn't resolve` } : token.value;
+    // The family Figma sets the stack's text in, as no Figma font is named
+    // after a whole stack.
+    return /\bvar\(/.test(token.value) ? { why: `${token.value} holds a var() storysync couldn't resolve` } : figmaStackFamily(token.value);
   }
   // An older tokens output has no px: the value in px or rem is worked out here.
   const px = token.px ?? lengthToPx(token.value);
@@ -371,11 +374,11 @@ function alphasToMake(planPath: string | undefined, names: string[], collections
     const parsed = read?.darkToken ? { ...read, darkToken: colorOfClass(read.darkToken, tokenColors) } : read;
     const colors = parsed ? [parsed.token, parsed.darkToken].filter((c): c is string => c !== undefined) : [];
     const collection = parsed && collectionOf(collections, colors);
-    const unknown = colors.filter((c) => !isColorToken(collections, c) && !(projectPalette ??= paletteOf()).has(c));
+    const unknown = colors.filter((c) => !isColorToken(collections, c) && !(projectPalette ??= paletteOf()).has(c) && !literalHex(c));
     if (!parsed || !collection || unknown.length) {
       throw new Error(`--alpha ${name}: name an alpha variable as a color token, a space and its alpha in percent, \`destructive 30%\`, or with the dark theme's after it, \`destructive 10% dark 20%\`, or with the color the dark theme paints, \`background dark input 30%\`, of color tokens these tokens have or Tailwind's palette`);
     }
-    for (const c of colors) if (!isColorToken(collections, c)) palette.set(c, projectPalette!.get(c)!);
+    for (const c of colors) if (!isColorToken(collections, c)) palette.set(c, projectPalette!.get(c) ?? literalHex(c)!);
     put(alphaVariableName(parsed.token, parsed.alpha, parsed.dark, parsed.darkToken), { token: parsed.token, ...(parsed.darkToken ? { darkToken: parsed.darkToken } : {}) }, collection);
   }
   let fromPlan: number | null = null;

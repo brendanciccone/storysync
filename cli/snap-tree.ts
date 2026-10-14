@@ -28,6 +28,7 @@ import { serializeSvg, svgAssetId } from "./snap-assets.js";
 import type { RawSvgNode } from "./snap-assets.js";
 import { ROOT_FIELDS, TREE_LIMITS, utilitySetsColor } from "./tree-types.js";
 import { canonicalJson } from "./checksum.js";
+import { colorToHex } from "./color.js";
 import type { Box, NoClassPaint, Shadow, Sides, TextFacts, TreeLayout, TreeNode, TreeSelf } from "./tree-types.js";
 
 // --- What the page reads ------------------------------------------------------
@@ -97,6 +98,13 @@ export interface RawTreeElement {
    * classEvidence's.
    */
   states?: Record<string, boolean>;
+  /**
+   * The custom properties behind a color a style sheet or an inline style
+   * gives it by var(), as a class would name each (`bg-normal-bg`,
+   * `bg-popover`); a `text-*` one is the color it inherits from the nearest
+   * element below the body that sets one by a rule, where no class does.
+   */
+  vars?: string[];
   /** The first `lucide-*` class of an `<svg>`. */
   lucide?: string;
   box: RawBox;
@@ -288,8 +296,12 @@ const DRAWING_TAGS = new Set(["svg", "img", "canvas", "video"]);
 /** Native controls the browser draws itself, unless `appearance: none` hands them to CSS. */
 const NATIVE_INPUTS = new Set(["checkbox", "radio", "range", "color", "file"]);
 
-/** Classes that may say which token a node's paint is: section 6.3's class evidence. */
-const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow)-([a-z][\w/-]*)$/;
+/**
+ * Classes that may say which token a node's paint is: section 6.3's class
+ * evidence; and its blend mode, whose `dark:` one (Avatar's ring's
+ * `dark:after:mix-blend-lighten`) figma code names, as no variable sets one.
+ */
+const EVIDENCE = /^(bg|text|border|ring|fill|stroke|outline|rounded|shadow|mix)-([a-z][\w/-]*)$/;
 
 /**
  * Class tokens naming what paints a node, for binding its paint to a
@@ -1047,6 +1059,23 @@ interface Ctx {
  * as a palette one does, though neither names a token; a font size the page
  * found sets no color (`text-body`) is no longer in `cls` to stop the walk.
  */
+/**
+ * An element's custom-property and rule evidence as `cls` writes it,
+ * `var:bg-popover` (figma-bind.ts, readEvidence), those of a prefix alone
+ * where given, the dark theme's (`dark:`) too. A rule's literal color,
+ * `text-[hsl(0,_0%,_91%)]`, is written by its hex, `text-[#e8e8e8]`, and
+ * left out where it is no color this reads.
+ */
+function varEvidence(vars: readonly string[] | undefined, prefix = ""): string[] {
+  return (vars ?? []).flatMap((v) => {
+    const m = /^(dark:)?([a-z]+-)\[(.*)\]$/.exec(v);
+    if (!(m ? m[2] : v.replace(/^dark:/, "")).startsWith(prefix)) return [];
+    if (!m) return [`var:${v}`];
+    const hex = colorToHex(m[3].replace(/_/g, " "));
+    return hex ? [`var:${m[1] ?? ""}${m[2]}[${hex}]`] : [];
+  });
+}
+
 function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; set: boolean } {
   type Classed = { cls?: string[]; states?: Record<string, boolean> } | undefined;
   const colors = (el: Classed) => utilitiesOf(el?.cls ?? [], el?.states).filter((u) => u.name.startsWith("text-") && utilitySetsColor(u.name) === "color");
@@ -1057,9 +1086,13 @@ function inheritedTextEvidence(item: Item, outer: string[][]): { cls: string[]; 
       const all = colors(el);
       const found = all.filter((u) => u.prefixed === prefixed);
       if (!found.length) continue;
-      // With the color it sets always, the one it sets in the dark theme
+      // With the color it sets always, the ones it sets in a state, which
+      // may be the state measured (a disabled button's
+      // `disabled:text-content-disabled`, a highlighted option's
+      // `data-[highlighted]:text-content-primary`), as an element's own
+      // classes count, and the one it sets in the dark theme
       // (`dark:text-muted-foreground`), which a variable's Dark mode must be.
-      const named = [...found, ...(prefixed ? [] : all.filter((u) => u.dark))].filter((u) => EVIDENCE.test(u.name));
+      const named = (prefixed ? found : all).filter((u) => EVIDENCE.test(u.name));
       // A state's arbitrary color, which may be the one measured, names
       // nothing either: no base style stands in for it.
       return { cls: evidenceNames(named), set: !prefixed || found.some((u) => !EVIDENCE.test(u.name)) };
@@ -1098,7 +1131,8 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     }
     if (holder("visibility") !== "visible") node.vis = 0;
     const inherited = inheritedTextEvidence(item, ctx.outer);
-    if (inherited.cls.length) node.cls = inherited.cls;
+    const vars = varEvidence((item.el ?? item.parent?.el)?.vars, "text-");
+    if (inherited.cls.length || vars.length) node.cls = [...inherited.cls, ...vars];
     if (!inherited.set) node.nocls = ["color"];
     return node;
   }
@@ -1237,6 +1271,7 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
       if (!inherited.set && !set.maybe.has("color") && !(kind === "V" && (set.maybe.has("fill") || set.maybe.has("stroke")))) nocls.push("color");
     }
     if (hasBorder(css) && !set.maybe.has("border-color")) nocls.push("border-color");
+    cls = [...cls, ...varEvidence(el.vars)];
     if (cls.length) node.cls = cls;
     if (nocls.length) node.nocls = nocls;
   }

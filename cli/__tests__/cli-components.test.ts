@@ -606,7 +606,8 @@ const TOKEN_PAGES: Catalog = {
 };
 
 test("list CLI: an entry whose stories name no component is listed as skipped, and map and diff leave it out unless named", async () => {
-  const standIn = await startStandIn(ADDON_MCP_10_6, [], { pages: [{ name: "ui/base", nodes: [set("Button", { size: ["sm", "lg"] })] }] }, TOKEN_PAGES);
+  // design/base holds a set an earlier push made for the token page, named and by its Storybook ID.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], { pages: [{ name: "ui/base", nodes: [set("Button", { size: ["sm", "lg"] })] }, { name: "design/base", nodes: [set("Color", { size: ["sm"] }, { storybookId: "design-base-color" })] }] }, TOKEN_PAGES);
   standIns.push(standIn);
   const r = await run("list", "--storybook", standIn.url);
   assert.equal(r.status, 0, r.out);
@@ -626,7 +627,8 @@ test("list CLI: an entry whose stories name no component is listed as skipped, a
   assert.equal(named.status, 0, named.out);
   assert.deepEqual((JSON.parse(named.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["design-base-color"]);
 
-  // diff compares the Button alone: the token page isn't missing from Figma.
+  // diff compares the Button alone: the token page isn't missing from Figma,
+  // nor its set, which an earlier push made, missing from code.
   const diffed = await diffAgainst(standIn, "--no-snap", "--no-cache", "--strict");
   assert.equal(diffed.status, 0, diffed.out);
   assert.match(diffed.out, /Components in sync/);

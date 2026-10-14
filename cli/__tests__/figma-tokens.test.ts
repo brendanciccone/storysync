@@ -110,6 +110,8 @@ test("figma tokens: a collection a category, each token typed and scoped as the 
           { name: "font/weight/bold", value: "700" }, { name: "leading/tight", value: "1.25" },
           { name: "tracking/wide", value: "0.025em" }, { name: "tracking/px", value: "1px", px: 1 },
           { name: "font/sans", value: "ui-sans-serif, system-ui, sans-serif" }, { name: "font/mono", value: "var(--font-geist-mono)" },
+          // Each family as Figma names the one it sets the stack's text in.
+          { name: "font/heading", value: '"Geist Variable", sans-serif' }, { name: "font/code", value: "ui-monospace, SFMono-Regular, Menlo, monospace" },
         ],
       },
       { category: "shadows", tokens: [{ name: "sm", value: "0 1px 2px 0 rgb(0 0 0 / 0.05)" }] },
@@ -133,7 +135,8 @@ test("figma tokens: a collection a category, each token typed and scoped as the 
       variables: [
         ["text/sm", "FLOAT", "FONT_SIZE", 14, undefined], ["base", "FLOAT", "FONT_SIZE", 16, undefined],
         ["font/weight/bold", "FLOAT", "FONT_WEIGHT", 700, undefined], ["leading/tight", "FLOAT", "LINE_HEIGHT", 1.25, undefined],
-        ["tracking/px", "FLOAT", "LETTER_SPACING", 1, undefined], ["font/sans", "STRING", "FONT_FAMILY", "ui-sans-serif, system-ui, sans-serif", undefined],
+        ["tracking/px", "FLOAT", "LETTER_SPACING", 1, undefined], ["font/sans", "STRING", "FONT_FAMILY", "Inter", undefined],
+        ["font/heading", "STRING", "FONT_FAMILY", "Geist", undefined], ["font/code", "STRING", "FONT_FAMILY", "Roboto Mono", undefined],
       ],
     },
   });
@@ -238,10 +241,27 @@ test("figma tokens: a dark theme the tokens gain renames the lone Default mode L
   await pushTokens(mock, TOKENS);
   assert.equal(mock.variableWrites.length, writes);
 
-  // The dark theme gone again: the Dark mode stays, each value its light one, as the browser has it.
+  // The dark theme gone again: the Dark mode stays, and keeps its values; the tokens carry none to write.
   const [dropped] = await pushTokens(mock, lightOnly);
-  assert.deepEqual([dropped.modes, dropped.renamedModes, dropped.updated], [["Light", "Dark"], [], ["background", "border"]]);
-  assert.deepEqual(mock.collections()[0].variables[0].values, { Light: "#ffffff", Dark: "#ffffff" });
+  assert.deepEqual([dropped.modes, dropped.renamedModes, dropped.updated], [["Light", "Dark"], [], []]);
+  assert.deepEqual(mock.collections()[0].variables[0].values, { Light: "#ffffff", Dark: "#0a0a0a" });
+});
+
+test("figma tokens: tokens of no dark value never write a designer's hand-made Dark mode, and a variable made new takes its light value there", async () => {
+  const mock = new MockFigma();
+  // A designer's own Dark mode, painted by hand.
+  mock.addVariable("background", "COLOR", { Light: "#ffffff", Dark: "#0a0a0a" }, "Colors");
+  mock.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#27272a" }, "Colors");
+  const lightOnly = copy(TOKENS);
+  for (const t of lightOnly.collections[0].tokens) delete t.dark;
+  const writes = mock.variableWrites.length;
+  const [colors] = await pushTokens(mock, lightOnly);
+  assert.deepEqual([colors.modes, colors.renamedModes, colors.addedModes, colors.created], [["Light", "Dark"], [], [], ["chart/1"]]);
+  const values = Object.fromEntries(mock.collections()[0].variables.map((v) => [v.name, v.values]));
+  assert.deepEqual(values.background, { Light: "#ffffff", Dark: "#0a0a0a" });
+  assert.deepEqual(values.border, { Light: "#e5e5e5", Dark: "#27272a" });
+  assert.deepEqual(values["chart/1"], { Light: "#8ec5ff", Dark: "#8ec5ff" });
+  assert.equal(mock.variableWrites.slice(writes).some((w) => /^value (?:background|border) Dark$/.test(w)), false, mock.variableWrites.slice(writes).join("; "));
 });
 
 test("figma tokens: a plan of one mode keeps Light alone and says why, on every push", async () => {
@@ -540,6 +560,16 @@ test("figma tokens: a per-mode variable holds the light class's color in Light a
   const again = await push(mock, planned);
   assert.deepEqual(changes(again[0]), NOTHING);
   // A tokens push with no plan keeps them, of its tokens and the palette, and lists none stale.
+  const plain = await pushTokens(mock, TOKENS);
+  assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
+});
+
+test("figma tokens: a pair of a rule's literal colors, Sonner's description, holds each in its mode, and a push with no plan keeps it", async () => {
+  const mock = new MockFigma();
+  const pair: PlanAlpha = { variable: "[#3f3f3f] dark [#e8e8e8]", token: "[#3f3f3f]", alpha: 1, darkToken: "[#e8e8e8]", dark: 1, palette: { "[#3f3f3f]": "#3f3f3f", "[#e8e8e8]": "#e8e8e8" } };
+  const [colors] = await pushTokens(mock, TOKENS, {}, [pair]);
+  assert.deepEqual([colors.alpha, colors.stale], [["[#3f3f3f] dark [#e8e8e8]"], []]);
+  assert.deepEqual(mock.collections()[0].variables.find((v) => v.name === pair.variable)!.values, { Light: "#3f3f3f", Dark: "#e8e8e8" });
   const plain = await pushTokens(mock, TOKENS);
   assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
 });

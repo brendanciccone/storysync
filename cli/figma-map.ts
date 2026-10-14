@@ -12,7 +12,7 @@
 // stroke built OUTSIDE it, and its children sit relative to that box.
 
 import { alphaByte, alphaVariableName } from "./figma-bind.js";
-import type { Binder, PaintRole, Scheme } from "./figma-bind.js";
+import type { BindDecision, Binder, PaintRole, Scheme } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { figmaFamily, standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
@@ -145,13 +145,27 @@ export interface Unbound {
   why?: string;
 }
 
-/** A paint bound by the project's base styles, not a class: the rule is why (figma-bind.ts). */
+/**
+ * A paint bound by the project's base styles, not a class: the rule is why
+ * (figma-bind.ts); or bound where nothing named one, as every token of its
+ * value holds the same value in each mode: those are `alike`.
+ */
 export interface BoundByDefault {
   key: string;
   property: string;
   value: string;
   variable: string;
   from: string;
+  alike?: string[];
+  /** Where `alike`: those the classes named, which tie, the first bound. */
+  named?: string[];
+}
+
+/** A binding no class showed, as `byDefault` records it: by a base style's rule, or by tokens alike in every mode. */
+function byDefault(key: string, property: string, value: string, decision: BindDecision): BoundByDefault | null {
+  if (!decision.variable) return null;
+  if (decision.alike) return { key, property, value, variable: decision.variable, from: "", alike: decision.alike, ...(decision.named ? { named: decision.named } : {}) };
+  return decision.from ? { key, property, value, variable: decision.variable, from: decision.from } : null;
 }
 
 export interface MapContext {
@@ -216,7 +230,8 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
   if (!decision.variable && decision.candidates.length > 1) {
     ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates, ...(decision.named ? { named: decision.named } : {}) });
   }
-  if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
+  const found = byDefault(key, property, hex.toLowerCase(), decision);
+  if (found) ctx.byDefault?.push(found);
   if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx, role, cls)];
   return alpha === 1 ? rgb : [rgb, alpha];
 }
@@ -648,6 +663,11 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     if (BLENDS[node.bm]) style.b = BLENDS[node.bm];
     else ctx.notBuilt.push({ key: node.k, what: `blend mode ${node.bm}` });
   }
+  // The dark theme's own blend, Avatar's ring's `dark:after:mix-blend-lighten`
+  // over `after:mix-blend-darken`: no variable sets a blend mode (README,
+  // What Figma can't do), so the measured one is built in both modes.
+  const darkBlend = (ctx.scheme ?? "light") === "light" ? (node.cls ?? []).map((c) => /^dark:mix-blend-([a-z-]+)$/.exec(c)?.[1]).find(Boolean) : undefined;
+  if (darkBlend && darkBlend !== (node.bm ?? "normal")) ctx.notBuilt.push({ key: node.k, what: `blend mode ${darkBlend} in Dark`, as: `${node.bm ?? "normal"} in both modes, as no variable sets a blend mode` });
   if (node.cp) ctx.notBuilt.push({ key: node.k, what: `clip-path ${node.cp}` });
   if (node.ol) ctx.notBuilt.push({ key: node.k, what: `outline ${node.ol[0]}px ${node.ol[1]} ${node.ol[2] ?? "transparent"}` });
   // A turn the build can make is built (builtTurn), as Figma's rotation,
@@ -685,7 +705,8 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     const binds: Record<string, string> = {};
     for (const [hex, alphas] of markupPaints(markup)) {
       const decision = ctx.binder.color(hex, "vector", node.cls, node.nocls, ctx.scheme);
-      if (decision.variable && decision.from) ctx.byDefault?.push({ key: node.k, property: "vector", value: hex, variable: decision.variable, from: decision.from });
+      const found = byDefault(node.k, "vector", hex, decision);
+      if (found) ctx.byDefault?.push(found);
       if (decision.variable) {
         binds[hex] = decision.variable;
         // A translucent shape's paint binds to the alpha variable, by its

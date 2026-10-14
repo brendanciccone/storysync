@@ -354,3 +354,79 @@ test("alphaVariableName: a per-mode variable writes its Dark color by its class 
   assert.equal(colorOfClass("input", colors), "input");
   assert.equal(colorOfClass("slate-900", colors), "slate-900");
 });
+
+// coder/coder's light and dark values (site/.storysync/tokens.json), several shared.
+const CODER_SHARED = {
+  collections: [{ category: "colors" as const, tokens: ([
+    ["content/primary", "#09090b", "#ffffff"], ["ring", "#09090b", "#d4d4d8"],
+    ["content/disabled", "#a1a1aa", "#3f3f46"], ["border/secondary", "#a1a1aa", "#3f3f46"],
+    ["border/DEFAULT", "#e4e4e7", "#27272a"], ["input", "#e4e4e7", "#27272a"], ["surface/tertiary", "#e4e4e7", "#27272a"],
+    ["surface/secondary", "#f4f4f5", "#18181b"],
+  ] as const).map(([name, hex, dark]) => ({ name, value: hex, hex, dark: { value: dark, hex: dark } })) }],
+  defaults: [{ property: "border-color" as const, token: "border/DEFAULT", from: "app.css: * { border-color: var(--border) }" }],
+};
+
+test("Binder: a value its tokens all hold in Light and in Dark binds to one of them, the base style's where it is one, and says they are alike", () => {
+  const binder = new Binder(CODER_SHARED);
+  // An outline Button's #e4e4e7 border, named by a class of another state: any of the three is right in both modes.
+  assert.deepEqual(binder.color("#e4e4e7", "stroke", ["border-surface-secondary"]), { variable: "border/DEFAULT", candidates: ["border/DEFAULT", "input", "surface/tertiary"], alike: ["border/DEFAULT", "input", "surface/tertiary"] });
+  // No base style among them: the one whose name fits the role, a text's content/disabled, not border/secondary.
+  assert.deepEqual(binder.color("#a1a1aa", "text", undefined), { variable: "content/disabled", candidates: ["border/secondary", "content/disabled"], alike: ["border/secondary", "content/disabled"] });
+  assert.equal(binder.color("#a1a1aa", "stroke", undefined).variable, "border/secondary");
+  // Two classes that tie: the first of those they name, and which they are.
+  assert.deepEqual(binder.color("#e4e4e7", "stroke", ["border-input", "border-surface-tertiary"]), { variable: "input", candidates: ["border/DEFAULT", "input", "surface/tertiary"], alike: ["border/DEFAULT", "input", "surface/tertiary"], named: ["input", "surface/tertiary"] });
+  // Measured dark, by the dark values, alike in Light too: a fill's surface/tertiary.
+  assert.equal(binder.color("#27272a", "fill", undefined, undefined, "dark").variable, "surface/tertiary");
+  // Tokens that differ in Dark stay unbound without evidence: a highlighted option's #09090b.
+  assert.deepEqual(binder.color("#09090b", "text", ["text-content-secondary"]), { variable: null, candidates: ["content/primary", "ring"] });
+  // A shadow's color still binds only where named.
+  assert.equal(binder.color("#e4e4e7", "effect", undefined).variable, null);
+});
+
+test("Binder: a class names a DEFAULT token by its key too, border-border-default, in any case", () => {
+  const binder = new Binder(CODER_SHARED);
+  assert.equal(binder.color("#e4e4e7", "stroke", ["border-border-default"]).variable, "border/DEFAULT");
+  assert.deepEqual(binder.color("#e4e4e7", "stroke", ["border-border"]).alike, undefined);
+  assert.equal(binder.color("#e4e4e7", "stroke", ["border-border"]).variable, "border/DEFAULT");
+  // A state's class is evidence for the state measured: a disabled button's text.
+  assert.equal(binder.color("#a1a1aa", "text", ["text-content-disabled", "text-content-invert"]).variable, "content/disabled");
+});
+
+test("Binder: a custom property behind the color names its token as a class does, and is no color the tokens lack", () => {
+  // shadcn/ui's Sonner: `background: var(--normal-bg)`, the Toaster's `--normal-bg: var(--popover)`.
+  const binder = new Binder({ ...WITH_DEFAULTS, collections: [{ category: "colors" as const, tokens: [
+    ["background", "#ffffff", "#0a0a0a"], ["card", "#ffffff", "#171717"], ["popover", "#ffffff", "#171717"],
+    ["foreground", "#0a0a0a", "#fafafa"], ["popover/foreground", "#0a0a0a", "#fafafa"], ["primary", "#171717", "#e5e5e5"],
+  ].map(([name, hex, dark]) => ({ name, value: hex, hex, dark: { value: dark, hex: dark } })) }] });
+  assert.equal(binder.color("#ffffff", "fill", ["var:bg-normal-bg", "var:bg-popover"]).variable, "popover");
+  assert.equal(binder.color("#ffffff", "fill", undefined).variable, null);
+  // Sonner's action button: `background: var(--normal-text)`, `color: var(--normal-bg)`.
+  assert.equal(binder.color("#0a0a0a", "fill", ["var:bg-normal-text", "var:bg-popover-foreground"]).variable, "popover/foreground");
+  // A rule's custom property that names no token of the value ends in a
+  // color of its own, not body's: the base style doesn't stand in for it.
+  assert.equal(binder.color("#0a0a0a", "text", ["var:text-normal-text"], ["color"]).variable, null);
+  assert.equal(binder.color("#0a0a0a", "text", undefined, ["color"]).variable, "foreground");
+  assert.deepEqual(readEvidence("var:bg-popover"), { dark: false, utility: "bg-popover", fromVar: true });
+  assert.deepEqual(readEvidence("var:dark:text-[#e8e8e8]"), { dark: true, utility: "text-[#e8e8e8]", fromVar: true });
+});
+
+test("Binder: a value its tokens hold alike in every mode stays unbound where a palette, arbitrary or rule's color sets it", () => {
+  // shadcn/ui's #0a0a0a is foreground, card/foreground and popover/foreground, all #fafafa in Dark;
+  // `text-neutral-950` stays #0a0a0a there, so binding any of them would turn it light.
+  const shadcn = new Binder({ collections: [{ category: "colors" as const, tokens: ([
+    ["foreground", "#0a0a0a", "#fafafa"], ["card/foreground", "#0a0a0a", "#fafafa"], ["popover/foreground", "#0a0a0a", "#fafafa"],
+    ["border/DEFAULT", "#e4e4e7", "#27272a"], ["input", "#e4e4e7", "#27272a"],
+  ] as const).map(([name, hex, dark]) => ({ name, value: hex, hex, dark: { value: dark, hex: dark } })) }] }, new Map([["neutral-950", "#0a0a0a"], ["zinc-200", "#e4e4e7"], ["zinc-700", "#3f3f46"]]));
+  assert.equal(shadcn.color("#0a0a0a", "text", undefined).variable, "card/foreground");
+  for (const cls of [["text-neutral-950"], ["text-[#0a0a0a]"], ["dark:text-neutral-950"], ["var:text-normal-text"]]) {
+    assert.deepEqual(shadcn.color("#0a0a0a", "text", cls), { variable: null, candidates: ["card/foreground", "foreground", "popover/foreground"] }, cls.join(" "));
+  }
+  // A fill's palette or arbitrary class, with or without a dark: one.
+  for (const cls of [["bg-zinc-200"], ["bg-zinc-200", "dark:bg-zinc-700"], ["bg-[#e4e4e7]"], ["var:bg-normal-bg"]]) {
+    assert.equal(shadcn.color("#e4e4e7", "fill", cls).variable, null, cls.join(" "));
+  }
+  assert.equal(shadcn.color("#e4e4e7", "fill", ["bg-size-[10px]"]).variable, "border/DEFAULT");
+  // A class of a color the project lacks generates no rule, so it sets none: coder's root `border-border-primary`.
+  assert.equal(shadcn.color("#e4e4e7", "stroke", ["border-border-primary"]).variable, "border/DEFAULT");
+  assert.equal(shadcn.color("#e4e4e7", "stroke", ["border-t-zinc-200"]).variable, null);
+});

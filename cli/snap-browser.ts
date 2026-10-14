@@ -2326,6 +2326,339 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     return Object.keys(out).length ? out : undefined;
   };
 
+  // The custom properties behind a color a style sheet or an inline style
+  // gives by var(), not a class (figma-bind.ts reads them as `var:`
+  // evidence): Sonner's toast is `background: var(--normal-bg)`, and
+  // shadcn/ui's Toaster sets `--normal-bg: var(--popover)` on it inline, so
+  // the toast's fill is `bg-normal-bg` and `bg-popover`, each named as a
+  // class names a token, `--color-popover` as `popover`. Only the
+  // declaration that wins counts, as the cascade picks it: an inline style
+  // over a rule, then `!important`, the cascade layer, specificity and
+  // order, among the rules whose @media and @supports apply now (a nested
+  // rule's `&` is its parent's selector; a container query's are left
+  // out, as no call answers one here). A custom property is followed to
+  // the nearest element up that declares it, and there to the declaration
+  // that wins. A utility class's winning rule is class evidence already,
+  // and the base styles' (`*`, `body`) are `defaults`'s, so neither
+  // records anything; a text's color is that of the nearest element below
+  // the body that a rule or class sets one on.
+  //
+  // A rule's color that is no var() is written as an arbitrary class
+  // writes it, `text-[#3f3f3f]` (snap-tree.ts turns the value into its
+  // hex), and the color the page's dark theme gives the element instead,
+  // where it does, after `dark:`: Sonner's description is `#3f3f3f`, and
+  // `hsl(0, 0%, 91%)` by `[data-sonner-theme='dark'] [data-description]`,
+  // which Figma then holds as a pair of the two. The dark theme's rules are
+  // those under a `.dark` class or a `[data-…theme…="dark"]` attribute,
+  // matched with it taken off, and those under `prefers-color-scheme:
+  // dark`; a `.light` or `[data-…theme…="light"]` rule is the light
+  // theme's alone.
+  type Declared = {
+    sel: string;
+    style: CSSStyleDeclaration;
+    layer: number;
+    layered: boolean;
+    spec: number;
+    order: number;
+    utility: boolean;
+    base: boolean;
+    /** The dark theme's alone: a copy of a rule its marker is taken off, or one under its media query. */
+    dark?: true;
+    /** The light theme's alone. */
+    light?: true;
+  };
+  type VarRule = CSSRule & { selectorText?: string; style?: CSSStyleDeclaration; cssRules?: CSSRuleList; media?: MediaList; conditionText?: string; containerName?: string; name?: string; nameList?: ArrayLike<string>; keyText?: string; findRule?: unknown };
+  const VAR_PAINTS: [string, string[]][] = [
+    ["bg", ["background-color", "background"]],
+    ["border", ["border-color", "border", ...["top", "right", "bottom", "left"].flatMap((side) => [`border-${side}-color`, `border-${side}`])]],
+    ["fill", ["fill"]],
+    ["stroke", ["stroke"]],
+  ];
+  const TRACKED = new Set(VAR_PAINTS.flatMap(([, list]) => list).concat("color"));
+  const DARK_MARK = /\.dark(?![\w\\-])|\[[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?dark["']?\s*(?:[is]\s*)?\]/gi;
+  const LIGHT_MARK = /\.light(?![\w\\-])|\[[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?light["']?\s*(?:[is]\s*)?\]|:not\([^)]*\.dark(?![\w\\-])/i;
+  const DARK_SCHEME = /prefers-color-scheme\s*:\s*dark/gi;
+  const splitSelectors = (list: string): string[] => {
+    const out: string[] = [];
+    let depth = 0;
+    let from = 0;
+    for (let i = 0; i < list.length; i++) {
+      const ch = list[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (ch === "," && depth === 0) {
+        out.push(list.slice(from, i).trim());
+        from = i + 1;
+      }
+    }
+    out.push(list.slice(from).trim());
+    return out.filter(Boolean);
+  };
+  const identEnd = (s: string, i: number): number => {
+    while (i < s.length) {
+      if (s[i] === "\\") i += 2;
+      else if (/[\w-]/.test(s[i]) || s.charCodeAt(i) > 127) i++;
+      else break;
+    }
+    return i;
+  };
+  const closing = (s: string, i: number): number => {
+    const open = s[i];
+    const shut = open === "(" ? ")" : "]";
+    let depth = 0;
+    for (let j = i; j < s.length; j++) {
+      if (s[j] === "\\") j++;
+      else if (s[j] === open) depth++;
+      else if (s[j] === shut && --depth === 0) return j;
+    }
+    return s.length;
+  };
+  // A selector's specificity as one number, ids by 1e6, classes by 1e3.
+  const specificity = (sel: string): number => {
+    let n = 0;
+    for (let i = 0; i < sel.length; ) {
+      const ch = sel[i];
+      if (ch === "#" || ch === ".") {
+        n += ch === "#" ? 1e6 : 1e3;
+        i = identEnd(sel, i + 1);
+      } else if (ch === "[") {
+        n += 1e3;
+        i = closing(sel, i) + 1;
+      } else if (ch === ":") {
+        const element = sel[i + 1] === ":";
+        const from = i + (element ? 2 : 1);
+        const to = identEnd(sel, from);
+        const name = sel.slice(from, to).toLowerCase();
+        const end = sel[to] === "(" ? closing(sel, to) : -1;
+        const args = end >= 0 ? sel.slice(to + 1, end) : "";
+        if (element || /^(?:before|after|first-line|first-letter)$/.test(name)) n += 1;
+        else if (/^(?:is|not|has|matches|any|-webkit-any)$/.test(name)) n += Math.max(0, ...splitSelectors(args).map(specificity));
+        else if (name !== "where") n += 1e3 + (/^nth-(?:last-)?child$/.test(name) && /\sof\s/i.test(args) ? Math.max(0, ...splitSelectors(args.slice(args.search(/\sof\s/i) + 4)).map(specificity)) : 0);
+        i = end >= 0 ? end + 1 : to;
+      } else if (/[A-Za-z_]/.test(ch) || sel.charCodeAt(i) > 127) {
+        n += 1;
+        i = identEnd(sel, i);
+      } else i++;
+    }
+    return n;
+  };
+  // The class a selector's last compound needs, to look it up by, or null.
+  const keyClass = (sel: string): string | null => {
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < sel.length; i++) {
+      const ch = sel[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (depth === 0 && /[\s>+~]/.test(ch)) start = i + 1;
+    }
+    const last = sel.slice(start);
+    depth = 0;
+    for (let i = 0; i < last.length; i++) {
+      const ch = last[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (depth === 0 && ch === ".") {
+        const m = /^\.((?:\\.|[\w-])+)/.exec(last.slice(i));
+        return m && !/\\[0-9a-fA-F]/.test(m[1]) ? m[1].replace(/\\(.)/g, "$1") : null;
+      }
+    }
+    return null;
+  };
+  // A nested rule's selector with its parent's for `&`, or before it where it has none.
+  const nested = (sel: string, parent: string | null): string =>
+    !parent ? sel : /(?:^|[^\\])&/.test(sel) ? sel.replace(/(\\.)|&/g, (m, escaped: string | undefined) => escaped ?? `:is(${parent})`) : `:is(${parent}) ${sel}`;
+  const utilityClass = /(?:^|[:!])-?(?:bg|text|border|fill|stroke|outline|ring|divide|from|via|to|placeholder|caret|accent|decoration|shadow)-/;
+  const baseSelector = /^(?:\*|html|body|:root|:host|::?(?:before|after|backdrop|placeholder|file-selector-button|marker|selection))$/;
+  const mediaOn = (query: string): boolean => {
+    try {
+      return typeof matchMedia !== "function" || matchMedia(query).matches;
+    } catch {
+      return false;
+    }
+  };
+  const supportsOn = (condition: string): boolean => {
+    try {
+      return typeof CSS === "undefined" || typeof CSS.supports !== "function" || CSS.supports(condition);
+    } catch {
+      return false;
+    }
+  };
+  let varIndex: { general: Declared[]; byClass: Map<string, Declared[]> } | null = null;
+  const indexVars = () => {
+    if (varIndex) return varIndex;
+    const general: Declared[] = [];
+    const byClass = new Map<string, Declared[]>();
+    const layers: string[] = [];
+    const layerOf = (name: string): number => {
+      if (!layers.includes(name)) layers.push(name);
+      return layers.indexOf(name);
+    };
+    const put = (d: Declared) => {
+      const key = keyClass(d.sel);
+      if (key) byClass.set(key, [...(byClass.get(key) ?? []), d]);
+      else general.push(d);
+    };
+    let order = 0;
+    const record = (selectors: string[], style: CSSStyleDeclaration, layer: string | null, theme: "any" | "dark" | "light") => {
+      let tracks = false;
+      for (let i = 0; i < style.length && !tracks; i++) tracks = (style[i].startsWith("--") && !style[i].startsWith("--tw-")) || TRACKED.has(style[i]);
+      if (!tracks) return;
+      order++;
+      const at = layer === null ? 0 : layerOf(layer);
+      for (const sel of selectors) {
+        const first = /^\.((?:\\.|[\w-])+)/.exec(sel);
+        const d: Declared = {
+          sel, style, layer: at, layered: layer !== null, spec: specificity(sel), order,
+          utility: !!first && utilityClass.test(first[1].replace(/\\(.)/g, "$1")), base: baseSelector.test(sel),
+          ...(theme === "dark" ? { dark: true as const } : {}), ...(theme === "light" || LIGHT_MARK.test(sel) ? { light: true as const } : {}),
+        };
+        put(d);
+        if (theme !== "dark" && sel.search(DARK_MARK) >= 0) put({ ...d, sel: sel.replace(DARK_MARK, ":is(*)"), dark: true });
+      }
+    };
+    const visit = (rules: CSSRuleList, layer: string | null, parent: string | null, theme: "any" | "dark" | "light") => {
+      for (const rule of Array.from(rules)) {
+        const r = rule as VarRule;
+        if (r.selectorText !== undefined) {
+          const selectors = splitSelectors(r.selectorText).map((sel) => nested(sel, parent));
+          if (r.style && typeof r.style.getPropertyValue === "function") record(selectors, r.style, layer, theme);
+          if (r.cssRules?.length) visit(r.cssRules, layer, selectors.join(", "), theme);
+        } else if (r.style && parent && r.keyText === undefined) {
+          // Declarations after a nested rule: its parent's.
+          record(splitSelectors(parent), r.style, layer, theme);
+        } else if (r.nameList) {
+          for (const name of Array.from(r.nameList)) layerOf(layer ? `${layer}.${name}` : name);
+        } else if (!r.cssRules || r.findRule !== undefined || r.containerName !== undefined) {
+          // A keyframe, @import or @property; a container query.
+        } else if (r.media) {
+          const query = r.media.mediaText;
+          if (mediaOn(query)) visit(r.cssRules, layer, parent, theme === "any" && /prefers-color-scheme\s*:\s*light/i.test(query) ? "light" : theme);
+          else if (theme !== "light" && query.search(DARK_SCHEME) >= 0 && mediaOn(query.replace(DARK_SCHEME, "prefers-color-scheme: light"))) visit(r.cssRules, layer, parent, "dark");
+        } else if (typeof r.conditionText === "string") {
+          if (supportsOn(r.conditionText)) visit(r.cssRules, layer, parent, theme);
+        } else if (typeof r.name === "string") {
+          const name = layer ? `${layer}.${r.name || `#${order}`}` : r.name || `#${order}`;
+          layerOf(name);
+          visit(r.cssRules, name, parent, theme);
+        }
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets ?? [])) {
+      try {
+        visit(sheet.cssRules, null, null, "any");
+      } catch {
+        // Another origin's sheet: unread.
+      }
+    }
+    return (varIndex = { general, byClass });
+  };
+  const matchesSel = (at: Element, sel: string): boolean => {
+    try {
+      return at.matches(sel);
+    } catch {
+      return false;
+    }
+  };
+  const inlineOf = (at: Element, name: string): string => {
+    const style = (at as HTMLElement).style;
+    return style && typeof style.getPropertyValue === "function" ? style.getPropertyValue(name).trim() : "";
+  };
+  const important = (style: CSSStyleDeclaration | undefined, name: string): boolean =>
+    !!style && typeof style.getPropertyPriority === "function" && style.getPropertyPriority(name) === "important";
+  const matchedRules = new Map<Element, Declared[]>();
+  const matchedOf = (at: Element): Declared[] => {
+    const had = matchedRules.get(at);
+    if (had) return had;
+    const { general, byClass } = indexVars();
+    const classes = (at.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+    const found = [...general, ...classes.flatMap((c) => byClass.get(c) ?? [])].filter((d) => matchesSel(at, d.sel));
+    matchedRules.set(at, found);
+    return found;
+  };
+  // The declaration of any of `names` that wins on `at`, in the light theme or the dark; null where none sets them. `decl` is null for an inline style.
+  type Won = { value: string; decl: Declared | null };
+  const winner = (at: Element, names: string[], dark: boolean): Won | null => {
+    let best: Won | null = null;
+    let weight: number[] = [];
+    const consider = (value: string, decl: Declared | null, isImportant: boolean) => {
+      const imp = isImportant ? 1 : 0;
+      // Inline before any rule; a layer later wins, an unlayered rule over all, and the reverse for !important.
+      const w = decl === null ? [imp, 1, 0, 0, 0]
+        : [imp, 0, isImportant ? (decl.layered ? 1e6 - decl.layer : 0) : (decl.layered ? decl.layer : 1e6), decl.spec, decl.order];
+      const first = w.findIndex((n, i) => n !== weight[i]);
+      if (best && (first < 0 || w[first] < weight[first])) return;
+      best = { value, decl };
+      weight = w;
+    };
+    const inline = (at as HTMLElement).style;
+    for (const name of names) {
+      const value = inlineOf(at, name);
+      if (value) consider(value, null, important(inline, name));
+    }
+    for (const d of matchedOf(at)) {
+      if (dark ? d.light : d.dark) continue;
+      for (const name of names) {
+        const value = d.style.getPropertyValue(name).trim();
+        if (value) consider(value, d, important(d.style, name));
+      }
+    }
+    return best;
+  };
+  // Every custom property a value's var()s name, and those the winning declarations set them to, in turn.
+  const chainOf = (start: Element, value: string, seen: Set<string>, dark: boolean): void => {
+    for (const m of value.matchAll(/var\(\s*(--[\w-]+)/g)) {
+      const name = m[1];
+      if (seen.has(name) || seen.size >= 16) continue;
+      seen.add(name);
+      for (let at: Element | null = start; at; at = at.parentElement) {
+        const won = winner(at, [name], dark);
+        if (!won) continue;
+        chainOf(at, won.value, seen, dark);
+        break;
+      }
+    }
+  };
+  // A rule's literal color as an arbitrary class writes it, `[hsl(0,_0%,_91%)]`, or null for a var() or a keyword.
+  const literal = (value: string): string | null =>
+    !value || value.includes("var(") || /^(?:inherit|initial|unset|revert(?:-layer)?|currentcolor|none|transparent)$/i.test(value) ? null : `[${value.replace(/\s+/g, "_")}]`;
+  const varsOf = (el: Element, classes: string[]): string[] => {
+    const out = new Set<string>();
+    const chain = (prefix: string, value: string, at: Element, dark: boolean) => {
+      const seen = new Set<string>();
+      chainOf(at, value, seen, dark);
+      for (const name of seen) out.add(`${dark ? "dark:" : ""}${prefix}-${name.slice(2).replace(/^color-/, "").toLowerCase()}`);
+    };
+    const byClassOrBase = (won: Won) => !!won.decl && (won.decl.utility || won.decl.base);
+    // What a rule or inline style sets `names` to on `at`, as evidence;
+    // false where none sets them, or one hands down the parent's
+    // (Sonner's title, `color: inherit`).
+    const settle = (prefix: string, names: string[], at: Element): boolean => {
+      const light = winner(at, names, false);
+      if (!light || /^(?:inherit|unset)$/i.test(light.value)) return false;
+      if (byClassOrBase(light)) return true;
+      const lit = literal(light.value);
+      if (lit) out.add(`${prefix}-${lit}`);
+      else chain(prefix, light.value, at, false);
+      const dark = winner(at, names, true);
+      if (!dark || dark.decl === light.decl || byClassOrBase(dark)) return true;
+      const darkLit = literal(dark.value);
+      if (darkLit) out.add(`dark:${prefix}-${darkLit}`);
+      else chain(prefix, dark.value, at, true);
+      return true;
+    };
+    for (const [prefix, names] of VAR_PAINTS) settle(prefix, names, el);
+    for (let at: Element | null = el; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
+      const own = at === el ? classes : (at.getAttribute("class") ?? "").split(/\s+/);
+      if (own.some((t) => /^!?text-/.test(t) && unprefixed(t) && setsTextColor(t))) break;
+      if (settle("text", ["color"], at)) break;
+    }
+    return [...out].sort();
+  };
+
   // Radii only layout can resolve, calc() of a percentage, sized on a probe
   // the element's size, as readComputedStyles sizes the root's.
   const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
@@ -2707,6 +3040,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     if (cls.length) node.cls = cls;
     const states = statesOf(el, cls);
     if (states) node.states = states;
+    const vars = varsOf(el, classes);
+    if (vars.length) node.vars = vars;
     // Its own size, where something turns or scales it: snap-tree.ts
     // centers that where it drew. A `rotate` or `scale` set on its own,
     // as Tailwind 4 sets them, doesn't show in `transform`.
