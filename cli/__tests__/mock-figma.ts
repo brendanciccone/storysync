@@ -2228,6 +2228,14 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
     },
     // A section, which, as probe 10 saw, grows for no child moved past it.
     createSection: () => create("SECTION", "Section").handle,
+    // A group of the nodes, in `parent`, which covers them as they move or grow (layoutTree).
+    group: (nodes: unknown[], parent: unknown) => {
+      const group = new Node(doc, "GROUP", "Group");
+      call.created++;
+      attach(unwrap(parent, "parent"), group);
+      for (const n of nodes) attach(group, unwrap(n));
+      return group.handle;
+    },
     createFrame: () => create("FRAME", "Frame").handle,
     createComponent: () => create("COMPONENT", "Component 1").handle,
     createText: () => create("TEXT", "").handle,

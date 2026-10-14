@@ -791,14 +791,17 @@ const settle = (built) => {
   for (const [n] of built) for (let p = n.parent; p.parent; p = p.parent) up.add(p);
   const depth = (n) => (n.parent ? depth(n.parent) + 1 : 0);
   for (const parent of [...up].sort((a, b) => depth(b) - depth(a))) {
-    // Figma lays out an auto layout's children: none is moved there.
-    if ('layoutMode' in parent && parent.layoutMode !== 'NONE') continue;
+    // Figma lays out an auto layout's children, and fits a group to its
+    // own: none is moved there, but a box that holds a set this call built
+    // is settled among its own siblings as a grown section is, in the
+    // result of the first.
+    const box = 'layoutMode' in parent ? parent.layoutMode !== 'NONE' : parent.type === 'GROUP';
     const ours = (m) => /^COMPONENT/.test(m.type) && idOf(m);
     const all = parent.children;
     const sets = all.filter(ours);
     const done = new Map();
     // The sets that grew first, so of two at one height they are taken first.
-    const due = new Map(built.filter(([n]) => n.parent === parent).sort((a, b) => b[2] - a[2]));
+    const due = new Map(box ? [] : built.filter(([n]) => n.parent === parent).sort((a, b) => b[2] - a[2]));
     while (due.size) {
       const [n, out] = [...due].reduce((a, b) => (b[0].y < a[0].y ? b : a));
       due.delete(n);
@@ -824,9 +827,9 @@ const settle = (built) => {
     // clips what runs past it: one a set built or moved here now runs
     // past grows to hold it, 100 to spare, and is settled among its own
     // siblings as a set that grew is, in the result of the first set that
-    // ran past it.
-    let by;
-    if (parent.type === 'SECTION' || parent.type === 'FRAME') {
+    // ran past it. A page has no width, and grows for nothing.
+    let by = box && (built.find(([n]) => n.parent === parent) || [])[1];
+    if ('width' in parent) {
       for (const [n, o] of done) {
         const [r, b, w, h] = [n.x + n.width, n.y + n.height, parent.width, parent.height];
         if (r > w || b > h) {

@@ -537,6 +537,132 @@ test("build: settle over random layouts moves each set at most once, never up, o
   }
 });
 
+test("build: a hugging auto layout frame or a group a set grew in is settled among its siblings, never moving, its section grown to hold what moved, what it may not move counted", async () => {
+  // Button grows inside box F, which Figma enlarges with it, onto a push's
+  // set Q and a designer's frame T beside it in section S.
+  for (const box of ["auto layout", "group"]) {
+    const full = loadTreeFixture("example-button");
+    const mock = mockFor([full]);
+    const [first] = await push(mock, await codeFor(withoutProp(full, "disabled", "false")));
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    const ids = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      const s = figma.createSection(); page.appendChild(s); s.x = ${b.x}; s.y = ${b.y}; s.resizeWithoutConstraints(${b.width + 600}, ${b.height + 60});
+      for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+      let f;
+      if (${JSON.stringify(box)} === "group") {
+        s.appendChild(set); set.x = 20; set.y = 20;
+        const r = figma.createRectangle(); s.appendChild(r); r.resize(10, 10); r.x = 20; r.y = ${b.height + 25};
+        f = figma.group([set, r], s);
+      } else {
+        f = figma.createFrame(); s.appendChild(f); f.x = 20; f.y = 20;
+        Object.assign(f, { layoutMode: "VERTICAL", primaryAxisSizingMode: "AUTO", counterAxisSizingMode: "AUTO", itemSpacing: 0 });
+        f.appendChild(set);
+      }
+      const q = figma.createComponent(); s.appendChild(q); q.resize(60, 30); q.x = ${b.width + 40}; q.y = 20;
+      q.setSharedPluginData("storysync", "id", "stand-in-q");
+      const t = figma.createFrame(); s.appendChild(t); t.resize(60, 40); t.x = ${b.width + 40}; t.y = 70;
+      return { s: s.id, f: f.id, q: q.id, t: t.id };`)).value as Record<string, string>;
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+    const [then] = await push(mock, await codeFor(full));
+    const [built] = sets(then);
+    const [s, f, q, t] = [at(ids.s), at(ids.f), at(ids.q), at(ids.t)];
+    assert.ok(f.width > b.width + 20, `${box}: grew onto Q and T`);
+    assert.deepEqual([f.x, f.y, t.x, t.y], [20, 20, b.width + 40, 70], `${box}: F and T stay`);
+    assert.equal(q.y, f.y + f.height + 100, `${box}: Q below F`);
+    assert.equal(s.height, q.y + q.height + 100, `${box}: S grown to hold Q`);
+    assert.deepEqual([built.moved, built.overlaps], [[ids.q], 1], `${box}: T counted`);
+  }
+});
+
+test("build: settle over random nestings of sections, frames, auto layout frames and groups moves no box's child Figma places, grows each section or frame to hold what moved, and counts what a grown box lies on", async () => {
+  let seed = 11;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const nestings = [["section", "auto"], ["section", "group"], ["frame", "auto"], ["frame", "group"], ["auto", "frame"], ["group", "frame"]] as const;
+  for (let round = 0; round < 24; round++) {
+    const [outer, inner] = nestings[round % nestings.length];
+    const full = loadTreeFixture("example-button");
+    const mock = mockFor([full]);
+    const [first] = await push(mock, await codeFor(withoutProp(full, "disabled", "false")));
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    // Layers beside the inner box in the outer one, or on the page: a push's sets and a designer's frames.
+    const layers = Array.from({ length: 6 }, (_, i) => ({
+      ours: rand(2) === 0, inOuter: outer !== "auto" && outer !== "group" && rand(2) === 0,
+      x: b.width + rand(5) * 40 - 60, y: rand(6) * 40 - 20, w: 40 + rand(3) * 40, h: 20 + rand(3) * 20, i,
+    }));
+    const made = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+      const box = (kind, parent, kids) => {
+        if (kind === "group") { for (const k of kids) { parent.appendChild(k); k.x = 20; k.y = 20; } return figma.group(kids, parent); }
+        const n = kind === "section" ? figma.createSection() : figma.createFrame();
+        parent.appendChild(n); n.x = 20; n.y = 20;
+        if (kind === "auto") Object.assign(n, { layoutMode: "VERTICAL", primaryAxisSizingMode: "AUTO", counterAxisSizingMode: "AUTO", itemSpacing: 0 });
+        else n.resizeWithoutConstraints(${b.width + 60}, ${b.height + 60});
+        for (const k of kids) { n.appendChild(k); if (kind !== "auto") { k.x = 20; k.y = 20; } }
+        return n;
+      };
+      // The outer box first, on the page where Button was, then the inner in it.
+      const o = ${JSON.stringify(outer)} === "group" ? null : box(${JSON.stringify(outer)}, page, []);
+      if (o && ${JSON.stringify(outer)} !== "auto") o.resizeWithoutConstraints(${b.width + 400}, ${b.height + 80});
+      const i = box(${JSON.stringify(inner)}, o || page, [set]);
+      const outerBox = o || box("group", page, [i]);
+      outerBox.x = ${b.x}; outerBox.y = ${b.y};
+      const ids = [];
+      for (const l of ${JSON.stringify(layers)}) {
+        const n = l.ours ? figma.createComponent() : figma.createFrame();
+        (l.inOuter ? outerBox : page).appendChild(n);
+        n.resizeWithoutConstraints(l.w, l.h); n.x = (l.inOuter ? 0 : ${b.x}) + l.x; n.y = (l.inOuter ? 0 : ${b.y}) + l.y;
+        if (l.ours) n.setSharedPluginData("storysync", "id", "stand-in-" + l.i);
+        ids.push(n.id);
+      }
+      return { inner: i.id, outer: outerBox.id, ids };`)).value as { inner: string; outer: string; ids: string[] };
+    assert.ok(made, `round ${round} (${outer}/${inner}): set up`);
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number; parent: { id: string } };
+    const parentOf = (id: string) => at(id).parent.id;
+    const all = [made.outer, made.inner, ...made.ids];
+    const before = new Map(all.map((id) => [id, [at(id).x, at(id).y]]));
+    const [then] = await push(mock, await codeFor(full));
+    const [built] = sets(then);
+    const moved = built.moved ?? [];
+    const ours = (id: string) => made.ids.includes(id) && layers[made.ids.indexOf(id)].ours;
+    assert.equal(new Set(moved).size, moved.length, `round ${round}: each id once`);
+    // A box never moves, nor does a designer's frame; a box's child Figma places is moved by no one.
+    for (const id of all) if (!ours(id) && id !== made.outer) assert.deepEqual([at(id).x, at(id).y], before.get(id), `round ${round}: ${id} stays`);
+    if (outer !== "group") assert.deepEqual([at(made.outer).x, at(made.outer).y], before.get(made.outer), `round ${round}: the outer box stays`);
+    assert.ok(!moved.includes(made.inner) && !moved.includes(button.id), `round ${round}: no box is moved`);
+    const hit = (p: string, q: string) => {
+      const [a, c] = [at(p), at(q)];
+      return a.x < c.x + c.width && c.x < a.x + a.width && a.y < c.y + c.height && c.y < a.y + a.height;
+    };
+    const siblings = (id: string) => all.filter((o) => o !== id && parentOf(o) === parentOf(id));
+    for (const id of moved) for (const o of siblings(id)) assert.ok(!hit(id, o), `round ${round}: a moved set lies on nothing`);
+    // Each box holding Button lies on no push's set, and what else it lies on is counted.
+    let lies = 0;
+    for (const id of [made.inner, made.outer]) {
+      for (const o of siblings(id)) {
+        if (!hit(id, o)) continue;
+        assert.ok(!ours(o), `round ${round}: ${id} lies on no push's set`);
+        lies++;
+      }
+    }
+    assert.ok(built.overlaps >= lies, `round ${round} (${outer}/${inner}): ${lies} overlaps, ${built.overlaps} counted`);
+    // A section or plain frame holds the box in it and what moved in it.
+    for (const [box, kind] of [[made.outer, outer], [made.inner, inner]] as const) {
+      if (kind !== "section" && kind !== "frame") continue;
+      const holder = at(box);
+      for (const id of [made.inner, button.id, ...moved].filter((id) => parentOf(id) === box)) {
+        assert.ok(at(id).x + at(id).width <= holder.width + 0.01 && at(id).y + at(id).height <= holder.height + 0.01, `round ${round} (${outer}/${inner}): the ${kind} holds ${id}`);
+      }
+    }
+  }
+});
+
 test("build: a set moved past a designer's frame grows the frame, which clips what runs past it; in an auto layout frame, settle moves nothing", async () => {
   // A designer's "Components" frame holding Button and Select, Select
   // moved below the frame's bottom, where it was clipped from the canvas.
