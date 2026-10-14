@@ -79,7 +79,7 @@ npx storysync figma tokens
    | typography `font/weight/*` | `FLOAT`, the weight | `FONT_WEIGHT` |
    | typography `leading/*`, `line/height/*` or `lh/*` | `FLOAT`, from `px`, or a unitless line height as it is | `LINE_HEIGHT` |
    | typography `tracking/*` | `FLOAT`, from `px` | `LETTER_SPACING` |
-   | typography, other `font/*` | `STRING`, as written | `FONT_FAMILY` |
+   | typography, other `font/*` | `STRING`, the family Figma sets the stack's text in: `Geist` for `"Geist Variable", sans-serif`, `Inter` for `ui-sans-serif, system-ui, sans-serif` | `FONT_FAMILY` |
 
    `figma tokens` prints each token it has to leave out, with why: a shadow, which no Figma variable holds; a color storysync couldn't convert to sRGB, such as `currentColor`; a length with no fixed size in px, in em or % (as letter spacing often is), which depends on the element; and any token a `tokens` warning starting `Unresolved:` names, whose `var()` is set nowhere storysync reads (next/font, say, sets a font's at runtime). Name them all in the summary. The tokens a warning says were not read from `@theme`, shadcn/ui's `font/sans` and `font/mono` among them, are out of the output already: name them all the same. So are the tokens a warning starting `Skipped dynamic value:` names, a value the config only computes when it runs, such as a template literal that interpolates or a `theme()` call: name them too.
 

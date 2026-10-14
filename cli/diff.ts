@@ -7,6 +7,7 @@ import type { FigmaVariable, FigmaComponentInfo } from "./figma.js";
 import { componentNames, selectComponents, titleLeaf } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { colorToHex } from "./color.js";
+import { figmaStackFamily, isFontFamilyToken } from "./fonts.js";
 import { colorOfClass, parseAlphaVariable } from "./figma-bind.js";
 
 // --- Token diff ---
@@ -141,6 +142,8 @@ export function canonicalizeCompound(input: string): string {
  */
 function workedOutForCompare(category: string, token: TokenValue): string | undefined {
   if (category === "colors") return token.hex?.toLowerCase();
+  // A font family as the push holds it: the family Figma sets the stack's text in.
+  if (category === "typography" && isFontFamilyToken(token.name)) return figmaStackFamily(token.value).toLowerCase();
   if (category === "spacing" || category === "radius" || category === "typography") {
     return token.px === undefined ? undefined : stripTrailingZero(token.px);
   }

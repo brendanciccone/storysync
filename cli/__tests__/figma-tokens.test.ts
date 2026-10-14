@@ -110,6 +110,8 @@ test("figma tokens: a collection a category, each token typed and scoped as the 
           { name: "font/weight/bold", value: "700" }, { name: "leading/tight", value: "1.25" },
           { name: "tracking/wide", value: "0.025em" }, { name: "tracking/px", value: "1px", px: 1 },
           { name: "font/sans", value: "ui-sans-serif, system-ui, sans-serif" }, { name: "font/mono", value: "var(--font-geist-mono)" },
+          // Each family as Figma names the one it sets the stack's text in.
+          { name: "font/heading", value: '"Geist Variable", sans-serif' }, { name: "font/code", value: "ui-monospace, SFMono-Regular, Menlo, monospace" },
         ],
       },
       { category: "shadows", tokens: [{ name: "sm", value: "0 1px 2px 0 rgb(0 0 0 / 0.05)" }] },
@@ -133,7 +135,8 @@ test("figma tokens: a collection a category, each token typed and scoped as the 
       variables: [
         ["text/sm", "FLOAT", "FONT_SIZE", 14, undefined], ["base", "FLOAT", "FONT_SIZE", 16, undefined],
         ["font/weight/bold", "FLOAT", "FONT_WEIGHT", 700, undefined], ["leading/tight", "FLOAT", "LINE_HEIGHT", 1.25, undefined],
-        ["tracking/px", "FLOAT", "LETTER_SPACING", 1, undefined], ["font/sans", "STRING", "FONT_FAMILY", "ui-sans-serif, system-ui, sans-serif", undefined],
+        ["tracking/px", "FLOAT", "LETTER_SPACING", 1, undefined], ["font/sans", "STRING", "FONT_FAMILY", "Inter", undefined],
+        ["font/heading", "STRING", "FONT_FAMILY", "Geist", undefined], ["font/code", "STRING", "FONT_FAMILY", "Roboto Mono", undefined],
       ],
     },
   });

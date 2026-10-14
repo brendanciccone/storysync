@@ -177,6 +177,16 @@ test("diffTokens: a per-mode variable whose Dark color is a slashed token, writt
   assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["foreground dark muted-background", "missing_from_code"]]);
 });
 
+test("diffTokens: a font family token matches the variable that holds the family Figma sets its stack's text in, as figma tokens pushes it", () => {
+  const code: TokenCollection[] = [{ category: "typography", tokens: [
+    { name: "font/sans", value: "ui-sans-serif, system-ui, sans-serif" }, { name: "font/heading", value: '"Geist Variable", sans-serif' },
+  ] }];
+  const font = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Typography", resolvedType: "STRING", mode: "Default" });
+  assert.deepEqual(diffTokens(code, [font("font/sans", "Inter"), font("font/heading", "Geist")]).map((e) => [e.name, e.status]), [["font/sans", "match"], ["font/heading", "match"]]);
+  // An earlier push's, holding the stack as written, differs until pushed again.
+  assert.deepEqual(diffTokens(code, [font("font/sans", "ui-sans-serif, system-ui, sans-serif"), font("font/heading", "Inter")]).map((e) => [e.name, e.status]), [["font/sans", "value_mismatch"], ["font/heading", "value_mismatch"]]);
+});
+
 test("diffTokens: matching color in different formats", () => {
   const code: TokenCollection[] = [
     { category: "colors", tokens: [{ name: "primary/500", value: "rgb(59, 130, 246)" }] },
