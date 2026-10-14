@@ -64,6 +64,7 @@ export const TREE_PROPERTY_DEFAULTS: Readonly<Record<string, string>> = {
 export const TEXT_TREE_PROPERTIES: readonly string[] = [
   "color", "font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing",
   "text-transform", "text-decoration-line", "text-align", "white-space", "text-overflow", "-webkit-line-clamp",
+  "text-wrap-style",
 ];
 
 /**
@@ -851,6 +852,8 @@ function textFacts(
   if (align === "center" || align === "right" || align === "justify" || align === "end") tx.ta = align;
   const ws = text["white-space"] ?? "normal";
   if (ws === "nowrap" || ws === "pre" || ws === "pre-wrap" || ws === "pre-line") tx.ws = ws;
+  const wrap = text["text-wrap-style"] ?? "auto";
+  if (wrap === "balance" || wrap === "pretty") tx.tw = wrap;
   if (text["text-overflow"] === "ellipsis" && ws === "nowrap" && clips(holder)) tx.el = 1;
   const clamp = Number.parseInt(text["-webkit-line-clamp"] ?? "", 10);
   if (Number.isFinite(clamp) && clamp > 0) tx.cl = clamp;

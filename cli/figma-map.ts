@@ -72,9 +72,11 @@ export interface FigmaText {
    */
   o?: 1;
   /**
-   * Its lines' widest width and their count, for a wrapped text whose lines
-   * are narrower than its box, as `text-wrap: balance` draws them: the build
-   * breaks the lines there where Figma would break them elsewhere.
+   * Its lines' widest width and their count, for a text the browser broke
+   * by `text-wrap: balance` or `pretty` (snap's `tw`), its lines narrower
+   * than its box: the build breaks the lines there where Figma, filling
+   * each line first, would break them elsewhere. Any other text wraps as
+   * Figma fills it, and reflows when a designer resizes it.
    */
   b?: [number, number];
   /**
@@ -498,7 +500,7 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   // each such one once laid out (templates/build.js, keepLines).
   if (out.ar === "H" && textWhole(node)) out.o = 1;
   if (node.el === "#value") Object.assign(out, { ar: "H", v: ctx.parentEl?.startsWith("textarea") ? "T" : "C" });
-  else if (tx.n > 1 && !tx.el && !tx.cl && tx.ink[2] < node.box[2] - 1) out.b = [round2(tx.ink[2]), tx.n];
+  else if (tx.tw && tx.n > 1 && !tx.el && !tx.cl && tx.ink[2] < node.box[2] - 1) out.b = [round2(tx.ink[2]), tx.n];
   if (tx.it) out.i = 1;
   if (tx.ls) out.s = tx.ls;
   if (tx.tt) out.tc = CASES[tx.tt];

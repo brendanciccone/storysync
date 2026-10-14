@@ -315,6 +315,17 @@ test("nodeStyle: a text's properties, sizing and truncation", () => {
   assert.equal(nodeStyle(text({}), ctx()).n, undefined);
 });
 
+test("nodeStyle: only a text the browser broke by text-wrap balance or pretty has its line breaks kept (b); a ragged paragraph wraps as Figma fills it", () => {
+  // Dialog's description: two lines, 389.53 at most in a 398px box, as
+  // greedy filling left them, so Figma fills them too and reflows on a resize.
+  const paragraph = { c: "This action cannot be undone. This will permanently delete your account.", n: 2, ink: [0, 2, 389.53, 40] as [number, number, number, number] };
+  assert.equal(nodeStyle(text(paragraph, [0, 0, 398, 40]), ctx()).t!.b, undefined);
+  for (const tw of ["balance", "pretty"] as const) assert.deepEqual(nodeStyle(text({ ...paragraph, tw }, [0, 0, 398, 40]), ctx()).t!.b, [389.53, 2], tw);
+  // One line, or lines as wide as the box: nothing to keep.
+  assert.equal(nodeStyle(text({ tw: "balance" }), ctx()).t!.b, undefined);
+  assert.equal(nodeStyle(text({ ...paragraph, tw: "balance", ink: [0, 2, 397.5, 40] }, [0, 0, 398, 40]), ctx()).t!.b, undefined);
+});
+
 test("nodeStyle: a label the browser drew whole on one line in a box Figma sets at its width is marked to stay so", () => {
   // In a wider box, centered; truncatable, but whole: each is kept on one line should Figma set it wider.
   assert.equal(nodeStyle(text({ ta: "center", ink: [120, 3, 94.17, 18] }, [0, 0, 336, 24]), ctx()).t!.o, 1);

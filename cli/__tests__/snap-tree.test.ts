@@ -525,6 +525,12 @@ test("buildTree: a text keeps whitespace where white-space says to, and records 
   assert.equal(facts.get("p")!.clip, 1);
   assert.equal(facts.get("p/#text")!.tx!.cl, 2);
   assert.equal(facts.get("p/#text")!.tx!.n, 3);
+
+  // Where the browser chose the line breaks, text-wrap-style says how.
+  const wrapped = (style: string) => byKey(buildTree(tree(el("div", [0, 0, 100, 40], {}, [
+    el("p", [0, 0, 100, 40], {}, [run("two lines", [[0, 0, 60, 20], [0, 20, 50, 20]])], { text: { ...TEXT, "text-wrap-style": style } }),
+  ]))).nodes).get("p")!.tx!.tw;
+  assert.deepEqual([wrapped("balance"), wrapped("pretty"), wrapped("auto"), wrapped("stable")], ["balance", "pretty", undefined, undefined]);
 });
 
 // --- Keys and paint order ------------------------------------------------------------

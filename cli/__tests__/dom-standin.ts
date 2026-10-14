@@ -53,7 +53,7 @@ const FAKE_DEFAULTS: Record<string, string> = {
   "outline-offset": "0px", "object-fit": "fill", "object-position": "50% 50%", appearance: "auto",
   color: "rgb(0, 0, 0)", "font-family": "Times", "font-size": "16px", "font-weight": "400", "font-style": "normal",
   "line-height": "normal", "letter-spacing": "normal", "text-transform": "none", "text-decoration-line": "none", "text-align": "start",
-  "white-space": "normal", "text-overflow": "clip", "-webkit-line-clamp": "none", content: "normal",
+  "white-space": "normal", "text-overflow": "clip", "-webkit-line-clamp": "none", "text-wrap-style": "auto", content: "normal",
   fill: "rgb(0, 0, 0)", "fill-opacity": "1", stroke: "none", "stroke-opacity": "1", "stroke-width": "1px", "stroke-linecap": "butt",
   "stroke-linejoin": "miter", "fill-rule": "nonzero", "clip-rule": "nonzero", "stroke-dasharray": "none", "stroke-dashoffset": "0px",
   "vector-effect": "none", mask: "none", isolation: "auto", width: "auto", height: "auto", left: "auto", top: "auto",

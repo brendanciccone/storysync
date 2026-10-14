@@ -1,5 +1,5 @@
 {
-  "about": "shadcn/ui registry (MIT) ui/base/Empty as snap measured it in the final live test of 0.4.0 (session s2, 2026-10-13): its description is balanced (text-wrap: balance) onto two lines 223.36px wide at most, in a 384px box.",
+  "about": "shadcn/ui registry (MIT) ui/base/Empty as snap measured it in the final live test of 0.4.0 (session s2, 2026-10-13): its description is balanced (text-wrap: balance) onto two lines 223.36px wide at most, in a 384px box. Its texts' tw, text-wrap-style balance from the root's text-balance, which snap records since, is written in by hand.",
   "component": {
     "id": "ui-base-empty",
     "name": "Empty",
@@ -245,7 +245,8 @@
             "n": 1,
             "sz": 18,
             "ta": "center",
-            "wt": 500
+            "wt": 500,
+            "tw": "balance"
           }
         },
         {
@@ -277,7 +278,8 @@
             "n": 2,
             "sz": 14,
             "ta": "center",
-            "wt": 400
+            "wt": 400,
+            "tw": "balance"
           }
         },
         {
@@ -395,7 +397,8 @@
             "sz": 14,
             "ta": "center",
             "ws": "nowrap",
-            "wt": 500
+            "wt": 500,
+            "tw": "balance"
           }
         }
       ],

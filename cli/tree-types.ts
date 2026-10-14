@@ -66,15 +66,17 @@ export interface TreeSelf {                 // as a flex/grid item, only non-def
  * snap drew `f`, the stand-in Figma sets it in, in its place: fonts.ts);
  * `col` the text's own color, not folded
  * with any ancestor's opacity; `lh` the line height in px, or `normal`; `el`
- * an ellipsis on one line, `cl` a line clamp; `n` the lines it took; `ink`
- * the glyph box relative to the node's own box; `ph` a placeholder.
+ * an ellipsis on one line, `cl` a line clamp; `tw` its text-wrap-style
+ * where the browser chose its line breaks, `balance` or `pretty`; `n` the
+ * lines it took; `ink` the glyph box relative to the node's own box; `ph` a
+ * placeholder.
  */
 export interface TextFacts {
   c: string; f: string; fk?: 1; fa?: 0; fs?: string;
   sz: number; wt: number; it?: 1; col: string | null;
   lh: number | "normal"; ls?: number;
   tt?: "uppercase" | "lowercase" | "capitalize"; td?: "underline" | "line-through";
-  ta?: "center" | "right" | "justify" | "end"; ws?: "nowrap" | "pre" | "pre-wrap" | "pre-line";
+  ta?: "center" | "right" | "justify" | "end"; ws?: "nowrap" | "pre" | "pre-wrap" | "pre-line"; tw?: "balance" | "pretty";
   el?: 1; cl?: number; n: number; ink: Box; ph?: 1;
 }
 
