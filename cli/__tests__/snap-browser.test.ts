@@ -777,6 +777,16 @@ test("captureTreeInPage: leaves out an unprefixed text-* class the page found se
   assert.deepEqual(unprobed.root.cls, ["text-body", "md:text-body", "hover:text-primary", "text-[14px]", "text-[#0a0a0a]", "bg-card"]);
 });
 
+test("captureTreeInPage: keeps a pseudo-element's blend classes, so a blend that changes in Dark can be named", () => {
+  // Avatar's ring: after:mix-blend-darken, dark:after:mix-blend-lighten.
+  const page = {
+    tag: "span", rect: [0, 0, 32, 32] as [number, number, number, number],
+    attrs: { class: "relative flex after:absolute after:rounded-full after:border after:border-border after:mix-blend-darken dark:after:mix-blend-lighten" },
+  };
+  const read = inFakePage(page, (el) => captureTreeInPage(el, TREE_ARGS), [], (root: Element) => root);
+  assert.deepEqual(read.root.cls, ["after:rounded-full", "after:border-border", "after:mix-blend-darken", "dark:after:mix-blend-lighten"]);
+});
+
 test("captureTreeInPage: an element a rotate or scale of its own turns gives its own size, an svg its CSS size", () => {
   const read = readTree({
     tag: "span", rect: [0, 0, 10, 10], style: { "box-sizing": "border-box" },

@@ -2160,7 +2160,9 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
   // A color drawn at alpha 0, in any space Chromium writes one in.
   // rgba() with alpha 0, or the slash syntax's `/ 0`: not rgb(r, g, 0), which is opaque.
   const clear = (c: string) => !c || c === "transparent" || /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(c) || /\/\s*0(?:\.0+)?\s*\)$/.test(c);
-  const evidence = /(?:^|[:!])(?:bg|text|border|ring|fill|stroke|outline|rounded|shadow)-/;
+  // As snap-tree.ts's EVIDENCE: `mix-` keeps a blend that changes in Dark,
+  // Avatar's ring's `dark:after:mix-blend-lighten`, for figma code to name.
+  const evidence = /(?:^|[:!])(?:bg|text|border|ring|fill|stroke|outline|rounded|shadow|mix)-/;
   // Whether an unprefixed `text-*` class sets the text color, tried on a
   // probe that inherits a color nothing else gives it: a project's own font
   // size (`text-body`) sets none, and a text inherits its color past it, as
