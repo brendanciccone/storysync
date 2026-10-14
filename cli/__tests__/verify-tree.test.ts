@@ -914,6 +914,18 @@ function textVerdict(result: TreeScore, key: string, properties: string[]) {
   };
 }
 
+test("outline: one that draws nothing, transparent as `outline-none` or of no width, isn't listed as not scored; one that draws is, in plain words", () => {
+  const styles = { borderRadius: { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 }, boxShadow: [], opacity: 1 } as unknown as NormalizedStyles;
+  const record = ["", "F", 0, 0, 60, 40, [], null, 0, [], 1, "NORMAL", 0, 1, "1:1", 0];
+  const reasons = (ol: TreeNode["ol"]) => scoreTree({
+    nodes: [{ k: "", t: "F", el: "button", box: [0, 0, 60, 40], ol }], styles, assets: { svg: {}, img: {} }, tolerance: 0.5, records: [record],
+  }).unscorable.filter((u) => u.property === "outline").map((u) => u.reason);
+  assert.deepEqual(reasons([2, "solid", null, 2]), [], "outline-none: 2px solid transparent");
+  assert.deepEqual(reasons([2, "solid", "#2563eb00", 2]), []);
+  assert.deepEqual(reasons([0, "solid", "#2563eb", 0]), []);
+  assert.deepEqual(reasons([2, "solid", "#2563eb", 2]), ["outline 2px solid is not built"]);
+});
+
 test("kind gate: a layer of another kind is compared on what its own would be, and its kind, its turn once", () => {
   // A turned arrow out of the flow, which the build turns, and a turned
   // box with a child, which it doesn't: each read back as a text.

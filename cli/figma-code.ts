@@ -40,7 +40,7 @@ import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { alphaCalls } from "./figma-tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
-import { absoluteBoxes, expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
+import { absoluteBoxes, expandTree, outlineDraws, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
 import type { Box, ComponentTree, FigmaPlan, PlanAlpha, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
@@ -350,7 +350,7 @@ function spreadDrawn(nodes: TreeNode[], styleOf: Map<string, FigmaStyle>, notBui
       const [x, y, w, h] = abs.get(node.k)!;
       const inside = nodes.every((n) => {
         if (n.vis === 0 || !(node.k === "" ? n.k !== "" : n.k.startsWith(`${node.k}/`))) return true;
-        const reach = Math.max(0, ...(n.sh ?? []).filter((s) => !s[5]).map(([sx, sy, blur, spread]) => Math.max(Math.abs(sx), Math.abs(sy)) + blur + Math.max(0, spread)), n.ol ? n.ol[0] + n.ol[3] : 0);
+        const reach = Math.max(0, ...(n.sh ?? []).filter((s) => !s[5]).map(([sx, sy, blur, spread]) => Math.max(Math.abs(sx), Math.abs(sy)) + blur + Math.max(0, spread)), outlineDraws(n.ol) ? n.ol![0] + n.ol![3] : 0);
         const [nx, ny, nw, nh] = abs.get(n.k)!;
         return nx - reach >= x + l - 0.5 && ny - reach >= y + t - 0.5 && nx + nw + reach <= x + w - r + 0.5 && ny + nh + reach <= y + h - b + 0.5;
       });

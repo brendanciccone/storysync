@@ -18,7 +18,7 @@
 import { sameFamily } from "./fonts.js";
 import { isFontKeyword, splitTopLevel } from "./snap-normalize.js";
 import type { NormalizedStyles } from "./snap-normalize.js";
-import { RECORD, RECORD_BY_TPL, borderBuiltInside, borderPaintsNothing, builtTurn, flowOf, insideStrokeDrawsBorder, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
+import { RECORD, RECORD_BY_TPL, borderBuiltInside, borderPaintsNothing, builtTurn, flowOf, insideStrokeDrawsBorder, outlineDraws, parentKey, rootWithStyles, transformedAround, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, ComponentTree, Flow, Sides, TreeNode, TurnContext } from "./tree-types.js";
 import { fnv1a32 } from "./checksum.js";
 
@@ -586,7 +586,8 @@ export function scoreTree(input: TreeInput): TreeScore {
 
     check("opacity", near(n.op ?? 1, rec.opacity, OPACITY_TOLERANCE), n.op ?? 1, rec.opacity);
     if (!isRoot) check("visible", rec.visible === (n.vis === 0 ? 0 : 1), n.vis === 0 ? 0 : 1, rec.visible);
-    if (n.ol) unscorable("outline", `outline ${n.ol[0]}px ${n.ol[1]} is not built in phase 1`);
+    // A transparent outline, as `outline-none`, draws nothing: nothing to score.
+    if (n.ol && outlineDraws(n.ol)) unscorable("outline", `outline ${n.ol[0]}px ${n.ol[1]} is not built`);
     if (n.cp) unscorable("clip-path", `clip-path ${n.cp}`);
 
     // Paint order among its keyed children, where it has two or more: drift
@@ -823,7 +824,7 @@ function scoreFrame(n: TreeNode, field: Field, tolerance: number, check: Check, 
   for (const layer of n.bgi ? splitTopLevel(n.bgi).reverse() : []) {
     const gradient = cssLinearGradient(layer, n.box[2], n.box[3]);
     if (gradient) want.push(gradient);
-    else unscorable("fills", `background-image ${layer.trim().slice(0, 60)} is not built in phase 1`);
+    else unscorable("fills", `background-image ${layer.trim().slice(0, 60)} is not built`);
   }
   const fills = (Array.isArray(field("fills")) ? field("fills") : []) as string[];
   const sameFills = fills.length === want.length && want.every((w, i) => (w.startsWith("lin:") && typeof fills[i] === "string" && fills[i].startsWith("lin:")
@@ -848,7 +849,7 @@ function scoreFrame(n: TreeNode, field: Field, tolerance: number, check: Check, 
     if (!value) continue;
     const blur = /^blur\((-?[\d.]+)px\)$/.exec(value.trim());
     if (blur) effects.push([name, Number(blur[1])]);
-    else unscorable(name === "L" ? "filter" : "backdrop-filter", `${value} is not built in phase 1`);
+    else unscorable(name === "L" ? "filter" : "backdrop-filter", `${value} is not built`);
   }
   if (!spike.shadowSpreadKept && effects.some((e) => e[0] === "D" || e[0] === "I")) unscorable("effects spread", "Figma's shadow spread is unavailable (spike item 2)");
   const got = (Array.isArray(field("effects")) ? field("effects") : []) as unknown[][];
@@ -888,7 +889,7 @@ function scoreStroke(n: TreeNode, field: Field, tolerance: number, check: Check,
   const align = n.bgc === "padding-box" || n.bgc === "content-box" ? "O" : "I";
   const aligned = (got: unknown) => got === align || (borderBuiltInside(n) && got === "I");
   const want = [Array.isArray(n.bd.w) ? weights : weights[0], colors.length === 1 ? (colors[0] ? [colors[0]] : []) : colors, style, align];
-  if (colors.length > 1) unscorable("stroke color", "per-side border colors, built as one in phase 1");
+  if (colors.length > 1) unscorable("stroke color", "per-side border colors, built as one");
   if (!STROKE_STYLES.has(style)) unscorable("stroke style", `a ${style} border, which Figma's strokes don't draw`);
   if (!Array.isArray(got)) {
     check("stroke", false, want, got);

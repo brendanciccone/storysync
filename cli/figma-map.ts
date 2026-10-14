@@ -16,7 +16,7 @@ import type { BindDecision, Binder, PaintRole, Scheme } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { figmaFamily, standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
-import { borderBuiltInside, borderPaintsNothing, builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
+import { borderBuiltInside, borderPaintsNothing, builtTurn, insideStrokeDrawsBorder, outlineDraws, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, PlanAlpha, Sides, TreeNode, TurnContext } from "./tree-types.js";
 
 /**
@@ -669,7 +669,8 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
   const darkBlend = (ctx.scheme ?? "light") === "light" ? (node.cls ?? []).map((c) => /^dark:mix-blend-([a-z-]+)$/.exec(c)?.[1]).find(Boolean) : undefined;
   if (darkBlend && darkBlend !== (node.bm ?? "normal")) ctx.notBuilt.push({ key: node.k, what: `blend mode ${darkBlend} in Dark`, as: `${node.bm ?? "normal"} in both modes, as no variable sets a blend mode` });
   if (node.cp) ctx.notBuilt.push({ key: node.k, what: `clip-path ${node.cp}` });
-  if (node.ol) ctx.notBuilt.push({ key: node.k, what: `outline ${node.ol[0]}px ${node.ol[1]} ${node.ol[2] ?? "transparent"}` });
+  // A transparent outline, as `outline-none`, draws nothing to build.
+  if (node.ol && outlineDraws(node.ol)) ctx.notBuilt.push({ key: node.k, what: `outline ${node.ol[0]}px ${node.ol[1]} ${node.ol[2]}` });
   // A turn the build can make is built (builtTurn), as Figma's rotation,
   // the other way round; any other transform is named.
   const around = ctx.around ?? { children: 0, transformed: false };

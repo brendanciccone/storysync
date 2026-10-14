@@ -181,6 +181,10 @@ test("nodeStyle: shadows, blurs and blend modes as Figma names them; what it lac
   assert.equal(nodeStyle(frame({ k: "::after", bm: "darken", cls: ["border-border", "dark:mix-blend-lighten", "mix-blend-darken"] }), c3).b, "DARKEN");
   assert.deepEqual(c3.notBuilt, [{ key: "::after", what: "blend mode lighten in Dark", as: "darken in both modes, as no variable sets a blend mode" }]);
   assert.deepEqual(ctx().notBuilt, []);
+  // An outline that draws nothing, as `outline-none`'s 2px solid transparent, is no gap.
+  const clear = ctx();
+  for (const ol of [[2, "solid", null, 2], [2, "solid", "#00000000", 2], [0, "solid", "#000000", 0]] as const) nodeStyle(frame({ ol: [...ol] }), clear);
+  assert.deepEqual(clear.notBuilt, []);
   const c4 = ctx();
   nodeStyle(frame({ bm: "darken", cls: ["dark:mix-blend-darken"] }), c4);
   assert.deepEqual(c4.notBuilt, []);

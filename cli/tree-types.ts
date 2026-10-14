@@ -573,6 +573,17 @@ export function borderPaintsNothing(n: TreeNode): boolean {
 }
 
 /**
+ * Whether an outline draws anything: one with no width, of style none or
+ * hidden, or transparent, as Tailwind's `outline-none` (`2px solid
+ * transparent`), draws nothing, so there is nothing to build or score.
+ */
+export function outlineDraws(ol: TreeNode["ol"]): boolean {
+  if (!ol) return false;
+  const [w, style, color] = ol;
+  return w > 0 && style !== "none" && style !== "hidden" && color !== null && alphaOf(color) > 0;
+}
+
+/**
  * Whether an INSIDE stroke over a fill that runs under it draws a border the
  * background stops at (`bgc`, as shadcn/ui's Button's `bg-clip-padding`)
  * as the browser does: where there is no background to show under the
