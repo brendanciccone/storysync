@@ -4,12 +4,16 @@
 // `storysync figma code` writes the call as `const DATA = {...};`, then
 // this file as the string T, whose checksum, TSUM, the call checks with
 // DATA's, SUM, before it runs T (cli/checksum.ts, callCode):
-//   DATA = { pages, sets: [[storysync id, line], ...] }
+//   DATA = { pages, sets: [[storysync id, line, dark?], ...] }
 // with every set the build made, on the pages it made them on. A line is a
 // note for a set snap measured from something other than the component, a
 // closed trigger or a layout wrapper, and "" for every other set. It goes on
 // the description's line that starts MARK, every other line kept, a
 // designer's own included; "" removes the line an earlier push left.
+// `dark` is 1 for a set snap measured in the dark theme, whose paints bind
+// by the tokens' dark values: it is put in each collection's Dark mode,
+// where it has no mode of that collection a designer chose, and Figma
+// resolves its bound paints again to the values measured (probe 7b).
 
 const NS = 'storysync';
 const MARK = 'storysync:';
@@ -37,7 +41,9 @@ for (const p of figma.root.children.filter((p) => wanted.has(pageKey(p.name)))) 
 }
 const changed = [];
 const missing = [];
-for (const [id, note] of DATA.sets) {
+const darkened = [];
+const DARK = DATA.sets.some((s) => s[2]) ? (await figma.variables.getLocalVariableCollectionsAsync()).map((c) => [c, c.modes.find((m) => m.name === 'Dark')]).filter((d) => d[1]) : [];
+for (const [id, note, dark] of DATA.sets) {
   const nodes = found[id] || [];
   if (nodes.length !== 1) {
     if (nodes.length) throw new Error('Found ' + nodes.length + ' sets with storysync id ' + id + ': ' + nodes.map((n) => n.id).join(', '));
@@ -45,6 +51,11 @@ for (const [id, note] of DATA.sets) {
     continue;
   }
   const node = nodes[0];
+  for (const [c, m] of dark ? DARK : []) {
+    if (node.explicitVariableModes[c.id]) continue;
+    node.setExplicitVariableModeForCollection(c, m.modeId);
+    darkened.push(node.id);
+  }
   const rich = Boolean(node.descriptionMarkdown);
   const key = rich ? 'descriptionMarkdown' : 'description';
   const before = unescape(node[key]);
@@ -76,4 +87,4 @@ if (blank) {
     }
   }
 }
-return { kind: 'label', changed, missing, pageOne };
+return Object.assign({ kind: 'label', changed, missing, pageOne }, darkened.length ? { darkened: [...new Set(darkened)] } : {});

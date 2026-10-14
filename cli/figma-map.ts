@@ -12,7 +12,7 @@
 // stroke built OUTSIDE it, and its children sit relative to that box.
 
 import { alphaByte, alphaVariableName } from "./figma-bind.js";
-import type { Binder, PaintRole } from "./figma-bind.js";
+import type { Binder, PaintRole, Scheme } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
@@ -143,6 +143,10 @@ export interface MapContext {
   alphas?: Map<string, PlanAlpha>;
   /** Whether the tree's `cls` keeps a `dark:` class's opacity (ComponentTree's `darkAlpha`), which then gives the dark theme's alpha. */
   darkAlpha?: boolean;
+  /** The color scheme snap measured the component in (its `scheme`), whose token values its paints match; light when absent. */
+  scheme?: Scheme;
+  /** The component the paints are of, recorded on each alpha variable it binds. */
+  component?: string;
   /**
    * The parent's classes, for the color of a `#text` or `#value` run that
    * carries none of its own. snap writes the `text-*` class a run inherits on
@@ -180,13 +184,61 @@ const round3 = (n: number): number => Math.round(n * 1000) / 1000;
  */
 export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefined, key: string, property: string, ctx: MapContext, nocls?: string[]): FigmaPaint {
   const [rgb, alpha] = splitHex(hex);
-  const decision = ctx.binder.color(hex, role, cls, nocls);
+  const decision = ctx.binder.color(hex, role, cls, nocls, ctx.scheme);
+  // A palette color no token is named for, which a `dark:` class pairs with
+  // another: AspectRatio's `bg-slate-50 dark:bg-slate-900`.
+  const light = !decision.variable && (ctx.scheme ?? "light") === "light" ? ctx.binder.lightPalette(rgb, role, cls) : undefined;
+  const pair = light && perMode(light, alpha, ctx, role, cls);
+  if (pair) return [rgb, alpha, pair];
   if (!decision.variable && decision.candidates.length > 1) {
-    ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
+    ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates, ...(decision.ambiguous ? { why: `it matches ${decision.candidates.join(", ")}, and its classes name more than one` } : {}) });
   }
   if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
   if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx, role, cls)];
   return alpha === 1 ? rgb : [rgb, alpha];
+}
+
+/**
+ * The fill of a node the light theme leaves clear and a `dark:` class
+ * paints, an input's `bg-transparent dark:bg-input/30`: the dark color's
+ * at 0 in Light, bound to the variable that holds it at the class's alpha
+ * in Dark, `input 0% dark 30%`; null where no `dark:` class paints it.
+ */
+export function darkOnlyFill(node: TreeNode, ctx: MapContext): FigmaPaint | null {
+  if ((ctx.scheme ?? "light") !== "light" || !ctx.darkAlpha) return null;
+  const dark = ctx.binder.darkPaint("fill", node.cls);
+  const hex = dark && (dark.hex ?? ctx.binder.hexOf(dark.name));
+  if (!dark || !hex || alphaByte(dark.alpha * (hex.length === 9 ? parseInt(hex.slice(7), 16) / 255 : 1)) === 0) return null;
+  const variable = alphaVariableName(dark.name, 0, dark.alpha);
+  record(ctx, { variable, token: dark.name, alpha: 0, dark: round3(alphaByte(dark.alpha) / 255), ...(dark.hex ? { palette: { [dark.name]: dark.hex } } : {}) });
+  return dark.hex ? [hex.slice(0, 7), 0, variable] : [hex.slice(0, 7), 0, variable, dark.name];
+}
+
+/** Records an alpha variable the plan binds, and the component binding it, for the plan's `variables` call to make. */
+function record(ctx: MapContext, alpha: PlanAlpha): void {
+  const had = ctx.alphas?.get(alpha.variable);
+  const components = [...new Set([...(had?.components ?? []), ...(ctx.component ? [ctx.component] : [])])].sort();
+  ctx.alphas?.set(alpha.variable, { ...(had ?? alpha), ...(components.length ? { components } : {}) });
+}
+
+/**
+ * The per-mode variable of `light`, a token or palette color the light
+ * class names, at `alpha`, where a `dark:` class paints another color:
+ * `background dark input 30%`, `slate-50 dark slate-900`; undefined where
+ * none does, or the snap cut its opacity off.
+ */
+function perMode(light: string, alpha: number, ctx: MapContext, role: PaintRole, cls: readonly string[] | undefined): string | undefined {
+  if (!ctx.darkAlpha) return undefined;
+  const dark = ctx.binder.darkPaint(role, cls);
+  if (!dark || dark.name === light) return undefined;
+  const variable = alphaVariableName(light, alpha, dark.alpha, dark.name);
+  const lightHex = ctx.binder.hexOf(light);
+  const palette: Record<string, string> = {};
+  if (!ctx.binder.isToken(light) && lightHex) palette[light] = lightHex;
+  if (dark.hex) palette[dark.name] = dark.hex;
+  const at = (a: number) => round3(alphaByte(a) / 255);
+  record(ctx, { variable, token: light, alpha: at(alpha), darkToken: dark.name, dark: at(dark.alpha), ...(Object.keys(palette).length ? { palette } : {}) });
+  return variable;
 }
 
 /**
@@ -195,15 +247,25 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
  * and holds that alpha itself; else its alpha variable, then the token,
  * recorded for the plan's `variables` call to make. A `dark:` class that
  * names the token at another alpha (`dark:bg-destructive/20` beside
- * `bg-destructive/10`) gives the variable that alpha in Dark.
+ * `bg-destructive/10`) gives the variable that alpha in Dark, and one that
+ * names another color (`bg-background dark:bg-input/30`) a per-mode
+ * variable of the two. Measured dark, the paint is the dark theme's, at
+ * its alpha in both modes: snap keeps no light class's opacity to say
+ * Light's.
  */
 function boundTo(token: string, alpha: number, ctx: MapContext, role: PaintRole, cls: readonly string[] | undefined): [string] | [string, string] {
-  const named = ctx.darkAlpha ? ctx.binder.darkAlpha(token, role, cls) : undefined;
+  const scheme = ctx.scheme ?? "light";
+  const paint = scheme === "light" && ctx.darkAlpha ? ctx.binder.darkPaint(role, cls) : undefined;
+  if (paint && paint.name !== token) {
+    const variable = perMode(token, alpha, ctx, role, cls);
+    if (variable) return [variable, token];
+  }
+  const named = paint?.name === token ? paint.alpha : undefined;
   const dark = named === undefined || alphaByte(named) === alphaByte(alpha) ? undefined : named;
-  if (!ctx.binder.opaque(token) || (alpha >= 1 && dark === undefined)) return [token];
+  if (!ctx.binder.opaque(token, scheme) || (alpha >= 1 && dark === undefined)) return [token];
   const variable = alphaVariableName(token, alpha, dark);
   const at = (a: number) => round3(alphaByte(a) / 255);
-  if (!ctx.alphas?.has(variable)) ctx.alphas?.set(variable, { variable, token, alpha: at(alpha), ...(dark !== undefined ? { dark: at(dark) } : {}) });
+  record(ctx, { variable, token, alpha: at(alpha), ...(dark !== undefined ? { dark: at(dark) } : {}) });
   return [variable, token];
 }
 
@@ -417,7 +479,7 @@ function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
     const [rgb, alpha] = splitHex(color);
     if (alpha === 0) continue;
     const effect: FigmaEffect = [inset ? "I" : "D", x, y, blur, spread, rgb, alpha];
-    const decision = ctx.binder.color(color, "effect", node.cls);
+    const decision = ctx.binder.color(color, "effect", node.cls, undefined, ctx.scheme);
     if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx, "effect", node.cls));
     // Only classes naming two of them leave it ambiguous: a shadow no class
     // names, as Tailwind's black shadow scale, binds to none by design.
@@ -594,7 +656,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     if (imported.rescale) style.rs = imported.rescale;
     const binds: Record<string, string> = {};
     for (const [hex, alphas] of markupPaints(markup)) {
-      const decision = ctx.binder.color(hex, "vector", node.cls, node.nocls);
+      const decision = ctx.binder.color(hex, "vector", node.cls, node.nocls, ctx.scheme);
       if (decision.variable && decision.from) ctx.byDefault?.push({ key: node.k, property: "vector", value: hex, variable: decision.variable, from: decision.from });
       if (decision.variable) {
         binds[hex] = decision.variable;
@@ -616,6 +678,10 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
     style.im = node.img;
   } else {
     if (node.bg) fills.push(solidPaint(node.bg, "fill", node.cls, node.k, "fill", ctx));
+    else {
+      const dark = darkOnlyFill(node, ctx);
+      if (dark) fills.push(dark);
+    }
     if (node.bgi) {
       // CSS lists the top layer first; Figma's fills run bottom to top.
       const layers = splitArgs(node.bgi).reverse();

@@ -241,6 +241,17 @@ export interface PlanResults {
    * mode switch, which no readback shows.
    */
   alphaFallbacks: string[];
+  /**
+   * The alpha variables the plan's `variables` call made for components no
+   * build with a result built, so nothing binds them, as `name (Collection):
+   * made for ui/base/Alert, whose build call 04 saved no build result`.
+   */
+  unusedAlphas: string[];
+}
+
+/** Whether a saved response holds a build result: a build that threw, or wasn't sent, has none. */
+function built(text: string): boolean {
+  return resultIn(text, (v) => v != null && typeof v === "object" && (v as { kind?: unknown }).kind === "build") !== null;
 }
 
 /**
@@ -265,6 +276,23 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   const notRead: number[] = [];
   const problems: string[] = [];
   const fellBack: string[] = [];
+  // Each component a build call built, and the calls that were to build the rest.
+  const builtBy = new Set<string>();
+  const failed = new Map<string, number[]>();
+  for (const call of plan.calls) {
+    if (call.kind !== "build") continue;
+    const ok = existsSync(join(base, call.result)) && built(readFileSync(join(base, call.result), "utf8"));
+    for (const c of call.components) {
+      if (ok) builtBy.add(c);
+      else failed.set(c, [...(failed.get(c) ?? []), call.seq]);
+    }
+  }
+  const unusedAlphas: string[] = [];
+  for (const alpha of plan.alphas ?? []) {
+    if (!alpha.components?.length || alpha.components.some((c) => builtBy.has(c))) continue;
+    const seqs = [...new Set(alpha.components.flatMap((c) => failed.get(c) ?? []))].sort((a, b) => a - b).map((n) => String(n).padStart(2, "0"));
+    unusedAlphas.push(`${alpha.variable}${alpha.collection ? ` (${alpha.collection})` : ""}: made for ${alpha.components.join(", ")}, whose build ${seqs.length === 1 ? "call" : "calls"} ${seqs.join(", ")} saved no build result`);
+  }
   for (const call of plan.calls) {
     if (call.kind === "build" && existsSync(join(base, call.result))) {
       for (const [component, key, what, variants] of alphaFallbacks(readFileSync(join(base, call.result), "utf8"))) {
@@ -318,5 +346,5 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   const written = out ?? join(base, "..", "figma-readback.json");
   mkdirSync(dirname(written), { recursive: true });
   writeFileSync(written, `${JSON.stringify(sorted, null, 2)}\n`);
-  return { readback: sorted, notRead, written, problems, alphaFallbacks: fellBack };
+  return { readback: sorted, notRead, written, problems, alphaFallbacks: fellBack, unusedAlphas };
 }

@@ -1111,7 +1111,7 @@ test("figma code: names the alpha variables its translucent paints bind to, whic
     assert.match(run.stdout, /\n {2}01 variables Create or update the alpha variables foreground 10% in the Colors variable collection/);
     assert.match(run.stdout, /\n {2}02 build {5}Create or update Dialog/);
     const json = jsonOf(await cli([...args, "--json"]));
-    assert.deepEqual(json.alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102 }]);
+    assert.deepEqual(json.alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102, components: ["ui/base/Dialog"], collection: "Colors" }]);
     // The call carries foreground, whose value it needs, and its alpha variable, and lists nothing stale.
     const code = readFileSync(join(dir, "figma", "calls", "01-variables-colors.js"), "utf8");
     assert.match(code, /^\/\/ storysync figma code, call 01: variables\. Send this file unchanged/);
@@ -1147,6 +1147,24 @@ test("verify --plan: a build that bound translucent paints without their alpha v
     assert.match(run.text.stdout, /Send the plan's variables call, its first, then those build calls again/);
     // Without --strict it still scores, and says so.
     assert.equal((await verifyPlan(p)).status, 0);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test("verify --plan: an alpha variable the plan's first call made for a build that then failed is said, with how to remove it", async () => {
+  // s1's Alert: the variables call made destructive 90%, and the build failed.
+  const p = await push(asSnap(loadTreeFixture("dialog")));
+  try {
+    assert.deepEqual(p.plan.alphas!.map((a) => [a.variable, a.components]), [["foreground 10%", ["ui/base/Dialog"]]]);
+    const build = p.plan.calls.find((c) => c.kind === "build")!;
+    const ok = await verifyPlan(p);
+    assert.equal((ok.json.plan as { unusedAlphas?: string[] }).unusedAlphas, undefined);
+    writeFileSync(join(dirname(p.planPath), build.result), "Error: in appendChild: Cannot move node");
+    const run = await verifyPlan(p);
+    assert.deepEqual((run.json.plan as { unusedAlphas: string[] }).unusedAlphas, [`foreground 10% (Colors): made for ui/base/Dialog, whose build call ${String(build.seq).padStart(2, "0")} saved no build result`]);
+    assert.match(run.text.stdout, /Alpha variables the plan made that no build with a result binds/);
+    assert.match(run.text.stdout, /storysync figma tokens --remove "Collection\/name"/);
   } finally {
     cleanup(p);
   }

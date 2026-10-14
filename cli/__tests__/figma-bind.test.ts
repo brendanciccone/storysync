@@ -264,3 +264,58 @@ test("Binder: a dark: class gives the alpha the dark theme paints its token at, 
   // dark:border-input/50 still names input among #e5e5e5's tokens.
   assert.equal(binder.color("#e5e5e5", "stroke", ["border-border", "dark:border-input/50"]).variable, "input");
 });
+
+// coder's tokens, cut down: two that swap #ffffff and #09090b between themes.
+const CODER = {
+  collections: [{ category: "colors" as const, tokens: [
+    { name: "content/primary", value: "#09090b", hex: "#09090b", dark: { value: "#ffffff", hex: "#ffffff" } },
+    { name: "surface/primary", value: "#ffffff", hex: "#ffffff", dark: { value: "#09090b", hex: "#09090b" } },
+    { name: "surface/invert/primary", value: "#27272a", hex: "#27272a", dark: { value: "#e4e4e7", hex: "#e4e4e7" } },
+    { name: "border/default", value: "#e4e4e7", hex: "#e4e4e7", dark: { value: "#27272a", hex: "#27272a" } },
+  ] }],
+};
+
+test("Binder: a component snap measured dark matches the tokens' dark values, never a light value that happens to equal its paint", () => {
+  const binder = new Binder(CODER);
+  // coder's dark #ffffff text: content/primary in the dark theme, not surface/primary, whose light value it is.
+  assert.deepEqual(binder.color("#ffffff", "text", ["text-content-primary"], undefined, "dark"), { variable: "content/primary", candidates: ["content/primary"] });
+  assert.equal(binder.color("#ffffff", "text", ["text-content-primary"]).variable, "surface/primary");
+  // Its button's #e4e4e7 fill, which light values give to border/default, and the class to none.
+  assert.equal(binder.color("#e4e4e7", "fill", ["bg-surface-invert-primary"], undefined, "dark").variable, "surface/invert/primary");
+  // Measured dark, a dark: class is what the paint shows, over the light theme's.
+  const shadcn = new Binder({ collections: [{ category: "colors" as const, tokens: [
+    { name: "border", value: "#e5e5e5", hex: "#e5e5e5", dark: { value: "#ffffff1a", hex: "#ffffff1a" } },
+    { name: "input", value: "#e5e5e5", hex: "#e5e5e5", dark: { value: "#ffffff1a", hex: "#ffffff1a" } },
+  ] }] });
+  assert.equal(shadcn.color("#ffffff1a", "stroke", ["border-border", "dark:border-input"], undefined, "dark").variable, "input");
+  // border is translucent in the dark theme, so a paint of it binds no alpha variable there.
+  assert.deepEqual([shadcn.opaque("border", "dark"), shadcn.opaque("border")], [false, true]);
+});
+
+test("per-mode variables: the light class's color and the dark: class's, each percent left out at 100%, read back", () => {
+  assert.equal(alphaVariableName("background", 1, 0.3, "input"), "background dark input 30%");
+  assert.equal(alphaVariableName("slate-50", 1, 1, "slate-900"), "slate-50 dark slate-900");
+  assert.equal(alphaVariableName("destructive", 0x1a / 255, 0.2, "ring"), "destructive 10% dark ring 20%");
+  assert.equal(alphaVariableName("input", 0, 0.3), "input 0% dark 30%");
+  // The same token is the alpha variable's name, as before.
+  assert.equal(alphaVariableName("destructive", 0x1a / 255, 0.2, "destructive"), "destructive 10% dark 20%");
+  assert.deepEqual(parseAlphaVariable("background dark input 30%"), { token: "background", alpha: 1, darkToken: "input", dark: 77 / 255 });
+  assert.deepEqual(parseAlphaVariable("slate-50 dark slate-900"), { token: "slate-50", alpha: 1, darkToken: "slate-900" });
+  assert.deepEqual(parseAlphaVariable("destructive 10% dark ring 20%"), { token: "destructive", alpha: 26 / 255, darkToken: "ring", dark: 51 / 255 });
+  for (const name of ["input dark 30%", "background dark", "background dark background", "dark dark x", "a dark b c", "a 10% dark b 120%"]) assert.equal(parseAlphaVariable(name), null, name);
+});
+
+test("Binder: a dark: class paints a token or a palette color, at its alpha; a light class names the palette color measured", () => {
+  const palette = new Map([["slate-50", "#f8fafc"], ["slate-900", "#0f172b"], ["transparent", "#00000000"]]);
+  const binder = new Binder(SHADCN_TOKENS, palette);
+  assert.deepEqual(binder.darkPaint("fill", ["bg-background", "dark:bg-input/30"]), { name: "input", alpha: 0.3 });
+  assert.deepEqual(binder.darkPaint("fill", ["bg-slate-50", "dark:bg-slate-900"]), { name: "slate-900", hex: "#0f172b", alpha: 1 });
+  assert.deepEqual(binder.darkPaint("fill", ["bg-card", "dark:bg-transparent"]), { name: "transparent", hex: "#00000000", alpha: 1 });
+  // Another role's, or two that differ, say nothing.
+  assert.equal(binder.darkPaint("stroke", ["dark:bg-input/30"]), undefined);
+  assert.equal(binder.darkPaint("fill", ["dark:bg-input/30", "dark:bg-muted"]), undefined);
+  assert.equal(binder.lightPalette("#f8fafc", "fill", ["bg-slate-50", "dark:bg-slate-900"]), "slate-50");
+  assert.equal(binder.lightPalette("#f8fafc", "fill", ["bg-slate-100"]), undefined);
+  assert.equal(binder.hexOf("input"), "#e5e5e5");
+  assert.equal(binder.hexOf("slate-900"), "#0f172b");
+});

@@ -681,7 +681,7 @@ program
       // and otherwise beside the plan's directory, so a plan made with
       // `figma code --out` elsewhere doesn't overwrite the push's readback.
       // The snap is the one the plan was made from, unless --snap says.
-      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; alphaFallbacks: string[]; snapChanged: boolean; planPath: string } | null = null;
+      let assembled: { readback: ReadbackFile; notRead: number[]; notReadSlices: [string, number, number][]; written: string; problems: string[]; alphaFallbacks: string[]; unusedAlphas: string[]; snapChanged: boolean; planPath: string } | null = null;
       if (opts.plan) {
         const planPath = opts.plan as string;
         const given = (name: string) => command.getOptionValueSource(name) === "cli";
@@ -723,6 +723,7 @@ program
         readback: assembled.written,
         problems: assembled.problems,
         ...(assembled.alphaFallbacks.length ? { alphaFallbacks: assembled.alphaFallbacks } : {}),
+        ...(assembled.unusedAlphas.length ? { unusedAlphas: assembled.unusedAlphas } : {}),
         ...(assembled.snapChanged ? { snapChanged: true } : {}),
       };
       const headline = headlineFidelity(result);
@@ -822,6 +823,13 @@ program
             console.log(`  ${chalk.red("!")} Bound without their alpha variable, so Figma makes them opaque when a designer switches a frame's mode, though the score can't show it:`);
             for (const line of plan.alphaFallbacks) console.log(chalk.red(`      ${line}`));
             console.log(chalk.dim("      Send the plan's variables call, its first, then those build calls again, and their read calls."));
+          }
+          // Made by the plan's first call for builds that then failed: no
+          // layer binds them, and nothing else would say so.
+          if (plan.unusedAlphas?.length) {
+            console.log(`  ${chalk.yellow("!")} Alpha variables the plan made that no build with a result binds:`);
+            for (const line of plan.unusedAlphas) console.log(chalk.yellow(`      ${line}`));
+            console.log(chalk.dim("      Send those build calls again, or ask the user whether to remove each, with `storysync figma tokens --remove \"Collection/name\"` and its calls."));
           }
         }
 
@@ -1069,7 +1077,10 @@ figma
       // its opacity at a mode switch: the plan's first calls make them.
       if (alphas.length) {
         const first = plan.calls.filter((c) => c.kind === "variables").map((c) => String(c.seq).padStart(2, "0"));
-        console.log(`\nTranslucent paints bind to ${alphas.length} alpha ${alphas.length === 1 ? "variable" : "variables"}, each a token's color at an alpha in every mode, which Figma keeps when a designer switches a frame's mode: ${alphas.map((a) => a.variable).join(", ")}.${first.length ? ` ${first.length === 1 ? "Call" : "Calls"} ${first.join(", ")} ${first.length === 1 ? "makes" : "make"} them, before the builds.` : ""}`);
+        // A per-mode one holds another color in Dark, or none in Light.
+        const perMode = alphas.filter((a) => a.darkToken !== undefined || a.alpha === 0).length;
+        const modes = perMode ? `, and ${perMode === alphas.length ? (perMode === 1 ? "it holds" : "each holds") : `${perMode} of them hold`} the color a dark: class paints in Dark` : "";
+        console.log(`\nTranslucent paints bind to ${alphas.length} alpha ${alphas.length === 1 ? "variable" : "variables"}, each a token's color at an alpha in every mode, which Figma keeps when a designer switches a frame's mode${modes}: ${alphas.map((a) => a.variable).join(", ")}.${first.length ? ` ${first.length === 1 ? "Call" : "Calls"} ${first.join(", ")} ${first.length === 1 ? "makes" : "make"} them, before the builds.` : ""}`);
       }
       console.log(`\n${describeEstimate(estimate)}`);
       console.log(chalk.dim("\nSend each call in seq order: its file unchanged as use_figma's code, with its description, and save the response unchanged to its result. After a build call with uploads, run `storysync figma upload`; after a read call whose result has `more`, run `storysync figma next`. Then `storysync verify --plan`."));
