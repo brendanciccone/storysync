@@ -196,10 +196,12 @@ export class Binder {
    * has one, and never to a step of the scale that happens to equal it, as
    * `md` does on a 16px circle, which a designer editing `md` would turn
    * square. A `pill`, a radius of half the box's shorter side, binds by
-   * value only where a class names its token, for the same reason.
+   * value only where a class names its token, for the same reason. Only a
+   * pill is full: classes lose their variants (`sm:`, `data-[x]:`), so a
+   * rounded-full beside the radius a smaller one draws may be inactive.
    */
   radius(px: number, cls: readonly string[] | undefined, pill = false): BindDecision {
-    if ((cls ?? []).some((c) => FULL_RADIUS.test(readEvidence(c).utility))) {
+    if (pill && (cls ?? []).some((c) => FULL_RADIUS.test(readEvidence(c).utility))) {
       const candidates = [...new Set(this.radii.filter((t) => tokenClassName(t.name) === "full").map((t) => t.name))].sort();
       return { variable: candidates.length === 1 ? candidates[0] : null, candidates };
     }

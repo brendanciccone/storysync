@@ -267,10 +267,14 @@ test("Binder: a dark: class gives the alpha the dark theme paints its token at, 
 
 test("Binder: a full radius binds only to a token named full, and a pill only where a class names its token", () => {
   const binder = new Binder(SHADCN_TOKENS);
-  assert.deepEqual(binder.radius(8, ["rounded-full"]), { variable: null, candidates: [] });
-  assert.deepEqual(binder.radius(8, ["dark:bg-input/30", "rounded-l-full"]), { variable: null, candidates: [] });
+  assert.deepEqual(binder.radius(8, ["rounded-full"], true), { variable: null, candidates: [] });
+  assert.deepEqual(binder.radius(8, ["dark:bg-input/30", "rounded-l-full"], true), { variable: null, candidates: [] });
   assert.equal(binder.radius(8, undefined, true).variable, null);
   assert.equal(binder.radius(8, ["rounded-md"], true).variable, "md");
   const full = new Binder({ collections: [{ category: "radius", tokens: [{ name: "md", value: "8px", px: 8 }, { name: "full", value: "9999px", px: 9999 }] }] });
-  assert.deepEqual(full.radius(8, ["rounded-full"]), { variable: "full", candidates: ["full"] });
+  assert.deepEqual(full.radius(8, ["rounded-full"], true), { variable: "full", candidates: ["full"] });
+  // Not a pill: the rounded-full, its variant gone (sm:, data-[x]:), is
+  // inactive, and md draws an 8px radius on a 36px button.
+  assert.equal(binder.radius(8, ["rounded-md", "rounded-full"]).variable, "md");
+  assert.equal(full.radius(8, ["rounded-md", "rounded-full"]).variable, "md");
 });
