@@ -731,17 +731,18 @@ const recordsOf = (base, delta) => {
 const idOf = (n) => get(n, 'id');
 const results = [];
 const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-const boxOf = (n) => ({ x: n.x, y: n.y, width: n.width, height: n.height });
-// Moves down, below `n`, each set or component that `n` grew onto: one it
-// didn't lie on at `was`, its box before, nor above it. What moves pushes
-// on in turn. A designer's layer stays, counted in `overlaps`.
-const push = (n, was, moved) => {
+// Moves down, below `n`, each set or component a push built that lies on
+// it, whether `n` grew onto it or an earlier push left it there; where one
+// starts above `n`, `n` moves below it instead. What moves pushes on in
+// turn. A designer's layer stays, counted in `overlaps`.
+const push = (n, moved) => {
   for (const m of n.parent.children) {
-    if (m === n || !idOf(m) || m.y < n.y || !hit(m, n) || hit(m, was)) continue;
-    const before = boxOf(m);
-    m.y = n.y + n.height + 100;
-    moved.push(m.id);
-    push(m, before, moved);
+    if (m === n || !/^COMPONENT/.test(m.type) || !idOf(m) || !hit(m, n)) continue;
+    const [a, b] = m.y < n.y ? [n, m] : [m, n];
+    a.y = b.y + b.height + 100;
+    moved.push(a.id);
+    push(a, moved);
+    if (a === n) return;
   }
 };
 // Each set is checked before it is changed. One the user must answer for
@@ -801,7 +802,6 @@ for (const set of DATA.sets) {
     results.push({ component: set.id, name: set.name, refused: why });
     continue;
   }
-  const was = node && boxOf(node);
   let converted = 0;
   if (convert) {
     const plain = node;
@@ -1058,10 +1058,10 @@ for (const set of DATA.sets) {
     }
     Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
   }
-  // A set that grew where it was moves down what it grew onto, so no two
-  // sets overlap; `overlaps` counts what it lies on once laid out.
+  // No two sets a push built overlap; `overlaps` counts what else it lies
+  // on once laid out.
   const moved = [];
-  if (was) push(node, was, moved);
+  push(node, moved);
   if (moved.length) out.moved = moved;
   out.overlaps = node.parent.children.filter((n) => n !== node && /^COMPONENT/.test(n.type) && hit(n, node)).length;
 }

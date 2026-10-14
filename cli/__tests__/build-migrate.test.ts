@@ -221,6 +221,26 @@ test("build: a set that grows where it is moves down the set it grew onto, and c
   assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 0]);
 });
 
+test("build: a set an earlier push left on another is moved off it, below it, or the set built below the one above it", async () => {
+  // The shadcn file's Breadcrumb inside Questionnaire: two sets a push built, one on the other.
+  const both = copy(loadTreeFixture("example-button"));
+  const other = copy(loadTreeFixture("switch").components[0]);
+  other.category = "Forms";
+  both.components.push(other);
+  for (const dy of [10, -10]) {
+    const mock = mockFor([loadTreeFixture("example-button"), loadTreeFixture("switch")]);
+    const coded = await codeFor(both);
+    const [first] = await push(mock, coded);
+    const [button, toggle] = sets(first);
+    const b = mock.handle(button.id) as { x: number; y: number };
+    await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(toggle.id)}); s.x = ${b.x + 10}; s.y = ${b.y + dy};`);
+    const [then] = await push(mock, coded);
+    assert.deepEqual(sets(then).map((s) => s.overlaps), [0, 0], `${dy}`);
+    const [top, below] = (dy > 0 ? [button, toggle] : [toggle, button]).map((s) => mock.handle(s.id) as { y: number; height: number });
+    assert.equal(below.y, top.y + top.height + 100, `${dy}`);
+  }
+});
+
 test("build and read: the first call of each kind stores its template in the file, the rest run it from there, refused where the file holds another", async () => {
   const snap = copy(loadTreeFixture("switch"));
   snap.components.push(copy(loadTreeFixture("example-button").components[0]));
