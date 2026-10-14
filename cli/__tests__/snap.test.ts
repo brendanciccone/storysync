@@ -14,7 +14,7 @@ import {
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
   contentOverflow, describeOverflow, describeVariantStories,
-  detectBehaviorProps, TIMEOUT_RETRY_FACTOR, describeStoryErrors,
+  detectBehaviorProps, TIMEOUT_RETRY_FACTOR, describeStoryErrors, snapMessages,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
@@ -2890,4 +2890,29 @@ test("describeStoryErrors: a story that calls an implicit action while it render
   assert.match(warning ?? "", /`args: \{ onLayoutChanged: fn\(\) \}` with `fn` from `storybook\/test`/);
   assert.match(describeStoryErrors("X", "x--default", [...failed, { status: "ok", error: null }]) ?? "", /^X: 2 of 3 variants failed/);
   assert.equal(describeStoryErrors("X", "x--default", [{ status: "render_error", error: "boom" }]), null);
+});
+
+test("snapMessages: what the text output says, i, ! and ✗ lines and each variant not measured, for --json's messages", () => {
+  const click = { via: "click" as const, trigger: 'button[data-slot="popover-trigger"]' };
+  const result = {
+    fontStandIns: [["system-ui", "Inter"]],
+    components: [
+      {
+        name: "Popover", title: "ui/base/Popover", variantProperties: [], warnings: ["a warning"], error: null,
+        variants: [
+          { combination: {}, slug: "default", status: "ok", error: null, opened: click, element: 'div[data-slot="popover-content"]' },
+          { combination: {}, slug: "other", status: "render_error", error: "boom" },
+        ],
+      },
+      { name: "Card", variantProperties: [], warnings: [], error: "no stories found for this component", variants: [], scheme: "light", globals: { theme: "light" } },
+    ],
+  } as never;
+  assert.deepEqual(snapMessages(result), [
+    { level: "info", text: describeFontStandIns([["system-ui", "Inter"]])! },
+    { level: "warning", component: "ui/base/Popover", text: "a warning" },
+    { level: "error", component: "Card", text: "no stories found for this component" },
+    { level: "info", component: "ui/base/Popover", text: 'measured open: snap clicked button[data-slot="popover-trigger"] in 1 of 1 variants to open it, and measured div[data-slot="popover-content"]'.replace(" in 1 of 1 variants", "") },
+    { level: "info", component: "Card", text: "measured in the light color scheme with globals=theme:light in its stories' URLs, as Storybook renders dark by default" },
+    { level: "failed", component: "Popover", text: "other [render_error] boom" },
+  ]);
 });

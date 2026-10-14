@@ -32,7 +32,7 @@ import { stylesJsonText } from "./snap-tree.js";
 import { chooseStory, siblingStories, storyAddsContent, storyKeys } from "./snap-stories.js";
 import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
-import { resolveProps } from "./props.js";
+import { describeExclusions, resolveProps } from "./props.js";
 import { describeDarkScheme, globalsParam, lightGlobals } from "./snap-scheme.js";
 import type { PropExclusion } from "./props.js";
 
@@ -296,6 +296,61 @@ export interface SnapResult {
     /** Components with more combinations than the ceiling, measured as a subset. */
     componentsCapped: number;
   };
+}
+
+/**
+ * One thing snap says about a run, as its text output says it: `info` an
+ * `i` line, `warning` a `!` line (a component's warning), `error` a `✗`
+ * line (a component it couldn't measure), and `failed` a variant it
+ * didn't measure. Under --json they are the output's `messages`, so an
+ * agent that reads only the JSON still has what a terminal shows.
+ */
+export interface SnapMessage {
+  level: "info" | "warning" | "error" | "failed";
+  /** The component's title, or name; absent for the run's. */
+  component?: string;
+  text: string;
+}
+
+/** Everything snap's text output says about `result`, in its order. */
+export function snapMessages(result: SnapResult): SnapMessage[] {
+  const out: SnapMessage[] = [];
+  const label = (c: SnapComponent) => c.title ?? c.name;
+  const standIns = describeFontStandIns(result.fontStandIns);
+  if (standIns) out.push({ level: "info", text: standIns });
+  for (const c of result.components) for (const text of c.warnings) out.push({ level: "warning", component: label(c), text });
+  for (const c of result.components) if (c.error != null) out.push({ level: "error", component: label(c), text: c.error });
+  // Said, not warned: the stories each variant was measured from, where not the component's.
+  for (const c of result.components) {
+    const stories = describeVariantStories(c);
+    if (stories) out.push({ level: "info", component: label(c), text: stories });
+  }
+  // Said, not warned: the overlays snap opened to measure.
+  for (const c of result.components) {
+    const opened = describeOpenedOverlays(c);
+    if (opened) out.push({ level: "info", component: label(c), text: opened });
+  }
+  // Said, not warned: the props the story's argTypes add, and those left out, and why.
+  for (const c of result.components) {
+    const added = (c.argsNotInDocs ?? []).filter((name) => c.variantProperties.some((p) => p.name === name));
+    if (added.length) {
+      const names = added.map((name) => `\`${name}\``).join(", ");
+      out.push({ level: "info", component: label(c), text: `the story's argTypes declare ${names}, which Storybook's docs don't list, so snap made ${added.length === 1 ? "it a variant property" : "them variant properties"}` });
+    }
+    const left = describeExclusions(c.excludedProps ?? []);
+    if (left) out.push({ level: "info", component: label(c), text: left });
+  }
+  // Said, not warned: the globals that rendered a dark-by-default Storybook light.
+  for (const c of result.components) {
+    if (c.globals && c.scheme === "light") {
+      const set = Object.entries(c.globals).map(([name, value]) => `${name}:${value}`).join(";");
+      out.push({ level: "info", component: label(c), text: `measured in the light color scheme with globals=${set} in its stories' URLs, as Storybook renders dark by default` });
+    }
+  }
+  for (const c of result.components) {
+    for (const v of c.variants) if (v.status !== "ok") out.push({ level: "failed", component: c.name, text: `${v.slug} [${v.status}] ${v.error ?? ""}`.trimEnd() });
+  }
+  return out;
 }
 
 /** Whether `snap --strict` fails on `result`. */

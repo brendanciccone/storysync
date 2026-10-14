@@ -13,7 +13,7 @@ import { checkPropFlags, describeExclusions, describeUnseenArgTypes, exclusionRe
 import type { PropExclusion, SnapProps } from "./props.js";
 import { detectTokenSource, extractTokens, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource } from "./tokens.js";
 import { diffTokens, diffComponents, selectDiffComponents, narrowFigmaComponents, computeDiffSummary, hasDifferences, modesNotCompared } from "./diff.js";
-import { describeFontStandIns, describeOpenedOverlays, describeVariantStories, runSnap, snapFailsStrict } from "./snap.js";
+import { runSnap, snapFailsStrict, snapMessages } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity } from "./verify.js";
@@ -575,48 +575,24 @@ program
       ).finally(unlisten);
       progress.done();
 
+      const messages = snapMessages(result);
       if (json) {
-        console.log(JSON.stringify(result));
+        // What a terminal shows, first, for an agent that reads only the JSON.
+        console.log(JSON.stringify({ messages, ...result }));
       } else {
         const { summary } = result;
         console.log(`\n${summary.rendered}/${summary.variants} variants measured across ${summary.components} components`);
         console.log(chalk.dim(`  Styles written to ${opts.out}/styles.json`));
-        const standIns = describeFontStandIns(result.fontStandIns);
-        if (standIns) console.log(chalk.dim(`\n  i ${standIns}`));
-        for (const component of result.components) {
-          for (const warning of component.warnings) {
-            console.log(chalk.yellow(`\n  ! ${component.title ?? component.name}: ${warning}`));
-          }
+        const named = (m: { component?: string; text: string }) => (m.component ? `${m.component}: ${m.text}` : m.text);
+        for (const m of messages) {
+          if (m.level === "info") console.log(chalk.dim(`\n  i ${named(m)}`));
+          else if (m.level === "warning") console.log(chalk.yellow(`\n  ! ${named(m)}`));
+          else if (m.level === "error") console.log(chalk.yellow(`\n  ✗ ${named(m)}`));
         }
-        for (const component of result.components.filter((c) => c.error != null)) {
-          console.log(chalk.yellow(`\n  ✗ ${component.title ?? component.name}: ${component.error}`));
-        }
-        // Said, not warned: the stories each variant was measured from, where not the component's.
-        for (const component of result.components) {
-          const stories = describeVariantStories(component);
-          if (stories) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${stories}`));
-        }
-        // Said, not warned: the overlays snap opened to measure.
-        for (const component of result.components) {
-          const opened = describeOpenedOverlays(component);
-          if (opened) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${opened}`));
-        }
-        // Said, not warned: the props the story's argTypes add, and those left out, and why.
-        for (const component of result.components) {
-          const added = (component.argsNotInDocs ?? []).filter((name) => component.variantProperties.some((p) => p.name === name));
-          if (added.length) {
-            const names = added.map((name) => `\`${name}\``).join(", ");
-            console.log(chalk.dim(`\n  i ${component.title ?? component.name}: the story's argTypes declare ${names}, which Storybook's docs don't list, so snap made ${added.length === 1 ? "it a variant property" : "them variant properties"}`));
-          }
-          const left = describeExclusions(component.excludedProps ?? []);
-          if (left) console.log(chalk.dim(`\n  i ${component.title ?? component.name}: ${left}`));
-        }
-        const failed = result.components.flatMap((c) => c.variants.filter((v) => v.status !== "ok").map((v) => ({ c, v })));
+        const failed = messages.filter((m) => m.level === "failed");
         if (failed.length) {
           console.log(chalk.yellow(`\n  ${failed.length} variants not measured:`));
-          for (const { c, v } of failed.slice(0, 10)) {
-            console.log(chalk.dim(`    ${c.name} ${v.slug} [${v.status}] ${v.error ?? ""}`));
-          }
+          for (const m of failed.slice(0, 10)) console.log(chalk.dim(`    ${m.component} ${m.text}`));
           if (failed.length > 10) console.log(chalk.dim(`    ... and ${failed.length - 10} more`));
         }
       }
