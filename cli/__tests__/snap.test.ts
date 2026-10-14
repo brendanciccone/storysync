@@ -1881,7 +1881,7 @@ test("runSnap --root-only: styles.json as before trees, each variant saying how 
     assert.equal(component.capture, undefined);
     assert.equal(component.tree, undefined);
     assert.deepEqual(component.variants.map((v) => [v.innerElements, v.treeDelta]), [[22, undefined], [22, undefined]]);
-    // Without trees, written as JSON.stringify writes it, as 0.4.0 did.
+    // Without trees, written as JSON.stringify writes it, as 0.3.0 did.
     assert.equal(readFileSync(join(dir, "styles.json"), "utf8"), `${JSON.stringify(result, null, 2)}\n`);
   } finally {
     rmSync(dir, { recursive: true, force: true });

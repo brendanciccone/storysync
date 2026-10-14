@@ -4,6 +4,11 @@ Section numbers refer to `design/ELEMENT-TREE-SPEC.md`. Packages A, B, C and D
 build against what `cli/tree-types.ts` does, so each departure is listed here
 rather than left for them to find.
 
+These are development notes, kept because the code cites them by number. The
+spec they refer to isn't in this repo. Here "0.4.0" means the build before
+element trees, which scored each variant's outer element alone, as 0.3.0 did.
+Element trees first shipped in 0.4.1; 0.4.0 was never published.
+
 ## Contract (`cli/tree-types.ts`)
 
 1. **Exports beyond section 7.1.**

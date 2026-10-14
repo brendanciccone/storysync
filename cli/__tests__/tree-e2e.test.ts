@@ -1089,7 +1089,7 @@ test("verify --allow-designer-layers: a layer a designer added inside a variant 
   }
 });
 
-test("verify --roots-only: scores each variant's outer element alone, as 0.4.0 did, beside the element score", async () => {
+test("verify --roots-only: scores each variant's outer element alone, as 0.3.0 did, beside the element score", async () => {
   const p = await push(asSnap(loadTreeFixture("attachment")));
   try {
     const roots = await verifyPlan(p, "--roots-only", "--strict");
