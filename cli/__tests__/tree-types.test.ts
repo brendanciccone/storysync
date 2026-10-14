@@ -387,13 +387,30 @@ test("flowOf: another world takes snap's axis, so a block child 3px into the one
   assert.deepEqual([none.axis, none.main], [null, {}]);
 });
 
-test("flowOf: a single-column grid stacks; several columns, or a wrapping flex, have no flow", () => {
+test("flowOf: a single-column grid stacks; several columns, or a wrapping flex that wrapped, have no flow", () => {
   const kids = [frame("a", [24, 0, 336, 24]), frame("b", [24, 28, 336, 20])];
   const header = frame("card-header", [0, 24, 384, 48], { L: { d: "grid", gap: [4, 4], pad: [0, 24, 0, 24], tracks: [1, 2] } });
   assert.equal(flowOf(header, kids).axis, "y");
   assert.deepEqual(flowOf(header, kids).main, { a: 0, b: 4 });
   assert.equal(flowOf(frame("g", [0, 0, 100, 40], { L: { d: "grid", tracks: [2, 1] } }), kids).axis, null);
   assert.equal(flowOf(frame("w", [0, 0, 100, 40], { L: { d: "flex", wrap: 1 } }), kids).axis, null);
+});
+
+test("flowOf: a wrapping flex whose children sit on one line flows along it, so a label Figma rounds up moves only itself", () => {
+  // Breadcrumb's list, flex-wrap, 400 wide: Figma's labels each up to a
+  // pixel wider, the chevron after "Components" lands at 169, not 167.44.
+  const list = frame("ol", [0, 0, 400, 20], { L: { d: "flex", ai: "center", gap: [10, 10], wrap: 1 } });
+  const snap = [frame("a", [0, 0, 84.4, 20]), frame("svg", [94.4, 3, 14, 14]), frame("page", [118.4, 0, 80.85, 20])];
+  const flow = flowOf(list, snap);
+  assert.equal(flow.axis, "x");
+  const figma = flowOf(list, [frame("a", [0, 0, 85, 20]), frame("svg", [95, 3, 14, 14]), frame("page", [119, 0, 81, 20])], flow);
+  assert.deepEqual(figma.main, flow.main);
+  // Columns too; a child with no height takes no line.
+  const column = frame("c", [0, 0, 40, 100], { L: { d: "flex", dir: "column", wrap: 1 } });
+  assert.equal(flowOf(column, [frame("a", [0, 0, 30, 20]), frame("b", [5, 20, 20, 20])]).axis, "y");
+  assert.equal(flowOf(list, [...snap, frame("empty", [200, 30, 10, 0])]).axis, "x");
+  // Wrapped onto a second line, even with no gap between: none.
+  assert.equal(flowOf(list, [frame("a", [0, 0, 300, 20]), frame("b", [0, 20, 200, 20])]).axis, null);
 });
 
 test("flowOf: out-of-flow children are left out, and the border and padding bound the content", () => {

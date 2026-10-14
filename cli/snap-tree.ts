@@ -64,6 +64,7 @@ export const TREE_PROPERTY_DEFAULTS: Readonly<Record<string, string>> = {
 export const TEXT_TREE_PROPERTIES: readonly string[] = [
   "color", "font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing",
   "text-transform", "text-decoration-line", "text-align", "white-space", "text-overflow", "-webkit-line-clamp",
+  "text-wrap-style",
 ];
 
 /**
@@ -958,6 +959,8 @@ function textFacts(
   if (align === "center" || align === "right" || align === "justify" || align === "end") tx.ta = align;
   const ws = text["white-space"] ?? "normal";
   if (ws === "nowrap" || ws === "pre" || ws === "pre-wrap" || ws === "pre-line") tx.ws = ws;
+  const wrap = text["text-wrap-style"] ?? "auto";
+  if (wrap === "balance" || wrap === "pretty") tx.tw = wrap;
   if (text["text-overflow"] === "ellipsis" && ws === "nowrap" && clips(holder)) tx.el = 1;
   const clamp = Number.parseInt(text["-webkit-line-clamp"] ?? "", 10);
   if (Number.isFinite(clamp) && clamp > 0) tx.cl = clamp;
@@ -1169,7 +1172,9 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
 
   if (el.tag === "svg") {
     const tooBig = el.svgElements !== undefined || !el.svg;
-    const built = tooBig ? null : serializeSvg(el.svg!, box);
+    // Drawn inside its padding and border, as the browser draws it there.
+    const inset = SIDES.map((side) => sideWidth(css, side) + px(css(`padding-${side}`))) as [number, number, number, number];
+    const built = tooBig ? null : serializeSvg(el.svg!, box, inset);
     if (built && built.markup.length <= ctx.maxSvgChars) {
       const id = svgAssetId(built.markup);
       ctx.svg[id] = built.markup;

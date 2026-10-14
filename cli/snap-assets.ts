@@ -183,6 +183,34 @@ export function rawPaint(markup: string): string {
 }
 
 /**
+ * The viewBox that draws an SVG across its whole border box as the browser
+ * draws it in its content box, inside its padding and border (`inset`, top
+ * right bottom left): coder's `[&>svg]:p-0.5` draws a 24-unit icon in the
+ * 20px inside a 24px box. The markup is imported at the border box, so its
+ * viewBox reaches as far past the drawing as the inset: `-2.4 -2.4 28.8
+ * 28.8` there. null where there is no inset, or no room inside it. With
+ * the same scale on both axes, the box's own aspect, any alignment then
+ * draws alike; `none` keeps a scale for each.
+ */
+function viewBoxIn(attrs: Record<string, string>, box: Box, inset: [number, number, number, number]): string | null {
+  const [t, r, b, l] = inset;
+  const [cw, ch] = [box[2] - l - r, box[3] - t - b];
+  if (!inset.some((v) => v > 0) || cw <= 0 || ch <= 0) return null;
+  const view = attrs.viewBox?.trim().split(/[\s,]+/).map(Number);
+  const [vx, vy, vw, vh] = view?.length === 4 && view[2] > 0 && view[3] > 0 ? view : [0, 0, cw, ch];
+  const fit = (attrs.preserveAspectRatio ?? "xMidYMid meet").trim().split(/\s+/);
+  let [kx, ky, ox, oy] = [cw / vw, ch / vh, l, t];
+  if (fit[0] !== "none") {
+    kx = ky = fit[1] === "slice" ? Math.max(cw / vw, ch / vh) : Math.min(cw / vw, ch / vh);
+    const at = (part: string, room: number) => (part === "Min" ? 0 : part === "Max" ? room : room / 2);
+    ox += at(fit[0].slice(1, 4), cw - vw * kx);
+    oy += at(fit[0].slice(5, 8), ch - vh * ky);
+  }
+  const n = (v: number) => String(Math.round(v * 1e4) / 1e4);
+  return [vx - ox / kx, vy - oy / ky, box[2] / kx, box[3] / ky].map(n).join(" ");
+}
+
+/**
  * An inline SVG as markup snap stores, rebuilt from what the browser drew
  * rather than copied from the page: geometry kept as written, every paint
  * as computed (section 6.6 of the design), sized to the box the browser drew
@@ -194,7 +222,7 @@ export function rawPaint(markup: string): string {
  * `use`, `text`, a nested `<svg>`) is kept as the page wrote it and named
  * in `flags`, so the node can say its vector is approximate.
  */
-export function serializeSvg(root: RawSvgNode, box: Box): { markup: string; flags: string[] } {
+export function serializeSvg(root: RawSvgNode, box: Box, inset: [number, number, number, number] = [0, 0, 0, 0]): { markup: string; flags: string[] } {
   const flags: string[] = [];
   const attrs = (pairs: [string, string][]) => pairs.map(([k, v]) => ` ${k}="${escapeAttr(v)}"`).join("");
   // Markup in order, a shape's left until the paint shared by all is known.
@@ -251,6 +279,11 @@ export function serializeSvg(root: RawSvgNode, box: Box): { markup: string; flag
 
   const rootAttrs: [string, string][] = [["xmlns", "http://www.w3.org/2000/svg"], ["width", String(r2(box[2]))], ["height", String(r2(box[3]))]];
   for (const name of SVG_ROOT_ATTRS) if (root.attrs[name] !== undefined) rootAttrs.push([name, root.attrs[name]]);
+  const drawn = viewBoxIn(root.attrs, box, inset);
+  if (drawn) {
+    for (const [i, pair] of rootAttrs.entries()) if (pair[0] === "viewBox") rootAttrs.splice(i, 1);
+    rootAttrs.splice(3, 0, ["viewBox", drawn]);
+  }
   for (const name of PAINT_ORDER) if (hoisted[name] !== undefined) rootAttrs.push([name, hoisted[name]]);
   const body = pieces.map((piece) => {
     if (typeof piece === "string") return piece;

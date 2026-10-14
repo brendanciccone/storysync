@@ -39,7 +39,7 @@ import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { alphaCalls } from "./figma-tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
-import { expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
+import { absoluteBoxes, expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
 import type { Box, ComponentTree, FigmaPlan, PlanAlpha, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
 import { VERSION } from "./version.js";
 
@@ -131,7 +131,10 @@ const MINIFIED_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
 
 /**
  * A template's code: the minified build output (dist/templates/*.min.js,
- * from scripts/build-templates.mjs) or the readable source.
+ * from scripts/build-templates.mjs) or the readable source. The readable
+ * one has its comment lines blanked but the first, which names it: each
+ * line stays the file's line, and a build call keeps the room for its data
+ * that the comments, a third of the build template, would take.
  */
 export function loadTemplate(name: TemplateName, minify = true, overrides?: FigmaCodeOptions["templates"]): string {
   const given = overrides?.[name];
@@ -144,7 +147,8 @@ export function loadTemplate(name: TemplateName, minify = true, overrides?: Figm
         : `${path} is missing: this storysync has no ${name} template`,
     );
   }
-  return readFileSync(path, "utf8").trim();
+  const code = readFileSync(path, "utf8").trim();
+  return minify ? code : code.split("\n").map((line, i) => (i > 0 && /^\s*\/\//.test(line) ? "" : line)).join("\n");
 }
 
 // --- Records ----------------------------------------------------------------
@@ -242,10 +246,11 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
     const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, scheme: schemeOf(component), component: componentKey(component), parentCls: parent?.cls, spike, around };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, scheme: schemeOf(component), component: componentKey(component), parentCls: parent?.cls, parentEl: parent?.el, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
+  spreadDrawn(full, styleOf, findings.notBuilt);
 
   const plans = new Map<string, LayoutPlan>();
   for (const node of full) {
@@ -280,6 +285,46 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
 }
 
 /**
+ * Figma draws a shadow's spread, a ring's whole width, only on a frame that
+ * clips its content and has a visible fill (its Plugin API; probe 8a saw a
+ * ring on a frame without either draw nothing): the build clips a frame
+ * whose shadow spreads, where its content draws inside it, so clipping cuts
+ * nothing the browser drew, and gives one without a fill a white fill
+ * multiplied, which leaves what is behind it as it was and lets the ring
+ * draw (probe 8a, call 2). `rc` says which it added, `c` the clip and `f`
+ * the fill, and the readback reads the frame without them. Where content
+ * draws past the frame, the shadow is built without its spread, and said.
+ */
+function spreadDrawn(nodes: TreeNode[], styleOf: Map<string, FigmaStyle>, notBuilt: NotBuilt[]): void {
+  const abs = absoluteBoxes(nodes);
+  for (const node of nodes) {
+    const style = styleOf.get(node.k)!;
+    if (node.t !== "F" || !style.e?.some((e) => e.length > 2 && e[4] !== 0)) continue;
+    let rc = "";
+    if (!style.c) {
+      const [t, r, b, l] = outsideInsets(node);
+      const [x, y, w, h] = abs.get(node.k)!;
+      const inside = nodes.every((n) => {
+        if (n.vis === 0 || !(node.k === "" ? n.k !== "" : n.k.startsWith(`${node.k}/`))) return true;
+        const reach = Math.max(0, ...(n.sh ?? []).filter((s) => !s[5]).map(([sx, sy, blur, spread]) => Math.max(Math.abs(sx), Math.abs(sy)) + blur + Math.max(0, spread)), n.ol ? n.ol[0] + n.ol[3] : 0);
+        const [nx, ny, nw, nh] = abs.get(n.k)!;
+        return nx - reach >= x + l - 0.5 && ny - reach >= y + t - 0.5 && nx + nw + reach <= x + w - r + 0.5 && ny + nh + reach <= y + h - b + 0.5;
+      });
+      if (!inside) {
+        // Built without it, so the readback reads what Figma draws, and verify scores it.
+        style.e = style.e.map((e) => (e.length > 2 && e[4] !== 0 ? [e[0], e[1], e[2], e[3], 0, ...e.slice(5)] : e)) as typeof style.e;
+        notBuilt.push({ key: node.k, what: "a shadow's spread on a frame whose content draws past it", as: "the shadow without its spread, which Figma draws only on a frame that clips" });
+        continue;
+      }
+      style.c = 1;
+      rc += "c";
+    }
+    if (!style.f?.length) rc += "f";
+    if (rc) style.rc = rc;
+  }
+}
+
+/**
  * The layout plan of each frame with children in a measured variant, by key:
  * what figma code builds, for a test or a report to read.
  */
@@ -305,7 +350,8 @@ function compileVariant(
   const records: Record_[] = [];
   const images: string[] = [];
   const own = (node: TreeNode, axis: 0 | 1): string => {
-    if (node.t === "T") return textSizesItself(node) || axis === 1 ? "H" : "X";
+    // A control's value keeps the box measured: its control is as tall as the browser drew it (FigmaText `v`).
+    if (node.t === "T") return node.el === "#value" ? "X" : textSizesItself(node) || axis === 1 ? "H" : "X";
     const plan = plans.get(node.k);
     return plan && plan.mode !== "NONE" && plan.hug[axis] ? "H" : "X";
   };
@@ -1129,7 +1175,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
       }
     }
     // The template and the limit the call it continues was written with: the
-    // readable template, which keeps its comments, after `figma code --no-minify`.
+    // readable template, which keeps its first line, after `figma code --no-minify`.
     const parent = existsSync(join(dir, call.file)) ? readFileSync(join(dir, call.file), "utf8") : "";
     const template = loadTemplate("readback", opts.minify ?? !parent.includes("// storysync readback, template"), opts.templates);
     const written = /\nconst LIMIT = (\d+);/.exec(parent);

@@ -73,8 +73,8 @@ const loadFont = (t) => {
   return (fonts[id] = fonts[id] || (async () => {
     const i = Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1));
     const d = Math.sign(3 - i);
-    for (const f of new Set([t.g || family, family, t.a || 'Inter', 'Inter'])) {
-      for (const j of new Set([i, i + d, i + 2 * d, 3].filter((j) => (j - 3) * d <= 0))) {
+    for (const f of new Set([t.g, family, t.a, 'Inter'])) {
+      if (f) for (const j of new Set([i, i + d, i + 2 * d, 3].filter((j) => (j - 3) * d <= 0))) {
         for (const s of new Set([STYLES[j], STYLES[j].replace(' ', '')])) {
           for (const style of italic ? [j === 3 ? 'Italic' : s + ' Italic', s] : [s]) {
             try {
@@ -266,7 +266,7 @@ const setLines = (n, t, w, h) => {
   if (t.ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
   else {
     n.resize(w, h);
-    n.textAutoResize = 'HEIGHT';
+    n.textAutoResize = t.v ? 'NONE' : 'HEIGHT';
   }
   n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
   n.maxLines = t.tr || null;
@@ -304,12 +304,16 @@ const style = async (n, rec, parent, root) => {
     await loadFonts([n]);
     n.fontName = font;
     n.characters = t.c;
+    if (get(n, 'br')) put(n, 'br', '');
     n.fontSize = t.z;
     n.lineHeight = t.l ? { unit: 'PIXELS', value: t.l } : { unit: 'AUTO' };
     n.letterSpacing = { unit: 'PIXELS', value: t.s || 0 };
     n.textCase = t.tc || 'ORIGINAL';
     n.textDecoration = t.td || 'NONE';
     n.textAlignHorizontal = t.ta || 'LEFT';
+    // A control's value (`v`): at its box's middle, or top.
+    n.textAlignVertical = t.v === 'C' ? 'CENTER' : 'TOP';
+    if (t.b && !t.tr) balance(n, t, w);
     await setPaints(n, 'fills', st.f || [], 'color');
     try {
       setLines(n, t, w, h);
@@ -343,7 +347,10 @@ const style = async (n, rec, parent, root) => {
       // No longer an image: the images call must not fill it.
       if (get(n, 'img')) put(n, 'img', '');
       await setPaints(n, 'fills', st.f || [], 'fill');
+      // A fill that draws nothing, for a ring (`rc`, figma-code spreadDrawn).
+      if (/f/.test(st.rc || '')) n.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, blendMode: 'MULTIPLY' }];
     }
+    if (st.rc || get(n, 'rc')) put(n, 'rc', st.rc || '');
     const s = st.s;
     if (s) {
       await setPaints(n, 'strokes', [s.p], 'stroke');
@@ -366,9 +373,11 @@ const style = async (n, rec, parent, root) => {
       if (v) for (const corner of corners) n.setBoundVariable(corner, v);
     }
     const L = st.L;
+    // Figma sets it only on auto layout (probe 8a): a frame copied from one
+    // with it, built without, clears it first.
+    if (!L && n.layoutMode !== 'NONE' && n.strokesIncludedInLayout) n.strokesIncludedInLayout = false;
     n.layoutMode = L ? (L.m === 'H' ? 'HORIZONTAL' : 'VERTICAL') : 'NONE';
-    // Only auto layout reads it: left alone on a frame without, unless an earlier build set it.
-    if (L || n.strokesIncludedInLayout) n.strokesIncludedInLayout = Boolean(L && L.i);
+    if (L) n.strokesIncludedInLayout = Boolean(L.i);
     if (L) {
       [n.paddingTop, n.paddingRight, n.paddingBottom, n.paddingLeft] = L.p;
       n.itemSpacing = L.g;
@@ -484,8 +493,81 @@ const converge = async (root, recs) => {
   return { nodes, designer };
 };
 
-// Keeps each text the browser drew whole on one line (`o`) so in Figma,
-// once the variant is laid out. Figma's font can set it wider than the box
+// Whether a text wraps in Figma: taller than a line and a half, of its
+// line height or Figma's for the font (1.21em to 1.36em), not of the box
+// measured, which a row that stretches its items makes taller. Without its
+// line limit, as a truncated text wraps where it would be cut.
+// A control's value (`v`) is sized to its box: it grows to its lines a moment.
+const wraps = (n, t) => {
+  const [w, h] = [n.width, n.height];
+  if (t.v) n.textAutoResize = 'HEIGHT';
+  n.maxLines = null;
+  const out = n.height > 1.5 * (t.l || 1.27 * t.z);
+  if (t.v) setLines(n, t, w, h);
+  n.maxLines = t.tr || null;
+  return out;
+};
+
+// Breaks a balanced text's lines (`b`: the widest line's width, the line
+// count) where the browser did: Chrome balances by filling each line at the
+// narrowest width that keeps their count, Figma fills them at the box's.
+// Where those differ, a line separator, which Figma keeps (probe 8a), ends
+// each line; `br` keeps the characters for the readback. Figma tells a
+// break only by height, so the text tries a word more at a time, before
+// setLines sizes it.
+const balance = (n, t, w) => {
+  const words = t.c.split(' ');
+  n.textAutoResize = 'HEIGHT';
+  const fits = (s, width) => {
+    n.resize(width, n.height);
+    n.characters = s;
+    return n.height <= 1.5 * (t.l || 1.27 * t.z);
+  };
+  const lines = [words[0]];
+  for (const word of words.slice(1)) {
+    const longer = lines[lines.length - 1] + ' ' + word;
+    if (fits(longer, t.b[0] + 0.5)) lines[lines.length - 1] = longer;
+    else lines.push(word);
+  }
+  const breaks = lines.length === t.b[1] && lines.slice(0, -1).some((l, j) => fits(l + ' ' + lines[j + 1].split(' ')[0], w));
+  n.characters = breaks ? lines.join('\u2028') : t.c;
+  if (breaks) put(n, 'br', t.c);
+};
+
+// Figma rounds a hugging label's width up to a pixel (probe 8a: Item's
+// "Action", 43.13, is 44), which narrows a filling sibling, Item's
+// description, until it wraps, or runs a row past its frame, Breadcrumb's.
+// By up to all that rounding, the frame that fixes the width grows by what
+// a child lost, so the labels still hug.
+const slack = (nodes, recs) => {
+  let most = 0.05;
+  for (let i = 1; i < recs.length; i++) {
+    const d = nodes[i].width - recs[i][5];
+    if (nodes[i].type === 'TEXT' && nodes[i].textAutoResize === 'WIDTH_AND_HEIGHT' && d > 0 && d < 1) most += d;
+  }
+  const grow = {};
+  for (let i = 1; i < recs.length && most > 0.06; i++) {
+    const [n, r] = [nodes[i], recs[i]];
+    const p = nodes[r[1]];
+    if (!n.visible || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
+    // A filling child narrower, or one further past its frame's end.
+    const past = (end, w) => Math.max(0, end + p.paddingRight - w);
+    const d = p.layoutMode === 'HORIZONTAL' && n.layoutGrow ? r[5] - n.width : past(n.x + n.width, p.width) - past(r[3] + r[5], recs[r[1]][5]);
+    let j = r[1];
+    while (j && nodes[j].layoutSizingHorizontal === 'FILL') j = recs[j][1];
+    if (d > 0.01 && d < most) grow[j] = Math.max(grow[j] || 0, d);
+  }
+  for (const j in grow) {
+    const f = nodes[j];
+    const v = f.layoutSizingVertical;
+    if (f.layoutSizingHorizontal !== 'FIXED') continue;
+    f.resize(f.width + grow[j], f.height);
+    if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
+  }
+};
+
+// Keeps each text the browser drew whole on one line (`o`), and an input's
+// value, so in Figma, once the variant is laid out. Figma's font can set it wider than the box
 // it was measured in: Inter is wider than the system-ui a snap from before
 // the stand-ins measured, and Figma may one day hold another Inter than
 // snap's. At that width it would wrap, or, truncated, end in an ellipsis
@@ -497,20 +579,15 @@ const keepLines = (nodes, recs) => {
   for (let i = 1; i < recs.length; i++) {
     const st = S[recs[i][7]];
     const t = st.t;
-    if (!t || !t.o) continue;
+    // An input's value is one line whatever its box; a textarea's wraps.
+    if (!t || (!t.o && t.v !== 'C') || t.v === 'T') continue;
     const n = nodes[i];
-    // Without its line limit a truncated text wraps where it would be cut.
-    // It wraps where it is taller than a line and a half in Figma: its line
-    // height, or Figma's own for the font, 1.21em for Inter to 1.36em for
-    // Noto Serif, whole lines rounded up to a pixel. Not the box measured,
-    // which a row that stretches its items makes taller than the text.
-    n.maxLines = null;
-    const wraps = n.height > 1.5 * (t.l || 1.27 * t.z);
-    n.maxLines = t.tr || null;
-    if (!wraps) continue;
+    if (!wraps(n, t)) continue;
     at[2] = S[recs[i][0]];
-    const fills = (st.z || [])[0] === 'L';
-    if (fills && !t.tr) continue;
+    const fills = (st.z || [])[0] === 'L' || t.v;
+    // A value is cut at its box, as the browser clips it.
+    if (t.v) n.textTruncation = 'ENDING';
+    else if (fills && !t.tr) continue;
     if (!fills) {
       n.textAutoResize = 'WIDTH_AND_HEIGHT';
       if (t.tr) setLines(n, t, n.width, n.height);
@@ -705,6 +782,7 @@ for (const [s, set] of DATA.sets.entries()) {
       }
       if (want === 'COMPONENT_SET') variant.name = name;
       const { nodes, designer } = await converge(variant, recs);
+      slack(nodes, recs);
       keepLines(nodes, recs);
       designerLayers += designer;
       if (src) checkLayout(nodes, recs, slug, absoluteContainers);

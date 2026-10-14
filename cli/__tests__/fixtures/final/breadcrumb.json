@@ -1,0 +1,268 @@
+{
+  "about": "shadcn/ui registry (MIT) ui/radix/Breadcrumb as snap measured it in the final live test of 0.4.0 (session s4, 2026-10-13): three labels in a row as wide as its fixed root, 39.05, 84.4 and 80.85px, which Figma sets 40, 85 and 81 wide.",
+  "component": {
+    "id": "ui-radix-breadcrumb",
+    "name": "Breadcrumb",
+    "title": "ui/radix/Breadcrumb",
+    "category": "ui/radix",
+    "storyId": "ui-radix-breadcrumb--default",
+    "variantProperties": [],
+    "base": {
+      "combination": {},
+      "slug": "default",
+      "styles": {
+        "display": "block",
+        "flexDirection": null,
+        "alignItems": null,
+        "justifyContent": null,
+        "gap": null,
+        "width": 272.28,
+        "height": 20,
+        "backgroundColor": null,
+        "color": "#0a0a0a",
+        "border": null,
+        "borderUniform": null,
+        "borderRadius": {
+          "topLeft": 0,
+          "topRight": 0,
+          "bottomRight": 0,
+          "bottomLeft": 0
+        },
+        "borderRadiusUniform": 0,
+        "padding": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "fontFamily": "Inter",
+        "fontSize": 16,
+        "fontWeight": 400,
+        "lineHeight": 24,
+        "letterSpacing": 0,
+        "boxShadow": [],
+        "opacity": 1,
+        "boxSizing": "border-box",
+        "fontAvailable": true,
+        "text": {
+          "color": "#737373",
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": 400
+        }
+      }
+    },
+    "variants": [
+      {
+        "combination": {},
+        "slug": "default",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 272.28,
+          "height": 20
+        },
+        "element": "nav[data-slot=\"breadcrumb\"]",
+        "delta": {},
+        "screenshot": "ui-radix-breadcrumb/default.png"
+      }
+    ],
+    "warnings": [],
+    "error": null,
+    "argTypes": {},
+    "storyFile": "./registry/ui/breadcrumb-story/breadcrumb-radix.stories.tsx",
+    "capture": "tree",
+    "tree": {
+      "version": 1,
+      "base": [
+        {
+          "L": {
+            "d": "block"
+          },
+          "box": [
+            0,
+            0,
+            272.29,
+            20
+          ],
+          "el": "nav[data-slot=breadcrumb]",
+          "k": "",
+          "t": "F"
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "gap": [
+              10,
+              10
+            ],
+            "wrap": 1
+          },
+          "box": [
+            0,
+            0,
+            272.29,
+            20
+          ],
+          "el": "ol[data-slot=breadcrumb-list]",
+          "k": "breadcrumb-list",
+          "t": "F"
+        },
+        {
+          "box": [
+            0,
+            0,
+            39.05,
+            20
+          ],
+          "cls": [
+            "text-foreground",
+            "text-muted-foreground"
+          ],
+          "el": "a[data-slot=breadcrumb-link]",
+          "k": "breadcrumb-list/breadcrumb-link",
+          "t": "T",
+          "tx": {
+            "c": "Home",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              39.05,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "box": [
+            49.05,
+            3,
+            14,
+            14
+          ],
+          "clip": 1,
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "svg.lucide-chevron-right",
+          "k": "breadcrumb-list/svg",
+          "shapes": [
+            [
+              5.25,
+              3.5,
+              3.5,
+              7
+            ]
+          ],
+          "svg": "svg:c79e9ced",
+          "t": "V"
+        },
+        {
+          "box": [
+            73.05,
+            0,
+            84.4,
+            20
+          ],
+          "cls": [
+            "text-foreground",
+            "text-muted-foreground"
+          ],
+          "el": "a[data-slot=breadcrumb-link]",
+          "k": "breadcrumb-list/breadcrumb-link:2",
+          "t": "T",
+          "tx": {
+            "c": "Components",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              84.39,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "box": [
+            167.44,
+            3,
+            14,
+            14
+          ],
+          "clip": 1,
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "svg.lucide-chevron-right",
+          "k": "breadcrumb-list/svg:2",
+          "shapes": [
+            [
+              5.25,
+              3.5,
+              3.5,
+              7
+            ]
+          ],
+          "svg": "svg:c79e9ced",
+          "t": "V"
+        },
+        {
+          "box": [
+            191.44,
+            0,
+            80.85,
+            20
+          ],
+          "cls": [
+            "text-foreground"
+          ],
+          "el": "span[data-slot=breadcrumb-page]",
+          "k": "breadcrumb-list/breadcrumb-page",
+          "t": "T",
+          "tx": {
+            "c": "Breadcrumb",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              80.84,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        }
+      ],
+      "assets": {
+        "svg": {
+          "svg:c79e9ced": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#737373\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m9 18 6-6-6-6\"/></svg>"
+        },
+        "img": {}
+      },
+      "darkAlpha": 1
+    },
+    "fontStandIns": [
+      [
+        "system-ui",
+        "Inter"
+      ]
+    ]
+  }
+}

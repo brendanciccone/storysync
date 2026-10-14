@@ -315,6 +315,17 @@ test("nodeStyle: a text's properties, sizing and truncation", () => {
   assert.equal(nodeStyle(text({}), ctx()).n, undefined);
 });
 
+test("nodeStyle: only a text the browser broke by text-wrap balance or pretty has its line breaks kept (b); a ragged paragraph wraps as Figma fills it", () => {
+  // Dialog's description: two lines, 389.53 at most in a 398px box, as
+  // greedy filling left them, so Figma fills them too and reflows on a resize.
+  const paragraph = { c: "This action cannot be undone. This will permanently delete your account.", n: 2, ink: [0, 2, 389.53, 40] as [number, number, number, number] };
+  assert.equal(nodeStyle(text(paragraph, [0, 0, 398, 40]), ctx()).t!.b, undefined);
+  for (const tw of ["balance", "pretty"] as const) assert.deepEqual(nodeStyle(text({ ...paragraph, tw }, [0, 0, 398, 40]), ctx()).t!.b, [389.53, 2], tw);
+  // One line, or lines as wide as the box: nothing to keep.
+  assert.equal(nodeStyle(text({ tw: "balance" }), ctx()).t!.b, undefined);
+  assert.equal(nodeStyle(text({ ...paragraph, tw: "balance", ink: [0, 2, 397.5, 40] }, [0, 0, 398, 40]), ctx()).t!.b, undefined);
+});
+
 test("nodeStyle: a label the browser drew whole on one line in a box Figma sets at its width is marked to stay so", () => {
   // In a wider box, centered; truncatable, but whole: each is kept on one line should Figma set it wider.
   assert.equal(nodeStyle(text({ ta: "center", ink: [120, 3, 94.17, 18] }, [0, 0, 336, 24]), ctx()).t!.o, 1);
@@ -389,6 +400,23 @@ test("nodeStyle: an image is a frame showing its asset; hidden and translucent n
 test("splitHex: #rrggbbaa as #rrggbb and an alpha to three places", () => {
   assert.deepEqual(splitHex("#DF22254D"), ["#df2225", 0.302]);
   assert.deepEqual(splitHex("#171717"), ["#171717", 1]);
+});
+
+test("nodeStyle: a rounded-full circle binds no step of the radius scale that equals its half, only a full token, and a pill binds by value only where a class names it", () => {
+  // RadioGroup's item, 16px and rounded-full: the browser draws 8, md's value.
+  const item = (cls: string[]): TreeNode => ({ k: "radio-group-item", t: "F", el: "button", box: [0, 0, 16, 16], r: 8, bd: { w: 1, s: "solid", c: "#e5e5e5" }, cls });
+  const shadcn = new Binder(SHADCN_TOKENS);
+  assert.deepEqual([nodeStyle(item(["rounded-full", "border-input"]), ctx(shadcn)).r, nodeStyle(item(["rounded-full", "border-input"]), ctx(shadcn)).rv], [8, undefined]);
+  // Classes that say nothing of the radius, a 16px circle: no value binds it.
+  assert.equal(nodeStyle(item(["border-input"]), ctx(shadcn)).rv, undefined);
+  // A class naming md on the same circle binds md.
+  assert.equal(nodeStyle(item(["rounded-md"]), ctx(shadcn)).rv, "md");
+  // A project with a full token binds it, whatever its value.
+  const withFull = new Binder({ ...SHADCN_TOKENS, collections: SHADCN_TOKENS.collections.map((c) => (c.category === "radius" ? { ...c, tokens: [...c.tokens, { name: "full", value: "9999px", px: 9999 }] } : c)) });
+  assert.equal(nodeStyle(item(["rounded-full"]), ctx(withFull)).rv, "full");
+  assert.equal(nodeStyle(item(["rounded-t-full", "rounded-b-full"]), ctx(withFull)).rv, "full");
+  // A box larger than twice its radius is no pill: its value binds as before.
+  assert.equal(nodeStyle({ ...item([]), box: [0, 0, 40, 40] }, ctx(shadcn)).rv, "md");
 });
 
 test("nodeStyle: where a dark: class paints another color, the paint binds to a per-mode variable of the two, a palette color's with its value", () => {

@@ -1033,7 +1033,7 @@ figma
   .option("--max-chars <n>", `Most characters of code in one build call (use_figma takes at most ${USE_FIGMA_CODE_LIMIT})`, String(MAX_CALL_CHARS))
   .option("--max-nodes <n>", "Most layers one build call creates or restyles; lower it, to 200 say, after `Script exceeded time limit`", String(SPIKE.maxNodes))
   .option("--read-limit <n>", "Most characters a read call is predicted to return (use_figma returns at most 20kb)", String(DEFAULT_READ_LIMIT))
-  .option("--no-minify", "Send the templates' readable sources instead of their minified build, for debugging")
+  .option("--no-minify", "Send the templates' readable sources, comment lines blanked, instead of their minified build, for debugging")
   .option("--json", "Output JSON instead of formatted text")
   .action(async (opts) => {
     const json = !!opts.json;
@@ -1159,7 +1159,7 @@ figma
   .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan's calls and results there are removed", ".storysync/figma/tokens")
   .option("--remove <variable>", "A variable to remove, as Collection/name, as a response's stale or conflicts list it, once the user has confirmed; repeat for each", collect)
   .option("--max-variables <n>", "Most variables one call creates or updates; lower it after `Script exceeded time limit`", String(DEFAULT_MAX_VARIABLES))
-  .option("--no-minify", "Send the template's readable source instead of its minified build, for debugging")
+  .option("--no-minify", "Send the template's readable source, comment lines blanked, instead of its minified build, for debugging")
   .option("--json", "Output JSON instead of formatted text")
   .action((opts) => {
     const json = !!opts.json;

@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { ALPHA_VARIABLE, Binder, alphaVariableName, colorOfClass, parseAlphaVariable, readEvidence } from "../figma-bind.js";
 import { SHADCN_TOKENS } from "./shadcn-tokens.js";
 
-
 test("Binder: #171717 with bg-primary binds to primary, of the five tokens that share it", () => {
   const binder = new Binder(SHADCN_TOKENS);
   const decision = binder.color("#171717", "fill", ["bg-primary"]);
@@ -274,6 +273,20 @@ const CODER = {
     { name: "border/default", value: "#e4e4e7", hex: "#e4e4e7", dark: { value: "#27272a", hex: "#27272a" } },
   ] }],
 };
+
+test("Binder: a full radius binds only to a token named full, and a pill only where a class names its token", () => {
+  const binder = new Binder(SHADCN_TOKENS);
+  assert.deepEqual(binder.radius(8, ["rounded-full"], true), { variable: null, candidates: [] });
+  assert.deepEqual(binder.radius(8, ["dark:bg-input/30", "rounded-l-full"], true), { variable: null, candidates: [] });
+  assert.equal(binder.radius(8, undefined, true).variable, null);
+  assert.equal(binder.radius(8, ["rounded-md"], true).variable, "md");
+  const full = new Binder({ collections: [{ category: "radius", tokens: [{ name: "md", value: "8px", px: 8 }, { name: "full", value: "9999px", px: 9999 }] }] });
+  assert.deepEqual(full.radius(8, ["rounded-full"], true), { variable: "full", candidates: ["full"] });
+  // Not a pill: the rounded-full, its variant gone (sm:, data-[x]:), is
+  // inactive, and md draws an 8px radius on a 36px button.
+  assert.equal(binder.radius(8, ["rounded-md", "rounded-full"]).variable, "md");
+  assert.equal(full.radius(8, ["rounded-md", "rounded-full"]).variable, "md");
+});
 
 test("Binder: a component snap measured dark matches the tokens' dark values, never a light value that happens to equal its paint", () => {
   const binder = new Binder(CODER);

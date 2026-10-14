@@ -295,7 +295,9 @@ test("auto layout: sizing values only where Figma allows them, with its errors",
   const figma = new MockFigma();
   const plain = "const f = figma.createFrame(); const k = figma.createFrame(); f.appendChild(k);";
   const auto = "const f = figma.createFrame(); f.layoutMode = 'HORIZONTAL'; const k = figma.createRectangle(); f.appendChild(k);";
-  assert.match(await fails(figma, `${plain} k.layoutSizingHorizontal = 'FILL';`), /FILL can only be set on children of auto-layout frames/);
+  // As probe 8a saw: a frame without auto layout of its own, in one without.
+  assert.match(await fails(figma, `${plain} k.layoutSizingHorizontal = 'FILL';`), /node must be an auto-layout frame or a child of an auto-layout frame/);
+  assert.match(await fails(figma, `${plain} k.layoutMode = 'VERTICAL'; k.layoutSizingHorizontal = 'FILL';`), /FILL can only be set on children of auto-layout frames/);
   assert.match(await fails(figma, `${auto} k.layoutSizingHorizontal = 'HUG';`), /HUG can only be set on auto-layout frames or text children/);
   assert.match(await fails(figma, "figma.createFrame().layoutSizingVertical = 'HUG';"), /node must be an auto-layout frame or a child of an auto-layout frame/);
   assert.match(await fails(figma, `${auto} k.layoutPositioning = 'ABSOLUTE'; k.layoutSizingHorizontal = 'FILL';`), /absolute positioned/);
@@ -1283,4 +1285,13 @@ test("figmaFonts: the mock sets each string of the fourth push's probe as wide a
     const off = Math.abs(measure.advance(chars, font(family, STYLE_WEIGHT[style], size)) - exact);
     assert.ok(off <= 0.002, `${chars} ${style} ${size}: Figma ${exact}`);
   }
+});
+
+test("probe 8a: a frame turned NONE refuses what Figma refuses there, strokesIncludedInLayout among them, and keeps what it read before", async () => {
+  // Call 1's part A, replayed: its script up to the rings, run as it ran live.
+  const live = JSON.parse(readFileSync(`${ROOT}cli/__tests__/fixtures/figma-probe-8a.json`, "utf8")).call1.none as Record<string, unknown>;
+  const spike = readFileSync(`${ROOT}spikes/figma-probe-8a-1.js`, "utf8");
+  const partA = `${spike.slice(0, spike.indexOf("// B. Rings"))}return out.none;`;
+  const got = await ok(new MockFigma(), partA) as Record<string, unknown>;
+  assert.deepEqual(got, live);
 });

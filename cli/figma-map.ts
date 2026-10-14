@@ -73,6 +73,21 @@ export interface FigmaText {
    * (H): the build keeps it so where Figma's font sets it wider (textOf).
    */
   o?: 1;
+  /**
+   * Its lines' widest width and their count, for a text the browser broke
+   * by `text-wrap: balance` or `pretty` (snap's `tw`), its lines narrower
+   * than its box: the build breaks the lines there where Figma, filling
+   * each line first, would break them elsewhere. Any other text wraps as
+   * Figma fills it, and reflows when a designer resizes it.
+   */
+  b?: [number, number];
+  /**
+   * A form control's value: built at the box measured, its line at the
+   * box's middle, as an input and a select draw it (C), or at its top, as a
+   * textarea does (T), where a text that grows to its lines would shrink
+   * the control around it.
+   */
+  v?: "C" | "T";
 }
 
 /** Everything the template sets on one node besides its place and size. */
@@ -105,6 +120,8 @@ export interface FigmaStyle {
   a?: 1;
   /** Figma's rotation, counterclockwise in degrees: the node's turn (tree-types builtTurn), the other way round. */
   rt?: number;
+  /** What the build adds only so Figma draws a shadow's spread: `c` the clip, `f` a white fill multiplied (figma-code, spreadDrawn). */
+  rc?: string;
 }
 
 /** Something a fact asked for that the build does not draw, by node key, and what it draws instead, if anything. */
@@ -158,6 +175,8 @@ export interface MapContext {
    * paints nothing; a run without any reads its parent's.
    */
   parentCls?: string[];
+  /** The parent's element, which says how a `#value` sits in its control: `input…`, `select…` or `textarea…`. */
+  parentEl?: string;
   /** The spike's answers; SPIKE's when absent. */
   spike?: Pick<Spike, "svgStrokesScale">;
   /** Where the node sits, which decides whether the build turns it (builtTurn); a childless node with nothing transformed around it when absent. */
@@ -450,7 +469,9 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
   const out: Pick<FigmaStyle, "r" | "rv"> = { r: collapse(corners) };
   const value = sides(node.r)[0];
   if (sides(node.r).every((c) => c === value) && value > 0) {
-    const decision = ctx.binder.radius(value, node.cls);
+    // A radius of half the shorter side draws a pill or a circle, whatever
+    // its value: one CSS scaled down to it binds by no value (Binder.radius).
+    const decision = ctx.binder.radius(value, node.cls, value * 2 >= Math.min(node.box[2], node.box[3]) - 0.01);
     if (outside) {
       // A token has the browser's radius, but the frame is drawn with the
       // inner one, which none has: said, rather than left without a word.
@@ -546,6 +567,8 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   // measured width, or show an ellipsis the browser didn't: the build checks
   // each such one once laid out (templates/build.js, keepLines).
   if (out.ar === "H" && textWhole(node)) out.o = 1;
+  if (node.el === "#value") Object.assign(out, { ar: "H", v: ctx.parentEl?.startsWith("textarea") ? "T" : "C" });
+  else if (tx.tw && tx.n > 1 && !tx.el && !tx.cl && tx.ink[2] < node.box[2] - 1) out.b = [round2(tx.ink[2]), tx.n];
   if (tx.it) out.i = 1;
   if (tx.ls) out.s = tx.ls;
   if (tx.tt) out.tc = CASES[tx.tt];
@@ -553,7 +576,6 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   if (tx.ta && ALIGNS[tx.ta]) out.ta = ALIGNS[tx.ta];
   if (tx.el) out.tr = 1;
   else if (tx.cl) out.tr = tx.cl;
-  void ctx;
   return out;
 }
 

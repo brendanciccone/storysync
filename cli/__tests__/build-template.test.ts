@@ -12,6 +12,7 @@ import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture, treeFixtureAss
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildTree } from "../snap-tree.js";
+import { readBack } from "./tree-harness.js";
 import type { RawTreeCapture, RawTreeItem } from "../snap-tree.js";
 import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
 
@@ -963,15 +964,28 @@ test("spike item 1: icons import at their measured size, as Figma scales their s
   assert.deepEqual(await weights({ svgStrokeScales: false }, false), [1.33]);
 });
 
-test("spike item 2: a shadow's spread Figma refuses on a frame that doesn't clip is left out, and said", async () => {
+test("spike item 2: a shadow's spread on a frame something draws past is built without it, and said; one Figma refuses anyway is left out, and said", async () => {
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#0a0a0a1a", inset: false }];
-  const { mock, results } = await buildAll(fixture, { shadowSpread: "refuse" });
-  // Once for the root, in both variants.
-  assert.equal(results[0].fallbacks.length, 1);
-  assert.deepEqual(results[0].fallbacks[0].map((v, i) => (i === 2 ? String(v).replace(/: .*/, "") : v)), ["ui/base/Switch", "", "shadow spread left out", 2]);
-  const root = mock.handle(variantsBySlug(mock).get("size-default")!.id) as { effects: { spread: number }[] };
-  assert.equal(root.effects[0].spread, 0);
+  // A thumb whose shadow draws past the root, which figma code then can't clip for the spread (spreadDrawn).
+  fixture.components[0].tree.base.find((n) => n.k !== "")!.sh = [[0, 0, 8, 0, "#0000001a"]];
+  const coded = await codeFor(fixture);
+  assert.ok(coded.warnings.some((w) => w.includes("(root): a shadow's spread on a frame whose content draws past it is built as the shadow without its spread")), coded.warnings.join("\n"));
+  // Built as said, without the spread Figma wouldn't draw, which the readback then reads and verify scores.
+  const mock = mockFor([fixture], { shadowSpread: "refuse" });
+  const runs = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual(result(runs[0]).fallbacks, []);
+  const root = () => mock.handle(variantsBySlug(mock).get("size-default")!.id) as { effects: { spread: number }[] };
+  assert.equal(root().effects[0].spread, 0);
+  // A call that asks for the spread anyway: Figma refuses it, and the build says so, once for the root in both variants.
+  const code = coded.code(coded.plan.calls.find((c) => c.kind === "build")!);
+  const data = JSON.parse(/\nconst DATA = (.*);\n/.exec(code)![1]) as { S: unknown[] };
+  for (const st of data.S) if (st && typeof st === "object" && "e" in st) (st as { e: unknown[][] }).e = (st as { e: unknown[][] }).e.map((e) => (e.length > 2 && e[4] === 0 && e[3] === 0 ? [...e.slice(0, 4), 1, ...e.slice(5)] : e));
+  const run = await mock.run(withConstant(code, "DATA", data));
+  assert.ok(run.ok, run.text);
+  assert.equal(result(run).fallbacks.length, 1);
+  assert.deepEqual(result(run).fallbacks[0].map((v, i) => (i === 2 ? String(v).replace(/: .*/, "") : v)), ["ui/base/Switch", "", "shadow spread left out", 2]);
+  assert.equal(root().effects[0].spread, 0);
 });
 
 test("spike item 3: truncation Figma refuses is built as a text box of the measured size", async () => {
@@ -1571,6 +1585,160 @@ test("boxDrift: a layer may move by what packs it, the siblings between it and w
   const end = [{ ...nodes[0], L: { d: "flex", dir: "row", jc: "flex-end" } }, ...nodes.slice(1)] as TreeNode[];
   assert.deepEqual(boxDrift(mock, built([-1, 0, 40, 20], [39, 0, 41, 20]), end, facts), []);
   assert.deepEqual(boxDrift(mock, built([0, 0, 41, 20], [42, 0, 40, 20]), end, facts), ["b/t: snap 40,0,40,20, Figma 42,0,40,20", "b: snap 40,0,40,20, Figma 42,0,40,20"]);
+});
+
+/** A component snap measured in the final live test of 0.4.0 (fixtures/final), as a fixture of its own. */
+function finalFixture(name: string): TreeFixture {
+  const base = copy(loadTreeFixture("example-button"));
+  base.components = [JSON.parse(readFileSync(fileURLToPath(new URL(`../../../cli/__tests__/fixtures/final/${name}.json`, import.meta.url)), "utf8")).component];
+  return base;
+}
+
+test("build: a variant copied from one with auto layout and strokes included, built without it, as Alert's destructive grid, is built, and built again", async () => {
+  // Figma refuses strokesIncludedInLayout on a frame without auto layout,
+  // to either value (probe 8a), and the copy keeps its original's true.
+  const fixture = finalFixture("alert");
+  const { coded, mock } = await buildAll(fixture);
+  const roots = variantsBySlug(mock);
+  const read = (slug: string) => mock.handle(roots.get(slug)!.id) as { layoutMode: string; strokesIncludedInLayout: boolean };
+  assert.deepEqual([read("variant-default").layoutMode, read("variant-default").strokesIncludedInLayout], ["VERTICAL", true]);
+  assert.deepEqual([read("variant-destructive").layoutMode, read("variant-destructive").strokesIncludedInLayout], ["NONE", false]);
+  const again = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual([again[0].created, again[0].removed], [0, 0]);
+  for (const variant of fixtureVariants(fixture)) {
+    assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+  }
+});
+
+test("build: where Figma rounds hugging labels up to a whole pixel, the frame that fixes the width grows by what they took, so the labels hug and nothing wraps (Item) or runs past its frame (Breadcrumb)", async () => {
+  type Text = { width: number; height: number; x: number; textAutoResize: string };
+  // Item: "Action" is 43.13 measured and 44 in Figma, which narrows the
+  // description's column by 0.87, its own width, short of one line.
+  const item = finalFixture("item");
+  const built = await buildAll(item);
+  for (const variant of fixtureVariants(item)) {
+    const root = variantsBySlug(built.mock).get(variant.slug)!;
+    const text = (k: string) => built.mock.handle(keyed(root, k)!.id) as Text;
+    const measured = (k: string) => variant.nodes.find((n) => n.k === k)!.box;
+    assert.equal(text("item-content/item-description/#text").height, Math.ceil(measured("item-content/item-description/#text")[3]), `${variant.slug}: the description on one line`);
+    const label = measured("button/#text")[2];
+    assert.deepEqual([text("button/#text").width, text("button/#text").textAutoResize], [Math.ceil(label), "WIDTH_AND_HEIGHT"], variant.slug);
+    // As wide as measured and the label's rounding; as tall, but for its
+    // title's line, which Figma rounds up to a whole pixel too.
+    assert.ok(Math.abs(root.width - (variant.nodes[0].box[2] + Math.ceil(label) - label)) < 0.01, `${variant.slug}: ${root.width}`);
+    assert.ok(root.height < variant.nodes[0].box[3] + 1, `${variant.slug}: ${root.height}`);
+    assert.equal((built.mock.handle(root.id) as { layoutSizingVertical: string }).layoutSizingVertical, "HUG");
+    assert.deepEqual(result(built.runs[0]).fallbacks, []);
+  }
+  // Breadcrumb: three labels, each up to a pixel wider, would end 1.71px
+  // past the list, which fills the nav's fixed 272.29: the nav grows by it.
+  const crumbs = finalFixture("breadcrumb");
+  const { mock } = await buildAll(crumbs);
+  const [variant] = fixtureVariants(crumbs);
+  const root = variantsBySlug(mock).get(variant.slug)!;
+  const list = mock.handle(keyed(root, "breadcrumb-list")!.id) as { width: number };
+  for (const k of ["breadcrumb-list/breadcrumb-link", "breadcrumb-list/breadcrumb-link:2", "breadcrumb-list/breadcrumb-page"]) {
+    const text = mock.handle(keyed(root, k)!.id) as Text;
+    assert.deepEqual([text.textAutoResize, text.width], ["WIDTH_AND_HEIGHT", Math.ceil(variant.nodes.find((n) => n.k === k)!.box[2])], k);
+  }
+  const page = mock.handle(keyed(root, "breadcrumb-list/breadcrumb-page")!.id) as Text;
+  assert.deepEqual([page.x + page.width, list.width, root.width], [274, 274, 274]);
+  assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)), []);
+  // A button whose label rounds up and changes nothing else is as it was.
+  const button = loadTreeFixture("example-button");
+  const plain = await buildAll(button);
+  const [own] = fixtureVariants(button);
+  assert.equal((plain.mock.handle(variantsBySlug(plain.mock).get(own.slug)!.id) as { layoutSizingHorizontal: string }).layoutSizingHorizontal, "HUG");
+});
+
+test("build: a balanced text's lines break where the browser broke them, at its measured box, and read back as its characters", async () => {
+  // Empty's description, text-wrap: balance: "Upload files to your cloud
+  // storage / to access them anywhere.", lines 223.36 wide at most in a
+  // 384px box, where Figma, filling each line first, would break after "them".
+  const empty = finalFixture("empty");
+  const { coded, mock } = await buildAll(empty, { measure: figmaFonts() });
+  const [variant] = fixtureVariants(empty);
+  const root = variantsBySlug(mock).get(variant.slug)!;
+  const k = "empty-header/empty-description";
+  const text = mock.handle(keyed(root, k)!.id) as { characters: string; width: number; height: number };
+  assert.equal(text.characters, "Upload files to your cloud storage to access them anywhere.");
+  assert.deepEqual([text.width, text.height], [384, 46]);
+  assert.equal(keyed(root, k)!.data["storysync.br"], "Upload files to your cloud storage to access them anywhere.");
+  // Built again, the same; nothing else gets a break: the title is one line.
+  await runPlan(mock, coded, ["build"]);
+  assert.equal((mock.handle(keyed(variantsBySlug(mock).get(variant.slug)!, k)!.id) as { characters: string }).characters, text.characters);
+  assert.equal(keyed(root, "empty-header/empty-title")!.data["storysync.br"] ?? "", "");
+  // The readback reads the characters snap measured.
+  const [read] = await readBack(mock, [[empty.components[0].id!, 0, 1, 0]], { page: result((await runPlan(mock, coded, ["build"]))[0]).page });
+  const json = String(JSON.stringify(read));
+  assert.ok(json.includes('"Upload files to your cloud storage to access them anywhere."'));
+  assert.ok(!json.includes("\\u2028"));
+});
+
+test("build: an input's value keeps its control's content box, its line at the middle, so the input is as tall as the browser drew it", async () => {
+  // Questionnaire's input, h-9: 36 tall, its placeholder's line 20 in a
+  // 26px content box, where a text grown to its line made the input 30.
+  const fixture = finalFixture("questionnaire");
+  const { mock } = await buildAll(fixture);
+  const [variant] = fixtureVariants(fixture);
+  const root = variantsBySlug(mock).get(variant.slug)!;
+  const input = "questionnaire-item/questionnaire-choices/questionnaire-input";
+  const value = mock.handle(keyed(root, `${input}/#value`)!.id) as { width: number; height: number; textAutoResize: string; textAlignVertical: string };
+  assert.deepEqual([value.width, value.height, value.textAutoResize, value.textAlignVertical], [475.47, 26, "NONE", "CENTER"]);
+  assert.equal((mock.handle(keyed(root, input)!.id) as { height: number }).height, 36);
+  assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)).filter((d) => String(d).includes(input)), []);
+});
+
+test("build: an input's value Figma sets wider than its box stays on one line in it, cut short and named so, as a textarea's wraps", async () => {
+  // The same input 200 wide: "Describe another approach…" takes two lines
+  // at 178, which a value built at its box would draw past it, unseen.
+  const fixture = finalFixture("questionnaire");
+  const input = "questionnaire-item/questionnaire-choices/questionnaire-input";
+  const nodes = fixture.components[0].tree!.base;
+  nodes.find((n) => n.k === input)!.box[2] = 200;
+  nodes.find((n) => n.k === `${input}/#value`)!.box[2] = 178;
+  const { mock, runs } = await buildAll(fixture);
+  const [variant] = fixtureVariants(fixture);
+  const value = mock.handle(keyed(variantsBySlug(mock).get(variant.slug)!, `${input}/#value`)!.id) as { width: number; height: number; textAutoResize: string; textTruncation: string; maxLines: number };
+  // A fixed-size text cut short reads TRUNCATE, and no maxLines in auto layout (the live text probe).
+  assert.deepEqual([value.width, value.height, value.textAutoResize, value.textTruncation, value.maxLines], [178, 26, "TRUNCATE", "ENDING", null]);
+  assert.deepEqual(result(runs[0]).fallbacks.map(([, key, what]) => [key.endsWith("#value"), what]), [[true, "cut short: Figma sets it wider"]]);
+  // At its own 475.47 it fits: nothing cut.
+  const wide = finalFixture("questionnaire");
+  const built = await buildAll(wide);
+  const own = built.mock.handle(keyed(variantsBySlug(built.mock).get(variant.slug)!, `${input}/#value`)!.id) as { textTruncation: string };
+  assert.equal(own.textTruncation, "DISABLED");
+  assert.deepEqual(result(built.runs[0]).fallbacks, []);
+});
+
+test("build: a ring on a frame without a fill clips the frame and gives it a fill that draws nothing, so Figma draws it; the readback reads the frame as measured", async () => {
+  // coder's ConfirmDialog Cancel button: a 1px border, no background, and
+  // a focus ring (box-shadow 0 0 0 2px #61a6fa), which Figma drew nowhere:
+  // it draws a spread only on a frame that clips and has a fill (probe 8a).
+  const tree = (labelX: number): TreeNode[] => [
+    { k: "", t: "F", el: "div", box: [0, 0, 120, 60], L: { d: "block" } },
+    { k: "button", t: "F", el: "button", box: [20, 10, 80, 40], bd: { w: 1, s: "solid", c: "#27272a" }, r: 6, sh: [[0, 0, 0, 2, "#61a6fa"]], L: { d: "block" } },
+    { k: "button/#text", t: "T", el: "#text", box: [labelX, 10, 50, 20], tx: { c: "Cancel", f: "Inter", sz: 14, wt: 500, col: "#fafafa", lh: 20, n: 1, ink: [0, 1.5, 50, 17] } },
+  ];
+  const ring = synthetic("Ring", tree(15), { width: 120, height: 60, display: "block" });
+  const { mock, runs } = await buildAll(ring);
+  const root = variantsBySlug(mock).get("default")!;
+  const button = mock.handle(keyed(root, "button")!.id) as { clipsContent: boolean; fills: { type: string; blendMode: string; color: object }[]; effects: { spread: number }[] };
+  assert.equal(button.clipsContent, true);
+  assert.deepEqual(button.fills.map((p) => [p.type, p.blendMode, p.color]), [["SOLID", "MULTIPLY", { r: 1, g: 1, b: 1 }]]);
+  assert.equal(button.effects[0].spread, 2);
+  assert.equal(keyed(root, "button")!.data["storysync.rc"], "cf");
+  const [read] = await readBack(mock, [[ring.components[0].id!, 0, 1, 0]], { page: result(runs[0]).page });
+  const find = (v: unknown): unknown[] | undefined => (Array.isArray(v) ? (v[0] === "button" && v[1] === "F" ? v : v.map(find).find(Boolean))
+    : v && typeof v === "object" ? Object.values(v).map(find).find(Boolean) : undefined);
+  const record = find(read)!;
+  // Its fills, and its clip, as the browser drew it: none.
+  assert.deepEqual([record[6], record[12]], [[], 0]);
+  // A label past the button: clipping it would cut it, so no clip, and said.
+  const spill = synthetic("Spill", tree(60), { width: 120, height: 60, display: "block" });
+  const spilled = await buildAll(spill);
+  assert.equal((spilled.mock.handle(keyed(variantsBySlug(spilled.mock).get("default")!, "button")!.id) as { clipsContent: boolean }).clipsContent, false);
+  assert.ok(spilled.coded.warnings.some((w) => /spread on a frame whose content draws past it/.test(w)), spilled.coded.warnings.join("\n"));
 });
 
 test("bindings: a component snap measured dark binds by the tokens' dark values, and the label call puts its set in Dark, where they show as measured", async () => {

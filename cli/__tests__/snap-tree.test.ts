@@ -525,6 +525,12 @@ test("buildTree: a text keeps whitespace where white-space says to, and records 
   assert.equal(facts.get("p")!.clip, 1);
   assert.equal(facts.get("p/#text")!.tx!.cl, 2);
   assert.equal(facts.get("p/#text")!.tx!.n, 3);
+
+  // Where the browser chose the line breaks, text-wrap-style says how.
+  const wrapped = (style: string) => byKey(buildTree(tree(el("div", [0, 0, 100, 40], {}, [
+    el("p", [0, 0, 100, 40], {}, [run("two lines", [[0, 0, 60, 20], [0, 20, 50, 20]])], { text: { ...TEXT, "text-wrap-style": style } }),
+  ]))).nodes).get("p")!.tx!.tw;
+  assert.deepEqual([wrapped("balance"), wrapped("pretty"), wrapped("auto"), wrapped("stable")], ["balance", "pretty", undefined, undefined]);
 });
 
 // --- Keys and paint order ------------------------------------------------------------
@@ -874,6 +880,15 @@ test("buildTree: under a wrapper, a child's flex facts are the wrapper's, which 
   assert.equal(node.abs, undefined);
   const floating = el("div", [8, 8, 24, 24], { position: "absolute" }, [el("span", [8, 8, 24, 24], { ...BORDER, position: "relative" })]);
   assert.equal(buildTree(tree(el("div", [0, 0, 40, 40], {}, [floating]))).nodes[1].abs, 1);
+});
+
+test("buildTree: an icon's markup draws inside its padding at its border box, as coder's [&>svg]:p-0.5 draws its plus", () => {
+  const plus = { tag: "svg", attrs: { viewBox: "0 0 24 24" }, kids: [{ tag: "path", attrs: { d: "M5 12h14" }, paint: {} }] };
+  const padded = el("svg", [12, 8, 24, 24], { "padding-top": "2px", "padding-right": "2px", "padding-bottom": "2px", "padding-left": "2px" }, [], { svg: plus, shapes: [[6.17, 12, 11.67, 0]] });
+  const button = el("button", [0, 0, 48, 40], { display: "flex" }, [padded]);
+  const built = buildTree(tree(button));
+  const node = byKey(built.nodes).get("svg")!;
+  assert.match(built.svg[node.svg!], / viewBox="-2.4 -2.4 28.8 28.8"/);
 });
 
 test("buildTree: a pseudo-element's classes are its host's before: or after: ones, and no class for another box is the element's own", () => {

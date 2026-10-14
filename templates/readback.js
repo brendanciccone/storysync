@@ -231,7 +231,10 @@ const record = async (n, k, around, root) => {
     const size = typeof n.fontSize === 'number' ? n.fontSize : null;
     const lh = typeof n.lineHeight === 'object' ? n.lineHeight : null;
     const ls = typeof n.letterSpacing === 'object' ? n.letterSpacing : null;
-    const chars = n.characters;
+    // The build breaks a balanced text's lines where the browser did, with
+    // line separators where it had spaces, and keeps its characters in
+    // `br`: read as those while they are all it changed.
+    const chars = get(n, 'br') && n.characters.replace(/\u2028/g, ' ') === get(n, 'br') ? get(n, 'br') : n.characters;
     const fills = await paints(n.fills, n);
     return [...head,
       chars.length > 300 ? 'fnv:' + fnv(chars) + ':' + chars.length + ':' + chars.slice(0, 60) : chars,
@@ -258,14 +261,18 @@ const record = async (n, k, around, root) => {
     const w = weights(n);
     stroke = [typeof n.strokeWeight === 'number' ? n.strokeWeight : w, await paints(n.strokes, n), styleOf(n, Math.max(...w)), n.strokeAlign[0]];
   }
-  return [...head, await paints(n.fills, n), stroke,
+  // What the build added only so Figma draws a ring (`rc`): a white fill
+  // multiplied, `f`, and the clip, `c`, which the browser drew without.
+  const rc = get(n, 'rc') || '';
+  const fills = Array.isArray(n.fills) && /f/.test(rc) ? n.fills.filter((p) => p.blendMode !== 'MULTIPLY') : n.fills;
+  return [...head, await paints(fills, n), stroke,
     typeof n.cornerRadius === 'number' ? corner(n.cornerRadius, own, 0)
       : [n.topLeftRadius, n.topRightRadius, n.bottomRightRadius, n.bottomLeftRadius].map((r, i) => corner(r, own, i)),
     // The type's initial: D(ROP_SHADOW), I(NNER_SHADOW), L(AYER_BLUR), B(ACKGROUND_BLUR).
     effectsOf(n).map((e) => (/SHADOW/.test(e.type)
       ? [e.type[0], r2(e.offset.x), r2(e.offset.y), r2(e.radius), r2(e.spread || 0), hexOf({ color: e.color })]
       : [e.type[0], r2(e.radius)])),
-    n.opacity, n.blendMode, n.clipsContent ? 1 : 0, ...tail.slice(1)];
+    n.opacity, n.blendMode, n.clipsContent && !/c/.test(rc) ? 1 : 0, ...tail.slice(1)];
 };
 
 // A variant's records, depth first in Figma's child order, the variant
