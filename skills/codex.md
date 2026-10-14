@@ -348,7 +348,7 @@ Everything step 3 says above about running it, its exit codes, caps, statuses an
    | `borderRadiusUniform`, else `borderRadius` | `cornerRadius`, else per-corner |
    | `borderUniform` | stroke weight + color (`null` means no stroke; a `color` of `null` is a transparent border, a stroke with an invisible paint: see below), and its `style` as the stroke's `dashPattern`, for a width `w`: none for `solid`, `[3w, 3w]` for `dashed`, `[w, w]` for `dotted`. Figma's strokes have no `double`, `groove`, `ridge`, `inset` or `outset`: build those solid, and name them in the summary, since `verify` reports their style as drift no edit can fix |
    | a color written `#rrggbbaa` | a translucent color: `#rrggbb` with the paint's `opacity` at `aa` / 255, so `#4b556322` is `#4b5563` at an opacity of 34 / 255, about 0.133; for a shadow, the effect color's `a` |
-   | `boxShadow[]` | one effect per layer: `INNER_SHADOW` where `inset` is true, a ring like `ring-inset` included, else `DROP_SHADOW`, with `offset` from `offsetX`/`offsetY`, `radius` from `blur`, and `spread` (`verify` does not read effects back, so it will not flag a shadow built wrong) |
+   | `boxShadow[]` | one effect per layer: `INNER_SHADOW` where `inset` is true, a ring like `ring-inset` included, else `DROP_SHADOW`, with `offset` from `offsetX`/`offsetY`, `radius` from `blur`, and `spread`, which step 6 reads back and `verify` compares layer by layer |
    | `display: flex` + `flexDirection` | auto-layout direction |
    | `fontSize` / `fontWeight` / `fontFamily` | text style, its font loaded with the build template's `loadFont` (see below) |
    | `text.layout` | how the label fits its box. Absent, the browser drew it on one line at its own width: let the text hug it (`textAutoResize = 'WIDTH_AND_HEIGHT'`). Present, the browser fitted it to its box: give the text a fixed width of `layout.width` (`resize(layout.width, text.height)`, or `layoutSizingHorizontal = 'FIXED'` in auto layout) and `textAutoResize = 'HEIGHT'`, so it wraps where the browser did; with a `truncation`, also `textTruncation = 'ENDING'` and `maxLines = layout.lines`, so it ends in an ellipsis after as many lines. Figma has no flat cut, so build a `clip` the same way and name it in the summary. Step 6 reads it back, and `verify` scores a label that hugs where the browser cut it off as drift: a title that hugs runs past its card |
@@ -1010,6 +1010,12 @@ use_figma({
           ? { row: child.itemSpacing, column: child.itemSpacing }
           : null,
         opacity: child.opacity,
+        // Each visible shadow, in order, as snap writes a box-shadow layer:
+        // verify compares them layer by layer, a ring's spread and inset too.
+        boxShadow: (child.effects || []).filter((e) => e.visible !== false && /SHADOW/.test(e.type)).map((e) => ({
+          offsetX: e.offset.x, offsetY: e.offset.y, blur: e.radius, spread: e.spread || 0,
+          color: hexOf({ color: e.color }), inset: e.type === 'INNER_SHADOW',
+        })),
         // The border box, from the geometry: see edge above.
         width: child.width + edge('Left') + edge('Right'),
         height: child.height + edge('Top') + edge('Bottom'),

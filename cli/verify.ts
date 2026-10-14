@@ -971,6 +971,14 @@ export const READBACK_FIELDS = [
 export const READBACK_LATER_FIELDS = ["textLayout", "bound", "unbound"] as const;
 
 /**
+ * Fields the root-only template returns that verify scores where an entry
+ * has them and requires of none: `boxShadow`, each shadow as snap writes
+ * a box-shadow layer, which a readback read before the template returned
+ * it lacks, and is still scored without.
+ */
+export const READBACK_SCORED_IF_PRESENT = ["boxShadow"] as const;
+
+/**
  * The fields the element-tree template (templates/readback.js) returns on
  * an entry beside READBACK_FIELDS, `boxShadow` among them, or on a later
  * part of a variant read in parts, which carries no root fields.
