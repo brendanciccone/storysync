@@ -1,5 +1,5 @@
 {
-  "about": "Probe 8e (2026-10-13), one use_figma call in file KoShLIaIOXj6vWAuwLTff8 on a page it made, storysync probe 8e: the Geist families listAvailableFontsAsync returns, the families of its 1938 named with Variable (none), how many styles some families fontsource ships as <Family> Variable have, and what loadFontAsync did with each family and style asked. fontsource-variable names its CSS family <Family> Variable (Geist Variable), which Figma names <Family>.",
+  "about": "Probe 8e (2026-10-13), one use_figma call in a private test Figma file on a page it made, storysync probe 8e: the Geist families listAvailableFontsAsync returns, the families of its 1938 named with Variable (none), how many styles some families fontsource ships as <Family> Variable have, and what loadFontAsync did with each family and style asked. fontsource-variable names its CSS family <Family> Variable (Geist Variable), which Figma names <Family>.",
   "families": 1938,
   "geist": {
     "Geist": ["Black", "Bold", "ExtraBold", "ExtraLight", "Light", "Medium", "Regular", "SemiBold", "Thin"],

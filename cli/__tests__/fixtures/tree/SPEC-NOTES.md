@@ -1888,7 +1888,7 @@ O16. **The `tooltip` and `select` fixtures** are the ui-base-tooltip and
 
 The fifth push verified at 100%, but by eye its Button radius was bound to
 nothing, its Tooltip arrow was a flat tab, and the template checksum never
-ran. Notes F6-1 on. The sixth probe (2026-10-13, file rPGAMu9hIKY9BwFWRkDpY3,
+ran. Notes F6-1 on. The sixth probe (2026-10-13, a private test Figma file,
 page "storysync probe 6", `fixtures/figma-tsum-probe.json`,
 `spikes/figma-tsum-probe-*.js`) settled what Figma does.
 
@@ -2028,7 +2028,7 @@ F6-9. **LIMIT 18,000 holds for dense and non-ASCII reads** (F6-5, C2). The
 
 # A variant no story is for (after the fifth live push)
 
-Notes R1 on. The fifth live push (Figma file rPGAMu9hIKY9BwFWRkDpY3)
+Notes R1 on. The fifth live push (a private test Figma file)
 scored 100%, but shadcn/ui Button's 12 `size=icon-xs` variants held the
 Default story's "Button" label spilling 10.3px out of a 24px square: no
 story's own args set `size=icon-xs`, so S5 left them on the component's

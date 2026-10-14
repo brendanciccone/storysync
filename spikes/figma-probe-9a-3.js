@@ -1,4 +1,4 @@
-// Probe 9a, call 3 (Figma file KoShLIaIOXj6vWAuwLTff8, page "storysync probe 9a"):
+// Probe 9a, call 3 (a private test Figma file, page "storysync probe 9a"):
 // what the build does to a variant no property names now before it is
 // removed. getInstancesAsync finds its instances, on the page and inside
 // another component; swapComponent moves each to another variant; the
