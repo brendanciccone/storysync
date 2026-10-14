@@ -312,12 +312,21 @@ export interface SnapMessage {
   text: string;
 }
 
-/** Everything snap's text output says about `result`, in its order. */
-export function snapMessages(result: SnapResult): SnapMessage[] {
-  const out: SnapMessage[] = [];
+/**
+ * Everything snap's text output says about `result`, in its order; first
+ * `notes`, what its progress said of the run that the result doesn't
+ * record (SnapDeps' onNote), for --json, where progress isn't printed.
+ */
+export function snapMessages(result: SnapResult, notes: readonly string[] = []): SnapMessage[] {
+  const out: SnapMessage[] = notes.map((text) => ({ level: "info", text }));
   const label = (c: SnapComponent) => c.title ?? c.name;
   const standIns = describeFontStandIns(result.fontStandIns);
   if (standIns) out.push({ level: "info", text: standIns });
+  // Said once for the run, not warned: the globals that rendered a dark-by-default Storybook light.
+  const globals = new Set(result.components.filter((c) => c.globals && c.scheme === "light").map((c) => globalsParam(c.globals!)));
+  for (const set of globals) {
+    out.push({ level: "info", text: `snap measured the light color scheme with globals=${set} in each story's URL, as Storybook renders dark by default` });
+  }
   for (const c of result.components) for (const text of c.warnings) out.push({ level: "warning", component: label(c), text });
   for (const c of result.components) if (c.error != null) out.push({ level: "error", component: label(c), text: c.error });
   // Said, not warned: the stories each variant was measured from, where not the component's.
@@ -339,13 +348,6 @@ export function snapMessages(result: SnapResult): SnapMessage[] {
     }
     const left = describeExclusions(c.excludedProps ?? []);
     if (left) out.push({ level: "info", component: label(c), text: left });
-  }
-  // Said, not warned: the globals that rendered a dark-by-default Storybook light.
-  for (const c of result.components) {
-    if (c.globals && c.scheme === "light") {
-      const set = Object.entries(c.globals).map(([name, value]) => `${name}:${value}`).join(";");
-      out.push({ level: "info", component: label(c), text: `measured in the light color scheme with globals=${set} in its stories' URLs, as Storybook renders dark by default` });
-    }
   }
   for (const c of result.components) {
     for (const v of c.variants) if (v.status !== "ok") out.push({ level: "failed", component: c.name, text: `${v.slug} [${v.status}] ${v.error ?? ""}`.trimEnd() });
@@ -374,6 +376,12 @@ export interface SnapDeps {
   launch: typeof resolveAndLaunch;
   /** Called with human-readable progress; no-op under --json. */
   onProgress?: (message: string) => void;
+  /**
+   * Called with what the run's progress says that is about the run as a
+   * whole, the browser launched again or the components --merge kept, which
+   * nothing in the result records: under --json, snapMessages' `notes`.
+   */
+  onNote?: (message: string) => void;
   /**
    * Called as each component starts, and as each of its variants does, so a
    * terminal can say where a long run is. Given under --json too: it draws
@@ -1479,6 +1487,11 @@ const SHARED_KEY_WARNING = /^\d+ components share the key "/;
 
 export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapResult> {
   const progress = deps.onProgress ?? (() => {});
+  // Said as progress, and as a note for --json's messages.
+  const note = (message: string) => {
+    progress(message);
+    deps.onNote?.(message.trim());
+  };
   // A typo'd name throws here rather than filtering to nothing, which would
   // still stamp a fresh `measuredAt` over an empty snap.
   const listed = await deps.storybook.listComponents();
@@ -1562,7 +1575,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
           } catch (err) {
             if (!(err instanceof BrowserLostError) || relaunched) throw err;
             relaunched = true;
-            progress(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
+            note(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
             // Measured again from the start, so its first attempt's
             // screenshots go: one the second attempt doesn't take would
             // still replace the last run's.
@@ -1584,7 +1597,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     // snap command handles between tasks, comes before any of it is written
     // or after all of it is.
     stage.commit();
-    return writeSnap(opts, deps, listed, components, earlier, progress, browserVersion);
+    return writeSnap(opts, deps, listed, components, earlier, note, browserVersion);
   } finally {
     stage.discard();
   }

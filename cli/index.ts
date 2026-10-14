@@ -547,6 +547,7 @@ program
 
     const storybook = await connectStorybook(opts.storybook, json, timeouts, opts.cache !== false);
     try {
+      const notes: string[] = [];
       const result = await runSnap(
         {
           storybookUrl: opts.storybook as string,
@@ -569,13 +570,15 @@ program
           storybook,
           launch: resolveAndLaunch,
           onProgress: json ? undefined : (m) => progress.print(() => console.log(m)),
+          // Under --json, what progress would have said of the run, for its messages.
+          onNote: json ? (m) => notes.push(m) : undefined,
           onComponentStart: (position, total, label) => progress.component(position, total, label),
           onVariantStart: (position, total) => progress.variant(position, total),
         },
       ).finally(unlisten);
       progress.done();
 
-      const messages = snapMessages(result);
+      const messages = snapMessages(result, notes);
       if (json) {
         // What a terminal shows, first, for an agent that reads only the JSON.
         console.log(JSON.stringify({ messages, ...result }));

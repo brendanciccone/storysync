@@ -2986,16 +2986,35 @@ test("snapMessages: what the text output says, i, ! and ✗ lines and each varia
         ],
       },
       { name: "Card", variantProperties: [], warnings: [], error: "no stories found for this component", variants: [], scheme: "light", globals: { theme: "light" } },
+      { name: "Badge", variantProperties: [], warnings: [], error: null, variants: [], scheme: "light", globals: { theme: "light" }, storyId: "ui-badge--default", storiesUnread: "no preview" },
     ],
   } as never;
-  assert.deepEqual(snapMessages(result), [
+  const kept = "Measured 2 components again and kept 5 from the earlier snap";
+  assert.deepEqual(snapMessages(result, [kept]), [
+    // What progress said of the run, which --json doesn't print.
+    { level: "info", text: kept },
     { level: "info", text: describeFontStandIns([["system-ui", "Inter"]])! },
+    // The globals once, for the run.
+    { level: "info", text: "snap measured the light color scheme with globals=theme:light in each story's URL, as Storybook renders dark by default" },
     { level: "warning", component: "ui/base/Popover", text: "a warning" },
     { level: "error", component: "Card", text: "no stories found for this component" },
+    { level: "info", component: "Badge", text: "snap couldn't read its stories' args (no preview), so it measured every variant from ui-badge--default, choosing no story for any" },
     { level: "info", component: "ui/base/Popover", text: 'measured open: snap clicked button[data-slot="popover-trigger"] in 1 of 1 variants to open it, and measured div[data-slot="popover-content"]'.replace(" in 1 of 1 variants", "") },
-    { level: "info", component: "Card", text: "measured in the light color scheme with globals=theme:light in its stories' URLs, as Storybook renders dark by default" },
     { level: "failed", component: "Popover", text: "other [render_error] boom" },
   ]);
+});
+
+test("runSnap: what progress says of the run, a relaunched browser and the components --merge kept, is a note for --json", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture });
+    await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const notes: string[] = [];
+    await runSnap(options(dir, { selector: "[data-slot=switch]", components: ["Switch"], merge: true }), { storybook: switchDocs([]), launch, onNote: (m) => notes.push(m) });
+    assert.deepEqual(notes, ["Measured 1 component again and kept 0 from the earlier snap"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("describeMeasurementNotes: a toast's story snap couldn't raise one from says why, after the layout wrapper's warning", () => {
