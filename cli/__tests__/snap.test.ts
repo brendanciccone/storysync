@@ -2805,7 +2805,7 @@ test("runSnap: a select whose field one variant couldn't open, where others open
     const [component] = result.components;
     const bySlug = new Map(component.variants.map((v) => [v.slug, v]));
     const [shut, open] = [bySlug.get("disabled-true")!, bySlug.get("disabled-false")!];
-    assert.deepEqual([open.element, open.opened?.via], ['div[data-slot="select-content"]', "click"]);
+    assert.deepEqual([open.element, open.opened?.via], ['button[data-slot="select-trigger"] + div[data-slot="select-content"]', "click"]);
     assert.deepEqual([shut.element, shut.opened], ['button[data-slot="select-trigger"]', undefined]);
     const warning = component.warnings.find((w) => /closed trigger/.test(w));
     assert.ok(warning?.startsWith(

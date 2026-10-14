@@ -768,15 +768,21 @@ export interface OpenableTrigger {
   toast?: { at: number[]; opener: string };
 }
 
+/**
+ * A select's or combobox's field, open, under the story's root: measured
+ * with the content it opened, as one (snap-browser.ts captureStory).
+ */
+export interface OpenField { path: number[]; element: string }
+
 export type MeasuredChoice =
   /**
    * An element under the story's root, by its index at each level down
    * from the root's container. `content`: what an open trigger beside it
    * controls, rendered inline rather than into a portal.
    */
-  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger; content?: true }
+  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger; content?: true; field?: OpenField }
   /** One of the portal candidates, by index. */
-  | { kind: "portal"; index: number; element: string; notes: MeasurementNote[] }
+  | { kind: "portal"; index: number; element: string; notes: MeasurementNote[]; field?: OpenField }
   | { kind: "none"; error: string };
 
 /** How deep snap looks past wrappers that draw nothing, as it always has. */
@@ -1078,10 +1084,21 @@ export function chooseMeasuredElement(
     const index = portals.findIndex((candidate) => candidate.rendered && wanted(candidate));
     return index < 0 ? null : { kind: "portal", index, element: describeElement(portals[index]), notes: [] };
   };
+  // A select's or combobox's field, open: what it opened is measured with
+  // it, as the two render, where a dialog's or menu's content is alone.
+  const field = (): OpenField | undefined => {
+    const found = container ? findFirst(container, [], (n) => isField(n) && isOpen(n)) : null;
+    return found ? { path: found.path, element: describeElement(found.node) } : undefined;
+  };
+  const withField = <T extends MeasuredChoice>(choice: T): T => {
+    const open = field();
+    return open ? { ...choice, field: open } : choice;
+  };
+
   const portaled =
     portal((candidate) => candidate.slot != null && slots.includes(candidate.slot)) ??
     portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
-  if (portaled) return portaled;
+  if (portaled) return withField(portaled);
 
   // A toast raised, where the story renders its toaster, as Sonner's does.
   const toast = container && isToastComponent(slots) ? findFirst(container, [], (node) => node.toast === true) : null;
@@ -1106,14 +1123,17 @@ export function chooseMeasuredElement(
 
   const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
   const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
-  if (opened) return opened;
+  if (opened) return isField(node) ? withField(opened) : opened;
   // Or rendered inline, beside the trigger, as Headless UI's menu is.
   const inline = isOpen(node) && container ? findControlled(container, [], controls) : null;
-  if (inline) return { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
+  if (inline) {
+    const content: MeasuredChoice = { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
+    return isField(node) ? withField(content) : content;
+  }
   // An open trigger whose aria-controls names nothing, as a tooltip's or a
   // hover card's: what it opened is the overlay showing.
   const shownBy = isOpen(node) && (isTrigger(node) || isField(node)) ? overlay() : null;
-  if (shownBy) return shownBy;
+  if (shownBy) return isField(node) ? withField(shownBy) : shownBy;
 
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];

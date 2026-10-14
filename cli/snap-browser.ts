@@ -355,6 +355,8 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
   let loaded = false;
   // The overlay snap opened, to close once it is measured.
   let shut: { opened: OverlayOpened; content: ElementHandle<Element> } | null = null;
+  // A select's field and its content measured as one: see pairOf.
+  let pair: Pair | null = null;
 
   try {
     // From before the navigation, so a request the story makes as it renders is seen.
@@ -452,21 +454,27 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     }
     // Under a tree, an element that draws nothing and holds nothing that
     // does is no root to build: the nearest one around it that draws is.
-    const climbedFrom = opts.tree === "tree" && !opts.selector ? await climbToDrawing(located) : null;
-    const { target, element, notes, matchedSelector, portal } = located;
+    const climbedFrom = opts.tree === "tree" && !opts.selector && !located.field ? await climbToDrawing(located) : null;
+    const { target, notes, matchedSelector, portal } = located;
 
     // Read before the styles and again after the picture: markup that
     // changes in between, a story that animates, is no evidence either way.
     const markupBefore = await readMarkup(page);
-    const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
-    const holder = await findTextHolder(target);
-    const textRaw = holder ? await readTextStyles(page, holder, target, TEXT_PROPERTIES) : null;
-    const textLayout = holder ? await readTextLayout(holder, target) : null;
-    const fonts = { root: await probeFontStack(target), text: holder ? await probeFontStack(holder) : null };
+    // A select's or combobox's field and the content it opened, as one: a
+    // root that draws nothing around both, its text the field's.
+    pair = located.field && opts.tree !== "count" ? await pairOf(page, located.field.target, target) : null;
+    const element = pair ? `${located.field!.element} + ${located.element}` : located.element;
+    const own = pair ? located.field!.target : target;
+    const raw = await readComputedStyles(page, pair?.probe ?? target, CAPTURED_PROPERTIES);
+    await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    const holder = await findTextHolder(own);
+    const textRaw = holder ? await readTextStyles(page, holder, own, TEXT_PROPERTIES) : null;
+    const textLayout = holder ? await readTextLayout(holder, own) : null;
+    const fonts = { root: await probeFontStack(own), text: holder ? await probeFontStack(holder) : null };
     const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
-    const boundingBox = await target.boundingBox();
+    const boundingBox = pair ? pair.box : await target.boundingBox();
     // Which scheme its colors are: a Storybook may render its dark theme by default.
-    const scheme = await target.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
+    const scheme = await own.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
     const themeGlobals = scheme?.scheme === "dark" ? (await page.evaluate(themeGlobalsInPage).catch(() => null)) ?? undefined : undefined;
 
     // Before the screenshot, which throws on an element with no box.
@@ -480,7 +488,11 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // had been read. So an empty box is measured without a picture, and a
     // picture otherwise waits no longer than --timeout.
     const drawable = boundingBox.width > 0 && boundingBox.height > 0;
-    const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
+    const screenshot = !opts.screenshot || !drawable
+      ? null
+      : pair
+        ? await page.screenshot({ type: "png", clip: pair.box, timeout: opts.timeoutMs })
+        : await target.screenshot({ type: "png", timeout: opts.timeoutMs });
     const markupAfter = await readMarkup(page);
     const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
     // After the markup is read again: Playwright's screenshots, of an
@@ -490,7 +502,11 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     let innerElements: number | undefined;
     try {
       // An overlay's content, in a portal or opened inline, is placed by what is around it.
-      if (opts.tree === "tree") tree = await captureTree(page, target, responses, opts.timeoutMs, { overlay: !!(portal || opened) });
+      if (opts.tree === "tree") {
+        tree = pair
+          ? await captureTree(page, pair.root, responses, opts.timeoutMs, { focus: [located.field!.target, target] })
+          : await captureTree(page, target, responses, opts.timeoutMs, { overlay: !!(portal || opened) });
+      }
       if (opts.tree === "count") innerElements = await countTree(target);
     } catch (err) {
       // Not measured, rather than measured without its tree: a variant
@@ -513,12 +529,51 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
     return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
   } finally {
+    await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
     // Closed again, whatever came of measuring it.
     if (shut) await closeOverlay(page, shut.opened, shut.content, opts.story?.id).catch(() => { /* the page went */ });
     images?.stop();
     responses?.stop();
     warnings?.stop();
   }
+}
+
+/** A select's open field and its content, measured as one: the element around both, a probe that draws nothing, and the box around both. */
+interface Pair {
+  root: ElementHandle<Element>;
+  probe: ElementHandle<Element>;
+  box: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * A select's or combobox's open `field` and the `content` it opened, as
+ * one root: the nearest element around both, which the tree is read under
+ * (captureTreeInPage's `focus`), the box around both, which the root is,
+ * and an element added to the page, which draws nothing, whose styles the
+ * root's are. Null where either has no box.
+ */
+async function pairOf(page: Page, field: ElementHandle<Element>, content: ElementHandle<Element>): Promise<Pair | null> {
+  const [a, b] = [await field.boundingBox(), await content.boundingBox()];
+  if (!a || !b) return null;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const box = { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+  const root = (await field.evaluateHandle((f, c) => {
+    let at = f.parentElement;
+    while (at && !at.contains(c)) at = at.parentElement;
+    return at ?? document.body;
+  }, content)).asElement() as ElementHandle<Element> | null;
+  const probe = (await page.evaluateHandle(() => {
+    const el = document.createElement("div");
+    el.style.cssText = "position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none";
+    document.body.appendChild(el);
+    return el;
+  })).asElement() as ElementHandle<Element> | null;
+  if (!root || !probe) {
+    await probe?.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    return null;
+  }
+  return { root, probe, box };
 }
 
 // --- Overlays ---------------------------------------------------------------
@@ -1195,6 +1250,8 @@ interface Located {
   content?: true;
   /** For a toast's story, the button that raises the toast (OpenableTrigger's `toast`). */
   opener?: ElementHandle<Element>;
+  /** A select's or combobox's open field, whose content `target` is: the two are measured as one. */
+  field?: { target: ElementHandle<Element>; element: string };
 }
 
 /**
@@ -1248,6 +1305,9 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
     const opener = at && container
       ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), at)).asElement() ?? undefined
       : undefined;
+    const fieldAt = choice.field && container
+      ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), choice.field.path)).asElement() ?? undefined
+      : undefined;
     return {
       target,
       element: choice.element,
@@ -1257,6 +1317,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       ...(choice.kind === "tree" && choice.trigger ? { trigger: choice.trigger } : {}),
       ...(choice.kind === "tree" && choice.content ? { content: true as const } : {}),
       ...(opener ? { opener: opener as ElementHandle<Element> } : {}),
+      ...(fieldAt && choice.field ? { field: { target: fieldAt as ElementHandle<Element>, element: choice.field.element } } : {}),
     };
   } finally {
     await portalsHandle.dispose();
@@ -2029,6 +2090,12 @@ interface TreeInPageArgs {
   nonRendered: readonly string[];
   /** Whether to read what is around the root too, for an overlay's content: RawTreeCapture's `around`. */
   around?: boolean;
+  /**
+   * Elements under the root read as the root's only children, the root a
+   * box around them that draws nothing: a select's open field and the
+   * content it opened (pairOf), which share no element but the body.
+   */
+  focus?: Element[];
 }
 
 /**
@@ -2045,7 +2112,15 @@ interface TreeInPageArgs {
  * the markup snap compares across variants is as it was.
  */
 export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeCapture {
-  const R = root.getBoundingClientRect();
+  const focus = args.focus ?? [];
+  const R = focus.length
+    ? (() => {
+      const rects = focus.map((el) => el.getBoundingClientRect());
+      const x = Math.min(...rects.map((r) => r.left));
+      const y = Math.min(...rects.map((r) => r.top));
+      return new DOMRect(x, y, Math.max(...rects.map((r) => r.right)) - x, Math.max(...rects.map((r) => r.bottom)) - y);
+    })()
+    : root.getBoundingClientRect();
   const rel = (r: DOMRect): RawBox => [r.left - R.left, r.top - R.top, r.width, r.height];
   const properties = Object.keys(args.defaults);
   const nonRendered = new Set(args.nonRendered);
@@ -2503,8 +2578,20 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     return node;
   };
 
+  // The focus elements as the root's children, each by its path from it.
+  const around = (els: Element[]): RawTreeElement => {
+    read++;
+    const node: RawTreeElement = { k: "e", tag: "div", box: [0, 0, R.width, R.height], cs: {}, kids: [], path: [] };
+    for (const el of els) {
+      const path: number[] = [];
+      for (let at: Element | null = el; at && at !== root && at.parentElement; at = at.parentElement) path.unshift(Array.from(at.parentElement.children).indexOf(at));
+      node.kids.push(walk(el, path, 1));
+    }
+    return node;
+  };
+
   try {
-    const out: RawTreeCapture = { root: walk(root, [], 0), fonts };
+    const out: RawTreeCapture = { root: focus.length ? around(focus) : walk(root, [], 0), fonts };
     // The class evidence around the root, up to <html>: a text it holds
     // inherits its color from there where nothing inside sets one, as from
     // a story's wrapper.
@@ -2515,7 +2602,7 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     if (outer.some((cls) => cls.length)) out.outer = outer;
     // What places an overlay's content, from outside it: up to the page's
     // own elements, which place nothing a component draws.
-    if (args.around) {
+    if (args.around && !focus.length) {
       const around: Record<string, string>[] = [];
       for (let at = root.parentElement; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
         around.push(readCss(getComputedStyle(at), null));
@@ -2527,6 +2614,12 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     (hider as HTMLStyleElement | null)?.remove();
   }
 }
+
+/**
+ * captureTreeInPage as Playwright takes it: its `focus` elements are
+ * passed as handles, which its types for TreeInPageArgs don't allow.
+ */
+const treeReader = captureTreeInPage as unknown as (root: Element, args: object) => RawTreeCapture | null;
 
 /** A variant's tree as captureStory read it, with what its assets are made from. */
 export interface CapturedTree {
@@ -2680,10 +2773,12 @@ export async function captureTree(
   target: ElementHandle<Element>,
   responses: ImageResponses | null,
   timeoutMs: number,
-  { overlay = false }: { overlay?: boolean } = {},
+  { overlay = false, focus }: { overlay?: boolean; focus?: ElementHandle<Element>[] } = {},
 ): Promise<CapturedTree> {
   const started = Date.now();
-  const raw = await target.evaluate(captureTreeInPage, { ...treeInPageArgs("tree"), ...(overlay ? { around: true } : {}) }) as RawTreeCapture | null;
+  const raw = await target.evaluate(treeReader, {
+    ...treeInPageArgs("tree"), ...(overlay ? { around: true } : {}), ...(focus ? { focus } : {}),
+  }) as RawTreeCapture | null;
   if (!raw?.root) throw new Error("the page returned no tree");
   const built = buildTree(raw);
   const byKey = new Map(built.nodes.map((node) => [node.k, node]));
@@ -2747,7 +2842,7 @@ export async function captureTree(
 
 /** How many elements a tree under `target` would hold, for `--root-only`. */
 export async function countTree(target: ElementHandle<Element>): Promise<number> {
-  const raw = await target.evaluate(captureTreeInPage, treeInPageArgs("count")) as RawTreeCapture | null;
+  const raw = await target.evaluate(treeReader, treeInPageArgs("count")) as RawTreeCapture | null;
   if (!raw?.root) throw new Error("the page returned no tree");
   return countInnerElements(raw);
 }

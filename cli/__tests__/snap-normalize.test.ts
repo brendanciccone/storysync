@@ -1134,7 +1134,8 @@ test("chooseMeasuredElement: an open trigger whose aria-controls names nothing m
   // A select's field, open, without slots.
   const field = node("button", { role: "combobox", expanded: "true", controls: "elsewhere", styles: FILLED });
   const listbox = [portal({ role: "listbox", overlay: true })];
-  assert.deepEqual(chooseMeasuredElement(root(field), listbox, []), { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [] });
+  // With the field it opened from, which is measured with it.
+  assert.deepEqual(chooseMeasuredElement(root(field), listbox, []), { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [], field: { path: [0], element: 'button[role="combobox"]' } });
   // An open trigger with nothing showing is measured as it is, with no note: it isn't closed.
   assert.deepEqual(chooseMeasuredElement(root(tooltip), [], []), { kind: "tree", path: [0], element: "button", notes: [] });
   // Something open that is no trigger doesn't take an overlay in its place.
@@ -1270,4 +1271,17 @@ test("chooseMeasuredElement: a toast's story has its button raise a toast, and a
   assert.deepEqual(raised, { kind: "tree", path: [0, 1, 0, 0], element: "li", notes: [], content: true });
   // Any other component's button is no toast's opener.
   assert.equal(chooseMeasuredElement(root(wrapper), [], ["card"]).kind === "tree" && (chooseMeasuredElement(root(wrapper), [], ["card"]) as { trigger?: unknown }).trigger, undefined);
+});
+
+test("chooseMeasuredElement: a select's open field comes with the content it opened; a dialog's trigger doesn't", () => {
+  const select = node("button", { role: "combobox", expanded: "true", controls: "lb", styles: FILLED });
+  const choice = chooseMeasuredElement(root(select), [portal({ role: "listbox", id: "lb", overlay: true })], ["select"]);
+  assert.deepEqual(choice, { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [], field: { path: [0], element: 'button[role="combobox"]' } });
+  // shadcn's, by its content's slot.
+  const slotted = chooseMeasuredElement(root(node("div", {}, [select])), [portal({ slot: "select-content", overlay: true })], ["select"]);
+  assert.deepEqual(slotted.kind === "portal" && slotted.field, { path: [0, 0], element: 'button[role="combobox"]' });
+  // A dialog's content is measured alone.
+  const dialog = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "true", controls: "d", state: "open", styles: FILLED });
+  const content = chooseMeasuredElement(root(dialog), [portal({ role: "dialog", id: "d", overlay: true })], ["dialog"]);
+  assert.equal(content.kind === "portal" && content.field, undefined);
 });

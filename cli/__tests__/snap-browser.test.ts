@@ -1360,8 +1360,12 @@ test("captureStory: with --no-open-overlays, a closed trigger is measured untouc
 test("captureStory: a select's field is clicked open and its listbox measured; one that opens nothing is measured as the field, with no note but why", async () => {
   const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
   const select = overlayPage({ marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" } });
-  const opened = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
-  assert.deepEqual([opened.element, opened.opened], ['div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+  const opened = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, tree: "tree", component: { name: "Select", title: "ui/radix/Select" } });
+  // The field and the listbox it opened, as one root around both: Figma gets the field too.
+  assert.deepEqual([opened.element, opened.opened], ['button[data-slot="select-trigger"] + div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+  assert.deepEqual(opened.boundingBox, { x: 416, y: 200, width: 448, height: 245 });
+  assert.deepEqual(opened.tree?.nodes.map((n) => n.k), ["", "button", "div"]);
+  assert.ok(select.done.includes("probe removed"));
 
   const shut = overlayPage({ marks: field, opensOn: [] });
   const asIs = await captureStory(shut.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
@@ -1460,4 +1464,20 @@ test("storybookErrorInPage: an implicit action error names the args Storybook wa
   } finally {
     scope.document = saved;
   }
+});
+
+test("captureTreeInPage: a select's open field and its listbox, in a portal, read as one root around both that draws nothing", () => {
+  const field: FakeElementSpec = { tag: "button", attrs: { role: "combobox" }, rect: [16, 16, 180, 36], style: { "background-color": "rgb(255, 255, 255)" }, kids: [{ text: "Apple", rects: [[28, 26, 40, 16]] }] };
+  const listbox: FakeElementSpec = { tag: "div", attrs: { role: "listbox" }, rect: [16, 56, 180, 120], style: { "background-color": "rgb(250, 250, 250)" } };
+  const body: FakeElementSpec = {
+    tag: "body", rect: [0, 0, 1280, 720],
+    kids: [{ tag: "div", attrs: { id: "storybook-root" }, rect: [0, 0, 1280, 68], kids: [field] }, { tag: "div", rect: [0, 0, 0, 0], style: { position: "fixed" }, kids: [listbox] }],
+  };
+  const raw = inFakePage(body, (el) => captureTreeInPage(el, { ...TREE_ARGS, focus: [el.children[0].children[0], el.children[1].children[0]] }));
+  assert.deepEqual(raw.root.box, [0, 0, 180, 160]);
+  assert.deepEqual(raw.root.cs, {});
+  const [button, list] = raw.root.kids as RawTreeElement[];
+  assert.deepEqual([button.tag, button.path, button.box], ["button", [0, 0], [0, 0, 180, 36]]);
+  assert.deepEqual([list.role, list.path, list.box], ["listbox", [1, 0], [0, 40, 180, 120]]);
+  assert.equal(raw.around, undefined);
 });
