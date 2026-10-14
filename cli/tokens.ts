@@ -1063,6 +1063,11 @@ function reexportRef(content: string, imports: Map<string, ConfigImport>): Confi
   return imported && !imported.call ? configRef(exported[1], imports) : null;
 }
 
+/** `text` as a regex matching it literally: every metacharacter, the backslash too, escaped. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * The function a config's export is built by, as `module.exports =
  * withTW({ ... })` or `const config = require("@inmediam/ui/tailwind")("docs")`
@@ -1078,7 +1083,7 @@ function wrapperCall(content: string, imports: Map<string, ConfigImport>): strin
   if (!id) return null;
   const imported = imports.get(id[1]);
   if (imported?.call) return `require("${imported.spec}")()`;
-  const assigned = new RegExp(`\\b(?:const|let|var)\\s+${id[1].replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*([\\w$.]+)\\s*\\(`).exec(content);
+  const assigned = new RegExp(`\\b(?:const|let|var)\\s+${escapeRegExp(id[1])}\\s*(?::[^=]+)?=\\s*([\\w$.]+)\\s*\\(`).exec(content);
   return assigned && assigned[1] !== "require" ? `${assigned[1]}()` : null;
 }
 
@@ -1095,14 +1100,14 @@ function exportedObject(content: string, name: string): string | null {
     const open = m.index + m[0].length - 1;
     return content.slice(open, closingIndex(content, open));
   };
-  const local = (id: string) => objectAfter(new RegExp(`\\b(?:const|let|var)\\s+${id.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=\\s*\\{`));
+  const local = (id: string) => objectAfter(new RegExp(`\\b(?:const|let|var)\\s+${escapeRegExp(id)}\\s*(?::[^=]+)?=\\s*\\{`));
   if (name === "default" || name === "*") {
     const direct = objectAfter(new RegExp(EXPORTED.source + "\\{"));
     if (direct) return direct;
     const id = new RegExp(EXPORTED.source + /([\w$]+)\s*(?:;|$|\bsatisfies\b|\bas\b)/.source, "m").exec(content);
     return id ? local(id[1]) : null;
   }
-  return local(name) ?? objectAfter(new RegExp(`\\b(?:module\\.)?exports\\.${name.replace(/\$/g, "\\$")}\\s*=\\s*\\{`));
+  return local(name) ?? objectAfter(new RegExp(`\\b(?:module\\.)?exports\\.${escapeRegExp(name)}\\s*=\\s*\\{`));
 }
 
 /** The file a relative import names, with the extensions a Tailwind config's imports can leave out. */
