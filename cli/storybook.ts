@@ -120,7 +120,7 @@ export function selectComponents(
  * inspect did, showed one of them as if it were the only one. An ID or a
  * title is one component's alone, so one matched exactly wins.
  */
-export function findComponent(entries: ComponentEntry[], name: string): ComponentEntry {
+export function findComponent(entries: ComponentEntry[], name: string, purpose = "inspect"): ComponentEntry {
   const key = name.trim().toLowerCase();
   const matched = entries.filter((e) => isNamed(e, key));
   if (!matched.length) {
@@ -134,8 +134,22 @@ export function findComponent(entries: ComponentEntry[], name: string): Componen
   if (exact) return exact[0];
   throw new Error(
     `"${name.trim()}" names ${matched.length} components: ` +
-    `${matched.map((e) => `${e.title ?? e.name} (${e.id})`).join(", ")}. Pass the ID or title of the one to inspect.`,
+    `${matched.map((e) => `${e.title ?? e.name} (${e.id})`).join(", ")}. Pass the ID or title of the one to ${purpose}.`,
   );
+}
+
+/**
+ * The one component each name picks, for a flag that acts on what the
+ * user said yes to: `--convert` and `--remove-extra`. A name that matches
+ * nothing throws as selectComponents does, and so does a name several
+ * components share, `Button` for both `ui/base/Button` and
+ * `ui/radix/Button`, listing each one's title and ID as inspect does, so
+ * the agent asks which one rather than acting on both. An ID or a title
+ * picks one.
+ */
+export function selectEach(entries: ComponentEntry[], names: readonly string[], flag: string): ComponentEntry[] {
+  selectComponents(entries, names, [], flag);
+  return componentNames(names).map((name) => findComponent(entries, name, `name with ${flag}`));
 }
 
 /** The names a component goes by in an "Available" list: its name, and its title's last segment where that differs. */

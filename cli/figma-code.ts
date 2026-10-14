@@ -36,7 +36,7 @@ import { describeVariantStories, parseMeasurementWarning } from "./snap.js";
 import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
 import { nameSlugs } from "./snap-args.js";
 import { applyDelta } from "./snap-normalize.js";
-import { componentKey, selectComponents } from "./storybook.js";
+import { componentKey, selectComponents, selectEach } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
 import { alphaCalls } from "./figma-tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
@@ -1100,14 +1100,14 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // the last part's call removes what snap no longer measures and lays
   // the variant out whole.
   const keys = new Map(entries.map((e, i) => [e, componentKey(all[i])]));
-  const convert = new Set(opts.convert?.length ? selectComponents(entries, opts.convert, [], "--convert").map((e) => keys.get(e)!) : []);
+  const convert = new Set(opts.convert?.length ? selectEach(entries, opts.convert, "--convert").map((e) => keys.get(e)!) : []);
   // --remove-extra tells a set to remove its extra variants only where
   // its last build Figma answered counted some: one with none to remove
   // keeps its call as it was, byte for byte, and one no saved answer
   // counted, as after a fresh clone or a teammate's push, is left alone,
   // never removed from on a guess.
   const { counts: extras, file } = opts.removeExtra ? builtExtras(opts.out) : { counts: new Map<string, number>(), file: undefined };
-  const named = Array.isArray(opts.removeExtra) ? new Set(selectComponents(entries, opts.removeExtra, [], "--remove-extra").map((e) => keys.get(e)!)) : null;
+  const named = Array.isArray(opts.removeExtra) ? new Set(selectEach(entries, opts.removeExtra, "--remove-extra").map((e) => keys.get(e)!)) : null;
   const asked = (c: { key: string }) => Boolean(opts.removeExtra) && (!named || named.has(c.key));
   const flags: SetFlags = { convert, removeExtra: (c) => asked(c) && (extras.get(c.id) ?? 0) > 0, extrasFile: file };
   const unknown = components.filter((c) => asked(c) && !extras.has(c.id)).map((c) => c.title ?? c.name);

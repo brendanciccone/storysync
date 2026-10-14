@@ -205,8 +205,11 @@ test("figma code --remove-extra <names>: only the components named remove their 
   const c = await codeIn(both(after, twinAfter), a.out, { removeExtra: ["Button"] });
   const removed = (await push(mock, c)).flatMap(sets);
   assert.deepEqual(removed.map((s) => [s.name, s.removed, s.extra]), [["Button", 6, 0], ["Twin", undefined, 6]]);
-  // A name that matches nothing is an error, as for --convert.
+  // A name that matches nothing is an error, as for --convert, and so is one two components share.
   await assert.rejects(codeIn(both(after, twinAfter), a.out, { removeExtra: ["Tabs"] }), /--remove-extra/);
+  const namesake = Object.assign(copy(twinAfter), { name: "Button", title: "Toggles/Button" });
+  await assert.rejects(codeIn(both(after, namesake), a.out, { removeExtra: ["Button"] }), /"Button" names 2 components: Forms\/Button \(.*\), Toggles\/Button \(.*\)\. Pass the ID or title of the one to name with --remove-extra/);
+  await assert.rejects(codeIn(both(after, namesake), a.out, { convert: ["Button"] }), /Pass the ID or title of the one to name with --convert/);
 });
 
 test("figma code --remove-extra: an answer from another Figma file says nothing of this one's sets", async () => {

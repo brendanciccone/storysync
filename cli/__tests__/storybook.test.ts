@@ -8,7 +8,7 @@ import {
   parseStories,
   resolveDocsTools,
   selectComponents,
-  findComponent,
+  findComponent, selectEach,
   toolResultText,
   tableCells,
   StorybookClient,
@@ -745,6 +745,16 @@ test("selectComponents: also matches a title, as map prints it, and its last seg
       "Tooltip (ui-base-tooltip, ui-radix-tooltip), TooltipContent (ui-base-tooltip, ui-radix-tooltip)",
   });
   assert.throws(() => findComponent(REGISTRY, "Tooltp"), /^Error: No component named "Tooltp"\. Available: Button \(ui-base-button, ui-radix-button\), Tooltip/);
+});
+
+test("selectEach: a --remove-extra or --convert name several components share is an error naming each, so one the user didn't say yes to isn't touched", () => {
+  // "Button" took ui/base/Button and ui/radix/Button both.
+  assert.throws(
+    () => selectEach(REGISTRY, ["Button"], "--remove-extra"),
+    { message: '"Button" names 2 components: ui/base/Button (ui-base-button), ui/radix/Button (ui-radix-button). Pass the ID or title of the one to name with --remove-extra.' },
+  );
+  assert.deepEqual(selectEach(REGISTRY, ["ui/radix/Button", "ui-base-tooltip"], "--convert").map((e) => e.id), ["ui-radix-button", "ui-base-tooltip"]);
+  assert.throws(() => selectEach(REGISTRY, ["Tooltp"], "--convert"), /^Error: --convert matched no component named "Tooltp"/);
 });
 
 test("findComponent: a name several components share is an error naming each one's title and ID", () => {
