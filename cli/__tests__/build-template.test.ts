@@ -1240,9 +1240,10 @@ test("build: a variant another call built is moved in the set's grid with its fo
   assert.deepEqual(result(two).sets[0].variants, 2);
 });
 
-test("build: a call refused for one of its sets changes none of them", async () => {
+test("build: a set the user must answer for is refused and left as it was, and the call builds the others in it", async () => {
+  // Toggle first: its refusal stops nothing after it.
   const snap = copy(loadTreeFixture("switch"));
-  snap.components.push(copy(loadTreeFixture("toggle").components[0]));
+  snap.components.unshift(copy(loadTreeFixture("toggle").components[0]));
   const coded = await codeFor(snap);
   const mock = mockFor([loadTreeFixture("switch"), loadTreeFixture("toggle")]);
   await mock.run(`
@@ -1257,12 +1258,18 @@ test("build: a call refused for one of its sets changes none of them", async () 
       set.x = x;
     }
   `);
-  const before = JSON.stringify(mock.pages());
+  const toggles = () => JSON.stringify(mock.pages()[0].children!.filter((n) => n.name === "Toggle"));
+  const before = toggles();
   const call = coded.plan.calls[0];
-  assert.deepEqual(call.components, ["ui/base/Switch", "ui/base/Toggle"]);
+  assert.deepEqual(call.components, ["ui/base/Toggle", "ui/base/Switch"]);
   const run = await mock.run(coded.code(call));
-  assert.match(run.text, /The page has COMPONENT_SET "Toggle" .*, COMPONENT_SET "Toggle" .*: ask the user which to update/);
-  assert.equal(JSON.stringify(mock.pages()), before, "Switch, first in the call, wasn't built either");
+  assert.ok(run.ok, run.text);
+  const sets = result(run).sets as { component: string; refused?: string; variants?: number }[];
+  const toggle = sets.find((s) => s.component === "ui-base-toggle")!;
+  assert.match(toggle.refused!, /^The page has COMPONENT_SET "Toggle" .*, COMPONENT_SET "Toggle" .*: ask the user which to update$/);
+  assert.deepEqual(Object.keys(toggle).sort(), ["component", "name", "refused"]);
+  assert.equal(toggles(), before, "Toggle's sets are as they were");
+  assert.equal(sets.find((s) => s.component === "ui-base-switch")!.variants, loadTreeFixture("switch").components[0].variants.length, "Switch is built");
 });
 
 /** The error every call throws when it fails its SUM. */
@@ -1610,10 +1617,11 @@ test("build: a variant copied from one with auto layout and strokes included, bu
   }
 });
 
-test("build: where Figma rounds hugging labels up to a whole pixel, the frame that fixes the width grows by what they took, so the labels hug and nothing wraps (Item) or runs past its frame (Breadcrumb)", async () => {
+test("build: where Figma's whole-pixel hugging labels would push a layer, they are fixed at the browser's sizes, so nothing wraps (Item) or runs past its frame (Breadcrumb) and no frame is wider; elsewhere they hug", async () => {
   type Text = { width: number; height: number; x: number; textAutoResize: string };
-  // Item: "Action" is 43.13 measured and 44 in Figma, which narrows the
-  // description's column by 0.87, its own width, short of one line.
+  // Item: "Action" is 43.13 measured and 44 hugging in Figma, which
+  // narrows the description's column by 0.87, its own width, short of one
+  // line. Fixed at 43.13, as Figma keeps it (probe 9a), it narrows nothing.
   const item = finalFixture("item");
   const built = await buildAll(item);
   for (const variant of fixtureVariants(item)) {
@@ -1621,17 +1629,17 @@ test("build: where Figma rounds hugging labels up to a whole pixel, the frame th
     const text = (k: string) => built.mock.handle(keyed(root, k)!.id) as Text;
     const measured = (k: string) => variant.nodes.find((n) => n.k === k)!.box;
     assert.equal(text("item-content/item-description/#text").height, Math.ceil(measured("item-content/item-description/#text")[3]), `${variant.slug}: the description on one line`);
-    const label = measured("button/#text")[2];
-    assert.deepEqual([text("button/#text").width, text("button/#text").textAutoResize], [Math.ceil(label), "WIDTH_AND_HEIGHT"], variant.slug);
-    // As wide as measured and the label's rounding; as tall, but for its
-    // title's line, which Figma rounds up to a whole pixel too.
-    assert.ok(Math.abs(root.width - (variant.nodes[0].box[2] + Math.ceil(label) - label)) < 0.01, `${variant.slug}: ${root.width}`);
+    assert.deepEqual([text("button/#text").width, text("button/#text").height, text("button/#text").textAutoResize], [measured("button/#text")[2], measured("button/#text")[3], "NONE"], variant.slug);
+    // As wide as measured; as tall, but for its title's line, which Figma
+    // rounds up to a whole pixel, as it grows to its lines (probe 9a).
+    assert.ok(Math.abs(root.width - variant.nodes[0].box[2]) < 0.01, `${variant.slug}: ${root.width}`);
     assert.ok(root.height < variant.nodes[0].box[3] + 1, `${variant.slug}: ${root.height}`);
     assert.equal((built.mock.handle(root.id) as { layoutSizingVertical: string }).layoutSizingVertical, "HUG");
     assert.deepEqual(result(built.runs[0]).fallbacks, []);
   }
   // Breadcrumb: three labels, each up to a pixel wider, would end 1.71px
-  // past the list, which fills the nav's fixed 272.29: the nav grows by it.
+  // past the list, which fills the nav's fixed 272.29: fixed at 39.05, 84.4
+  // and 80.85, they end where the browser drew them, the nav as measured.
   const crumbs = finalFixture("breadcrumb");
   const { mock } = await buildAll(crumbs);
   const [variant] = fixtureVariants(crumbs);
@@ -1639,16 +1647,20 @@ test("build: where Figma rounds hugging labels up to a whole pixel, the frame th
   const list = mock.handle(keyed(root, "breadcrumb-list")!.id) as { width: number };
   for (const k of ["breadcrumb-list/breadcrumb-link", "breadcrumb-list/breadcrumb-link:2", "breadcrumb-list/breadcrumb-page"]) {
     const text = mock.handle(keyed(root, k)!.id) as Text;
-    assert.deepEqual([text.textAutoResize, text.width], ["WIDTH_AND_HEIGHT", Math.ceil(variant.nodes.find((n) => n.k === k)!.box[2])], k);
+    assert.deepEqual([text.textAutoResize, text.width], ["NONE", variant.nodes.find((n) => n.k === k)!.box[2]], k);
   }
   const page = mock.handle(keyed(root, "breadcrumb-list/breadcrumb-page")!.id) as Text;
-  assert.deepEqual([page.x + page.width, list.width, root.width], [274, 274, 274]);
+  const measured = variant.nodes[0].box[2];
+  assert.ok([page.x + page.width, list.width, root.width].every((w) => Math.abs(w - measured) < 0.01), `${page.x + page.width}, ${list.width}, ${root.width}: ${measured}`);
   assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)), []);
-  // A button whose label rounds up and changes nothing else is as it was.
+  // A button whose label rounds up and pushes nothing hugs it, as a designer's would.
   const button = loadTreeFixture("example-button");
   const plain = await buildAll(button);
   const [own] = fixtureVariants(button);
-  assert.equal((plain.mock.handle(variantsBySlug(plain.mock).get(own.slug)!.id) as { layoutSizingHorizontal: string }).layoutSizingHorizontal, "HUG");
+  const ownRoot = variantsBySlug(plain.mock).get(own.slug)!;
+  assert.equal((plain.mock.handle(ownRoot.id) as { layoutSizingHorizontal: string }).layoutSizingHorizontal, "HUG");
+  const label = ownRoot.children!.find((c) => c.type === "TEXT")!;
+  assert.equal((plain.mock.handle(label.id) as Text).textAutoResize, "WIDTH_AND_HEIGHT");
 });
 
 test("build: a balanced text's lines break where the browser broke them, at its measured box, and read back as its characters", async () => {

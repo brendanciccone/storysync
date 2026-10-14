@@ -13,7 +13,8 @@
 //
 // DATA = { page, S, sets }
 //   S     the call's table of strings and styles; records refer to it by index.
-//   sets  [{ id, title, name, props, base, v }], each one part of a set:
+//   sets  [{ id, title, name, props, base, v, cv?, pin?, end?, rm? }], each
+//         one part of a set:
 //         id, title   the component's Storybook id and title, kept on the set
 //                     as shared plugin data, by which it is found again;
 //         name        the set's name; props, its variantProperties for the grid;
@@ -21,17 +22,26 @@
 //         v           [[name, slug, i, src, digest, delta]], the part's variants:
 //                     src 1 measured, 0 a placeholder for one snap couldn't
 //                     measure; delta [[index, [x, y, w, h] | 0, style | -1]]
-//                     against base, or { r: records } in full.
+//                     against base, or { r: records } in full, or a part of
+//                     a variant too big for one call, { r, p: [part, of],
+//                     c: the calls of the parts before, on the last };
+//         cv          1 where the user said to make the plain component an
+//                     earlier push built the first variant of this set;
+//         pin         { prop: value } snap pins each prop it left out to;
+//         end         1 on the set's last part; rm, 1 there where the user
+//                     said to remove the variants no property names now.
 //   A record is [key, parent, kind, x, y, w, h, style]: key and style index
 //   S, parent indexes the records, kind is F, T, V or I. x and y are relative
 //   to the parent's frame; w and h are the frame's size. A style is
 //   cli/figma-map.ts's FigmaStyle.
 //
 // It returns { kind: 'build', tpl: 2, page, sets, uploads, fonts, unbound,
-// fallbacks, omitted? }: per set what changed (section 8.2), the image
-// layers to upload_assets, font stand-ins, variable names that didn't bind,
-// spike fallbacks taken, and how many list entries were left out to keep
-// the response under use_figma's 20kb.
+// fallbacks, omitted? }: per set what changed (section 8.2), or `refused`,
+// the question for the user that left it as it was, or `stashed`, the
+// parts kept for a later call; the image layers to upload_assets, font
+// stand-ins, variable names that didn't bind, spike fallbacks taken, and
+// how many list entries were left out to keep the response under
+// use_figma's 20kb.
 //
 // Each variant is converged: its layers are matched to records by the key in
 // their shared plugin data `k`, restyled in place (so node ids, and the
@@ -534,36 +544,59 @@ const balance = (n, t, w) => {
   if (breaks) put(n, 'br', t.c);
 };
 
-// Figma rounds a hugging label's width up to a pixel (probe 8a: Item's
-// "Action", 43.13, is 44), which narrows a filling sibling, Item's
-// description, until it wraps, or runs a row past its frame, Breadcrumb's.
-// By up to all that rounding, the frame that fixes the width grows by what
-// a child lost, so the labels still hug.
+// Figma sets a hugging text's box to whole pixels (probe 9a: 39.05, 84.4
+// and 80.85 by 19.25 are 40, 85 and 81 by 20), so a row of them can end
+// past the frame that fixes its width (Breadcrumb's), or narrow a filling
+// sibling until it wraps (Item's description beside "Action", 43.13 set
+// 44). Where that rounding pushes a layer so, each rounded text is fixed
+// at the size the browser drew it, which Figma keeps (probe 9a), and the
+// variant is as measured, no frame wider; elsewhere they hug, as a
+// designer's labels do, and verify takes Figma's whole pixels.
 const slack = (nodes, recs) => {
+  const round = [];
   let most = 0.05;
   for (let i = 1; i < recs.length; i++) {
     const d = nodes[i].width - recs[i][5];
-    if (nodes[i].type === 'TEXT' && nodes[i].textAutoResize === 'WIDTH_AND_HEIGHT' && d > 0 && d < 1) most += d;
+    if (nodes[i].type === 'TEXT' && nodes[i].textAutoResize === 'WIDTH_AND_HEIGHT' && d > 0 && d < 1) {
+      most += d;
+      round.push(i);
+    }
   }
-  const grow = {};
-  for (let i = 1; i < recs.length && most > 0.06; i++) {
+  for (let i = 1; i < recs.length && round.length; i++) {
     const [n, r] = [nodes[i], recs[i]];
     const p = nodes[r[1]];
     if (!n.visible || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
-    // A filling child narrower, or one further past its frame's end.
     const past = (end, w) => Math.max(0, end + p.paddingRight - w);
     const d = p.layoutMode === 'HORIZONTAL' && n.layoutGrow ? r[5] - n.width : past(n.x + n.width, p.width) - past(r[3] + r[5], recs[r[1]][5]);
-    let j = r[1];
-    while (j && nodes[j].layoutSizingHorizontal === 'FILL') j = recs[j][1];
-    if (d > 0.01 && d < most) grow[j] = Math.max(grow[j] || 0, d);
+    if (d > 0.01 && d < most) {
+      for (const j of round) nodes[j].resize(recs[j][5], recs[j][6]);
+      return;
+    }
   }
-  for (const j in grow) {
-    const f = nodes[j];
-    const v = f.layoutSizingVertical;
-    if (f.layoutSizingHorizontal !== 'FIXED') continue;
-    f.resize(f.width + grow[j], f.height);
-    if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
-  }
+};
+
+// Room for a text Figma sets wider than the browser did (probe 9a: Geist
+// sets Select's "Select a fruit" 85 wide, the browser 84.5): the frame
+// that fixes its width, the one it fills, grows by what it lacks, where
+// its row has that room free, so the text is drawn whole as measured.
+const room = (nodes, recs, i) => {
+  const c = nodes[i].clone();
+  c.textAutoResize = 'WIDTH_AND_HEIGHT';
+  c.maxLines = null;
+  const d = c.width - nodes[i].width;
+  c.remove();
+  let j = i;
+  while (j && nodes[j].layoutSizingHorizontal === 'FILL') j = recs[j][1];
+  const f = nodes[j];
+  const p = j && nodes[recs[j][1]];
+  if (!p || d <= 0 || f.type === 'TEXT' || p.layoutMode === 'NONE' || f.layoutPositioning === 'ABSOLUTE' || f.layoutSizingHorizontal !== 'FIXED') return false;
+  const flow = p.children.filter((k) => k.visible && k.layoutPositioning !== 'ABSOLUTE');
+  const used = p.layoutMode === 'HORIZONTAL' ? flow.reduce((t, k) => t + k.width, 0) + (p.primaryAxisAlignItems === 'SPACE_BETWEEN' ? 0 : p.itemSpacing * (flow.length - 1)) : f.width;
+  if (p.width - p.paddingLeft - p.paddingRight - (p.strokesIncludedInLayout && p.strokes.length ? p.strokeLeftWeight + p.strokeRightWeight : 0) - used < d) return false;
+  const v = f.layoutSizingVertical;
+  f.resize(f.width + d, f.height);
+  if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
+  return true;
 };
 
 // Keeps each text the browser drew whole on one line (`o`), and an input's
@@ -585,6 +618,7 @@ const keepLines = (nodes, recs) => {
     if (!wraps(n, t)) continue;
     at[2] = S[recs[i][0]];
     const fills = (st.z || [])[0] === 'L' || t.v;
+    if (fills && room(nodes, recs, i) && !wraps(n, t)) continue;
     // A value is cut at its box, as the browser clips it.
     if (t.v) n.textTruncation = 'ENDING';
     else if (fills && !t.tr) continue;
@@ -697,37 +731,108 @@ const recordsOf = (base, delta) => {
 
 const idOf = (n) => get(n, 'id');
 const results = [];
-// Every set this call builds is found and checked before any is changed,
-// so a call refused for one changes nothing.
-const found = DATA.sets.map((set) => {
+const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+const boxOf = (n) => ({ x: n.x, y: n.y, width: n.width, height: n.height });
+// Moves down, below `n`, each set or component that `n` grew onto: one it
+// didn't lie on at `was`, its box before, nor above it. What moves pushes
+// on in turn. A designer's layer stays, counted in `overlaps`.
+const push = (n, was, moved) => {
+  for (const m of page.children) {
+    if (m === n || !idOf(m) || m.y < n.y || !hit(m, n) || hit(m, was)) continue;
+    const before = boxOf(m);
+    m.y = n.y + n.height + 100;
+    moved.push(m.id);
+    push(m, before, moved);
+  }
+};
+// Each set is checked before it is changed. One the user must answer for
+// is left as it is, its result saying why in `refused`, and the call goes
+// on to the others.
+for (const set of DATA.sets) {
   const want = set.props.length ? 'COMPONENT_SET' : 'COMPONENT';
+  // A variant too big for one call comes in parts (`p`: [part, of]). Each
+  // but the last is kept on the page, its strings and styles with it, an
+  // icon's markup (a style's `m`) too, until the last part's call builds
+  // the variant whole and removes them.
+  const key = (slug, k) => 'part ' + set.id + ' ' + slug + ' ' + k;
+  const parts = [];
+  set.v = set.v.filter(([, slug, , , digest, d]) => {
+    if (!d.p || d.p[0] === d.p[1]) return true;
+    const used = [];
+    const ix = {};
+    const re = (i) => {
+      if (i in ix) return ix[i];
+      const j = (ix[i] = used.push(S[i]) - 1);
+      if (S[i].m !== undefined) used[j] = Object.assign({}, S[i], { m: re(S[i].m) });
+      return j;
+    };
+    put(page, key(slug, d.p[0]), JSON.stringify({ d: digest, S: used, r: d.r.map((q) => [re(q[0]), ...q.slice(1, 7), re(q[7])]) }));
+    parts.push(slug);
+    return false;
+  });
+  if (!set.v.length) {
+    results.push({ component: set.id, name: set.name, stashed: parts.length });
+    continue;
+  }
   const names = set.v.map((v) => v[0]);
-  if (new Set(names).size !== names.length) throw new Error('This part names a variant of ' + set.name + ' twice');
   // The set: by name anywhere on the page, else by its storysync id, so a
-  // renamed set is found and a copy of one is not; refused as 0.4.0 refused.
+  // renamed set is found and a copy of one is not.
   const all = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
     .filter((n) => n.parent.type !== 'COMPONENT_SET' && (n.type === want || n.type === 'COMPONENT_SET' || idOf(n)));
   const named = all.filter((n) => n.name === set.name);
   const sets = named.length ? named : all.filter((n) => idOf(n) === set.id);
-  const node = sets[0] || null;
-  const why = sets.length > 1 ? 'ask the user which to update'
-    : node && node.type !== want ? 'this part builds a ' + want + ': ask the user whether to convert it or skip it'
-      : node && idOf(node) && idOf(node) !== set.id ? 'it is another component: ask the user whether it is ' + set.id : '';
-  if (why) throw new Error('The page has ' + sets.map((n) => n.type + ' "' + n.name + '" (' + n.id + ', id "' + idOf(n) + '")').join(', ') + ': ' + why);
-  if (node && set.props.length && node.layoutMode !== 'NONE') {
-    throw new Error('The set "' + set.name + '" has auto layout (' + node.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set');
+  let node = sets[0] || null;
+  const kids = node && node.type === 'COMPONENT_SET' ? node.children : [];
+  const twice = names.find((name) => kids.filter((c) => c.name === name).length > 1);
+  // A plain component an earlier push built where a set now goes is made
+  // the set's first variant, in place, so its instances stay on it, where
+  // the call carries the user's yes (`cv`, figma code --convert).
+  const convert = node && node.type === 'COMPONENT' && want === 'COMPONENT_SET' && set.cv;
+  const why = new Set(names).size !== names.length ? 'This part names a variant of ' + set.name + ' twice'
+    : sets.length > 1 || (node && node.type !== want && !convert) || (node && idOf(node) && idOf(node) !== set.id)
+      ? 'The page has ' + sets.map((n) => n.type + ' "' + n.name + '" (' + n.id + ', id "' + idOf(n) + '")').join(', ') + ': '
+        + (sets.length > 1 ? 'ask the user which to update'
+          : node.type !== want ? 'this part builds a ' + want + ': ask the user whether to convert it' + (want === 'COMPONENT' ? '' : ' in place (figma code --convert)') + ' or skip it'
+            : 'it is another component: ask the user whether it is ' + set.id)
+      : kids.length && node.layoutMode !== 'NONE' ? 'The set "' + set.name + '" has auto layout (' + node.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set'
+        : twice ? 'The set "' + set.name + '" has ' + kids.filter((c) => c.name === twice).length + ' variants named "' + twice + '", not one' : '';
+  if (why) {
+    results.push({ component: set.id, name: set.name, refused: why });
+    continue;
   }
-  const existing = new Map();
-  for (const name of names) {
-    const same = !node ? [] : want === 'COMPONENT' ? [node] : node.children.filter((c) => c.name === name);
-    if (same.length > 1) throw new Error('The set "' + set.name + '" has ' + same.length + ' variants named "' + name + '", not one');
-    existing.set(name, same[0] || null);
+  const was = node && boxOf(node);
+  let converted = 0;
+  if (convert) {
+    const plain = node;
+    put(plain, 'id', '');
+    put(plain, 'title', '');
+    node = figma.combineAsVariants([plain], plain.parent, plain.parent.children.indexOf(plain));
+    node.name = set.name;
+    plain.name = set.props.map((p) => p.name + '=' + p.defaultValue).join(', ');
+    converted = 1;
   }
-  return { want, names, node, existing };
-});
-for (const [s, set] of DATA.sets.entries()) {
-  const { want, names, existing } = found[s];
-  let node = found[s].node;
+  // Variants an earlier push built under other properties are renamed onto
+  // this part's, so their instances follow: a property added takes its
+  // default value; of a property dropped, a variant at the value snap now
+  // pins it to (`pin`) is kept, a measured one before a placeholder. The
+  // rest stay, extra, until the user has them removed (`rm`).
+  let renamed = 0;
+  if (node && node.type === 'COMPONENT_SET') {
+    const take = {};
+    for (const c of node.children) {
+      if (names.includes(c.name) || !get(c, 'slug')) continue;
+      const old = Object.fromEntries(c.name.split(', ').map((s) => s.split('=')));
+      if (Object.keys(old).some((k) => set.pin && k in set.pin && set.pin[k] !== old[k] && !set.props.some((p) => p.name === k))) continue;
+      const to = set.props.map((p) => p.name + '=' + (p.name in old ? old[p.name] : p.defaultValue)).join(', ');
+      if (!names.includes(to) || node.children.some((d) => d.name === to)) continue;
+      if (!take[to] || (get(c, 'src') === 'measured' && get(take[to], 'src') !== 'measured')) take[to] = c;
+    }
+    for (const to in take) {
+      take[to].name = to;
+      renamed++;
+    }
+  }
+  const existing = new Map(names.map((name) => [name, !node ? null : want === 'COMPONENT' ? node : node.children.find((c) => c.name === name) || null]));
   const fresh = !node;
   const below = page.children.reduce((y, n) => Math.max(y, n.y + n.height + 100), 0);
   const created = [];
@@ -736,10 +841,24 @@ for (const [s, set] of DATA.sets.entries()) {
   let designerLayers = 0;
   let first = null;
   let firstKeys = null;
+  const done = [];
   try {
     for (const [name, slug, index, src, digest, delta] of set.v) {
       at = [set.title || set.name, slug];
-      const recs = recordsOf(set.base, delta);
+      let recs = recordsOf(set.base, delta);
+      if (delta.p) {
+        // The last part of a variant: its earlier parts' records first.
+        const before = [];
+        for (let k = 1; k < delta.p[1]; k++) {
+          const o = JSON.parse(get(page, key(slug, k)) || '{}');
+          if (o.d !== digest) throw new Error('Variant ' + slug + ' of ' + set.name + ' is sent in ' + delta.p[1] + ' calls: send call ' + delta.c + ' first, then this one again');
+          const n = S.length;
+          S.push(...o.S.map((v) => (v.m !== undefined ? Object.assign({}, v, { m: v.m + n }) : v)));
+          before.push(...o.r.map((q) => [q[0] + n, ...q.slice(1, 7), q[7] + n]));
+        }
+        recs = before.concat(recs);
+        done.push([slug, delta.p[1]]);
+      }
       let variant = existing.get(name);
       if (!variant && first && recs.filter((r) => firstKeys.has(r[0])).length * 2 >= recs.length) {
         // A new variant that shares most of its layers with one already
@@ -800,111 +919,127 @@ for (const [s, set] of DATA.sets.entries()) {
     for (const v of created) if (!v.removed) v.remove();
     throw e;
   }
+  for (const [slug, n] of done) for (let k = 1; k < n; k++) put(page, key(slug, k), '');
   if (want === 'COMPONENT') node = first;
   else if (!node) node = figma.combineAsVariants(created, page);
   else for (const v of created) node.appendChild(v);
   put(node, 'id', set.id);
   put(node, 'title', set.title || '');
   if (fresh) Object.assign(node, { name: set.name, x: 0, y: below });
-  const overlaps = node.parent.children.filter((n) => n !== node && /^COMPONENT/.test(n.type)
-    && n.x < node.x + node.width && node.x < n.x + n.width && n.y < node.y + node.height && node.y < n.y + n.height).length;
   const out = {
     id: node.id, component: set.id, name: node.name, variants: want === 'COMPONENT' ? 1 : node.children.length,
     added: created.length, updated: names.length - created.length, migrated, designerLayers,
-    rows: 1, columns: 1, extra: 0, overlaps, absoluteContainers,
+    rows: 1, columns: 1, extra: 0, overlaps: 0, absoluteContainers,
   };
+  if (converted) out.converted = 1;
+  if (renamed) out.renamed = renamed;
+  if (parts.length) out.stashed = parts.length;
   results.push(out);
-  if (want === 'COMPONENT') continue;
-
-  // Lays the whole set out by its properties, as 0.4.0 did, and checks it,
-  // each variant by where it draws: GAP apart, none over another or past the
-  // set. A row's boxes share their top edge and a column's their left, the
-  // row as tall as its most above them and below, the column as wide, so the
-  // default variant stays top-left, where Figma takes the default from.
-  const GAP = 20;
-  const axes = set.props.map((p) => [p.name + '=', p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']]);
-  const byId = (a, b) => (a.node.id > b.node.id) - (a.node.id < b.node.id);
-  const byColumn = (a, b) => {
-    for (let i = 1; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
-    return 0;
-  };
-  const cells = [];
-  const extra = [];
-  for (const n of node.children) {
-    const pairs = n.name.split(', ');
-    const pos = pairs.length === axes.length ? pairs.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
-    (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join(), d: drawn(n) });
-  }
-  cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));
-  const grid = [];
-  for (const c of cells) {
-    const last = grid[grid.length - 1];
-    (last && last.at[0] === c.at[0] && last.key === c.key ? extra : grid).push(c);
-  }
-  extra.sort((a, b) => (a.node.name > b.node.name) - (a.node.name < b.node.name) || byId(a, b));
-  const rows = [...new Set(grid.map((c) => c.at[0]))];
-  const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((p) => p.slice(1).join());
-  const rowOf = new Map(rows.map((r, i) => [r, i]));
-  const columnOf = new Map(columns.map((key, i) => [key, i]));
-  // Each column's reach left of its boxes and right of their left edge; each row's above and below its top.
-  const lefts = columns.map(() => 0);
-  const rights = columns.map(() => 0);
-  const tops = rows.map(() => 0);
-  const bottoms = rows.map(() => 0);
-  for (const c of grid) {
-    c.row = rowOf.get(c.at[0]);
-    c.column = columnOf.get(c.key);
-    lefts[c.column] = Math.max(lefts[c.column], -c.d[0]);
-    rights[c.column] = Math.max(rights[c.column], c.d[2]);
-    tops[c.row] = Math.max(tops[c.row], -c.d[1]);
-    bottoms[c.row] = Math.max(bottoms[c.row], c.d[3]);
-  }
-  const xs = [GAP];
-  const ys = [GAP];
-  lefts.forEach((l, i) => xs.push(xs[i] + l + rights[i] + GAP));
-  tops.forEach((t, i) => ys.push(ys[i] + t + bottoms[i] + GAP));
-  for (const c of grid) {
-    c.x = xs[c.column] + lefts[c.column];
-    c.y = ys[c.row] + tops[c.row];
-  }
-  let across = GAP;
-  let bottom = ys[rows.length];
-  const top = Math.max(0, ...extra.map((c) => -c.d[1]));
-  for (const c of extra) {
-    c.x = across - c.d[0];
-    c.y = bottom + top;
-    across += c.d[2] - c.d[0] + GAP;
-  }
-  if (extra.length) bottom += top + Math.max(...extra.map((c) => c.d[3])) + GAP;
-  const order = [...grid, ...extra];
-  for (const c of order) {
-    c.node.x = c.x;
-    c.node.y = c.y;
-  }
-  node.resizeWithoutConstraints(Math.max(xs[columns.length], across), bottom);
-  // The layers panel shows the last child on top: last to first, moving only those out of place.
-  const target = order.map((c) => c.node).reverse();
-  const before = node.children;
-  let kept = 0;
-  while (kept < before.length && before[kept].id === target[kept].id) kept++;
-  for (const n of target.slice(kept)) {
-    // A variant another call built holds texts in fonts this one hasn't loaded.
-    await loadFonts(textsIn(n));
-    node.appendChild(n);
-  }
-  const kids = node.children;
-  if (kids.length !== order.length || kids.some((n, i) => n.id !== target[i].id)) throw new Error("The set's layers are not in the order it was laid out in");
-  for (const c of order) {
-    if (Math.abs(c.node.x - c.x) > 0.5 || Math.abs(c.node.y - c.y) > 0.5) throw new Error('Variant "' + c.node.name + '" is not where the layout put it');
-  }
-  const boxes = order.map(({ node: n, d }) => ({ name: n.name, x: n.x + d[0], y: n.y + d[1], r: n.x + d[2], b: n.y + d[3] }));
-  boxes.forEach((a, i) => {
-    if (a.x < 0 || a.y < 0 || a.r > node.width || a.b > node.height) throw new Error('Variant "' + a.name + '" lies outside the set');
-    for (const b of boxes.slice(i + 1)) {
-      if (a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b) throw new Error('Variants "' + a.name + '" and "' + b.name + '" overlap');
+  if (want === 'COMPONENT_SET') {
+    // Lays the whole set out by its properties, as 0.4.0 did, each variant
+    // by where it draws: GAP apart, none over another or past the set. A
+    // row's boxes share their top edge and a column's their left, the row as
+    // tall as its most above them and below, the column as wide, so the
+    // default variant stays top-left, where Figma takes the default from.
+    // It checks the layers' order and that each is where it was put.
+    const GAP = 20;
+    const axes = set.props.map((p) => [p.name + '=', p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']]);
+    const byId = (a, b) => (a.node.id > b.node.id) - (a.node.id < b.node.id);
+    const byColumn = (a, b) => {
+      for (let i = 1; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+      return 0;
+    };
+    const cells = [];
+    const extra = [];
+    let removed = 0;
+    for (const n of node.children) {
+      const pairs = n.name.split(', ');
+      const pos = pairs.length === axes.length ? pairs.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
+      // A variant an earlier push built that no property names now: on the
+      // set's last part, no longer read back by its index, or removed where
+      // the user said so (`rm`, figma code --remove-extra).
+      if (pos.includes(-1) && set.end && get(n, 'slug')) {
+        put(n, 'i', '');
+        if (set.rm) {
+          await loadFonts(textsIn(n));
+          n.remove();
+          removed++;
+          continue;
+        }
+      }
+      (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join(), d: drawn(n) });
     }
-  });
-  Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
+    if (removed) out.removed = removed;
+    cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));
+    const grid = [];
+    for (const c of cells) {
+      const last = grid[grid.length - 1];
+      (last && last.at[0] === c.at[0] && last.key === c.key ? extra : grid).push(c);
+    }
+    extra.sort((a, b) => (a.node.name > b.node.name) - (a.node.name < b.node.name) || byId(a, b));
+    const rows = [...new Set(grid.map((c) => c.at[0]))];
+    const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((p) => p.slice(1).join());
+    const rowOf = new Map(rows.map((r, i) => [r, i]));
+    const columnOf = new Map(columns.map((key, i) => [key, i]));
+    // Each column's reach left of its boxes and right of their left edge; each row's above and below its top.
+    const lefts = columns.map(() => 0);
+    const rights = columns.map(() => 0);
+    const tops = rows.map(() => 0);
+    const bottoms = rows.map(() => 0);
+    for (const c of grid) {
+      c.row = rowOf.get(c.at[0]);
+      c.column = columnOf.get(c.key);
+      lefts[c.column] = Math.max(lefts[c.column], -c.d[0]);
+      rights[c.column] = Math.max(rights[c.column], c.d[2]);
+      tops[c.row] = Math.max(tops[c.row], -c.d[1]);
+      bottoms[c.row] = Math.max(bottoms[c.row], c.d[3]);
+    }
+    const xs = [GAP];
+    const ys = [GAP];
+    lefts.forEach((l, i) => xs.push(xs[i] + l + rights[i] + GAP));
+    tops.forEach((t, i) => ys.push(ys[i] + t + bottoms[i] + GAP));
+    for (const c of grid) {
+      c.x = xs[c.column] + lefts[c.column];
+      c.y = ys[c.row] + tops[c.row];
+    }
+    let across = GAP;
+    let bottom = ys[rows.length];
+    const top = Math.max(0, ...extra.map((c) => -c.d[1]));
+    for (const c of extra) {
+      c.x = across - c.d[0];
+      c.y = bottom + top;
+      across += c.d[2] - c.d[0] + GAP;
+    }
+    if (extra.length) bottom += top + Math.max(...extra.map((c) => c.d[3])) + GAP;
+    const order = [...grid, ...extra];
+    for (const c of order) {
+      c.node.x = c.x;
+      c.node.y = c.y;
+    }
+    node.resizeWithoutConstraints(Math.max(xs[columns.length], across), bottom);
+    // The layers panel shows the last child on top: last to first, moving only those out of place.
+    const target = order.map((c) => c.node).reverse();
+    const before = node.children;
+    let kept = 0;
+    while (kept < before.length && before[kept].id === target[kept].id) kept++;
+    for (const n of target.slice(kept)) {
+      // A variant another call built holds texts in fonts this one hasn't loaded.
+      await loadFonts(textsIn(n));
+      node.appendChild(n);
+    }
+    const kids = node.children;
+    if (kids.length !== order.length || kids.some((n, i) => n.id !== target[i].id)) throw new Error("The set's layers are not in the order it was laid out in");
+    for (const c of order) {
+      if (Math.abs(c.node.x - c.x) > 0.5 || Math.abs(c.node.y - c.y) > 0.5) throw new Error('Variant "' + c.node.name + '" is not where the layout put it');
+    }
+    Object.assign(out, { variants: kids.length, rows: rows.length, columns: columns.length, extra: extra.length });
+  }
+  // A set that grew where it was moves down what it grew onto, so no two
+  // sets overlap; `overlaps` counts what it lies on once laid out.
+  const moved = [];
+  if (was) push(node, was, moved);
+  if (moved.length) out.moved = moved;
+  out.overlaps = node.parent.children.filter((n) => n !== node && /^COMPONENT/.test(n.type) && hit(n, node)).length;
 }
 
 const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
