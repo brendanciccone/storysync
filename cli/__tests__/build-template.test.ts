@@ -1572,3 +1572,26 @@ test("boxDrift: a layer may move by what packs it, the siblings between it and w
   assert.deepEqual(boxDrift(mock, built([-1, 0, 40, 20], [39, 0, 41, 20]), end, facts), []);
   assert.deepEqual(boxDrift(mock, built([0, 0, 41, 20], [42, 0, 40, 20]), end, facts), ["b/t: snap 40,0,40,20, Figma 42,0,40,20", "b: snap 40,0,40,20, Figma 42,0,40,20"]);
 });
+
+/** A component snap measured in the final live test of 0.4.0 (fixtures/final), as a fixture of its own. */
+function finalFixture(name: string): TreeFixture {
+  const base = copy(loadTreeFixture("example-button"));
+  base.components = [JSON.parse(readFileSync(fileURLToPath(new URL(`../../../cli/__tests__/fixtures/final/${name}.json`, import.meta.url)), "utf8")).component];
+  return base;
+}
+
+test("build: a variant copied from one with auto layout and strokes included, built without it, as Alert's destructive grid, is built, and built again", async () => {
+  // Figma refuses strokesIncludedInLayout on a frame without auto layout,
+  // to either value (probe 8a), and the copy keeps its original's true.
+  const fixture = finalFixture("alert");
+  const { coded, mock } = await buildAll(fixture);
+  const roots = variantsBySlug(mock);
+  const read = (slug: string) => mock.handle(roots.get(slug)!.id) as { layoutMode: string; strokesIncludedInLayout: boolean };
+  assert.deepEqual([read("variant-default").layoutMode, read("variant-default").strokesIncludedInLayout], ["VERTICAL", true]);
+  assert.deepEqual([read("variant-destructive").layoutMode, read("variant-destructive").strokesIncludedInLayout], ["NONE", false]);
+  const again = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual([again[0].created, again[0].removed], [0, 0]);
+  for (const variant of fixtureVariants(fixture)) {
+    assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+  }
+});

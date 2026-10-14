@@ -1279,7 +1279,8 @@ function setSizing(n: Node, axis: Axis, value: unknown): void {
   const parentMain: Axis | null = parent?.isAutoLayout() ? (parent.layoutMode === "HORIZONTAL" ? "x" : "y") : null;
   const ownMain: Axis | null = n.isAutoLayout() ? (n.layoutMode === "HORIZONTAL" ? "x" : "y") : null;
   if (mode === "FILL") {
-    if (!parentMain) invalid(prop, "FILL can only be set on children of auto-layout frames");
+    // Figma's words differ by whether the node has auto layout itself (probe 8a).
+    if (!parentMain) invalid(prop, ownMain ? "FILL can only be set on children of auto-layout frames" : "node must be an auto-layout frame or a child of an auto-layout frame");
     if (n.layoutPositioning === "ABSOLUTE") invalid(prop, "FILL cannot be set on absolute positioned auto-layout children");
     if (axis === parentMain) n.layoutGrow = 1;
     else n.layoutAlign = "STRETCH";
@@ -1301,7 +1302,7 @@ function setSizing(n: Node, axis: Axis, value: unknown): void {
     }
     if (mode === "HUG") {
       if (n.type === "TEXT") {
-        if (!parentMain) invalid(prop, "HUG can only be set on auto-layout frames or text children of auto-layout frames");
+        if (!parentMain) invalid(prop, "node must be an auto-layout frame or a child of an auto-layout frame");
         n.textAutoResize = axis === "x" ? "WIDTH_AND_HEIGHT" : n.textAutoResize === "NONE" ? "HEIGHT" : n.textAutoResize;
       } else if (ownMain) {
         if (axis === ownMain) n.primarySizing = "AUTO";
@@ -1724,22 +1725,61 @@ const PROPS: Record<string, Prop> = {
   layoutWrap: {
     types: FRAMES,
     get: () => "NO_WRAP",
-    set: (_n, v) => {
-      if (oneOf("layoutWrap", v, ["NO_WRAP", "WRAP"]) === "WRAP") throw new Error("mock-figma: layoutWrap WRAP is not modeled; the build lays a wrapping flex out absolute");
+    set: (n, v) => {
+      if (oneOf("layoutWrap", v, ["NO_WRAP", "WRAP"]) !== "WRAP") return;
+      if (n.layoutMode === "NONE") invalid("layoutWrap", "Can only set layoutWrap = WRAP on nodes with layoutMode === HORIZONTAL or VERTICAL");
+      throw new Error("mock-figma: layoutWrap WRAP is not modeled; the build lays a wrapping flex out absolute");
     },
   },
   primaryAxisSizingMode: enumProp(FRAMES, "primaryAxisSizingMode", "primarySizing", ["FIXED", "AUTO"]),
   counterAxisSizingMode: enumProp(FRAMES, "counterAxisSizingMode", "counterSizing", ["FIXED", "AUTO"]),
   primaryAxisAlignItems: enumProp(FRAMES, "primaryAxisAlignItems", "primaryAlign", ["MIN", "MAX", "CENTER", "SPACE_BETWEEN"]),
-  counterAxisAlignItems: enumProp(FRAMES, "counterAxisAlignItems", "counterAlign", ["MIN", "MAX", "CENTER", "BASELINE"]),
+  counterAxisAlignItems: {
+    types: FRAMES,
+    get: (n) => n.counterAlign,
+    set: (n, v) => {
+      const align = oneOf("counterAxisAlignItems", v, ["MIN", "MAX", "CENTER", "BASELINE"] as const);
+      if (align === "BASELINE" && n.layoutMode !== "HORIZONTAL") invalid("counterAxisAlignItems", "counterAxisAlignItems = BASELINE can only be set when layoutMode === HORIZONTAL");
+      n.counterAlign = align;
+      changed(n);
+    },
+  },
   paddingTop: { types: FRAMES, get: (n) => n.pad[0], set: (n, v) => { n.pad[0] = finite("paddingTop", v, 0); changed(n); } },
   paddingRight: { types: FRAMES, get: (n) => n.pad[1], set: (n, v) => { n.pad[1] = finite("paddingRight", v, 0); changed(n); } },
   paddingBottom: { types: FRAMES, get: (n) => n.pad[2], set: (n, v) => { n.pad[2] = finite("paddingBottom", v, 0); changed(n); } },
   paddingLeft: { types: FRAMES, get: (n) => n.pad[3], set: (n, v) => { n.pad[3] = finite("paddingLeft", v, 0); changed(n); } },
   itemSpacing: { types: FRAMES, get: (n) => n.itemSpacing, set: (n, v) => { n.itemSpacing = finite("itemSpacing", v); changed(n); } },
-  strokesIncludedInLayout: { types: FRAMES, get: (n) => n.strokesIncluded, set: (n, v) => { n.strokesIncluded = Boolean(v); changed(n); } },
-  itemReverseZIndex: { types: FRAMES, get: () => false, set: () => undefined },
-  layoutPositioning: enumProp(SCENE, "layoutPositioning", "layoutPositioning", ["AUTO", "ABSOLUTE"]),
+  // Kept, and read back, when the frame turns NONE, but not set there, to
+  // either value, as probe 8a saw (fixtures/figma-probe-8a.json, call 1).
+  strokesIncludedInLayout: {
+    types: FRAMES,
+    get: (n) => n.strokesIncluded,
+    set: (n, v) => {
+      if (n.layoutMode === "NONE") invalid("strokesIncludedInLayout", "Can only set strokesIncludedInLayout on nodes with layoutMode !== NONE");
+      n.strokesIncluded = Boolean(v);
+      changed(n);
+    },
+  },
+  // Read only where the frame wraps, which the build never asks for: kept, as Figma takes them on any frame (probe 8a).
+  counterAxisSpacing: { types: FRAMES, get: () => null, set: (_n, v) => { finite("counterAxisSpacing", v, 0); } },
+  counterAxisAlignContent: { types: FRAMES, get: () => "AUTO", set: (_n, v) => { oneOf("counterAxisAlignContent", v, ["AUTO", "SPACE_BETWEEN"]); } },
+  itemReverseZIndex: {
+    types: FRAMES,
+    get: () => false,
+    set: (n) => {
+      if (n.layoutMode === "NONE") invalid("itemReverseZIndex", "Can only set itemReverseZIndex on nodes with layoutMode !== NONE");
+    },
+  },
+  layoutPositioning: {
+    types: SCENE,
+    get: (n) => n.layoutPositioning,
+    set: (n, v) => {
+      const mode = oneOf("layoutPositioning", v, ["AUTO", "ABSOLUTE"] as const);
+      if (mode === "ABSOLUTE" && !n.parent?.isAutoLayout()) invalid("layoutPositioning", "Can only set layoutPositioning = ABSOLUTE if the parent node has layoutMode !== NONE");
+      n.layoutPositioning = mode;
+      changed(n);
+    },
+  },
   layoutAlign: enumProp(SCENE, "layoutAlign", "layoutAlign", ["MIN", "CENTER", "MAX", "STRETCH", "INHERIT"]),
   layoutGrow: { types: SCENE, get: (n) => n.layoutGrow, set: (n, v) => { n.layoutGrow = finite("layoutGrow", v, 0, 1); changed(n); } },
   layoutSizingHorizontal: { types: SCENE, get: (n) => getSizing(n, "x"), set: (n, v) => setSizing(n, "x", v) },

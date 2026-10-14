@@ -1,0 +1,398 @@
+{
+  "about": "shadcn/ui registry (MIT) ui/base/Alert as snap measured it in the final live test of 0.4.0 (session s1, 2026-10-13): variant=destructive is laid out as a 2x2 grid, built without auto layout, and copied from variant=default, which has auto layout and its border included in it.",
+  "component": {
+    "id": "ui-base-alert",
+    "name": "Alert",
+    "title": "ui/base/Alert",
+    "category": "ui/base",
+    "storyId": "ui-base-alert--default",
+    "variantProperties": [
+      {
+        "name": "variant",
+        "type": "VARIANT",
+        "values": [
+          "default",
+          "destructive"
+        ],
+        "defaultValue": "default",
+        "defaultAssumed": true
+      }
+    ],
+    "base": {
+      "combination": {
+        "variant": "default"
+      },
+      "slug": "variant-default",
+      "styles": {
+        "display": "grid",
+        "flexDirection": "row",
+        "alignItems": "normal",
+        "justifyContent": "normal",
+        "gap": {
+          "row": 2,
+          "column": 2
+        },
+        "width": 1248,
+        "height": 68,
+        "backgroundColor": "#ffffff",
+        "color": "#0a0a0a",
+        "border": {
+          "top": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          },
+          "right": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          },
+          "bottom": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          },
+          "left": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          }
+        },
+        "borderUniform": {
+          "width": 1,
+          "style": "solid",
+          "color": "#e5e5e5"
+        },
+        "borderRadius": {
+          "topLeft": 10,
+          "topRight": 10,
+          "bottomRight": 10,
+          "bottomLeft": 10
+        },
+        "borderRadiusUniform": 10,
+        "padding": {
+          "top": 12,
+          "right": 16,
+          "bottom": 12,
+          "left": 16
+        },
+        "fontFamily": "Inter",
+        "fontSize": 14,
+        "fontWeight": 400,
+        "lineHeight": 20,
+        "letterSpacing": 0,
+        "boxShadow": [],
+        "opacity": 1,
+        "boxSizing": "border-box",
+        "fontAvailable": true,
+        "text": {
+          "color": "#0a0a0a",
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": 500
+        }
+      }
+    },
+    "variants": [
+      {
+        "combination": {
+          "variant": "default"
+        },
+        "slug": "variant-default",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 1248,
+          "height": 68
+        },
+        "element": "div[data-slot=\"alert\"]",
+        "delta": {},
+        "screenshot": "ui-base-alert/variant-default.png"
+      },
+      {
+        "combination": {
+          "variant": "destructive"
+        },
+        "slug": "variant-destructive",
+        "storyId": "ui-base-alert--destructive",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 1248,
+          "height": 68
+        },
+        "element": "div[data-slot=\"alert\"]",
+        "delta": {
+          "gap": {
+            "row": 2,
+            "column": 10
+          },
+          "color": "#df2225",
+          "text": {
+            "color": "#df2225",
+            "fontFamily": "Inter",
+            "fontSize": 14,
+            "fontWeight": 500
+          }
+        },
+        "treeDelta": {
+          "keys": [
+            "",
+            "svg",
+            "alert-title",
+            "alert-description"
+          ],
+          "set": {
+            "": {
+              "L": {
+                "d": "grid",
+                "gap": [
+                  2,
+                  10
+                ],
+                "pad": [
+                  12,
+                  16,
+                  12,
+                  16
+                ],
+                "tracks": [
+                  2,
+                  2
+                ]
+              },
+              "cls": [
+                "bg-card",
+                "rounded-lg",
+                "text-current",
+                "text-destructive"
+              ]
+            },
+            "svg": {
+              "box": [
+                17,
+                15,
+                16,
+                16
+              ],
+              "clip": 1,
+              "cls": [
+                "text-destructive"
+              ],
+              "el": "svg.lucide-circle-alert",
+              "k": "svg",
+              "shapes": [
+                [
+                  1.33,
+                  1.33,
+                  13.33,
+                  13.33
+                ],
+                [
+                  8,
+                  5.33,
+                  0,
+                  2.67
+                ],
+                [
+                  8,
+                  10.67,
+                  0.01,
+                  0
+                ]
+              ],
+              "svg": "svg:70e1d0d5",
+              "t": "V"
+            },
+            "alert-title": {
+              "box": [
+                43,
+                13,
+                1188,
+                20
+              ],
+              "cls": [
+                "text-destructive",
+                "text-foreground"
+              ],
+              "tx": {
+                "c": "Error",
+                "col": "#df2225",
+                "f": "Inter",
+                "fs": "system-ui",
+                "ink": [
+                  0,
+                  1,
+                  32.72,
+                  17
+                ],
+                "lh": 20,
+                "n": 1,
+                "sz": 14,
+                "wt": 500
+              }
+            },
+            "alert-description": {
+              "box": [
+                43,
+                35,
+                1188,
+                20
+              ],
+              "tx": {
+                "c": "Your session has expired. Please log in again.",
+                "col": "#df2225e6",
+                "f": "Inter",
+                "fs": "system-ui",
+                "ink": [
+                  0,
+                  1,
+                  299.06,
+                  17
+                ],
+                "lh": 20,
+                "n": 1,
+                "sz": 14,
+                "wt": 400
+              }
+            }
+          }
+        },
+        "screenshot": "ui-base-alert/variant-destructive.png"
+      }
+    ],
+    "warnings": [],
+    "error": null,
+    "argTypes": {
+      "variant": {
+        "type": "enum",
+        "control": "radio",
+        "options": [
+          "default",
+          "destructive"
+        ],
+        "initial": "default"
+      }
+    },
+    "storyFile": "./registry/ui/alert-story/alert-base.stories.tsx",
+    "capture": "tree",
+    "tree": {
+      "version": 1,
+      "base": [
+        {
+          "L": {
+            "d": "grid",
+            "gap": [
+              2,
+              2
+            ],
+            "pad": [
+              12,
+              16,
+              12,
+              16
+            ],
+            "tracks": [
+              1,
+              2
+            ]
+          },
+          "box": [
+            0,
+            0,
+            1248,
+            68
+          ],
+          "cls": [
+            "bg-card",
+            "rounded-lg",
+            "text-card-foreground",
+            "text-current"
+          ],
+          "el": "div[data-slot=alert]",
+          "k": "",
+          "nocls": [
+            "border-color"
+          ],
+          "t": "F"
+        },
+        {
+          "box": [
+            17,
+            13,
+            1214,
+            20
+          ],
+          "cls": [
+            "text-card-foreground",
+            "text-foreground"
+          ],
+          "el": "div[data-slot=alert-title]",
+          "k": "alert-title",
+          "t": "T",
+          "tx": {
+            "c": "Heads up!",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              67.64,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "wt": 500
+          }
+        },
+        {
+          "box": [
+            17,
+            35,
+            1214,
+            20
+          ],
+          "cls": [
+            "text-foreground",
+            "text-muted-foreground",
+            "text-pretty"
+          ],
+          "el": "div[data-slot=alert-description]",
+          "k": "alert-description",
+          "t": "T",
+          "tx": {
+            "c": "You can add components to your app using the cli.",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              334.36,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        }
+      ],
+      "assets": {
+        "svg": {
+          "svg:70e1d0d5": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#df2225\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle r=\"10\" cx=\"12\" cy=\"12\"/><line x1=\"12\" y1=\"8\" x2=\"12\" y2=\"12\"/><line x1=\"12\" y1=\"16\" x2=\"12.01\" y2=\"16\"/></svg>"
+        },
+        "img": {}
+      },
+      "darkAlpha": 1
+    },
+    "fontStandIns": [
+      [
+        "system-ui",
+        "Inter"
+      ]
+    ]
+  }
+}

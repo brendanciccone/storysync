@@ -90,7 +90,8 @@ test("figma code: every call is at most --max-chars and --max-nodes, and no vari
   component.variantProperties = [{ name: "n", type: "VARIANT", values: Array.from({ length: 60 }, (_, i) => String(i)), defaultValue: "0" }];
   component.variants = Array.from({ length: 60 }, (_, i) => ({ ...copy(component.variants[0]), combination: { n: String(i) }, slug: `n-${i}`, ...(i ? { treeDelta: {} } : {}) }));
   component.base!.slug = "n-0";
-  for (const [maxChars, maxNodes] of [[45_000, 400], [26_000, 400], [45_000, 100]]) {
+  // 27,500: one variant beside the build template (19,500, templates.test.ts) and the guard, and room for a second.
+  for (const [maxChars, maxNodes] of [[45_000, 400], [27_500, 400], [45_000, 100]]) {
     const coded = await codeFor(snap, { maxChars, maxNodes });
     const builds = coded.plan.calls.filter((c) => c.kind === "build");
     assert.ok(builds.length > 1, `${maxChars}/${maxNodes} packs into ${builds.length} calls`);

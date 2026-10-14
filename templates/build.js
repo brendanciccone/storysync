@@ -365,9 +365,11 @@ const style = async (n, rec, parent, root) => {
       if (v) for (const corner of corners) n.setBoundVariable(corner, v);
     }
     const L = st.L;
+    // Figma sets it only on auto layout (probe 8a): a frame copied from one
+    // with it, built without, clears it first.
+    if (!L && n.layoutMode !== 'NONE' && n.strokesIncludedInLayout) n.strokesIncludedInLayout = false;
     n.layoutMode = L ? (L.m === 'H' ? 'HORIZONTAL' : 'VERTICAL') : 'NONE';
-    // Only auto layout reads it: left alone on a frame without, unless an earlier build set it.
-    if (L || n.strokesIncludedInLayout) n.strokesIncludedInLayout = Boolean(L && L.i);
+    if (L) n.strokesIncludedInLayout = Boolean(L.i);
     if (L) {
       [n.paddingTop, n.paddingRight, n.paddingBottom, n.paddingLeft] = L.p;
       n.itemSpacing = L.g;
