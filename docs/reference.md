@@ -258,8 +258,10 @@ Options:
                          nothing comparable or was read back without its element tree, a readback
                          entry is not what Figma returned, is incomplete or was read before the snap,
                          a text's layout snap measured wasn't read back, a planned read call wasn't
-                         read whole, a layer a designer added is inside a variant, or the snap recorded
-                         a component failure or lacks a component the readback has
+                         read whole or was read before a build of its components was sent again, a
+                         variant was built from an earlier measurement than a snap other than the
+                         plan's, a layer a designer added is inside a variant, or the snap recorded a
+                         component failure or lacks a component the readback has
   --allow-designer-layers
                          With --strict, pass the layers a designer added inside variants, which verify
                          still lists
@@ -580,7 +582,7 @@ Entries that fail aren't scored and fail `--strict`. Without `--strict` the run 
 Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
 ```
 
-With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. So is a read call whose response was saved before a build call of its components was sent again: it read Figma before that build, so it fails `--strict` until it is sent again. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
+With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. So is a read call whose response was saved before a build call of its components was sent again: it read Figma before that build, so it fails `--strict` until it is sent again. A snap other than the one the plan was made from, taken again or passed as `--snap`, is named too, with what it reached: the components Figma says were built from an earlier measurement than it, which the plan's calls would build again, so `figma code` has to run again with it, and which fail `--strict`; or, where there are none, that every variant scored was built from what it measures, so the score stands.
 
 The checksum isn't a signature. See [What Figma can't do](https://github.com/brendanciccone/storysync/blob/main/README.md#what-figma-cant-do).
 

@@ -2036,3 +2036,31 @@ export function formatElementReport(result: VerifyResult, beside: readonly strin
   for (const seq of result.notRead ?? []) lines.push(chalk.red(`  ! planned read call ${seq} wasn't read whole, so the variants it didn't read weren't scored`));
   return lines;
 }
+
+/**
+ * What `verify --plan` says when the snap it scores isn't the one the plan
+ * was made from (its digest differs), from what that reached: Figma's
+ * `built` digests name the components built from another measurement than
+ * this snap's, the plan's calls would build those the same way again, and
+ * they fail --strict; where none is, every variant scored was built from
+ * what this snap measures, and the score stands. `snap` and `planSnap.path`
+ * as shown; `planSnapIntact` where the plan's own snap is still as it was,
+ * to score the plan against.
+ */
+export function describeSnapChange(
+  snap: string,
+  planSnap: { path: string; measuredAt?: string },
+  { measuredAt, given, planSnapIntact, builtFromOther, notInSnap }: { measuredAt?: string; given: boolean; planSnapIntact: boolean; builtFromOther: string[]; notInSnap: string[] },
+): string[] {
+  const when = planSnap.measuredAt && measuredAt && planSnap.measuredAt !== measuredAt ? ` (it was measured at ${measuredAt}, the plan's at ${planSnap.measuredAt})` : "";
+  const what = given && snap !== planSnap.path
+    ? `--snap ${snap} isn't the snap \`storysync figma code\` made this plan from, ${planSnap.path}${when}`
+    : `${snap} has changed since \`storysync figma code\` made this plan from it${when}`;
+  if (builtFromOther.length) {
+    const one = builtFromOther.length === 1;
+    const instead = given && planSnapIntact ? `; or, to score this plan as it was made, pass --snap ${planSnap.path}` : "";
+    return [chalk.red(`  ! ${what}, and Figma says ${builtFromOther.join(", ")} ${one ? "was" : "were"} built from an earlier measurement than this snap's, which this plan's calls would build again: run \`storysync figma code\` with this snap, send its calls, and run verify again${instead}.`)];
+  }
+  const lacks = notInSnap.length ? `; it lacks ${notInSnap.join(", ")}, as said above, and` : ", but";
+  return [chalk.dim(`  i ${what}${lacks} every variant scored was built from what this snap measures, so the score stands: what changed is elsewhere in the snap.`)];
+}
