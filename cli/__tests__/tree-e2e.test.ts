@@ -160,11 +160,11 @@ async function push(
   const mock = new MockFigma({ measure: fonts === "figma" ? figmaFonts(browser) : browser, moveNeedsFonts: true });
   mockInUse = mock;
 
-  // The variables first, from the calls `figma tokens` writes from the
-  // tokens and the plan, each sent unchanged and its response saved
-  // unchanged: the plan names the alpha variables its paints bind to.
+  // The variables first, from the calls `figma tokens` writes, as on a
+  // first push, before any plan: each sent unchanged and its response
+  // saved unchanged. The plan's own first call makes its alpha variables.
   const tokenOut = join(out, "tokens");
-  const tokens = await cli(["figma", "tokens", "--tokens", join(dir, "tokens.json"), "--plan", planPath, "--out", tokenOut, "--json"]);
+  const tokens = await cli(["figma", "tokens", "--tokens", join(dir, "tokens.json"), "--plan", join(dir, "no-plan-yet.json"), "--out", tokenOut, "--json"]);
   assert.equal(tokens.status, 0, `figma tokens exited ${tokens.status}\n${tokens.stdout}${tokens.stderr}`);
   for (const call of (jsonOf(tokens) as { calls: { file: string; result: string }[] }).calls) {
     const run = await mock.run(readFileSync(join(tokenOut, call.file), "utf8"));
@@ -415,7 +415,7 @@ test("tree e2e: a Button's translucent border is built OUTSIDE at its padding bo
   }
 });
 
-test("tree e2e: every translucent paint and ring of Attachment, Button and Dialog binds to an alpha variable figma tokens made from the plan, keeps its alpha with its set switched to Dark and back, and verifies at 100% again", async () => {
+test("tree e2e: every translucent paint and ring of Attachment, Button and Dialog binds to an alpha variable the plan's first call made, keeps its alpha with its set switched to Dark and back, and verifies at 100% again", async () => {
   // Push 5's shadcn/ui components, cut down: Attachment's error state
   // (border-destructive/30, bg-destructive/10, text-destructive/80), the
   // Button's destructive variants (bg-destructive/10, and here
@@ -436,6 +436,7 @@ test("tree e2e: every translucent paint and ring of Attachment, Button and Dialo
   const p = await push(snap, { tokens, fonts: "browser" });
   try {
     assert.deepEqual(p.plan.alphas!.map((a) => a.variable), ["destructive 10%", "destructive 30%", "destructive 80%", "foreground 10%"]);
+    assert.deepEqual(p.plan.calls.filter((c) => c.kind === "variables").map((c) => [c.seq, c.file, c.collection]), [[1, "calls/01-variables-colors.js", "Colors"]]);
     const alphas = new Map(p.mock.collections()[0].variables.filter((v) => /%$/.test(v.name)).map((v) => [v.name, v.values]));
     assert.deepEqual(Object.fromEntries(alphas), {
       "destructive 10%": { Light: "#df22251a", Dark: "#ff64671a" }, "destructive 30%": { Light: "#df22254d", Dark: "#ff64674d" },
@@ -1097,7 +1098,7 @@ test("figma code: prints each value the base styles bound, with the rule, and li
   }
 });
 
-test("figma code: names the alpha variables its translucent paints bind to, and says to run figma tokens before sending the plan", async () => {
+test("figma code: names the alpha variables its translucent paints bind to, which its first call makes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "storysync-tree-e2e-"));
   try {
     const snapPath = join(dir, "styles.json");
@@ -1106,14 +1107,48 @@ test("figma code: names the alpha variables its translucent paints bind to, and 
     const args = ["figma", "code", "--snap", snapPath, "--tokens", join(dir, "tokens.json"), "--out", join(dir, "figma")];
     const run = await cli(args);
     assert.equal(run.status, 0, run.stderr);
-    assert.ok(run.stdout.includes("Translucent paints bind to 1 alpha variable, each a token's color at an alpha in every mode: foreground 10%.\n"), run.stdout);
-    assert.match(run.stdout, /Run `storysync figma tokens` now, which reads this plan and makes them, and send its calls before this plan's/);
-    assert.deepEqual(jsonOf(await cli([...args, "--json"])).alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102 }]);
-    // Without a translucent paint of a token, nothing is said.
+    assert.ok(run.stdout.includes("Translucent paints bind to 1 alpha variable, each a token's color at an alpha in every mode, which Figma keeps when a designer switches a frame's mode: foreground 10%. Call 01 makes them, before the builds.\n"), run.stdout);
+    assert.match(run.stdout, /\n {2}01 variables Create or update the alpha variables foreground 10% in the Colors variable collection/);
+    assert.match(run.stdout, /\n {2}02 build {5}Create or update Dialog/);
+    const json = jsonOf(await cli([...args, "--json"]));
+    assert.deepEqual(json.alphas, [{ variable: "foreground 10%", token: "foreground", alpha: 0.102 }]);
+    // The call carries foreground, whose value it needs, and its alpha variable, and lists nothing stale.
+    const code = readFileSync(join(dir, "figma", "calls", "01-variables-colors.js"), "utf8");
+    assert.match(code, /^\/\/ storysync figma code, call 01: variables\. Send this file unchanged/);
+    assert.match(code, /const DATA = \{"collection":"Colors","modes":\["Default"\],"part":\[1,1\],"vars":\[\["foreground","COLOR",\["ALL_FILLS","STROKE_COLOR","EFFECT_COLOR"\],"#0a0a0a"\]\],"alpha":\["foreground 10%"\]\};/);
+    // Without a translucent paint of a token, nothing is said, and no variables call planned.
     writeFileSync(snapPath, stylesJsonText(asSnap(loadTreeFixture("switch")) as Parameters<typeof stylesJsonText>[0]));
-    assert.doesNotMatch((await cli(args)).stdout, /alpha variable/);
+    const plain = await cli(args);
+    assert.doesNotMatch(plain.stdout, /alpha variable/);
+    assert.equal((jsonOf(await cli([...args, "--json"])).calls as { kind: string }[]).filter((c) => c.kind === "variables").length, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify --plan: a build that bound translucent paints without their alpha variables is said under the score, by call and layer, and fails --strict", async () => {
+  // As a plan sent from its second call: the build binds destructive at
+  // each paint's opacity, which Figma resets at a mode switch, and no
+  // readback shows a binding.
+  const p = await push(asSnap(loadTreeFixture("dialog")));
+  try {
+    const build = p.plan.calls.find((c) => c.kind === "build")!;
+    const at = join(dirname(p.planPath), build.result);
+    const saved = JSON.parse(readFileSync(at, "utf8")) as { fallbacks: unknown[] };
+    saved.fallbacks = [...saved.fallbacks, ["ui/base/Dialog", "", "no alpha variable foreground 10%: shadow unbound", 1], ["ui/base/Dialog", "dialog-close", "no alpha variable destructive 30%: bound to destructive at its opacity", 2]];
+    writeFileSync(at, JSON.stringify(saved));
+    const run = await verifyPlan(p, "--strict");
+    assert.equal(run.status, 1);
+    assert.deepEqual((run.json.plan as { alphaFallbacks: string[] }).alphaFallbacks, [
+      `call ${String(build.seq).padStart(2, "0")}: ui/base/Dialog: no alpha variable foreground 10%: shadow unbound (1 variant)`,
+      `call ${String(build.seq).padStart(2, "0")}: ui/base/Dialog › dialog-close: no alpha variable destructive 30%: bound to destructive at its opacity (2 variants)`,
+    ]);
+    assert.match(run.text.stdout, /Bound without their alpha variable, so Figma makes them opaque when a designer switches a frame's mode/);
+    assert.match(run.text.stdout, /Send the plan's variables call, its first, then those build calls again/);
+    // Without --strict it still scores, and says so.
+    assert.equal((await verifyPlan(p)).status, 0);
+  } finally {
+    cleanup(p);
   }
 });
 

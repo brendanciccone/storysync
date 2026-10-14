@@ -33,6 +33,7 @@ import type { SnapComponent, SnapResult, SnapVariant } from "./snap.js";
 import { applyDelta } from "./snap-normalize.js";
 import { componentKey, selectComponents } from "./storybook.js";
 import type { ComponentEntry } from "./storybook.js";
+import { alphaCalls } from "./figma-tokens.js";
 import type { TokenExtractionResult } from "./tokens.js";
 import { expandTree, parentKey, rootWithStyles, transformedAround, treeDigest } from "./tree-types.js";
 import type { Box, ComponentTree, FigmaPlan, PlanAlpha, PlanBinding, PlanCall, TreeDelta, TreeNode } from "./tree-types.js";
@@ -231,7 +232,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
     const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, parentCls: parent?.cls, spike, around };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, parentCls: parent?.cls, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
@@ -588,7 +589,7 @@ function readTokens(path: string | undefined, warnings: string[]): TokenExtracti
  * responses saved for them (`07.json`, `07b.json`, `03.upload.json`).
  */
 const PLAN_FILES: Record<"calls" | "results", RegExp> = {
-  calls: /^\d{2,}[b-z]?-(?:build|images|label|read)(?:-[a-z0-9-]+)?\.js$/,
+  calls: /^\d{2,}[b-z]?-(?:variables|build|images|label|read)(?:-[a-z0-9-]+)?\.js$/,
   results: /^\d{2,}[b-z]?(?:\.upload)?\.json$/,
 };
 
@@ -624,7 +625,8 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const snap = JSON.parse(bytes.toString("utf8")) as SnapResult & { components: SnapComponentWithTree[] };
   const metaPath = join(dirname(opts.snap), "meta.json");
   const measuredAt = existsSync(metaPath) ? String((JSON.parse(readFileSync(metaPath, "utf8")) as { measuredAt?: string }).measuredAt ?? "") : "";
-  const binder = new Binder(readTokens(opts.tokens, warnings));
+  const tokens = readTokens(opts.tokens, warnings);
+  const binder = new Binder(tokens);
 
   const all = (snap.components ?? []) as SnapComponentWithTree[];
   const entries = all.map((c): ComponentEntry => ({ id: c.id ?? componentKey(c), name: c.name, title: c.title }));
@@ -649,17 +651,20 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     images: loadTemplate("images", minify, opts.templates),
     label: loadTemplate("label", minify, opts.templates),
     readback: loadTemplate("readback", minify, opts.templates),
+    variables: loadTemplate("variables", minify, opts.templates),
   };
 
   const calls: (PlanCall & { code: string })[] = [];
   const add = (call: Omit<PlanCall, "seq" | "file" | "result" | "chars">, code: (seq: number) => string) => {
     const seq = calls.length + 1;
     const text = code(seq);
-    const file = `calls/${pad(seq)}-${call.kind}${call.page ? `-${pageSlug(call.page)}` : ""}.js`;
+    const named = call.page || call.collection;
+    const file = `calls/${pad(seq)}-${call.kind}${named ? `-${pageSlug(named)}` : ""}.js`;
     const kind = call.kind === "read" ? "readback" : call.kind;
     assertCompiles(text, file, kind, templates[kind]);
     calls.push({
       seq, kind: call.kind, page: call.page, components: call.components,
+      ...(call.collection ? { collection: call.collection } : {}),
       file, result: `results/${pad(seq)}.json`,
       description: call.description, chars: text.length,
       ...(call.nodes !== undefined ? { nodes: call.nodes } : {}),
@@ -668,6 +673,21 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       code: text,
     });
   };
+
+  // First the alpha variables the translucent paints bind to, each a
+  // token's color at an alpha in every mode, which Figma keeps at a mode
+  // switch (figma-bind.ts): a call per color collection, before the builds
+  // that bind them, so the plan sent in order needs nothing else first.
+  // It finds and updates what `figma tokens` made already, and changes
+  // nothing then. A build that finds none binds the token at the paint's
+  // opacity, which a mode switch resets to 1, and says so in `fallbacks`.
+  const alphas = [...bound.values()].sort((a, b) => (a.variable < b.variable ? -1 : a.variable > b.variable ? 1 : 0));
+  for (const { collection, data, alpha } of tokens && alphas.length ? alphaCalls(tokens, alphas, warnings) : []) {
+    add(
+      { kind: "variables", page: "", components: [], collection, description: `Create or update the alpha variables ${alpha.join(", ")} in the ${collection} variable collection, each a token's color at an alpha in every mode, for the translucent paints the builds bind` },
+      (seq) => `${header(seq, "variables", "")}${callCode([["DATA", data]], templates.variables)}`,
+    );
+  }
 
   // Builds: by page, each component's variants in snap order, packed. A
   // variant too big for one call on its own is left out, and the rest built.
@@ -786,10 +806,8 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   };
   const bindings = built.flatMap((c) => c.bindings);
   if (bindings.length) plan.bindings = bindings;
-  // Each alpha variable a translucent paint binds to, for `figma tokens` to
-  // make before the builds are sent: a build without it binds the token at
-  // the paint's opacity, which a mode switch resets.
-  const alphas = [...bound.values()].sort((a, b) => (a.variable < b.variable ? -1 : a.variable > b.variable ? 1 : 0));
+  // Each alpha variable a translucent paint binds to, which the first
+  // calls make, and `figma tokens` keeps up to date with its token.
   if (alphas.length) plan.alphas = alphas;
   const planPath = join(out, "plan.json");
   writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);

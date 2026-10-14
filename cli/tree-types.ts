@@ -276,8 +276,9 @@ export interface PlanBinding {
 
 /** One planned call. Paths are relative to the plan's directory. */
 export interface PlanCall {
-  seq: number; kind: "build" | "images" | "label" | "read";
-  page: string; components: string[];        // componentKey list
+  seq: number; kind: "variables" | "build" | "images" | "label" | "read";
+  page: string; components: string[];        // componentKey list; none for variables
+  collection?: string;                       // variables: the collection its alpha variables go in
   file: string; result: string;              // relative to plan dir
   description: string; chars: number;
   nodes?: number;                            // build: nodes created or restyled at most
