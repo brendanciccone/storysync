@@ -268,7 +268,11 @@ export function exclusionReason(exclusion: PropExclusion): string {
       return `${exclusion.name}=${exclusion.value} opens what it shows, so snap measures every variant with it`;
     case "no-op":
       return exclusion.markup === "same"
-        ? "every value measured the same, markup included: behavior only, or the story doesn't pass it through"
+        // Not a word of the component's markup changed, as when the story
+        // never hands the arg on (shadcn's Item story drops `variant`):
+        // that and its fix first, as a prop that changes only behavior,
+        // such as cmdk's `loop`, is rightly left out as it is.
+        ? "every value measured the same, markup included, as when the story drops the arg: if it should change the look, pass the story's args through to the component and measure it again"
         : exclusion.markup === "changed"
           ? "every value measured the same though the markup changed with it: behavior only"
           : "every value measured the same: behavior only";

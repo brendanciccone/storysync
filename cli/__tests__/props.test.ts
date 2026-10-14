@@ -126,9 +126,16 @@ test("describeExclusions: once per component, by reason, saying how to keep one"
   );
   assert.equal(
     describeExclusions([{ name: "loop", reason: "no-op", markup: "same" }]),
-    "left out `loop` (every value measured the same, markup included: behavior only, or the story doesn't pass it through); to make it a variant property again, pass --keep-props loop",
+    "left out `loop` (every value measured the same, markup included, as when the story drops the arg: if it should change the look, " +
+      "pass the story's args through to the component and measure it again); to make it a variant property again, pass --keep-props loop",
   );
   assert.equal(describeExclusions([{ name: "size", reason: "excluded" }]), "left out `size` (--exclude-props)");
+  // shadcn's Item story drops `variant`: nothing on the page changed, so
+  // the line names the story, and how to fix it, not behavior.
+  const item = describeExclusions([{ name: "variant", reason: "no-op", markup: "same" }]) ?? "";
+  assert.doesNotMatch(item, /behavior only/);
+  assert.match(item, /the story drops the arg/);
+  assert.match(item, /pass the story's args through to the component/);
 });
 
 test("readSnapProps and snapPropSource: what a snap recorded, by component ID, for a command without a browser", () => {
