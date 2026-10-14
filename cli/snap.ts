@@ -294,6 +294,13 @@ export interface SnapResult {
     /** Components with more combinations than the ceiling, measured as a subset. */
     componentsCapped: number;
   };
+  /**
+   * The components a merge (`--merge`, or `--components` with a snap to add
+   * to) dropped from the earlier snap because Storybook no longer lists
+   * them, by key. Returned by runSnap, and in `snap --json`, but not
+   * written to styles.json: it is what this run did, not what was measured.
+   */
+  removedComponents?: string[];
 }
 
 /** Whether `snap --strict` fails on `result`. */
@@ -1579,10 +1586,19 @@ function writeSnap(
   // only for one recorded without an ID.
   const ids = new Set(measured.map((c) => c.id));
   const keys = new Set(measured.map((c) => componentKey(c)));
-  const kept = (earlier?.result.components ?? []).filter((c) => (c.id != null ? !ids.has(c.id) : !keys.has(componentKey(c))));
+  const others = (earlier?.result.components ?? []).filter((c) => (c.id != null ? !ids.has(c.id) : !keys.has(componentKey(c))));
+  // Not one Storybook no longer lists: its code is gone, and kept it would
+  // stay in the summary, a full figma code build and verify for good.
+  // Matched the same way; all are kept where the listing came back empty.
+  const listedIds = new Set(listed.map((e) => e.id));
+  const listedKeys = new Set(listed.map((e) => componentKey(e)));
+  const removed = listed.length ? others.filter((c) => (c.id != null ? !listedIds.has(c.id) : !listedKeys.has(componentKey(c)))) : [];
+  const kept = others.filter((c) => !removed.includes(c));
   const components = [...measured, ...kept];
+  const removedKeys = removed.map((c) => componentKey(c)).sort();
   if (earlier) {
-    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap`);
+    const dropped = removedKeys.length ? `, and dropped ${removedKeys.join(", ")}, which Storybook no longer lists` : "";
+    progress(`Measured ${measured.length} ${measured.length === 1 ? "component" : "components"} again and kept ${kept.length} from the earlier snap${dropped}`);
   }
 
   // Deterministic ordering so repeated runs produce identical output.
@@ -1659,7 +1675,7 @@ function writeSnap(
 
   writeStylesJson(opts.outDir, result);
   writeMetaJson(opts.outDir, result, oldest, times, browserVersion, { noChannelArgs: opts.channelArgs === false, noOpenOverlays: opts.openOverlays === false });
-  return result;
+  return removedKeys.length ? { ...result, removedComponents: removedKeys } : result;
 }
 
 /** A variant's tree as captured, until the component's base is known and its assets are written. */

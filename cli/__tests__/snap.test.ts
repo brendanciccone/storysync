@@ -2909,6 +2909,30 @@ test("runSnap: props only the stories' args set are measured, the unset default 
   }
 });
 
+test("runSnap with --components alone: drops a kept component Storybook no longer lists, and says so", async () => {
+  const dir = tempDir();
+  try {
+    await snapAt(dir, "first", "2026-10-01T10:00:00.000Z");
+    const listed = mergeStorybook("second");
+    const gone = { ...listed, listComponents: async () => (await listed.listComponents()).filter((e) => e.id !== "forms-c") };
+    const progress: string[] = [];
+    const merged = await runSnap(options(dir, { components: ["forms-b"], merge: "auto" }), {
+      storybook: gone as never, launch: async () => ({ via: "stub", browser: stubBrowser() }) as never,
+      now: () => Date.parse("2026-10-01T11:00:00.000Z"), onProgress: (m) => progress.push(m),
+    });
+    assert.deepEqual(merged.components.map((c) => c.title), ["Forms/A", "Forms/B"]);
+    assert.deepEqual(merged.removedComponents, ["Forms/C"]);
+    assert.equal(merged.summary.components, 2);
+    const styles = readJson(join(dir, "styles.json"));
+    assert.deepEqual(styles.components.map((c: { title: string }) => c.title), ["Forms/A", "Forms/B"]);
+    assert.equal(styles.removedComponents, undefined);
+    assert.deepEqual(readJson(join(dir, "meta.json")).componentsMeasuredAt, { "Forms/A": "2026-10-01T10:00:00.000Z", "Forms/B": "2026-10-01T11:00:00.000Z" });
+    assert.ok(progress.some((m) => /kept 1 from the earlier snap, and dropped Forms\/C, which Storybook no longer lists/.test(m)), progress.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSnap with --components alone: merges into the snap in --out where there is one, and writes the components alone where there is none", async () => {
   const dir = tempDir();
   try {
