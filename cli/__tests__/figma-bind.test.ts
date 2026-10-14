@@ -319,3 +319,14 @@ test("Binder: a dark: class paints a token or a palette color, at its alpha; a l
   assert.equal(binder.hexOf("input"), "#e5e5e5");
   assert.equal(binder.hexOf("slate-900"), "#0f172b");
 });
+
+test("readEvidence and darkPaint: a dark: class with a state snap couldn't tell applies leaves Dark undecided", () => {
+  assert.deepEqual(readEvidence("dark:group-data-[state=open]:bg-input/30"), { dark: true, utility: "bg-input", alpha: 0.3, state: "group-data-[state=open]" });
+  assert.deepEqual(readEvidence("dark:bg-[color:var(--x)]"), { dark: true, utility: "bg-[color:var(--x)]" });
+  const binder = new Binder(SHADCN_TOKENS);
+  assert.deepEqual(binder.darkPaint("text", ["dark:text-muted-foreground", "text-foreground"]), { name: "muted/foreground", alpha: 1 });
+  assert.equal(binder.darkPaint("text", ["dark:data-active:text-foreground", "dark:text-muted-foreground", "text-foreground"]), undefined);
+  assert.equal(binder.darkAlpha("destructive", "fill", ["dark:bg-destructive/20", "dark:hover:bg-destructive/30"]), undefined);
+  // Another role's says nothing of this one.
+  assert.deepEqual(binder.darkPaint("fill", ["dark:bg-input/30", "dark:hover:text-foreground"]), { name: "input", alpha: 0.3 });
+});

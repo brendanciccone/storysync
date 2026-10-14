@@ -233,12 +233,14 @@ export class Binder {
   darkPaint(role: PaintRole, cls: readonly string[] | undefined): DarkPaint | undefined {
     const found = new Map<string, DarkPaint>();
     for (const entry of cls ?? []) {
-      const { dark, utility, alpha } = readEvidence(entry);
+      const { dark, utility, alpha, state } = readEvidence(entry);
       if (!dark) continue;
       const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
       if (!prefix) continue;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
       const paint = this.colorNamed(rest) ?? this.colorNamed(rest.replace(SIDE, ""));
+      // One with a state snap couldn't tell applies: Dark may be either.
+      if (paint && state) return undefined;
       if (paint) found.set(`${paint.name} ${alpha ?? 1}`, { ...paint, alpha: alpha ?? 1 });
     }
     return found.size === 1 ? [...found.values()][0] : undefined;
@@ -282,11 +284,12 @@ export class Binder {
   darkAlpha(token: string, role: PaintRole, cls: readonly string[] | undefined): number | undefined {
     const found = new Set<number>();
     for (const entry of cls ?? []) {
-      const { dark, utility, alpha } = readEvidence(entry);
+      const { dark, utility, alpha, state } = readEvidence(entry);
       if (!dark) continue;
       const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
       if (!prefix) continue;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
+      if (state && (this.colorNamed(rest) ?? this.colorNamed(rest.replace(SIDE, "")))) return undefined;
       if (tokenClassName(token) === rest || tokenClassName(token) === rest.replace(SIDE, "")) found.add(alpha ?? 1);
     }
     return found.size === 1 ? [...found][0] : undefined;
@@ -314,8 +317,8 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
   const named = new Set<string>();
   const dark = new Set<string>();
   for (const entry of cls ?? []) {
-    const { dark: isDark, utility: c } = readEvidence(entry);
-    const prefix = prefixes.find((p) => c.startsWith(`${p}-`));
+    const { dark: isDark, utility: c, state } = readEvidence(entry);
+    const prefix = state ? undefined : prefixes.find((p) => c.startsWith(`${p}-`));
     if (!prefix) continue;
     const rest = c.slice(prefix.length + 1).toLowerCase();
     for (const name of [rest, rest.replace(SIDE, "")]) {
@@ -335,14 +338,29 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
  * applies it, and the opacity a `dark:` one keeps: `dark:bg-destructive/20`
  * is `bg-destructive`, dark, at 0.2; `/[.25]` and `/[25%]` are 0.25. snap
  * keeps no other entry's opacity, which the paint's measured alpha holds.
+ * A `dark:` one with a state snap couldn't tell applies (snap-tree.ts's
+ * classEvidence), `dark:group-hover:bg-accent`, has it as `state`: the
+ * dark theme may paint its property so, or not.
  */
-export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number } {
+export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number; state?: string } {
   const dark = entry.startsWith("dark:");
   const rest = dark ? entry.slice(5) : entry;
   const m = /^(.+?)\/(?:(\d+(?:\.\d+)?)|\[(\d*\.?\d+)(%?)\])$/.exec(rest);
-  if (!m) return { dark, utility: rest };
-  const alpha = m[2] !== undefined ? Number(m[2]) / 100 : Number(m[3]) / (m[4] ? 100 : 1);
-  return { dark, utility: m[1], ...(Number.isFinite(alpha) && alpha >= 0 && alpha <= 1 ? { alpha } : {}) };
+  const alpha = !m ? NaN : m[2] !== undefined ? Number(m[2]) / 100 : Number(m[3]) / (m[4] ? 100 : 1);
+  let utility = m ? m[1] : rest;
+  let state: string | undefined;
+  let depth = 0;
+  for (let i = utility.length - 1; dark && i >= 0; i--) {
+    const ch = utility[i];
+    if (ch === "]" || ch === ")") depth++;
+    else if (ch === "[" || ch === "(") depth--;
+    else if (ch === ":" && depth === 0) {
+      state = utility.slice(0, i);
+      utility = utility.slice(i + 1);
+      break;
+    }
+  }
+  return { dark, utility, ...(Number.isFinite(alpha) && alpha >= 0 && alpha <= 1 ? { alpha } : {}), ...(state ? { state } : {}) };
 }
 
 // --- Alpha variables ------------------------------------------------------------

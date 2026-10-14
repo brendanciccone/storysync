@@ -756,7 +756,7 @@ test("classEvidence: the utilities that name a paint's token, variant prefixes a
   );
   // shadcn/ui's destructive Button: the dark theme paints destructive at
   // 20%, which snap, measuring the light theme, sees only in the class.
-  assert.deepEqual(classEvidence(["bg-destructive/10", "hover:bg-destructive/20", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive", "dark:hover:bg-destructive/30"]),
+  assert.deepEqual(classEvidence(["bg-destructive/10", "hover:bg-destructive/20", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive", "dark:hover:bg-destructive/30"], { hover: false }),
     ["bg-destructive", "dark:bg-destructive/20", "dark:bg-muted/[.25]", "text-destructive"]);
   // An outline button's: past 8, the dark:border-input that names its border in Dark mode is kept.
   const outline = ["focus-visible:border-ring", "focus-visible:ring-ring/50", "aria-invalid:ring-destructive/20", "aria-invalid:border-destructive",
@@ -766,8 +766,9 @@ test("classEvidence: the utilities that name a paint's token, variant prefixes a
 });
 
 test("classEvidence and buildTree: a dark: prefix alone stays, naming the token the dark theme paints", () => {
-  // dark: alone is the dark theme's color; with a state after it, a state's.
-  assert.deepEqual(classEvidence(["border-border", "dark:border-input", "dark:hover:bg-input/50", "hover:dark:bg-muted", "!dark:text-x"]),
+  // dark: alone is the dark theme's color; with a state the page found
+  // doesn't apply, not hovered, a state's.
+  assert.deepEqual(classEvidence(["border-border", "dark:border-input", "dark:hover:bg-input/50", "hover:dark:bg-muted", "!dark:text-x"], { hover: false }),
     ["bg-input", "bg-muted", "border-border", "dark:border-input", "dark:text-x"]);
   // A text takes the dark theme's color with the one it inherits.
   const p = el("p", [0, 0, 200, 20], {}, [run("Muted", [[0, 1.5, 40, 17]])], { text: TEXT });
@@ -893,4 +894,23 @@ test("buildTree: a pseudo-element's classes are its host's before: or after: one
   const title = byKey(buildTree(tree(alert)).nodes).get("alert-title")!;
   assert.deepEqual([title.cls, title.nocls], [["text-card-foreground"], undefined]);
   assert.deepEqual(classEvidence(["[&>svg]:text-x", "*:bg-x", "**:bg-y", "[.dark_&]:bg-z", "has-[>svg]:bg-w", "[&:hover]:bg-v"]), ["bg-v", "bg-w", "bg-z"]);
+});
+
+test("classEvidence: a dark: class with a state is the dark theme's where the page found its state applies, and says nothing where it doesn't", () => {
+  // shadcn/ui's Tabs trigger.
+  const tabs = ["text-foreground/60", "dark:text-muted-foreground", "data-active:text-foreground", "dark:data-active:text-foreground", "dark:hover:bg-x"];
+  // Active: Tailwind puts dark:data-active: after dark:, so it is what Dark paints.
+  assert.deepEqual(classEvidence(tabs, { "data-active": true, hover: false }), ["bg-x", "dark:text-foreground", "text-foreground"]);
+  assert.deepEqual(classEvidence(tabs, { "data-active": false, hover: false }), ["bg-x", "dark:text-muted-foreground", "text-foreground"]);
+  // A state the page couldn't tell stays as written, for figma code to leave Dark as the token's.
+  assert.deepEqual(classEvidence(tabs), ["bg-x", "dark:data-active:text-foreground", "dark:hover:bg-x", "dark:text-muted-foreground", "text-foreground"]);
+  // Another property's plain dark: class stays.
+  assert.deepEqual(classEvidence(["bg-background", "dark:bg-input/30", "dark:data-checked:bg-primary", "dark:border-input"], { "data-checked": true }), ["bg-background", "bg-primary", "dark:bg-primary", "dark:border-input"]);
+});
+
+test("buildTree: a text's inherited dark: class with a state reads its holder's states", () => {
+  const label = el("span", [10, 5, 50, 20], {}, [run("Account", [[10, 6.5, 50, 17]])], { text: TEXT });
+  const trigger = el("button", [0, 0, 80, 30], { display: "flex" }, [label], { cls: ["text-foreground/60", "dark:text-muted-foreground", "dark:data-active:text-foreground"], states: { "data-active": true } });
+  const nodes = buildTree(tree(trigger)).nodes;
+  assert.deepEqual(nodes.find((n) => n.t === "T")!.cls, ["dark:text-foreground", "text-foreground"]);
 });

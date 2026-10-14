@@ -2016,6 +2016,77 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
   const evidenceIn = (classes: string[]): string[] =>
     classes.filter((t) => t && evidence.test(t) && !(/^!?text-/.test(t) && unprefixed(t) && !setsTextColor(t)));
 
+  // Whether a state variant applies to an element as measured, where the
+  // page can tell: an attribute's (`data-active`, `data-[state=open]`,
+  // `aria-checked`), a pseudo-class's (`hover`, `checked`), a group's or
+  // peer's of one, or `not-` one; undefined for any other, a breakpoint or
+  // `has-*`. Tailwind puts a `dark:` class with a state after the plain
+  // `dark:` one, so it is what the dark theme paints wherever its state
+  // applies: Tabs' `dark:data-active:text-foreground` over
+  // `dark:text-muted-foreground`.
+  const PSEUDO: Record<string, string> = {
+    hover: ":hover", focus: ":focus", "focus-visible": ":focus-visible", "focus-within": ":focus-within", active: ":active",
+    disabled: ":disabled", enabled: ":enabled", checked: ":checked", indeterminate: ":indeterminate", required: ":required",
+    optional: ":optional", invalid: ":invalid", valid: ":valid", "read-only": ":read-only", "placeholder-shown": ":placeholder-shown",
+    empty: ":empty", first: ":first-child", last: ":last-child", only: ":only-child", odd: ":nth-child(odd)", even: ":nth-child(even)",
+    "first-of-type": ":first-of-type", "last-of-type": ":last-of-type", open: "[open]", target: ":target",
+  };
+  const unquote = (s: string) => s.replace(/^(["'])(.*)\1$/, "$2").replace(/_/g, " ");
+  const stateOn = (at: Element, v: string): boolean | undefined => {
+    if (v.startsWith("not-")) {
+      const on = stateOn(at, v.slice(4));
+      return on === undefined ? undefined : !on;
+    }
+    const scoped = /^(group|peer)-(.+?)(?:\/([\w-]+))?$/.exec(v);
+    if (scoped) {
+      // `group-hover:` applies where an ancestor marked `group` is hovered,
+      // `peer-checked:` where a sibling before it marked `peer` is checked.
+      const mark = scoped[3] ? `${scoped[1]}/${scoped[3]}` : scoped[1];
+      const marked: Element[] = [];
+      const step = (e: Element) => (scoped[1] === "group" ? e.parentElement : e.previousElementSibling);
+      for (let e = step(at); e; e = step(e)) if ((e.getAttribute("class") ?? "").split(/\s+/).includes(mark)) marked.push(e);
+      const found = marked.map((e) => stateOn(e, scoped[2]));
+      return found.includes(true) ? true : found.includes(undefined) ? undefined : false;
+    }
+    const attr = /^(data|aria)-(?:\[([\w-]+)(?:=(.+))?\]|([\w-]+))$/.exec(v);
+    if (attr) {
+      const name = `${attr[1]}-${attr[2] ?? attr[4]}`;
+      if (attr[3] !== undefined) return at.getAttribute(name) === unquote(attr[3]);
+      return attr[1] === "aria" && attr[4] ? at.getAttribute(name) === "true" : at.hasAttribute(name);
+    }
+    if (!PSEUDO[v] || typeof at.matches !== "function") return undefined;
+    try {
+      return at.matches(PSEUDO[v]);
+    } catch {
+      return undefined;
+    }
+  };
+  // The state variants of an element's `dark:` classes the page can tell, and whether each applies.
+  const statesOf = (at: Element, classes: string[]): Record<string, boolean> | undefined => {
+    const out: Record<string, boolean> = {};
+    for (const token of classes) {
+      const parts: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let i = 0; i < token.length; i++) {
+        const ch = token[i];
+        if (ch === "[" || ch === "(") depth++;
+        else if (ch === "]" || ch === ")") depth--;
+        else if (ch === ":" && depth === 0) {
+          parts.push(token.slice(from, i).replace(/^!/, ""));
+          from = i + 1;
+        }
+      }
+      if (!parts.includes("dark")) continue;
+      for (const v of parts) {
+        if (v === "dark" || v === "before" || v === "after" || v in out) continue;
+        const on = stateOn(at, v);
+        if (on !== undefined) out[v] = on;
+      }
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+
   // Radii only layout can resolve, calc() of a percentage, sized on a probe
   // the element's size, as readComputedStyles sizes the root's.
   const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
@@ -2290,6 +2361,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     const classes = (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
     const cls = evidenceIn(classes);
     if (cls.length) node.cls = cls;
+    const states = statesOf(el, cls);
+    if (states) node.states = states;
     // Its own size, where something turns or scales it: snap-tree.ts
     // centers that where it drew. A `rotate` or `scale` set on its own,
     // as Tailwind 4 sets them, doesn't show in `transform`.

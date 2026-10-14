@@ -428,3 +428,18 @@ test("nodeStyle: measured dark, a paint binds by the tokens' dark values, at its
   assert.deepEqual(nodeStyle(frame({ k: "", bg: "#09090b80", cls: ["bg-surface-primary/50"] }), c).f, [["#09090b", 0.502, "surface/primary 50%", "surface/primary"]]);
   assert.deepEqual([...alphas.keys()], ["surface/primary 50%"]);
 });
+
+test("nodeStyle: a dark: class with a state decides Dark where snap found it applies, and makes no per-mode variable where snap couldn't tell", () => {
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas: new Map(), darkAlpha: true };
+  const text = (col: string, cls: string[]) => nodeStyle(frame({ k: "t", t: "T", el: "p", cls, tx: { c: "Account", col, f: "Inter", wt: 500, sz: 14, lh: 20, n: 1, ink: [0, 0, 60, 20] } as TreeNode["tx"] }), c).f;
+  // Tabs' active trigger: dark:data-active:text-foreground over dark:text-muted-foreground.
+  assert.deepEqual(text("#0a0a0a", ["dark:text-foreground", "text-foreground"]), [["#0a0a0a", 1, "foreground"]]);
+  assert.deepEqual(text("#0a0a0a", ["dark:data-active:text-foreground", "dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 1, "foreground"]]);
+  // An inactive one, text-foreground/60 dark:text-muted-foreground: Dark is muted's.
+  assert.deepEqual(text("#0a0a0a99", ["dark:text-muted-foreground", "text-foreground"]), [["#0a0a0a", 0.6, "foreground 60% dark muted/foreground", "foreground"]]);
+  // Checkbox checked: dark:data-checked:bg-primary over dark:bg-input/30.
+  const fill = (cls: string[]) => nodeStyle(frame({ k: "b", bg: "#171717", cls }), c).f;
+  assert.deepEqual(fill(["bg-primary", "dark:bg-primary"]), [["#171717", 1, "primary"]]);
+  assert.deepEqual(fill(["bg-primary", "dark:bg-input/30", "dark:data-checked:bg-primary"]), [["#171717", 1, "primary"]]);
+  assert.deepEqual([...c.alphas!.keys()], ["foreground 60% dark muted/foreground"]);
+});

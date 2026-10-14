@@ -1396,3 +1396,19 @@ test("overlaySettledInPage: waits out the animations that end, not one that repe
     delete scope.requestAnimationFrame;
   }
 });
+
+test("captureTreeInPage: says which states of an element's dark: classes apply to it, where it can tell", () => {
+  const cls = [
+    "bg-muted", "dark:bg-input/30", "dark:data-active:bg-background", "dark:aria-checked:bg-x", "dark:data-[orientation=vertical]:bg-y",
+    "dark:group-data-[state=open]:bg-z", "dark:not-data-active:bg-u", "dark:md:bg-w", "data-[side=top]:bg-v",
+  ].join(" ");
+  const raw = readTree({
+    tag: "div", rect: [0, 0, 200, 40], attrs: { class: "group", "data-state": "open" },
+    kids: [{ tag: "button", rect: [0, 0, 80, 30], attrs: { class: cls, "data-active": "", "aria-checked": "false", "data-orientation": "horizontal" } }],
+  });
+  // A breakpoint (md) it can't tell, and a class without dark: it doesn't ask.
+  assert.deepEqual((raw.root.kids[0] as RawTreeElement).states, {
+    "data-active": true, "aria-checked": false, "data-[orientation=vertical]": false, "group-data-[state=open]": true, "not-data-active": false,
+  });
+  assert.equal(raw.root.states, undefined);
+});
