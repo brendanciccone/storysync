@@ -2,14 +2,17 @@
 // every call must keep.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callCode, callConstants, templateLiteral } from "../checksum.js";
-import { CALL_CONSTANTS, loadTemplate } from "../figma-code.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CALL_CONSTANTS, loadTemplate, runFigmaNext } from "../figma-code.js";
+import { runFigmaTokens } from "../figma-tokens.js";
 import { MAX_CALL_CHARS, USE_FIGMA_CODE_LIMIT } from "../figma-spike.js";
 import type { TemplateName } from "../figma-code.js";
-import { codeFor } from "./figma-build-harness.js";
+import { SHADCN_TOKENS, codeFor } from "./figma-build-harness.js";
 import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
 
 /**
@@ -137,4 +140,21 @@ test("templates: none uses what use_figma doesn't support, and each switches pag
     }
     assert.ok((code.match(/setCurrentPageAsync\(/g) ?? []).length <= 1, `${name} switches page once at most`);
   }
+});
+
+test("templates: figma code, figma next and figma tokens refuse to write a call longer than use_figma takes", async () => {
+  // A template that alone passes the limit stands in for any call packed
+  // wrong: Figma would refuse it whole, so no writer may leave it in a plan.
+  const huge = `return { kind: 'read', tpl: 3, page: PAGE, sets: [], slices: SLICES, limit: LIMIT, more: { slices: SLICES } };//${"x".repeat(USE_FIGMA_CODE_LIMIT)}`;
+  const switchSnap = loadTreeFixture("switch");
+  for (const [name, fixture] of [["readback", "switch"], ["label", "switch"], ["images", "avatar"]] as const) {
+    await assert.rejects(codeFor(loadTreeFixture(fixture), { templates: { [name]: huge } }), /is \d+ characters, more than use_figma takes \(50000\)/, name);
+  }
+  const coded = await codeFor(switchSnap);
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", tpl: 3, page: read.page, sets: [], more: { slices: [["ui-base-switch", 0, 0, 0]] } }));
+  await assert.rejects(runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq, templates: { readback: huge } }), /more than use_figma takes/);
+  const dir = mkdtempSync(join(tmpdir(), "storysync-limit-"));
+  writeFileSync(join(dir, "tokens.json"), JSON.stringify(SHADCN_TOKENS));
+  assert.throws(() => runFigmaTokens({ tokens: join(dir, "tokens.json"), out: join(dir, "out"), templates: { variables: huge } }), /more than use_figma takes/);
 });

@@ -115,6 +115,17 @@ export function assertCompiles(code: string, file: string, kind: TemplateName, t
 /** What figma code packs each read call's slices to, predicted (figma-results.ts READ_LIMIT says why). */
 export const DEFAULT_READ_LIMIT = 17_000;
 
+/**
+ * Throws where a call figma code, figma next or figma tokens writes is
+ * longer than use_figma takes: Figma refuses such a call whole, so it is
+ * a plan no one can send, which every writer packs its calls to avoid.
+ */
+export function assertWithinLimit(code: string, file: string): void {
+  if (code.length > USE_FIGMA_CODE_LIMIT) {
+    throw new Error(`${file} is ${code.length} characters, more than use_figma takes (${USE_FIGMA_CODE_LIMIT}): a storysync bug, since every call is packed under it`);
+  }
+}
+
 /** The readback template's own limit sits this far above what each call is predicted to return. */
 const READ_GUARD_MARGIN = 1_000;
 
@@ -796,6 +807,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     const file = `calls/${pad(seq)}-${call.kind}${named ? `-${pageSlug(named)}` : ""}.js`;
     const kind = call.kind === "read" ? "readback" : call.kind;
     assertCompiles(text, file, kind, templates[kind]);
+    assertWithinLimit(text, file);
     calls.push({
       seq, kind: call.kind, page: call.page, components: call.components,
       ...(call.collection ? { collection: call.collection } : {}),
@@ -888,12 +900,34 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
     );
   }
 
-  // Label: every set built, with a line for those snap measured from something else.
-  const label = { pages: builtPages, sets: built.map((c) => (c.dark ? [c.id, c.note, 1] : [c.id, c.note])) };
-  add(
-    { kind: "label", page: "", components: built.map((c) => c.key), description: `Label the sets snap measured from something other than the component or from more than one story, ${built.some((c) => c.dark) ? "put those it measured in the dark theme in each collection's Dark mode, " : ""}and remove Figma's empty default page` },
-    (seq) => `${header(seq, "label", "")}${callCode([["DATA", label]], templates.label)}`,
-  );
+  // Label: every set built, with a line for those snap measured from
+  // something else, packed into calls under --max-chars as the builds are,
+  // since a line naming each variant's story grows with the library. Each
+  // call carries the pages its sets are on; the last alone removes Page 1,
+  // once every set is on its page.
+  const labelCode = (seq: number, sets: CompiledComponent[], last: boolean) => {
+    const data = {
+      pages: builtPages.filter((page) => sets.some((c) => c.page === page)),
+      sets: sets.map((c) => (c.dark ? [c.id, c.note, 1] : [c.id, c.note])),
+      ...(last ? { last: 1 } : {}),
+    };
+    return `${header(seq, "label", "")}${callCode([["DATA", data]], templates.label)}`;
+  };
+  const labels: CompiledComponent[][] = [];
+  for (const c of built) {
+    const last = labels[labels.length - 1];
+    if (last && labelCode(calls.length + labels.length, [...last, c], true).length <= maxChars) last.push(c);
+    else labels.push([c]);
+  }
+  labels.forEach((sets, i) => {
+    const last = i === labels.length - 1;
+    const dark = sets.some((c) => c.dark) ? "put those it measured in the dark theme in each collection's Dark mode, " : "";
+    const what = `Label the sets snap measured from something other than the component or from more than one story${labels.length > 1 ? ` (${sets.map((c) => c.name).join(", ")})` : ""}`;
+    add(
+      { kind: "label", page: "", components: sets.map((c) => c.key), description: last ? `${what}, ${dark}and remove Figma's empty default page` : `${what}${dark ? `, and ${dark.slice(0, -2)}` : ""}` },
+      (seq) => labelCode(seq, sets, last),
+    );
+  });
 
   // Reads: by page, slices of each set's variants packed by predicted size.
   for (const page of builtPages) {
@@ -1184,6 +1218,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
     const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next").replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file, "readback", template);
+    assertWithinLimit(code, file);
     writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };
   }

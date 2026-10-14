@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callConstants, callSum } from "../checksum.js";
-import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, pageOf, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { READ_LIMIT, loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
@@ -300,6 +300,42 @@ test("figma code: the label call carries a line for a set measured from a closed
   assert.deepEqual(data.sets.find(([id]) => id === "ui-base-card"), ["ui-base-card", ""]);
   // The example's 0.3.0 snap has no Storybook id: its title stands in, as verify keys it.
   assert.ok(data.sets.some(([id]) => id === "Forms/Button"));
+});
+
+test("figma code: the label is split into calls under --max-chars, each with its sets' pages, the last alone removing Page 1", async () => {
+  // A library whose notes name each variant's story: one label call of
+  // them all passed use_figma's 50,000 characters.
+  const button = loadTreeFixture("example-button").components[0];
+  const snap = copy(loadTreeFixture("example-button"));
+  snap.components = Array.from({ length: 100 }, (_, n) => {
+    const c = copy(button);
+    Object.assign(c, { id: `forms-button-${n}`, name: `Button${n}`, title: `Forms/Button${n}`, category: n % 2 ? "Forms" : "Actions" });
+    c.variants.forEach((v, i) => Object.assign(v, { storyId: `forms-button-${n}--story-with-a-long-name-${i}` }));
+    return c;
+  });
+  const coded = await codeFor(snap);
+  const labels = coded.plan.calls.filter((c) => c.kind === "label");
+  assert.ok(labels.length > 1, `${labels.length} label calls`);
+  const ids: string[] = [];
+  labels.forEach((call, i) => {
+    assert.ok(call.chars <= MAX_CALL_CHARS, `${call.file}: ${call.chars} characters`);
+    const data = dataOf(coded.code(call)) as { pages: string[]; sets: [string, string][]; last?: 1 };
+    assert.equal(data.last, i === labels.length - 1 ? 1 : undefined, call.file);
+    const pages = data.sets.map(([id]) => pageOf(snap.components.find((c) => c.id === id)!));
+    assert.deepEqual(data.pages, [...new Set(snap.components.map(pageOf))].filter((p) => pages.includes(p)), call.file);
+    assert.deepEqual(call.components, data.sets.map(([id]) => componentKey(snap.components.find((c) => c.id === id)!)));
+    ids.push(...data.sets.map(([id]) => id));
+    assert.match(call.description, i === labels.length - 1 ? /remove Figma's empty default page$/ : /^Label the sets .*\(Button\d+, /);
+  });
+  assert.deepEqual(ids, snap.components.map((c) => c.id));
+  // Page 1 goes with the last call only, once every set is labeled.
+  const mock = mockFor([], { pages: ["Page 1", "Forms"] });
+  for (const [i, call] of labels.entries()) {
+    const run = await mock.run(coded.code(call));
+    assert.ok(run.ok, run.text);
+    assert.equal((run.value as { pageOne?: string }).pageOne, i === labels.length - 1 ? "removed" : undefined);
+    assert.deepEqual(mock.pages().map((p) => p.name), i === labels.length - 1 ? ["Forms"] : ["Page 1", "Forms"]);
+  }
 });
 
 test("figma code: the label line of a closed trigger snap didn't open says why, without quotes; an overlay it opened gets none", async () => {

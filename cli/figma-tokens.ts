@@ -28,7 +28,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, wr
 import { join, relative, resolve } from "node:path";
 import { callCode, fnv1a32Bytes } from "./checksum.js";
 import { alphaVariableName, colorOfClass, parseAlphaVariable } from "./figma-bind.js";
-import { assertCompiles, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
+import { assertCompiles, assertWithinLimit, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
 import type { FigmaCodeOptions } from "./figma-code.js";
 import { lengthToPx, tokenColorToHex, withoutRepeatedDefault } from "./tokens.js";
 import type { TokenCategory, TokenExtractionResult, TokenValue } from "./tokens.js";
@@ -268,6 +268,7 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
       const file = `calls/${pad(seq)}-variables-${pageSlug(collection.name)}.js`;
       const code = `// storysync figma tokens, call ${pad(seq)}: the ${collection.name} variables. Send this file unchanged as use_figma's code.\n${callCode([["DATA", data]], template, "figma tokens")}`;
       assertCompiles(code, file, "variables", template);
+      assertWithinLimit(code, file);
       calls.push({
         seq, kind: "variables", collection: collection.name, part: [p + 1, parts], variables: vars.length, ...(alpha.length ? { alphas: alpha.length } : {}),
         file, result: `results/${pad(seq)}.json`, description, chars: code.length, code,

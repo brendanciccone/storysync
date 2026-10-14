@@ -4,8 +4,11 @@
 // `storysync figma code` writes the call as `const DATA = {...};`, then
 // this file as the string T, whose checksum, TSUM, the call checks with
 // DATA's, SUM, before it runs T (cli/checksum.ts, callCode):
-//   DATA = { pages, sets: [[storysync id, line, dark?], ...] }
-// with every set the build made, on the pages it made them on. A line is a
+//   DATA = { pages, sets: [[storysync id, line, dark?], ...], last? }
+// with sets the build made, on the pages it made them on. A plan holds as
+// many label calls as its sets need to keep each under use_figma's 50,000
+// characters; `last` marks the last of them, which alone removes Page 1,
+// once every set is on its page. A line is a
 // note for a set snap measured from something other than the component, a
 // closed trigger or a layout wrapper, and "" for every other set. It goes on
 // the description's line that starts MARK, every other line kept, a
@@ -92,7 +95,7 @@ for (const [id, note, dark] of DATA.sets) {
 // remains. The user is moved off it only to remove it: use_figma switches
 // page once per call, so if Figma then refuses, they stay on the other page.
 let pageOne = 'none';
-const blank = figma.root.children.find((p) => p.name === 'Page 1');
+const blank = DATA.last && figma.root.children.find((p) => p.name === 'Page 1');
 if (blank) {
   await blank.loadAsync();
   const other = figma.root.children.find((p) => p !== blank);
@@ -107,4 +110,4 @@ if (blank) {
     }
   }
 }
-return Object.assign({ kind: 'label', changed, missing, pageOne }, darkened.length ? { darkened: [...new Set(darkened)] } : {}, lightened.length ? { lightened: [...new Set(lightened)] } : {});
+return Object.assign({ kind: 'label', changed, missing }, DATA.last ? { pageOne } : {}, darkened.length ? { darkened: [...new Set(darkened)] } : {}, lightened.length ? { lightened: [...new Set(lightened)] } : {});
