@@ -384,7 +384,9 @@ function radiusOf(node: TreeNode, ctx: MapContext): Pick<FigmaStyle, "r" | "rv">
   const out: Pick<FigmaStyle, "r" | "rv"> = { r: collapse(corners) };
   const value = sides(node.r)[0];
   if (sides(node.r).every((c) => c === value) && value > 0) {
-    const decision = ctx.binder.radius(value, node.cls);
+    // A radius of half the shorter side draws a pill or a circle, whatever
+    // its value: one CSS scaled down to it binds by no value (Binder.radius).
+    const decision = ctx.binder.radius(value, node.cls, value * 2 >= Math.min(node.box[2], node.box[3]) - 0.01);
     if (outside) {
       // A token has the browser's radius, but the frame is drawn with the
       // inner one, which none has: said, rather than left without a word.

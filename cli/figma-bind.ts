@@ -188,12 +188,28 @@ export class Binder {
     return found.size === 1 ? [...found][0] : undefined;
   }
 
-  /** The radius token a corner radius of `px` binds to, given the node's classes. */
-  radius(px: number, cls: readonly string[] | undefined): BindDecision {
+  /**
+   * The radius token a corner radius of `px` binds to, given the node's
+   * classes. A full radius (`rounded-full`, on any side) is the box's own
+   * half, which the browser scales `9999px` or `calc(infinity * 1px)` down
+   * to (resolveRadii): it binds to a token named `full`, where the project
+   * has one, and never to a step of the scale that happens to equal it, as
+   * `md` does on a 16px circle, which a designer editing `md` would turn
+   * square. A `pill`, a radius of half the box's shorter side, binds by
+   * value only where a class names its token, for the same reason.
+   */
+  radius(px: number, cls: readonly string[] | undefined, pill = false): BindDecision {
+    if ((cls ?? []).some((c) => FULL_RADIUS.test(readEvidence(c).utility))) {
+      const candidates = [...new Set(this.radii.filter((t) => tokenClassName(t.name) === "full").map((t) => t.name))].sort();
+      return { variable: candidates.length === 1 ? candidates[0] : null, candidates };
+    }
     const candidates = [...new Set(this.radii.filter((t) => Math.abs(t.px - px) < 0.01).map((t) => t.name))].sort();
-    return { variable: decide(candidates, PREFIXES.radius, cls).variable, candidates };
+    return { variable: decide(candidates, PREFIXES.radius, cls, !pill).variable, candidates };
   }
 }
+
+/** Tailwind's full radius, on every corner or some: `rounded-full`, `rounded-t-full`, `rounded-tl-full`, `rounded-s-full`. */
+const FULL_RADIUS = /^rounded(?:-(?:[trblse]|tl|tr|br|bl|ss|se|es|ee))?-full$/;
 
 /**
  * The one candidate the classes name, or the only candidate where the value
