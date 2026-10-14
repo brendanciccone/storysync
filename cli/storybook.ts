@@ -602,7 +602,7 @@ export class StorybookClient {
     if (!tools) {
       throw new Error(
         "Storybook MCP is missing the docs tools (docs-list and docs-show, or list-all-documentation and get-documentation before addon-mcp 10.6).\n" +
-          "  The docs tools require Storybook 10.1+ — they are not available in Storybook 9.x.\n" +
+          "  The docs tools require Storybook 10.1 or later. They are not available in Storybook 9.x.\n" +
           "  Run `storysync init` to check your setup, or upgrade with: npx storybook@latest upgrade",
       );
     }

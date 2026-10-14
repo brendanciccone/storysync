@@ -108,8 +108,8 @@ function setupClaude(projectPath: string, force: boolean): SetupResult {
   if (existsSync(legacySkillPath)) {
     extraNotes.push(
       staleCommands.length
-        ? `Then remove ${relative(projectPath, legacySkillPath)} — it predates the skill directory layout and is never loaded.`
-        : `Remove ${relative(projectPath, legacySkillPath)} — it predates the skill directory layout and is never loaded.`,
+        ? `Then remove ${relative(projectPath, legacySkillPath)}: it predates the skill directory layout and is never loaded.`
+        : `Remove ${relative(projectPath, legacySkillPath)}: it predates the skill directory layout and is never loaded.`,
     );
   }
 
@@ -193,7 +193,7 @@ function setupCodex(projectPath: string, force: boolean): SetupResult {
   // so say what to remove rather than touching it.
   if (existsSync(agentsPath) && readFileSync(agentsPath, "utf8").startsWith(LEGACY_CODEX_HEADING)) {
     extraNotes.push(
-      `Remove the storysync instructions from ${relative(projectPath, agentsPath)} — an earlier setup wrote them there, and Codex now loads them from ${relative(projectPath, skillDest)}.`,
+      `Remove the storysync instructions from ${relative(projectPath, agentsPath)}. An earlier setup wrote them there, and Codex now loads them from ${relative(projectPath, skillDest)}.`,
     );
   }
 
@@ -205,7 +205,7 @@ function setupCodex(projectPath: string, force: boolean): SetupResult {
       "Add Storybook MCP:  codex mcp add storybook --url http://localhost:6006/mcp",
       "Add Figma MCP:      codex mcp add figma --url https://mcp.figma.com/mcp   (or the Figma plugin, from /plugins)",
       "Approve npx storysync when Codex asks to run it outside the sandbox: it needs Storybook on localhost and a browser",
-      "Then say: \"Push my Storybook to Figma (file key: <key>)\" — or $storysync to name the skill",
+      "Then say: \"Push my Storybook to Figma (file key: <key>)\", or $storysync to name the skill",
     ],
   };
 }
@@ -213,7 +213,7 @@ function setupCodex(projectPath: string, force: boolean): SetupResult {
 export function runSetup(client: Client, projectInput: string, force: boolean): void {
   const projectPath = resolve(projectInput);
 
-  console.log(chalk.bold(`\nstorysync setup — ${client}`));
+  console.log(chalk.bold(`\nstorysync setup: ${client}`));
   console.log(chalk.dim(`Project: ${projectPath}\n`));
 
   let result: SetupResult;

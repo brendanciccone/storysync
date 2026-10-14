@@ -1,10 +1,10 @@
-# storysync example — Vite + React + Storybook
+# Storysync example: Vite + React + Storybook
 
-A minimal project for trying storysync end to end, and the fixture its behavior is verified against.
+A minimal project for trying Storysync end to end, and the fixture its behavior is verified against.
 
 ```bash
 pnpm install
-pnpm storybook          # http://localhost:6006 — leave running
+pnpm storybook          # http://localhost:6006, leave it running
 ```
 
 Then, from this directory in a second terminal:
@@ -18,12 +18,12 @@ npx storysync snap --storybook http://localhost:6006 --screenshots
 ```text
 ✓ Forms/Button 5/5 variants measured
 ! Forms/Frozen: all 3 rendered variants measured identically and rendered the same
-  markup — the story may not pass args through to the component ...
+  markup. The story may not pass args through to the component ...
 ```
 
 Both lines matter.
 
-**Button** is a normal args-driven story. Five variants get measured rather than five guessed — `--variants representative` measures each declared value once against the others' defaults, so it renders 5 times instead of the full product of 12.
+**Button** is a normal args-driven story. Five variants get measured rather than five guessed: `--variants representative` measures each declared value once against the others' defaults, so it renders 5 times instead of the full product of 12.
 
 **Frozen is broken on purpose.** Its story uses a custom `render` that ignores incoming args, so every variant produces an identical render. This is the one failure mode measurement cannot catch on its own: the values look real, they just all describe the default state. `snap` notices every variant measured identically, and that their markup was the same too, so the args never reached the component, and says so. Delete the `render` line in `src/Frozen.stories.tsx` and the warning goes away.
 
@@ -35,16 +35,16 @@ jq '.components[] | select(.name=="Button") | .base.styles
   .storysync/snaps/styles.json
 ```
 
-Those values should match `src/Button.tsx` exactly — `#2563eb`, `12`, `4/8`, `3`. That correspondence is the whole point: they came from a browser rendering the component, not from anything reading the source.
+Those values should match `src/Button.tsx` exactly: `#2563eb`, `12`, `4/8`, `3`. That correspondence is the whole point: they came from a browser rendering the component, not from anything reading the source.
 
 Two more properties worth a look:
 
 - `"backgroundColor": null` on the outline variant. Transparent is recorded as *no fill*, not as black.
-- `"fontAvailable": true`. The components use Inter, bundled from npm via `@fontsource/inter` and imported in `.storybook/preview.ts` — nothing is fetched at runtime.
+- `"fontAvailable": true`. The components use Inter, bundled from npm via `@fontsource/inter` and imported in `.storybook/preview.ts`: nothing is fetched at runtime.
 
-  The font choice is load-bearing, because it has to satisfy two constraints at once. The browser must actually render it, or `snap` measures a fallback. And Figma's *plugin* context — where `use_figma` writes — must have it: that context exposes only Google Fonts, so system fonts like Arial or Helvetica that a designer sees in the desktop app's picker are unavailable to the agent doing the push. The push then sets the text in a stand-in at the measured weight, Inter, or Roboto Mono for a monospace face, and names it in its summary, and `verify` reports the family as drift. Bundling a Google font from npm is the one arrangement that satisfies both with no network.
+  The font choice is load-bearing, because it has to satisfy two constraints at once. The browser must actually render it, or `snap` measures a fallback. And Figma's *plugin* context, where `use_figma` writes, must have it: that context exposes only Google Fonts, so system fonts like Arial or Helvetica that a designer sees in the desktop app's picker are unavailable to the agent doing the push. The push then sets the text in a stand-in at the measured weight, Inter, or Roboto Mono for a monospace face, and names it in its summary, and `verify` reports the family as drift. Bundling a Google font from npm is the one arrangement that satisfies both with no network.
 
-  To see the substitution detector fire, point `fontFamily` at a font that is not installed and delete the `preview.ts` imports: `fontAvailable` flips to `false` with a warning naming the family. That matters because a named font that didn't load is recorded as the family the code *asked for*, not the fallback that rendered — without this check, a project would score full marks on a typeface the screenshots would show is different.
+  To see the substitution detector fire, point `fontFamily` at a font that is not installed and delete the `preview.ts` imports: `fontAvailable` flips to `false` with a warning naming the family. That matters because a named font that didn't load is recorded as the family the code *asked for*, not the fallback that rendered: without this check, a project would score full marks on a typeface the screenshots would show is different.
 
 Run it twice and diff `styles.json`: byte-identical. The timestamp lives in `meta.json` beside it, so the measurements stay diffable in review.
 

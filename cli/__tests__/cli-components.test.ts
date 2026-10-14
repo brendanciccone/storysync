@@ -300,7 +300,7 @@ test("diff CLI: when Storybook can't be listed, --components still narrows Figma
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /Failed to list Storybook components/);
   assert.match(r.out, /"docs-list" failed: Storybook index could not be built/);
-  assert.match(r.out, /Storybook listing failed — component results are partial/);
+  assert.match(r.out, /Storybook listing failed, so the component results are partial/);
   assert.doesNotMatch(r.out, /matched no component/);
   assert.doesNotMatch(r.out, /Card|Badge|No differences found|Components in sync/);
 
@@ -467,7 +467,7 @@ test("diff CLI: a Figma component too big for one use_figma response fails the r
   const r = await diffAgainst(standIn);
   assert.match(r.out, /Failed to read Figma components/);
   assert.match(r.out, /Failed to read page "Icons" of the Figma file: .*Component "Icon" on page "Icons" comes to \d+ bytes as use_figma returns it, more than the 17000 one call can carry under its 20kb response limit/);
-  assert.match(r.out, /Figma read failed — diff results above are partial/);
+  assert.match(r.out, /Figma read failed, so the diff results above are partial/);
   assert.doesNotMatch(r.out, /not in Figma|not in code|No differences found|Components in sync/);
 
   const strict = await diffAgainst(standIn, "--strict", "--json");
@@ -496,7 +496,7 @@ test("diff CLI: a component code has but couldn't map is reported, never as not 
   assert.equal(text.status, 0, text.out);
   // Each failure is named by its title, which says which Button it is.
   assert.match(text.out, /Skipped 1 component\(s\) due to mapping errors:\n {2}Forms\/Button: Error: Storybook MCP tool "docs-show" failed/);
-  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\) — component results are partial: Forms\/Button was not compared/);
+  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\), so the component results are partial: Forms\/Button was not compared/);
   assert.doesNotMatch(text.out, /Button not in code|No differences found/);
   assert.match(text.out, /- Badge not in code/);
   const json = await diffAgainst(withButton, "--json");

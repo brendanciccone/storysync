@@ -838,7 +838,7 @@ program
         // anything in Figma.
         const readbackIssues = result.readbackIssues ?? [];
         for (const issue of readbackIssues) {
-          console.log(`  ${chalk.red("!")} ${issue.component} ${chalk.dim(issue.slug)} readback entry ${readbackIssueReason(issue, snapAge)} — nothing in it was scored`);
+          console.log(`  ${chalk.red("!")} ${issue.component} ${chalk.dim(issue.slug)} readback entry ${readbackIssueReason(issue, snapAge)}; nothing in it was scored`);
         }
         if (readbackIssues.length > 0) {
           console.log(chalk.dim(plan
@@ -856,7 +856,7 @@ program
             continue;
           }
           if (variant.status === "unscored") {
-            console.log(`  ${chalk.red("!")} ${variant.component} ${chalk.dim(variant.slug)} reported no comparable properties — nothing was scored`);
+            console.log(`  ${chalk.red("!")} ${variant.component} ${chalk.dim(variant.slug)} reported no comparable properties, so nothing was scored`);
             continue;
           }
           console.log(`  ${chalk.red("~")} ${variant.component} ${chalk.dim(variant.slug)}`);
@@ -909,13 +909,13 @@ program
             console.log(chalk.dim(`      ${v.component} ${v.slug} [${v.source}]`));
           }
           for (const u of result.unmeasuredInFigma) {
-            console.log(chalk.dim(`      ${u.component} ${u.slug} [unmeasured — written to Figma but never scored]`));
+            console.log(chalk.dim(`      ${u.component} ${u.slug} [unmeasured: written to Figma but never scored]`));
           }
           for (const u of result.unreadInFigma ?? []) {
-            for (const name of u.unbuilt) console.log(chalk.dim(`      ${u.component} ${name} [not built by storysync — in Figma's set but never scored]`));
+            for (const name of u.unbuilt) console.log(chalk.dim(`      ${u.component} ${name} [not built by storysync: in Figma's set but never scored]`));
             if (u.uncovered > 0) {
               const one = u.uncovered === 1;
-              console.log(chalk.dim(`      ${u.component}: ${u.uncovered} ${one ? "variant carries a slug" : "variants carry slugs"} no read covered [built by an earlier push for ${one ? "a variant" : "variants"} snap no longer measures — never scored]`));
+              console.log(chalk.dim(`      ${u.component}: ${u.uncovered} ${one ? "variant carries a slug" : "variants carry slugs"} no read covered [built by an earlier push for ${one ? "a variant" : "variants"} snap no longer measures, never scored]`));
             }
           }
         }
@@ -946,7 +946,7 @@ program
         if (age?.known) {
           const line = `  Measured ${formatAge(age.ageMs)} ago${age.storybookUrl ? ` from ${age.storybookUrl}` : ""}`;
           if (age.stale) {
-            console.log(chalk.yellow(`${line} — re-run \`storysync snap\` if the code has changed since.`));
+            console.log(chalk.yellow(`${line}. Run \`storysync snap\` again if the code has changed since.`));
           } else {
             console.log(chalk.dim(line));
           }
@@ -1669,15 +1669,15 @@ program
         }));
       } else {
         if (figmaReadFailed) {
-          console.log(chalk.yellow("\nFigma read failed — diff results above are partial. See errors for details."));
+          console.log(chalk.yellow("\nFigma read failed, so the diff results above are partial. See errors for details."));
         }
         if (storybookReadFailed) {
-          console.log(chalk.yellow("\nStorybook listing failed — component results are partial: nothing in code was read to match Figma against. See errors for details."));
+          console.log(chalk.yellow("\nStorybook listing failed, so the component results are partial: nothing in code was read to match Figma against. See errors for details."));
         }
         const unseenNote = storybook ? describeUnseenArgTypes(snap ? shownPath(snap.path) : null, unseen, mapped) : null;
         if (unseenNote) console.log(chalk.dim(`\n${unseenNote}`));
         if (mappingFailures.length) {
-          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s) — component results are partial: ${mappingFailures.map((f) => f.title ?? f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
+          console.log(chalk.yellow(`\nMapping failed for ${mappingFailures.length} Storybook component(s), so the component results are partial: ${mappingFailures.map((f) => f.title ?? f.name).join(", ")} ${mappingFailures.length === 1 ? "was" : "were"} not compared. See errors for details.`));
         }
 
         const mismatched = tokenDiffs.filter((t) => t.status !== "match");

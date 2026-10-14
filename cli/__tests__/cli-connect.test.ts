@@ -358,7 +358,7 @@ test("diff CLI: a use_figma that never answers fails the Figma read within --req
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /Failed to read Figma variables/);
     assert.match(r.out, /Figma MCP didn't answer use_figma within 1\.5s; raise --request-timeout if it needs longer/);
-    assert.match(r.out, /Figma read failed — diff results above are partial/);
+    assert.match(r.out, /Figma read failed, so the diff results above are partial/);
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

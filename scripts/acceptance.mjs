@@ -3248,7 +3248,7 @@ async function main() {
     // Its markup is the same on every variant too, so the story is to blame,
     // not props that change only what snap doesn't measure.
     const warnings = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").warnings;
-    assert(warnings.some((w) => /^all 3 rendered variants measured identically and rendered the same markup — the story may not pass args through/.test(w)),
+    assert(warnings.some((w) => /^all 3 rendered variants measured identically and rendered the same markup. The story may not pass args through/.test(w)),
       `Frozen warned ${JSON.stringify(warnings)}`);
     // Left out as measuring the same, so Figma gets the one look the story draws.
     const excluded = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").excludedProps;

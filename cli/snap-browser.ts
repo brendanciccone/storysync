@@ -168,7 +168,7 @@ export async function resolveAndLaunch(opts: { headless?: boolean } = {}): Promi
       "  - install Google Chrome or Microsoft Edge\n" +
       `  - download a browser: ${browserInstallCommand()}\n` +
       "  - point storysync at an existing binary: STORYSYNC_BROWSER_PATH=/path/to/chrome\n" +
-      "\nNote: use the full `playwright` package to download browsers — storysync\n" +
+      "\nNote: use the full `playwright` package to download browsers. storysync\n" +
       "depends on playwright-core, which cannot download them itself.",
   );
 }

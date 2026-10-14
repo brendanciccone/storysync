@@ -691,7 +691,7 @@ test("every push instruction builds a border's style as a dash pattern and reads
     }
     const cursor = readFileSync(join(project, ".cursor", "rules", "storysync.mdc"), "utf8");
     assert.match(cursor, /`borderUniform` → stroke[^\n]*`style` as the stroke's `dashPattern`, for a width `w`: none for `solid`, `\[3w, 3w\]` for `dashed`, `\[w, w\]` for `dotted`/, "the Cursor rule builds every border as a solid stroke");
-    assert.match(cursor, /^ *- `borderUniform` — [^\n]*`style` is the border style the stroke's `dashPattern` was built from/m, "the Cursor rule's readback writes every border's style as solid");
+    assert.match(cursor, /^ *- `borderUniform`: [^\n]*`style` is the border style the stroke's `dashPattern` was built from/m, "the Cursor rule's readback writes every border's style as solid");
     assert.doesNotMatch(cursor, /style: "solid"/, "the Cursor rule's readback writes every border's style as solid");
   } finally {
     rmSync(project, { recursive: true, force: true });

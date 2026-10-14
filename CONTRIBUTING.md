@@ -14,7 +14,7 @@ pnpm test
 
 ### Supply-chain protection
 
-This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time — defense against npm supply-chain attacks like Shai-Hulud.
+This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time: defense against npm supply-chain attacks like Shai-Hulud.
 
 Install it once with the command in [its README's Installation section](https://github.com/AikidoSec/safe-chain#installation). It downloads the install script from a pinned release and checks its SHA-256 before running it. The version and checksum change with every release, so copy the command from there. Then restart your terminal, and `pnpm safe-chain-verify` should print `OK: Safe-chain works!`.
 
@@ -22,11 +22,11 @@ No tokens or config required. Free and open source.
 
 ## Scripts
 
-- `pnpm build` — compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
-- `pnpm dev` — incremental compile in watch mode
-- `pnpm lint` — type-check without emitting
-- `pnpm test` — build and run the node test runner suite
-- `pnpm acceptance` — end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm storybook`). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
+- `pnpm build`: compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
+- `pnpm dev`: incremental compile in watch mode
+- `pnpm lint`: type-check without emitting
+- `pnpm test`: build and run the node test runner suite
+- `pnpm acceptance`: end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm install && pnpm storybook`; the example has its own lockfile and is not a workspace package). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
 
 ## Submitting changes
 

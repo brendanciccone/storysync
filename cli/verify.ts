@@ -1939,7 +1939,7 @@ export function readSnapAge(
   // Clamping a future date to "0s ago" would report a skewed clock as
   // maximally fresh, which is the wrong way to be wrong.
   if (measured > now + MAX_CLOCK_SKEW_MS) {
-    return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}) — check the clock` };
+    return { known: false, reason: `measuredAt is in the future (${meta.measuredAt}): check the clock` };
   }
 
   // Only times that are times: a component with none is held to measuredAt.
@@ -1955,7 +1955,7 @@ export function readSnapAge(
     const theirs = only.map((key) => times[key] ?? meta.measuredAt as string);
     at = theirs.reduce((min, t) => (Date.parse(t) < Date.parse(min) ? t : min));
     if (Date.parse(at) > now + MAX_CLOCK_SKEW_MS) {
-      return { known: false, reason: `a component's measuredAt is in the future (${at}) — check the clock` };
+      return { known: false, reason: `a component's measuredAt is in the future (${at}): check the clock` };
     }
   }
   const ageMs = Math.max(0, now - Date.parse(at));

@@ -542,7 +542,7 @@ export function detectIdenticalVariants(variants: SnapVariant[]): string | null 
   const allEmpty = measured.every((v) => (!v.delta || Object.keys(v.delta).length === 0) && !treeChanged(v));
   if (!allEmpty) return null;
   return (
-    `all ${measured.length} rendered variants measured identically — the story may not pass args ` +
+    `all ${measured.length} rendered variants measured identically. The story may not pass args ` +
     `through to the component (hardcoded props, a custom render function, or a decorator). ` +
     `Measured values may describe only the default state.`
   );
@@ -581,7 +581,7 @@ export function describeIdenticalVariants(
   const measured = variants.filter((v) => v.status === "ok").length;
   const known = markups.length === measured && markups.every((m) => m !== null);
   if (known && new Set(markups).size === 1) {
-    return identical.replace(" — the story may not", " and rendered the same markup — the story may not");
+    return identical.replace(" identically. The story may not", " identically and rendered the same markup. The story may not");
   }
   if (!names.length) return identical;
   const list = names.map((name) => `\`${name}\``).join(", ");
@@ -1422,8 +1422,8 @@ export function detectFontSubstitution(component: SnapComponent): string | null 
   return (
     `the browser could not render ${named}, so the measurements describe a ` +
     `substituted typeface. Load the font in Storybook (a preview-head.html <link> is enough), ` +
-    `or expect the Figma text to differ. Figma also needs the font available to its editor — ` +
-    `storysync cannot install fonts into Figma.`
+    `or expect the Figma text to differ. Figma also needs the font available to its editor, ` +
+    `and storysync cannot install fonts into Figma.`
   );
 }
 
@@ -1741,7 +1741,7 @@ function writeSnap(
     for (const component of sharing) {
       component.warnings.push(
         `${sharing.length} components share the key "${key}", which identifies a component in ` +
-          `the readback and during verification — their variants will collide and only one will ` +
+          `the readback and during verification, so their variants will collide and only one will ` +
           `be scored. ${fix}`,
       );
     }
