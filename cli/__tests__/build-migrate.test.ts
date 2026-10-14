@@ -386,6 +386,39 @@ test("build: a set settle moves goes clear of a designer's layers too, which nev
   assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 1]);
 });
 
+test("build: a set moved past its section's bottom grows the section, which then moves what a push built below it and counts what it may not move", async () => {
+  // The review's S and T: Button in section S, a set below it moved past
+  // S's bottom, where Figma grows no section (probe 10), onto T.
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const coded = await codeFor(loadTreeFixture("example-button"));
+  const [first] = await push(mock, coded);
+  const button = sets(first)[0];
+  // Copied: the handle is live, and Button's x and y become S's.
+  const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+  const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+  const ids = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+    const s = figma.createSection(); page.appendChild(s); s.name = "S"; s.x = ${b.x}; s.y = ${b.y}; s.resizeWithoutConstraints(${b.width + 100}, ${b.height + 160});
+    for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+    s.appendChild(set); set.x = 50; set.y = 50;
+    const r = figma.createComponent(); s.appendChild(r); r.name = "R"; r.resize(${b.width}, 30); r.x = 50; r.y = 60;
+    r.setSharedPluginData("storysync", "id", "stand-in-r");
+    const t = figma.createFrame(); page.appendChild(t); t.name = "T"; t.resize(60, 40); t.x = ${b.x}; t.y = ${b.y + b.height + 180};
+    const q = figma.createComponent(); page.appendChild(q); q.name = "Q"; q.resize(60, 30); q.x = ${b.x + 100}; q.y = ${b.y + b.height + 180};
+    q.setSharedPluginData("storysync", "id", "stand-in-q");
+    return { s: s.id, r: r.id, t: t.id, q: q.id };`)).value as Record<string, string>;
+  const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+  const [then] = await push(mock, coded);
+  const [built] = sets(then);
+  const [s, r, t, q] = [at(ids.s), at(ids.r), at(ids.t), at(ids.q)];
+  // R below Button, inside S, which grew to hold it, 100 to spare, and stayed where it was.
+  assert.equal(r.y, 50 + b.height + 100);
+  assert.deepEqual([s.x, s.y, s.width, s.height], [b.x, b.y, b.width + 100, r.y + r.height + 100]);
+  // Q, a set a push built, moved below the grown S; T, a designer's frame, stayed, counted on Button.
+  assert.deepEqual([t.x, t.y], [b.x, b.y + b.height + 180]);
+  assert.equal(q.y, s.y + s.height + 100);
+  assert.deepEqual([built.moved, built.overlaps], [[ids.r, ids.q], 1]);
+});
+
 test("build: of two sets built at one height that lie on each other, the one that grew stays and the other moves", async () => {
   const button = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
   const other = copy(loadTreeFixture("switch").components[0]);

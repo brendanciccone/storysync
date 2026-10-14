@@ -45,7 +45,8 @@ import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
  *   No trim made that room: the lever is the stored template, which only
  *   the first call carries. With the template at its budget, the first
  *   call keeps 19,100 for DATA, over 2.5 times the fourth live push's
- *   largest variant, 7,454 beside the template; at its size now, 21,000.
+ *   largest variant, 7,454 beside the template; at its size now, 20,500,
+ *   since a set moved past a section's bottom grows the section.
  * - A variant too big for a call's room is sent in parts, each built by a
  *   call of its own (figma-code.ts), so no variant needs more room than
  *   that, and the first call's room is a matter of how many calls a plan
@@ -83,7 +84,7 @@ test("templates: the build's budget leaves a call room for its data, packed and 
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 19_000, "the first call keeps 19,000 for DATA");
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 2.5 * 7_454, "over 2.5 times the room the largest took");
   assert.ok(MAX_CALL_CHARS - loading >= 43_000, "a call after it keeps 43,000 for DATA");
-  assert.ok(MAX_CALL_CHARS - templateLiteral(loadTemplate("build")).length - storing >= 21_000, "the first call keeps 21,000 for DATA beside the template it stores");
+  assert.ok(MAX_CALL_CHARS - templateLiteral(loadTemplate("build")).length - storing >= 20_500, "the first call keeps 20,500 for DATA beside the template it stores");
   assert.ok(BUDGETS.readback + storing + 1_000 < MAX_CALL_CHARS, "a read call is its template, the guard and a short header");
 });
 

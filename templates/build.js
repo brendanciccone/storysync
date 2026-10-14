@@ -783,7 +783,14 @@ const hit = (a, b, y = b.y) => a.x < b.x + b.width && b.x < a.x + a.width && a.y
 // named in.
 const moves = [];
 const settle = (built) => {
-  for (const parent of new Set(built.map(([n]) => n.parent))) {
+  // A copy, which takes the sections that grow.
+  built = [...built];
+  // Each page and section the sets are in, a section before what holds
+  // it, so one a set grew past is settled among its siblings in turn.
+  const up = new Set();
+  for (const [n] of built) for (let p = n.parent; p.parent; p = p.parent) up.add(p);
+  const depth = (n) => (n.parent ? depth(n.parent) + 1 : 0);
+  for (const parent of [...up].sort((a, b) => depth(b) - depth(a))) {
     const ours = (m) => /^COMPONENT/.test(m.type) && idOf(m);
     const all = parent.children;
     const sets = all.filter(ours);
@@ -794,12 +801,13 @@ const settle = (built) => {
       const [n, out] = [...due].reduce((a, b) => (b[0].y < a[0].y ? b : a));
       due.delete(n);
       // Named in the result of a set it lies on that has moved or grew.
-      const onto = sets.find((m) => done.has(m) && hit(m, n));
+      const onto = all.find((m) => done.has(m) && hit(m, n));
       const by = onto ? done.get(onto) : out;
       let y = n.y;
-      // What it lies on at y: a set done, or not due and starting above y,
-      // and, once it moves, a designer's layer.
-      for (let on; (on = all.filter((m) => m !== n && hit(m, n, y) && (ours(m) ? !due.has(m) && (done.has(m) || m.y < y) : y !== n.y))).length; ) {
+      // What it lies on at y: a set or grown section done, or a set not due
+      // starting above y, and, once it moves, a designer's layer.
+      // A section grown below never moves.
+      for (let on; ours(n) && (on = all.filter((m) => m !== n && hit(m, n, y) && (done.has(m) || (ours(m) ? !due.has(m) && m.y < y : y !== n.y)))).length; ) {
         y = Math.max(...on.map((m) => m.y + m.height)) + 100;
       }
       if (y !== n.y) {
@@ -810,6 +818,21 @@ const settle = (built) => {
       done.set(n, by);
       for (const m of sets) if (!done.has(m) && !due.has(m) && hit(m, n)) due.set(m, by);
     }
+    // Figma grows no section a child moves past (probe 10): one a set
+    // built or moved here now runs past grows to hold it, 100 to spare,
+    // and is settled among its own siblings as a set that grew is, in the
+    // result of the first set that ran past it.
+    let by;
+    if (parent.type === 'SECTION') {
+      for (const [n, o] of done) {
+        const [r, b, w, h] = [n.x + n.width, n.y + n.height, parent.width, parent.height];
+        if (r > w || b > h) {
+          parent.resizeWithoutConstraints(r > w ? r + 100 : w, b > h ? b + 100 : h);
+          by = by || o;
+        }
+      }
+    }
+    if (by) built.push([parent, by, 1]), moves.push([parent, by]);
   }
 };
 const built = [];

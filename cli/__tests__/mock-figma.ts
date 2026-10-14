@@ -783,11 +783,11 @@ export function imageSize(bytes: Uint8Array): { width: number; height: number } 
 // coordinates of its own: its children's x and y, and its own, are in the
 // frame around it, and its box is what its children cover. It has no fills
 // or strokes; it has effects, as Figma's groups do, which the build reads.
-type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GROUP" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON" | "INSTANCE";
+type Kind = "DOCUMENT" | "PAGE" | "SECTION" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GROUP" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON" | "INSTANCE";
 
-const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP"]);
+const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "SECTION", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP"]);
 const FRAMES = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET"]);
-const SCENE = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "GROUP", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON", "INSTANCE"]);
+const SCENE = new Set<Kind>(["SECTION", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON", "INSTANCE"]);
 /** What a variable mode can be set on. */
 const MODED = new Set<Kind>([...FRAMES, "PAGE"]);
 const GEOMETRY = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
@@ -2226,6 +2226,8 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
       call.created++;
       return doc.addPage(`Page ${doc.pages.length + 1}`).handle;
     },
+    // A section, which, as probe 10 saw, grows for no child moved past it.
+    createSection: () => create("SECTION", "Section").handle,
     createFrame: () => create("FRAME", "Frame").handle,
     createComponent: () => create("COMPONENT", "Component 1").handle,
     createText: () => create("TEXT", "").handle,
