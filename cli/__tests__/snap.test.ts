@@ -1713,8 +1713,8 @@ function treeBrowser(opts: {
   scheme?: (globals: string | null, storyId: string) => SchemeReading;
   /** The loads, counted from 1, that time out. */
   loadsTimeOut?: number[];
-  /** Storybook's globals, as themeGlobalsInPage reads them. */
-  themeGlobals?: ThemeGlobals;
+  /** Storybook's globals, as themeGlobalsInPage reads them, or as it would given the URL's `globals`. */
+  themeGlobals?: ThemeGlobals | ((globals: string | null) => ThemeGlobals);
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
@@ -1759,7 +1759,7 @@ function treeBrowser(opts: {
     $: async () => target,
     evaluate: async (fn: unknown, arg?: unknown) => {
       if (fn === storiesOwnInPage && readFails-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
-      if (fn === themeGlobalsInPage) return opts.themeGlobals ?? null;
+      if (fn === themeGlobalsInPage) return (typeof opts.themeGlobals === "function" ? opts.themeGlobals(globals) : opts.themeGlobals) ?? null;
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage || fn === storiesOwnInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
@@ -2882,6 +2882,27 @@ test("runSnap: a story that renders dark whatever snap sets is recorded as dark,
     assert.equal(component.globals, undefined);
     const warning = component.warnings.find((w) => /dark color scheme/.test(w));
     assert.match(warning ?? "", /^It was measured in its dark color scheme \(html\.dark\), as Storybook rendered it dark, and still did with globals=theme:light/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a page that marks no scheme, where addon-themes' default theme is dark, is measured light with the globals", async () => {
+  const dir = tempDir();
+  try {
+    const { launch, loads } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture,
+      // A JSX provider's theme: nothing on the page says which.
+      scheme: () => ({ scheme: "light" }),
+      themeGlobals: (globals): ThemeGlobals => (globals === "theme:light"
+        ? { globals: { theme: "light" }, allowed: ["theme"], options: {} }
+        : { globals: { theme: "dark" }, allowed: ["theme"], options: { theme: ["light", "dark"] }, defaulted: ["theme"] }),
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const [component] = result.components;
+    assert.equal(component.scheme, "light");
+    assert.deepEqual(component.globals, { theme: "light" });
+    assert.deepEqual(loads.map((l) => l.globals ?? ""), ["", "theme:light"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

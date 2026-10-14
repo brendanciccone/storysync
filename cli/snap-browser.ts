@@ -32,7 +32,7 @@ import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
 import type { TreeNode } from "./tree-types.js";
 import { STAND_IN_PREFIX, standInFaces, standInStack } from "./fonts.js";
 import type { StandIn } from "./fonts.js";
-import { colorSchemeInPage, themeGlobalsInPage } from "./snap-scheme.js";
+import { colorSchemeInPage, schemeOfGlobals, themeGlobalsInPage } from "./snap-scheme.js";
 import type { SchemeReading, ThemeGlobals } from "./snap-scheme.js";
 
 // --- Browser resolution -----------------------------------------------------
@@ -473,9 +473,13 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const fonts = { root: await probeFontStack(own), text: holder ? await probeFontStack(holder) : null };
     const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
     const boundingBox = pair ? pair.box : await target.boundingBox();
-    // Which scheme its colors are: a Storybook may render its dark theme by default.
-    const scheme = await own.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
-    const themeGlobals = scheme?.scheme === "dark" ? (await page.evaluate(themeGlobalsInPage).catch(() => null)) ?? undefined : undefined;
+    // Which scheme its colors are: a Storybook may render its dark theme by
+    // default. As the page marks it, else as Storybook's globals say, which a
+    // theme provider that marks nothing on the page follows.
+    const marked = await own.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
+    const globalsRead = (await page.evaluate(themeGlobalsInPage).catch(() => null)) ?? undefined;
+    const scheme = marked?.by ? marked : schemeOfGlobals(globalsRead) ?? marked;
+    const themeGlobals = scheme?.scheme === "dark" ? globalsRead : undefined;
 
     // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {

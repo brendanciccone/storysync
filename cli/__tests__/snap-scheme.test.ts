@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { colorSchemeInPage, describeDarkScheme, globalsParam, lightGlobals } from "../snap-scheme.js";
+import { colorSchemeInPage, describeDarkScheme, globalsParam, lightGlobals, schemeOfGlobals, themeGlobalsInPage } from "../snap-scheme.js";
 import { inFakePage } from "./dom-standin.js";
 import type { FakeElementSpec } from "./dom-standin.js";
 
@@ -53,4 +53,38 @@ test("globalsParam and describeDarkScheme", () => {
   const warning = describeDarkScheme("html.dark", "its preview has no theme global", { dark: 2, measured: 4 });
   assert.match(warning, /^It was measured in its dark color scheme \(html\.dark\) \(2 of 4 measured variants\), as its preview has no theme global/);
   assert.match(warning, /`scheme: "dark"`/);
+});
+
+test("themeGlobalsInPage: addon-themes' empty theme global is its default, and the backgrounds global's value is read as a URL sets it", () => {
+  const held = globalThis as { window?: unknown };
+  held.window = {
+    __STORYBOOK_PREVIEW__: {
+      storyStoreValue: {
+        userGlobals: { get: () => ({ theme: "", backgrounds: { value: "dark", grid: false } }), allowedGlobalNames: new Set(["theme", "backgrounds"]) },
+        projectAnnotations: { globalTypes: {} },
+      },
+    },
+    __STORYBOOK_ADDONS_CHANNEL__: {
+      last: (event: string) => (event === "storybook/addon-themes/REGISTER_THEMES" ? [{ defaultTheme: "dark", themes: ["light", "dark"] }] : undefined),
+    },
+  };
+  try {
+    const read = themeGlobalsInPage();
+    assert.deepEqual(read, {
+      globals: { theme: "dark", backgrounds: { $type: "object" }, "backgrounds.value": "dark" },
+      allowed: ["theme", "backgrounds", "backgrounds.value"],
+      options: { theme: ["light", "dark"] },
+      defaulted: ["theme"],
+    });
+    assert.deepEqual(schemeOfGlobals(read), { scheme: "dark", by: "addon-themes' default theme, dark" });
+    assert.deepEqual(lightGlobals(read!), { theme: "light", "backgrounds.value": "light" });
+  } finally {
+    delete held.window;
+  }
+});
+
+test("schemeOfGlobals: a theme, scheme or mode global naming dark is dark; others say nothing", () => {
+  assert.deepEqual(schemeOfGlobals({ globals: { mode: "dark" }, allowed: ["mode"], options: {} }), { scheme: "dark", by: "globals mode:dark" });
+  assert.equal(schemeOfGlobals({ globals: { theme: "light", locale: "dark" }, allowed: [], options: {} }), null);
+  assert.equal(schemeOfGlobals(null), null);
 });

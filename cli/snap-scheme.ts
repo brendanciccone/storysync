@@ -4,9 +4,9 @@
 // Token values are matched by their light theme's, so a component measured
 // in a project's dark theme would bind to whichever token's light value its
 // dark colors happen to equal. A Storybook that renders dark by default, as
-// coder's does through @storybook/addon-themes, is asked for light through
-// its globals, in each story's URL; where that can't be done, the component
-// records `scheme: "dark"` and snap says so.
+// a theme decorator reading @storybook/addon-themes' `theme` global may, is
+// asked for light through its globals, in each story's URL; where that
+// can't be done, the component records `scheme: "dark"` and snap says so.
 
 /** The scheme a component was measured in, and what on the page said so. */
 export interface SchemeReading {
@@ -52,12 +52,39 @@ export function colorSchemeInPage(el: Element): SchemeReading {
 
 /** Storybook's globals, as themeGlobalsInPage reads them, for lightGlobals. */
 export interface ThemeGlobals {
-  /** Each global's value, a string, or a value of another type by its type. */
+  /**
+   * Each global's value, a string, or a value of another type by its type;
+   * `backgrounds.value` for the backgrounds global's, as a URL sets it.
+   */
   globals: Record<string, string | { $type: string }>;
   /** The globals a story's URL may set: those the project declares. */
   allowed: string[];
   /** The values a toolbar offers for each global that has a toolbar. */
   options: Record<string, string[]>;
+  /**
+   * Globals whose value is addon-themes' default theme, as the global is
+   * empty and its decorator renders that: a JSX provider's theme marks
+   * nothing on the page to read instead.
+   */
+  defaulted?: string[];
+}
+
+/**
+ * The scheme Storybook's globals say a story renders in, where the page
+ * marks none (colorSchemeInPage's `by` absent): dark where a theme,
+ * scheme, mode or appearance global, or the backgrounds global, names
+ * dark, as a theme provider that marks nothing may follow. Null where none
+ * does.
+ */
+export function schemeOfGlobals(read: ThemeGlobals | null | undefined): SchemeReading | null {
+  if (!read || typeof read.globals !== "object" || read.globals === null) return null;
+  for (const [name, value] of Object.entries(read.globals)) {
+    if (typeof value !== "string" || !/dark/i.test(value)) continue;
+    if (!/theme|scheme|mode|appearance/i.test(name) && name !== "backgrounds.value") continue;
+    const defaulted = read.defaulted?.includes(name);
+    return { scheme: "dark", by: defaulted ? `addon-themes' default theme, ${value}` : `globals ${name}:${value}` };
+  }
+  return null;
 }
 
 /**
@@ -67,9 +94,11 @@ export interface ThemeGlobals {
 export function themeGlobalsInPage(): ThemeGlobals | null {
   try {
     interface GlobalsInPage { get?(): Record<string, unknown>; globals?: Record<string, unknown>; allowedGlobalNames?: Set<string> }
-    const preview = (window as unknown as {
+    const page = window as unknown as {
       __STORYBOOK_PREVIEW__?: { storyStoreValue?: { userGlobals?: GlobalsInPage; globals?: GlobalsInPage; projectAnnotations?: { globalTypes?: Record<string, unknown> } } };
-    }).__STORYBOOK_PREVIEW__;
+      __STORYBOOK_ADDONS_CHANNEL__?: { last?(event: string): unknown };
+    };
+    const preview = page.__STORYBOOK_PREVIEW__;
     const store = preview?.storyStoreValue;
     // Storybook 8.2 and later keep the user's globals apart from a story's own; 7 has one store.
     const held = store?.userGlobals ?? store?.globals;
@@ -78,6 +107,12 @@ export function themeGlobalsInPage(): ThemeGlobals | null {
     const globals: ThemeGlobals["globals"] = {};
     for (const [name, value] of Object.entries(values)) globals[name] = typeof value === "string" ? value : { $type: value === null ? "null" : typeof value };
     const allowed = held.allowedGlobalNames ? Array.from(held.allowedGlobalNames) : Object.keys(values);
+    // The backgrounds global's value, `{ value: "dark" }` from Storybook 8.3, as a URL sets it.
+    const backgrounds = (values.backgrounds as { value?: unknown } | null | undefined)?.value;
+    if (typeof backgrounds === "string") {
+      globals["backgrounds.value"] = backgrounds;
+      if (allowed.includes("backgrounds")) allowed.push("backgrounds.value");
+    }
     const options: Record<string, string[]> = {};
     for (const [name, type] of Object.entries(store.projectAnnotations?.globalTypes ?? {})) {
       const items = (type as { toolbar?: { items?: unknown } } | null)?.toolbar?.items;
@@ -85,7 +120,17 @@ export function themeGlobalsInPage(): ThemeGlobals | null {
       const values = items.map((item) => (typeof item === "string" ? item : (item as { value?: unknown } | null)?.value)).filter((v): v is string => typeof v === "string");
       if (values.length) options[name] = values;
     }
-    return { globals, allowed, options };
+    // addon-themes' `theme`, empty, is the default its decorator was given,
+    // which it sends on the channel with its themes, the toolbar's values.
+    // Written out, as this runs in the page, where nothing around it is.
+    const registered = (page.__STORYBOOK_ADDONS_CHANNEL__?.last?.("storybook/addon-themes/REGISTER_THEMES") as unknown[] | undefined)?.[0] as { defaultTheme?: unknown; themes?: unknown } | undefined;
+    const defaulted: string[] = [];
+    if (registered && typeof registered.defaultTheme === "string" && registered.defaultTheme && !values.theme) {
+      globals.theme = registered.defaultTheme;
+      defaulted.push("theme");
+      if (Array.isArray(registered.themes) && !options.theme) options.theme = registered.themes.filter((t): t is string => typeof t === "string");
+    }
+    return { globals, allowed, options, ...(defaulted.length ? { defaulted } : {}) };
   } catch {
     return null;
   }
