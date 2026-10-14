@@ -92,6 +92,27 @@ export const PLATFORM_FACES: ReadonlySet<string> = new Set([
   "georgia", "times new roman", "times", "verdana", "tahoma", "trebuchet ms",
 ]);
 
+/**
+ * The name Figma has a family under, where the CSS name differs. Fontsource's
+ * variable packages name the family `<Family> Variable`, as
+ * @fontsource-variable/geist does `Geist Variable`, and Figma names it
+ * `<Family>`: of its 1938 families none has `Variable` in its name, it has
+ * `Geist` and `Inter`, and it refuses `Geist Variable` and `Inter Variable`
+ * (probe 8e, fixtures/figma-probe-8e-fonts.json). So the build loads this
+ * name first, and verify takes it for the family snap measured.
+ */
+export function figmaFamily(family: string): string {
+  const m = /^(.+?)\s+variable$/i.exec(family.trim());
+  return m ? m[1] : family;
+}
+
+/** Whether a family Figma set a text in is the one measured, by its CSS name or Figma's for it. */
+export function sameFamily(measured: string, figma: unknown): boolean {
+  if (typeof figma !== "string") return false;
+  const f = figma.toLowerCase();
+  return measured.toLowerCase() === f || figmaFamily(measured).toLowerCase() === f;
+}
+
 /** Whether Figma would set text in this family in a stand-in: a CSS keyword, or a platform face it lacks. */
 export function needsStandIn(family: string): boolean {
   return isFontKeyword(family) || PLATFORM_FACES.has(family.trim().toLowerCase());

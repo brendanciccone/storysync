@@ -151,3 +151,16 @@ test("the stand-ins are the font versions Figma has, and the mock's metrics were
     assert.equal(installed.version, version, `${name}: run scripts/figma-font-metrics.mjs after updating it`);
   }
 });
+
+test("figmaFamily: fontsource's <Family> Variable is Figma's <Family>, and sameFamily takes either name", async () => {
+  const { figmaFamily, sameFamily } = await import("../fonts.js");
+  assert.equal(figmaFamily("Geist Variable"), "Geist");
+  assert.equal(figmaFamily("Inter Variable"), "Inter");
+  assert.equal(figmaFamily("Plus Jakarta Sans Variable"), "Plus Jakarta Sans");
+  assert.equal(figmaFamily("Geist"), "Geist");
+  assert.equal(figmaFamily("Variable"), "Variable");
+  assert.ok(sameFamily("Geist Variable", "Geist"));
+  assert.ok(sameFamily("Geist Variable", "geist variable"));
+  assert.ok(!sameFamily("Geist Variable", "Inter"));
+  assert.ok(!sameFamily("Geist", "Geist Mono"));
+});

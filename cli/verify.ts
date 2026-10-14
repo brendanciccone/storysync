@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { canonicalJson, fnv1a32 } from "./checksum.js";
+import { sameFamily } from "./fonts.js";
 import { applyDelta, isFontKeyword } from "./snap-normalize.js";
 import { expandTree, rootWithStyles, treeDigest } from "./tree-types.js";
 import type { ComponentTree, TreeDelta, TreeNode } from "./tree-types.js";
@@ -735,7 +736,7 @@ export function propertyMatches(
     case "fontWeight":
       return Number(measured ?? 0) === Number(figma ?? 0);
     case "fontFamily":
-      return String(measured ?? "").toLowerCase() === String(figma ?? "").toLowerCase();
+      return sameFamily(String(measured ?? ""), String(figma ?? ""));
     case "gap":
       // "No gap" and "a gap of zero" render identically. A block element
       // measures `null` because CSS gap does not apply to it, while Figma must

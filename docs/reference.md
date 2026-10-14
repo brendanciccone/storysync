@@ -429,7 +429,7 @@ snap warns when all of a component's variants measure the same, or all of one pr
 
 snap records the family the browser drew with. A named font that failed to load is recorded as asked, with `fontAvailable: false` and a warning. Another platform's font listed after a system keyword, like `SFMono-Regular`, gets no warning.
 
-Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI. So it sets that text in a stand-in: Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it:
+Figma names a family fontsource names `<Family> Variable` without the suffix, so the build sets `Geist Variable` in Figma's `Geist`, and `verify` takes the one for the other. Figma has no font for a CSS keyword like `system-ui`, or for a platform's own font like Menlo or Segoe UI. So it sets that text in a stand-in: Inter, Roboto Mono for a monospace font, or Noto Serif for a serif. Those fonts are a few percent wider than a Mac's, enough to wrap a label in Figma that fit in the browser. So snap draws such text in the font Figma will use, from font files that come with Storysync, before it measures it:
 
 - Figma rounds each letter's width a little, so Storysync's copies of Inter, Roboto Mono and Noto Serif are rounded the same way. A label sets as wide in the browser as in Figma, to within a fraction of a pixel.
 - Its Inter has Inter's arrows, check marks and other symbols, so "Next →" isn't measured in another font.

@@ -14,7 +14,7 @@
 import { alphaByte, alphaVariableName } from "./figma-bind.js";
 import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
-import { standInFor } from "./fonts.js";
+import { figmaFamily, standInFor } from "./fonts.js";
 import type { Spike } from "./figma-spike.js";
 import { borderBuiltInside, borderPaintsNothing, builtTurn, insideStrokeDrawsBorder, textHugs, turnOf, unturnedBecause } from "./tree-types.js";
 import type { Box, PlanAlpha, Sides, TreeNode, TurnContext } from "./tree-types.js";
@@ -53,6 +53,8 @@ export interface FigmaText {
   f: string;
   /** The stand-in loadFont tries where Figma lacks `f` (fonts.ts), when it isn't Inter, the template's last resort. */
   a?: string;
+  /** Figma's name for `f`, where it differs, which loadFont tries first: `Geist` for fontsource's `Geist Variable` (fonts.ts figmaFamily). */
+  g?: string;
   w: number;
   i?: 1;
   z: number;
@@ -474,6 +476,8 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   // for a snap that drew the keyword's own face, what Figma sets it in.
   const alt = standInFor(tx.fs ?? tx.f);
   if (alt !== "Inter" && alt !== tx.f) out.a = alt;
+  const named = figmaFamily(tx.f);
+  if (named !== tx.f) out.g = named;
   // A label Figma's font sets wider than the browser's would wrap in its
   // measured width, or show an ellipsis the browser didn't: the build checks
   // each such one once laid out (templates/build.js, keepLines).

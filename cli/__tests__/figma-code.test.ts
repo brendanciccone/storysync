@@ -15,7 +15,7 @@ import { expandTree } from "../tree-types.js";
 import type { FigmaPlan, NoClassPaint, PlanCall, TreeDelta, TreeNode } from "../tree-types.js";
 import { verify } from "../verify.js";
 import { SHADCN_TOKENS, STUB_READBACK, codeFor, mockFor, runPlan } from "./figma-build-harness.js";
-import { loadTreeFixture, svgShapeBoxes, treeFixtureNames, withNoClass } from "./mock-figma.js";
+import { FONTS, loadTreeFixture, svgShapeBoxes, treeFixtureNames, withNoClass } from "./mock-figma.js";
 import type { TreeFixture } from "./mock-figma.js";
 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -467,6 +467,49 @@ test("figma code: an icon that keeps a <g>, which Figma imports as a GROUP, is b
   // Every element verified, the icon's shapes and paints found through the group.
   assert.deepEqual(result.variants[0].nodes ?? [], []);
   assert.deepEqual([result.elementFidelity, result.summary.elements?.verified, result.summary.elements?.measured], [1, 2, 2]);
+});
+
+/** Builds and reads every call of a plan in `mock`, saving each response where the plan says, as an agent does. */
+async function sendAll(coded: Awaited<ReturnType<typeof codeFor>>, mock: ReturnType<typeof mockFor>, kinds?: PlanCall["kind"][]): Promise<unknown[]> {
+  const values: unknown[] = [];
+  mkdirSync(join(coded.out, "results"), { recursive: true });
+  for (const call of coded.plan.calls) {
+    if (kinds && !kinds.includes(call.kind)) continue;
+    const run = await mock.run(coded.code(call));
+    assert.ok(run.ok, `${call.file}: ${run.text}`);
+    writeFileSync(join(coded.out, call.result), run.text);
+    values.push(run.value);
+  }
+  return values;
+}
+
+test("figma code: a text in fontsource's Geist Variable is set in Figma's Geist, no stand-in, and verify takes it for the family measured", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  // Probe 8e: Figma has Geist, and refuses Geist Variable.
+  const probe = JSON.parse(readFileSync(fileURLToPath(new URL("../../../cli/__tests__/fixtures/figma-probe-8e-fonts.json", import.meta.url)), "utf8")) as { geist: Record<string, string[]> };
+  const snap = copy(loadTreeFixture("example-button"));
+  let renamed = 0;
+  const rename = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(rename);
+    else if (value && typeof value === "object") {
+      const tx = (value as { tx?: { f?: string } }).tx;
+      if (tx?.f === "Inter") {
+        tx.f = "Geist Variable";
+        renamed++;
+      }
+      Object.values(value).forEach(rename);
+    }
+  };
+  rename(snap);
+  assert.ok(renamed > 0);
+  const coded = await codeFor(snap, { templates: {} });
+  const mock = mockFor([snap], { fonts: { ...FONTS, ...probe.geist } });
+  const values = await sendAll(coded, mock) as { kind: string; fonts?: Record<string, string> }[];
+  for (const value of values.filter((v) => v.kind === "build")) assert.deepEqual(value.fonts, {}, "Geist is no stand-in");
+  const { readback, notRead } = loadPlanResults(join(coded.out, "plan.json"));
+  const result = verify(JSON.parse(readFileSync(coded.snapPath, "utf8")), readback, 0.5, { notRead });
+  const family = result.variants.flatMap((v) => (v.nodes ?? []).flatMap((n) => n.differences.filter((d) => d.property === "family")));
+  assert.deepEqual(family, []);
+  assert.ok(result.summary.elements!.verified > 0);
 });
 
 test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {
