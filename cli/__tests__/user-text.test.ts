@@ -50,3 +50,11 @@ test("CONTRIBUTING's acceptance steps install the example's own dependencies", (
   const line = read("CONTRIBUTING.md").split("\n").find((l) => l.includes("`pnpm acceptance`")) ?? "";
   assert.match(line, /cd examples\/storybook-vite && pnpm install && pnpm storybook/);
 });
+
+test("the reference's troubleshooting quotes the 404 message the CLI prints", () => {
+  // It quoted "Storybook has no MCP endpoint", which nothing prints, so a
+  // reader searching for the line they saw found nothing.
+  const printed = /"(There's no MCP endpoint there)\./.exec(read("cli/mcp-connect.ts"))?.[1];
+  assert.ok(printed, "mcp-connect.ts no longer prints the 404 line");
+  assert.ok(read("docs/reference.md").includes(`**"${printed}" (HTTP 404).**`));
+});

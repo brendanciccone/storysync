@@ -864,3 +864,16 @@ test("figma code: --snap takes the directory snap wrote, and says to run snap wh
   );
   await assert.rejects(runFigmaCode({ snap: empty, out: join(empty, "out") }), /No snap at .*styles\.json/);
 });
+
+test("verify --plan: an alpha variable made for a component no build call builds says so, naming no call", () => {
+  // Every variant of a component too big for one call: it has no build call.
+  const dir = mkdtempSync(join(tmpdir(), "storysync-unused-alpha-"));
+  const plan: FigmaPlan = {
+    version: 1, storysyncVersion: "0.4.0", snap: { path: "styles.json", measuredAt: "", digest: "" },
+    calls: [{ seq: 1, kind: "variables", page: "", components: [], file: "calls/01-variables.js", result: "results/01.json", chars: 0, description: "" } as PlanCall],
+    alphas: [{ variable: "foreground 10%", token: "foreground", alpha: 0.1, components: ["ui/base/Table"], collection: "Colors" }],
+  };
+  writeFileSync(join(dir, "plan.json"), JSON.stringify(plan));
+  const { unusedAlphas } = loadPlanResults(join(dir, "plan.json"));
+  assert.deepEqual(unusedAlphas, ["foreground 10% (Colors): made for ui/base/Table, which no build call builds, so nothing binds it"]);
+});

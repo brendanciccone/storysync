@@ -1543,7 +1543,6 @@ export function verify(
   };
 }
 
-/** Whether an entry was read by the element-tree template, which no earlier template's has a field of. */
 /**
  * Why snap couldn't measure a variant, for the line verify lists it on: its
  * status and error, and whether the component's warnings name a story
@@ -1565,6 +1564,7 @@ function oneLine(text: string, max = 100): string {
   return `${cut.slice(0, cut.lastIndexOf(" ") > max / 2 ? cut.lastIndexOf(" ") : max).replace(/[\s,;:.]+$/, "")}…`;
 }
 
+/** Whether an entry was read by the element-tree template, which no earlier template's has a field of. */
 function isTreeEntry(entry: unknown): entry is ReadbackStyles {
   return entry != null && typeof entry === "object" && TREE_MARKS.some((key) => (entry as Record<string, unknown>)[key] !== undefined);
 }

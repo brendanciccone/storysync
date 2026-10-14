@@ -33,6 +33,7 @@ No tokens or config required. Free and open source.
 - Keep commits focused and descriptive.
 - Run `pnpm lint` and `pnpm test` before opening a pull request.
 - Follow the existing code style (TypeScript, ESM, no semi-bikeshedding).
+- Keep `skills/codex.md` byte-identical to `skills/claude-code.md` from `## Tokens` down. `skills/cursor.mdc` follows the same steps, but gives the root-only build and readback and the audit's reads in prose, without the plugin code the other two carry, and says so: a change to those templates is a change to its prose.
 
 ## Releasing
 

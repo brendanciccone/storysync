@@ -199,6 +199,8 @@ Fidelity: 99.3% of elements (287 of 289 verified), 99.6% of properties (3,412/3,
 
 storysync 0.3.0 measured each variant's outer element alone, its fill, border, radius, padding, gap and one text style, and the agent wrote the plugin code that built it, as the steps below describe. That path remains for a push the user asks to make that way: to restyle the sets a 0.3.0 push built without adding their inner layers, say, or to compare with 0.3.0's numbers. It compares only the outer element, so a set pushed this way can score 100% with its icon missing or its title in the wrong place, and `verify` says of each component that only its outer element was compared. Take the element-tree path above unless the user asks for this one. `figma code` refuses a snap taken this way, and points here.
 
+This rule gives the root-only build and readback, and the audit's reads below, as steps in prose, not as the ready-made plugin code the Claude Code and Codex skills carry: write that code from the steps, field by field, and check it against them before sending it.
+
 For a root-only push, Components steps 1 and 2 are as above, step 3's snap adds `--root-only`, and steps 3 to 7 below take the place of the rest:
 
 ```bash

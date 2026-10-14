@@ -846,7 +846,7 @@ Commit both files. Use the Storysync version the Action runs, which is the `vers
 
 ### Storybook
 
-- **"Storybook has no MCP endpoint" (HTTP 404).** Run `npx storysync init`, then restart Storybook.
+- **"There's no MCP endpoint there" (HTTP 404).** Storybook answered, but not at `/mcp`: `@storybook/addon-mcp` isn't installed and registered. Run `npx storysync init`, then restart Storybook. If it is installed, check that `--storybook` is your Storybook's URL.
 - **A request timed out.** A busy or shared Storybook is slow rather than down. Run the command again with `--request-timeout 900000`, or `--connect-timeout 180000` for connecting.
 - **A long snap stopped part-way.** An agent's shell stops a command after a few minutes, and snap stopped part-way writes nothing. The skills run it in the background with `STORYSYNC_PROGRESS=1` and check its exit code.
 - **Stories time out.** A busy Storybook times out stories that render. Measure those components again with `--components <IDs> --merge` and a longer `--timeout`, such as 30000.
