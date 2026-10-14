@@ -419,6 +419,19 @@ test("nodeStyle: a rounded-full circle binds no step of the radius scale that eq
   assert.equal(nodeStyle({ ...item([]), box: [0, 0, 40, 40] }, ctx(shadcn)).rv, "md");
 });
 
+test("nodeStyle: a color its tokens hold alike in every mode, set by a palette class, pairs its own colors rather than binding a token", () => {
+  // coder's #e4e4e7 is border/DEFAULT and input, #27272a in Dark: bg-zinc-200 must stay zinc-200.
+  const tokens = { collections: [{ category: "colors" as const, tokens: ([
+    ["border/DEFAULT", "#e4e4e7", "#27272a"], ["input", "#e4e4e7", "#27272a"], ["popover", "#ffffff", "#171717"], ["card", "#ffffff", "#171717"],
+  ] as const).map(([name, hex, dark]) => ({ name, value: hex, hex, dark: { value: dark, hex: dark } })) }] };
+  const binder = new Binder(tokens, new Map([["zinc-200", "#e4e4e7"], ["zinc-700", "#3f3f46"]]));
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(binder), alphas, darkAlpha: true, byDefault: [] };
+  assert.deepEqual(nodeStyle(frame({ k: "a", bg: "#e4e4e7", cls: ["bg-zinc-200", "dark:bg-zinc-700"] }), c).f, [["#e4e4e7", 1, "zinc-200 dark zinc-700"]]);
+  assert.deepEqual(nodeStyle(frame({ k: "b", bg: "#e4e4e7", cls: ["bg-zinc-200"] }), c).f, ["#e4e4e7"]);
+  assert.deepEqual(c.byDefault ?? [], []);
+});
+
 test("nodeStyle: where a dark: class paints another color, the paint binds to a per-mode variable of the two, a palette color's with its value", () => {
   const palette = new Map([["slate-50", "#f8fafc"], ["slate-900", "#0f172b"]]);
   const alphas = new Map();

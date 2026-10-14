@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callConstants, callSum } from "../checksum.js";
-import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeBinding, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { READ_LIMIT, loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
@@ -810,4 +810,12 @@ test("figma code: prints the push's estimate, in text and in --json, from the ca
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("describeBinding: says whether classes named the tokens that tie, or none did, and why any of them is right", () => {
+  const alike = ["border/DEFAULT", "input", "surface/tertiary"];
+  const b = { component: "button", property: "stroke", value: "#e4e4e7", variable: "input", from: "", alike, keys: ["", "icon"] };
+  assert.equal(describeBinding({ ...b, named: ["input", "surface/tertiary"] }), "button: stroke #e4e4e7 bound to input, which its classes name with surface/tertiary, as border/DEFAULT, input, and surface/tertiary hold it in every mode, so any of them is right in each (its root, icon)");
+  assert.equal(describeBinding({ ...b, variable: "border/DEFAULT" }), "button: stroke #e4e4e7 bound to border/DEFAULT, which no class names, as border/DEFAULT, input, and surface/tertiary hold it in every mode, so any of them is right in each (its root, icon)");
+  assert.equal(describeBinding({ component: "dialog", property: "color", value: "#0a0a0a", variable: "foreground", from: "body { color: var(--foreground) }", keys: ["t"] }), "dialog: color #0a0a0a bound to foreground, which no class names, by the base style body { color: var(--foreground) } (t)");
 });

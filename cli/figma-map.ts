@@ -157,12 +157,14 @@ export interface BoundByDefault {
   variable: string;
   from: string;
   alike?: string[];
+  /** Where `alike`: those the classes named, which tie, the first bound. */
+  named?: string[];
 }
 
 /** A binding no class showed, as `byDefault` records it: by a base style's rule, or by tokens alike in every mode. */
 function byDefault(key: string, property: string, value: string, decision: BindDecision): BoundByDefault | null {
   if (!decision.variable) return null;
-  if (decision.alike) return { key, property, value, variable: decision.variable, from: "", alike: decision.alike };
+  if (decision.alike) return { key, property, value, variable: decision.variable, from: "", alike: decision.alike, ...(decision.named ? { named: decision.named } : {}) };
   return decision.from ? { key, property, value, variable: decision.variable, from: decision.from } : null;
 }
 

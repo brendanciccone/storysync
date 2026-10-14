@@ -550,7 +550,7 @@ function compileComponent(component: SnapComponentWithTree, binder: Binder, warn
   const bindings = new Map<string, PlanBinding>();
   for (const b of findings.byDefault) {
     const id = `${b.property} ${b.value}`;
-    const was = bindings.get(id) ?? { component: key, property: b.property, value: b.value, variable: b.variable, from: b.from, ...(b.alike ? { alike: b.alike } : {}), keys: [] };
+    const was = bindings.get(id) ?? { component: key, property: b.property, value: b.value, variable: b.variable, from: b.from, ...(b.alike ? { alike: b.alike } : {}), ...(b.named ? { named: b.named } : {}), keys: [] };
     if (!was.keys.includes(b.key)) was.keys = [...was.keys, b.key].sort();
     bindings.set(id, was);
   }
@@ -1030,6 +1030,19 @@ export function formatTokens(n: number): string {
 }
 
 /** The estimate as one line: what the calls send and return, and the tokens to plan on. */
+/**
+ * A binding no class showed, as `figma code` prints it: by the base
+ * style's rule, or as tokens alike in every mode, with the ones the classes
+ * named where they tie (`which its classes name with surface/tertiary`).
+ */
+export function describeBinding(b: PlanBinding): string {
+  const layers = b.keys.map((k) => (k === "" ? "its root" : k)).join(", ");
+  const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")}${names.length > 2 ? "," : ""} and ${names[names.length - 1]}`);
+  const why = b.alike ? `as ${list(b.alike)} hold it in every mode, so any of them is right in each` : `by the base style ${b.from}`;
+  const named = b.named && b.named.length > 1 ? `which its classes name with ${list(b.named.filter((n) => n !== b.variable))}` : "which no class names";
+  return `${b.component}: ${b.property} ${b.value} bound to ${b.variable}, ${named}, ${why} (${layers})`;
+}
+
 export function describeEstimate(e: PushEstimate): string {
   const n = (v: number) => v.toLocaleString("en-US");
   const returned = e.charsReturned ? ` and read back about ${n(Math.round(e.charsReturned / 1000) * 1000)}` : "";

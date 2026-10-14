@@ -85,7 +85,7 @@ export interface BindDecision {
   candidates: string[];
   /** True where the classes name two of them and the value is left unbound for it, rather than for none being named. */
   ambiguous?: true;
-  /** Where `ambiguous`: the candidates the classes name, sorted, which tie, as `text-card-foreground` and `text-foreground` do. */
+  /** Where `ambiguous`, or `alike`: the candidates the classes name, sorted, which tie, as `text-card-foreground` and `text-foreground` do. */
   named?: string[];
   /** Where a base style picked the token, not a class: the rule, as `defaults` gives it. */
   from?: string;
@@ -204,7 +204,7 @@ export class Binder {
     // in some state to a color no token names.
     const property = DEFAULT_PROPERTY[role];
     const fallback = property && this.defaults.get(property);
-    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.unnamedColor(role, cls)) {
+    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.setsOtherColor(role, cls)) {
       return { variable: fallback.token, candidates, from: fallback.from };
     }
     return { variable: null, candidates };
@@ -215,20 +215,45 @@ export class Binder {
    * tokens unbound, one of them where all hold the same value in each mode,
    * so that any is right in Light and in Dark: of those the classes name
    * where they tie, else the base style's for the role's property, else
-   * the first. A shadow's color binds only where named, so never so; and
-   * in a project of one theme, where no mode tells them apart, a value
-   * stays unbound rather than bound to a guess.
+   * the first whose name fits the role (`content/disabled` for a text,
+   * not `border/secondary`), else the first. A shadow's color binds only
+   * where named, so never so; in a project of one theme, where no mode
+   * tells them apart, a value stays unbound rather than bound to a guess;
+   * and so does one a class or a rule sets to a color no token holds
+   * (setsOtherColor), which keeps its value in Dark while a token's
+   * changes.
    */
   color(hex: string, role: PaintRole, cls: readonly string[] | undefined, nocls?: readonly string[], scheme: Scheme = "light"): BindDecision {
     const decision = this.byEvidence(hex, role, cls, nocls, scheme);
     const { candidates } = decision;
-    if (decision.variable || candidates.length < 2 || NAMED_ONLY.has(role) || !this.hasDark) return decision;
+    if (decision.variable || candidates.length < 2 || NAMED_ONLY.has(role) || !this.hasDark || this.setsOtherColor(role, cls)) return decision;
     const same = (index: Map<string, string>) => candidates.every((t) => index.get(t) !== undefined && index.get(t) === index.get(candidates[0]));
     if (!same(this.lightHex) || !same(this.darkHex)) return decision;
     const property = DEFAULT_PROPERTY[role];
     const fallback = property && this.defaults.get(property)?.token;
-    const variable = decision.named?.[0] ?? (fallback && candidates.includes(fallback) ? fallback : candidates[0]);
-    return { variable, candidates, alike: candidates };
+    const fits = FITS[role];
+    const variable = decision.named?.[0] ?? (fallback && candidates.includes(fallback) ? fallback : (fits && candidates.find((t) => fits.test(t))) || candidates[0]);
+    return { variable, candidates, alike: candidates, ...(decision.named?.length ? { named: decision.named } : {}) };
+  }
+
+  /**
+   * Whether the classes or the rules say the role's color is one no token
+   * holds, though its value matches tokens: a class that sets it to a
+   * palette or arbitrary color, in any theme or state (unnamedColor, and
+   * a fill's `bg-zinc-200 dark:bg-zinc-700`, `bg-[#e4e4e7]`), or a custom
+   * property or rule's color behind it (`var:` evidence) that names none
+   * of the tokens the classes could not name either: a chain that ends in
+   * a literal, as Sonner's `--normal-bg: #fff` would.
+   */
+  private setsOtherColor(role: PaintRole, cls: readonly string[] | undefined): boolean {
+    if (this.unnamedColor(role, cls)) return true;
+    return (cls ?? []).map(readEvidence).some(({ utility, fromVar }) => {
+      const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
+      if (!prefix) return false;
+      if (fromVar) return true;
+      const rest = utility.slice(prefix.length + 1).toLowerCase();
+      return role === "fill" && !this.tokenByClass.has(rest) && (this.palette.has(rest) || ARBITRARY_COLOR.test(rest));
+    });
   }
 
   /**
@@ -371,6 +396,21 @@ const FULL_RADIUS = /^rounded(?:-(?:[trblse]|tl|tr|br|bl|ss|se|es|ee))?-full$/;
  * `border-default`, as a config whose key is `default` names it
  * (`border-border-default` on coder's).
  */
+/** A class's arbitrary color, `[#e4e4e7]`, `[rgb(…)]` or `[color:…]`, after its prefix. */
+const ARBITRARY_COLOR = /^\[(?:#|(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(|color:)/;
+
+/**
+ * The names that fit a role, for a value its tokens all hold in every
+ * mode and no class picks among (Binder.color): a text's
+ * `content/disabled` or `foreground`, a border's `border/secondary`.
+ */
+const FITS: Partial<Record<PaintRole, RegExp>> = {
+  text: /(?:^|[/-])(?:content|foreground|text|fg)(?:[/-]|$)/i,
+  vector: /(?:^|[/-])(?:content|foreground|text|fg|icon)(?:[/-]|$)/i,
+  stroke: /(?:^|[/-])(?:border|stroke|outline|ring|input|divider)(?:[/-]|$)/i,
+  fill: /(?:^|[/-])(?:background|surface|bg|fill|card|popover)(?:[/-]|$)/i,
+};
+
 function classNamesOf(token: string): string[] {
   const short = tokenClassName(token);
   const whole = token.toLowerCase().replace(/\//g, "-");

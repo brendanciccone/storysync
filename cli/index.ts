@@ -17,7 +17,7 @@ import { runSnap, snapFailsStrict, snapMessages } from "./snap.js";
 import { resolveAndLaunch } from "./snap-browser.js";
 import { nameSlugs } from "./snap-args.js";
 import { verify, loadJsonFile, formatFidelity, parseDuration, formatAge, readSnapAge, formatElementReport, treeStrictFailures, headlineFidelity, describeSnapChange } from "./verify.js";
-import { DEFAULT_READ_LIMIT, describeEstimate, estimatePush, planSnapChanged, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
+import { DEFAULT_READ_LIMIT, describeBinding, describeEstimate, estimatePush, planSnapChanged, readPlan, runFigmaCode, runFigmaNext } from "./figma-code.js";
 import { MAX_CALL_CHARS, SPIKE, USE_FIGMA_CODE_LIMIT } from "./figma-spike.js";
 import { runFigmaUpload } from "./figma-upload.js";
 import { DEFAULT_MAX_VARIABLES, runFigmaTokens } from "./figma-tokens.js";
@@ -1072,11 +1072,7 @@ figma
       // What no class showed, and the project's base styles did: a text that
       // inherits body's color, a border that takes `*`'s; or what tokens
       // alike in every mode left free to pick.
-      for (const b of bindings) {
-        const layers = b.keys.map((k) => (k === "" ? "its root" : k)).join(", ");
-        const why = b.alike ? `as ${b.alike.slice(0, -1).join(", ")}${b.alike.length > 2 ? "," : ""} and ${b.alike[b.alike.length - 1]} hold it in every mode, so any of them is right in each` : `by the base style ${b.from}`;
-        console.log(chalk.dim(`  = ${b.component}: ${b.property} ${b.value} bound to ${b.variable}, which no class names, ${why} (${layers})`));
-      }
+      for (const b of bindings) console.log(chalk.dim(`  = ${describeBinding(b)}`));
       for (const warning of warnings) console.log(chalk.yellow(`  ! ${warning}`));
       // A translucent paint binds to its token's alpha variable, which keeps
       // its opacity at a mode switch: the plan's first calls make them.

@@ -284,6 +284,7 @@ export interface PlanBinding {
   component: string;                         // componentKey
   property: string; value: string; variable: string; from: string;
   alike?: string[];                          // bound as these tokens hold the value in every mode; from is ""
+  named?: string[];                          // where alike: those the classes named, which tie
   keys: string[];                            // node keys, sorted, "" the root
 }
 
