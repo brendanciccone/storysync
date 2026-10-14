@@ -470,7 +470,7 @@ program
   .option("--keep-props <names>", KEEP_PROPS_HELP)
   .option("--no-cache", "Read every component's docs from Storybook, not from the docs cache in .storysync/cache")
   .option("--screenshots", "Also save a PNG per variant (off by default)")
-  .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more, with three times as long", "10000")
+  .option("--timeout <ms>", "Per-story timeout in milliseconds; a story that times out loading is tried once more, with three times as long, or as long once such a try in its component timed out", "10000")
   .option("--selector <css>", "Measure the element this matches instead of choosing one")
   .option("--merge", "With --components, measure only those and merge them into the styles.json in --out, keeping the rest")
   .option("--root-only", "Measure each variant's outer element alone, without its element tree, as 0.3.0 did: for a push through the skill's root-only templates")
